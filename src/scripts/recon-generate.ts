@@ -1683,14 +1683,16 @@ export function resolveManifestActionSequence(
  */
 export function extractActionSequence(
   captures: Capture[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
 
   return captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
-      if (capture.method === "GET") return false;
+      if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
@@ -1714,9 +1716,11 @@ export function extractActionSequence(
  */
 export function extractGraphQLActionSequence(
   captures: Capture[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1724,7 +1728,8 @@ export function extractGraphQLActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
-      return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+      if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
+      return matchesFoldReturn(capture);
     });
 }
 
@@ -5972,11 +5977,19 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   return null;
 }
 
-function buildFoldPlanFromSpec<T extends { capture: Capture }>(
-  actions: readonly T[],
-  spec: FoldReturnSpec
-): FoldPlan | null {
-  const primaryArrayPath = spec.resultsPath.split(".");
+/**
+ * Compiles a flow-declared {@link FoldReturnSpec.endpointPattern} into a
+ * capture predicate, or a predicate that always returns `false` when `spec`
+ * is `null` or its pattern isn't a valid regex — the same null-safe
+ * try/catch shape {@link buildFoldPlanFromSpec} already applied inline,
+ * shared here so the action-sequence extractors can admit a spec-matched
+ * drill-down capture under the identical rule that later resolves its fold
+ * plan, instead of dropping it before the fold pipeline ever sees it.
+ */
+function compileFoldReturnEndpointMatcher(
+  spec: FoldReturnSpec | null
+): (capture: Capture) => boolean {
+  if (spec === null) return () => false;
   const endpointRx = ((): RegExp | null => {
     try {
       return new RegExp(spec.endpointPattern);
@@ -5984,7 +5997,16 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       return null;
     }
   })();
-  if (endpointRx === null) return null;
+  if (endpointRx === null) return () => false;
+  return (capture: Capture) => endpointRx.test(capture.url);
+}
+
+function buildFoldPlanFromSpec<T extends { capture: Capture }>(
+  actions: readonly T[],
+  spec: FoldReturnSpec
+): FoldPlan | null {
+  const primaryArrayPath = spec.resultsPath.split(".");
+  const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
@@ -5998,7 +6020,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       drillStepIndex++
     ) {
       const drill = actions[drillStepIndex]!;
-      if (!endpointRx.test(drill.capture.url)) continue;
+      if (!matchesFoldReturnEndpoint(drill.capture)) continue;
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -7991,7 +8013,9 @@ async function main(): Promise<void> {
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
-  const graphqlActionSequence = gql ? extractGraphQLActionSequence(captures, submitPatterns) : [];
+  const graphqlActionSequence = gql
+    ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
+    : [];
   const primaryGraphQLOperation =
     gql && graphqlActionSequence.length === 0
       ? selectPrimaryGraphQLOperation(
@@ -8059,7 +8083,7 @@ async function main(): Promise<void> {
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
     ? graphqlActionSequence
-    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns));
+    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns, foldReturnSpec));
   // The same undercount hazard applies one layer below the manifest: a
   // flow-declared submitEndpointPattern that matches only one section's URL
   // (the natural way to describe "the button that finishes the wizard")
@@ -8073,8 +8097,8 @@ async function main(): Promise<void> {
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
       : gql
-        ? extractGraphQLActionSequence(captures, null)
-        : collapseRedundantPatches(extractActionSequence(captures, null));
+        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
   if (patternUndercounts) {
@@ -8114,8 +8138,8 @@ async function main(): Promise<void> {
     submitEndpointPattern === null
       ? null
       : gql
-        ? extractGraphQLActionSequence(captures, null)
-        : collapseRedundantPatches(extractActionSequence(captures, null));
+        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
