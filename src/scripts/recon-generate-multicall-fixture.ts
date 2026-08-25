@@ -1631,3 +1631,55 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmedi
     }),
   ];
 }
+
+const ACCOUNT_STATUS_URL = "https://api.example.com/accounts/status";
+const ACCOUNT_TRANSACTIONS_URL = "https://api.example.com/accounts/transactions";
+
+/**
+ * A dependent (chained) drill-down whose join key is threaded ONLY through a
+ * request HEADER (`API-Token`) on the chain's ENTRY hop (`r1`) — invisible to
+ * `detectDrillDownFoldPlan`'s structural heuristic exactly like
+ * {@link buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps}
+ * — so only a flow-declared `foldReturn` can resolve this fold at all. Unlike
+ * every existing header-threaded-join fixture, though, a site author writing
+ * that `foldReturn` naturally points `endpointPattern` at `r2`
+ * (`/accounts/transactions`) — the call whose OWN response actually carries
+ * the per-item data (`transactions[]`) they want folded — not at `r1`
+ * (`/accounts/status`), the opaque intermediate hop that merely carries the
+ * `accountId`→`API-Token` header thread onward as a `statusToken`. `r2`'s own
+ * request only ever carries that threaded `statusToken`, never `accountId`
+ * in any form (body, URL, or header) — the join key is resolvable only by
+ * walking back to `r1`, exactly the way `computeFoldChain` already walks
+ * FORWARD from a resolved entry hop to a richer terminal. `resultsPath`
+ * anchors on `accounts`, `joinFields` on `accountId`.
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ACCOUNT_SEARCH_URL,
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        accounts: [
+          { accountId: 42, name: "Acme" },
+          { accountId: 43, name: "Globex" },
+        ],
+      },
+      timestamp: "2024-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ACCOUNT_STATUS_URL,
+      requestPostData: null,
+      requestHeaders: { "Content-Type": "application/json", "API-Token": "42" },
+      responseBody: { statusToken: "status-token-42" },
+      timestamp: "2024-08-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ACCOUNT_TRANSACTIONS_URL,
+      requestPostData: JSON.stringify({ statusToken: "status-token-42" }),
+      responseBody: {
+        transactions: [{ statusToken: "status-token-42", transactionId: "t-42", amount: 19.99 }],
+      },
+      timestamp: "2024-08-01T00:00:02Z",
+    }),
+  ];
+}
