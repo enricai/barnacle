@@ -20,6 +20,7 @@ import {
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownDrillDecoyActionSteps,
+  buildMulticallSingleShotSearchDrillDownHeaderMintedChainedResponseValueActionSteps,
   buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownNestedJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownNestedJoinFieldChainedDependentActionSteps,
@@ -528,6 +529,23 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     // only way the chain reaches r2's real per-item `history[]` is by
     // recognizing r1's boolean `verified` leaf as a value r2 threads into
     // its request.
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
+  });
+
+  it("extends the chain past a drill step whose response mints its join value ONLY in a response header", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownHeaderMintedChainedResponseValueActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    // r1's response BODY is empty ({}) — its join token ("tok-a1") is minted
+    // only in its `X-Price-Token` response header — so the only way the
+    // chain reaches r2's real per-item `history[]` is by recognizing that
+    // header value as one r2 threads into its request body.
     expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);

@@ -5355,19 +5355,23 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .map(({ path }) => path.join("."));
 }
 
-/** Every string, numeric, and boolean leaf value present anywhere in a response body —
+/** Every string, numeric, and boolean leaf value present anywhere in a response —
  * the set a chained drill-down step's request must overlap with for that
  * step to count as depending on this response. Deliberately walks the WHOLE
  * body (not just object-array items, unlike {@link findThreadedJoinFields})
  * since a chained step can thread any response value, not only a per-item
- * join field. */
-function collectResponseLeafValues(responseBody: unknown): Set<string> {
+ * join field. Also walks every response HEADER value, mirroring
+ * {@link collectRequestValuesIncludingHeaders} on the request side, since a
+ * chain hop can just as easily mint its join token in a response header
+ * (e.g. a `Location` or custom correlation header) as in the body. */
+function collectResponseLeafValues(capture: Capture): Set<string> {
   const values = new Set<string>();
-  for (const { value } of walkAllPrimitiveLeaves(responseBody)) {
+  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (typeof value === "string" && value.length > 0) values.add(value);
     if (typeof value === "number") values.add(String(value));
     if (typeof value === "boolean") values.add(String(value));
   }
+  for (const v of Object.values(capture.responseHeaders)) values.add(v);
   return values;
 }
 
@@ -5443,7 +5447,7 @@ function computeFoldChain<T extends { capture: Capture }>(
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
     const dependsOnChain = chain.some((chainIndex) => {
       const chainStepCapture = actions[chainIndex]!.capture;
-      const responseValues = collectResponseLeafValues(chainStepCapture.responseBody);
+      const responseValues = collectResponseLeafValues(chainStepCapture);
       const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
       return [...responseValues].some((v) => !echoedValues.has(v) && requestValues.has(v));
     });
@@ -6288,7 +6292,7 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
         const priorIndex = target.chain[j]!;
         const priorCapture = actions[priorIndex]?.capture;
         if (!priorCapture) continue;
-        const responseValues = collectResponseLeafValues(priorCapture.responseBody);
+        const responseValues = collectResponseLeafValues(priorCapture);
         const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
         for (let k = j + 1; k < target.chain.length; k++) {
           const laterCapture = actions[target.chain[k]!]?.capture;
