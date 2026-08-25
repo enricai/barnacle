@@ -56,23 +56,14 @@ function stubArrayWrappedNumericChainedJoinFieldFetch(): void {
 
 describe("recon-generate dependent drill-down fold executeHttp — array-wrapped numeric chained join field runtime guard", () => {
   // This is NOT the array-wrap fix (bugfix-001) under test in the sibling
-  // string-valued file — it documents a prerequisite gap found while writing
-  // that regression coverage for a numeric variant. `indexStateValues`
-  // (src/scripts/recon-generate.ts) walks response bodies via
-  // `walkStringLeaves`, which yields string leaves only, so a bare-number
-  // chain-produced value (`r1`'s response here) is never indexed as a
-  // threadable state value and never reaches `compileActionSteps`'
-  // `produces[]` at all. `r2`'s templated body then has no accessor to
-  // substitute for the token and renders `{"tokens":[undefined]}` —
-  // invalid JSON — which the http client surfaces as a thrown fetch
-  // failure. This reproduces identically regardless of the terminal body's
-  // array-wrap shape, so it sits upstream of and is independent from the
-  // array-wrap fix. `it.fails` records this as a known, currently-failing
-  // case: if `indexStateValues` is later extended to index numeric leaves,
-  // this test will start passing, which should draw attention to update it
-  // to a real `it()` assertion (mirroring the string-valued sibling) rather
-  // than silently going green.
-  it.fails("does not yet thread a numeric chain-produced join value into a later request body at all", async () => {
+  // string-valued file — it covers a prerequisite gap found while writing
+  // that regression coverage for a numeric variant. `indexStateValues`,
+  // `jsonBodyLeafValues`, `compileActionSteps`' produces[] walk, and
+  // `resolveResponsePathValue` (src/scripts/recon-generate.ts) now thread a
+  // bare-number chain-produced value (`r1`'s response here) identically to a
+  // string leaf, so `r2`'s templated body resolves the token accessor
+  // instead of rendering `{"tokens":[undefined]}`.
+  it("threads a numeric chain-produced join value into a later request body", async () => {
     const steps =
       buildMulticallSingleShotSearchDrillDownArrayWrappedNumericChainedJoinFieldActionSteps();
     const captures = steps.map((step) => step.capture);
