@@ -1720,8 +1720,13 @@ export function extractActionSequence(
  *
  * When the flow declares a `foldReturnSpec`, a non-mutation capture whose
  * URL matches its `endpointPattern` is admitted despite the query drop
- * above, mirroring {@link extractActionSequence}'s GET admission. Every
- * other non-mutation capture is still dropped.
+ * above, mirroring {@link extractActionSequence}'s GET admission. So is a
+ * non-mutation capture whose response resolves the spec's own `resultsPath`
+ * — the GraphQL-primary read op the drill-down folds onto, which
+ * `endpointPattern` (naming the drill, not the primary) never matches on its
+ * own; without this a declared spec would admit the drill-down but leave
+ * `resolveFoldPlan` with no primary capture to resolve `resultsPath`
+ * against. Every other non-mutation capture is still dropped.
  *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
@@ -1733,6 +1738,7 @@ export function extractGraphQLActionSequence(
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1741,7 +1747,7 @@ export function extractGraphQLActionSequence(
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
       if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
-      return matchesFoldReturn(capture);
+      return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
 }
 
@@ -6011,6 +6017,27 @@ function compileFoldReturnEndpointMatcher(
   })();
   if (endpointRx === null) return () => false;
   return (capture: Capture) => endpointRx.test(capture.url);
+}
+
+/**
+ * A capture predicate matching whichever capture actually holds
+ * {@link FoldReturnSpec.resultsPath}'s object array — the flow's own PRIMARY
+ * results source, as opposed to {@link compileFoldReturnEndpointMatcher}'s
+ * `endpointPattern` match (the drill-down). REST's `extractActionSequence`
+ * never needs this: a REST primary is a POST/non-GET and is admitted
+ * unconditionally regardless of `foldReturnSpec`. GraphQL's primary is
+ * always a `query`, and `extractGraphQLActionSequence` drops every
+ * non-mutation capture by default, so without this predicate a declared
+ * `foldReturnSpec` would admit only the drill-down capture and never the
+ * read op whose response the drill-down folds onto — leaving
+ * `buildFoldPlanFromSpec` with no `primaryStepIndex` to resolve against.
+ */
+function compileFoldReturnResultsMatcher(
+  spec: FoldReturnSpec | null
+): (capture: Capture) => boolean {
+  if (spec === null) return () => false;
+  const resultsPath = spec.resultsPath.split(".");
+  return (capture: Capture) => objectItemsAtPath(capture.responseBody, resultsPath) !== null;
 }
 
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
