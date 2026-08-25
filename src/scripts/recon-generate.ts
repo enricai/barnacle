@@ -2853,17 +2853,21 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * whole blob is caller-supplied; the generator can't reach inside a value it
  * has delegated wholesale.
  *
- * A candidate whose leaves include a value a PRIOR step's response already
- * produced (e.g. a per-item join token wrapped in a bulk-lookup array like
- * `{"tokens":["<prior-response-value>"]}`) is never swallowed here, no
- * matter how array/object-shaped it looks: that value is a threaded
- * dependent-drill-down coordinate the fold-chain machinery (`computeFoldChain`
- * / `dependsOnChain`) already resolved, not caller-supplied history data, and
- * `interpolateStateValues` (Pass 1, which runs AFTER this pass) must still be
- * able to reach in and bind it — freezing it into an opaque
+ * A candidate whose leaves include a value already threaded from elsewhere in
+ * the fold — either a PRIOR step's response (e.g. a per-item join token
+ * wrapped in a bulk-lookup array like `{"tokens":["<prior-response-value>"]}`)
+ * OR the fold's own PRIMARY ITEM field feeding the immediate drill step's
+ * request (e.g. `{"orderIds":["<primary-item-value>"]}`) — is never swallowed
+ * here, no matter how array/object-shaped it looks: both are threaded
+ * dependent-drill-down coordinates, not caller-supplied history data. The
+ * prior-step-response case must stay reachable for `interpolateStateValues`
+ * (Pass 1, which runs AFTER this pass); the primary-item case must stay
+ * reachable as literal text for the fold-loop's own `parameterize` pass
+ * (which runs even later, once rendering enters the per-item loop) to find
+ * and swap for `${item.<field>}`. Freezing either into an opaque
  * `${JSON.stringify(payload.tokens)}` blob here would silently drop the
- * per-item value the chain step's request depends on, breaking the fold at
- * exactly the case an ARRAY-wrapped join field represents.
+ * value the request depends on, breaking the fold at exactly the case an
+ * ARRAY/OBJECT-wrapped join field represents.
  *
  * Site-agnostic: operates only on the recon body's own shape.
  */
@@ -4200,6 +4204,22 @@ export function emitMultiStepExecuteHttp(
   // names are actually load-bearing for a resolved fold.
   const earlyFoldPlans = resolveFoldPlan(actions, foldReturnSpec);
   const joinCarryingHeaderNamesByStep = new Map<number, Set<string>>();
+  // A fold target's join value is the PRIMARY ITEM's own field, threaded into
+  // the drill step's request text-literally by the fold-loop's own
+  // `parameterize` pass (later, once rendering enters the per-item loop) — it
+  // is never a prior STEP's produced state var, so `deriveStateVarByValue`
+  // (built from `produces[]`) never sees it. Mechanism B
+  // (`applyStructuredValuePayloadSubstitutions`) runs BEFORE that loop-aware
+  // pass and only knows to spare a candidate carrying a prior step's state
+  // value; without this, it freezes an array/object-wrapped join field (e.g.
+  // `{"orderIds":["<item.orderId>"]}`) into an opaque
+  // `${JSON.stringify(payload.orderIds)}` blob, destroying the literal text
+  // `parameterize` needs to find and swap for `${item.orderId}` — every
+  // iteration then replays one caller-supplied value instead of the item's
+  // own. Collected once here (fold plans depend only on `actions`/
+  // `foldReturnSpec`, not on Pass 1's render) so Pass 1 knows which values to
+  // spare per step, mirroring the header-name collection above.
+  const joinFieldValuesByStep = new Map<number, Set<string>>();
   for (const plan of earlyFoldPlans) {
     const primaryItems = objectItemsAtPath(
       actions[plan.primaryStepIndex]!.capture.responseBody,
@@ -4223,6 +4243,13 @@ export function emitMultiStepExecuteHttp(
           if (matchesJoinField) headerNames.add(headerName);
         }
         if (headerNames.size > 0) joinCarryingHeaderNamesByStep.set(stepIndex, headerNames);
+        const joinValues = joinFieldValuesByStep.get(stepIndex) ?? new Set<string>();
+        for (const field of target.joinFields) {
+          const value = readValueAtPath(firstItem, field.split("."));
+          if (typeof value === "string" && value.length > 0) joinValues.add(value);
+          else if (typeof value === "number") joinValues.add(String(value));
+        }
+        if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
       }
     }
   }
@@ -4288,7 +4315,10 @@ export function emitMultiStepExecuteHttp(
             rawBodyWithFormSubs,
             parsedBody,
             outStructuredKeys,
-            new Set(deriveStateVarByValue(prior).keys())
+            new Set([
+              ...deriveStateVarByValue(prior).keys(),
+              ...(joinFieldValuesByStep.get(i) ?? []),
+            ])
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE

@@ -1503,3 +1503,46 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDepend
     }),
   ];
 }
+
+/**
+ * A different sibling of the same array-wrapped-join-field failure family:
+ * here it's the IMMEDIATE drill step (`r1`), not a later chain hop, whose
+ * request body wraps the value it threads — but that value is the PRIMARY
+ * ITEM's own join field (`orderId`), not a prior step's produced response
+ * value. `applyStructuredValuePayloadSubstitutions`'s "spare a candidate
+ * already threaded" exception only recognized prior-step state values, so it
+ * still froze `r1`'s `{"orderIds":["order-a"]}` into an opaque
+ * `${JSON.stringify(payload.orderIds)}` blob, destroying the literal
+ * `"order-a"` text the fold-loop's own per-item `parameterize` pass (which
+ * runs even later, once rendering enters the loop) needs to find and swap
+ * for `${item.orderId}` — every iteration replayed the SAME captured order
+ * instead of each primary item's own.
+ */
+export function buildMulticallSingleShotSearchDrillDownArrayWrappedImmediateJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-03T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderIds":["order-a"]}',
+      responseBody: ["status-token-order-a"],
+      timestamp: "2024-10-03T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_BULK_URL,
+      requestPostData: '{"tokens":["status-token-order-a"]}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-order-a", ts: "2024-10-03T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-03T00:00:02Z",
+    }),
+  ];
+}
