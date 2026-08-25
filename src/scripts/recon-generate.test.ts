@@ -34,6 +34,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps,
+  buildStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
 import type { Capture } from "@/scripts/recon-shared";
@@ -2661,6 +2662,56 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
     // outside it.
     expect(body.match(/const r1 = \(await httpClient\(/g)).toHaveLength(1);
     expect(body.match(/const r2 = \(await httpClient\(/g)).toHaveLength(1);
+  });
+});
+
+describe("emitMultiStepExecuteHttp — fold-loop parameterize re-keys a boolean join field per item", () => {
+  it("swaps the captured boolean join literal for a per-item accessor instead of freezing it as a shared constant", () => {
+    // r0's primary items carry a boolean `primary` field; r1's drill request
+    // threads that field's own captured value (`true`, from item 0) as a
+    // literal query param. Without boolean support at the join-detection and
+    // parameterize layers, the drill call is either never folded into the
+    // loop at all, or (if it were) `primary=true` would stay frozen as a
+    // shared literal instead of re-keying to each item's own boolean.
+    const steps = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          results: [
+            { sku: "sku-a", primary: true },
+            { sku: "sku-b", primary: false },
+          ],
+        },
+        timestamp: "2024-11-15T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/detail/?primary=true",
+        requestPostData: null,
+        method: "GET",
+        responseBody: { detail: "d1" },
+        timestamp: "2024-11-15T00:00:01Z",
+      }),
+    ];
+
+    const body = emitMultiStepExecuteHttp(
+      steps as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("${item.primary}");
+    expect(body).not.toContain("primary=true");
   });
 });
 
