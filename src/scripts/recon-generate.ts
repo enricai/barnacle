@@ -1677,6 +1677,13 @@ export function resolveManifestActionSequence(
  * JWT refresh, reference-lookup) that a browser fires incidentally. Absent
  * patterns preserve the noise heuristic exactly.
  *
+ * When the flow declares a `foldReturnSpec`, a GET whose URL matches its
+ * `endpointPattern` is admitted despite the GET drop above — the same scoped
+ * rule `buildFoldPlanFromSpec` later uses to resolve the fold plan, so a
+ * spec-declared GET drill-down survives to reach it instead of being
+ * dropped before the fold pipeline ever sees it. Every other GET is still
+ * dropped.
+ *
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
@@ -1710,6 +1717,11 @@ export function extractActionSequence(
  * page-load `ListForms`) that carry no state-threading value and are exactly
  * what let a chronologically-first fallback pick an unrelated query. Host is
  * NOT a filter criterion, matching {@link extractActionSequence}.
+ *
+ * When the flow declares a `foldReturnSpec`, a non-mutation capture whose
+ * URL matches its `endpointPattern` is admitted despite the query drop
+ * above, mirroring {@link extractActionSequence}'s GET admission. Every
+ * other non-mutation capture is still dropped.
  *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
