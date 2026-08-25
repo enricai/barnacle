@@ -65,7 +65,8 @@ function stubDependentDrillDownOntoPrimaryFetch(): void {
 
 describe("recon-generate dependent drill-down fold executeHttp — onto primary runtime guard", () => {
   it("folds the dependent (chained) drill-down's terminal fields onto the matching primary result item instead of dropping them", async () => {
-    const steps = buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps();
+    const steps =
+      buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps();
     const captures = steps.map((step) => step.capture);
     const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
 

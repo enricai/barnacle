@@ -531,6 +531,55 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
   });
 
+  it("resolves a nested-join primary item through an opaque intermediate hop to the real chain terminal", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          results: [
+            { identifiers: { orderId: "order-a" } },
+            { identifiers: { orderId: "order-b" } },
+          ],
+        },
+        timestamp: "2024-06-02T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-b/status",
+        requestPostData: JSON.stringify({ orderId: "order-b" }),
+        // A bare array of primitive strings — no object-array field and no
+        // flat-object shape, so this hop has no candidate of its own. The
+        // real per-item data only shows up on the step this response's lone
+        // token threads into.
+        responseBody: ["tok-77"],
+        timestamp: "2024-06-02T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-77" }),
+        responseBody: { entries: [{ ts: "2024-06-02T00:00:02Z", event: "delivered" }] },
+        timestamp: "2024-06-02T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["identifiers.orderId"]);
+    // The join value ("order-b") only satisfies the SECOND primary item, so
+    // `primaryMatchedItemIndex` must resolve by walking into each item's
+    // nested fields rather than assuming the first item matches.
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(1);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    // The chain must extend past the opaque r1 hop to r2, the step that
+    // actually holds the foldable array.
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
   it("resolves the chain terminal to a flat-object response two hops past the immediate drill step", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
