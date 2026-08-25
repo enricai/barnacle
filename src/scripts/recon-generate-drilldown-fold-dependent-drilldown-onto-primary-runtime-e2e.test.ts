@@ -8,7 +8,10 @@ import {
   indexStateValues,
 } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps } from "@/scripts/recon-generate-multicall-fixture";
+import {
+  buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps,
+} from "@/scripts/recon-generate-multicall-fixture";
 
 const SEARCH_BODY = { results: [{ orderId: "order-a" }, { orderId: "order-b" }] };
 
@@ -117,6 +120,101 @@ describe("recon-generate dependent drill-down fold executeHttp — onto primary 
         orderId: "order-b",
         statusToken: "status-token-order-b",
         ts: "2024-10-01T00:00:02Z",
+        event: "shipped",
+      },
+    ]);
+
+    // One primary call, plus one call per chain step (2) per primary item (2).
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1 + 2 * 2);
+  });
+});
+
+const ORDER_HISTORY_BULK_BODY_FOR = (
+  orderId: string
+): { entries: Array<Record<string, unknown>> } => ({
+  entries: [{ statusToken: statusTokenFor(orderId), ts: "2024-10-03T00:00:02Z", event: "shipped" }],
+});
+
+/**
+ * Same request-routing as {@link stubDependentDrillDownOntoPrimaryFetch}, except
+ * the chain's terminal call wraps its threaded `statusToken` join value inside
+ * a single-element request-body ARRAY (`{"tokens":[...]}`, a bulk-lookup
+ * shape) instead of as a flat top-level scalar field.
+ */
+function stubArrayWrappedDependentDrillDownOntoPrimaryFetch(): void {
+  const fn = vi.fn().mockImplementation((_url: string, init?: { body?: string }) => {
+    const requestBody = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+    const responseBody = (() => {
+      if (requestBody === null || typeof requestBody.page === "number") return SEARCH_BODY;
+      if (typeof requestBody.orderId === "string") return STATUS_BODY_FOR(requestBody.orderId);
+      if (Array.isArray(requestBody.tokens) && typeof requestBody.tokens[0] === "string") {
+        const statusToken = requestBody.tokens[0] as string;
+        const orderId = statusToken.replace("status-token-", "");
+        return ORDER_HISTORY_BULK_BODY_FOR(orderId);
+      }
+      throw new Error(
+        `stubArrayWrappedDependentDrillDownOntoPrimaryFetch: unrecognized request body ${JSON.stringify(requestBody)}`
+      );
+    })();
+    return Promise.resolve({
+      status: 200,
+      ok: true,
+      text: vi.fn().mockResolvedValue(JSON.stringify(responseBody)),
+      headers: new Headers(),
+    });
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
+describe("recon-generate dependent drill-down fold executeHttp — array-wrapped chained join field runtime guard", () => {
+  it("threads the chain's own produced join value into a bulk-lookup array instead of freezing it as an opaque caller payload", async () => {
+    const steps = buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps();
+    const captures = steps.map((step) => step.capture);
+    const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
+
+    const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+    const stateIndex = indexStateValues(captures);
+    const actionSteps = compileActionSteps(actionCaptures as never, stateIndex);
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubArrayWrappedDependentDrillDownOntoPrimaryFetch();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
+
+    const data = result.data as { results?: Array<Record<string, unknown>> };
+    expect(data.results).toEqual([
+      {
+        orderId: "order-a",
+        statusToken: "status-token-order-a",
+        ts: "2024-10-03T00:00:02Z",
+        event: "shipped",
+      },
+      {
+        orderId: "order-b",
+        statusToken: "status-token-order-b",
+        ts: "2024-10-03T00:00:02Z",
         event: "shipped",
       },
     ]);
