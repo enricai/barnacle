@@ -1136,6 +1136,48 @@ export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSte
   ];
 }
 
+const CATALOG_VERIFICATION_STATUS_URL = "https://api.example.com/catalog/verification-status";
+
+/**
+ * A boolean-threading sibling of {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps}:
+ * the drill step's (`r1`) response mints ONLY a boolean value
+ * (`{ verified: true }`) and carries no array of its own — unlike the
+ * `priceToken`/`prices[]` sibling, this drill step is NOT foldable in
+ * isolation. A third step (`r2`) threads that boolean (rendered as the
+ * string `"true"`) into its request and carries the real per-item
+ * `history[]` array in its response. `computeFoldChain` must recognize the
+ * boolean leaf as a genuine chain-dependency source and extend the chain to
+ * `[drillStepIndex, historyStepIndex]` rather than stopping at `r1`.
+ */
+export function buildMulticallSingleShotSearchDrillDownBooleanChainedResponseValueActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-12-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        verified: true,
+      },
+      timestamp: "2024-12-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_VERIFICATION_STATUS_URL,
+      requestPostData: '{"verified":"true"}',
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-12-01T00:00:02Z",
+    }),
+  ];
+}
+
 /**
  * A nested-join-key sibling of {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps}:
  * each primary `results[]` item carries its join key under a nested
