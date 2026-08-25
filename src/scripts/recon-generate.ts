@@ -3101,6 +3101,28 @@ export function indexStateValues(
         }
       }
     }
+    // Non-cookie response headers are only indexed for values the fold-chain
+    // detector already confirmed are threaded from this hop's response into a
+    // later hop's request (`chainForceIncludeValues`) — unlike Set-Cookie,
+    // which is always a plausible token mint, an arbitrary header (e.g.
+    // `X-Conversation-Id`) is indexed as producible state only when chain
+    // detection itself has already established that reuse, so this never
+    // sweeps every header value as noise.
+    for (const [headerName, headerValue] of Object.entries(c.responseHeaders)) {
+      if (headerName.toLowerCase() === "set-cookie") continue;
+      if (headerValue.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (headerValue.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
+      if (PLACEHOLDER_STATE_VALUES.has(headerValue)) continue;
+      if (!chainForceIncludeValues.has(headerValue)) continue;
+      if (!index.has(headerValue)) {
+        index.set(headerValue, {
+          value: headerValue,
+          originIndex: i,
+          path: [],
+          headerOrigin: { sourceHeader: headerName },
+        });
+      }
+    }
     if (c.responseBody === undefined || c.responseBody === null) continue;
     // For GET captures, only index UUID-shaped strings. GET captures (today,
     // only the form-schema fetch inserted as an action step) surface stable

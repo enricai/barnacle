@@ -1513,6 +1513,64 @@ describe("indexStateValues — a short numeric value threaded through a dependen
   });
 });
 
+describe("indexStateValues — a non-cookie response header value threaded through a dependent drill-down chain is indexed with its real header name", () => {
+  // Regression: the drill step (`r1`) mints a session token on a plain
+  // response header (`X-Session-Token`, not Set-Cookie), which the terminal
+  // step (`r2`) echoes back as a request header. Without a general
+  // non-cookie header scan, indexStateValues never creates a StateValue for
+  // it at all — only Set-Cookie values are ever indexed from headers.
+  const steps = [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ orderId: "order-a" }, { orderId: "order-b" }] },
+      timestamp: "2024-10-05T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/order-status/",
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: {},
+      responseHeaders: { "x-session-token": "sess-a1b2c3d4e5f6" },
+      timestamp: "2024-10-05T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/order-history/bulk/",
+      requestPostData: "{}",
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "X-Session-Token": "sess-a1b2c3d4e5f6",
+      },
+      responseBody: { entries: [{ ts: "2024-10-05T00:00:02Z", event: "shipped" }] },
+      timestamp: "2024-10-05T00:00:02Z",
+    }),
+  ];
+  const captures = steps.map((step) => step.capture);
+  const stateIndex = indexStateValues(captures);
+
+  it("indexes the non-cookie header value with kind header and its real header name", () => {
+    const sv = stateIndex.get("sess-a1b2c3d4e5f6");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "x-session-token" });
+    expect(sv?.path).toEqual([]);
+  });
+
+  it("does not index an unrelated response header value that the chain never threads", () => {
+    const untouchedSteps = [
+      steps[0]!,
+      {
+        ...steps[1]!,
+        capture: {
+          ...steps[1]!.capture,
+          responseHeaders: { "x-request-id": "req-untouched-99999999" },
+        },
+      },
+      steps[2]!,
+    ];
+    const untouchedIndex = indexStateValues(untouchedSteps.map((step) => step.capture));
+    expect(untouchedIndex.has("req-untouched-99999999")).toBe(false);
+  });
+});
+
 describe("collectHeaderBindings — multi-cookie regression (listings-fixture __pa first-wins bug)", () => {
   /** Step 0: the feature-toggle call mints three geo/analytics cookies (all
    * later threaded back on the `Cookie` request header) plus a conversation
