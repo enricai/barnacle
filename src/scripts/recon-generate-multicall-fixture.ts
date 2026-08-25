@@ -1394,3 +1394,64 @@ export function buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChained
     }),
   ];
 }
+
+/**
+ * A 4-step sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps}
+ * that inserts one more chain hop between the opaque token step and the real
+ * per-item terminal: a flat confirmation object (`r2`) that echoes back the
+ * token it was called with (excluded from its richness by
+ * `directPrimitiveChildCountExcludingEchoed`) alongside a boolean status flag
+ * AND a second, non-echoed token that threads onward into the real terminal
+ * step (`r3`). Both `r2` and `r3` land on the SAME richness — two non-echoed
+ * primitive fields apiece (`held`/`receiptToken` on `r2`, `event`/`ts` on
+ * `r3`) — so `computeFoldChain`'s strict `candidateRichness > chainTerminalRichness`
+ * comparison never lets `r3` displace `r2` as the chain terminal: a tie is
+ * exactly as "not richer" as a loss. This isolates the case where a
+ * side-effect confirmation hop that merely happens to match the real
+ * terminal's field count silently masks it, as opposed to
+ * {@link buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps}'s
+ * opaque hop, which offers no candidate at all.
+ */
+export function buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationHopChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-02T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: ["status-token-order-a"],
+      timestamp: "2024-10-02T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"statusToken":"status-token-order-a"}',
+      responseBody: {
+        statusToken: "status-token-order-a",
+        held: true,
+        receiptToken: "receipt-token-order-a",
+      },
+      timestamp: "2024-10-02T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: `${ORDER_HISTORY_URL}receipt/`,
+      requestPostData: '{"receiptToken":"receipt-token-order-a"}',
+      responseBody: {
+        entries: [
+          {
+            receiptToken: "receipt-token-order-a",
+            event: "shipped",
+            ts: "2024-10-02T00:00:03Z",
+          },
+        ],
+      },
+      timestamp: "2024-10-02T00:00:03Z",
+    }),
+  ];
+}
