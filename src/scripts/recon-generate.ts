@@ -5327,8 +5327,8 @@ function* walkItemFieldPaths(
 }
 
 /**
- * Finds the ordered list of an array item's string/numeric field paths whose
- * values are threaded into `drillCapture`'s outbound request — the join key a
+ * Finds the ordered list of an array item's string/numeric/boolean field
+ * paths whose values are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Each entry is a dot-separated
  * path (see {@link readValueAtPath} / {@link pathToAccessor}), so a bare
  * top-level field stays a single segment (e.g. `"sku"`) and a field nested
@@ -5345,7 +5345,8 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .filter(
       ({ value: v }) =>
         (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-        (typeof v === "number" && requestValues.has(String(v)))
+        (typeof v === "number" && requestValues.has(String(v))) ||
+        (typeof v === "boolean" && requestValues.has(String(v)))
     )
     .map(({ path }) => path.join("."));
 }
