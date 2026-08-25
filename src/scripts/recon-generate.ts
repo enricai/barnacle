@@ -5499,14 +5499,28 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // selection computeFoldChain applies to every later chained step, so a
       // decoy is never disambiguated differently on the immediate drill call
       // than it is one hop further down the chain.
+      // An immediate hop with no object-array/flat-object candidate at all
+      // (a bare token/id array, a scalar, an empty body) must not abandon
+      // the whole candidate here — a LATER hop in the chain may still
+      // thread forward to the real per-item data (e.g. an id array whose
+      // values are looked up individually on a following step). Feed
+      // computeFoldChain the empty-path baseline FoldTarget already
+      // documents as its fallback contract, and only bail once the
+      // resolved chain terminal itself has no real items to fold onto.
       const drillArray = selectDisambiguatedCandidate(drill.capture.responseBody, drill.capture);
-      if (!drillArray) continue;
+      const drillArrayPath = drillArray?.path ?? [];
 
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillIndex,
-        drillArray.path
+        drillArrayPath
       );
+
+      const chainTerminalItems = objectItemsAtPath(
+        actions[chainTerminalIndex]!.capture.responseBody,
+        chainArrayPath
+      );
+      if (!chainTerminalItems || chainTerminalItems.length === 0) continue;
 
       // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
       // item nested inside a multi-element outer array — e.g. a
@@ -5528,7 +5542,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       targets.push({
         joinFields,
         drillStepIndex: drillIndex,
-        drillArrayPath: drillArray.path,
+        drillArrayPath,
         primaryMatchedItemIndex:
           globalMatchedItemIndex === -1 ? primaryMatchedItemIndex : globalMatchedItemIndex,
         chain,
