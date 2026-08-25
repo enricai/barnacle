@@ -13,6 +13,7 @@ import {
   buildMulticallSingleShotSearchDrillDownArrayWrappedBooleanImmediateJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps,
+  buildMulticallSingleShotSearchDrillDownBooleanChainedResponseValueActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps,
@@ -511,6 +512,21 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     // `priceToken`, so the chain must not stop at r1.
     expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.drillArrayPath).toEqual(["prices"]);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
+  });
+
+  it("extends the chain past a drill step whose response mints only a boolean value threaded into a later hop", () => {
+    const plan = detect(buildMulticallSingleShotSearchDrillDownBooleanChainedResponseValueActionSteps());
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+    // r1's response is `{ verified: true }` — no array of its own — so the
+    // only way the chain reaches r2's real per-item `history[]` is by
+    // recognizing r1's boolean `verified` leaf as a value r2 threads into
+    // its request.
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["history"]);
   });
