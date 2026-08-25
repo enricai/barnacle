@@ -3088,7 +3088,16 @@ export function indexStateValues(
     )?.[1];
     if (rawSetCookie !== undefined) {
       for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
-        if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+        // Same chain/force exemption as the body-value MIN_STATE_VALUE_LENGTH
+        // floor below: a cookie-sourced value the fold-chain detector already
+        // confirmed is threaded into a later hop's request is exactly as
+        // legitimate as a long one, so it must not be dropped for being short.
+        if (
+          value.length < MIN_STATE_VALUE_LENGTH &&
+          !chainForceIncludeValues.has(value) &&
+          !forceIncludeValues.has(value)
+        )
+          continue;
         if (value.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
         if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
         if (!index.has(value)) {
@@ -3099,6 +3108,27 @@ export function indexStateValues(
             headerOrigin: { sourceHeader: "set-cookie", cookieName: name },
           });
         }
+      }
+    }
+    // Non-cookie response headers are only indexed for values the fold-chain
+    // detector already confirmed are threaded from this hop's response into a
+    // later hop's request (`chainForceIncludeValues`) — unlike Set-Cookie,
+    // which is always a plausible token mint, an arbitrary header (e.g.
+    // `X-Conversation-Id`) is indexed as producible state only when chain
+    // detection itself has already established that reuse, so this never
+    // sweeps every header value as noise.
+    for (const [headerName, headerValue] of Object.entries(c.responseHeaders)) {
+      if (headerName.toLowerCase() === "set-cookie") continue;
+      if (!chainForceIncludeValues.has(headerValue)) continue;
+      if (headerValue.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
+      if (PLACEHOLDER_STATE_VALUES.has(headerValue)) continue;
+      if (!index.has(headerValue)) {
+        index.set(headerValue, {
+          value: headerValue,
+          originIndex: i,
+          path: [],
+          headerOrigin: { sourceHeader: headerName },
+        });
       }
     }
     if (c.responseBody === undefined || c.responseBody === null) continue;
@@ -3394,6 +3424,39 @@ export function compileActionSteps(
           targetHeader,
         });
       }
+    }
+
+    // Non-cookie response-header-origin produces — mirrors the Set-Cookie
+    // block above but for a plain header (e.g. `X-Price-Token`) whose value
+    // `indexStateValues` indexed with `headerOrigin.sourceHeader` set to the
+    // real header name. Only emitted when the value is actually consumed as
+    // a REQUEST HEADER downstream (`usedValueTargetHeader`) — `createHttpClient`'s
+    // `bind` option (see http-client.ts) is the only mechanism that can
+    // thread a header-origin value forward, since the emitted response
+    // variable never exposes response headers to the rest of the generated
+    // code the way it exposes the parsed body.
+    for (const [headerName, headerValue] of Object.entries(capture.responseHeaders)) {
+      if (headerName.toLowerCase() === "set-cookie") continue;
+      if (!usedValues.has(headerValue)) continue;
+      const sv = stateIndex.get(headerValue);
+      if (!sv || sv.originIndex !== index || !sv.headerOrigin) continue;
+      const targetHeader = usedValueTargetHeader.get(headerValue);
+      if (!targetHeader) continue;
+      let name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header`;
+      if (!/^[A-Za-z_$]/.test(name)) name = `_${name}`;
+      let suffix = 1;
+      while (seenNames.has(name)) {
+        suffix++;
+        name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header${suffix}`;
+      }
+      seenNames.add(name);
+      produces.push({
+        kind: "header",
+        name,
+        sourceHeader: sv.headerOrigin.sourceHeader,
+        cookieName: sv.headerOrigin.cookieName,
+        targetHeader,
+      });
     }
 
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
@@ -5355,19 +5418,23 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .map(({ path }) => path.join("."));
 }
 
-/** Every string, numeric, and boolean leaf value present anywhere in a response body —
+/** Every string, numeric, and boolean leaf value present anywhere in a response —
  * the set a chained drill-down step's request must overlap with for that
  * step to count as depending on this response. Deliberately walks the WHOLE
  * body (not just object-array items, unlike {@link findThreadedJoinFields})
  * since a chained step can thread any response value, not only a per-item
- * join field. */
-function collectResponseLeafValues(responseBody: unknown): Set<string> {
+ * join field. Also walks every response HEADER value, mirroring
+ * {@link collectRequestValuesIncludingHeaders} on the request side, since a
+ * chain hop can just as easily mint its join token in a response header
+ * (e.g. a `Location` or custom correlation header) as in the body. */
+function collectResponseLeafValues(capture: Capture): Set<string> {
   const values = new Set<string>();
-  for (const { value } of walkAllPrimitiveLeaves(responseBody)) {
+  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (typeof value === "string" && value.length > 0) values.add(value);
     if (typeof value === "number") values.add(String(value));
     if (typeof value === "boolean") values.add(String(value));
   }
+  for (const v of Object.values(capture.responseHeaders)) values.add(v);
   return values;
 }
 
@@ -5443,7 +5510,7 @@ function computeFoldChain<T extends { capture: Capture }>(
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
     const dependsOnChain = chain.some((chainIndex) => {
       const chainStepCapture = actions[chainIndex]!.capture;
-      const responseValues = collectResponseLeafValues(chainStepCapture.responseBody);
+      const responseValues = collectResponseLeafValues(chainStepCapture);
       const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
       return [...responseValues].some((v) => !echoedValues.has(v) && requestValues.has(v));
     });
@@ -6288,7 +6355,7 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
         const priorIndex = target.chain[j]!;
         const priorCapture = actions[priorIndex]?.capture;
         if (!priorCapture) continue;
-        const responseValues = collectResponseLeafValues(priorCapture.responseBody);
+        const responseValues = collectResponseLeafValues(priorCapture);
         const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
         for (let k = j + 1; k < target.chain.length; k++) {
           const laterCapture = actions[target.chain[k]!]?.capture;

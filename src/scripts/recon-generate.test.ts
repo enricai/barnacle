@@ -33,6 +33,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps,
   buildStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -1149,6 +1150,13 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     expect(stateIndex.has("abc")).toBe(false);
   });
 
+  it("admits a short Set-Cookie value confirmed as a dependent-drilldown chain join field, unlike the no-fold-plan case above", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+    const captures = steps.map((step) => step.capture);
+    const stateIndex = indexStateValues(captures);
+    expect(stateIndex.has("tok1")).toBe(true);
+  });
+
   it("still skips PLACEHOLDER_STATE_VALUES for cookie-origin values — the raised ceiling doesn't bypass the placeholder gate", () => {
     const placeholderCookieCapture = {
       ...tokenMintCapture,
@@ -1510,6 +1518,103 @@ describe("indexStateValues — a short numeric value threaded through a dependen
     const orderStatusStep = actionSteps.find((step) => step.capture.url === captures[1]!.url);
     const bodyProduce = orderStatusStep?.produces.find((p) => p.kind === "body");
     expect(bodyProduce).toBeDefined();
+  });
+});
+
+describe("indexStateValues — a non-cookie response header value threaded through a dependent drill-down chain is indexed with its real header name", () => {
+  // Regression: the drill step (`r1`) mints a session token on a plain
+  // response header (`X-Session-Token`, not Set-Cookie), which the terminal
+  // step (`r2`) echoes back as a request header. Without a general
+  // non-cookie header scan, indexStateValues never creates a StateValue for
+  // it at all — only Set-Cookie values are ever indexed from headers.
+  const steps = [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ orderId: "order-a" }, { orderId: "order-b" }] },
+      timestamp: "2024-10-05T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/order-status/",
+      requestPostData: '{"orderId":"order-a"}',
+      responseBody: {},
+      responseHeaders: { "x-session-token": "sess-a1b2c3d4e5f6" },
+      timestamp: "2024-10-05T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/order-history/bulk/",
+      requestPostData: "{}",
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "X-Session-Token": "sess-a1b2c3d4e5f6",
+      },
+      responseBody: { entries: [{ ts: "2024-10-05T00:00:02Z", event: "shipped" }] },
+      timestamp: "2024-10-05T00:00:02Z",
+    }),
+  ];
+  const captures = steps.map((step) => step.capture);
+  const stateIndex = indexStateValues(captures);
+
+  it("indexes the non-cookie header value with kind header and its real header name", () => {
+    const sv = stateIndex.get("sess-a1b2c3d4e5f6");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "x-session-token" });
+    expect(sv?.path).toEqual([]);
+  });
+
+  it("does not index an unrelated response header value that the chain never threads", () => {
+    const untouchedSteps = [
+      steps[0]!,
+      {
+        ...steps[1]!,
+        capture: {
+          ...steps[1]!.capture,
+          responseHeaders: { "x-request-id": "req-untouched-99999999" },
+        },
+      },
+      steps[2]!,
+    ];
+    const untouchedIndex = indexStateValues(untouchedSteps.map((step) => step.capture));
+    expect(untouchedIndex.has("req-untouched-99999999")).toBe(false);
+  });
+
+  it("indexes a chain-confirmed header value shorter than MIN_STATE_VALUE_LENGTH (mirrors the body-value force-include bypass)", () => {
+    const shortValueSteps = [
+      steps[0]!,
+      {
+        ...steps[1]!,
+        capture: { ...steps[1]!.capture, responseHeaders: { "x-session-token": "s1a2b3" } },
+      },
+      {
+        ...steps[2]!,
+        capture: {
+          ...steps[2]!.capture,
+          requestHeaders: { "Content-Type": "application/json", "X-Session-Token": "s1a2b3" },
+        },
+      },
+    ];
+    const shortValueIndex = indexStateValues(shortValueSteps.map((step) => step.capture));
+    const sv = shortValueIndex.get("s1a2b3");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "x-session-token" });
+  });
+});
+
+describe("indexStateValues — a short Set-Cookie value threaded through a dependent drill-down chain is indexed despite MIN_STATE_VALUE_LENGTH", () => {
+  // Cookie-origin counterpart of the short-numeric chain regression above:
+  // r1 mints `tok1` (4 chars, well under MIN_STATE_VALUE_LENGTH's 8-char
+  // floor) via Set-Cookie rather than the response body, and r2 threads it
+  // back via its request body. Without the chain-produced-value carve-out on
+  // the Set-Cookie branch, indexStateValues drops it, so compileActionSteps
+  // never emits a header-kind produces[] accessor for it.
+  const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+  const captures = steps.map((step) => step.capture);
+  const stateIndex = indexStateValues(captures);
+
+  it("indexes the short cookie-sourced chain-produced token despite it being under MIN_STATE_VALUE_LENGTH", () => {
+    const sv = stateIndex.get("tok1");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "sess" });
   });
 });
 

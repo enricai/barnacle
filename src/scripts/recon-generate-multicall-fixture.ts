@@ -19,6 +19,7 @@ export function buildCapture(overrides: {
   responseBody: unknown;
   timestamp: string;
   requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   method?: string;
 }): Capture {
   return {
@@ -29,7 +30,7 @@ export function buildCapture(overrides: {
     status: 200,
     requestHeaders: overrides.requestHeaders ?? { "Content-Type": "application/json" },
     requestPostData: overrides.requestPostData,
-    responseHeaders: { "content-type": "application/json" },
+    responseHeaders: overrides.responseHeaders ?? { "content-type": "application/json" },
     responseBody: overrides.responseBody,
     operationName: null,
     query: null,
@@ -51,6 +52,7 @@ export function buildStep(
     responseBody: unknown;
     timestamp: string;
     requestHeaders?: Record<string, string>;
+    responseHeaders?: Record<string, string>;
     method?: string;
   }
 ): MulticallFixtureStep {
@@ -1136,6 +1138,45 @@ export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSte
   ];
 }
 
+/**
+ * A response-header sibling of {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps}:
+ * the drill step's (`r1`) response mints its join token (`tok-a1`) ONLY in a
+ * custom response HEADER (`X-Price-Token`) — its body is empty, unlike the
+ * sibling's `priceToken` body field. A third step (`r2`) threads that header
+ * value into its own request body and carries the real per-item `history[]`
+ * array. `computeFoldChain`'s `dependsOnChain` check must walk `r1`'s
+ * response headers (not just its body) to see the shared value, extending
+ * the chain to `[drillStepIndex, historyStepIndex]` rather than stopping at
+ * `r1`.
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderMintedChainedResponseValueActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-11-16T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {},
+      responseHeaders: { "content-type": "application/json", "X-Price-Token": "tok-a1" },
+      timestamp: "2024-11-16T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-a1"}',
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-11-16T00:00:02Z",
+    }),
+  ];
+}
+
 const CATALOG_VERIFICATION_STATUS_URL = "https://api.example.com/catalog/verification-status";
 
 /**
@@ -1641,6 +1682,46 @@ export function buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFi
 }
 
 /**
+ * Cookie-origin sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps}:
+ * here `r1` mints the short chain-produced token (`tok1`, under
+ * `MIN_STATE_VALUE_LENGTH`) via `Set-Cookie` rather than the response body,
+ * AND echoes the same value in its response body (the "body-level echo" that
+ * lets {@link collectDependentDrillDownChainValues} confirm the cookie value
+ * is chain-produced, exactly as a body-sourced token would be). `r2` threads
+ * `tok1` back via its request body. Exercises `indexStateValues`' Set-Cookie
+ * branch's `chainForceIncludeValues`/`forceIncludeValues` exemption, mirroring
+ * the body-value floor exemption.
+ */
+export function buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-05T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseHeaders: { "set-cookie": "sess=tok1; Path=/; HttpOnly" },
+      responseBody: { echoedToken: "tok1" },
+      timestamp: "2024-10-05T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"token":"tok1"}',
+      responseBody: {
+        entries: [{ token: "tok1", ts: "2024-10-05T00:00:02Z", event: "shipped" }],
+      },
+      timestamp: "2024-10-05T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * A different sibling of the same array-wrapped-join-field failure family:
  * here it's the IMMEDIATE drill step (`r1`), not a later chain hop, whose
  * request body wraps the value it threads — but that value is the PRIMARY
@@ -1859,6 +1940,52 @@ export function buildMulticallSingleShotSearchDrillDownGetEntryHopChainedDepende
         entries: [{ token: "status-token-order-a", ts: "2024-10-05T00:00:02Z", event: "shipped" }],
       },
       timestamp: "2024-10-05T00:00:02Z",
+    }),
+  ];
+}
+
+/**
+ * A response-header sibling of {@link buildMulticallSingleShotSearchDrillDownGetEntryHopChainedDependentActionSteps}:
+ * the chain's drill hop (`r1`) mints its join token (`tok-a1`) ONLY in a
+ * custom response HEADER (`X-Price-Token`) — its body is empty ({}), unlike
+ * {@link buildMulticallSingleShotSearchDrillDownHeaderMintedChainedResponseValueActionSteps}'s
+ * body-echo-free sibling, which threads the header value forward via the
+ * request BODY. Here the terminal hop (`r2`) instead threads that value back
+ * as a REQUEST HEADER of its own (also named `X-Price-Token`) — the only
+ * shape `createHttpClient`'s `bind` option can actually thread a
+ * header-origin value into, since the emitted response variable never
+ * exposes response headers to the rest of the generated code. Exercises
+ * `compileActionSteps`' non-cookie response-header produce block: without it,
+ * `tok-a1` is never captured into a `produces[]`/`bind` entry at all, and
+ * `r2`'s per-item call goes out with no `X-Price-Token` header, so the
+ * terminal `history[]` fold silently collapses to whichever primary item the
+ * stub happens to answer first instead of each item's own token.
+ */
+export function buildMulticallSingleShotSearchDrillDownResponseHeaderThreadedJoinChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-12-10T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {},
+      responseHeaders: { "content-type": "application/json", "X-Price-Token": "tok-a1" },
+      timestamp: "2024-12-10T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: "{}",
+      requestHeaders: { "Content-Type": "application/json", "X-Price-Token": "tok-a1" },
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-12-10T00:00:02Z",
     }),
   ];
 }
