@@ -5869,6 +5869,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // an explicit foldReturn declaration must be able to express a
       // detail-by-id drill response exactly like the case the heuristic
       // detects on its own, not just an array field.
+      // Falls through with an empty `[]` path baseline — rather than
+      // bailing here — when the matched drill step's own response holds no
+      // object-array/flat-object candidate, so an intermediate hop that
+      // merely threads a value onward (holding no foldable data itself)
+      // still lets computeFoldChain walk to a later chained step that DOES
+      // hold the real per-item data, exactly as the structural heuristic
+      // now does (see detectDrillDownFoldPlan). Validated after the chain
+      // resolves, below, since `[]` is a valid empty baseline for
+      // computeFoldChain but not a valid final drillArrayPath on its own.
       const drillArrayPath = ((): string[] | null => {
         if (spec.drillResultsPath === undefined) {
           return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
@@ -5876,7 +5885,6 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         const path = spec.drillResultsPath.split(".");
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
-      if (drillArrayPath === null) continue;
       const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndex(
         primaryItems,
         spec.joinFields,
@@ -5886,8 +5894,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
         actions,
         drillStepIndex,
-        drillArrayPath
+        drillArrayPath ?? []
       );
+      // The chain's resolved terminal must actually hold foldable data —
+      // an intermediate drill step with neither its own candidate NOR a
+      // later chained step that resolves one has nothing to merge, so it
+      // is skipped exactly as the pre-chain null check used to skip it.
+      if (!objectItemsAtPath(actions[chainTerminalIndex]!.capture.responseBody, chainArrayPath)) {
+        continue;
+      }
       freshestPlan = {
         primaryStepIndex,
         primaryArrayPath,
@@ -5895,7 +5910,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           {
             joinFields: spec.joinFields,
             drillStepIndex,
-            drillArrayPath,
+            drillArrayPath: drillArrayPath ?? [],
             primaryMatchedItemIndex,
             chain,
             chainArrayPath,

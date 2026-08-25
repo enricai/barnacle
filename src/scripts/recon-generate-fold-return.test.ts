@@ -916,7 +916,7 @@ describe("resolveFoldPlan", () => {
     ]);
   });
 
-  it("returns null when the declared drillResultsPath resolves to no non-empty object array", () => {
+  it("falls through to the drill step's own flat-object response when the declared drillResultsPath resolves to nothing there and no later hop chains from it", () => {
     const steps = buildUnthreadedDoubleDecoyDrillDownActionSteps();
     const spec: FoldReturnSpec = {
       endpointPattern: "/catalog/pricing/",
@@ -925,7 +925,30 @@ describe("resolveFoldPlan", () => {
       joinFields: ["sku"],
     };
 
-    expect(resolveFoldPlan(steps, spec)).toEqual([]);
+    // `nothing` never resolves on r1's own response, but r1 is the LAST
+    // step (no later hop for computeFoldChain to walk to), so — exactly as
+    // when no drillResultsPath is declared at all — the drill step's own
+    // response is still foldable as a flat one-item object rather than
+    // being discarded outright; the pre-fix behavior bailed via
+    // `drillArrayPath === null` before computeFoldChain ever got a chance
+    // to resolve this.
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [1],
+            chainArrayPath: [],
+            chainTerminalIndex: 1,
+          },
+        ],
+      },
+    ]);
   });
 
   it("resolves primaryMatchedItemIndex against the drill request's headers, not just URL/body", () => {
@@ -1012,6 +1035,70 @@ describe("resolveFoldPlan", () => {
             primaryMatchedItemIndex: 0,
             chain: [1, 2],
             chainArrayPath: [],
+            chainTerminalIndex: 2,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("resolves a chain past an intermediate hop whose declared drillResultsPath doesn't exist on its own response", () => {
+    // r1 matches endpointPattern (the declared drill step) and is threaded
+    // by the primary's `sku`, but its own response holds only an opaque
+    // `token` — no `items` field, so `objectItemsAtPath` at the declared
+    // `drillResultsPath` resolves nothing on r1 itself. r2 threads that
+    // token onward and is the step that actually returns the real per-item
+    // `items[]` array. Before the fix, `drillArrayPath === null` on r1 made
+    // buildFoldPlanFromSpec bail via `continue` before computeFoldChain ever
+    // ran, so the plan was dropped even though r2's data was reachable one
+    // hop later.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-11-16T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/token/",
+        requestPostData: '{"lookup":true}',
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+        responseBody: { token: "tok-a1" },
+        timestamp: "2024-11-16T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"token":"tok-a1"}',
+        responseBody: { items: [{ sku: "sku-a", price: 9.99 }] },
+        timestamp: "2024-11-16T00:00:02Z",
+      }),
+    ];
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/token/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+      drillResultsPath: "items",
+    };
+
+    // No object-array/flat-object candidate resolves at r1's own declared
+    // `drillResultsPath`, so without the fix the spec plan would be dropped
+    // entirely (or the structural heuristic — which doesn't even see this
+    // endpoint declared — resolves nothing either).
+    expect(resolveFoldPlan(steps)).toEqual([]);
+
+    expect(resolveFoldPlan(steps, spec)).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["results"],
+        targets: [
+          {
+            joinFields: ["sku"],
+            drillStepIndex: 1,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [1, 2],
+            chainArrayPath: ["items"],
             chainTerminalIndex: 2,
           },
         ],
