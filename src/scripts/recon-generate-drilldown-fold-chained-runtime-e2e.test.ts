@@ -246,6 +246,86 @@ function stubChainedFetchWithPoorerArrayTerminal(): void {
   vi.stubGlobal("fetch", fn);
 }
 
+const ELIGIBILITY_URL = "https://api.example.com/catalog/eligibility/";
+const BOOL_DETAIL_URL = "https://api.example.com/catalog/bool-detail/";
+
+// Entry chain hop mints a boolean leaf (`eligible`) — no string/numeric
+// field of its own long enough to clear MIN_STATE_VALUE_LENGTH without the
+// chain-detector's force-include exemption, so this fixture's threading
+// depends entirely on collectResponseLeafValues also collecting booleans.
+// Only one extra field beyond `eligible` itself, so the terminal hop below
+// (3 fields) is unambiguously richer and wins the fold-terminal tie-break.
+const ELIGIBILITY_BODY_FOR = (sku: string): { eligible: boolean; checkedAt: string } => ({
+  eligible: sku === "sku-a",
+  checkedAt: "2024-11-01",
+});
+const BOOL_DETAIL_BODY_FOR = (
+  eligible: boolean
+): { tier: string; checkedBy: string; verifiedAt: string } => ({
+  tier: eligible ? "gold" : "standard",
+  checkedBy: "system",
+  verifiedAt: "2024-11-02",
+});
+
+/**
+ * Same primary-search + 2-hop chained-drill-down shape as
+ * `buildRecordedChainedDrillDownCaptures`, but the entry hop's response
+ * value threaded into the terminal hop's request is a boolean (`eligible`)
+ * rather than a string/numeric token.
+ */
+function buildRecordedChainedDrillDownCapturesWithBooleanChainValue(): ReturnType<
+  typeof buildCapture
+>[] {
+  return [
+    buildCapture({
+      url: SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: SEARCH_BODY,
+      timestamp: "2024-11-15T00:00:00Z",
+    }),
+    buildCapture({
+      url: ELIGIBILITY_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: ELIGIBILITY_BODY_FOR("sku-a"),
+      timestamp: "2024-11-15T00:00:01Z",
+    }),
+    buildCapture({
+      url: BOOL_DETAIL_URL,
+      requestPostData: `{"eligible":${ELIGIBILITY_BODY_FOR("sku-a").eligible}}`,
+      responseBody: BOOL_DETAIL_BODY_FOR(true),
+      timestamp: "2024-11-15T00:00:02Z",
+    }),
+  ];
+}
+
+/**
+ * Stubs `fetch` for the boolean-chain fixture: search -> eligibility (keyed
+ * by `sku`) -> bool-detail (keyed by the threaded `eligible` boolean),
+ * matched by request body content, not call order.
+ */
+function stubChainedFetchWithBooleanChainValue(): void {
+  const fn = vi.fn().mockImplementation((_url: string, init?: { body?: string }) => {
+    const requestBody = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+    const responseBody = (() => {
+      if (requestBody === null || typeof requestBody.page === "number") return SEARCH_BODY;
+      if (typeof requestBody.sku === "string") return ELIGIBILITY_BODY_FOR(requestBody.sku);
+      if (typeof requestBody.eligible === "boolean") {
+        return BOOL_DETAIL_BODY_FOR(requestBody.eligible);
+      }
+      throw new Error(
+        `stubChainedFetchWithBooleanChainValue: unrecognized request body ${JSON.stringify(requestBody)}`
+      );
+    })();
+    return Promise.resolve({
+      status: 200,
+      ok: true,
+      text: vi.fn().mockResolvedValue(JSON.stringify(responseBody)),
+      headers: new Headers(),
+    });
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
 describe("recon-generate chained drill-down fold executeHttp — generated-and-run integration guard", () => {
   it("threads each chain step's produced value into the next call and folds the terminal chain response onto the primary item, at runtime", async () => {
     const captures = buildRecordedChainedDrillDownCaptures();
@@ -402,6 +482,60 @@ describe("recon-generate chained drill-down fold executeHttp — generated-and-r
     // folded item — only the chain's genuinely richer terminal's fields do.
     expect(data.results?.[0]).not.toHaveProperty("event");
     expect(data.results?.[0]).not.toHaveProperty("detailToken");
+
+    // One primary call, plus one call per chain step (2) per primary item (2).
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1 + 2 * 2);
+  });
+
+  it("threads a boolean chain-produced value into a later chain hop's request and folds the terminal chain response onto the primary item, at runtime", async () => {
+    const captures = buildRecordedChainedDrillDownCapturesWithBooleanChainValue();
+    const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
+
+    const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+    const stateIndex = indexStateValues(captures);
+    const actionSteps = compileActionSteps(actionCaptures as never, stateIndex);
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubChainedFetchWithBooleanChainValue();
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
+
+    // The chain must extend past the entry (eligibility) hop onto the
+    // terminal (bool-detail) hop — each item's own `eligible` boolean,
+    // produced by the entry hop, threads into the terminal hop's request,
+    // so each item's folded `tier` reflects its OWN eligibility, not a
+    // single recorded value repeated for every item.
+    const data = result.data as { results?: Array<Record<string, unknown>> };
+    expect(data.results).toEqual([
+      { sku: "sku-a", tier: "gold", checkedBy: "system", verifiedAt: "2024-11-02" },
+      { sku: "sku-b", tier: "standard", checkedBy: "system", verifiedAt: "2024-11-02" },
+    ]);
+    // The intermediate chain step's own field never lands on the folded
+    // item — only the chain's TERMINAL step's fields do.
+    expect(data.results?.[0]).not.toHaveProperty("eligible");
+    expect(data.results?.[0]).not.toHaveProperty("checkedAt");
 
     // One primary call, plus one call per chain step (2) per primary item (2).
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1 + 2 * 2);

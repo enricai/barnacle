@@ -3488,7 +3488,9 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
       return null;
     }
   }
-  return typeof cursor === "string" || typeof cursor === "number" ? String(cursor) : null;
+  return typeof cursor === "string" || typeof cursor === "number" || typeof cursor === "boolean"
+    ? String(cursor)
+    : null;
 }
 
 /**
@@ -5353,7 +5355,7 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .map(({ path }) => path.join("."));
 }
 
-/** Every string and numeric leaf value present anywhere in a response body —
+/** Every string, numeric, and boolean leaf value present anywhere in a response body —
  * the set a chained drill-down step's request must overlap with for that
  * step to count as depending on this response. Deliberately walks the WHOLE
  * body (not just object-array items, unlike {@link findThreadedJoinFields})
@@ -5364,6 +5366,7 @@ function collectResponseLeafValues(responseBody: unknown): Set<string> {
   for (const { value } of walkAllPrimitiveLeaves(responseBody)) {
     if (typeof value === "string" && value.length > 0) values.add(value);
     if (typeof value === "number") values.add(String(value));
+    if (typeof value === "boolean") values.add(String(value));
   }
   return values;
 }
