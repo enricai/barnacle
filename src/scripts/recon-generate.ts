@@ -3127,7 +3127,19 @@ export function indexStateValues(
       // Indexing them would let state-threading rewrite the anchors and
       // corrupt T2/T3's already-substituted Values.
       if (shieldedUuids.has(value)) continue;
-      if (isGet && !UUID_REGEX.test(value)) continue;
+      // Same chain/force exemption as the MIN_STATE_VALUE_LENGTH floor above:
+      // a value the fold-chain detector already confirmed is threaded from
+      // this GET hop's response into a later hop's request is exactly as
+      // legitimate as a UUID anchor, so it must not be dropped just because
+      // this hop happens to be a GET rather than every existing fixture's
+      // POST.
+      if (
+        isGet &&
+        !UUID_REGEX.test(value) &&
+        !chainForceIncludeValues.has(value) &&
+        !forceIncludeValues.has(value)
+      )
+        continue;
       if (!index.has(value)) {
         index.set(value, { value, originIndex: i, path });
       }
