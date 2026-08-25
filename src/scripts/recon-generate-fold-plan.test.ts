@@ -11,6 +11,7 @@ import {
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
   buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDependentMultipartChainStepActionSteps,
@@ -772,6 +773,20 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
+  it("resolves the immediate drill step's join field even when the primary item's numeric join value is wrapped inside a request-body array", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.joinFields).toEqual(["orderId"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
