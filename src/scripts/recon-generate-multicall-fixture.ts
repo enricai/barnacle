@@ -19,6 +19,7 @@ export function buildCapture(overrides: {
   responseBody: unknown;
   timestamp: string;
   requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   method?: string;
 }): Capture {
   return {
@@ -29,7 +30,7 @@ export function buildCapture(overrides: {
     status: 200,
     requestHeaders: overrides.requestHeaders ?? { "Content-Type": "application/json" },
     requestPostData: overrides.requestPostData,
-    responseHeaders: { "content-type": "application/json" },
+    responseHeaders: overrides.responseHeaders ?? { "content-type": "application/json" },
     responseBody: overrides.responseBody,
     operationName: null,
     query: null,
@@ -51,6 +52,7 @@ export function buildStep(
     responseBody: unknown;
     timestamp: string;
     requestHeaders?: Record<string, string>;
+    responseHeaders?: Record<string, string>;
     method?: string;
   }
 ): MulticallFixtureStep {
@@ -1132,6 +1134,45 @@ export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSte
         history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
       },
       timestamp: "2024-11-15T00:00:02Z",
+    }),
+  ];
+}
+
+/**
+ * A response-header sibling of {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps}:
+ * the drill step's (`r1`) response mints its join token (`tok-a1`) ONLY in a
+ * custom response HEADER (`X-Price-Token`) — its body is empty, unlike the
+ * sibling's `priceToken` body field. A third step (`r2`) threads that header
+ * value into its own request body and carries the real per-item `history[]`
+ * array. `computeFoldChain`'s `dependsOnChain` check must walk `r1`'s
+ * response headers (not just its body) to see the shared value, extending
+ * the chain to `[drillStepIndex, historyStepIndex]` rather than stopping at
+ * `r1`.
+ */
+export function buildMulticallSingleShotSearchDrillDownHeaderMintedChainedResponseValueActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }],
+      },
+      timestamp: "2024-11-16T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {},
+      responseHeaders: { "content-type": "application/json", "X-Price-Token": "tok-a1" },
+      timestamp: "2024-11-16T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-a1"}',
+      responseBody: {
+        history: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-11-16T00:00:02Z",
     }),
   ];
 }
