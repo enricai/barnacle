@@ -1135,6 +1135,50 @@ export function buildMulticallSingleShotSearchDrillDownChainedDependentActionSte
 }
 
 /**
+ * A nested-join-key sibling of {@link buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps}:
+ * each primary `results[]` item carries its join key under a nested
+ * `identifiers` object (`{ identifiers: { sku } }`, matching
+ * {@link buildMulticallSingleShotSearchDrillDownNestedJoinFieldMultiItemActionSteps})
+ * rather than as a top-level field, AND (as in the chained-dependent fixture)
+ * the drill step's own response is foldable on its own terms but is ALSO
+ * depended on by a further step whose response carries the real per-item
+ * data. The primary item that threads the nested join is the SECOND item
+ * (`sku-b`), not the first, so `primaryMatchedItemIndex` must resolve by
+ * walking into each item's nested fields rather than assuming index 0, while
+ * `computeFoldChain` must still extend the chain past the drill step to its
+ * dependent follow-up rather than stopping at the drill step's own array.
+ */
+export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldChainedDependentActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ identifiers: { sku: "sku-a" } }, { identifiers: { sku: "sku-b" } }],
+      },
+      timestamp: "2024-11-20T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-b"}',
+      responseBody: {
+        priceToken: "tok-b1",
+        prices: [{ sku: "sku-b", amount: 24.99 }],
+      },
+      timestamp: "2024-11-20T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-b1"}',
+      responseBody: {
+        history: [{ sku: "sku-b", amount: 22.5, asOf: "2024-11-01" }],
+      },
+      timestamp: "2024-11-20T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * A search endpoint re-queried with two distinct bodies (`page 1`/`page 2`,
  * satisfying {@link findRequeriedActions}'s re-query signature) whose
  * responses BOTH independently contain a `results[]` item sharing the same
