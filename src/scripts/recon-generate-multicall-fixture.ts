@@ -1546,3 +1546,42 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedImmediateJoin
     }),
   ];
 }
+
+/**
+ * Same array-wrapped-immediate-join-field shape as
+ * {@link buildMulticallSingleShotSearchDrillDownArrayWrappedImmediateJoinFieldActionSteps},
+ * but the primary item's join field is a bare JSON NUMBER (`orderId: 101`)
+ * rather than a string. `walkStringLeaves` (used by the spare check in
+ * `applyStructuredValuePayloadSubstitutions`) silently skips number leaves,
+ * so a numeric join value wrapped in `{"orderIds":[101]}` was frozen into an
+ * opaque `${JSON.stringify(payload.orderIds)}` blob instead of being spared
+ * for the fold-loop's later per-item `parameterize` pass.
+ */
+export function buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: 101 }, { orderId: 102 }],
+      },
+      timestamp: "2024-10-03T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderIds":[101]}',
+      responseBody: ["status-token-101"],
+      timestamp: "2024-10-03T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_BULK_URL,
+      requestPostData: '{"tokens":["status-token-101"]}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-101", ts: "2024-10-03T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-03T00:00:02Z",
+    }),
+  ];
+}
