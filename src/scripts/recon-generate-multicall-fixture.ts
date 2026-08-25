@@ -1228,3 +1228,46 @@ export function buildMulticallStructuralPlusSpecOnlySameStepActionSteps(): Multi
     }),
   ];
 }
+
+const ORDER_HISTORY_URL = "https://api.example.com/orders/history/";
+
+/**
+ * A 3-step chain where the drill step (`r1`) is a bare threading step — its
+ * response carries the join value (`statusToken`) but no object-array field
+ * at all, so it can't itself be the decoy. The decoy instead sits on the
+ * chain's terminal step (`r2`): a `warnings[]` array positioned BEFORE the
+ * real per-item `entries[]` array in key order, where `entries[]`'s items
+ * thread `r2`'s own `statusToken` request value and `warnings[]`'s items do
+ * not. {@link computeFoldChain}'s `selectDisambiguatedCandidate` call on
+ * this (non-immediate) chain hop must resolve `chainArrayPath` to `entries`
+ * on the threaded-join-fields match, not `warnings` for being found first.
+ */
+export function buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-7" }],
+      },
+      timestamp: "2024-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/orders/order-7/status",
+      requestPostData: null,
+      responseBody: {
+        statusToken: "tok-99",
+      },
+      timestamp: "2024-09-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"statusToken":"tok-99"}',
+      responseBody: {
+        warnings: [{ code: "stale-cache" }],
+        entries: [{ statusToken: "tok-99", ts: "2024-09-01T00:00:02Z", event: "shipped" }],
+      },
+      timestamp: "2024-09-01T00:00:02Z",
+    }),
+  ];
+}

@@ -5265,6 +5265,38 @@ function collectResponseLeafValues(responseBody: unknown): Set<string> {
  * threads further, so `chain` degrades to `[drillStepIndex]` for the common
  * single-step case.
  */
+/** Disambiguates among every object-array (or flat-object) candidate on
+ * `responseBody`, preferring the one whose items thread `capture`'s own
+ * request/header values (see {@link findThreadedJoinFields}), falling back
+ * to the richest candidate by {@link chainTerminalItemRichness} when none
+ * thread. Both the immediate drill step ({@link scanPrimaryCandidateGroups})
+ * and every later chained step ({@link computeFoldChain}) must disambiguate
+ * identically — a decoy candidate positioned earlier in key order than the
+ * real per-item array is exactly as invalid a pick on a chain hop as it is
+ * on the immediate drill call — so this is the single implementation both
+ * reuse instead of each doing its own first-DFS-match shortcut. */
+function selectDisambiguatedCandidate(
+  responseBody: unknown,
+  capture: Capture
+): { path: string[]; items: Record<string, unknown>[] } | null {
+  const candidates = findAllObjectArrayFieldsOrWholeObject(responseBody);
+  if (candidates.length === 0) return null;
+  const requestValues = collectRequestValuesIncludingHeaders(capture);
+  const threaded = candidates.find((candidate) =>
+    candidate.items.some((item) => findThreadedJoinFields(item, capture).length > 0)
+  );
+  if (threaded) return threaded;
+  return candidates.reduce((richest, candidate) => {
+    const candidateRichness = chainTerminalItemRichness(
+      responseBody,
+      candidate.path,
+      requestValues
+    );
+    const richestSoFar = chainTerminalItemRichness(responseBody, richest.path, requestValues);
+    return candidateRichness > richestSoFar ? candidate : richest;
+  });
+}
+
 function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
@@ -5287,39 +5319,30 @@ function computeFoldChain<T extends { capture: Capture }>(
     });
     if (!dependsOnChain) continue;
     chain.push(i);
-    const candidateArray = findObjectArrayField(candidate.capture.responseBody);
-    if (candidateArray) {
-      const candidateArrayRichness = chainTerminalItemRichness(
-        candidate.capture.responseBody,
-        candidateArray.path,
-        requestValues
-      );
-      if (candidateArrayRichness > chainTerminalRichness) {
-        chainArrayPath = candidateArray.path;
-        chainTerminalIndex = i;
-        chainTerminalRichness = candidateArrayRichness;
-      }
-      continue;
-    }
-    // No real object-array field. A flat response can still be the genuine
-    // terminal further down the chain (not only at the immediate drill
-    // step), but only when it carries STRICTLY MORE of its own per-item
-    // primitive data than the chain's best terminal so far — otherwise a
-    // step called purely for its side effect / for threading a value
-    // further (e.g. a `{ held: true }` confirmation, exactly as rich as —
-    // never richer than — the real per-item shape it merely threads onward
-    // from) would always qualify as an implicit one-item collection and
-    // collapse this into "always advance the terminal to the newest chain
-    // member" regardless of whether that member actually holds foldable
-    // data.
-    if (!isObjectArrayItem(candidate.capture.responseBody)) continue;
+    // Disambiguated identically to the immediate drill step (see
+    // selectDisambiguatedCandidate): a decoy object-array field positioned
+    // earlier in key order than the real per-item array must not win just
+    // for being found first on THIS chain step's own response, any more
+    // than it would on the immediate drill call. The winning candidate
+    // still only displaces the terminal when it's STRICTLY richer than the
+    // chain's best terminal so far — otherwise a step chained purely for
+    // threading a value onward (e.g. a `{ held: true }` confirmation, never
+    // richer than the real per-item shape it merely threads from) would
+    // always qualify as an implicit one-item collection and collapse this
+    // into "always advance the terminal to the newest chain member"
+    // regardless of whether that member actually holds foldable data.
+    const candidateArray = selectDisambiguatedCandidate(
+      candidate.capture.responseBody,
+      candidate.capture
+    );
+    if (!candidateArray) continue;
     const candidateRichness = chainTerminalItemRichness(
       candidate.capture.responseBody,
-      [],
+      candidateArray.path,
       requestValues
     );
     if (candidateRichness > chainTerminalRichness) {
-      chainArrayPath = [];
+      chainArrayPath = candidateArray.path;
       chainTerminalIndex = i;
       chainTerminalRichness = candidateRichness;
     }
@@ -5463,45 +5486,18 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // fold target as a one-element array would be; only skipping it, rather
       // than treating it as an implicit one-item collection, was the actual
       // root cause of dependent drill-downs never folding onto primary
-      // results.
-      const drillCandidates = findAllObjectArrayFieldsOrWholeObject(drill.capture.responseBody);
-      // Same disambiguation on the drill side, reusing findThreadedJoinFields
-      // against the drill's own request: a per-item drill array commonly
-      // echoes the join value(s) it was looked up by (e.g. a `sku` search
-      // parameter mirrored back on each result), which distinguishes it from
-      // a decoy array (e.g. an `errors[]` collection) that never does. Not
-      // every real drill array echoes the join value, though (e.g. a
-      // `productId`-keyed lookup returning `units[]` with no `productId`
-      // field of its own) — when no candidate threads, the richest candidate
-      // by per-item primitive-field count wins (see
-      // {@link chainTerminalItemRichness}), so a small real nested
-      // object-array field (e.g. a few related tags) does not automatically
-      // beat a richer flat whole-object candidate just for being found first.
-      // As on the primary side, every item (not just items[0]) is checked for
-      // a thread.
-      const drillRequestValues = collectRequestValuesIncludingHeaders(drill.capture);
-      const threadedDrillArray = drillCandidates.find((candidate) =>
-        candidate.items.some((item) => findThreadedJoinFields(item, drill.capture).length > 0)
-      );
-      const drillArray =
-        threadedDrillArray ??
-        drillCandidates.reduce<{ path: string[]; items: Record<string, unknown>[] } | undefined>(
-          (richest, candidate) => {
-            if (!richest) return candidate;
-            const candidateRichness = chainTerminalItemRichness(
-              drill.capture.responseBody,
-              candidate.path,
-              drillRequestValues
-            );
-            const richestSoFar = chainTerminalItemRichness(
-              drill.capture.responseBody,
-              richest.path,
-              drillRequestValues
-            );
-            return candidateRichness > richestSoFar ? candidate : richest;
-          },
-          undefined
-        );
+      // results. Disambiguated via selectDisambiguatedCandidate — a per-item
+      // drill array commonly echoes the join value(s) it was looked up by
+      // (e.g. a `sku` search parameter mirrored back on each result), which
+      // distinguishes it from a decoy array (e.g. an `errors[]` collection)
+      // that never does. Not every real drill array echoes the join value,
+      // though (e.g. a `productId`-keyed lookup returning `units[]` with no
+      // `productId` field of its own), so when no candidate threads, the
+      // richest candidate by per-item primitive-field count wins — the same
+      // selection computeFoldChain applies to every later chained step, so a
+      // decoy is never disambiguated differently on the immediate drill call
+      // than it is one hop further down the chain.
+      const drillArray = selectDisambiguatedCandidate(drill.capture.responseBody, drill.capture);
       if (!drillArray) continue;
 
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
