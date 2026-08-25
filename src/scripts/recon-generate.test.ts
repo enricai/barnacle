@@ -33,6 +33,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps,
   buildStep,
 } from "@/scripts/recon-generate-multicall-fixture";
@@ -1510,6 +1511,24 @@ describe("indexStateValues — a short numeric value threaded through a dependen
     const orderStatusStep = actionSteps.find((step) => step.capture.url === captures[1]!.url);
     const bodyProduce = orderStatusStep?.produces.find((p) => p.kind === "body");
     expect(bodyProduce).toBeDefined();
+  });
+});
+
+describe("indexStateValues — a short Set-Cookie value threaded through a dependent drill-down chain is indexed despite MIN_STATE_VALUE_LENGTH", () => {
+  // Cookie-origin counterpart of the short-numeric chain regression above:
+  // r1 mints `tok1` (4 chars, well under MIN_STATE_VALUE_LENGTH's 8-char
+  // floor) via Set-Cookie rather than the response body, and r2 threads it
+  // back via its request body. Without the chain-produced-value carve-out on
+  // the Set-Cookie branch, indexStateValues drops it, so compileActionSteps
+  // never emits a header-kind produces[] accessor for it.
+  const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+  const captures = steps.map((step) => step.capture);
+  const stateIndex = indexStateValues(captures);
+
+  it("indexes the short cookie-sourced chain-produced token despite it being under MIN_STATE_VALUE_LENGTH", () => {
+    const sv = stateIndex.get("tok1");
+    expect(sv).toBeDefined();
+    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "sess" });
   });
 });
 

@@ -1682,6 +1682,46 @@ export function buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFi
 }
 
 /**
+ * Cookie-origin sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps}:
+ * here `r1` mints the short chain-produced token (`tok1`, under
+ * `MIN_STATE_VALUE_LENGTH`) via `Set-Cookie` rather than the response body,
+ * AND echoes the same value in its response body (the "body-level echo" that
+ * lets {@link collectDependentDrillDownChainValues} confirm the cookie value
+ * is chain-produced, exactly as a body-sourced token would be). `r2` threads
+ * `tok1` back via its request body. Exercises `indexStateValues`' Set-Cookie
+ * branch's `chainForceIncludeValues`/`forceIncludeValues` exemption, mirroring
+ * the body-value floor exemption.
+ */
+export function buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
+      timestamp: "2024-10-05T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"orderId":"order-a"}',
+      responseHeaders: { "set-cookie": "sess=tok1; Path=/; HttpOnly" },
+      responseBody: { echoedToken: "tok1" },
+      timestamp: "2024-10-05T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_URL,
+      requestPostData: '{"token":"tok1"}',
+      responseBody: {
+        entries: [{ token: "tok1", ts: "2024-10-05T00:00:02Z", event: "shipped" }],
+      },
+      timestamp: "2024-10-05T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * A different sibling of the same array-wrapped-join-field failure family:
  * here it's the IMMEDIATE drill step (`r1`), not a later chain hop, whose
  * request body wraps the value it threads — but that value is the PRIMARY
