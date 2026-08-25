@@ -33,6 +33,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps,
+  buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps,
 } from "@/scripts/recon-generate-multicall-fixture";
 import { buildRepeatedSectionSubmissionCaptures } from "@/scripts/recon-generate-repeated-section-fixture";
 import type { Capture } from "@/scripts/recon-shared";
@@ -1336,6 +1337,30 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
     );
     const names = steps.flatMap((s) => s.produces).map((p) => p.name);
     expect(names).toContain("jobId");
+  });
+});
+
+describe("indexStateValues — a short numeric value threaded through a dependent drill-down chain is indexed despite MIN_STATE_VALUE_LENGTH", () => {
+  // Regression for the length-floor bug: `r1`'s response is a bare two-digit
+  // JSON number (`42`), well under MIN_STATE_VALUE_LENGTH's 8-char floor.
+  // Without the chain-produced-value carve-out, indexStateValues drops it
+  // entirely, so compileActionSteps never emits a produces[] accessor for it
+  // and r2's templated body has nothing to substitute for the per-item token.
+  const steps = buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps();
+  const captures = steps.map((step) => step.capture);
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("indexes the short numeric chain-produced token despite it being under MIN_STATE_VALUE_LENGTH", () => {
+    const sv = stateIndex.get("42");
+    expect(sv).toBeDefined();
+  });
+
+  it("produces a body accessor on the originating chain step for the short numeric token", () => {
+    const orderStatusStep = actionSteps.find((step) => step.capture.url === captures[1]!.url);
+    const bodyProduce = orderStatusStep?.produces.find((p) => p.kind === "body");
+    expect(bodyProduce).toBeDefined();
   });
 });
 

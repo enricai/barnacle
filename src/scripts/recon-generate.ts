@@ -3015,15 +3015,37 @@ export function* walkSetCookiePairs(
  * Exception: values in `PLACEHOLDER_STATE_VALUES` are skipped entirely so
  * the LATER non-placeholder occurrence at the same JSON path becomes the
  * canonical binding instead.
+ *
+ * `forceIncludeValues` (see {@link collectDependentDrillDownChainValues})
+ * bypasses `MIN_STATE_VALUE_LENGTH` for the specific values it names — a
+ * value already confirmed, by the fold-chain detector itself, to be threaded
+ * from one dependent-drill-down chain hop's response into the next hop's
+ * request is exactly as legitimate a produced state value as a long one; a
+ * length floor exists to keep an UNRELATED short value (an enum code, a page
+ * number) from being mistaken for reused state by blind substring/value
+ * matching, and a value the chain detector already confirmed is threaded
+ * carries no such ambiguity. Every other filter (MAX length, placeholder,
+ * shielded UUID, GET-non-UUID) still applies.
  */
 /** Exported for unit testing — lets tests exercise the produces[] walk (body
  * AND header/cookie origins) directly against synthetic Capture sequences. */
 export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
-  actionCaptureIndices: Set<number> = new Set()
+  actionCaptureIndices: Set<number> = new Set(),
+  forceIncludeValues: ReadonlySet<string> = new Set()
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
+  // Computed structurally off the SAME captures being indexed (no
+  // foldReturnSpec available at this layer) — a spec-declared fold's own
+  // chain values reach here via the caller-supplied `forceIncludeValues`
+  // (see recon-generate's top-level `collectDependentDrillDownChainValues`
+  // call), so this indexes a chain-produced value regardless of whether the
+  // fold plan that confirmed it is structural or spec-declared.
+  const chainForceIncludeValues = collectDependentDrillDownChainValues(
+    captures.map((capture) => ({ capture })),
+    null
+  );
   // First pass: identify the earliest origin among ACTION captures for each
   // value. Action-only earliest-origin tracking is what compileActionSteps'
   // produces[] check needs — it ignores non-action captures (telemetry GETs,
@@ -3068,7 +3090,12 @@ export function indexStateValues(
     for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
       if (rawValue === null) continue;
       const value = String(rawValue);
-      if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      if (
+        value.length < MIN_STATE_VALUE_LENGTH &&
+        !chainForceIncludeValues.has(value) &&
+        !forceIncludeValues.has(value)
+      )
+        continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
       // Schema-identifier UUIDs (the field-id and option-id anchors) are stable
@@ -6140,6 +6167,63 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * plan that survives multipart disqualification, letting every downstream
  * emitter/shape-inference caller fold each of them.
  */
+/**
+ * Every value ACTUALLY threaded from one dependent-drill-down chain hop's
+ * response into a LATER chain hop's own request/headers — the same overlap
+ * `computeFoldChain`'s `dependsOnChain` check already computes to decide a
+ * step belongs in the chain at all — across every fold target
+ * `detectDrillDownFoldPlan` / `buildFoldPlanFromSpec` resolve. These are the
+ * values `indexStateValues` must index as producible state regardless of
+ * `MIN_STATE_VALUE_LENGTH`, so `compileActionSteps` can thread a
+ * chain-produced join value into the next hop's request even when that
+ * value is a short one (e.g. a bare numeric status token).
+ *
+ * Deliberately NOT "every leaf value on a chain hop's response" — a chain
+ * terminal's response commonly ECHOES the primary item's own join field
+ * back (e.g. `sku` on the folded record), and that echoed value is a
+ * PRIMARY-ITEM field the fold loop's own per-item render already threads
+ * literally (see {@link findThreadedJoinFields}'s docstring); sweeping it
+ * into state-threading's single-earliest-origin index would collapse every
+ * item's distinct value onto whichever item's capture was indexed first.
+ * Restricting to values that themselves reappear in a STRICTLY LATER chain
+ * hop's own request — real cross-call threading, not an echo sitting still
+ * in one response — keeps this exact to the shape state-threading is
+ * actually needed for.
+ *
+ * Runs directly off raw actions (not `resolveFoldPlan`, which needs
+ * `isMultipart` — unavailable before `compileActionSteps` has run) since
+ * fold-plan DETECTION depends only on each action's `capture`.
+ */
+function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null
+): Set<string> {
+  const structuralPlans = detectDrillDownFoldPlan(actions);
+  const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
+  const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
+  const values = new Set<string>();
+  for (const plan of plans) {
+    for (const target of plan.targets) {
+      for (let j = 0; j < target.chain.length; j++) {
+        const priorIndex = target.chain[j]!;
+        const priorCapture = actions[priorIndex]?.capture;
+        if (!priorCapture) continue;
+        const responseValues = collectResponseLeafValues(priorCapture.responseBody);
+        const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
+        for (let k = j + 1; k < target.chain.length; k++) {
+          const laterCapture = actions[target.chain[k]!]?.capture;
+          if (!laterCapture) continue;
+          const laterRequestValues = collectRequestValuesIncludingHeaders(laterCapture);
+          for (const v of responseValues) {
+            if (!echoedValues.has(v) && laterRequestValues.has(v)) values.add(v);
+          }
+        }
+      }
+    }
+  }
+  return values;
+}
+
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null
@@ -8083,9 +8167,23 @@ async function main(): Promise<void> {
     ];
   })();
   const actionCaptureIndices = new Set<number>(actionCaptures.map((a) => a.index));
+  // Resolved off raw actionCaptures — fold-plan DETECTION depends only on
+  // each action's capture, so this runs before compileActionSteps/
+  // indexStateValues even exist — so a short numeric join value threaded
+  // through a dependent-drill-down chain hop still gets indexed as
+  // producible state (see collectDependentDrillDownChainValues).
+  const dependentDrillDownChainValues =
+    actionCaptures.length > 1
+      ? collectDependentDrillDownChainValues(actionCaptures, foldReturnSpec)
+      : new Set<string>();
   const stateIndex =
     actionCaptures.length > 1
-      ? indexStateValues(captures, shieldedUuids, actionCaptureIndices)
+      ? indexStateValues(
+          captures,
+          shieldedUuids,
+          actionCaptureIndices,
+          dependentDrillDownChainValues
+        )
       : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
