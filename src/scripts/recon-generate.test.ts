@@ -2710,7 +2710,7 @@ describe("emitMultiStepExecuteHttp — fold-loop parameterize re-keys a boolean 
     );
 
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("${item.primary}");
+    expect(body).toContain(`$${"{"}item.primary}`);
     expect(body).not.toContain("primary=true");
   });
 });
