@@ -4305,7 +4305,8 @@ export function emitMultiStepExecuteHttp(
             const value = readValueAtPath(firstItem, field.split("."));
             return (
               (typeof value === "string" && value.length > 0 && value === headerValue) ||
-              (typeof value === "number" && String(value) === headerValue)
+              ((typeof value === "number" || typeof value === "boolean") &&
+                String(value) === headerValue)
             );
           });
           if (matchesJoinField) headerNames.add(headerName);
@@ -4315,7 +4316,8 @@ export function emitMultiStepExecuteHttp(
         for (const field of target.joinFields) {
           const value = readValueAtPath(firstItem, field.split("."));
           if (typeof value === "string" && value.length > 0) joinValues.add(value);
-          else if (typeof value === "number") joinValues.add(String(value));
+          else if (typeof value === "number" || typeof value === "boolean")
+            joinValues.add(String(value));
         }
         if (joinValues.size > 0) joinFieldValuesByStep.set(stepIndex, joinValues);
       }
