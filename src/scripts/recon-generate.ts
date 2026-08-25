@@ -4806,7 +4806,14 @@ export function emitMultiStepExecuteHttp(
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
   if (foldPlans.length > 1 && everyPrimaryIsPlainObject) {
-    const mergedVars = foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName).join(", ");
+    // Two plans can share the SAME primaryStepIndex (independent arrays on
+    // one primary response, folded in place by two separate loops above) —
+    // deduping here keeps that shared var out of mergeFoldedPrimaryBodies
+    // twice, which would otherwise concatenate every array on the object
+    // with itself.
+    const mergedVars = [
+      ...new Set(foldPlans.map((plan) => actions[plan.primaryStepIndex]!.varName)),
+    ].join(", ");
     lines.push(`    return { data: mergeFoldedPrimaryBodies(${mergedVars}) };`);
   } else {
     const returnVar = lastFoldPlan
