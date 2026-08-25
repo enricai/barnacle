@@ -753,7 +753,9 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
   });
 
   it("extends the chain past an opaque intermediate hop to the step holding the real per-item array", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps());
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps()
+    );
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
@@ -764,7 +766,9 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
   });
 
   it("resolves the chain to the terminal step even when it threads the drill step's value wrapped inside a request-body array", () => {
-    const plan = detect(buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps());
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps()
+    );
 
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
