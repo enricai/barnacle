@@ -1078,8 +1078,23 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
     if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
     return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
   }
-  const foldedBodies = foldPlans.map((plan) =>
-    foldResponseBodyForShapeInference(actionSteps, plan)
+  // Plans sharing a primaryStepIndex (independent arrays on one primary
+  // response) MUST fold onto the SAME accumulating body, not independent
+  // copies of the original — folding each in isolation and then merging via
+  // mergeFoldedPrimaryBodies would array-concat one plan's folded items with
+  // the other's still-unfolded ones, duplicating every item.
+  const plansByPrimaryStep = new Map<number, FoldPlan[]>();
+  for (const plan of foldPlans) {
+    plansByPrimaryStep.set(plan.primaryStepIndex, [
+      ...(plansByPrimaryStep.get(plan.primaryStepIndex) ?? []),
+      plan,
+    ]);
+  }
+  const foldedBodies = [...plansByPrimaryStep.values()].map((plans) =>
+    plans.reduce<unknown>(
+      (body, plan) => foldResponseBodyForShapeInference(actionSteps, plan, body),
+      actionSteps[plans[0]!.primaryStepIndex]!.capture.responseBody
+    )
   );
   if (foldedBodies.every(isPlainObject)) {
     return mergeFoldedPrimaryBodies(...foldedBodies);
@@ -6030,9 +6045,9 @@ function replaceByReference(value: unknown, target: object, replacement: unknown
  */
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   actionSteps: readonly T[],
-  foldPlan: FoldPlan
+  foldPlan: FoldPlan,
+  initialBody: unknown = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody
 ): unknown {
-  const primaryBody = actionSteps[foldPlan.primaryStepIndex]!.capture.responseBody;
   return foldPlan.targets.reduce<unknown>((body, target) => {
     const drillBody = actionSteps[target.chainTerminalIndex]!.capture.responseBody;
     const primaryItems = objectItemsAtPath(body, foldPlan.primaryArrayPath);
@@ -6048,7 +6063,7 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
       ) ?? drillItems?.[0];
     if (!primaryItems || !matchedItem || !drillMatch) return body;
     return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });
-  }, primaryBody);
+  }, initialBody);
 }
 
 /** Bounded-paging signal detected from a primary read operation's own
