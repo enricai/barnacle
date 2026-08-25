@@ -1140,3 +1140,47 @@ export function buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapAc
     }),
   ];
 }
+
+const CATALOG_VENDOR_DETAIL_URL = "https://api.example.com/catalog/vendors/detail/";
+
+/**
+ * A single primary search response carrying TWO genuinely independent
+ * object-array fields — `products[]` and `vendors[]` — each drilled by its
+ * own, unrelated later step (`sku` into a pricing lookup, `vendorId` into a
+ * vendor-detail lookup). `scanPrimaryCandidate`'s old candidatePool lock
+ * (recon-generate.ts:5411-5413) resolved only whichever array its FIRST
+ * qualifying drill-down threaded from (`products[]`, via r1) and then
+ * restricted every later candidate scan to that SAME array, so r2's
+ * `vendorId` thread into `vendors[]` was silently discarded — this fixture
+ * proves BOTH arrays fold independently, one FoldPlan per distinct
+ * `primaryArrayPath`.
+ */
+export function buildMulticallSingleShotSearchTwoIndependentArraysActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ sku: "sku-a" }],
+        vendors: [{ vendorId: "v1" }],
+      },
+      timestamp: "2025-01-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_PRICING_URL}?sku=sku-a`,
+      requestPostData: null,
+      responseBody: {
+        prices: [{ sku: "sku-a", amount: 9.99 }],
+      },
+      timestamp: "2025-01-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_VENDOR_DETAIL_URL}?vendorId=v1`,
+      requestPostData: null,
+      responseBody: {
+        contracts: [{ vendorId: "v1", contractId: "c1" }],
+      },
+      timestamp: "2025-01-01T00:00:02Z",
+    }),
+  ];
+}
