@@ -1812,7 +1812,9 @@ function jsonBodyLeafValues(requestPostData: string | null | undefined): string[
   })();
   if (parsed === undefined) return null;
   const values: string[] = [];
-  for (const { value } of walkStringLeaves(parsed)) values.push(value);
+  for (const { value } of walkAllPrimitiveLeaves(parsed)) {
+    if (value !== null) values.push(String(value));
+  }
   return values;
 }
 
@@ -3063,7 +3065,9 @@ export function indexStateValues(
     // e.g. "candidate" as a state value gets substituted INSIDE an already-
     // emitted ${candidateId} interpolation, producing ${${entityTypeCode}Id}.
     const isGet = c.method === "GET";
-    for (const { value, path } of walkStringLeaves(c.responseBody)) {
+    for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
+      if (rawValue === null) continue;
+      const value = String(rawValue);
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
@@ -3331,7 +3335,9 @@ export function compileActionSteps(
     }
 
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
-      for (const { value, path } of walkStringLeaves(capture.responseBody)) {
+      for (const { value: rawValue, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+        if (rawValue === null) continue;
+        const value = String(rawValue);
         if (!usedValues.has(value)) continue;
         const sv = stateIndex.get(value);
         // Only PRODUCE values whose earliest origin is this very capture.
@@ -3420,7 +3426,7 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
       return null;
     }
   }
-  return typeof cursor === "string" ? cursor : null;
+  return typeof cursor === "string" || typeof cursor === "number" ? String(cursor) : null;
 }
 
 /**

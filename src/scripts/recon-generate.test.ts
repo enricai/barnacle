@@ -1123,6 +1123,62 @@ describe("compileActionSteps — Set-Cookie state binding (listings-fixture-styl
   });
 });
 
+describe("indexStateValues / compileActionSteps — bare numeric response-body leaf threads as state", () => {
+  /** Capture 1: a status-check call returns a bare numeric token in the body,
+   * not wrapped in a string — e.g. `{ statusToken: 12345678 }`. */
+  const numericMintCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/status/check",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { statusToken: 12345678 },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  /** Capture 2: a follow-up call re-sends that number, wrapped inside an
+   * array, in its JSON request body. */
+  const statefulCallCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action",
+    method: "POST",
+    url: "https://api.example.com/status/confirm",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({ tokens: [12345678] }),
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { confirmed: true },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const captures = [numericMintCapture, statefulCallCapture];
+  const actionCaptures = captures.map((capture, index) => ({ capture, index }));
+  const stateIndex = indexStateValues(captures);
+  const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+
+  it("indexes the bare numeric leaf keyed by its String() form", () => {
+    const sv = stateIndex.get("12345678");
+    expect(sv).toBeDefined();
+    expect(sv?.path).toEqual(["statusToken"]);
+  });
+
+  it("produces a body-kind entry on the originating step for the numeric value", () => {
+    const [mintStep] = actionSteps;
+    const bodyProduce = mintStep?.produces.find((p) => p.kind === "body");
+    expect(bodyProduce).toBeDefined();
+    expect(bodyProduce).toMatchObject({ kind: "body", path: ["statusToken"] });
+  });
+});
+
 /** The `${${` double-interpolation sentinel, built by concatenation so Biome's
  * noTemplateCurlyInString rule doesn't flag the literal placeholder. */
 const DOUBLE_INTERP = `$${"{"}$${"{"}`;
