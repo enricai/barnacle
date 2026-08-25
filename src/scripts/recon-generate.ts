@@ -5314,8 +5314,10 @@ function computeFoldChain<T extends { capture: Capture }>(
     const candidate = actions[i]!;
     const requestValues = collectRequestValuesIncludingHeaders(candidate.capture);
     const dependsOnChain = chain.some((chainIndex) => {
-      const responseValues = collectResponseLeafValues(actions[chainIndex]!.capture.responseBody);
-      return [...responseValues].some((v) => requestValues.has(v));
+      const chainStepCapture = actions[chainIndex]!.capture;
+      const responseValues = collectResponseLeafValues(chainStepCapture.responseBody);
+      const echoedValues = collectRequestValuesIncludingHeaders(chainStepCapture);
+      return [...responseValues].some((v) => !echoedValues.has(v) && requestValues.has(v));
     });
     if (!dependsOnChain) continue;
     chain.push(i);
