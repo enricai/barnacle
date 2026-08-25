@@ -666,6 +666,60 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   });
 });
 
+describe("extractActionSequence — foldReturnSpec-scoped GET admission", () => {
+  const capture = (method: string, url: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method,
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const BASE = "https://api.example.com";
+  const foldReturnSpec = {
+    endpointPattern: "/orders/[^/]+/detail",
+    resultsPath: "orderSearch.results.orders",
+    joinFields: ["orderId"],
+  };
+
+  it("drops every GET when no foldReturnSpec is given (today's behavior)", () => {
+    const kept = extractActionSequence([
+      capture("POST", `${BASE}/orders/search`),
+      capture("GET", `${BASE}/orders/1/detail`),
+    ]).map((a) => a.capture.method);
+
+    expect(kept).toEqual(["POST"]);
+  });
+
+  it("admits a GET capture whose URL matches the flow's own foldReturnSpec.endpointPattern", () => {
+    const kept = extractActionSequence(
+      [capture("POST", `${BASE}/orders/search`), capture("GET", `${BASE}/orders/1/detail`)],
+      null,
+      foldReturnSpec
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([`${BASE}/orders/search`, `${BASE}/orders/1/detail`]);
+  });
+
+  it("still drops a GET that does not match the declared endpointPattern", () => {
+    const kept = extractActionSequence(
+      [capture("POST", `${BASE}/orders/search`), capture("GET", `${BASE}/orders/1/unrelated`)],
+      null,
+      foldReturnSpec
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([`${BASE}/orders/search`]);
+  });
+});
+
 describe("resolveManifestActionSequence — authoritative submission selection", () => {
   const capture = (url: string) => ({
     timestamp: "2024-01-01T00:00:00Z",
@@ -831,6 +885,100 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
     const kept = extractGraphQLActionSequence([named, nullNamed]);
     expect(kept).toHaveLength(2);
     expect(kept.map((a) => a.capture.query)).toEqual([named.query, nullNamed.query]);
+  });
+});
+
+describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation admission", () => {
+  const BASE = "https://aidfinder.example.com";
+  const gqlCapture = (operationName: string, kind: "query" | "mutation") => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"op":"${operationName}"}`,
+    responseHeaders: {},
+    responseBody: {},
+    operationName,
+    query: `${kind} ${operationName}($input: Input) {\n  ${operationName}(input: $input) { id }\n}`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const foldReturnSpec = {
+    endpointPattern: "/graphql",
+    resultsPath: "orderSearch.results.orders",
+    joinFields: ["orderId"],
+  };
+
+  it("drops every query when no foldReturnSpec is given (today's behavior)", () => {
+    const kept = extractGraphQLActionSequence([
+      gqlCapture("OrderDetail", "query"),
+      gqlCapture("SubmitForm", "mutation"),
+    ]).map((a) => a.capture.operationName);
+
+    expect(kept).toEqual(["SubmitForm"]);
+  });
+
+  it("admits a non-mutation capture whose URL matches the flow's own foldReturnSpec.endpointPattern", () => {
+    const kept = extractGraphQLActionSequence(
+      [gqlCapture("OrderDetail", "query"), gqlCapture("SubmitForm", "mutation")],
+      null,
+      foldReturnSpec
+    ).map((a) => a.capture.operationName);
+
+    expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
+  });
+
+  it("still drops a non-mutation capture that does not match the declared endpointPattern", () => {
+    const kept = extractGraphQLActionSequence(
+      [gqlCapture("OrderDetail", "query"), gqlCapture("SubmitForm", "mutation")],
+      null,
+      { ...foldReturnSpec, endpointPattern: "/unrelated" }
+    ).map((a) => a.capture.operationName);
+
+    expect(kept).toEqual(["SubmitForm"]);
+  });
+
+  const restCapture = (path: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "GET",
+    url: `${BASE}${path}`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("admits a REST GET capture (capture.query === null) whose URL matches the declared endpointPattern", () => {
+    const kept = extractGraphQLActionSequence(
+      [restCapture("/inventory-lookup"), gqlCapture("SubmitForm", "mutation")],
+      null,
+      { ...foldReturnSpec, endpointPattern: "/inventory-lookup" }
+    ).map((a) => a.capture.operationName ?? a.capture.url);
+
+    expect(kept).toEqual([`${BASE}/inventory-lookup`, "SubmitForm"]);
+  });
+
+  it("scopes admission to the declared pattern: a matching capture is kept, an unrelated one is still dropped, in the same input", () => {
+    const kept = extractGraphQLActionSequence(
+      [
+        gqlCapture("OrderDetail", "query"),
+        restCapture("/unrelated-lookup"),
+        gqlCapture("SubmitForm", "mutation"),
+      ],
+      null,
+      foldReturnSpec
+    ).map((a) => a.capture.operationName);
+
+    expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
   });
 });
 

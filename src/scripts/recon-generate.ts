@@ -1677,20 +1677,29 @@ export function resolveManifestActionSequence(
  * JWT refresh, reference-lookup) that a browser fires incidentally. Absent
  * patterns preserve the noise heuristic exactly.
  *
+ * When the flow declares a `foldReturnSpec`, a GET whose URL matches its
+ * `endpointPattern` is admitted despite the GET drop above — the same scoped
+ * rule `buildFoldPlanFromSpec` later uses to resolve the fold plan, so a
+ * spec-declared GET drill-down survives to reach it instead of being
+ * dropped before the fold pipeline ever sees it. Every other GET is still
+ * dropped.
+ *
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
  */
 export function extractActionSequence(
   captures: Capture[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
 
   return captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
-      if (capture.method === "GET") return false;
+      if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
@@ -1709,14 +1718,27 @@ export function extractActionSequence(
  * what let a chronologically-first fallback pick an unrelated query. Host is
  * NOT a filter criterion, matching {@link extractActionSequence}.
  *
+ * When the flow declares a `foldReturnSpec`, a non-mutation capture whose
+ * URL matches its `endpointPattern` is admitted despite the query drop
+ * above, mirroring {@link extractActionSequence}'s GET admission. So is a
+ * non-mutation capture whose response resolves the spec's own `resultsPath`
+ * — the GraphQL-primary read op the drill-down folds onto, which
+ * `endpointPattern` (naming the drill, not the primary) never matches on its
+ * own; without this a declared spec would admit the drill-down but leave
+ * `resolveFoldPlan` with no primary capture to resolve `resultsPath`
+ * against. Every other non-mutation capture is still dropped.
+ *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
 export function extractGraphQLActionSequence(
   captures: Capture[],
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1724,7 +1746,8 @@ export function extractGraphQLActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
-      return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+      if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
+      return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
 }
 
@@ -5972,11 +5995,19 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   return null;
 }
 
-function buildFoldPlanFromSpec<T extends { capture: Capture }>(
-  actions: readonly T[],
-  spec: FoldReturnSpec
-): FoldPlan | null {
-  const primaryArrayPath = spec.resultsPath.split(".");
+/**
+ * Compiles a flow-declared {@link FoldReturnSpec.endpointPattern} into a
+ * capture predicate, or a predicate that always returns `false` when `spec`
+ * is `null` or its pattern isn't a valid regex — the same null-safe
+ * try/catch shape {@link buildFoldPlanFromSpec} already applied inline,
+ * shared here so the action-sequence extractors can admit a spec-matched
+ * drill-down capture under the identical rule that later resolves its fold
+ * plan, instead of dropping it before the fold pipeline ever sees it.
+ */
+function compileFoldReturnEndpointMatcher(
+  spec: FoldReturnSpec | null
+): (capture: Capture) => boolean {
+  if (spec === null) return () => false;
   const endpointRx = ((): RegExp | null => {
     try {
       return new RegExp(spec.endpointPattern);
@@ -5984,7 +6015,37 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       return null;
     }
   })();
-  if (endpointRx === null) return null;
+  if (endpointRx === null) return () => false;
+  return (capture: Capture) => endpointRx.test(capture.url);
+}
+
+/**
+ * A capture predicate matching whichever capture actually holds
+ * {@link FoldReturnSpec.resultsPath}'s object array — the flow's own PRIMARY
+ * results source, as opposed to {@link compileFoldReturnEndpointMatcher}'s
+ * `endpointPattern` match (the drill-down). REST's `extractActionSequence`
+ * never needs this: a REST primary is a POST/non-GET and is admitted
+ * unconditionally regardless of `foldReturnSpec`. GraphQL's primary is
+ * always a `query`, and `extractGraphQLActionSequence` drops every
+ * non-mutation capture by default, so without this predicate a declared
+ * `foldReturnSpec` would admit only the drill-down capture and never the
+ * read op whose response the drill-down folds onto — leaving
+ * `buildFoldPlanFromSpec` with no `primaryStepIndex` to resolve against.
+ */
+function compileFoldReturnResultsMatcher(
+  spec: FoldReturnSpec | null
+): (capture: Capture) => boolean {
+  if (spec === null) return () => false;
+  const resultsPath = spec.resultsPath.split(".");
+  return (capture: Capture) => objectItemsAtPath(capture.responseBody, resultsPath) !== null;
+}
+
+function buildFoldPlanFromSpec<T extends { capture: Capture }>(
+  actions: readonly T[],
+  spec: FoldReturnSpec
+): FoldPlan | null {
+  const primaryArrayPath = spec.resultsPath.split(".");
+  const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
@@ -5998,7 +6059,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       drillStepIndex++
     ) {
       const drill = actions[drillStepIndex]!;
-      if (!endpointRx.test(drill.capture.url)) continue;
+      if (!matchesFoldReturnEndpoint(drill.capture)) continue;
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -7991,7 +8052,9 @@ async function main(): Promise<void> {
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
-  const graphqlActionSequence = gql ? extractGraphQLActionSequence(captures, submitPatterns) : [];
+  const graphqlActionSequence = gql
+    ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
+    : [];
   const primaryGraphQLOperation =
     gql && graphqlActionSequence.length === 0
       ? selectPrimaryGraphQLOperation(
@@ -8059,7 +8122,7 @@ async function main(): Promise<void> {
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
     ? graphqlActionSequence
-    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns));
+    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns, foldReturnSpec));
   // The same undercount hazard applies one layer below the manifest: a
   // flow-declared submitEndpointPattern that matches only one section's URL
   // (the natural way to describe "the button that finishes the wizard")
@@ -8073,8 +8136,8 @@ async function main(): Promise<void> {
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
       : gql
-        ? extractGraphQLActionSequence(captures, null)
-        : collapseRedundantPatches(extractActionSequence(captures, null));
+        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
   if (patternUndercounts) {
@@ -8114,8 +8177,8 @@ async function main(): Promise<void> {
     submitEndpointPattern === null
       ? null
       : gql
-        ? extractGraphQLActionSequence(captures, null)
-        : collapseRedundantPatches(extractActionSequence(captures, null));
+        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
