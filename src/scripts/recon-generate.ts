@@ -2901,8 +2901,8 @@ function applyStructuredValuePayloadSubstitutions(
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
     if (priorStepStateValues.size > 0) {
-      const carriesThreadedValue = [...walkStringLeaves(value)].some(({ value: leaf }) =>
-        priorStepStateValues.has(leaf)
+      const carriesThreadedValue = [...walkAllPrimitiveLeaves(value)].some(
+        ({ value: leaf }) => leaf !== null && priorStepStateValues.has(String(leaf))
       );
       if (carriesThreadedValue) continue;
     }
