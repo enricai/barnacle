@@ -1288,3 +1288,46 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
     ]);
   });
 });
+
+describe("boolean-typed primary-item join field", () => {
+  const steps: MulticallFixtureStep[] = [
+    buildStep("r0", {
+      url: "https://api.example.com/records/search",
+      requestPostData: JSON.stringify({ page: 1 }),
+      responseBody: {
+        records: [
+          { id: "aaaaaaaa", primary: true },
+          { id: "bbbbbbbb", primary: false },
+        ],
+      },
+      timestamp: "2025-03-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/records/detail",
+      requestPostData: JSON.stringify({ primary: true }),
+      responseBody: { detail: { note: "n1" } },
+      timestamp: "2025-03-01T00:00:01Z",
+    }),
+  ];
+
+  it("detectDrillDownFoldPlan resolves a plan with the boolean field in joinFields", () => {
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryArrayPath).toEqual(["records"]);
+    expect(plan?.targets[0]?.joinFields).toEqual(["primary"]);
+    expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(0);
+  });
+
+  it("resolveFoldPlan/buildFoldPlanFromSpec resolves a plan with the boolean field in joinFields", () => {
+    const resolved = resolveFoldPlan(steps, {
+      endpointPattern: "records/detail",
+      resultsPath: "records",
+      joinFields: ["primary"],
+    });
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["primary"]);
+    expect(resolved[0]?.targets[0]?.primaryMatchedItemIndex).toBe(0);
+  });
+});
