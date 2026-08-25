@@ -940,6 +940,46 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
 
     expect(kept).toEqual(["SubmitForm"]);
   });
+
+  const restCapture = (path: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "GET",
+    url: `${BASE}${path}`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("admits a REST GET capture (capture.query === null) whose URL matches the declared endpointPattern", () => {
+    const kept = extractGraphQLActionSequence(
+      [restCapture("/inventory-lookup"), gqlCapture("SubmitForm", "mutation")],
+      null,
+      { ...foldReturnSpec, endpointPattern: "/inventory-lookup" }
+    ).map((a) => a.capture.operationName ?? a.capture.url);
+
+    expect(kept).toEqual([`${BASE}/inventory-lookup`, "SubmitForm"]);
+  });
+
+  it("scopes admission to the declared pattern: a matching capture is kept, an unrelated one is still dropped, in the same input", () => {
+    const kept = extractGraphQLActionSequence(
+      [
+        gqlCapture("OrderDetail", "query"),
+        restCapture("/unrelated-lookup"),
+        gqlCapture("SubmitForm", "mutation"),
+      ],
+      null,
+      foldReturnSpec
+    ).map((a) => a.capture.operationName);
+
+    expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
+  });
 });
 
 describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
