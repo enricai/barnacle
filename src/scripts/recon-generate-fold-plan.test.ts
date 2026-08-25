@@ -666,6 +666,43 @@ describe("detectDrillDownFoldPlan — multiple independent targets", () => {
     expect(plan?.targets[1]?.drillStepIndex).toBe(2);
     expect(plan?.targets[1]?.drillArrayPath).toEqual(["stock"]);
   });
+
+  it("does not chain a second per-item drill under the first merely because both thread the same primary join value", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          items: [{ sku: "sku-a" }, { sku: "sku-b" }],
+        },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/items/sku-a/pricing",
+        requestPostData: null,
+        // Echoes the primary's own `sku` join value alongside its own
+        // field — an echo, not evidence a later step depends on THIS
+        // step's response, since `sku-a` was already on the primary item.
+        responseBody: { pricing: [{ sku: "sku-a", amount: 42 }] },
+        timestamp: "2024-09-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/items/sku-a/reviews",
+        requestPostData: null,
+        responseBody: { reviews: [{ sku: "sku-a", rating: 5 }] },
+        timestamp: "2024-09-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets).toHaveLength(2);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1]);
+    expect(plan?.targets[1]?.drillStepIndex).toBe(2);
+    expect(plan?.targets[1]?.chain).toEqual([2]);
+  });
 });
 
 describe("detectDrillDownFoldPlan — multiple independent primaries", () => {
