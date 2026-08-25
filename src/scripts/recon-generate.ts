@@ -5327,8 +5327,8 @@ function* walkItemFieldPaths(
 }
 
 /**
- * Finds the ordered list of an array item's string/numeric field paths whose
- * values are threaded into `drillCapture`'s outbound request — the join key a
+ * Finds the ordered list of an array item's string/numeric/boolean field
+ * paths whose values are threaded into `drillCapture`'s outbound request — the join key a
  * dependent drill-down call was built from. Each entry is a dot-separated
  * path (see {@link readValueAtPath} / {@link pathToAccessor}), so a bare
  * top-level field stays a single segment (e.g. `"sku"`) and a field nested
@@ -5964,7 +5964,8 @@ function resolveSpecMatchedPrimaryItemIndex(
       const value = readValueAtPath(item, field.split("."));
       return (
         (typeof value === "string" && value.length > 0 && requestValues.has(value)) ||
-        (typeof value === "number" && requestValues.has(String(value)))
+        (typeof value === "number" && requestValues.has(String(value))) ||
+        (typeof value === "boolean" && requestValues.has(String(value)))
       );
     })
   );

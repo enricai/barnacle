@@ -10,6 +10,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallSingleShotSearchDrillDownActionSteps,
+  buildMulticallSingleShotSearchDrillDownArrayWrappedBooleanImmediateJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps,
   buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps,
   buildMulticallSingleShotSearchDrillDownChainedDecoyOnChainTerminalActionSteps,
@@ -787,6 +788,20 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan).not.toBeNull();
     expect(plan?.primaryStepIndex).toBe(0);
     expect(plan?.targets[0]?.joinFields).toEqual(["orderId"]);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
+  it("resolves the immediate drill step's join field even when the primary item's boolean join value is wrapped inside a request-body array", () => {
+    const plan = detect(
+      buildMulticallSingleShotSearchDrillDownArrayWrappedBooleanImmediateJoinFieldActionSteps()
+    );
+
+    expect(plan).not.toBeNull();
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets[0]?.joinFields).toEqual(["flag"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(1);
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);

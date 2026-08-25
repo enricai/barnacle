@@ -1680,6 +1680,46 @@ export function buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmedi
   ];
 }
 
+/**
+ * Same array-wrapped-immediate-join-field shape as
+ * {@link buildMulticallSingleShotSearchDrillDownArrayWrappedNumericImmediateJoinFieldActionSteps},
+ * but the primary item's join field is a bare JSON BOOLEAN (`flag: true`)
+ * rather than a number or string. `walkStringLeaves` (used by the spare
+ * check in `applyStructuredValuePayloadSubstitutions`) silently skips
+ * boolean leaves the same way it skips number leaves, so a boolean join
+ * value wrapped in `{"flags":[true]}` was frozen into an opaque
+ * `${JSON.stringify(payload.flags)}` blob instead of being spared for the
+ * fold-loop's later per-item `parameterize` pass.
+ */
+export function buildMulticallSingleShotSearchDrillDownArrayWrappedBooleanImmediateJoinFieldActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ flag: true }, { flag: false }],
+      },
+      timestamp: "2024-10-03T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_ORDER_STATUS_URL,
+      requestPostData: '{"flags":[true]}',
+      responseBody: ["status-token-true"],
+      timestamp: "2024-10-03T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: ORDER_HISTORY_BULK_URL,
+      requestPostData: '{"tokens":["status-token-true"]}',
+      responseBody: {
+        entries: [
+          { statusToken: "status-token-true", ts: "2024-10-03T00:00:02Z", event: "shipped" },
+        ],
+      },
+      timestamp: "2024-10-03T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_STATUS_URL = "https://api.example.com/accounts/status";
 const ACCOUNT_TRANSACTIONS_URL = "https://api.example.com/accounts/transactions";
 
