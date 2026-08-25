@@ -130,10 +130,26 @@ describe("recon-generate foldReturn spec targeting a chain TERMINAL endpoint —
     const executeHttp = evalExecuteHttpBody(body, httpClient, z);
     const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
 
+    // `statusToken` is expected on each merged item — it is the chain's own
+    // terminal response field, echoed straight through by the fold merge
+    // exactly like every other chained-dependent fold (see
+    // recon-generate-drilldown-fold-dependent-drilldown-onto-primary-runtime-e2e.test.ts).
     const data = result.data as { accounts?: Array<Record<string, unknown>> };
     expect(data.accounts).toEqual([
-      { accountId: 42, name: "Acme", transactionId: "t-42", amount: 19.99 },
-      { accountId: 43, name: "Globex", transactionId: "t-43", amount: 19.99 },
+      {
+        accountId: 42,
+        name: "Acme",
+        statusToken: "status-token-42",
+        transactionId: "t-42",
+        amount: 19.99,
+      },
+      {
+        accountId: 43,
+        name: "Globex",
+        statusToken: "status-token-43",
+        transactionId: "t-43",
+        amount: 19.99,
+      },
     ]);
 
     // One primary call, plus one call per chain step (2) per primary item (2).
