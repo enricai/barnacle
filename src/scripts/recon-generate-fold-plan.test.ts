@@ -26,6 +26,7 @@ import {
   buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps,
   buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps,
   buildMulticallSingleShotSearchDrillDownRicherFlatOutranksNestedArrayActionSteps,
+  buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationHopChainedDependentActionSteps,
   buildMulticallSingleShotSearchTwoIndependentArraysActionSteps,
   buildStep,
   type MulticallFixtureStep,
@@ -730,6 +731,23 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chain).toEqual([1, 2]);
     expect(plan?.targets[0]?.chainArrayPath).toEqual([]);
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
+  it("advances past a confirmation hop whose non-echoed richness merely TIES the real terminal's, instead of freezing on the tie", () => {
+    const steps =
+      buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationHopChainedDependentActionSteps();
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    // r2 (the flat confirmation hop) and r3 (the real per-item terminal)
+    // both carry two non-echoed primitive fields apiece, so a strict `>`
+    // richness comparison never lets r3 displace r2 — the chain must still
+    // extend all the way to r3, not stop at the tied confirmation hop.
+    expect(plan?.targets[0]?.chain).toEqual([1, 2, 3]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(3);
   });
 });
 

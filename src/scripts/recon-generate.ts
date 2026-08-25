@@ -5327,12 +5327,18 @@ function computeFoldChain<T extends { capture: Capture }>(
     // for being found first on THIS chain step's own response, any more
     // than it would on the immediate drill call. The winning candidate
     // still only displaces the terminal when it's STRICTLY richer than the
-    // chain's best terminal so far — otherwise a step chained purely for
-    // threading a value onward (e.g. a `{ held: true }` confirmation, never
-    // richer than the real per-item shape it merely threads from) would
-    // always qualify as an implicit one-item collection and collapse this
-    // into "always advance the terminal to the newest chain member"
-    // regardless of whether that member actually holds foldable data.
+    // chain's best terminal so far, OR ties it with a genuine object-ARRAY
+    // candidate (isGenuineArrayCandidate: candidateArray.path is non-empty).
+    // A flat single-object candidate never wins a tie — otherwise a step
+    // chained purely for threading a value onward (e.g. a `{ held: true }`
+    // confirmation, never richer than the real per-item shape it merely
+    // threads from) would always qualify as an implicit one-item collection
+    // and collapse this into "always advance the terminal to the newest
+    // chain member" regardless of whether that member actually holds
+    // foldable data. But a later hop that DOES resolve to a real per-item
+    // array, tied only because a same-shaped flat confirmation hop sits
+    // earlier in the chain, is the genuine terminal and must still win —
+    // see buildMulticallSingleShotSearchDrillDownRichnessTiedConfirmationHopChainedDependentActionSteps.
     const candidateArray = selectDisambiguatedCandidate(
       candidate.capture.responseBody,
       candidate.capture
@@ -5343,7 +5349,12 @@ function computeFoldChain<T extends { capture: Capture }>(
       candidateArray.path,
       requestValues
     );
-    if (candidateRichness > chainTerminalRichness) {
+    const isGenuineArrayCandidate = candidateArray.path.length > 0;
+    const advancesOnTie =
+      candidateRichness === chainTerminalRichness &&
+      candidateRichness > 0 &&
+      isGenuineArrayCandidate;
+    if (candidateRichness > chainTerminalRichness || advancesOnTie) {
       chainArrayPath = candidateArray.path;
       chainTerminalIndex = i;
       chainTerminalRichness = candidateRichness;
