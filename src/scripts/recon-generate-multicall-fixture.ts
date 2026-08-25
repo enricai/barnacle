@@ -1140,3 +1140,91 @@ export function buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapAc
     }),
   ];
 }
+
+const CATALOG_VENDOR_DETAIL_URL = "https://api.example.com/catalog/vendors/detail/";
+
+/**
+ * A single primary search response carrying TWO genuinely independent
+ * object-array fields — `products[]` and `vendors[]` — each drilled by its
+ * own, unrelated later step (`sku` into a pricing lookup, `vendorId` into a
+ * vendor-detail lookup). `scanPrimaryCandidate`'s old candidatePool lock
+ * (recon-generate.ts:5411-5413) resolved only whichever array its FIRST
+ * qualifying drill-down threaded from (`products[]`, via r1) and then
+ * restricted every later candidate scan to that SAME array, so r2's
+ * `vendorId` thread into `vendors[]` was silently discarded — this fixture
+ * proves BOTH arrays fold independently, one FoldPlan per distinct
+ * `primaryArrayPath`.
+ */
+export function buildMulticallSingleShotSearchTwoIndependentArraysActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ sku: "sku-a" }],
+        vendors: [{ vendorId: "v1" }],
+      },
+      timestamp: "2025-01-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_PRICING_URL}?sku=sku-a`,
+      requestPostData: null,
+      responseBody: {
+        prices: [{ sku: "sku-a", amount: 9.99 }],
+      },
+      timestamp: "2025-01-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_VENDOR_DETAIL_URL}?vendorId=v1`,
+      requestPostData: null,
+      responseBody: {
+        contracts: [{ vendorId: "v1", contractId: "c1" }],
+      },
+      timestamp: "2025-01-01T00:00:02Z",
+    }),
+  ];
+}
+
+/**
+ * A single primary search response carrying TWO independent object-array
+ * fields — `products[]`, whose `sku` join threads through the pricing call's
+ * own JSON body and so is structurally detectable, and `vendors[]`, whose
+ * `vendorId` join threads ONLY through the vendor-detail call's
+ * `X-Vendor-Id` request header, invisible to `collectRequestStringValues`
+ * and resolvable only via a flow-declared `foldReturn` spec naming `vendors`
+ * as its `resultsPath`. `mergeSpecPlanOntoSamePrimary` used to key its
+ * consumed-index check off `primaryStepIndex` alone, so the spec's plan —
+ * anchored on the SAME step 0 the structural heuristic had already resolved,
+ * but naming a DIFFERENT array — was wrongly treated as already consumed and
+ * silently dropped instead of appended.
+ */
+export function buildMulticallStructuralPlusSpecOnlySameStepActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ sku: "sku-a" }],
+        vendors: [{ vendorId: "v1" }],
+      },
+      timestamp: "2025-03-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_PRICING_URL}?sku=sku-a`,
+      requestPostData: null,
+      responseBody: {
+        prices: [{ sku: "sku-a", amount: 9.99 }],
+      },
+      timestamp: "2025-03-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_VENDOR_DETAIL_URL,
+      requestPostData: '{"lookup":true}',
+      responseBody: {
+        contracts: [{ vendorId: "v1", contractId: "c1" }],
+      },
+      timestamp: "2025-03-01T00:00:02Z",
+      requestHeaders: { "Content-Type": "application/json", "X-Vendor-Id": "v1" },
+    }),
+  ];
+}
