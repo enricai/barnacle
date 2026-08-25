@@ -8,7 +8,7 @@ import {
   indexStateValues,
 } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps } from "@/scripts/recon-generate-multicall-fixture";
+import { buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 
 const SEARCH_BODY = { results: [{ orderId: "order-a" }, { orderId: "order-b" }] };
 
@@ -21,36 +21,33 @@ const statusTokenFor = (orderId: string): string => `status-token-${orderId}`;
 // instead of threading r1's actual produced value.
 const STATUS_BODY_FOR = (orderId: string): string[] => [statusTokenFor(orderId)];
 
-// r1's own response is a BARE array of a single opaque token — not an
-// object-array or flat-object candidate at all (selectDisambiguatedCandidate
-// finds nothing to fold there, since a bare string array never satisfies
-// `isObjectArrayItem`/`findAllObjectArrayFields`) — while r2 threads that
-// token and holds the real per-item data, so the chain must extend PAST
-// this opaque intermediate hop rather than being discarded for lacking a
-// candidate at the immediate hop.
-const HISTORY_BODY_FOR = (orderId: string): { entries: Array<Record<string, unknown>> } => ({
-  entries: [
-    { statusToken: `status-token-${orderId}`, ts: "2024-10-01T00:00:02Z", event: "shipped" },
-  ],
+const ORDER_HISTORY_BULK_BODY_FOR = (
+  orderId: string
+): { entries: Array<Record<string, unknown>> } => ({
+  entries: [{ statusToken: statusTokenFor(orderId), ts: "2024-10-03T00:00:02Z", event: "shipped" }],
 });
 
 /**
  * Stubs `fetch` to answer the primary search call once, then each chain
  * step's call once per primary item, matched by request body content rather
- * than call order.
+ * than call order. The chain's terminal call wraps its threaded
+ * `statusToken` join value inside a single-element request-body ARRAY
+ * (`{"tokens":[...]}`, a bulk-lookup shape) instead of as a flat top-level
+ * scalar field.
  */
-function stubDependentDrillDownOntoPrimaryFetch(): void {
+function stubArrayWrappedDependentDrillDownOntoPrimaryFetch(): void {
   const fn = vi.fn().mockImplementation((_url: string, init?: { body?: string }) => {
     const requestBody = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
     const responseBody = (() => {
       if (requestBody === null || typeof requestBody.page === "number") return SEARCH_BODY;
       if (typeof requestBody.orderId === "string") return STATUS_BODY_FOR(requestBody.orderId);
-      if (typeof requestBody.statusToken === "string") {
-        const orderId = requestBody.statusToken.replace("status-token-", "");
-        return HISTORY_BODY_FOR(orderId);
+      if (Array.isArray(requestBody.tokens) && typeof requestBody.tokens[0] === "string") {
+        const statusToken = requestBody.tokens[0] as string;
+        const orderId = statusToken.replace("status-token-", "");
+        return ORDER_HISTORY_BULK_BODY_FOR(orderId);
       }
       throw new Error(
-        `stubDependentDrillDownOntoPrimaryFetch: unrecognized request body ${JSON.stringify(requestBody)}`
+        `stubArrayWrappedDependentDrillDownOntoPrimaryFetch: unrecognized request body ${JSON.stringify(requestBody)}`
       );
     })();
     return Promise.resolve({
@@ -63,10 +60,9 @@ function stubDependentDrillDownOntoPrimaryFetch(): void {
   vi.stubGlobal("fetch", fn);
 }
 
-describe("recon-generate dependent drill-down fold executeHttp — onto primary runtime guard", () => {
-  it("folds the dependent (chained) drill-down's terminal fields onto the matching primary result item instead of dropping them", async () => {
-    const steps =
-      buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps();
+describe("recon-generate dependent drill-down fold executeHttp — array-wrapped chained join field runtime guard", () => {
+  it("threads the chain's own produced join value into a bulk-lookup array instead of freezing it as an opaque caller payload", async () => {
+    const steps = buildMulticallSingleShotSearchDrillDownArrayWrappedChainedDependentActionSteps();
     const captures = steps.map((step) => step.capture);
     const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
 
@@ -100,7 +96,7 @@ describe("recon-generate dependent drill-down fold executeHttp — onto primary 
       baseHeaders: { "Content-Type": "application/json" },
     });
 
-    stubDependentDrillDownOntoPrimaryFetch();
+    stubArrayWrappedDependentDrillDownOntoPrimaryFetch();
 
     const executeHttp = evalExecuteHttpBody(body, httpClient, z);
     const result = await executeHttp({ BaseUrl: "https://api.example.com", page: 1 });
@@ -110,13 +106,13 @@ describe("recon-generate dependent drill-down fold executeHttp — onto primary 
       {
         orderId: "order-a",
         statusToken: "status-token-order-a",
-        ts: "2024-10-01T00:00:02Z",
+        ts: "2024-10-03T00:00:02Z",
         event: "shipped",
       },
       {
         orderId: "order-b",
         statusToken: "status-token-order-b",
-        ts: "2024-10-01T00:00:02Z",
+        ts: "2024-10-03T00:00:02Z",
         event: "shipped",
       },
     ]);
