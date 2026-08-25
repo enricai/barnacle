@@ -4701,7 +4701,7 @@ export function emitMultiStepExecuteHttp(
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
-                : typeof value === "number"
+                : typeof value === "number" || typeof value === "boolean"
                   ? String(value)
                   : null;
             return stringValue !== null
@@ -5297,14 +5297,14 @@ function collectRequestStringValues(capture: Capture): Set<string> {
   })();
   if (parsedBody !== undefined) {
     for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (typeof value === "number") values.add(String(value));
+      if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
     }
   }
   return values;
 }
 
 /**
- * Yields every string/numeric leaf reachable from `item` by walking nested
+ * Yields every string/numeric/boolean leaf reachable from `item` by walking nested
  * plain objects only (not arrays — a join key is a scalar field of the item
  * or one of its nested objects, never an element drawn from a nested array),
  * paired with its dot-separated path from `item`'s root. A bare top-level
@@ -5345,7 +5345,8 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
     .filter(
       ({ value: v }) =>
         (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-        (typeof v === "number" && requestValues.has(String(v)))
+        (typeof v === "number" && requestValues.has(String(v))) ||
+        (typeof v === "boolean" && requestValues.has(String(v)))
     )
     .map(({ path }) => path.join("."));
 }
