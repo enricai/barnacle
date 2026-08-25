@@ -3426,6 +3426,39 @@ export function compileActionSteps(
       }
     }
 
+    // Non-cookie response-header-origin produces — mirrors the Set-Cookie
+    // block above but for a plain header (e.g. `X-Price-Token`) whose value
+    // `indexStateValues` indexed with `headerOrigin.sourceHeader` set to the
+    // real header name. Only emitted when the value is actually consumed as
+    // a REQUEST HEADER downstream (`usedValueTargetHeader`) — `createHttpClient`'s
+    // `bind` option (see http-client.ts) is the only mechanism that can
+    // thread a header-origin value forward, since the emitted response
+    // variable never exposes response headers to the rest of the generated
+    // code the way it exposes the parsed body.
+    for (const [headerName, headerValue] of Object.entries(capture.responseHeaders)) {
+      if (headerName.toLowerCase() === "set-cookie") continue;
+      if (!usedValues.has(headerValue)) continue;
+      const sv = stateIndex.get(headerValue);
+      if (!sv || sv.originIndex !== index || !sv.headerOrigin) continue;
+      const targetHeader = usedValueTargetHeader.get(headerValue);
+      if (!targetHeader) continue;
+      let name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header`;
+      if (!/^[A-Za-z_$]/.test(name)) name = `_${name}`;
+      let suffix = 1;
+      while (seenNames.has(name)) {
+        suffix++;
+        name = `${headerName.replace(/[^A-Za-z0-9]/g, "")}Header${suffix}`;
+      }
+      seenNames.add(name);
+      produces.push({
+        kind: "header",
+        name,
+        sourceHeader: sv.headerOrigin.sourceHeader,
+        cookieName: sv.headerOrigin.cookieName,
+        targetHeader,
+      });
+    }
+
     if (capture.responseBody !== undefined && capture.responseBody !== null) {
       for (const { value: rawValue, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
         if (rawValue === null) continue;
