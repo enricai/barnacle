@@ -1150,6 +1150,13 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     expect(stateIndex.has("abc")).toBe(false);
   });
 
+  it("admits a short Set-Cookie value confirmed as a dependent-drilldown chain join field, unlike the no-fold-plan case above", () => {
+    const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+    const captures = steps.map((step) => step.capture);
+    const stateIndex = indexStateValues(captures);
+    expect(stateIndex.has("tok1")).toBe(true);
+  });
+
   it("still skips PLACEHOLDER_STATE_VALUES for cookie-origin values — the raised ceiling doesn't bypass the placeholder gate", () => {
     const placeholderCookieCapture = {
       ...tokenMintCapture,
