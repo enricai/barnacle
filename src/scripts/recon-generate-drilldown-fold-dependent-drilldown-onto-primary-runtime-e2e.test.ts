@@ -8,11 +8,7 @@ import {
   indexStateValues,
 } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
-
-const SEARCH_URL = "https://api.example.com/catalog/search/";
-const ORDER_STATUS_URL = "https://api.example.com/catalog/order-status";
-const ORDER_HISTORY_URL = "https://api.example.com/catalog/order-history";
+import { buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 
 const SEARCH_BODY = { results: [{ orderId: "order-a" }, { orderId: "order-b" }] };
 
@@ -37,38 +33,6 @@ const HISTORY_BODY_FOR = (orderId: string): { entries: Array<Record<string, unkn
     { statusToken: `status-token-${orderId}`, ts: "2024-10-01T00:00:02Z", event: "shipped" },
   ],
 });
-
-/**
- * Builds a primary search + 2-hop dependent drill-down capture shape:
- * `results[]` is the primary array, `r1` (order-status) is an opaque
- * intermediate hop whose ONLY output is a token, and `r2` (order-history)
- * threads that token and holds the real per-item data — the value threaded
- * to `r2` comes from `r1`'s response, never directly from the primary
- * array, so folding `r2`'s fields onto the matching primary item requires
- * following the whole chain rather than joining directly off `results[]`.
- */
-function buildRecordedDependentDrillDownOntoPrimaryCaptures(): ReturnType<typeof buildCapture>[] {
-  return [
-    buildCapture({
-      url: SEARCH_URL,
-      requestPostData: '{"page":1}',
-      responseBody: SEARCH_BODY,
-      timestamp: "2024-10-01T00:00:00Z",
-    }),
-    buildCapture({
-      url: ORDER_STATUS_URL,
-      requestPostData: '{"orderId":"order-a"}',
-      responseBody: STATUS_BODY_FOR("order-a"),
-      timestamp: "2024-10-01T00:00:01Z",
-    }),
-    buildCapture({
-      url: ORDER_HISTORY_URL,
-      requestPostData: `{"statusToken":"${statusTokenFor("order-a")}"}`,
-      responseBody: HISTORY_BODY_FOR("order-a"),
-      timestamp: "2024-10-01T00:00:02Z",
-    }),
-  ];
-}
 
 /**
  * Stubs `fetch` to answer the primary search call once, then each chain
@@ -101,7 +65,8 @@ function stubDependentDrillDownOntoPrimaryFetch(): void {
 
 describe("recon-generate dependent drill-down fold executeHttp — onto primary runtime guard", () => {
   it("folds the dependent (chained) drill-down's terminal fields onto the matching primary result item instead of dropping them", async () => {
-    const captures = buildRecordedDependentDrillDownOntoPrimaryCaptures();
+    const steps = buildMulticallSingleShotSearchDrillDownOpaqueIntermediateChainedDependentActionSteps();
+    const captures = steps.map((step) => step.capture);
     const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
 
     // Mirrors the real pipeline (recon-generate.ts's orchestrator, not a raw
