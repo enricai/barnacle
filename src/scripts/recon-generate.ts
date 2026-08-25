@@ -5526,7 +5526,7 @@ function directPrimitiveChildCountExcludingEchoed(
   let n = 0;
   for (const v of Object.values(obj)) {
     if (v === null || (typeof v !== "object" && typeof v !== "function")) {
-      if (typeof v === "string" || typeof v === "number") {
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
         if (requestValues.has(String(v))) continue;
       }
       n++;

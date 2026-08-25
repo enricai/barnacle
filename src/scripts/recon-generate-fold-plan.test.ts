@@ -628,6 +628,41 @@ describe("detectDrillDownFoldPlan — chained per-item dependency", () => {
     expect(plan?.targets[0]?.chainTerminalIndex).toBe(3);
   });
 
+  it("does not let an echoed boolean confirmation field outrank the later step holding the real per-item array", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/confirm",
+        requestPostData: JSON.stringify({ confirmed: true }),
+        // The only non-echoed field is `token` — `confirmed` is a boolean
+        // echoed straight back from this hop's own request and must not
+        // count toward richness, or it inflates this flat confirmation
+        // hop's baseline above the real terminal's genuine per-item data.
+        responseBody: { confirmed: true, token: "tok-1" },
+        timestamp: "2024-09-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/orders/history",
+        requestPostData: JSON.stringify({ token: "tok-1" }),
+        responseBody: { entries: [{ event: "shipped" }] },
+        timestamp: "2024-09-01T00:00:02Z",
+      }),
+    ];
+
+    const plan = detect(steps);
+
+    expect(plan).not.toBeNull();
+    expect(plan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan?.targets[0]?.chain).toEqual([1, 2]);
+    expect(plan?.targets[0]?.chainArrayPath).toEqual(["entries"]);
+    expect(plan?.targets[0]?.chainTerminalIndex).toBe(2);
+  });
+
   it("skips a side-effect-only intermediate response, keeping the drill step's own array as the terminal", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
