@@ -5287,7 +5287,11 @@ function selectDisambiguatedCandidate(
   );
   if (threaded) return threaded;
   return candidates.reduce((richest, candidate) => {
-    const candidateRichness = chainTerminalItemRichness(responseBody, candidate.path, requestValues);
+    const candidateRichness = chainTerminalItemRichness(
+      responseBody,
+      candidate.path,
+      requestValues
+    );
     const richestSoFar = chainTerminalItemRichness(responseBody, richest.path, requestValues);
     return candidateRichness > richestSoFar ? candidate : richest;
   });
