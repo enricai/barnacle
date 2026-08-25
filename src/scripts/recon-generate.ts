@@ -3088,7 +3088,16 @@ export function indexStateValues(
     )?.[1];
     if (rawSetCookie !== undefined) {
       for (const { name, value } of walkSetCookiePairs(rawSetCookie)) {
-        if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+        // Same chain/force exemption as the body-value MIN_STATE_VALUE_LENGTH
+        // floor below: a cookie-sourced value the fold-chain detector already
+        // confirmed is threaded into a later hop's request is exactly as
+        // legitimate as a long one, so it must not be dropped for being short.
+        if (
+          value.length < MIN_STATE_VALUE_LENGTH &&
+          !chainForceIncludeValues.has(value) &&
+          !forceIncludeValues.has(value)
+        )
+          continue;
         if (value.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
         if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
         if (!index.has(value)) {
