@@ -1169,6 +1169,46 @@ describe("resolveFoldPlan", () => {
     // occurrences.
     expect(callCount).toBe(1);
   });
+
+  it("resolves a spec-declared resultsPath with a nested wildcard against a non-first outer group", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          groups: [
+            {
+              items: [{ sku: "sku-a" }, { sku: "sku-b" }],
+            },
+            {
+              items: [{ sku: "sku-c" }, { sku: "sku-d" }],
+            },
+          ],
+        },
+        timestamp: "2024-04-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-d"}',
+        responseBody: { prices: [{ sku: "sku-d", amount: 29.99 }] },
+        timestamp: "2024-04-01T00:00:01Z",
+      }),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/pricing/",
+      resultsPath: "groups.*.items",
+      joinFields: ["sku"],
+    };
+
+    const plan = resolveFoldPlan(steps, spec);
+
+    // The join value ("sku-d") only exists on the SECOND group's SECOND
+    // item, flattened index 3 across both groups — a bug that only ever
+    // searches the FIRST group's items (or defaults to index 0) would
+    // resolve null or the wrong index here, not just fail to resolve at
+    // all.
+    expect(plan[0]?.targets[0]?.primaryMatchedItemIndex).toBe(3);
+  });
 });
 
 describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
