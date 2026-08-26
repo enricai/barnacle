@@ -5263,7 +5263,7 @@ const objectArrayFieldsCache = new WeakMap<
  * cached (every real call site invokes with the default); a caller passing
  * an explicit `path` — recursion within the uncached walk itself — bypasses
  * the cache and hits the underlying scan directly. */
-function findAllObjectArrayFields(
+export function findAllObjectArrayFields(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
@@ -5313,7 +5313,7 @@ const objectArrayFieldsOrWholeObjectCache = new WeakMap<
   { path: string[]; items: Record<string, unknown>[] }[]
 >();
 
-function findAllObjectArrayFieldsOrWholeObject(
+export function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
@@ -5484,7 +5484,7 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * investigation notes). */
 const responseLeafValuesCache = new WeakMap<Capture, Set<string>>();
 
-function collectResponseLeafValues(capture: Capture): Set<string> {
+export function collectResponseLeafValues(capture: Capture): Set<string> {
   const cached = responseLeafValuesCache.get(capture);
   if (cached) return cached;
   const computed = collectResponseLeafValuesUncached(capture);
@@ -6084,7 +6084,7 @@ function objectItemsAtPath(
  * headers), not its response. */
 const requestValuesCache = new WeakMap<Capture, Set<string>>();
 
-function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+export function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
   const cached = requestValuesCache.get(capture);
   if (cached) return cached;
   const values = collectRequestStringValues(capture);
