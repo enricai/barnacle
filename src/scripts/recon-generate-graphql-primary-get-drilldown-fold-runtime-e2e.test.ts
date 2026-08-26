@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Bottleneck from "bottleneck";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
@@ -221,6 +225,126 @@ function stubNestedJobOpeningsFetch(): void {
   vi.stubGlobal("fetch", fn);
 }
 
+const NONJOIN_SEARCH_QUERY =
+  "query companySearch { companySearch { companies { id packageCode title } } }";
+
+function nonJoinRequestGraphqlSearchCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "browse",
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({ query: NONJOIN_SEARCH_QUERY, variables: {} }),
+    responseHeaders: {},
+    responseBody: {
+      companySearch: {
+        companies: [
+          { id: "job-1", packageCode: "PKG-1", title: "Engineer" },
+          { id: "job-2", packageCode: "PKG-2", title: "Designer" },
+        ],
+      },
+    },
+    operationName: "companySearch",
+    query: NONJOIN_SEARCH_QUERY,
+    variables: {},
+    decodedParams: null,
+  };
+}
+
+/**
+ * Unlike {@link restDrillDownCapture}, this drill request is keyed by
+ * `packageCode` (`?code=PKG-1`) — the join field the flow declares (`id`)
+ * never appears in the request at all, only in the response, which echoes
+ * it back on the SAME per-item field name the primary uses.
+ */
+function nonJoinRequestDrillDownCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "browse",
+    method: "GET",
+    url: `${BASE}/listings/api/v1/openings?code=PKG-1`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: { opening: [{ id: "job-1", location: "Remote" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+}
+
+/**
+ * Unlike {@link nonJoinRequestDrillDownCapture}, this drill request carries
+ * NO per-item field at all (a static, unparameterized URL), and its
+ * response never echoes `id` either — genuinely unresolvable by either the
+ * structural heuristic (nothing threads into the request) or a declared
+ * `foldReturn` naming `id` (nothing to match in the response).
+ */
+function unthreadedDrillDownCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "browse",
+    method: "GET",
+    url: `${BASE}/listings/api/v1/openings`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: { opening: [{ location: "Nowhere" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+}
+
+const NONJOIN_JOB_OPENINGS_SPEC: FoldReturnSpec = {
+  endpointPattern: "/listings/api/v1/openings",
+  resultsPath: "companySearch.companies",
+  drillResultsPath: "opening",
+  joinFields: ["id"],
+};
+
+/** Every drill response returns TWO items — the real match plus a decoy
+ * sharing the requested `packageCode` — so a merge that fell back to "first
+ * item in the response" instead of actually matching on `id` would silently
+ * fold the wrong (decoy) item onto every primary item past the first. */
+const NONJOIN_OPENING_LOCATIONS_BY_PACKAGE_CODE: Record<
+  string,
+  { opening: { id: string; location: string }[] }
+> = {
+  "PKG-1": {
+    opening: [
+      { id: "job-1", location: "Remote" },
+      { id: "decoy-1", location: "WRONG" },
+    ],
+  },
+  "PKG-2": {
+    opening: [
+      { id: "decoy-2", location: "WRONG" },
+      { id: "job-2", location: "Onsite" },
+    ],
+  },
+};
+
+function stubNonJoinJobOpeningsFetch(): void {
+  const fn = vi.fn(async (url: string) => {
+    const packageCode = new URL(url).searchParams.get("code") ?? "";
+    const response = NONJOIN_OPENING_LOCATIONS_BY_PACKAGE_CODE[packageCode];
+    if (!response) {
+      throw new Error(
+        `stubNonJoinJobOpeningsFetch: no opening fixture for package code "${packageCode}"`
+      );
+    }
+    return jsonResponse(response);
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
 describe("GraphQL-primary + captured GET REST drill-down foldReturn — extraction through runtime e2e", () => {
   it("falsifier: without a declared foldReturn, extraction drops BOTH the GraphQL query primary and the GET drill-down", () => {
     const captures = [graphqlSearchCapture(), restDrillDownCapture()] as never[];
@@ -431,4 +555,173 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     // company groups.
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
+
+  it("resolves and correctly matches a foldReturn whose declared joinFields name a field absent from the drill request but present on its response", async () => {
+    const withCaptures = [
+      nonJoinRequestGraphqlSearchCapture(),
+      nonJoinRequestDrillDownCapture(),
+    ] as never[];
+
+    const withActionCaptures = extractGraphQLActionSequence(
+      withCaptures,
+      null,
+      NONJOIN_JOB_OPENINGS_SPEC
+    );
+    const withStateIndex = indexStateValues(
+      withCaptures,
+      new Set(),
+      new Set(withActionCaptures.map((a) => a.index))
+    );
+    const withActionSteps = compileActionSteps(withActionCaptures, withStateIndex);
+    const withPrimaryResponseBody = withActionSteps[0]!.capture.responseBody;
+
+    const contractWith = emitContractTs({
+      siteId: "nonjoin-fold-test",
+      pascal: "NonjoinFoldTest",
+      baseUrl: BASE,
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: withPrimaryResponseBody,
+      gql: true,
+      gqlQuery: NONJOIN_SEARCH_QUERY,
+      endpointPath: "/graphql",
+      gqlOperationName: "companySearch",
+      gqlVariables: {},
+      auxFiles: [],
+      actionSteps: withActionSteps,
+      foldReturnSpec: NONJOIN_JOB_OPENINGS_SPEC,
+    });
+
+    // Same extracted actionSteps as the WITH case, but with the declared
+    // foldReturn withheld from emission — isolates what the SPEC's own
+    // `joinFields` contribute over the structural heuristic alone (which,
+    // independent of any foldReturn, still detects `packageCode` threading
+    // into the drill request on its own). The structural-only merge matches
+    // on `packageCode` — a field the drill response never carries — while
+    // the spec-driven merge correctly matches on the declared `id`.
+    const contractWithout = emitContractTs({
+      siteId: "nonjoin-fold-test",
+      pascal: "NonjoinFoldTest",
+      baseUrl: BASE,
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: withPrimaryResponseBody,
+      gql: true,
+      gqlQuery: NONJOIN_SEARCH_QUERY,
+      endpointPath: "/graphql",
+      gqlOperationName: "companySearch",
+      gqlVariables: {},
+      auxFiles: [],
+      actionSteps: withActionSteps,
+      foldReturnSpec: null,
+    });
+
+    expect(contractWith).not.toEqual(contractWithout);
+    expect(contractWith).toContain("/listings/api/v1/openings");
+    expect(contractWithout).toContain("/listings/api/v1/openings");
+    expect(contractWith).toContain('m["id"]');
+    expect(contractWithout).not.toContain('m["id"]');
+    expect(contractWithout).toContain('m["packageCode"]');
+
+    const executeHttpBodyWith = extractExecuteHttpBodyFromContract(contractWith);
+    expect(executeHttpBodyWith).toContain("for (const item of foldItems)");
+    // The URL must be parameterized off `packageCode` — the field the
+    // captured request actually varies on — even though the declared
+    // joinFields name `id`, a field the request never carries.
+    expect(executeHttpBodyWith).toContain("item.packageCode");
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubNonJoinJobOpeningsFetch();
+
+    const getGql = () => async () => withPrimaryResponseBody;
+    const executeHttp = evalSinglePrimaryExecuteHttp(
+      executeHttpBodyWith,
+      getGql,
+      httpClient,
+      "NONJOINFOLDTEST_QUERY",
+      NONJOIN_SEARCH_QUERY
+    );
+    const result = await executeHttp({}, { baseUrl: BASE });
+
+    // The drill response for each package code returns TWO items (the real
+    // match plus a decoy); the merge must pick the one whose `id` actually
+    // matches the primary item's own `id`, not just the first response item.
+    expect(result.data).toEqual({
+      companySearch: {
+        companies: [
+          { id: "job-1", packageCode: "PKG-1", title: "Engineer", location: "Remote" },
+          { id: "job-2", packageCode: "PKG-2", title: "Designer", location: "Onsite" },
+        ],
+      },
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("emits the 'no fold plan resolved' warning when a declared foldReturn's joinFields name a field absent from BOTH the drill request and its response", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "barnacle-gql-nonjoin-unresolvable-"));
+    const runRoot = join(workDir, "run");
+    const REPO_ROOT = join(__dirname, "..", "..");
+    const siteId = `gql-nonjoin-unresolvable-run${process.pid}`;
+    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    try {
+      mkdirSync(join(runRoot, "graphql"), { recursive: true });
+      mkdirSync(join(runRoot, "replays"), { recursive: true });
+      mkdirSync(join(runRoot, "aux"), { recursive: true });
+      writeFileSync(
+        join(runRoot, "graphql", "000-browse-search.json"),
+        JSON.stringify(nonJoinRequestGraphqlSearchCapture())
+      );
+      writeFileSync(
+        join(runRoot, "graphql", "001-browse-drill.json"),
+        JSON.stringify(unthreadedDrillDownCapture())
+      );
+      mkdirSync(siteOutDir, { recursive: true });
+      writeFileSync(
+        join(siteOutDir, "recon-flow.json"),
+        JSON.stringify({
+          steps: [{ step: "search for companies" }],
+          foldReturn: {
+            endpointPattern: NONJOIN_JOB_OPENINGS_SPEC.endpointPattern,
+            resultsPath: NONJOIN_JOB_OPENINGS_SPEC.resultsPath,
+            drillResultsPath: NONJOIN_JOB_OPENINGS_SPEC.drillResultsPath,
+            joinFields: NONJOIN_JOB_OPENINGS_SPEC.joinFields,
+          },
+        })
+      );
+
+      const result = spawnSync(
+        join(REPO_ROOT, "node_modules", ".bin", "tsx"),
+        [
+          join(REPO_ROOT, "src", "scripts", "recon-generate.ts"),
+          "--site-id",
+          siteId,
+          "--run-dir",
+          runRoot,
+          "--emit",
+          "ts",
+          "--force",
+        ],
+        { cwd: REPO_ROOT, encoding: "utf8" }
+      );
+      const out = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, out).toBe(0);
+      expect(out).toContain("no fold plan resolved");
+
+      const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+      expect(contract).not.toContain("/listings/api/v1/openings");
+      expect(contract).not.toContain("foldItems");
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      rmSync(siteOutDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
