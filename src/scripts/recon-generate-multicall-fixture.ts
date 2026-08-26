@@ -1,3 +1,5 @@
+import { addSeconds } from "date-fns";
+import type { FoldReturnSpec } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 /** Structural match of recon-generate.ts's internal (unexported) `ActionStep` —
@@ -1988,4 +1990,90 @@ export function buildMulticallSingleShotSearchDrillDownResponseHeaderThreadedJoi
       timestamp: "2024-12-10T00:00:02Z",
     }),
   ];
+}
+
+/**
+ * The declared `foldReturn` matching {@link buildFoldReturnScalableActionSequence}'s
+ * lone real primary/drill-down pair. The join value is threaded only through
+ * a request HEADER (never the URL or body), mirroring the header-threaded
+ * fixtures used elsewhere in this module — `detectDrillDownFoldPlan`'s
+ * structural heuristic never scans headers, so resolving this pair is only
+ * reachable through `buildFoldPlanFromSpec`, the exact code path the
+ * incident's large-capture-set hang was traced to.
+ */
+export const FOLD_RETURN_SCALABLE_SPEC: FoldReturnSpec = {
+  endpointPattern: "/catalog/pricing/",
+  resultsPath: "results",
+  joinFields: ["sku"],
+};
+
+const FOLD_RETURN_SCALABLE_BASE_TIMESTAMP = new Date("2024-11-01T00:00:00.000Z");
+
+/**
+ * Generates `n` {@link MulticallFixtureStep} entries reproducing the reported
+ * incident's shape at any scale: a large capture set dominated by noise
+ * candidates, with exactly one primary/drill-down pair that actually
+ * satisfies {@link FOLD_RETURN_SCALABLE_SPEC}. The real primary is placed
+ * first and the real drill-down last, so every noise step sits between them
+ * and `buildFoldPlanFromSpec`'s primary×drill scan has to walk the full
+ * candidate set to find the one true match — the same "one eligible pair
+ * buried among many candidates" shape the incident's 2000+-capture run hit.
+ *
+ * Noise steps alternate between two shapes that are each independently
+ * eligible for one side of the scan without ever completing a match:
+ * - a "noise primary" re-hitting the same search endpoint with its own
+ *   unique `sku`, so `objectItemsAtPath` treats it as a valid primary
+ *   candidate at every even noise slot;
+ * - a "noise drill" re-hitting the same pricing endpoint (so it passes
+ *   `compileFoldReturnEndpointMatcher`) with its own unique, non-matching
+ *   `X-Item-Sku` header, so every real primary/noise-drill and noise-
+ *   primary/real-drill combination is scanned and rejected.
+ *
+ * Since no noise step's join value ever matches another step's, none of
+ * them can complete a fold — `resolveFoldPlan` still returns exactly the one
+ * plan for the real pair, regardless of how large `n` is.
+ */
+export function buildFoldReturnScalableActionSequence(n: number): MulticallFixtureStep[] {
+  if (n < 2) throw new Error(`buildFoldReturnScalableActionSequence requires n >= 2, got ${n}`);
+
+  const timestampAt = (index: number): string =>
+    addSeconds(FOLD_RETURN_SCALABLE_BASE_TIMESTAMP, index).toISOString();
+
+  const realPrimary = buildStep("primary", {
+    url: CATALOG_SEARCH_URL,
+    requestPostData: '{"page":1}',
+    responseBody: { results: [{ sku: "sku-real" }] },
+    timestamp: timestampAt(0),
+  });
+
+  const realDrill = buildStep("drill", {
+    url: CATALOG_PRICING_URL,
+    requestPostData: '{"lookup":true}',
+    responseBody: { prices: [{ sku: "sku-real", amount: 19.99 }] },
+    timestamp: timestampAt(n - 1),
+    requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-real" },
+  });
+
+  const noiseSteps: MulticallFixtureStep[] = Array.from({ length: n - 2 }, (_, i) => {
+    const index = i + 1;
+    return i % 2 === 0
+      ? buildStep(`noise-primary-${i}`, {
+          url: CATALOG_SEARCH_URL,
+          requestPostData: `{"page":${index + 1}}`,
+          responseBody: { results: [{ sku: `sku-noise-primary-${i}` }] },
+          timestamp: timestampAt(index),
+        })
+      : buildStep(`noise-drill-${i}`, {
+          url: CATALOG_PRICING_URL,
+          requestPostData: '{"lookup":true}',
+          responseBody: { prices: [{ sku: `sku-noise-drill-${i}`, amount: 9.99 }] },
+          timestamp: timestampAt(index),
+          requestHeaders: {
+            "Content-Type": "application/json",
+            "X-Item-Sku": `sku-noise-drill-${i}`,
+          },
+        });
+  });
+
+  return [realPrimary, ...noiseSteps, realDrill];
 }

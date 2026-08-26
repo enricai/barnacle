@@ -5226,7 +5226,7 @@ const ARRAY_WILDCARD_SEGMENT = "*";
  * A path segment for an array index the search descended through (to keep
  * looking for a nested candidate array) is the {@link ARRAY_WILDCARD_SEGMENT}
  * sentinel, never a literal index — see its docstring. */
-function findAllObjectArrayFields(
+function findAllObjectArrayFieldsUncached(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
@@ -5234,15 +5234,47 @@ function findAllObjectArrayFields(
   if (Array.isArray(value)) {
     const objectItems = value.filter(isObjectArrayItem);
     const nestedCandidates = objectItems.flatMap((item) =>
-      findAllObjectArrayFields(item, [...path, ARRAY_WILDCARD_SEGMENT])
+      findAllObjectArrayFieldsUncached(item, [...path, ARRAY_WILDCARD_SEGMENT])
     );
     return objectItems.length > 0
       ? [{ path, items: objectItems }, ...nestedCandidates]
       : nestedCandidates;
   }
   return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
-    findAllObjectArrayFields(v, [...path, key])
+    findAllObjectArrayFieldsUncached(v, [...path, key])
   );
+}
+
+/** Every distinct top-level `value` object {@link findAllObjectArrayFields}
+ * is invoked on is scanned repeatedly — once per fold-chain candidate/join
+ * disambiguation that re-derives the same response body — so a per-run,
+ * identity-keyed cache lets a given body's whole-tree scan run at most once
+ * regardless of how many callers re-derive it. Keyed on object identity
+ * (never a serialized path/value pair) because captures/response bodies are
+ * never mutated once produced (see this module's fold-plan investigation
+ * notes), so identity alone is a safe, unconditionally correct cache key. */
+const objectArrayFieldsCache = new WeakMap<
+  object,
+  { path: string[]; items: Record<string, unknown>[] }[]
+>();
+
+/** Memoized entry point for {@link findAllObjectArrayFieldsUncached} — see
+ * {@link objectArrayFieldsCache}. Only the default top-level `path` is
+ * cached (every real call site invokes with the default); a caller passing
+ * an explicit `path` — recursion within the uncached walk itself — bypasses
+ * the cache and hits the underlying scan directly. */
+export function findAllObjectArrayFields(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] }[] {
+  if (path.length > 0 || value === null || typeof value !== "object") {
+    return findAllObjectArrayFieldsUncached(value, path);
+  }
+  const cached = objectArrayFieldsCache.get(value);
+  if (cached) return cached;
+  const computed = findAllObjectArrayFieldsUncached(value, path);
+  objectArrayFieldsCache.set(value, computed);
+  return computed;
 }
 
 /** The first object-array field by DFS/key order — see
@@ -5271,12 +5303,30 @@ function findObjectArrayField(
  * more genuine per-item data than a small real nested object-array; a
  * caller that just wants the first real array (the common case) is
  * unaffected since it still comes first. */
-function findAllObjectArrayFieldsOrWholeObject(
+const objectArrayFieldsOrWholeObjectCache = new WeakMap<
+  object,
+  { path: string[]; items: Record<string, unknown>[] }[]
+>();
+
+/** Memoized the same way as {@link findAllObjectArrayFields} (see
+ * {@link objectArrayFieldsCache}) — this is the candidate list
+ * {@link selectDisambiguatedCandidate} and {@link buildFoldPlanFromSpec}
+ * re-derive off the SAME responseBody on every chain hop/disambiguation, so
+ * it is exactly as hot a redundant-recompute site as the underlying scan. */
+export function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
+  if (path.length > 0 || value === null || typeof value !== "object") {
+    const found = findAllObjectArrayFields(value, path);
+    return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  }
+  const cached = objectArrayFieldsOrWholeObjectCache.get(value);
+  if (cached) return cached;
   const found = findAllObjectArrayFields(value, path);
-  return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  const computed = isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  objectArrayFieldsOrWholeObjectCache.set(value, computed);
+  return computed;
 }
 
 /** The first candidate from {@link findAllObjectArrayFieldsOrWholeObject} —
@@ -5405,6 +5455,66 @@ function* walkItemFieldPaths(
  * order the primary response declares them, not sorted. Returns `[]` when no
  * field of the item threads into the request at all.
  */
+/**
+ * Maps every string/numeric/boolean value seen in any action's request URL
+ * or body (see {@link collectRequestStringValues} — deliberately headers-
+ * excluded, unlike {@link buildRequestValueIndex}, matching the structural
+ * heuristic's own header-blind scan) to the ascending list of action indices
+ * whose request carries it. Built once per {@link detectDrillDownFoldPlan}
+ * call and shared across every primary candidate's scan, so
+ * {@link scanPrimaryCandidateGroups} can jump straight to the indices that
+ * could possibly thread one of a primary array's own item values instead of
+ * walking every later action — the O(actions)-per-primary forward scan that
+ * makes the structural heuristic itself O(actions^2) on a large capture set
+ * dominated by same-shaped primary candidates.
+ */
+function buildRequestStringValueIndex<T extends { capture: Capture }>(
+  actions: readonly T[]
+): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  for (let i = 0; i < actions.length; i++) {
+    for (const value of collectRequestStringValues(actions[i]!.capture)) {
+      const indices = index.get(value);
+      if (indices) indices.push(i);
+      else index.set(value, [i]);
+    }
+  }
+  return index;
+}
+
+/** Every string/numeric/boolean field value present anywhere across `items`
+ * — the set of values whose {@link buildRequestStringValueIndex} entries can
+ * possibly thread out of this primary array, used to prune the candidate
+ * drill indices {@link scanPrimaryCandidateGroups} walks instead of
+ * considering every later action index. */
+function collectItemsFieldValues(items: readonly Record<string, unknown>[]): Set<string> {
+  const values = new Set<string>();
+  for (const item of items) {
+    for (const { value } of walkItemFieldPaths(item)) {
+      if (typeof value === "string" && value.length > 0) values.add(value);
+      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    }
+  }
+  return values;
+}
+
+/** Ascending, deduped action indices strictly greater than `afterIndex`
+ * whose request carries at least one of `values` — see
+ * {@link collectItemsFieldValues} / {@link buildRequestStringValueIndex}. */
+function collectCandidateIndicesAscending(
+  requestStringValueIndex: ReadonlyMap<string, number[]>,
+  values: ReadonlySet<string>,
+  afterIndex: number
+): number[] {
+  const candidates = new Set<number>();
+  for (const value of values) {
+    for (const index of requestStringValueIndex.get(value) ?? []) {
+      if (index > afterIndex) candidates.add(index);
+    }
+  }
+  return [...candidates].sort((a, b) => a - b);
+}
+
 function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
@@ -5426,8 +5536,23 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * join field. Also walks every response HEADER value, mirroring
  * {@link collectRequestValuesIncludingHeaders} on the request side, since a
  * chain hop can just as easily mint its join token in a response header
- * (e.g. a `Location` or custom correlation header) as in the body. */
-function collectResponseLeafValues(capture: Capture): Set<string> {
+ * (e.g. a `Location` or custom correlation header) as in the body.
+ * Memoized like {@link objectArrayFieldsCache} — {@link computeFoldChain}'s
+ * inner `dependsOnChain` check re-derives this for every chain member on
+ * every outer loop iteration, making it the single hottest redundant-
+ * recompute site in fold-chain resolution (see this module's fold-plan
+ * investigation notes). */
+const responseLeafValuesCache = new WeakMap<Capture, Set<string>>();
+
+export function collectResponseLeafValues(capture: Capture): Set<string> {
+  const cached = responseLeafValuesCache.get(capture);
+  if (cached) return cached;
+  const computed = collectResponseLeafValuesUncached(capture);
+  responseLeafValuesCache.set(capture, computed);
+  return computed;
+}
+
+function collectResponseLeafValuesUncached(capture: Capture): Set<string> {
   const values = new Set<string>();
   for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (typeof value === "string" && value.length > 0) values.add(value);
@@ -5649,11 +5774,28 @@ interface PrimaryScanGroup {
  * one array's target chain is never re-claimed as a fresh target thread of
  * a different, independent array on the same primary response.
  */
+let scanPrimaryCandidateGroupsCallCount = 0;
+
+/** Test-only instrumentation for asserting `scanPrimaryCandidateGroups`'s
+ * O(actions.length) scan is reused across repeat queries of the same index
+ * (via `detectDrillDownFoldPlan`'s per-index cache) rather than re-run.
+ * Not read by any production path. */
+export function getScanPrimaryCandidateGroupsCallCountForTest(): number {
+  return scanPrimaryCandidateGroupsCallCount;
+}
+
+/** Test-only counterpart to {@link getScanPrimaryCandidateGroupsCallCountForTest}. */
+export function resetScanPrimaryCandidateGroupsCallCountForTest(): void {
+  scanPrimaryCandidateGroupsCallCount = 0;
+}
+
 function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryIndex: number,
-  globallyConsumedIndices: ReadonlySet<number>
+  globallyConsumedIndices: ReadonlySet<number>,
+  requestStringValueIndex: ReadonlyMap<string, number[]>
 ): PrimaryScanGroup[] {
+  scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
   const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
   if (primaryCandidates.length === 0) return [];
@@ -5668,8 +5810,17 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
 
   for (const primaryArray of primaryCandidates) {
     const targets: FoldTarget[] = [];
+    // Pruned to the (typically tiny) set of later action indices whose
+    // request could possibly thread one of this array's own item values —
+    // see buildRequestStringValueIndex's docstring — instead of every
+    // index from primaryIndex+1 to the end of actions.
+    const candidateDrillIndices = collectCandidateIndicesAscending(
+      requestStringValueIndex,
+      collectItemsFieldValues(primaryArray.items),
+      primaryIndex
+    );
 
-    for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
+    for (const drillIndex of candidateDrillIndices) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
       if (consumedIndices.has(drillIndex)) continue;
@@ -5779,11 +5930,43 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   // primary's response, not on this later primary's array, so it must
   // never be re-claimed as a fresh drill target for a subsequent primary.
   const globallyConsumedIndices = new Set<number>();
+  // scanPrimaryCandidateGroups's result for a given index only depends on
+  // `actions` (fixed) and the current contents of `globallyConsumedIndices`,
+  // so it is safe to reuse across repeat queries of the SAME index as long
+  // as the consumed set hasn't grown since it was computed. The freshest-wins
+  // loop below re-queries the same laterIndex once per sibling group on a
+  // re-queried primary, and the outer loop often reaches that very index as
+  // its own primaryIndex shortly after — both hit this cache instead of
+  // repeating the O(actions.length) scan.
+  let consumedVersion = 0;
+  const scanCache = new Map<number, PrimaryScanGroup[]>();
+  const scanCacheVersion = new Map<number, number>();
+  // Built once for the whole detectDrillDownFoldPlan call — see
+  // buildRequestStringValueIndex's docstring.
+  const requestStringValueIndex = buildRequestStringValueIndex(actions);
+  const scanCached = (index: number): PrimaryScanGroup[] => {
+    const cachedVersion = scanCacheVersion.get(index);
+    if (cachedVersion === consumedVersion) return scanCache.get(index)!;
+    const result = scanPrimaryCandidateGroups(
+      actions,
+      index,
+      globallyConsumedIndices,
+      requestStringValueIndex
+    );
+    scanCache.set(index, result);
+    scanCacheVersion.set(index, consumedVersion);
+    return result;
+  };
+  const addConsumed = (index: number): void => {
+    if (globallyConsumedIndices.has(index)) return;
+    globallyConsumedIndices.add(index);
+    consumedVersion++;
+  };
 
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
     if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
-    const groups = scanPrimaryCandidateGroups(actions, primaryIndex, globallyConsumedIndices);
+    const groups = scanCached(primaryIndex);
     if (groups.length === 0) continue;
 
     const primaryEndpointKey = endpointKey(primary.capture.url);
@@ -5809,11 +5992,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         if (globallyConsumedIndices.has(laterIndex)) continue;
         const laterAction = actions[laterIndex]!;
         if (endpointKey(laterAction.capture.url) !== primaryEndpointKey) continue;
-        const laterGroups = scanPrimaryCandidateGroups(
-          actions,
-          laterIndex,
-          globallyConsumedIndices
-        );
+        const laterGroups = scanCached(laterIndex);
         const laterGroup = laterGroups.find(
           (g) =>
             JSON.stringify(g.primaryArrayPath) === JSON.stringify(freshestGroup.primaryArrayPath)
@@ -5859,9 +6038,9 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // itself is marked consumed once per group pushed (idempotent via
       // Set.add), since the step itself is only visited once regardless of
       // how many independent array groups it yields.
-      globallyConsumedIndices.add(freshestIndex);
+      addConsumed(freshestIndex);
       for (const target of freshestGroup.targets) {
-        for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
+        for (const chainIndex of target.chain) addConsumed(chainIndex);
       }
     }
   }
@@ -6012,9 +6191,19 @@ function objectItemsAtPath(
  * through a request HEADER), so matching a spec's `joinFields` against the
  * drill capture must search headers even though the structural heuristic
  * deliberately doesn't (see {@link collectRequestStringValues}'s docstring). */
-function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+const requestValuesCache = new WeakMap<Capture, Set<string>>();
+
+/** Memoized like {@link objectArrayFieldsCache} — the same capture's
+ * request/header values are re-derived on every fold-chain candidate that
+ * threads through it. Keyed on `Capture` identity rather than
+ * `responseBody`, since this walks the capture's request side (URL, body,
+ * headers), not its response. */
+export function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+  const cached = requestValuesCache.get(capture);
+  if (cached) return cached;
   const values = collectRequestStringValues(capture);
   for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  requestValuesCache.set(capture, values);
   return values;
 }
 
@@ -6044,6 +6233,71 @@ function resolveSpecMatchedPrimaryItemIndex(
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
+/**
+ * Maps every string/numeric/boolean value seen in any action's request (URL,
+ * body, or headers — see {@link collectRequestValuesIncludingHeaders}) to the
+ * ascending list of action indices whose request carries it. Built once per
+ * {@link buildFoldPlanFromSpec} call and shared across every primary/drill
+ * candidate pair, so {@link resolveSpecMatchedPrimaryItemIndexAlongChain}'s
+ * upstream search can jump straight to the (typically tiny) set of indices
+ * that could possibly carry a given primary item's join value instead of
+ * scanning every index between the primary and the drill — the O(actions)-
+ * per-candidate backward walk the reported large-capture-set hang traced to.
+ */
+function buildRequestValueIndex<T extends { capture: Capture }>(
+  actions: readonly T[]
+): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  for (let i = 0; i < actions.length; i++) {
+    for (const value of collectRequestValuesIncludingHeaders(actions[i]!.capture)) {
+      const indices = index.get(value);
+      if (indices) indices.push(i);
+      else index.set(value, [i]);
+    }
+  }
+  return index;
+}
+
+/** Every string/numeric/boolean {@link FoldReturnSpec.joinFields} value
+ * present on any of `primaryItems`, stringified exactly as
+ * {@link resolveSpecMatchedPrimaryItemIndex} compares them — the set of
+ * values whose {@link buildRequestValueIndex} entries can possibly resolve
+ * this primary's join, used to prune the candidate entry indices
+ * {@link resolveSpecMatchedPrimaryItemIndexAlongChain} walks instead of
+ * considering every action index in range. */
+function collectPrimaryJoinValues(
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[]
+): Set<string> {
+  const values = new Set<string>();
+  for (const item of primaryItems) {
+    for (const field of joinFields) {
+      const value = readValueAtPath(item, field.split("."));
+      if (typeof value === "string" && value.length > 0) values.add(value);
+      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    }
+  }
+  return values;
+}
+
+/** Descending, deduped action indices strictly greater than
+ * `primaryStepIndex` whose request carries at least one of `joinValues` —
+ * the pruned candidate set {@link resolveSpecMatchedPrimaryItemIndexAlongChain}
+ * walks instead of every index in `(primaryStepIndex, actions.length)`. */
+function collectCandidateEntryIndicesDescending(
+  requestValueIndex: ReadonlyMap<string, number[]>,
+  joinValues: ReadonlySet<string>,
+  primaryStepIndex: number
+): number[] {
+  const candidates = new Set<number>();
+  for (const value of joinValues) {
+    for (const index of requestValueIndex.get(value) ?? []) {
+      if (index > primaryStepIndex) candidates.add(index);
+    }
+  }
+  return [...candidates].sort((a, b) => b - a);
+}
+
 /** Like {@link resolveSpecMatchedPrimaryItemIndex}, but also looks upstream of
  * `drillStepIndex` for the join key when `drillStepIndex`'s own request
  * doesn't carry it — a `foldReturn` spec's `endpointPattern` naturally names
@@ -6060,19 +6314,61 @@ function resolveSpecMatchedPrimaryItemIndex(
  * `drillStepIndex` alone would never include this upstream entry hop, so it
  * would never be re-executed (header-parameterized) per primary item at
  * runtime. */
+let resolveSpecMatchedPrimaryItemIndexAlongChainCallCount = 0;
+
+/** Test-only instrumentation: how many times
+ * {@link resolveSpecMatchedPrimaryItemIndexAlongChain} — the expensive
+ * backward-walk + {@link computeFoldChain} resolution — has actually run
+ * since the last {@link resetFoldPlanResolutionCallCountForTests} call, so a
+ * test can assert `buildFoldPlanFromSpec` pays for it only once per primary
+ * rather than once per matching drill occurrence. */
+export function getFoldPlanResolutionCallCountForTests(): number {
+  return resolveSpecMatchedPrimaryItemIndexAlongChainCallCount;
+}
+
+export function resetFoldPlanResolutionCallCountForTests(): void {
+  resolveSpecMatchedPrimaryItemIndexAlongChainCallCount = 0;
+}
+
 function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  primaryStepIndex: number,
-  drillStepIndex: number
+  drillStepIndex: number,
+  // Keyed by entryIndex alone: valid for every call sharing the same
+  // primaryStepIndex/primaryItems/joinFields, since resolveSpecMatchedPrimaryItemIndex's
+  // result for a given entryIndex depends on nothing else. Without this,
+  // buildFoldPlanFromSpec's per-primary candidate loop re-walks the SAME
+  // overlapping entryIndex range from scratch for every matching drill
+  // occurrence it tries — O(candidates * chain length) per primary instead
+  // of O(chain length) total, the combinatorial blowup the reported hang
+  // traced to at large capture-set sizes.
+  matchedItemIndexCache: Map<number, number | null>,
+  // Descending, deduped, computed once per primaryStepIndex by
+  // {@link collectCandidateEntryIndicesDescending} — every index whose
+  // request carries at least one of this primary's join values, i.e. a
+  // strict superset of the indices `resolveSpecMatchedPrimaryItemIndex`
+  // could ever match. Walking this instead of every index down to
+  // `primaryStepIndex` is what collapses the backward search from
+  // O(actions) to O(occurrences of the actual join value) per candidate.
+  candidateEntryIndicesDescending: readonly number[]
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
-  for (let entryIndex = drillStepIndex; entryIndex > primaryStepIndex; entryIndex--) {
-    const matched = resolveSpecMatchedPrimaryItemIndex(
-      primaryItems,
-      joinFields,
-      actions[entryIndex]!.capture
-    );
+  resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
+  for (const entryIndex of candidateEntryIndicesDescending) {
+    if (entryIndex > drillStepIndex) continue;
+    const cached = matchedItemIndexCache.get(entryIndex);
+    const matched =
+      cached !== undefined
+        ? cached
+        : ((): number | null => {
+            const resolved = resolveSpecMatchedPrimaryItemIndex(
+              primaryItems,
+              joinFields,
+              actions[entryIndex]!.capture
+            );
+            matchedItemIndexCache.set(entryIndex, resolved);
+            return resolved;
+          })();
     if (matched === null) continue;
     if (entryIndex === drillStepIndex) return { entryIndex, primaryMatchedItemIndex: matched };
     const { chain } = computeFoldChain(actions, entryIndex, []);
@@ -6132,6 +6428,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 ): FoldPlan | null {
   const primaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
+  // Built once and shared across every primaryStepIndex — see
+  // buildRequestValueIndex's docstring. Lets each primary immediately tell
+  // whether ANY action anywhere carries one of its own join values before
+  // paying for anything else, instead of scanning its own drill candidates
+  // one by one only to discover none of them can ever match.
+  const requestValueIndex = buildRequestValueIndex(actions);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
@@ -6139,13 +6441,44 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       primaryArrayPath
     );
     if (!primaryItems) continue;
+    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields);
+    const candidateEntryIndicesDescending = collectCandidateEntryIndicesDescending(
+      requestValueIndex,
+      joinValues,
+      primaryStepIndex
+    );
+    // No action anywhere carries any of this primary's join values, so no
+    // drillStepIndex candidate could ever resolve — skip straight to the
+    // next primary instead of scanning this one's drill candidates (each of
+    // which would only rediscover the same dead end).
+    if (candidateEntryIndicesDescending.length === 0) continue;
+    // Cheap regex-only pass first: collects every endpointPattern-matching
+    // drillStepIndex without paying for the expensive backward-walk +
+    // computeFoldChain resolution below. Scanned from the freshest (highest)
+    // index down so the expensive resolution — tried only on the entries
+    // this loop actually visits — runs on the candidate that would win
+    // ties in the original last-write-wins scan first, falling through to
+    // the next-freshest only when a candidate fails to resolve, instead of
+    // resolving every earlier occurrence just to have it overwritten.
+    const matchingDrillStepIndices: number[] = [];
     for (
       let drillStepIndex = primaryStepIndex + 1;
       drillStepIndex < actions.length;
       drillStepIndex++
     ) {
+      if (matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture)) {
+        matchingDrillStepIndices.push(drillStepIndex);
+      }
+    }
+    // Shared across every matching-drill candidate tried below for THIS
+    // primaryStepIndex — see resolveSpecMatchedPrimaryItemIndexAlongChain's
+    // docstring on why a fresh cache per primary (not per drill candidate)
+    // is what collapses the backward-walk from O(candidates * chain length)
+    // to O(chain length).
+    const matchedItemIndexCache = new Map<number, number | null>();
+    for (let i = matchingDrillStepIndices.length - 1; i >= 0; i--) {
+      const drillStepIndex = matchingDrillStepIndices[i]!;
       const drill = actions[drillStepIndex]!;
-      if (!matchesFoldReturnEndpoint(drill.capture)) continue;
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -6164,8 +6497,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         actions,
         primaryItems,
         spec.joinFields,
-        primaryStepIndex,
-        drillStepIndex
+        drillStepIndex,
+        matchedItemIndexCache,
+        candidateEntryIndicesDescending
       );
       if (matchResult === null) continue;
       const { entryIndex, primaryMatchedItemIndex } = matchResult;
@@ -6218,6 +6552,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           },
         ],
       };
+      break;
     }
   }
   return freshestPlan;

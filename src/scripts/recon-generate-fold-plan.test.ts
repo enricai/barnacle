@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectRequestValuesIncludingHeaders,
+  collectResponseLeafValues,
   detectDrillDownFoldPlan,
   type FoldPlan,
   type FoldReturnSpec,
+  findAllObjectArrayFields,
+  findAllObjectArrayFieldsOrWholeObject,
+  getScanPrimaryCandidateGroupsCallCountForTest,
+  resetScanPrimaryCandidateGroupsCallCountForTest,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
 import {
@@ -79,6 +85,21 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(2);
     expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(0);
+  });
+
+  it("scans each re-queried primary occurrence's candidate groups at most once, not once per (primaryIndex, laterIndex) pair queried against it", () => {
+    resetScanPrimaryCandidateGroupsCallCountForTest();
+    const steps = buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps();
+
+    detectAll(steps);
+
+    // Only step indices 0 and 1 (the two re-queried search occurrences) are
+    // ever scanned as either a primaryIndex or a same-endpoint laterIndex —
+    // step 2 (the pricing drill-down) never is. Without the per-index cache,
+    // index 1 is scanned twice: once from the freshest-wins loop querying it
+    // as `laterIndex` while primaryIndex is still 0, and again when the
+    // outer loop itself reaches primaryIndex 1.
+    expect(getScanPrimaryCandidateGroupsCallCountForTest()).toBe(2);
   });
 
   it("anchors on the freshest re-queried primary occurrence when both independently thread the same drill-down's join key", () => {
@@ -1415,5 +1436,144 @@ describe("boolean-typed primary-item join field", () => {
     expect(resolved).toHaveLength(1);
     expect(resolved[0]?.targets[0]?.joinFields).toEqual(["primary"]);
     expect(resolved[0]?.targets[0]?.primaryMatchedItemIndex).toBe(0);
+  });
+});
+
+describe("per-capture derived value memoization", () => {
+  it("collectResponseLeafValues/findAllObjectArrayFields(OrWholeObject) walk a given response body at most once, and collectRequestValuesIncludingHeaders walks a given capture's request at most once, across repeated calls", () => {
+    const step = buildStep("r0", {
+      url: "https://api.example.com/orders",
+      requestPostData: JSON.stringify({ page: 1 }),
+      requestHeaders: { "Content-Type": "application/json", "X-Trace-Id": "trace-1" },
+      responseBody: { orders: [{ orderId: "o1", note: "n1" }] },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+    const { responseBody } = step.capture;
+
+    // Identity-keyed caching means a second call against the SAME
+    // response/capture object returns the exact same Set/array instance
+    // rather than re-walking the body — the only way that instance could
+    // be `===` to the first call's result. A fresh, structurally-identical
+    // (but distinct) response/capture object must NOT hit that cache.
+    expect(collectResponseLeafValues(step.capture)).toBe(collectResponseLeafValues(step.capture));
+    expect(findAllObjectArrayFields(responseBody)).toBe(findAllObjectArrayFields(responseBody));
+    expect(findAllObjectArrayFieldsOrWholeObject(responseBody)).toBe(
+      findAllObjectArrayFieldsOrWholeObject(responseBody)
+    );
+    expect(collectRequestValuesIncludingHeaders(step.capture)).toBe(
+      collectRequestValuesIncludingHeaders(step.capture)
+    );
+
+    const distinctButIdenticalStep = buildStep("r0", {
+      url: "https://api.example.com/orders",
+      requestPostData: JSON.stringify({ page: 1 }),
+      requestHeaders: { "Content-Type": "application/json", "X-Trace-Id": "trace-1" },
+      responseBody: { orders: [{ orderId: "o1", note: "n1" }] },
+      timestamp: "2024-01-01T00:00:00Z",
+    });
+    const distinctButIdenticalBody = distinctButIdenticalStep.capture.responseBody;
+    expect(collectResponseLeafValues(distinctButIdenticalStep.capture)).not.toBe(
+      collectResponseLeafValues(step.capture)
+    );
+    expect(findAllObjectArrayFields(distinctButIdenticalBody)).not.toBe(
+      findAllObjectArrayFields(responseBody)
+    );
+  });
+});
+
+describe("resolveFoldPlan — large capture set performance regression", () => {
+  it("resolves a 500-action search-then-per-item-detail flow well within a bounded wall-clock budget", () => {
+    const itemCount = 499;
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/widgets/search/",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          results: Array.from({ length: itemCount }, (_, i) => ({ widgetId: `w-${i}` })),
+        },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      // Each drill response is a flat (non-array) object — a realistic
+      // detail-by-id shape — rather than an object-array, so it is never
+      // itself mistaken for a candidate primary during structural detection.
+      ...Array.from({ length: itemCount }, (_, i) =>
+        buildStep(`d${i}`, {
+          url: "https://api.example.com/widgets/detail/",
+          requestPostData: JSON.stringify({ widgetId: `w-${i}` }),
+          responseBody: { widgetId: `w-${i}`, amount: 10 + i },
+          timestamp: `2024-09-01T00:00:${String((i % 59) + 1).padStart(2, "0")}Z`,
+        })
+      ),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/widgets/detail/",
+      resultsPath: "results",
+      joinFields: ["widgetId"],
+    };
+
+    const started = Date.now();
+    const plan = resolveFoldPlan(steps, spec);
+    const elapsedMs = Date.now() - started;
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryStepIndex).toBe(0);
+    expect(plan[0]?.targets).toHaveLength(itemCount);
+    expect(plan[0]?.targets[itemCount - 1]?.drillStepIndex).toBe(itemCount);
+    expect(elapsedMs).toBeLessThan(5000);
+  });
+
+  it("resolves a 2000+ action flow with a header-threaded join well within a tight wall-clock budget", () => {
+    const itemCount = 2000;
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search/",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { orders: [{ orderId: 1000 }] },
+        timestamp: "2024-09-02T00:00:00Z",
+      }),
+      // Header-threaded join and a flat (non-array) drill response: neither
+      // the join (headers aren't scanned by the structural heuristic) nor
+      // the response shape (not an object-array) is structurally
+      // detectable, so this can only resolve via the declared foldReturn
+      // spec — the exact shape `buildFoldPlanFromSpec`'s freshest-candidate
+      // restriction targets, at the scale the report reproduces.
+      ...Array.from({ length: itemCount }, (_, i) =>
+        buildStep(`d${i}`, {
+          url: "https://api.example.com/orders/order-detail/",
+          requestPostData: null,
+          requestHeaders: { "Content-Type": "application/json", "X-Order-Id": "1000" },
+          responseBody: { orderId: 1000, lineTotal: 10 + i },
+          timestamp: `2024-09-02T00:00:${String((i % 59) + 1).padStart(2, "0")}Z`,
+        })
+      ),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/orders/order-detail/",
+      resultsPath: "orders",
+      joinFields: ["orderId"],
+    };
+
+    const started = Date.now();
+    const plan = resolveFoldPlan(steps, spec);
+    const elapsedMs = Date.now() - started;
+
+    expect(plan).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["orders"],
+        targets: [
+          {
+            joinFields: ["orderId"],
+            drillStepIndex: itemCount,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [itemCount],
+            chainArrayPath: [],
+            chainTerminalIndex: itemCount,
+          },
+        ],
+      },
+    ]);
+    expect(elapsedMs).toBeLessThan(2000);
   });
 });

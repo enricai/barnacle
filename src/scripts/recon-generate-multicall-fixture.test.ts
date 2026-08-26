@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   detectDrillDownFoldPlan,
   type FoldPlan,
+  resolveFoldPlan,
   selectPayloadAction,
 } from "@/scripts/recon-generate";
 import {
+  buildFoldReturnScalableActionSequence,
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
@@ -14,6 +16,7 @@ import {
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
   buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps,
+  FOLD_RETURN_SCALABLE_SPEC,
   type MulticallFixtureStep,
 } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -319,5 +322,38 @@ describe("buildMulticallSingleShotSearchHeuristicAndSpecTwoTargetActionSteps", (
     expect(stockStep?.capture.requestHeaders["X-Item-Id"]).toBe("item-a");
     expect(stockStep?.capture.url).not.toContain("item-a");
     expect(stockStep?.capture.requestPostData).not.toContain("item-a");
+  });
+});
+
+describe("buildFoldReturnScalableActionSequence", () => {
+  it("returns exactly n steps", () => {
+    expect(buildFoldReturnScalableActionSequence(20)).toHaveLength(20);
+    expect(buildFoldReturnScalableActionSequence(2)).toHaveLength(2);
+  });
+
+  it("rejects n < 2 (no room for the one real primary/drill pair)", () => {
+    expect(() => buildFoldReturnScalableActionSequence(1)).toThrow();
+  });
+
+  it("resolves to exactly one FoldPlan at n=20, matching the declared spec's real pair", () => {
+    const steps = buildFoldReturnScalableActionSequence(20);
+
+    // Never resolvable by the structural heuristic alone — the real pair's
+    // join value is threaded only through a request header — so this is
+    // exercising the same buildFoldPlanFromSpec fallback the incident hung
+    // in, not the heuristic's own fast path.
+    expect(
+      detectDrillDownFoldPlan(steps as unknown as Parameters<typeof detectDrillDownFoldPlan>[0])
+    ).toEqual([]);
+
+    const plans = resolveFoldPlan(steps, FOLD_RETURN_SCALABLE_SPEC) as FoldPlan[];
+    expect(plans).toHaveLength(1);
+
+    const plan = plans[0];
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.primaryArrayPath).toEqual(["results"]);
+    expect(plan?.targets).toHaveLength(1);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(19);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
   });
 });
