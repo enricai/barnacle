@@ -1,4 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Element as HappyDomElement } from "happy-dom";
+import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeFakeDeepLocator, registerDeepLocatorHopElements } from "@/scraper/deep-locator-fake";
@@ -939,5 +941,159 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
         }) as never
       )
     ).rejects.toThrow();
+  });
+});
+
+/**
+ * Regression for the doc's root-cause item 1: a resolved xpath pointing at a
+ * clean, unambiguous native `input[type=checkbox]` produced `fired=false`
+ * (kind never set, defaulting to the "none" fallback in the log) instead of
+ * engaging the checkbox classification branch. The two describe blocks above
+ * only ever hand the n+16 fallback a CANNED `n16Result` object — a mocked
+ * `evaluate` returns whatever `kind` the test author picks, so it cannot
+ * catch a real xpath-resolution or classification defect in the expression
+ * itself. This suite instead executes flow-runner.ts's ACTUAL n+16 `clickExpr`
+ * template-literal string against a genuine happy-dom `Window`/`Document` —
+ * mirroring `prompt-widget-dom-harness.test-helper.ts`'s real-`evaluate`
+ * pattern — so a break in either the xpath resolution or the checkbox
+ * type-check would fail this test even though the mocked-cascade tests above
+ * stay green.
+ */
+describe("flow-runner/executeStepWithHealing — n+16 native-click fallback real-DOM checkbox classification", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mainFrameTarget.mockImplementation(delegatingMainFrameTarget);
+  });
+
+  /**
+   * Mirrors Stagehand's `nodeToAbsoluteXPath` (see `xpathTailForRetarget`'s
+   * docblock in flow-runner.ts): pure tag+sibling-position steps, no
+   * `@id`/`@name` predicate anywhere — so the fixture's selector matches what
+   * production actually receives instead of a convenient `@id`-keyed
+   * shortcut that would never exercise the real resolution walk.
+   */
+  function absoluteXPathFor(el: HappyDomElement): string {
+    const steps: string[] = [];
+    let node: HappyDomElement | null = el;
+    while (node) {
+      const currentNode: HappyDomElement = node;
+      const parent: HappyDomElement | null = currentNode.parentElement;
+      if (!parent) {
+        steps.unshift(`${currentNode.tagName.toLowerCase()}[1]`);
+        break;
+      }
+      const sameTag = Array.from(parent.children).filter(
+        (c: HappyDomElement) => c.tagName === currentNode.tagName
+      );
+      const idx = sameTag.indexOf(currentNode) + 1;
+      steps.unshift(`${node.tagName.toLowerCase()}[${idx}]`);
+      node = parent;
+    }
+    return `/${steps.join("/")}`;
+  }
+
+  /** Absolute positional resolution — exactly what a live `document.evaluate` does. */
+  function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElement | null {
+    const steps = xp
+      .split("/")
+      .filter(Boolean)
+      .map((step) => {
+        const match = /^([a-zA-Z0-9]+)\[(\d+)\]$/.exec(step);
+        if (!match) throw new Error(`unsupported xpath step in test fixture: ${step}`);
+        return { tag: match[1]?.toUpperCase(), idx: Number(match[2]) };
+      });
+    // First step is the documentElement (html) itself, already the root.
+    let current: HappyDomElement | null = root;
+    for (const step of steps.slice(1)) {
+      if (!current) return null;
+      const candidates: HappyDomElement[] = Array.from(current.children).filter(
+        (c: HappyDomElement) => c.tagName === step.tag
+      );
+      current = candidates[step.idx - 1] ?? null;
+    }
+    return current;
+  }
+
+  it("resolves { fired: true, kind: 'checkbox', checked: true } for a clean-id native checkbox against a live document, not a mocked evaluate", async () => {
+    const window = new Window({ url: `${CHILD_ORIGIN}/application/abc-123` });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form>
+        <label for="accept_terms">I agree to the terms</label>
+        <input type="checkbox" id="accept_terms" name="accept_terms" aria-required="true" />
+      </form>
+    `;
+    const checkbox = document.getElementById("accept_terms") as unknown as HappyDomElement & {
+      checked: boolean;
+    };
+    expect(checkbox).not.toBeNull();
+    expect(checkbox.checked).toBe(false);
+
+    const xpath = absoluteXPathFor(checkbox);
+    const documentElement = document.documentElement as unknown as HappyDomElement;
+    // happy-dom implements neither `XPathResult` nor `document.evaluate` —
+    // polyfill only that, with a resolver that walks the REAL DOM tree by
+    // tag+position, same as prompt-widget-dom-harness.test-helper.ts does
+    // for its own (simpler, @id-keyed) xpath shape.
+    (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
+      (expr: string) => {
+        const node = expr.startsWith("//")
+          ? null // this fixture's primary xpath always resolves; the tail-retarget branch is covered by bugfix-002's own suite
+          : resolveAbsoluteXPath(documentElement, expr);
+        return { singleNodeValue: node };
+      };
+
+    let n16ProbeResult: unknown;
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const src = String(expr);
+        if (src.includes("groupPresent")) return { groupPresent: false };
+        if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+        if (src.includes('el.click !== "function"')) {
+          // Execute the ACTUAL production expression string against the
+          // live document — the free identifiers `clickExpr` references
+          // (see flow-runner.ts:9936) are exactly `document`, `Event`,
+          // `XPathResult`.
+          const fn = new Function("document", "Event", "XPathResult", `return (${src});`) as (
+            d: unknown,
+            e: unknown,
+            x: unknown
+          ) => unknown;
+          n16ProbeResult = fn(document, window.Event, { FIRST_ORDERED_NODE_TYPE: 9 });
+          return n16ProbeResult;
+        }
+        if (src.includes("isInvalid(node)")) return false;
+        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        return null;
+      }) as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    guardedObserve.mockResolvedValue([
+      { selector: `xpath=${xpath}`, description: "Terms checkbox", method: "click" },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Terms checkbox",
+      actions: [{ selector: `xpath=${xpath}`, description: "Terms checkbox", method: "click" }],
+    });
+
+    const outcome = await executeStepWithHealing(
+      baseParams({
+        page,
+        step: "Check the 'I agree to the terms' checkbox",
+        frameTarget: childTarget,
+      }) as never
+    );
+
+    expect(n16ProbeResult).toEqual({ fired: true, kind: "checkbox", checked: true });
+    expect(checkbox.checked).toBe(true);
+    expect(outcome).toBe("completed");
   });
 });
