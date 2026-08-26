@@ -827,4 +827,68 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
 
     expect(outcome).toBe("completed");
   });
+
+  it("does NOT credit a checkbox-intent step when the n+16 click resolves kind=checkbox checked=false, even with a page-wide htmlDelta/textChanged/formValueChanged all moving from an unrelated field", async () => {
+    let snapshotCalls = 0;
+    const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+      if (src.includes('el.click !== "function"')) {
+        return { fired: true, kind: "checkbox", checked: false };
+      }
+      if (src.includes("isInvalid(node)")) return false;
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes("b.outerHTML")) {
+        snapshotCalls += 1;
+        const isPost = snapshotCalls > 1;
+        // Mirrors the doc's probe line: htmlDelta=-12, textChanged=false,
+        // formValueChanged=true — an unrelated already-filled field's
+        // signature drifting, not the target checkbox committing.
+        return isPost
+          ? { html: 88, text: "0:", values: "already-filled-field-changed", state: "" }
+          : { html: 100, text: "0:", values: "", state: "" };
+      }
+      return null;
+    });
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: childEvaluate as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "xpath=//input[@id='newsletter-opt-in']",
+        description: "Newsletter opt-in checkbox",
+        method: "click",
+      },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Newsletter opt-in checkbox",
+      actions: [
+        {
+          selector: "xpath=//input[@id='newsletter-opt-in']",
+          description: "Newsletter opt-in checkbox",
+          method: "click",
+        },
+      ],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Check the 'I agree to the Terms' checkbox",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+  });
 });
