@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { type FoldPlan, resolveFoldPlan } from "@/scripts/recon-generate";
 import {
   buildFoldReturnScalableActionSequence,
+  buildFoldReturnWildcardScalableActionSequence,
   FOLD_RETURN_SCALABLE_SPEC,
+  FOLD_RETURN_WILDCARD_SCALABLE_SPEC,
 } from "@/scripts/recon-generate-multicall-fixture";
 
 // Reproduces the incident's 2146-capture, >11-minute hang
@@ -50,5 +52,31 @@ describe("resolveFoldPlan at scale", () => {
     const ratio = largeElapsedMs / Math.max(smallElapsedMs, 1);
 
     expect(ratio).toBeLessThan(10);
+  });
+});
+
+// Wildcard-resultsPath counterpart to the above: the incident doc reports the
+// hang reproduced under both a wildcard resultsPath ('data.cruiseSearch.
+// results.cruises.*.sailings') and a flat one as separately-isolated
+// configurations, but the fix's linear scaling was only proven above for a
+// flat resultsPath. objectItemsAtPath's ARRAY_WILDCARD_SEGMENT flatMap branch
+// (recon-generate.ts:6156) is exercised here instead, at the same 2500-action
+// scale, to confirm the value-indexed pruning generalizes to it.
+describe("resolveFoldPlan at scale with a wildcard resultsPath", () => {
+  it("resolves the single real fold plan for a 2500-capture wildcard-nested set within a strict wall-clock bound", () => {
+    const steps = buildFoldReturnWildcardScalableActionSequence(2500);
+
+    const start = performance.now();
+    const plans = resolveFoldPlan(steps, FOLD_RETURN_WILDCARD_SCALABLE_SPEC) as FoldPlan[];
+    const elapsedMs = performance.now() - start;
+
+    expect(elapsedMs).toBeLessThan(5000);
+
+    expect(plans).toHaveLength(1);
+    const plan = plans[0];
+    expect(plan?.primaryStepIndex).toBe(0);
+    expect(plan?.targets).toHaveLength(1);
+    expect(plan?.targets[0]?.drillStepIndex).toBe(2499);
+    expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
   });
 });

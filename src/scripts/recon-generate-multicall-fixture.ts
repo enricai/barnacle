@@ -2077,3 +2077,79 @@ export function buildFoldReturnScalableActionSequence(n: number): MulticallFixtu
 
   return [realPrimary, ...noiseSteps, realDrill];
 }
+
+/**
+ * A wildcard-`resultsPath` sibling of {@link FOLD_RETURN_SCALABLE_SPEC}: the
+ * primary item lives under a single nested array-of-objects hop
+ * (`groups.*.items`) rather than a flat top-level array, exercising
+ * {@link objectItemsAtPath}'s `ARRAY_WILDCARD_SEGMENT` flatMap branch instead
+ * of its flat-path branch. Pairs with
+ * {@link buildFoldReturnWildcardScalableActionSequence}, which reproduces the
+ * same "one real pair buried among many candidates" shape as
+ * {@link buildFoldReturnScalableActionSequence} but with every primary's
+ * items nested one `groups[]` level deep.
+ */
+export const FOLD_RETURN_WILDCARD_SCALABLE_SPEC: FoldReturnSpec = {
+  endpointPattern: "/catalog/pricing/",
+  resultsPath: "groups.*.items",
+  joinFields: ["sku"],
+};
+
+/**
+ * Wildcard-`resultsPath` sibling of {@link buildFoldReturnScalableActionSequence}:
+ * identical noise/real-pair shape and scale, except every primary response
+ * (real and noise alike) nests its item under a single-element `groups[]`
+ * array (`{ groups: [ { items: [...] } ] }`) instead of a flat top-level
+ * array, so `objectItemsAtPath` must resolve {@link
+ * FOLD_RETURN_WILDCARD_SCALABLE_SPEC}'s `groups.*.items` wildcard path
+ * across the full candidate set rather than a flat `resultsPath`. Proves the
+ * value-indexed pruning `buildFoldPlanFromSpec` relies on (keyed on join
+ * VALUES, not on `resultsPath` shape) stays linear at scale under the
+ * wildcard branch too.
+ */
+export function buildFoldReturnWildcardScalableActionSequence(n: number): MulticallFixtureStep[] {
+  if (n < 2) {
+    throw new Error(`buildFoldReturnWildcardScalableActionSequence requires n >= 2, got ${n}`);
+  }
+
+  const timestampAt = (index: number): string =>
+    addSeconds(FOLD_RETURN_SCALABLE_BASE_TIMESTAMP, index).toISOString();
+
+  const realPrimary = buildStep("primary", {
+    url: CATALOG_SEARCH_URL,
+    requestPostData: '{"page":1}',
+    responseBody: { groups: [{ items: [{ sku: "sku-real" }] }] },
+    timestamp: timestampAt(0),
+  });
+
+  const realDrill = buildStep("drill", {
+    url: CATALOG_PRICING_URL,
+    requestPostData: '{"lookup":true}',
+    responseBody: { prices: [{ sku: "sku-real", amount: 19.99 }] },
+    timestamp: timestampAt(n - 1),
+    requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-real" },
+  });
+
+  const noiseSteps: MulticallFixtureStep[] = Array.from({ length: n - 2 }, (_, i) => {
+    const index = i + 1;
+    return i % 2 === 0
+      ? buildStep(`noise-primary-${i}`, {
+          url: CATALOG_SEARCH_URL,
+          requestPostData: `{"page":${index + 1}}`,
+          responseBody: { groups: [{ items: [{ sku: `sku-noise-primary-${i}` }] }] },
+          timestamp: timestampAt(index),
+        })
+      : buildStep(`noise-drill-${i}`, {
+          url: CATALOG_PRICING_URL,
+          requestPostData: '{"lookup":true}',
+          responseBody: { prices: [{ sku: `sku-noise-drill-${i}`, amount: 9.99 }] },
+          timestamp: timestampAt(index),
+          requestHeaders: {
+            "Content-Type": "application/json",
+            "X-Item-Sku": `sku-noise-drill-${i}`,
+          },
+        });
+  });
+
+  return [realPrimary, ...noiseSteps, realDrill];
+}
