@@ -5455,6 +5455,66 @@ function* walkItemFieldPaths(
  * order the primary response declares them, not sorted. Returns `[]` when no
  * field of the item threads into the request at all.
  */
+/**
+ * Maps every string/numeric/boolean value seen in any action's request URL
+ * or body (see {@link collectRequestStringValues} — deliberately headers-
+ * excluded, unlike {@link buildRequestValueIndex}, matching the structural
+ * heuristic's own header-blind scan) to the ascending list of action indices
+ * whose request carries it. Built once per {@link detectDrillDownFoldPlan}
+ * call and shared across every primary candidate's scan, so
+ * {@link scanPrimaryCandidateGroups} can jump straight to the indices that
+ * could possibly thread one of a primary array's own item values instead of
+ * walking every later action — the O(actions)-per-primary forward scan that
+ * makes the structural heuristic itself O(actions^2) on a large capture set
+ * dominated by same-shaped primary candidates.
+ */
+function buildRequestStringValueIndex<T extends { capture: Capture }>(
+  actions: readonly T[]
+): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  for (let i = 0; i < actions.length; i++) {
+    for (const value of collectRequestStringValues(actions[i]!.capture)) {
+      const indices = index.get(value);
+      if (indices) indices.push(i);
+      else index.set(value, [i]);
+    }
+  }
+  return index;
+}
+
+/** Every string/numeric/boolean field value present anywhere across `items`
+ * — the set of values whose {@link buildRequestStringValueIndex} entries can
+ * possibly thread out of this primary array, used to prune the candidate
+ * drill indices {@link scanPrimaryCandidateGroups} walks instead of
+ * considering every later action index. */
+function collectItemsFieldValues(items: readonly Record<string, unknown>[]): Set<string> {
+  const values = new Set<string>();
+  for (const item of items) {
+    for (const { value } of walkItemFieldPaths(item)) {
+      if (typeof value === "string" && value.length > 0) values.add(value);
+      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    }
+  }
+  return values;
+}
+
+/** Ascending, deduped action indices strictly greater than `afterIndex`
+ * whose request carries at least one of `values` — see
+ * {@link collectItemsFieldValues} / {@link buildRequestStringValueIndex}. */
+function collectCandidateIndicesAscending(
+  requestStringValueIndex: ReadonlyMap<string, number[]>,
+  values: ReadonlySet<string>,
+  afterIndex: number
+): number[] {
+  const candidates = new Set<number>();
+  for (const value of values) {
+    for (const index of requestStringValueIndex.get(value) ?? []) {
+      if (index > afterIndex) candidates.add(index);
+    }
+  }
+  return [...candidates].sort((a, b) => a - b);
+}
+
 function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
@@ -5732,7 +5792,8 @@ export function resetScanPrimaryCandidateGroupsCallCountForTest(): void {
 function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryIndex: number,
-  globallyConsumedIndices: ReadonlySet<number>
+  globallyConsumedIndices: ReadonlySet<number>,
+  requestStringValueIndex: ReadonlyMap<string, number[]>
 ): PrimaryScanGroup[] {
   scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
@@ -5749,8 +5810,17 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
 
   for (const primaryArray of primaryCandidates) {
     const targets: FoldTarget[] = [];
+    // Pruned to the (typically tiny) set of later action indices whose
+    // request could possibly thread one of this array's own item values —
+    // see buildRequestStringValueIndex's docstring — instead of every
+    // index from primaryIndex+1 to the end of actions.
+    const candidateDrillIndices = collectCandidateIndicesAscending(
+      requestStringValueIndex,
+      collectItemsFieldValues(primaryArray.items),
+      primaryIndex
+    );
 
-    for (let drillIndex = primaryIndex + 1; drillIndex < actions.length; drillIndex++) {
+    for (const drillIndex of candidateDrillIndices) {
       const drill = actions[drillIndex]!;
       if (drill === primary) continue;
       if (consumedIndices.has(drillIndex)) continue;
@@ -5871,10 +5941,18 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   let consumedVersion = 0;
   const scanCache = new Map<number, PrimaryScanGroup[]>();
   const scanCacheVersion = new Map<number, number>();
+  // Built once for the whole detectDrillDownFoldPlan call — see
+  // buildRequestStringValueIndex's docstring.
+  const requestStringValueIndex = buildRequestStringValueIndex(actions);
   const scanCached = (index: number): PrimaryScanGroup[] => {
     const cachedVersion = scanCacheVersion.get(index);
     if (cachedVersion === consumedVersion) return scanCache.get(index)!;
-    const result = scanPrimaryCandidateGroups(actions, index, globallyConsumedIndices);
+    const result = scanPrimaryCandidateGroups(
+      actions,
+      index,
+      globallyConsumedIndices,
+      requestStringValueIndex
+    );
     scanCache.set(index, result);
     scanCacheVersion.set(index, consumedVersion);
     return result;
@@ -6155,6 +6233,71 @@ function resolveSpecMatchedPrimaryItemIndex(
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
+/**
+ * Maps every string/numeric/boolean value seen in any action's request (URL,
+ * body, or headers — see {@link collectRequestValuesIncludingHeaders}) to the
+ * ascending list of action indices whose request carries it. Built once per
+ * {@link buildFoldPlanFromSpec} call and shared across every primary/drill
+ * candidate pair, so {@link resolveSpecMatchedPrimaryItemIndexAlongChain}'s
+ * upstream search can jump straight to the (typically tiny) set of indices
+ * that could possibly carry a given primary item's join value instead of
+ * scanning every index between the primary and the drill — the O(actions)-
+ * per-candidate backward walk the reported large-capture-set hang traced to.
+ */
+function buildRequestValueIndex<T extends { capture: Capture }>(
+  actions: readonly T[]
+): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  for (let i = 0; i < actions.length; i++) {
+    for (const value of collectRequestValuesIncludingHeaders(actions[i]!.capture)) {
+      const indices = index.get(value);
+      if (indices) indices.push(i);
+      else index.set(value, [i]);
+    }
+  }
+  return index;
+}
+
+/** Every string/numeric/boolean {@link FoldReturnSpec.joinFields} value
+ * present on any of `primaryItems`, stringified exactly as
+ * {@link resolveSpecMatchedPrimaryItemIndex} compares them — the set of
+ * values whose {@link buildRequestValueIndex} entries can possibly resolve
+ * this primary's join, used to prune the candidate entry indices
+ * {@link resolveSpecMatchedPrimaryItemIndexAlongChain} walks instead of
+ * considering every action index in range. */
+function collectPrimaryJoinValues(
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[]
+): Set<string> {
+  const values = new Set<string>();
+  for (const item of primaryItems) {
+    for (const field of joinFields) {
+      const value = readValueAtPath(item, field.split("."));
+      if (typeof value === "string" && value.length > 0) values.add(value);
+      else if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    }
+  }
+  return values;
+}
+
+/** Descending, deduped action indices strictly greater than
+ * `primaryStepIndex` whose request carries at least one of `joinValues` —
+ * the pruned candidate set {@link resolveSpecMatchedPrimaryItemIndexAlongChain}
+ * walks instead of every index in `(primaryStepIndex, actions.length)`. */
+function collectCandidateEntryIndicesDescending(
+  requestValueIndex: ReadonlyMap<string, number[]>,
+  joinValues: ReadonlySet<string>,
+  primaryStepIndex: number
+): number[] {
+  const candidates = new Set<number>();
+  for (const value of joinValues) {
+    for (const index of requestValueIndex.get(value) ?? []) {
+      if (index > primaryStepIndex) candidates.add(index);
+    }
+  }
+  return [...candidates].sort((a, b) => b - a);
+}
+
 /** Like {@link resolveSpecMatchedPrimaryItemIndex}, but also looks upstream of
  * `drillStepIndex` for the join key when `drillStepIndex`'s own request
  * doesn't carry it — a `foldReturn` spec's `endpointPattern` naturally names
@@ -6191,16 +6334,41 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   actions: readonly T[],
   primaryItems: readonly Record<string, unknown>[],
   joinFields: readonly string[],
-  primaryStepIndex: number,
-  drillStepIndex: number
+  drillStepIndex: number,
+  // Keyed by entryIndex alone: valid for every call sharing the same
+  // primaryStepIndex/primaryItems/joinFields, since resolveSpecMatchedPrimaryItemIndex's
+  // result for a given entryIndex depends on nothing else. Without this,
+  // buildFoldPlanFromSpec's per-primary candidate loop re-walks the SAME
+  // overlapping entryIndex range from scratch for every matching drill
+  // occurrence it tries — O(candidates * chain length) per primary instead
+  // of O(chain length) total, the combinatorial blowup the reported hang
+  // traced to at large capture-set sizes.
+  matchedItemIndexCache: Map<number, number | null>,
+  // Descending, deduped, computed once per primaryStepIndex by
+  // {@link collectCandidateEntryIndicesDescending} — every index whose
+  // request carries at least one of this primary's join values, i.e. a
+  // strict superset of the indices `resolveSpecMatchedPrimaryItemIndex`
+  // could ever match. Walking this instead of every index down to
+  // `primaryStepIndex` is what collapses the backward search from
+  // O(actions) to O(occurrences of the actual join value) per candidate.
+  candidateEntryIndicesDescending: readonly number[]
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
   resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
-  for (let entryIndex = drillStepIndex; entryIndex > primaryStepIndex; entryIndex--) {
-    const matched = resolveSpecMatchedPrimaryItemIndex(
-      primaryItems,
-      joinFields,
-      actions[entryIndex]!.capture
-    );
+  for (const entryIndex of candidateEntryIndicesDescending) {
+    if (entryIndex > drillStepIndex) continue;
+    const cached = matchedItemIndexCache.get(entryIndex);
+    const matched =
+      cached !== undefined
+        ? cached
+        : ((): number | null => {
+            const resolved = resolveSpecMatchedPrimaryItemIndex(
+              primaryItems,
+              joinFields,
+              actions[entryIndex]!.capture
+            );
+            matchedItemIndexCache.set(entryIndex, resolved);
+            return resolved;
+          })();
     if (matched === null) continue;
     if (entryIndex === drillStepIndex) return { entryIndex, primaryMatchedItemIndex: matched };
     const { chain } = computeFoldChain(actions, entryIndex, []);
@@ -6260,6 +6428,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 ): FoldPlan | null {
   const primaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
+  // Built once and shared across every primaryStepIndex — see
+  // buildRequestValueIndex's docstring. Lets each primary immediately tell
+  // whether ANY action anywhere carries one of its own join values before
+  // paying for anything else, instead of scanning its own drill candidates
+  // one by one only to discover none of them can ever match.
+  const requestValueIndex = buildRequestValueIndex(actions);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     const primaryItems = objectItemsAtPath(
@@ -6267,6 +6441,17 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       primaryArrayPath
     );
     if (!primaryItems) continue;
+    const joinValues = collectPrimaryJoinValues(primaryItems, spec.joinFields);
+    const candidateEntryIndicesDescending = collectCandidateEntryIndicesDescending(
+      requestValueIndex,
+      joinValues,
+      primaryStepIndex
+    );
+    // No action anywhere carries any of this primary's join values, so no
+    // drillStepIndex candidate could ever resolve — skip straight to the
+    // next primary instead of scanning this one's drill candidates (each of
+    // which would only rediscover the same dead end).
+    if (candidateEntryIndicesDescending.length === 0) continue;
     // Cheap regex-only pass first: collects every endpointPattern-matching
     // drillStepIndex without paying for the expensive backward-walk +
     // computeFoldChain resolution below. Scanned from the freshest (highest)
@@ -6285,6 +6470,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         matchingDrillStepIndices.push(drillStepIndex);
       }
     }
+    // Shared across every matching-drill candidate tried below for THIS
+    // primaryStepIndex — see resolveSpecMatchedPrimaryItemIndexAlongChain's
+    // docstring on why a fresh cache per primary (not per drill candidate)
+    // is what collapses the backward-walk from O(candidates * chain length)
+    // to O(chain length).
+    const matchedItemIndexCache = new Map<number, number | null>();
     for (let i = matchingDrillStepIndices.length - 1; i >= 0; i--) {
       const drillStepIndex = matchingDrillStepIndices[i]!;
       const drill = actions[drillStepIndex]!;
@@ -6306,8 +6497,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         actions,
         primaryItems,
         spec.joinFields,
-        primaryStepIndex,
-        drillStepIndex
+        drillStepIndex,
+        matchedItemIndexCache,
+        candidateEntryIndicesDescending
       );
       if (matchResult === null) continue;
       const { entryIndex, primaryMatchedItemIndex } = matchResult;
