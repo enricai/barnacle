@@ -8476,8 +8476,17 @@ async function main(): Promise<void> {
   const graphqlActionSequence = gql
     ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
     : [];
+  // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
+  // doc comment) can put 2+ entries in graphqlActionSequence with none of them
+  // an actual `mutation` — a GraphQL-primary query plus its drill-down, not a
+  // transactional multi-step submission. Only a real mutation makes this a
+  // submission flow; an admitted read/drill capture must not, on its own, null
+  // out primaryGraphQLOperation below or flip isSubmissionFlow further down.
+  const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
+    (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
+  );
   const primaryGraphQLOperation =
-    gql && graphqlActionSequence.length === 0
+    gql && !graphqlActionSequenceHasMutation
       ? selectPrimaryGraphQLOperation(
           captures,
           flowSteps,
@@ -8671,7 +8680,7 @@ async function main(): Promise<void> {
       : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
-  const isSubmissionFlow = actionSteps.length > 1;
+  const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
 
   // Loud failure for a submitEndpointPattern that under-matches the raw traffic badly
   // enough to collapse the flow to the single-endpoint fallback: heuristicActionCaptures

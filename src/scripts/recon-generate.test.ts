@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
+import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import {
   buildKnownFieldValues,
@@ -26,6 +27,7 @@ import {
   sanitizeFixtureIdentifier,
   selectEffectiveResponseBody,
   selectPayloadAction,
+  selectPrimaryGraphQLOperation,
   selectReturnAction,
 } from "@/scripts/recon-generate";
 import {
@@ -981,6 +983,91 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
     ).map((a) => a.capture.operationName);
 
     expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
+  });
+});
+
+describe("foldReturn-admitted read+drill classification — no mutation present (#bugfix-001)", () => {
+  const BASE = "https://aidfinder.example.com";
+  const gqlQueryCapture = (operationName: string, url: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"op":"${operationName}"}`,
+    responseHeaders: {},
+    // Matches foldReturnSpec.resultsPath below so extractGraphQLActionSequence's
+    // matchesFoldReturnResults predicate admits this as the primary results
+    // source the drill-down folds onto.
+    responseBody: { data: { searchResults: { items: [{ id: "1" }] } } },
+    operationName,
+    query: `query ${operationName}($input: Input) {\n  ${operationName}(input: $input) { id }\n}`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const restGetCapture = (path: string) => ({
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action" as const,
+    method: "GET",
+    url: `${BASE}${path}`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const foldReturnSpec = {
+    endpointPattern: "/itinerary/api/v1/sailings",
+    resultsPath: "data.searchResults.items",
+    joinFields: ["id"],
+  };
+
+  // Mirrors main()'s own derivation (recon-generate.ts ~8476-8489, ~8672-8674):
+  // graphqlActionSequence is the same array fed to both the primary-operation
+  // gate and isSubmissionFlow, so it must not conflate "admitted 2+ entries"
+  // with "is a transactional submission" when none of those entries is an
+  // actual mutation.
+  it("a query primary plus a foldReturn-admitted GET drill, with zero mutations, keeps primaryGraphQLOperation non-null and isSubmissionFlow false", () => {
+    const primaryQuery = gqlQueryCapture("SearchResults", `${BASE}/graphql`);
+    const drillCapture = restGetCapture("/itinerary/api/v1/sailings");
+    const captures = [primaryQuery, drillCapture];
+
+    const graphqlActionSequence = extractGraphQLActionSequence(captures, null, foldReturnSpec);
+    expect(graphqlActionSequence.map((a) => a.capture.operationName ?? a.capture.url)).toEqual([
+      "SearchResults",
+      `${BASE}/itinerary/api/v1/sailings`,
+    ]);
+
+    const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
+      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
+    );
+    expect(graphqlActionSequenceHasMutation).toBe(false);
+
+    const primaryGraphQLOperation = graphqlActionSequenceHasMutation
+      ? null
+      : selectPrimaryGraphQLOperation(captures, [], EMPTY_VOCABULARY, {}, [], null);
+    expect(primaryGraphQLOperation).not.toBeNull();
+    expect(primaryGraphQLOperation?.capture.operationName).toBe("SearchResults");
+
+    const actionCaptures = [
+      { capture: primaryQuery, index: 0 },
+      { capture: drillCapture, index: 1 },
+    ];
+    const stateIndex = indexStateValues(
+      captures,
+      new Set(),
+      new Set(actionCaptures.map((a) => a.index))
+    );
+    const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+    const isSubmissionFlow = actionSteps.length > 1 && graphqlActionSequenceHasMutation;
+    expect(isSubmissionFlow).toBe(false);
   });
 });
 
