@@ -156,6 +156,71 @@ function evalSinglePrimaryExecuteHttp(
   return factory(getGql, httpClient, z, queryText);
 }
 
+const NESTED_SEARCH_QUERY =
+  "query companySearch { companySearch { companies { id postings { id title } } } }";
+
+function nestedGraphqlSearchCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "browse",
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({ query: NESTED_SEARCH_QUERY, variables: {} }),
+    responseHeaders: {},
+    responseBody: {
+      jobSearch: {
+        companies: [
+          {
+            id: "company-1",
+            postings: [
+              { id: "job-1", title: "Engineer" },
+              { id: "job-2", title: "Designer" },
+            ],
+          },
+          {
+            id: "company-2",
+            postings: [{ id: "job-3", title: "Analyst" }],
+          },
+        ],
+      },
+    },
+    operationName: "companySearch",
+    query: NESTED_SEARCH_QUERY,
+    variables: {},
+    decodedParams: null,
+  };
+}
+
+const NESTED_JOB_OPENINGS_SPEC: FoldReturnSpec = {
+  endpointPattern: "/listings/api/v1/openings",
+  resultsPath: "jobSearch.companies.*.postings",
+  drillResultsPath: "opening",
+  joinFields: ["id"],
+};
+
+const NESTED_OPENING_LOCATIONS_BY_JOB_ID: Record<
+  string,
+  { opening: { id: string; location: string }[] }
+> = {
+  "job-1": { opening: [{ id: "job-1", location: "Remote" }] },
+  "job-2": { opening: [{ id: "job-2", location: "Onsite" }] },
+  "job-3": { opening: [{ id: "job-3", location: "Hybrid" }] },
+};
+
+function stubNestedJobOpeningsFetch(): void {
+  const fn = vi.fn(async (url: string) => {
+    const jobId = new URL(url).searchParams.get("id") ?? "";
+    const response = NESTED_OPENING_LOCATIONS_BY_JOB_ID[jobId];
+    if (!response) {
+      throw new Error(`stubNestedJobOpeningsFetch: no opening fixture for job id "${jobId}"`);
+    }
+    return jsonResponse(response);
+  });
+  vi.stubGlobal("fetch", fn);
+}
+
 describe("GraphQL-primary + captured GET REST drill-down foldReturn — extraction through runtime e2e", () => {
   it("falsifier: without a declared foldReturn, extraction drops BOTH the GraphQL query primary and the GET drill-down", () => {
     const captures = [graphqlSearchCapture(), restDrillDownCapture()] as never[];
@@ -262,5 +327,108 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     // One drill-down call per primary item — the primary GraphQL call itself
     // goes through the mocked `getGql`, not `fetch`.
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("folds the drill-down onto a nested-array primary (resultsPath with a wildcard group) via a .flatMap accessor, across multiple outer groups", async () => {
+    const captures = [nestedGraphqlSearchCapture(), restDrillDownCapture()] as never[];
+
+    const actionCaptures = extractGraphQLActionSequence(captures, null, NESTED_JOB_OPENINGS_SPEC);
+    expect(actionCaptures.map((a) => (a.capture as { method: string }).method)).toEqual([
+      "POST",
+      "GET",
+    ]);
+
+    const stateIndex = indexStateValues(
+      captures,
+      new Set(),
+      new Set(actionCaptures.map((a) => a.index))
+    );
+    const actionSteps = compileActionSteps(actionCaptures, stateIndex);
+    expect(actionSteps).toHaveLength(2);
+
+    const foldPlans = resolveFoldPlan(actionSteps, NESTED_JOB_OPENINGS_SPEC);
+    expect(foldPlans.length).toBeGreaterThan(0);
+    expect(foldPlans[0]!.targets.length).toBeGreaterThan(0);
+
+    const primaryResponseBody = actionSteps[0]!.capture.responseBody;
+
+    const contract = emitContractTs({
+      siteId: "job-openings-nested-fold-test",
+      pascal: "JobOpeningsNestedFoldTest",
+      baseUrl: BASE,
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: primaryResponseBody,
+      gql: true,
+      gqlQuery: NESTED_SEARCH_QUERY,
+      endpointPath: "/graphql",
+      gqlOperationName: "companySearch",
+      gqlVariables: {},
+      auxFiles: [],
+      actionSteps,
+      foldReturnSpec: NESTED_JOB_OPENINGS_SPEC,
+    });
+
+    expect(contract).toContain("getGql(context.baseUrl)(");
+
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+    // The nested resultsPath's wildcard group must generalize across every
+    // outer group via .flatMap — a literal index into one group (e.g.
+    // `.companies[0].postings`) would silently drop every other group's
+    // items at runtime.
+    expect(executeHttpBody).toContain(".flatMap(");
+    expect(executeHttpBody).not.toMatch(/\.companies\[\d+\]/);
+    expect(executeHttpBody).toContain("for (const item of foldItems)");
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    stubNestedJobOpeningsFetch();
+
+    const gqlCalls: { operationName: string; query: string; variables: unknown }[] = [];
+    const getGql =
+      (_baseUrl: string) =>
+      async (operationName: string, query: string, variables: Record<string, unknown>) => {
+        gqlCalls.push({ operationName, query, variables });
+        return primaryResponseBody;
+      };
+
+    const executeHttp = evalSinglePrimaryExecuteHttp(
+      executeHttpBody,
+      getGql,
+      httpClient,
+      "JOBOPENINGSNESTEDFOLDTEST_QUERY",
+      NESTED_SEARCH_QUERY
+    );
+    const result = await executeHttp({}, { baseUrl: BASE });
+
+    expect(gqlCalls).toHaveLength(1);
+    expect(gqlCalls[0]!.operationName).toBe("companySearch");
+
+    expect(result.data).toEqual({
+      jobSearch: {
+        companies: [
+          {
+            id: "company-1",
+            postings: [
+              { id: "job-1", title: "Engineer", location: "Remote" },
+              { id: "job-2", title: "Designer", location: "Onsite" },
+            ],
+          },
+          {
+            id: "company-2",
+            postings: [{ id: "job-3", title: "Analyst", location: "Hybrid" }],
+          },
+        ],
+      },
+    });
+    // One drill-down call per postings item, flattened across both outer
+    // company groups.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 });
