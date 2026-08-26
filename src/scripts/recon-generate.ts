@@ -5226,7 +5226,7 @@ const ARRAY_WILDCARD_SEGMENT = "*";
  * A path segment for an array index the search descended through (to keep
  * looking for a nested candidate array) is the {@link ARRAY_WILDCARD_SEGMENT}
  * sentinel, never a literal index — see its docstring. */
-function findAllObjectArrayFields(
+function findAllObjectArrayFieldsUncached(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
@@ -5234,15 +5234,47 @@ function findAllObjectArrayFields(
   if (Array.isArray(value)) {
     const objectItems = value.filter(isObjectArrayItem);
     const nestedCandidates = objectItems.flatMap((item) =>
-      findAllObjectArrayFields(item, [...path, ARRAY_WILDCARD_SEGMENT])
+      findAllObjectArrayFieldsUncached(item, [...path, ARRAY_WILDCARD_SEGMENT])
     );
     return objectItems.length > 0
       ? [{ path, items: objectItems }, ...nestedCandidates]
       : nestedCandidates;
   }
   return Object.entries(value as Record<string, unknown>).flatMap(([key, v]) =>
-    findAllObjectArrayFields(v, [...path, key])
+    findAllObjectArrayFieldsUncached(v, [...path, key])
   );
+}
+
+/** Every distinct top-level `value` object {@link findAllObjectArrayFields}
+ * is invoked on is scanned repeatedly — once per fold-chain candidate/join
+ * disambiguation that re-derives the same response body — so a per-run,
+ * identity-keyed cache lets a given body's whole-tree scan run at most once
+ * regardless of how many callers re-derive it. Keyed on object identity
+ * (never a serialized path/value pair) because captures/response bodies are
+ * never mutated once produced (see this module's fold-plan investigation
+ * notes), so identity alone is a safe, unconditionally correct cache key. */
+const objectArrayFieldsCache = new WeakMap<
+  object,
+  { path: string[]; items: Record<string, unknown>[] }[]
+>();
+
+/** Memoized entry point for {@link findAllObjectArrayFieldsUncached} — see
+ * {@link objectArrayFieldsCache}. Only the default top-level `path` is
+ * cached (every real call site invokes with the default); a caller passing
+ * an explicit `path` — recursion within the uncached walk itself — bypasses
+ * the cache and hits the underlying scan directly. */
+function findAllObjectArrayFields(
+  value: unknown,
+  path: string[] = []
+): { path: string[]; items: Record<string, unknown>[] }[] {
+  if (path.length > 0 || value === null || typeof value !== "object") {
+    return findAllObjectArrayFieldsUncached(value, path);
+  }
+  const cached = objectArrayFieldsCache.get(value);
+  if (cached) return cached;
+  const computed = findAllObjectArrayFieldsUncached(value, path);
+  objectArrayFieldsCache.set(value, computed);
+  return computed;
 }
 
 /** The first object-array field by DFS/key order — see
@@ -5271,12 +5303,30 @@ function findObjectArrayField(
  * more genuine per-item data than a small real nested object-array; a
  * caller that just wants the first real array (the common case) is
  * unaffected since it still comes first. */
+/** Memoized the same way as {@link findAllObjectArrayFields} (see
+ * {@link objectArrayFieldsCache}) — this is the candidate list
+ * {@link selectDisambiguatedCandidate} and {@link buildFoldPlanFromSpec}
+ * re-derive off the SAME responseBody on every chain hop/disambiguation, so
+ * it is exactly as hot a redundant-recompute site as the underlying scan. */
+const objectArrayFieldsOrWholeObjectCache = new WeakMap<
+  object,
+  { path: string[]; items: Record<string, unknown>[] }[]
+>();
+
 function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
 ): { path: string[]; items: Record<string, unknown>[] }[] {
+  if (path.length > 0 || value === null || typeof value !== "object") {
+    const found = findAllObjectArrayFields(value, path);
+    return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  }
+  const cached = objectArrayFieldsOrWholeObjectCache.get(value);
+  if (cached) return cached;
   const found = findAllObjectArrayFields(value, path);
-  return isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  const computed = isObjectArrayItem(value) ? [...found, { path, items: [value] }] : found;
+  objectArrayFieldsOrWholeObjectCache.set(value, computed);
+  return computed;
 }
 
 /** The first candidate from {@link findAllObjectArrayFieldsOrWholeObject} —
@@ -5426,8 +5476,23 @@ function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Cap
  * join field. Also walks every response HEADER value, mirroring
  * {@link collectRequestValuesIncludingHeaders} on the request side, since a
  * chain hop can just as easily mint its join token in a response header
- * (e.g. a `Location` or custom correlation header) as in the body. */
+ * (e.g. a `Location` or custom correlation header) as in the body.
+ * Memoized like {@link objectArrayFieldsCache} — {@link computeFoldChain}'s
+ * inner `dependsOnChain` check re-derives this for every chain member on
+ * every outer loop iteration, making it the single hottest redundant-
+ * recompute site in fold-chain resolution (see this module's fold-plan
+ * investigation notes). */
+const responseLeafValuesCache = new WeakMap<Capture, Set<string>>();
+
 function collectResponseLeafValues(capture: Capture): Set<string> {
+  const cached = responseLeafValuesCache.get(capture);
+  if (cached) return cached;
+  const computed = collectResponseLeafValuesUncached(capture);
+  responseLeafValuesCache.set(capture, computed);
+  return computed;
+}
+
+function collectResponseLeafValuesUncached(capture: Capture): Set<string> {
   const values = new Set<string>();
   for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (typeof value === "string" && value.length > 0) values.add(value);
@@ -6012,9 +6077,19 @@ function objectItemsAtPath(
  * through a request HEADER), so matching a spec's `joinFields` against the
  * drill capture must search headers even though the structural heuristic
  * deliberately doesn't (see {@link collectRequestStringValues}'s docstring). */
+/** Memoized like {@link objectArrayFieldsCache} — the same capture's
+ * request/header values are re-derived on every fold-chain candidate that
+ * threads through it. Keyed on `Capture` identity rather than
+ * `responseBody`, since this walks the capture's request side (URL, body,
+ * headers), not its response. */
+const requestValuesCache = new WeakMap<Capture, Set<string>>();
+
 function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
+  const cached = requestValuesCache.get(capture);
+  if (cached) return cached;
   const values = collectRequestStringValues(capture);
   for (const v of Object.values(capture.requestHeaders)) values.add(v);
+  requestValuesCache.set(capture, values);
   return values;
 }
 
