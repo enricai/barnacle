@@ -709,4 +709,122 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
     expect(n16Calls.length).toBeGreaterThan(0);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
+
+  /**
+   * Builds a childEvaluate mock for a checkbox-intent step (bugfix-001):
+   * the n+16 clickExpr result is controlled by `n16Result`, and the DOM
+   * snapshot expr (`b.outerHTML` — see `DOM_SNAPSHOT_EXPR`) returns a
+   * form-value signature that differs pre/post ONLY when
+   * `formValueChangedAcrossSnapshot` is true, simulating an unrelated field
+   * changing on the same page (the reported false-positive) without the
+   * target checkbox itself committing.
+   */
+  function checkboxIntentEvaluate(
+    n16Result: { fired: boolean; kind?: string; checked?: boolean },
+    formValueChangedAcrossSnapshot: boolean
+  ) {
+    let snapshotCalls = 0;
+    return vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("groupPresent")) return { groupPresent: false };
+      if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+      if (src.includes('el.click !== "function"')) return n16Result;
+      if (src.includes("isInvalid(node)")) return false;
+      if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+      if (src.includes("b.outerHTML")) {
+        snapshotCalls += 1;
+        const isPost = snapshotCalls > 1;
+        const values = isPost && formValueChangedAcrossSnapshot ? "changed" : "";
+        return { html: 100, text: "0:", values, state: "" };
+      }
+      return null;
+    });
+  }
+
+  it("does NOT credit a checkbox-intent step on a weak formValueChanged signal alone when checkboxStateVerified is false", async () => {
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: checkboxIntentEvaluate({ fired: false }, true) as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "xpath=//input[@id='newsletter-opt-in']",
+        description: "Newsletter opt-in checkbox",
+        method: "click",
+      },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Newsletter opt-in checkbox",
+      actions: [
+        {
+          selector: "xpath=//input[@id='newsletter-opt-in']",
+          description: "Newsletter opt-in checkbox",
+          method: "click",
+        },
+      ],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Check the 'I agree to receive updates' checkbox",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+  });
+
+  it("DOES credit a checkbox-intent step when checkboxStateVerified is true", async () => {
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: checkboxIntentEvaluate(
+        { fired: true, kind: "checkbox", checked: true },
+        false
+      ) as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "xpath=//input[@id='newsletter-opt-in']",
+        description: "Newsletter opt-in checkbox",
+        method: "click",
+      },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Newsletter opt-in checkbox",
+      actions: [
+        {
+          selector: "xpath=//input[@id='newsletter-opt-in']",
+          description: "Newsletter opt-in checkbox",
+          method: "click",
+        },
+      ],
+    });
+
+    const outcome = await executeStepWithHealing(
+      baseParams({
+        page,
+        step: "Check the 'I agree to receive updates' checkbox",
+        frameTarget: childTarget,
+      }) as never
+    );
+
+    expect(outcome).toBe("completed");
+  });
 });

@@ -1177,6 +1177,23 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Is this flow step's intent to check a checkbox or select a radio option?
+ * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
+ * from crediting a checkbox/radio-intent step: those signals move whenever ANY
+ * field on the page changes (e.g. an earlier fill), so they say nothing about
+ * whether THIS control actually committed. A checkbox/radio-intent step must be
+ * verified by the element's own committed state (`checkboxStateVerified`) or a
+ * real network/url/selection-state signal, the same discipline `isAdvanceStep`
+ * already applies to advance/Next steps. Keyed on the ORIGINAL step instruction,
+ * via the same parsers (`parseCheckStep`/`parseRadioStep`) their primitives use.
+ * Pure; unit-testable seam paralleling `isAdvanceStep`.
+ */
+export function isCheckboxOrRadioIntentStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  return parseCheckStep(instruction) !== null || parseRadioStep(instruction) !== null;
+}
+
+/**
  * Whether `snapshotPage` should build the per-element selection baseline
  * (`StepSnapshot.selectionStateByXpath`) for this step — i.e. whether
  * `verifyDomEffect`'s element-scoped click read-back is allowed to credit it.
@@ -10028,7 +10045,14 @@ export async function executeStepWithHealing(params: {
           // actually run below (requireSubmitEndpoint) to corroborate — otherwise
           // only a strong signal (network/url) or a verified checkbox state may
           // pass. Non-final/submit steps are unaffected.
-          const weakDomSignalsAllowed = (!isFinalStep && !submitStep) || requireSubmitEndpoint;
+          // Also excludes a checkbox/radio-intent step: `retryFormValueChanged`
+          // is a page-wide signature that moves whenever ANY field changes (an
+          // earlier fill included), so it says nothing about whether THIS
+          // control committed — only the element's own `checkboxStateVerified`
+          // (or a real network/url/selection-state signal) may verify it.
+          const weakDomSignalsAllowed =
+            ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
+            !isCheckboxOrRadioIntentStep(step);
           let retryVerified =
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
