@@ -30,4 +30,25 @@ describe("resolveFoldPlan at scale", () => {
     expect(plan?.targets[0]?.drillStepIndex).toBe(2499);
     expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
   });
+
+  // Machine-speed-independent complement to the fixed-ms bound above: a 4x
+  // growth in capture count should produce roughly a 4x growth in elapsed
+  // time if resolveFoldPlan is linear. A quadratic-or-worse regression would
+  // produce a ~16x+ growth, so a 10x ratio bound catches the regression on
+  // both fast and slow CI hardware without relying on an absolute threshold.
+  it("scales roughly linearly, not quadratically, as the capture count grows", () => {
+    const smallSteps = buildFoldReturnScalableActionSequence(500);
+    const smallStart = performance.now();
+    resolveFoldPlan(smallSteps, FOLD_RETURN_SCALABLE_SPEC);
+    const smallElapsedMs = performance.now() - smallStart;
+
+    const largeSteps = buildFoldReturnScalableActionSequence(2000);
+    const largeStart = performance.now();
+    resolveFoldPlan(largeSteps, FOLD_RETURN_SCALABLE_SPEC);
+    const largeElapsedMs = performance.now() - largeStart;
+
+    const ratio = largeElapsedMs / Math.max(smallElapsedMs, 1);
+
+    expect(ratio).toBeLessThan(10);
+  });
 });
