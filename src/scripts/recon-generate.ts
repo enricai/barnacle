@@ -6259,6 +6259,37 @@ function resolveSpecMatchedPrimaryItemIndex(
   return matchedIndex === -1 ? null : matchedIndex;
 }
 
+/** Like {@link resolveSpecMatchedPrimaryItemIndex}, but matches against the
+ * drill capture's own RESPONSE instead of its request — a `foldReturn`
+ * spec's `joinFields` names the field the AUTHOR knows the drill-down
+ * response carries (so `emitFoldMatchAndMergeLines` can match it back onto a
+ * primary item at runtime); it names nothing about what the drill's REQUEST
+ * carries, which is very often a completely different per-item field (e.g. a
+ * REST drill-down keyed by an item's `packageCode` whose response happens to
+ * echo back that item's `id`). Tried only as a fallback, after the
+ * request-based match, since a request-carried join value disambiguates a
+ * drill occurrence unambiguously while a response-only match can in
+ * principle collide across primary items with the same response shape. */
+function resolveSpecMatchedPrimaryItemIndexFromResponse(
+  primaryItems: readonly Record<string, unknown>[],
+  joinFields: readonly string[],
+  drillCapture: Capture
+): number | null {
+  const responseValues = collectResponseLeafValues(drillCapture);
+  if (responseValues.size === 0) return null;
+  const matchedIndex = primaryItems.findIndex((item) =>
+    joinFields.every((field) => {
+      const value = readValueAtPath(item, field.split("."));
+      return (
+        (typeof value === "string" && value.length > 0 && responseValues.has(value)) ||
+        (typeof value === "number" && responseValues.has(String(value))) ||
+        (typeof value === "boolean" && responseValues.has(String(value)))
+      );
+    })
+  );
+  return matchedIndex === -1 ? null : matchedIndex;
+}
+
 /**
  * Maps every string/numeric/boolean value seen in any action's request (URL,
  * body, or headers — see {@link collectRequestValuesIncludingHeaders}) to the
@@ -6473,11 +6504,6 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       joinValues,
       primaryStepIndex
     );
-    // No action anywhere carries any of this primary's join values, so no
-    // drillStepIndex candidate could ever resolve — skip straight to the
-    // next primary instead of scanning this one's drill candidates (each of
-    // which would only rediscover the same dead end).
-    if (candidateEntryIndicesDescending.length === 0) continue;
     // Cheap regex-only pass first: collects every endpointPattern-matching
     // drillStepIndex without paying for the expensive backward-walk +
     // computeFoldChain resolution below. Scanned from the freshest (highest)
@@ -6486,6 +6512,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     // ties in the original last-write-wins scan first, falling through to
     // the next-freshest only when a candidate fails to resolve, instead of
     // resolving every earlier occurrence just to have it overwritten.
+    //
+    // Computed even when `candidateEntryIndicesDescending` is empty (unlike
+    // the request-based path below, which bails immediately in that case):
+    // an endpointPattern match is a single regex test per action, O(actions)
+    // regardless — not the O(actions)-per-candidate backward walk the
+    // request-based prune exists to avoid — so it stays cheap even when no
+    // request anywhere carries this primary's join values, which is exactly
+    // the case {@link resolveSpecMatchedPrimaryItemIndexFromResponse}'s
+    // response-only fallback below exists to resolve.
     const matchingDrillStepIndices: number[] = [];
     for (
       let drillStepIndex = primaryStepIndex + 1;
@@ -6495,6 +6530,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       if (matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture)) {
         matchingDrillStepIndices.push(drillStepIndex);
       }
+    }
+    if (candidateEntryIndicesDescending.length === 0 && matchingDrillStepIndices.length === 0) {
+      continue;
     }
     // Shared across every matching-drill candidate tried below for THIS
     // primaryStepIndex — see resolveSpecMatchedPrimaryItemIndexAlongChain's
@@ -6519,7 +6557,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       // now does (see detectDrillDownFoldPlan). Validated after the chain
       // resolves, below, since `[]` is a valid empty baseline for
       // computeFoldChain but not a valid final drillArrayPath on its own.
-      const matchResult = resolveSpecMatchedPrimaryItemIndexAlongChain(
+      const chainMatchResult = resolveSpecMatchedPrimaryItemIndexAlongChain(
         actions,
         primaryItems,
         spec.joinFields,
@@ -6527,6 +6565,22 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         matchedItemIndexCache,
         candidateEntryIndicesDescending
       );
+      // A request-carried join value (checked above, across this whole
+      // primary/drill chain) disambiguates unambiguously; only fall back to
+      // matching the drill's own RESPONSE — which never disambiguates an
+      // upstream entry hop, only the drill step itself — when that fails.
+      const matchResult =
+        chainMatchResult ??
+        ((): { entryIndex: number; primaryMatchedItemIndex: number } | null => {
+          const primaryMatchedItemIndex = resolveSpecMatchedPrimaryItemIndexFromResponse(
+            primaryItems,
+            spec.joinFields,
+            drill.capture
+          );
+          return primaryMatchedItemIndex === null
+            ? null
+            : { entryIndex: drillStepIndex, primaryMatchedItemIndex };
+        })();
       if (matchResult === null) continue;
       const { entryIndex, primaryMatchedItemIndex } = matchResult;
       // Rooted at `entryIndex` — the step whose request ACTUALLY carries the
@@ -6613,15 +6667,29 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
   );
   if (samePrimaryPlan !== undefined) {
+    // A drillStepIndex the structural heuristic ALSO resolved keeps its
+    // structurally-resolved chain/drillArrayPath (already proven to reach
+    // real per-item data), but its `joinFields` is overridden to the spec's
+    // declared value — the heuristic's own joinFields only prove a field
+    // threads INTO the drill's REQUEST, which says nothing about whether
+    // that same field can be found on the drill's RESPONSE to match it back
+    // onto a primary item (see emitFoldMatchAndMergeLines). A flow author
+    // declaring `joinFields` on a foldReturn is asserting exactly that: this
+    // is the field their drill-down's RESPONSE actually carries.
+    const specTargetsByDrillStepIndex = new Map(
+      specPlan.targets.map((target) => [target.drillStepIndex, target])
+    );
     return structuralPlans.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
+      const mergedTargets = plan.targets.map((target) => {
+        const specTarget = specTargetsByDrillStepIndex.get(target.drillStepIndex);
+        return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
+      });
       const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
       const newTargets = specPlan.targets.filter(
         (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
       );
-      return newTargets.length === 0
-        ? plan
-        : { ...plan, targets: [...plan.targets, ...newTargets] };
+      return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
   }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
@@ -7649,12 +7717,27 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // Same word-boundary-anchored swap emitMultiStepExecuteHttp's own
         // `parameterize` performs — a plain split/join would also rewrite
         // unrelated substrings that happen to contain the join value.
-        const parameterizeUrl = (rawUrl: string): string => {
+        //
+        // Parameterizes off EVERY per-item field this specific chain hop's
+        // own captured request actually varies on (via findThreadedJoinFields),
+        // not just `target.joinFields` — `target.joinFields` names the field
+        // used to MATCH the drill's RESPONSE back onto the primary item (see
+        // emitFoldMatchAndMergeLines), which for a spec-declared foldReturn
+        // can legitimately be a field the request never carries at all (e.g.
+        // an `id` echoed only in the response, while the request is keyed by
+        // an unrelated field like a package code). Building the URL from only
+        // `target.joinFields` in that case would leave it unparameterized —
+        // every item would fetch the SAME first-captured URL.
+        const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
           const withBase =
             baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
               ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
               : rawUrl;
-          return target.joinFields.reduce((acc, field) => {
+          const threadedFields = new Set([
+            ...target.joinFields,
+            ...findThreadedJoinFields(firstItem, chainCapture),
+          ]);
+          return [...threadedFields].reduce((acc, field) => {
             const value = readValueAtPath(firstItem, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
@@ -7672,7 +7755,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
-          const url = parameterizeUrl(chainStep.capture.url);
+          const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
