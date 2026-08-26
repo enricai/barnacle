@@ -7607,8 +7607,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             `emitContractTs: fold plan primary step ${foldPlan.primaryStepIndex} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
           );
         }
-        const suffix =
-          foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const joinAccessor = (field: string): string =>
           `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         // Same word-boundary-anchored swap emitMultiStepExecuteHttp's own
