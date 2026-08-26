@@ -110,7 +110,9 @@ function parseXPathSteps(xp: string): { tag: string; idx: number }[] {
     .map((step) => {
       const match = /^([a-zA-Z0-9]+)\[(\d+)\]$/.exec(step);
       if (!match) throw new Error(`unsupported xpath step in test fixture: ${step}`);
-      return { tag: match[1].toUpperCase(), idx: Number(match[2]) };
+      const [, tag, idx] = match;
+      // biome-ignore lint/style/noNonNullAssertion: guarded by the regex match above
+      return { tag: tag!.toUpperCase(), idx: Number(idx) };
     });
 }
 
@@ -120,7 +122,7 @@ function evaluateAbsolute(root: FakeElement, xp: string): FakeElement | null {
   let current: FakeElement | null = root;
   for (const step of steps) {
     if (!current) return null;
-    const candidates = current.children.filter((c) => c.tagName === step.tag);
+    const candidates: FakeElement[] = current.children.filter((c) => c.tagName === step.tag);
     current = candidates[step.idx - 1] ?? null;
   }
   return current;
@@ -197,13 +199,14 @@ function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
   }
   const fakeDocument = {
     evaluate(xp: string) {
-      const node = xp.startsWith("//") ? evaluateTail(htmlRoot, xp.slice(2)) : evaluateAbsolute(htmlRoot, xp);
+      const node = xp.startsWith("//")
+        ? evaluateTail(htmlRoot, xp.slice(2))
+        : evaluateAbsolute(htmlRoot, xp);
       return { singleNodeValue: node };
     },
   };
   return (async (expr: unknown) => {
     const source = String(expr);
-    // biome-ignore lint/security/noGlobalEval: intentional sandboxed test harness, not production code
     const fn = new Function("document", "Event", "XPathResult", `return (${source});`) as (
       d: unknown,
       e: unknown,
@@ -259,9 +262,7 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback chec
       success: true,
       message: "clicked",
       actionDescription: "Subscribe to updates",
-      actions: [
-        { selector: staleSelector, description: "Subscribe to updates", method: "click" },
-      ],
+      actions: [{ selector: staleSelector, description: "Subscribe to updates", method: "click" }],
     });
 
     const target: FrameTarget = {
@@ -280,37 +281,35 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback chec
 
     const page = fakePage();
 
-    const outcome = await executeStepWithHealing(
-      {
-        stagehand: makeStagehand(),
-        page,
-        step: "Check the 'Subscribe to updates' checkbox",
-        optional: false,
-        upload: false,
-        submitStep: false,
-        stepIndex: 0,
-        totalSteps: () => 1,
-        phase: "flow",
-        signalCounter: { n: 0 },
-        recentCaptures: [],
-        recentCaptureMeta: [],
-        anthropic: null,
-        rephraseModel: null,
-        logger: testLogger,
-        uploadFixture: null,
-        isFinalStep: false,
-        submitEndpointPattern: null,
-        submittedStateSelectors: [],
-        requireSubmitEndpointMatch: false,
-        advanceTransitionBodyPattern: null,
-        successUrlFragments: [],
-        successPageTitleHints: [],
-        ownBackendHostnames: [],
-        knownErrorClassPrefixes: [],
-        wizardExitButtonLabels: [],
-        frameTarget: target,
-      } as never
-    );
+    const outcome = await executeStepWithHealing({
+      stagehand: makeStagehand(),
+      page,
+      step: "Check the 'Subscribe to updates' checkbox",
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 0,
+      totalSteps: () => 1,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      frameTarget: target,
+    } as never);
 
     // Eliminates the reported false negative: the fallback must fire, must
     // classify the resolved element as a checkbox (not kind=none), and must
