@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
-import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import type { ReconVocabulary } from "@/recon/vocabulary";
+import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import {
   buildKnownFieldValues,
   collectHeaderBindings,
