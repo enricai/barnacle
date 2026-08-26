@@ -9039,15 +9039,18 @@ async function main(): Promise<void> {
 
   // A declared foldReturn that resolves to no plan is a silent no-op otherwise
   // — the flow author gets the discarding selectReturnAction path with nothing
-  // in the output saying their declaration never applied. Checks the SAME
-  // resolved-and-applied plan set emitContractTs itself emits from (via
-  // resolveApplicableFoldPlans) rather than an independently recomputed
-  // resolveFoldPlan() call, so this diagnostic can never silently disagree
-  // with what actually made it into the output.
-  if (
-    foldReturnSpec !== null &&
-    resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length === 0
-  ) {
+  // in the output saying their declaration never applied. A multi-step
+  // (submission) flow applies its fold via emitMultiStepExecuteHttp's own
+  // resolveFoldPlan call, entirely independent of resolveApplicableFoldPlans
+  // (which exists only to gate emitContractTs's single-primary hot path, and
+  // unconditionally reports zero plans once multiStepBody is set) — so this
+  // diagnostic must consult the SAME resolution each path actually applies,
+  // or it falsely reports "no fold plan resolved" for every multi-step flow
+  // with a working foldReturn.
+  const effectiveFoldPlanCount = multiStepBody
+    ? resolveFoldPlan(actionSteps, foldReturnSpec).length
+    : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length;
+  if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
     logger.warn(
       `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
     );
