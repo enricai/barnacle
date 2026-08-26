@@ -5714,11 +5714,27 @@ interface PrimaryScanGroup {
  * one array's target chain is never re-claimed as a fresh target thread of
  * a different, independent array on the same primary response.
  */
+let scanPrimaryCandidateGroupsCallCount = 0;
+
+/** Test-only instrumentation for asserting `scanPrimaryCandidateGroups`'s
+ * O(actions.length) scan is reused across repeat queries of the same index
+ * (via `detectDrillDownFoldPlan`'s per-index cache) rather than re-run.
+ * Not read by any production path. */
+export function getScanPrimaryCandidateGroupsCallCountForTest(): number {
+  return scanPrimaryCandidateGroupsCallCount;
+}
+
+/** Test-only counterpart to {@link getScanPrimaryCandidateGroupsCallCountForTest}. */
+export function resetScanPrimaryCandidateGroupsCallCountForTest(): void {
+  scanPrimaryCandidateGroupsCallCount = 0;
+}
+
 function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryIndex: number,
   globallyConsumedIndices: ReadonlySet<number>
 ): PrimaryScanGroup[] {
+  scanPrimaryCandidateGroupsCallCount++;
   const primary = actions[primaryIndex]!;
   const primaryCandidates = findAllObjectArrayFields(primary.capture.responseBody);
   if (primaryCandidates.length === 0) return [];
@@ -5844,11 +5860,35 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   // primary's response, not on this later primary's array, so it must
   // never be re-claimed as a fresh drill target for a subsequent primary.
   const globallyConsumedIndices = new Set<number>();
+  // scanPrimaryCandidateGroups's result for a given index only depends on
+  // `actions` (fixed) and the current contents of `globallyConsumedIndices`,
+  // so it is safe to reuse across repeat queries of the SAME index as long
+  // as the consumed set hasn't grown since it was computed. The freshest-wins
+  // loop below re-queries the same laterIndex once per sibling group on a
+  // re-queried primary, and the outer loop often reaches that very index as
+  // its own primaryIndex shortly after — both hit this cache instead of
+  // repeating the O(actions.length) scan.
+  let consumedVersion = 0;
+  const scanCache = new Map<number, PrimaryScanGroup[]>();
+  const scanCacheVersion = new Map<number, number>();
+  const scanCached = (index: number): PrimaryScanGroup[] => {
+    const cachedVersion = scanCacheVersion.get(index);
+    if (cachedVersion === consumedVersion) return scanCache.get(index)!;
+    const result = scanPrimaryCandidateGroups(actions, index, globallyConsumedIndices);
+    scanCache.set(index, result);
+    scanCacheVersion.set(index, consumedVersion);
+    return result;
+  };
+  const addConsumed = (index: number): void => {
+    if (globallyConsumedIndices.has(index)) return;
+    globallyConsumedIndices.add(index);
+    consumedVersion++;
+  };
 
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
     if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
-    const groups = scanPrimaryCandidateGroups(actions, primaryIndex, globallyConsumedIndices);
+    const groups = scanCached(primaryIndex);
     if (groups.length === 0) continue;
 
     const primaryEndpointKey = endpointKey(primary.capture.url);
@@ -5874,11 +5914,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         if (globallyConsumedIndices.has(laterIndex)) continue;
         const laterAction = actions[laterIndex]!;
         if (endpointKey(laterAction.capture.url) !== primaryEndpointKey) continue;
-        const laterGroups = scanPrimaryCandidateGroups(
-          actions,
-          laterIndex,
-          globallyConsumedIndices
-        );
+        const laterGroups = scanCached(laterIndex);
         const laterGroup = laterGroups.find(
           (g) =>
             JSON.stringify(g.primaryArrayPath) === JSON.stringify(freshestGroup.primaryArrayPath)
@@ -5924,9 +5960,9 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // itself is marked consumed once per group pushed (idempotent via
       // Set.add), since the step itself is only visited once regardless of
       // how many independent array groups it yields.
-      globallyConsumedIndices.add(freshestIndex);
+      addConsumed(freshestIndex);
       for (const target of freshestGroup.targets) {
-        for (const chainIndex of target.chain) globallyConsumedIndices.add(chainIndex);
+        for (const chainIndex of target.chain) addConsumed(chainIndex);
       }
     }
   }

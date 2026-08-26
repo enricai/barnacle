@@ -7,6 +7,8 @@ import {
   type FoldReturnSpec,
   findAllObjectArrayFields,
   findAllObjectArrayFieldsOrWholeObject,
+  getScanPrimaryCandidateGroupsCallCountForTest,
+  resetScanPrimaryCandidateGroupsCallCountForTest,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
 import {
@@ -83,6 +85,21 @@ describe("detectDrillDownFoldPlan", () => {
     expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
     expect(plan?.targets[0]?.drillStepIndex).toBe(2);
     expect(plan?.targets[0]?.primaryMatchedItemIndex).toBe(0);
+  });
+
+  it("scans each re-queried primary occurrence's candidate groups at most once, not once per (primaryIndex, laterIndex) pair queried against it", () => {
+    resetScanPrimaryCandidateGroupsCallCountForTest();
+    const steps = buildMulticallSingleShotSearchDrillDownRequeriedPrimaryOverlapActionSteps();
+
+    detectAll(steps);
+
+    // Only step indices 0 and 1 (the two re-queried search occurrences) are
+    // ever scanned as either a primaryIndex or a same-endpoint laterIndex —
+    // step 2 (the pricing drill-down) never is. Without the per-index cache,
+    // index 1 is scanned twice: once from the freshest-wins loop querying it
+    // as `laterIndex` while primaryIndex is still 0, and again when the
+    // outer loop itself reaches primaryIndex 1.
+    expect(getScanPrimaryCandidateGroupsCallCountForTest()).toBe(2);
   });
 
   it("anchors on the freshest re-queried primary occurrence when both independently thread the same drill-down's join key", () => {
