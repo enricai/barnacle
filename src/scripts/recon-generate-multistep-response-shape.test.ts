@@ -85,9 +85,28 @@ describe("recon-generate — G1 shape-inference target agrees with the return ta
     expect(shapeInferenceBody).not.toBe(returnSelected!.capture.responseBody);
   });
 
-  it("falls back to the replay body for a non-submission (single-endpoint) flow", () => {
+  it("falls back to the replay body for a non-submission flow with no resolvable fold plan", () => {
     const replayBody = { single: true };
-    expect(selectEffectiveResponseBody(false, steps, replayBody)).toBe(replayBody);
+    const singleStep: MulticallFixtureStep[] = [
+      buildStep("r1", {
+        url: "https://api.example.com/no-drilldown/",
+        requestPostData: null,
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:00.000Z",
+      }),
+    ];
+    expect(selectEffectiveResponseBody(false, singleStep, replayBody)).toBe(replayBody);
+  });
+
+  it("still applies the fold plan for a non-submission (single-endpoint) flow, not the replay body", () => {
+    const replayBody = { single: true };
+    const effectiveResponseBody = selectEffectiveResponseBody(false, steps, replayBody);
+    expect(effectiveResponseBody).not.toBe(replayBody);
+    expect(effectiveResponseBody).toEqual({
+      totalPages: 5,
+      totalAvailableListings: 699,
+      products: [{ productId: "p1", unitId: "s1" }],
+    });
   });
 
   it("shape inference fed the selected body emits inventory keys, not drill-down keys", () => {

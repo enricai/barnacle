@@ -4,28 +4,33 @@ import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import {
   compileActionSteps,
-  emitMultiStepExecuteHttp,
+  emitContractTs,
   extractGraphQLActionSequence,
   type FoldReturnSpec,
   indexStateValues,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
-import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
+import {
+  extractExecuteHttpBodyFromContract,
+  stripEmitterTypeAssertions,
+} from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 const BASE = "https://api.example.com";
 
 /**
  * Reproduces the reported failure across the FULL extraction-through-runtime
  * chain (`extractGraphQLActionSequence` -> `compileActionSteps` ->
- * `resolveFoldPlan` -> `emitMultiStepExecuteHttp` -> evaluated `executeHttp`),
- * not just the downstream fold-and-emit stage every other
- * `*-fold-*-runtime-e2e` file exercises starting from an already-built
- * `ActionStep[]`. Before the fix, `extractGraphQLActionSequence` admitted the
- * captured GET drill-down (it matches `foldReturn.endpointPattern`) but
- * dropped the GraphQL `query` primary itself — neither a `mutation` nor an
- * `endpointPattern` match — so `resolveFoldPlan` was handed an action
- * sequence with no primary capture to resolve `resultsPath` against and
- * produced an empty plan, however correct the declared `foldReturn` was.
+ * `resolveFoldPlan` -> `emitContractTs` -> evaluated `executeHttp`), not just
+ * the downstream fold-and-emit stage every other `*-fold-*-runtime-e2e` file
+ * exercises starting from an already-built `ActionStep[]`. Before the
+ * bugfix-001/002 fixes, this exact scenario (a GraphQL `query`-kind primary
+ * with a declared `foldReturn`) was misclassified as a submission flow and
+ * regressed the entire generated contract to the raw-replay/ATS shape (see
+ * docs/recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
+ * The fixed behavior routes this scenario through `emitContractTs`'s
+ * single-primary `getGql`/`httpClient` fold-merge hot path instead of
+ * `emitMultiStepExecuteHttp` — this test pins that contract, not the
+ * multi-step emitter, as the observable output.
  */
 
 const SEARCH_QUERY = "query jobSearch { jobSearch { postings { id title } } }";
@@ -102,16 +107,6 @@ function jsonResponse(body: unknown): {
 
 function stubJobOpeningsFetch(): void {
   const fn = vi.fn(async (url: string) => {
-    if (!url.includes("/listings/api/v1/openings")) {
-      return jsonResponse({
-        jobSearch: {
-          postings: [
-            { id: "job-1", title: "Engineer" },
-            { id: "job-2", title: "Designer" },
-          ],
-        },
-      });
-    }
     const jobId = new URL(url).searchParams.get("id") ?? "";
     const response = OPENING_LOCATIONS_BY_JOB_ID[jobId];
     if (!response) {
@@ -120,6 +115,45 @@ function stubJobOpeningsFetch(): void {
     return jsonResponse(response);
   });
   vi.stubGlobal("fetch", fn);
+}
+
+/**
+ * Evaluates the single-primary hot path's `executeHttp` body — unlike
+ * `evalExecuteHttpBody` (which only injects `httpClient` for the multi-step
+ * emitter), this path calls `getGql(context.baseUrl)(...)` for the primary
+ * operation and `httpClient(...)` only for the folded drill-down call, so
+ * both bindings plus a `context` argument are required.
+ */
+function evalSinglePrimaryExecuteHttp(
+  body: string,
+  getGql: (
+    baseUrl: string
+  ) => (
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>
+  ) => Promise<unknown>,
+  httpClient: ReturnType<typeof createHttpClient>,
+  queryConstName: string,
+  queryText: string
+): (payload: Record<string, unknown>, context: { baseUrl: string }) => Promise<{ data: unknown }> {
+  const stripped = stripEmitterTypeAssertions(body);
+  const factory = new Function(
+    "getGql",
+    "httpClient",
+    "z",
+    queryConstName,
+    `return async function executeHttp(payload, context) {\n${stripped}\n};`
+  ) as (
+    getGqlArg: unknown,
+    httpClientArg: unknown,
+    zArg: unknown,
+    queryArg: string
+  ) => (
+    payload: Record<string, unknown>,
+    context: { baseUrl: string }
+  ) => Promise<{ data: unknown }>;
+  return factory(getGql, httpClient, z, queryText);
 }
 
 describe("GraphQL-primary + captured GET REST drill-down foldReturn — extraction through runtime e2e", () => {
@@ -131,7 +165,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     expect(actionCaptures).toHaveLength(0);
   });
 
-  it("resolves a fold plan and folds the drill-down's per-item field onto every primary item at runtime", async () => {
+  it("resolves a fold plan and folds the drill-down's per-item field onto the single-primary getGql/httpClient emission at runtime", async () => {
     const captures = [graphqlSearchCapture(), restDrillDownCapture()] as never[];
 
     const actionCaptures = extractGraphQLActionSequence(captures, null, JOB_OPENINGS_SPEC);
@@ -152,31 +186,39 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     expect(foldPlans.length).toBeGreaterThan(0);
     expect(foldPlans[0]!.targets.length).toBeGreaterThan(0);
 
-    const inputBody = JSON.parse(actionSteps[0]!.capture.requestPostData ?? "null") as unknown;
-    const body = emitMultiStepExecuteHttp(
-      actionSteps,
-      inputBody,
-      { stringMessageKey: null, nestedErrorPaths: [] },
-      new Map(),
-      new Set(),
-      new Map(),
-      new Set(),
-      new Map(),
-      new Map(),
-      BASE,
-      new Map(),
-      new Map(),
-      null,
-      new Map(),
-      new Map(),
-      new Set(),
-      [],
-      new Map(),
-      new Map(),
-      JOB_OPENINGS_SPEC
-    );
+    const primaryResponseBody = actionSteps[0]!.capture.responseBody;
 
-    expect(body).toContain("for (const item of foldItems)");
+    const contract = emitContractTs({
+      siteId: "job-openings-fold-test",
+      pascal: "JobOpeningsFoldTest",
+      baseUrl: BASE,
+      baseHeaders: { "Content-Type": "application/json" },
+      minTime: 100,
+      safeRps: 10,
+      responseBody: primaryResponseBody,
+      gql: true,
+      gqlQuery: SEARCH_QUERY,
+      endpointPath: "/graphql",
+      gqlOperationName: "jobSearch",
+      gqlVariables: {},
+      auxFiles: [],
+      actionSteps,
+      foldReturnSpec: JOB_OPENINGS_SPEC,
+    });
+
+    // The doc's own marker table (see docblock above): a clean single-primary
+    // `getGql(` call must be present, and every raw-replay/ATS marker the
+    // regression introduced must be absent.
+    expect(contract).toContain("getGql(context.baseUrl)(");
+    expect(contract).not.toContain("ApplicantContactSchema");
+    expect(contract).not.toContain("multipartJsonObject");
+    expect(contract).not.toContain("BaseUrl: z.string()");
+    expect(contract).not.toContain("payload.operationName");
+    expect(contract).not.toContain("payload.variables");
+    expect(contract).not.toContain("payload.BaseUrl");
+
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+    expect(executeHttpBody).toContain("for (const item of foldItems)");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
@@ -187,8 +229,27 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
 
     stubJobOpeningsFetch();
 
-    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
-    const result = await executeHttp({ BaseUrl: BASE, query: SEARCH_QUERY, variables: {} });
+    const gqlCalls: { operationName: string; query: string; variables: unknown }[] = [];
+    const getGql =
+      (_baseUrl: string) =>
+      async (operationName: string, query: string, variables: Record<string, unknown>) => {
+        gqlCalls.push({ operationName, query, variables });
+        return primaryResponseBody;
+      };
+
+    const executeHttp = evalSinglePrimaryExecuteHttp(
+      executeHttpBody,
+      getGql,
+      httpClient,
+      "JOBOPENINGSFOLDTEST_QUERY",
+      SEARCH_QUERY
+    );
+    // Caller-friendly payload: no BaseUrl/operationName/variables in the call
+    // signature — the pre-fix raw-replay shape required all three.
+    const result = await executeHttp({}, { baseUrl: BASE });
+
+    expect(gqlCalls).toHaveLength(1);
+    expect(gqlCalls[0]!.operationName).toBe("jobSearch");
 
     expect(result.data).toEqual({
       jobSearch: {
@@ -198,7 +259,8 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
         ],
       },
     });
-    // One primary GraphQL call plus one drill-down call per primary item.
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+    // One drill-down call per primary item — the primary GraphQL call itself
+    // goes through the mocked `getGql`, not `fetch`.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
   });
 });

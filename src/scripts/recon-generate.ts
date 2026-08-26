@@ -1064,6 +1064,13 @@ export function selectReturnAction<T extends { capture: Capture }>(steps: readon
  * clobbering the other. A plan whose folded body isn't a plain object can't
  * be merged meaningfully, so in that case this falls back to the LAST plan's
  * folded body alone, exactly as before this merge was introduced.
+ *
+ * The `!isSubmissionFlow` short-circuit only applies once no fold plan
+ * resolves: a single-primary read flow (isSubmissionFlow false) with a
+ * declared `foldReturn` still needs its primary body folded here, or the
+ * inferred response shape would omit every field the single-primary
+ * getGql/httpClient emission's own fold-merge loop (see `emitContractTs`)
+ * adds at runtime.
  */
 export function selectEffectiveResponseBody<T extends { capture: Capture; isMultipart: boolean }>(
   isSubmissionFlow: boolean,
@@ -1071,11 +1078,11 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   replayResponseBody: unknown,
   foldReturnSpec: FoldReturnSpec | null = null
 ): unknown {
-  if (!isSubmissionFlow) return replayResponseBody;
   const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   if (foldPlans.length <= 1) {
     if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
+    if (!isSubmissionFlow) return replayResponseBody;
     return selectReturnAction(actionSteps)?.capture.responseBody ?? replayResponseBody;
   }
   // Plans sharing a primaryStepIndex (independent arrays on one primary
@@ -4130,6 +4137,66 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
   return out;
 }
 
+/**
+ * Emits the lines that match a fold target's drill-down chain response
+ * against the loop item and merge the match onto it — the last leg of a
+ * fold, shared by {@link emitMultiStepExecuteHttp}'s per-item loop and
+ * `emitContractTs`'s single-primary getGql/httpClient fold-merge loop, so
+ * both emitters describe the exact same match/merge semantics rather than
+ * two copies that could drift apart.
+ */
+function emitFoldMatchAndMergeLines(
+  terminalStep: { varName: string },
+  target: FoldTarget,
+  itemVar: string,
+  suffix: string,
+  joinAccessor: (field: string) => string
+): string[] {
+  // An empty chainArrayPath means the terminal step's response IS the
+  // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
+  // / objectItemsAtPath's flat-object branch): the response is a flat
+  // object at runtime, not an array. There is exactly one candidate, so
+  // no join-field match is needed (or even possible against an array
+  // API) — emit a direct object reference instead of the array
+  // `.find()` machinery the multi-item branch below needs.
+  if (target.chainArrayPath.length === 0) {
+    return [
+      `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
+      `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
+    ];
+  }
+  const foldMatchesExpr = pathToFoldAccessorExpr(
+    `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+    target.chainArrayPath
+  );
+  return [
+    `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+    `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
+      .map((f) => {
+        const segments = f.split(".");
+        // The drill-down response is a DIFFERENT payload than the
+        // primary item, so it has no obligation to mirror the
+        // primary item's own nesting for the join key (e.g. a
+        // primary item's `identifiers.sku` is typically echoed
+        // back flat, as `sku`, on the drill response). Try the
+        // full nested path first (optional-chained, since an
+        // intermediate segment may not exist on a flat response),
+        // then fall back to the bare last segment.
+        const lastSegment = segments[segments.length - 1]!;
+        const optionalBracketAccessor = segments
+          .map((segment) => `?.[${JSON.stringify(segment)}]`)
+          .join("");
+        const matchAccessor =
+          segments.length > 1
+            ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
+            : `m[${JSON.stringify(lastSegment)}]`;
+        return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
+      })
+      .join(" && ")}) ?? foldMatches${suffix}[0];`,
+    `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
+  ];
+}
+
 /** Exported for unit testing — lets tests drive the multipart-upload code path directly
  * without going through the full emitContractTs pipeline. */
 export function emitMultiStepExecuteHttp(
@@ -4815,50 +4882,9 @@ export function emitMultiStepExecuteHttp(
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        // An empty chainArrayPath means the terminal step's response IS the
-        // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
-        // / objectItemsAtPath's flat-object branch): the response is a flat
-        // object at runtime, not an array. There is exactly one candidate, so
-        // no join-field match is needed (or even possible against an array
-        // API) — emit a direct object reference instead of the array
-        // `.find()` machinery the multi-item branch below needs.
-        if (target.chainArrayPath.length === 0) {
-          lines.push(
-            `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
-            `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
-          );
-        } else {
-          const foldMatchesExpr = pathToFoldAccessorExpr(
-            `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
-            target.chainArrayPath
-          );
-          lines.push(
-            `      const foldMatches${suffix} = ${foldMatchesExpr};`,
-            `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-              .map((f) => {
-                const segments = f.split(".");
-                // The drill-down response is a DIFFERENT payload than the
-                // primary item, so it has no obligation to mirror the
-                // primary item's own nesting for the join key (e.g. a
-                // primary item's `identifiers.sku` is typically echoed
-                // back flat, as `sku`, on the drill response). Try the
-                // full nested path first (optional-chained, since an
-                // intermediate segment may not exist on a flat response),
-                // then fall back to the bare last segment.
-                const lastSegment = segments[segments.length - 1]!;
-                const optionalBracketAccessor = segments
-                  .map((segment) => `?.[${JSON.stringify(segment)}]`)
-                  .join("");
-                const matchAccessor =
-                  segments.length > 1
-                    ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
-                    : `m[${JSON.stringify(lastSegment)}]`;
-                return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
-              })
-              .join(" && ")}) ?? foldMatches${suffix}[0];`,
-            `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`
-          );
-        }
+        lines.push(
+          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        );
       }
       lines.push(`    }`, "");
       continue;
@@ -7091,6 +7117,17 @@ export function emitContractTs(opts: {
    * of required — it has no wiring target in `executeHttp` and would
    * otherwise mislead callers into thinking it affects the request. */
   unpopulatedDeclaredVariables?: readonly string[];
+  /** The full action sequence (primary + any drill-down captures) — used,
+   * alongside `foldReturnSpec`, to resolve a {@link FoldPlan} for the
+   * single-primary getGql/httpClient hot path (`multiStepBody` unset) so a
+   * declared `foldReturn` still folds onto the clean primary-op emission
+   * instead of only ever applying inside `emitMultiStepExecuteHttp`. */
+  actionSteps?: readonly ActionStep[];
+  /** The flow's declared foldReturn spec, resolved the same way
+   * `selectEffectiveResponseBody`/`emitMultiStepExecuteHttp` resolve it, so
+   * the single-primary path can never disagree with the inferred shape on
+   * whether a fold applies. */
+  foldReturnSpec?: FoldReturnSpec | null;
 }): string {
   const {
     siteId,
@@ -7114,6 +7151,8 @@ export function emitContractTs(opts: {
     isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
+    actionSteps = [],
+    foldReturnSpec = null,
     discoveredFormFields,
     fieldOptionsMap,
     discoveredOptionFields,
@@ -7196,6 +7235,23 @@ export function emitContractTs(opts: {
     !multiStepBody && gql && gqlOperationName
       ? detectPaginationSignal(responseBody, gqlVariables)
       : null;
+  // A resolved drill-down fold plan on the single-primary getGql/httpClient
+  // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
+  // multi-step equivalent) folds onto `data` in place, exactly as the
+  // multi-step loop folds onto its own primary var: without this, a
+  // single-primary read flow with a declared `foldReturn` would silently
+  // drop the fold feature the flow author declared (see
+  // recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
+  // Not attempted alongside `paginationSignal` — a paginated primary's items
+  // span multiple page fetches this branch never issues, so a fold plan
+  // resolving against only the FIRST page's captured sample would be
+  // incomplete; that combination is out of scope here.
+  const singlePrimaryFoldPlans =
+    multiStepBody || paginationSignal ? [] : resolveFoldPlan(actionSteps, foldReturnSpec);
+  // A GraphQL primary with a resolved drill-down fold has no other REST
+  // client to issue the drill request(s) with — getGql only ever speaks
+  // GraphQL to the primary endpoint.
+  const needsFoldHttpClient = gql && singlePrimaryFoldPlans.length > 0;
   // Every field source below (the base extend's own keys, form-schema
   // discovery, browser-flow splicing, option/raw-option enums, additional
   // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
@@ -7464,7 +7520,7 @@ export function emitContractTs(opts: {
   const clientImport = omitExecuteHttp
     ? ""
     : gql
-      ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";`
+      ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
       : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
@@ -7493,7 +7549,16 @@ function getGql(baseUrl: string): GqlFn {
   }
   return client;
 }
+${
+  // A GraphQL primary with a resolved drill-down fold has no other REST
+  // client to issue the drill request(s) with — getGql only ever speaks
+  // GraphQL to the primary endpoint.
+  needsFoldHttpClient
+    ? `
+const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `
+    : ""
+}`
       : `
 const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
 `;
@@ -7504,6 +7569,101 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
     : "{ q: payload.query }";
+
+  /** Builds the `for (const item of foldItems) { ... }` block(s) that fold
+   * every resolved plan's drill-down data onto `dataVarName`'s primary array
+   * — the single-primary counterpart of emitMultiStepExecuteHttp's own
+   * per-item loop, sharing its match/merge tail via
+   * {@link emitFoldMatchAndMergeLines} so the two can't describe different
+   * merge semantics. Chain hops beyond the drill step itself are rendered
+   * directly off each hop's own captured request (no state-threading
+   * pipeline) since a single-primary read flow carries no submitted payload
+   * for those calls to reference. */
+  const buildFoldMergeLines = (dataVarName: string): string[] => {
+    const lines: string[] = [];
+    for (const [planIndex, foldPlan] of singlePrimaryFoldPlans.entries()) {
+      const primaryStep = actionSteps[foldPlan.primaryStepIndex];
+      if (!primaryStep) continue;
+      const primaryItems = objectItemsAtPath(
+        primaryStep.capture.responseBody,
+        foldPlan.primaryArrayPath
+      );
+      const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
+      const planSuffix = singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
+      const foldItemsVar = `foldItems${planSuffix}`;
+      const foldItemsExpr = pathToFoldAccessorExpr(
+        `(${dataVarName} as ${primaryArrType})`,
+        foldPlan.primaryArrayPath
+      );
+      const itemVar = `item${planSuffix}`;
+      lines.push(
+        `    const ${foldItemsVar} = ${foldItemsExpr};`,
+        `    for (const ${itemVar} of ${foldItemsVar}) {`
+      );
+      for (const [targetIndex, target] of foldPlan.targets.entries()) {
+        const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
+        if (!firstItem) {
+          throw new Error(
+            `emitContractTs: fold plan primary step ${foldPlan.primaryStepIndex} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
+          );
+        }
+        const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        const joinAccessor = (field: string): string =>
+          `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+        // Same word-boundary-anchored swap emitMultiStepExecuteHttp's own
+        // `parameterize` performs — a plain split/join would also rewrite
+        // unrelated substrings that happen to contain the join value.
+        const parameterizeUrl = (rawUrl: string): string => {
+          const withBase =
+            baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
+              ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
+              : rawUrl;
+          return target.joinFields.reduce((acc, field) => {
+            const value = readValueAtPath(firstItem, field.split("."));
+            const stringValue =
+              typeof value === "string" && value.length > 0
+                ? value
+                : typeof value === "number" || typeof value === "boolean"
+                  ? String(value)
+                  : null;
+            if (stringValue === null) return acc;
+            return acc.replace(
+              new RegExp(`\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+              `\${${joinAccessor(field)}}`
+            );
+          }, withBase);
+        };
+        for (const chainIndex of target.chain) {
+          const chainStep = actionSteps[chainIndex];
+          if (!chainStep) continue;
+          const url = parameterizeUrl(chainStep.capture.url);
+          const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
+            looseServerResponse: true,
+            aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
+              chainStep.capture.responseBody,
+            ]),
+          });
+          lines.push(
+            `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`,
+            `        method: ${JSON.stringify(chainStep.capture.method)},`,
+            `        schema: ${schemaExpr},`,
+            `      })) as Record<string, unknown>;`
+          );
+        }
+        const terminalStep = actionSteps[target.chainTerminalIndex];
+        if (!terminalStep) continue;
+        lines.push(
+          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        );
+      }
+      lines.push(`    }`, "");
+    }
+    return lines;
+  };
+
+  const dataFoldMergeLines = buildFoldMergeLines("data");
+  const dataFoldMergeBlock =
+    dataFoldMergeLines.length > 0 ? `${dataFoldMergeLines.join("\n")}\n` : "";
 
   const executeHttpBody = multiStepBody
     ? multiStepBody
@@ -7517,12 +7677,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         })
       : gql
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
-    return { data };`
+${dataFoldMergeBlock}    return { data };`
         : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
-    return { data };`;
+${dataFoldMergeBlock}    return { data };`;
 
   const fixtureComments =
     auxFiles.length > 0
@@ -8476,8 +8636,17 @@ async function main(): Promise<void> {
   const graphqlActionSequence = gql
     ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
     : [];
+  // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
+  // doc comment) can put 2+ entries in graphqlActionSequence with none of them
+  // an actual `mutation` — a GraphQL-primary query plus its drill-down, not a
+  // transactional multi-step submission. Only a real mutation makes this a
+  // submission flow; an admitted read/drill capture must not, on its own, null
+  // out primaryGraphQLOperation below or flip isSubmissionFlow further down.
+  const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
+    (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
+  );
   const primaryGraphQLOperation =
-    gql && graphqlActionSequence.length === 0
+    gql && !graphqlActionSequenceHasMutation
       ? selectPrimaryGraphQLOperation(
           captures,
           flowSteps,
@@ -8671,7 +8840,7 @@ async function main(): Promise<void> {
       : new Map<string, StateValue>();
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
-  const isSubmissionFlow = actionSteps.length > 1;
+  const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
 
   // Loud failure for a submitEndpointPattern that under-matches the raw traffic badly
   // enough to collapse the flow to the single-endpoint fallback: heuristicActionCaptures
@@ -8913,6 +9082,8 @@ async function main(): Promise<void> {
     isSubmissionFlow,
     inputBody,
     hasMultipartStep,
+    actionSteps,
+    foldReturnSpec,
     discoveredFormFields,
     fieldOptionsMap,
     discoveredOptionFields,
