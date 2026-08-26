@@ -133,6 +133,17 @@ describe("recon-generate GraphQL-primary + GET REST drill-down foldReturn — ru
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain("/inventory/api/v1/items");
+
+    // Doc's own marker table (recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md):
+    // a clean single-primary `getGql(` call must be present, and every
+    // raw-replay/ATS marker the regression introduced must be absent.
+    expect(contract).toContain("getGql(context.baseUrl)(");
+    expect(contract).not.toContain("ApplicantContactSchema");
+    expect(contract).not.toContain("multipartJsonObject");
+    expect(contract).not.toContain("BaseUrl: z.string()");
+    expect(contract).not.toContain("payload.operationName");
+    expect(contract).not.toContain("payload.variables");
+    expect(contract).not.toContain("payload.BaseUrl");
   }, 30_000);
 
   it("falsifier: without the declared foldReturn, the same captures warn and the contract omits the drill endpoint (control)", () => {
