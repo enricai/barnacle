@@ -6135,6 +6135,22 @@ function resolveSpecMatchedPrimaryItemIndex(
  * `drillStepIndex` alone would never include this upstream entry hop, so it
  * would never be re-executed (header-parameterized) per primary item at
  * runtime. */
+let resolveSpecMatchedPrimaryItemIndexAlongChainCallCount = 0;
+
+/** Test-only instrumentation: how many times
+ * {@link resolveSpecMatchedPrimaryItemIndexAlongChain} — the expensive
+ * backward-walk + {@link computeFoldChain} resolution — has actually run
+ * since the last {@link resetFoldPlanResolutionCallCountForTests} call, so a
+ * test can assert `buildFoldPlanFromSpec` pays for it only once per primary
+ * rather than once per matching drill occurrence. */
+export function getFoldPlanResolutionCallCountForTests(): number {
+  return resolveSpecMatchedPrimaryItemIndexAlongChainCallCount;
+}
+
+export function resetFoldPlanResolutionCallCountForTests(): void {
+  resolveSpecMatchedPrimaryItemIndexAlongChainCallCount = 0;
+}
+
 function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Capture }>(
   actions: readonly T[],
   primaryItems: readonly Record<string, unknown>[],
@@ -6142,6 +6158,7 @@ function resolveSpecMatchedPrimaryItemIndexAlongChain<T extends { capture: Captu
   primaryStepIndex: number,
   drillStepIndex: number
 ): { entryIndex: number; primaryMatchedItemIndex: number } | null {
+  resolveSpecMatchedPrimaryItemIndexAlongChainCallCount++;
   for (let entryIndex = drillStepIndex; entryIndex > primaryStepIndex; entryIndex--) {
     const matched = resolveSpecMatchedPrimaryItemIndex(
       primaryItems,
@@ -6214,13 +6231,27 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       primaryArrayPath
     );
     if (!primaryItems) continue;
+    // Cheap regex-only pass first: collects every endpointPattern-matching
+    // drillStepIndex without paying for the expensive backward-walk +
+    // computeFoldChain resolution below. Scanned from the freshest (highest)
+    // index down so the expensive resolution — tried only on the entries
+    // this loop actually visits — runs on the candidate that would win
+    // ties in the original last-write-wins scan first, falling through to
+    // the next-freshest only when a candidate fails to resolve, instead of
+    // resolving every earlier occurrence just to have it overwritten.
+    const matchingDrillStepIndices: number[] = [];
     for (
       let drillStepIndex = primaryStepIndex + 1;
       drillStepIndex < actions.length;
       drillStepIndex++
     ) {
+      if (matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture)) {
+        matchingDrillStepIndices.push(drillStepIndex);
+      }
+    }
+    for (let i = matchingDrillStepIndices.length - 1; i >= 0; i--) {
+      const drillStepIndex = matchingDrillStepIndices[i]!;
       const drill = actions[drillStepIndex]!;
-      if (!matchesFoldReturnEndpoint(drill.capture)) continue;
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
       // an explicit foldReturn declaration must be able to express a
@@ -6293,6 +6324,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           },
         ],
       };
+      break;
     }
   }
   return freshestPlan;

@@ -3,7 +3,9 @@ import {
   detectDrillDownFoldPlan,
   emitMultiStepExecuteHttp,
   type FoldReturnSpec,
+  getFoldPlanResolutionCallCountForTests,
   parseFoldReturnSpec,
+  resetFoldPlanResolutionCallCountForTests,
   resolveFoldPlan,
   selectEffectiveResponseBody,
 } from "@/scripts/recon-generate";
@@ -1117,6 +1119,55 @@ describe("resolveFoldPlan", () => {
     // rendered JSON request template; a raw FormData upload has no such
     // template, so the plan must be dropped rather than emitted broken.
     expect(resolveFoldPlan(multipartDrill, SINGLE_SHOT_SPEC)).toEqual([]);
+  });
+
+  it("resolves the freshest matching drill occurrence without re-running the expensive chain resolution on every earlier occurrence it discards", () => {
+    // A generic search-then-per-item-detail flow: one primary search plus 50
+    // per-item detail drills, all matching the SAME declared endpointPattern
+    // and join — the exact shape the report calls out (one GET drill per
+    // array item hitting the same endpoint). Every occurrence but the last
+    // independently satisfies the join, so the pre-fix scan would run the
+    // full resolveSpecMatchedPrimaryItemIndexAlongChain resolution on all 50
+    // only to have each earlier one overwritten by the next.
+    const itemCount = 50;
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/inventory/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      ...Array.from({ length: itemCount }, (_, i) =>
+        buildStep(`d${i}`, {
+          url: "https://api.example.com/inventory/detail/",
+          requestPostData: '{"lookup":true}',
+          responseBody: { detail: [{ sku: "sku-a", amount: 10 + i }] },
+          timestamp: `2024-06-01T00:00:${String(i + 1).padStart(2, "0")}Z`,
+          requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-a" },
+        })
+      ),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/inventory/detail/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    };
+
+    resetFoldPlanResolutionCallCountForTests();
+    const plan = resolveFoldPlan(steps, spec);
+    const callCount = getFoldPlanResolutionCallCountForTests();
+
+    // The freshest (last) drill occurrence — index `itemCount` — must win,
+    // exactly as it did before the restructure.
+    expect(plan[0]?.primaryStepIndex).toBe(0);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(itemCount);
+    expect(plan[0]?.targets[0]?.chainTerminalIndex).toBe(itemCount);
+
+    // There is exactly one primary in this fixture, so the expensive
+    // resolution must run O(1) times overall (once, for the freshest
+    // candidate that succeeds), not once per one of the 50 matching drill
+    // occurrences.
+    expect(callCount).toBe(1);
   });
 });
 
