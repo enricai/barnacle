@@ -1480,3 +1480,100 @@ describe("per-capture derived value memoization", () => {
     );
   });
 });
+
+describe("resolveFoldPlan — large capture set performance regression", () => {
+  it("resolves a 500-action search-then-per-item-detail flow well within a bounded wall-clock budget", () => {
+    const itemCount = 499;
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/widgets/search/",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          results: Array.from({ length: itemCount }, (_, i) => ({ widgetId: `w-${i}` })),
+        },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      // Each drill response is a flat (non-array) object — a realistic
+      // detail-by-id shape — rather than an object-array, so it is never
+      // itself mistaken for a candidate primary during structural detection.
+      ...Array.from({ length: itemCount }, (_, i) =>
+        buildStep(`d${i}`, {
+          url: "https://api.example.com/widgets/detail/",
+          requestPostData: JSON.stringify({ widgetId: `w-${i}` }),
+          responseBody: { widgetId: `w-${i}`, amount: 10 + i },
+          timestamp: `2024-09-01T00:00:${String((i % 59) + 1).padStart(2, "0")}Z`,
+        })
+      ),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/widgets/detail/",
+      resultsPath: "results",
+      joinFields: ["widgetId"],
+    };
+
+    const started = Date.now();
+    const plan = resolveFoldPlan(steps, spec);
+    const elapsedMs = Date.now() - started;
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryStepIndex).toBe(0);
+    expect(plan[0]?.targets).toHaveLength(itemCount);
+    expect(plan[0]?.targets[itemCount - 1]?.drillStepIndex).toBe(itemCount);
+    expect(elapsedMs).toBeLessThan(5000);
+  });
+
+  it("resolves a 2000+ action flow with a header-threaded join well within a tight wall-clock budget", () => {
+    const itemCount = 2000;
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search/",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { orders: [{ orderId: 1000 }] },
+        timestamp: "2024-09-02T00:00:00Z",
+      }),
+      // Header-threaded join and a flat (non-array) drill response: neither
+      // the join (headers aren't scanned by the structural heuristic) nor
+      // the response shape (not an object-array) is structurally
+      // detectable, so this can only resolve via the declared foldReturn
+      // spec — the exact shape `buildFoldPlanFromSpec`'s freshest-candidate
+      // restriction targets, at the scale the report reproduces.
+      ...Array.from({ length: itemCount }, (_, i) =>
+        buildStep(`d${i}`, {
+          url: "https://api.example.com/orders/order-detail/",
+          requestPostData: null,
+          requestHeaders: { "Content-Type": "application/json", "X-Order-Id": "1000" },
+          responseBody: { orderId: 1000, lineTotal: 10 + i },
+          timestamp: `2024-09-02T00:00:${String((i % 59) + 1).padStart(2, "0")}Z`,
+        })
+      ),
+    ];
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/orders/order-detail/",
+      resultsPath: "orders",
+      joinFields: ["orderId"],
+    };
+
+    const started = Date.now();
+    const plan = resolveFoldPlan(steps, spec);
+    const elapsedMs = Date.now() - started;
+
+    expect(plan).toEqual([
+      {
+        primaryStepIndex: 0,
+        primaryArrayPath: ["orders"],
+        targets: [
+          {
+            joinFields: ["orderId"],
+            drillStepIndex: itemCount,
+            drillArrayPath: [],
+            primaryMatchedItemIndex: 0,
+            chain: [itemCount],
+            chainArrayPath: [],
+            chainTerminalIndex: itemCount,
+          },
+        ],
+      },
+    ]);
+    expect(elapsedMs).toBeLessThan(2000);
+  });
+});
