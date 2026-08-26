@@ -891,4 +891,53 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
       )
     ).rejects.toThrow();
   });
+
+  it("does NOT credit a radio-intent step on a weak formValueChanged signal alone when checkboxStateVerified is false", async () => {
+    // clickExpr classifies both checkbox and radio inputs under the same
+    // kind:"checkbox" branch (el.type === "checkbox" || el.type === "radio"),
+    // so a radio target's n+16 result also reports kind:"checkbox" — proving
+    // the gate covers the radio leg of that shared classification branch.
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: FRAME_SELECTOR,
+      evaluate: checkboxIntentEvaluate(
+        { fired: true, kind: "checkbox", checked: false },
+        true
+      ) as FrameTarget["evaluate"],
+      locator: vi.fn() as FrameTarget["locator"],
+      url: () => Promise.resolve(`${CHILD_ORIGIN}/application/abc-123`),
+      title: () => Promise.resolve("Apply"),
+    };
+    const page = fakePage();
+
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "xpath=//input[@id='contact-pref-email']",
+        description: "Email contact-preference radio button",
+        method: "click",
+      },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "Email contact-preference radio button",
+      actions: [
+        {
+          selector: "xpath=//input[@id='contact-pref-email']",
+          description: "Email contact-preference radio button",
+          method: "click",
+        },
+      ],
+    });
+
+    await expect(
+      executeStepWithHealing(
+        baseParams({
+          page,
+          step: "Click the 'Email' radio button for the 'Contact preference' question",
+          frameTarget: childTarget,
+        }) as never
+      )
+    ).rejects.toThrow();
+  });
 });
