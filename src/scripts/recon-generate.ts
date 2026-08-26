@@ -6753,6 +6753,24 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   });
 }
 
+/**
+ * The fold plans `emitContractTs` actually threads into its single-primary
+ * hot path — a multi-step flow owns its own per-item fold loop (via
+ * `emitMultiStepExecuteHttp`) instead, so this resolves to none there.
+ * Exported and shared verbatim by `emitContractTs` and the "no fold plan
+ * resolved" diagnostic in `main()` so the two can never independently decide
+ * whether a declared foldReturn actually made it into the emitted output —
+ * any future exclusion added to the single-primary hot path must be added
+ * here too, and both call sites pick it up automatically.
+ */
+export function resolveApplicableFoldPlans<T extends { capture: Capture; isMultipart: boolean }>(
+  actions: readonly T[],
+  foldReturnSpec: FoldReturnSpec | null,
+  multiStepBody: string | undefined
+): FoldPlan[] {
+  return multiStepBody ? [] : resolveFoldPlan(actions, foldReturnSpec);
+}
+
 /** Rebuilds `value` with every occurrence of `target` (compared by object
  * identity) replaced by `replacement`, spreading every ancestor
  * array/object level so sibling fields and sibling array elements survive
@@ -6899,6 +6917,14 @@ function buildNestedSpreadOverride(
  * the observed page size on each call, stops once the response's own
  * reported total is reached or `MAX_PAGES` caps it, and merges pages by the
  * detected identity field rather than concatenating blindly.
+ *
+ * `foldMergeLines`, when non-empty, threads a resolved single-primary fold
+ * plan (see `emitContractTs`'s `singlePrimaryFoldPlans`) additively into the
+ * loop: it runs once, after every page has been fetched and de-duplicated
+ * into `itemsById`, so the drill-down call/merge sees the final assembled
+ * item set rather than only the first page's captured sample. Each merge
+ * mutates its item in place (`Object.assign`), which is visible through
+ * `itemsById`'s own stored references — no re-`set` needed.
  */
 function buildPaginatedGqlExecuteHttpBody(opts: {
   pascal: string;
@@ -6906,8 +6932,10 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
   queryConstName: string;
   gqlVariablesExpr: string;
   signal: PaginationSignal;
+  foldMergeLines: string[];
 }): string {
-  const { pascal, gqlOperationNameExpr, queryConstName, gqlVariablesExpr, signal } = opts;
+  const { pascal, gqlOperationNameExpr, queryConstName, gqlVariablesExpr, signal, foldMergeLines } =
+    opts;
   const { totalPath, arrayPath, containerPath, countKey, skipKey, pageSize, identityField } =
     signal;
 
@@ -6963,7 +6991,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       }
       skip += PAGE_SIZE;
     }
-    const truncated = itemsById.size < total;
+${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const truncated = itemsById.size < total;
     const withItems = ${withItemsOverrideExpr};
     const data = ${withTotalOverrideExpr} as ${pascal}Response;
     return { data };`;
@@ -7242,12 +7270,15 @@ export function emitContractTs(opts: {
   // single-primary read flow with a declared `foldReturn` would silently
   // drop the fold feature the flow author declared (see
   // recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
-  // Not attempted alongside `paginationSignal` — a paginated primary's items
-  // span multiple page fetches this branch never issues, so a fold plan
-  // resolving against only the FIRST page's captured sample would be
-  // incomplete; that combination is out of scope here.
-  const singlePrimaryFoldPlans =
-    multiStepBody || paginationSignal ? [] : resolveFoldPlan(actionSteps, foldReturnSpec);
+  // Also threaded additively into `paginationSignal`'s fetch loop below (see
+  // buildPaginatedGqlExecuteHttpBody) — the fold runs against the final
+  // assembled/de-duplicated page items, not just the first page's captured
+  // sample, so a paginated primary is no longer excluded from folding.
+  const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
+    actionSteps,
+    foldReturnSpec,
+    multiStepBody
+  );
   // A GraphQL primary with a resolved drill-down fold has no other REST
   // client to issue the drill request(s) with — getGql only ever speaks
   // GraphQL to the primary endpoint.
@@ -7578,8 +7609,14 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
    * merge semantics. Chain hops beyond the drill step itself are rendered
    * directly off each hop's own captured request (no state-threading
    * pipeline) since a single-primary read flow carries no submitted payload
-   * for those calls to reference. */
-  const buildFoldMergeLines = (dataVarName: string): string[] => {
+   * for those calls to reference.
+   *
+   * `itemsExprOverride`, when given, replaces the `dataVarName`+`primaryArrayPath`
+   * accessor with a caller-supplied items expression — used by the paginated
+   * GraphQL fetch loop, whose merged/de-duplicated page items already sit in
+   * a flat runtime collection (`itemsById.values()`) rather than nested at
+   * `primaryArrayPath` inside a single response object. */
+  const buildFoldMergeLines = (dataVarName: string, itemsExprOverride?: string): string[] => {
     const lines: string[] = [];
     for (const [planIndex, foldPlan] of singlePrimaryFoldPlans.entries()) {
       const primaryStep = actionSteps[foldPlan.primaryStepIndex];
@@ -7591,10 +7628,9 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       const planSuffix = singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
       const foldItemsVar = `foldItems${planSuffix}`;
-      const foldItemsExpr = pathToFoldAccessorExpr(
-        `(${dataVarName} as ${primaryArrType})`,
-        foldPlan.primaryArrayPath
-      );
+      const foldItemsExpr =
+        itemsExprOverride ??
+        pathToFoldAccessorExpr(`(${dataVarName} as ${primaryArrType})`, foldPlan.primaryArrayPath);
       const itemVar = `item${planSuffix}`;
       lines.push(
         `    const ${foldItemsVar} = ${foldItemsExpr};`,
@@ -7664,6 +7700,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   const dataFoldMergeLines = buildFoldMergeLines("data");
   const dataFoldMergeBlock =
     dataFoldMergeLines.length > 0 ? `${dataFoldMergeLines.join("\n")}\n` : "";
+  // The paginated fetch loop assembles its final page items into
+  // `itemsById` — fold onto THAT flat, de-duplicated collection (once, after
+  // the loop) rather than `data`/`primaryArrayPath`, so every item folded
+  // is the final merged item across all fetched pages, not just page one's.
+  const paginatedFoldMergeLines = paginationSignal
+    ? buildFoldMergeLines("data", "[...itemsById.values()]")
+    : [];
 
   const executeHttpBody = multiStepBody
     ? multiStepBody
@@ -7674,6 +7717,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           queryConstName: `${pascal.toUpperCase()}_QUERY`,
           gqlVariablesExpr,
           signal: paginationSignal,
+          foldMergeLines: paginatedFoldMergeLines,
         })
       : gql
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
@@ -8995,8 +9039,18 @@ async function main(): Promise<void> {
 
   // A declared foldReturn that resolves to no plan is a silent no-op otherwise
   // — the flow author gets the discarding selectReturnAction path with nothing
-  // in the output saying their declaration never applied.
-  if (foldReturnSpec !== null && resolveFoldPlan(actionSteps, foldReturnSpec).length === 0) {
+  // in the output saying their declaration never applied. A multi-step
+  // (submission) flow applies its fold via emitMultiStepExecuteHttp's own
+  // resolveFoldPlan call, entirely independent of resolveApplicableFoldPlans
+  // (which exists only to gate emitContractTs's single-primary hot path, and
+  // unconditionally reports zero plans once multiStepBody is set) — so this
+  // diagnostic must consult the SAME resolution each path actually applies,
+  // or it falsely reports "no fold plan resolved" for every multi-step flow
+  // with a working foldReturn.
+  const effectiveFoldPlanCount = multiStepBody
+    ? resolveFoldPlan(actionSteps, foldReturnSpec).length
+    : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length;
+  if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
     logger.warn(
       `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
     );
