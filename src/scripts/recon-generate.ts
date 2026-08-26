@@ -5303,16 +5303,16 @@ function findObjectArrayField(
  * more genuine per-item data than a small real nested object-array; a
  * caller that just wants the first real array (the common case) is
  * unaffected since it still comes first. */
-/** Memoized the same way as {@link findAllObjectArrayFields} (see
- * {@link objectArrayFieldsCache}) — this is the candidate list
- * {@link selectDisambiguatedCandidate} and {@link buildFoldPlanFromSpec}
- * re-derive off the SAME responseBody on every chain hop/disambiguation, so
- * it is exactly as hot a redundant-recompute site as the underlying scan. */
 const objectArrayFieldsOrWholeObjectCache = new WeakMap<
   object,
   { path: string[]; items: Record<string, unknown>[] }[]
 >();
 
+/** Memoized the same way as {@link findAllObjectArrayFields} (see
+ * {@link objectArrayFieldsCache}) — this is the candidate list
+ * {@link selectDisambiguatedCandidate} and {@link buildFoldPlanFromSpec}
+ * re-derive off the SAME responseBody on every chain hop/disambiguation, so
+ * it is exactly as hot a redundant-recompute site as the underlying scan. */
 export function findAllObjectArrayFieldsOrWholeObject(
   value: unknown,
   path: string[] = []
@@ -6191,13 +6191,13 @@ function objectItemsAtPath(
  * through a request HEADER), so matching a spec's `joinFields` against the
  * drill capture must search headers even though the structural heuristic
  * deliberately doesn't (see {@link collectRequestStringValues}'s docstring). */
+const requestValuesCache = new WeakMap<Capture, Set<string>>();
+
 /** Memoized like {@link objectArrayFieldsCache} — the same capture's
  * request/header values are re-derived on every fold-chain candidate that
  * threads through it. Keyed on `Capture` identity rather than
  * `responseBody`, since this walks the capture's request side (URL, body,
  * headers), not its response. */
-const requestValuesCache = new WeakMap<Capture, Set<string>>();
-
 export function collectRequestValuesIncludingHeaders(capture: Capture): Set<string> {
   const cached = requestValuesCache.get(capture);
   if (cached) return cached;
