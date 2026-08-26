@@ -1177,6 +1177,23 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Is this flow step's intent to check a checkbox or select a radio option?
+ * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
+ * from crediting a checkbox/radio-intent step: those signals move whenever ANY
+ * field on the page changes (e.g. an earlier fill), so they say nothing about
+ * whether THIS control actually committed. A checkbox/radio-intent step must be
+ * verified by the element's own committed state (`checkboxStateVerified`) or a
+ * real network/url/selection-state signal, the same discipline `isAdvanceStep`
+ * already applies to advance/Next steps. Keyed on the ORIGINAL step instruction,
+ * via the same parsers (`parseCheckStep`/`parseRadioStep`) their primitives use.
+ * Pure; unit-testable seam paralleling `isAdvanceStep`.
+ */
+export function isCheckboxOrRadioIntentStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  return parseCheckStep(instruction) !== null || parseRadioStep(instruction) !== null;
+}
+
+/**
  * Whether `snapshotPage` should build the per-element selection baseline
  * (`StepSnapshot.selectionStateByXpath`) for this step — i.e. whether
  * `verifyDomEffect`'s element-scoped click read-back is allowed to credit it.
@@ -3465,6 +3482,39 @@ const STATE_CLASS_METHODS = new Set([
  */
 function xpathBody(selector: string): string | null {
   return selector.startsWith("xpath=") ? selector.slice("xpath=".length) : null;
+}
+
+/**
+ * Stagehand's resolved xpath (`nodeToAbsoluteXPath` in its DOM helper) is
+ * built purely from sibling-position counts — `/html[1]/body[1]/div[7]/label[1]/input[1]`,
+ * with no `@id`/`@name` predicates anywhere in the path. A validation
+ * re-render triggered by an earlier field's blur/change (e.g. an inline
+ * error node inserted as a preceding sibling of an ancestor container)
+ * shifts every ancestor's positional index below the insertion point, so
+ * the full absolute path stops matching the live DOM even though the leaf
+ * element itself never moved or re-rendered. The leaf's own count of
+ * same-tag preceding siblings is untouched by an unrelated ancestor
+ * insertion, so re-anchoring on just the last two path steps (the leaf and
+ * its immediate parent, tag + position predicate intact) recovers the live
+ * node deterministically without guessing at a new selector.
+ */
+function xpathTailForRetarget(xpath: string): string | null {
+  const steps: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of xpath) {
+    if (ch === "[") depth++;
+    if (ch === "]") depth--;
+    if (ch === "/" && depth === 0) {
+      if (current) steps.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) steps.push(current);
+  const tail = steps.slice(-2).filter(Boolean);
+  return tail.length > 0 ? tail.join("/") : null;
 }
 
 /**
@@ -9876,7 +9926,14 @@ export async function executeStepWithHealing(params: {
           // default action, but isolated-world page.evaluate() click()s don't
           // reliably trigger that default action — same gap N+42 documented
           // for direct checkbox/radio clicks.
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${clickActivationExpr("el")} return { fired: true, kind: "click" }; })()`;
+          // xpathTail: see xpathTailForRetarget's docblock — Stagehand's
+          // absolute xpath is pure sibling-position, so a re-render that
+          // shifted an ANCESTOR's index (a validation message inserted by an
+          // earlier field's blur) leaves the primary evaluate with no match
+          // even though the leaf element is still live; re-anchor on the
+          // leaf's own last two steps before giving up.
+          const xpathTail = xpathTailForRetarget(xpath);
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${clickActivationExpr("el")} return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -9898,6 +9955,10 @@ export async function executeStepWithHealing(params: {
               const isInvalid = ${INVALID_MARKER_EL_EXPR};
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
+              if (!node && ${JSON.stringify(xpathTail)}) {
+                const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                node = r2.singleNodeValue;
+              }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
                 if (node.getAttribute && isInvalid(node)) return true;
@@ -10028,7 +10089,14 @@ export async function executeStepWithHealing(params: {
           // actually run below (requireSubmitEndpoint) to corroborate — otherwise
           // only a strong signal (network/url) or a verified checkbox state may
           // pass. Non-final/submit steps are unaffected.
-          const weakDomSignalsAllowed = (!isFinalStep && !submitStep) || requireSubmitEndpoint;
+          // Also excludes a checkbox/radio-intent step: `retryFormValueChanged`
+          // is a page-wide signature that moves whenever ANY field changes (an
+          // earlier fill included), so it says nothing about whether THIS
+          // control committed — only the element's own `checkboxStateVerified`
+          // (or a real network/url/selection-state signal) may verify it.
+          const weakDomSignalsAllowed =
+            ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
+            !isCheckboxOrRadioIntentStep(step);
           let retryVerified =
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
