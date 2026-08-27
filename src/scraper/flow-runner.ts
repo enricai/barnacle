@@ -3831,6 +3831,50 @@ async function selectionAncestorChanged(
 }
 
 /**
+ * Structural marker probe for the n+16 fallback's weak-signal gate — reuses
+ * the SAME `hasMarker` predicate {@link selectionAncestorChanged} diffs
+ * against, but only asks presence, not before/after equality. A click that
+ * resolves onto (or under) a `role=option`/aria-selection/component-kit
+ * marker element must clear the strict {@link selectionAncestorChanged} /
+ * {@link selectionSiblingCommittedValueChanged} signal to be credited —
+ * html-byte-delta/text-change/form-value alone (a label re-render with no
+ * committed-control change) is exactly the reported defect
+ * (textChanged=true, selectionStateChanged=false, verified=true) this
+ * closes off. Returns `false` on any miss / malformed result / evaluate
+ * throw (defer to the strict signal already gating `retryVerified`).
+ */
+async function clickTargetHasSelectionMarker(
+  target: FrameTarget,
+  leafXpath: string
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const fp = (el) => { const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; };
+    const SELECTION_ROLES = new Set(["option", "tab", "switch", "radio", "checkbox", "menuitemcheckbox"]);
+    const KIT_MARKER_SEL = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const hasMarker = (el, f) => {
+      if (f.kind || f.ariaPressed || f.ariaChecked || f.ariaSelected || f.dataState || f.dataSelected || f.dataChecked || f.checked) return true;
+      if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
+      if (el.matches(KIT_MARKER_SEL)) return true;
+      return false;
+    };
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    let node = r.singleNodeValue;
+    if (!node) return false;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (node.getAttribute && hasMarker(node, fp(node))) return true;
+      node = node.parentElement;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Sibling read-back for the case NEITHER the clicked leaf NOR any of its
  * ancestors ({@link selectionAncestorChanged}) ever change: a design-system
  * combobox where the click re-renders only the visible trigger label, and the
@@ -10203,9 +10247,19 @@ export async function executeStepWithHealing(params: {
           // earlier fill included), so it says nothing about whether THIS
           // control committed — only the element's own `checkboxStateVerified`
           // (or a real network/url/selection-state signal) may verify it.
+          // A click that resolved onto (or under) a selection-marker element
+          // (role=option, aria-selected/checked/pressed, a component-kit
+          // marker) must clear the strict retrySelectionStateChanged signal —
+          // the weak html/text/form-value OR-branch alone can never credit
+          // it, closing the reported textChanged=true/selectionStateChanged=
+          // false/verified=true defect.
+          const clickTargetIsSelectionMarker =
+            xpath !== null &&
+            (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
-            !isCheckboxOrRadioIntentStep(step);
+            !isCheckboxOrRadioIntentStep(step) &&
+            !clickTargetIsSelectionMarker;
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
