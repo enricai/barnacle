@@ -69,21 +69,32 @@ export const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(","
  * Browser-context regex-literal source that recognizes a selection state
  * expressed purely as a CSS class-name token — a custom option widget authored
  * with no role, aria-state, or data-state marker, just a class swap on select
- * (e.g. `class="option selected"`). Shared verbatim (not re-derived) across every
- * "does this element carry a selection marker" predicate — the n+16 actuation
- * retarget below, `flow-runner.ts`'s `selectionAncestorChanged` /
- * `clickTargetHasSelectionMarker` verification walks, and the page-wide
- * `DOM_SNAPSHOT_EXPR` diagnostic signature — so a class-only widget can never
- * be invisible to the strict verification gate while still visible to the
- * weak diagnostic one.
+ * (e.g. `class="option selected"`). Matches both a bare state word
+ * (`selected`/`selectable`/`active`/`checked`) and a hyphen-compound token
+ * ENDING in one (`is-selected`, `Mui-selected`, `result-selected`,
+ * `result-selectable`) — a custom option list is as likely to namespace its
+ * state word onto a domain-specific prefix (`result-selectable` flipping to
+ * `result-selected` on commit) as to use a bare/kit-prefixed one, and the
+ * prior enumeration of exact whole tokens only ever matched the latter shape.
+ * Shared verbatim (not re-derived) across every "does this element carry a
+ * selection marker" predicate — the n+16 actuation retarget below,
+ * `flow-runner.ts`'s `selectionAncestorChanged` / `clickTargetHasSelectionMarker`
+ * verification walks, and the page-wide `DOM_SNAPSHOT_EXPR` diagnostic
+ * signature — so a class-only widget can never be invisible to the strict
+ * verification gate while still visible to the weak diagnostic one.
  */
 export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
-  "/(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/";
+  "/(?:^|\\s)(?:[\\w-]*-)?(selected|selectable|active|checked)(?:\\s|$)/";
 
 /**
- * Tag-agnostic class-token selector union — one bare `.token` clause per
- * token {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} recognizes — shared
- * between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
+ * Tag-agnostic class-token selector union — a candidate pre-filter for
+ * {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}'s bare state words plus a
+ * `[class*="-word"]` substring clause per hyphen-compound shape it also
+ * recognizes (CSS has no "class token ending in" selector, so this
+ * over-matches slightly — e.g. an unrelated `my-selected-item` token — and
+ * relies on every caller re-testing candidates against the regex above for
+ * the precise decision, exactly as `DOM_SNAPSHOT_EXPR`'s `clsHit` already
+ * does). Shared between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
  * `SELECTION_STATE_MAP_EXPR`'s baseline capture so a class-token-marked
  * element gets baseline coverage under the SAME vocabulary the diagnostic
  * signature already uses, rather than a second drifting list. Deliberately
@@ -94,7 +105,7 @@ export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
  * elements it exists to catch.
  */
 export const SELECTION_MARKER_CLASS_SELECTOR_SRC =
-  ".selected,.active,.checked,.Mui-selected,.is-selected";
+  '.selected,.selectable,.active,.checked,[class*="-selected"],[class*="-selectable"],[class*="-active"],[class*="-checked"]';
 
 /**
  * How far up from a resolved leaf {@link retargetToSelectionMarkerExpr} (and

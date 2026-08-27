@@ -10337,6 +10337,20 @@ export async function executeStepWithHealing(params: {
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
+          // A click's weak signal must be a genuine COMMITTED-state change
+          // (formValueChanged), not a bare textChanged/htmlDelta — a label
+          // re-render (new option text, a re-rendered count) satisfies
+          // textChanged without the widget's real state (a hidden sibling
+          // input value, or a selection-marker flip already caught by
+          // retrySelectionStateChanged/clickTargetIsSelectionMarker above)
+          // ever moving. Non-click probes (fills, native selects) keep the
+          // original OR-of-any-weak-signal behavior — they have no
+          // equivalent selection-marker/committed-value read-back to defer
+          // to instead.
+          const weakSignalMatched =
+            probeResult.kind === "click"
+              ? retryFormValueChanged
+              : retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged;
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
@@ -10345,8 +10359,7 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               checkboxStateVerified ||
               retrySelectionStateChanged ||
-              (weakDomSignalsAllowed &&
-                (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+              (weakDomSignalsAllowed && weakSignalMatched));
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
