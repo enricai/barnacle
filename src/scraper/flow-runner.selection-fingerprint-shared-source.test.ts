@@ -64,7 +64,14 @@ describe("flow-runner/selection fingerprint — shared in-page source", () => {
     expect(occurrences).toBeLessThanOrEqual(3);
   });
 
-  it("every leaf-scoped selection read-back falls back to the ancestor walk", () => {
+  it("selectionSiblingCommittedValueChanged interpolates the shared xpath source", () => {
+    const fnStart = SOURCE.indexOf("async function selectionSiblingCommittedValueChanged(");
+    expect(fnStart, "selectionSiblingCommittedValueChanged not found").toBeGreaterThan(-1);
+    const fnBody = SOURCE.slice(fnStart, SOURCE.indexOf("\n}\n", fnStart));
+    expect(fnBody).toContain(`const xpathOf = ${XPATH_NEEDLE};`);
+  });
+
+  it("every leaf-scoped selection read-back falls back to the ancestor walk, then the sibling committed-value search", () => {
     // There are exactly two element-scoped selection read-backs: the primary one
     // in `verifyDomEffect`'s click branch and the `retrySelectionStateChanged`
     // n+16 native-click fallback. Both must consult `selectionAncestorChanged`
@@ -75,9 +82,13 @@ describe("flow-runner/selection fingerprint — shared in-page source", () => {
     const readbackSites =
       SOURCE.split("selectionFingerprintChanged(preFingerprint, postFingerprint)").length - 1;
     const ancestorFallbacks = SOURCE.split("selectionAncestorChanged(").length - 1;
+    const siblingFallbacks = SOURCE.split("selectionSiblingCommittedValueChanged(").length - 1;
     // Two read-back sites; `selectionAncestorChanged` appears once at its
-    // definition plus once per read-back fallback = 3 references total.
+    // definition plus once per read-back fallback = 3 references total. Same
+    // shape for `selectionSiblingCommittedValueChanged`, chained after the
+    // ancestor walk at both sites.
     expect(readbackSites).toBe(2);
     expect(ancestorFallbacks).toBe(3);
+    expect(siblingFallbacks).toBe(3);
   });
 });
