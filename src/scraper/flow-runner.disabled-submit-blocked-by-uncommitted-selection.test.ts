@@ -160,12 +160,11 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
     // like `flow-runner.list-select-real-actuation.test.ts`.
     const win = window as unknown as { XPathResult?: unknown };
     win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
-    (
-      document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }
-    ).evaluate = (expr: string) => {
-      const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
-      return { singleNodeValue: node };
-    };
+    (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
+      (expr: string) => {
+        const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
+        return { singleNodeValue: node };
+      };
 
     const state: CheckoutSequenceState = {
       url: BASE_URL,
@@ -183,11 +182,10 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
     const page: Page = {
       evaluate: async (expr: unknown): Promise<unknown> => {
         const src = String(expr);
-        const fn = new window.Function(
-          "document",
-          "XPathResult",
-          `return (${src});`
-        ) as (d: unknown, x: unknown) => unknown;
+        const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
+          d: unknown,
+          x: unknown
+        ) => unknown;
         return fn(document, win.XPathResult);
       },
       url: () => state.url,
