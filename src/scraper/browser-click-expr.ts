@@ -93,7 +93,8 @@ export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
  * gating the selector on a tag or role attribute would exclude exactly the
  * elements it exists to catch.
  */
-export const SELECTION_MARKER_CLASS_SELECTOR_SRC = ".selected,.active,.checked,.Mui-selected,.is-selected";
+export const SELECTION_MARKER_CLASS_SELECTOR_SRC =
+  ".selected,.active,.checked,.Mui-selected,.is-selected";
 
 /**
  * How far up from a resolved leaf {@link retargetToSelectionMarkerExpr} (and
@@ -147,6 +148,17 @@ export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string)
       if (__smRoles.has((node.getAttribute("role") || "").toLowerCase())) return true;
       if (typeof node.matches === "function" && node.matches(__smKitSel)) return true;
       if (__smClassRx.test(node.getAttribute("class") || "")) return true;
+      // A class-token-only widget whose click handler is broken never adds the
+      // token to THIS node, but a sibling still carrying it (the untouched
+      // prior selection) proves the group uses the class-token convention —
+      // so this node is a member of that same selection group.
+      if (node.parentElement && node.parentElement.children) {
+        const __smSiblings = node.parentElement.children;
+        for (let __smI = 0; __smI < __smSiblings.length; __smI++) {
+          const __smSib = __smSiblings[__smI];
+          if (__smSib !== node && __smClassRx.test(__smSib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     let __smNode = ${elVar};

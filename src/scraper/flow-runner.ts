@@ -3849,6 +3849,16 @@ async function selectionAncestorChanged(
       if (el.matches(KIT_MARKER_SEL)) return true;
       // Fallback: a widget authored with no role/aria-state, marked purely by a class token.
       if (CLASS_TOKEN_RX.test(el.getAttribute("class") || "")) return true;
+      // Fallback: a broken click handler never adds the token to THIS node, but a
+      // sibling still carrying it (the untouched prior selection) proves the
+      // group uses the class-token convention — so this node is a member of it.
+      if (el.parentElement && el.parentElement.children) {
+        const siblings = el.parentElement.children;
+        for (let i = 0; i < siblings.length; i++) {
+          const sib = siblings[i];
+          if (sib !== el && CLASS_TOKEN_RX.test(sib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     const changed = (a, b) =>
@@ -3907,6 +3917,13 @@ async function clickTargetHasSelectionMarker(
       if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
       if (el.matches(KIT_MARKER_SEL)) return true;
       if (CLASS_TOKEN_RX.test(el.getAttribute("class") || "")) return true;
+      if (el.parentElement && el.parentElement.children) {
+        const siblings = el.parentElement.children;
+        for (let i = 0; i < siblings.length; i++) {
+          const sib = siblings[i];
+          if (sib !== el && CLASS_TOKEN_RX.test(sib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
