@@ -84,6 +84,16 @@ describe("retargetToSelectionMarkerExpr", () => {
     expect(result.matched).toBe(true);
   });
 
+  it("retargets onto a class-token-marked ancestor (no role/aria) the same way it does for a role-marked one", () => {
+    const option = makeElement("li", { class: "result-item result-selectable selected" });
+    const label = link(option, makeElement("span"));
+
+    const result = run(label);
+
+    expect(result.el).toBe(option);
+    expect(result.matched).toBe(true);
+  });
+
   it("leaves the leaf untouched and reports no match when no ancestor carries a marker", () => {
     const container = makeElement("div");
     const button = link(container, makeElement("button"));

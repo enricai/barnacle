@@ -66,6 +66,37 @@ export const SELECTION_MARKER_ROLES = [
 export const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(",");
 
 /**
+ * Browser-context regex-literal source that recognizes a selection state
+ * expressed purely as a CSS class-name token — a custom option widget authored
+ * with no role, aria-state, or data-state marker, just a class swap on select
+ * (e.g. `class="option selected"`). Shared verbatim (not re-derived) across every
+ * "does this element carry a selection marker" predicate — the n+16 actuation
+ * retarget below, `flow-runner.ts`'s `selectionAncestorChanged` /
+ * `clickTargetHasSelectionMarker` verification walks, and the page-wide
+ * `DOM_SNAPSHOT_EXPR` diagnostic signature — so a class-only widget can never
+ * be invisible to the strict verification gate while still visible to the
+ * weak diagnostic one.
+ */
+export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
+  "/(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/";
+
+/**
+ * Tag-agnostic class-token selector union — one bare `.token` clause per
+ * token {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} recognizes — shared
+ * between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
+ * `SELECTION_STATE_MAP_EXPR`'s baseline capture so a class-token-marked
+ * element gets baseline coverage under the SAME vocabulary the diagnostic
+ * signature already uses, rather than a second drifting list. Deliberately
+ * NOT tag-qualified (no `button.selected`/`[role=option].selected`/etc.):
+ * the whole point of this vocabulary extension is a widget authored with NO
+ * role/aria-state/component-kit marker — often a bare `<li>` or `<div>` — so
+ * gating the selector on a tag or role attribute would exclude exactly the
+ * elements it exists to catch.
+ */
+export const SELECTION_MARKER_CLASS_SELECTOR_SRC =
+  ".selected,.active,.checked,.Mui-selected,.is-selected";
+
+/**
  * How far up from a resolved leaf {@link retargetToSelectionMarkerExpr} (and
  * `flow-runner.ts`'s `selectionAncestorChanged`) walks looking for the
  * option/toggle that carries the selection marker. Design-system options nest
@@ -104,6 +135,7 @@ export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string)
   return `{
     const __smRoles = new Set(${JSON.stringify(SELECTION_MARKER_ROLES)});
     const __smKitSel = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const __smClassRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC};
     const __smHasMarker = (node) => {
       if (!node || typeof node.getAttribute !== "function") return false;
       if (
@@ -115,6 +147,18 @@ export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string)
       ) return true;
       if (__smRoles.has((node.getAttribute("role") || "").toLowerCase())) return true;
       if (typeof node.matches === "function" && node.matches(__smKitSel)) return true;
+      if (__smClassRx.test(node.getAttribute("class") || "")) return true;
+      // A class-token-only widget whose click handler is broken never adds the
+      // token to THIS node, but a sibling still carrying it (the untouched
+      // prior selection) proves the group uses the class-token convention —
+      // so this node is a member of that same selection group.
+      if (node.parentElement && node.parentElement.children) {
+        const __smSiblings = node.parentElement.children;
+        for (let __smI = 0; __smI < __smSiblings.length; __smI++) {
+          const __smSib = __smSiblings[__smI];
+          if (__smSib !== node && __smClassRx.test(__smSib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     let __smNode = ${elVar};

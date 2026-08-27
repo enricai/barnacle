@@ -44,6 +44,8 @@ import {
   clickActivationExpr,
   MAX_SELECTION_ANCESTOR_DEPTH,
   retargetToSelectionMarkerExpr,
+  SELECTION_MARKER_CLASS_SELECTOR_SRC,
+  SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
   WIDGET_KIT_SELECTION_MARKER_SELECTORS,
 } from "@/scraper/browser-click-expr";
 import {
@@ -719,14 +721,26 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
 })`;
 /**
  * Browser-context predicate string: given an element `el` in scope, is it
- * disabled (native `disabled` property or `aria-disabled="true"`)? A click
- * that resolves to a disabled target cannot have done anything, regardless
- * of what other DOM signals moved. Interpolate into a `page.evaluate` expr
- * where `el` is bound.
+ * disabled — either directly (native `disabled` property or
+ * `aria-disabled="true"`) or via an ancestor within
+ * {@link MAX_SELECTION_ANCESTOR_DEPTH} levels? Stagehand can resolve a click
+ * to a decorative leaf (a plain `<span>`/text node) nested inside a
+ * non-form clickable wrapper (`<div role="button" aria-disabled="true">`) —
+ * the leaf itself carries no `disabled` property and no `aria-disabled`
+ * attribute of its own, so a leaf-only check misses it even though the
+ * click can't have done anything. Climbs the SAME bounded depth as
+ * {@link NEARBY_SELECTION_CONTAINER_FN_SRC} rather than an unbounded walk,
+ * so a disabled ancestor far up the tree (e.g. a disabled `<fieldset>`
+ * wrapping an entire form section) doesn't false-positive-veto an
+ * unrelated enabled control nested arbitrarily deep inside it. Interpolate
+ * into a `page.evaluate` expr where `el` is bound.
  */
 const DISABLED_MARKER_EL_EXPR = `((el) => {
-  if (el.disabled === true) return true;
-  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+  for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && el; depth++) {
+    if (el.disabled === true) return true;
+    if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+    el = el.parentElement;
+  }
   return false;
 })`;
 /**
@@ -916,11 +930,17 @@ export function prepareFailureDumpBody(raw: unknown): string | null {
 }
 
 /**
- * Trust boundary: static string literal, fixed at compile time. No interpolation
- * means no injection surface. Runs in browser context and returns a typed-narrow
- * shape via Runtime.callFunctionOn.
+ * Trust boundary: composed only from compile-time constants
+ * ({@link SELECTION_MARKER_CLASS_SELECTOR_SRC},
+ * {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}) — no runtime/request
+ * interpolation, so no injection surface. Runs in browser context and returns
+ * a typed-narrow shape via Runtime.callFunctionOn. The class-token selector
+ * and regex are the SAME source {@link SELECTION_STATE_MAP_EXPR} uses to
+ * decide which class-only-marked elements get a strict-verification baseline
+ * entry, so the weak page-wide signature and the strict per-element gate
+ * agree on exactly what counts as a class-token selection marker.
  */
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active"; const classRx = /(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
 
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
@@ -3684,7 +3704,13 @@ const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
  * permanently invisible to the read-back — the baseline is where a hidden
  * committed-value control gets ITS OWN entry (keyed by its own xpath, reusing
  * the existing `value` field), so a later diff has something to compare
- * against.
+ * against. The selector also folds in
+ * {@link SELECTION_MARKER_CLASS_SELECTOR_SRC} — the SAME class-token vocabulary
+ * `DOM_SNAPSHOT_EXPR`'s weak diagnostic signature uses — so a custom option
+ * widget that flips a class on ITSELF (`class="option selected"`, no role/
+ * aria-state) gets its own baseline entry: without it,
+ * {@link selectionAncestorChanged}'s ancestor-diff would have nothing to
+ * compare against for a widget that never writes a hidden sibling control.
  */
 const SELECTION_STATE_MAP_EXPR = `(() => {
   const b = document.body;
@@ -3697,7 +3723,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };
-  const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]";
+  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
     (el.tagName === "INPUT" || el.tagName === "SELECT") &&
@@ -3826,12 +3852,25 @@ async function selectionAncestorChanged(
     const fp = (el) => { const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; };
     const SELECTION_ROLES = new Set(["option", "tab", "switch", "radio", "checkbox", "menuitemcheckbox"]);
     const KIT_MARKER_SEL = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const CLASS_TOKEN_RX = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC};
     const hasMarker = (el, f) => {
       // Standards first: fingerprint fields / aria-states, then a selection role.
       if (f.kind || f.ariaPressed || f.ariaChecked || f.ariaSelected || f.dataState || f.dataSelected || f.dataChecked || f.checked) return true;
       if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
       // Fallback: a component-kit selection widget that exposes no standard marker.
       if (el.matches(KIT_MARKER_SEL)) return true;
+      // Fallback: a widget authored with no role/aria-state, marked purely by a class token.
+      if (CLASS_TOKEN_RX.test(el.getAttribute("class") || "")) return true;
+      // Fallback: a broken click handler never adds the token to THIS node, but a
+      // sibling still carrying it (the untouched prior selection) proves the
+      // group uses the class-token convention — so this node is a member of it.
+      if (el.parentElement && el.parentElement.children) {
+        const siblings = el.parentElement.children;
+        for (let i = 0; i < siblings.length; i++) {
+          const sib = siblings[i];
+          if (sib !== el && CLASS_TOKEN_RX.test(sib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     const changed = (a, b) =>
@@ -3884,10 +3923,19 @@ async function clickTargetHasSelectionMarker(
     const fp = (el) => { const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; };
     const SELECTION_ROLES = new Set(["option", "tab", "switch", "radio", "checkbox", "menuitemcheckbox"]);
     const KIT_MARKER_SEL = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const CLASS_TOKEN_RX = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC};
     const hasMarker = (el, f) => {
       if (f.kind || f.ariaPressed || f.ariaChecked || f.ariaSelected || f.dataState || f.dataSelected || f.dataChecked || f.checked) return true;
       if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
       if (el.matches(KIT_MARKER_SEL)) return true;
+      if (CLASS_TOKEN_RX.test(el.getAttribute("class") || "")) return true;
+      if (el.parentElement && el.parentElement.children) {
+        const siblings = el.parentElement.children;
+        for (let i = 0; i < siblings.length; i++) {
+          const sib = siblings[i];
+          if (sib !== el && CLASS_TOKEN_RX.test(sib.getAttribute("class") || "")) return true;
+        }
+      }
       return false;
     };
     const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
