@@ -9,6 +9,7 @@ import {
   findAllObjectArrayFieldsOrWholeObject,
   getScanPrimaryCandidateGroupsCallCountForTest,
   resetScanPrimaryCandidateGroupsCallCountForTest,
+  resolveApplicableFoldPlans,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
 import {
@@ -1126,6 +1127,57 @@ describe("resolveFoldPlan — spec plan for a second, independent array on an al
   });
 });
 
+describe("resolveFoldPlan — spec target shares a drillStepIndex with a shallower structural target", () => {
+  it("replaces the structural target's array level/joinFields wholesale with the spec's own, instead of discarding the spec or merging only joinFields", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/events/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          events: [
+            { eventId: "e1", featured: true, sessions: [{ id: "s1" }, { id: "s2" }] },
+            { eventId: "e2", featured: false, sessions: [{ id: "s3" }] },
+          ],
+        },
+        timestamp: "2025-03-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/events/detail",
+        requestPostData: JSON.stringify({ featured: true }),
+        responseBody: { id: "s1", featured: true, venue: "Main Hall" },
+        timestamp: "2025-03-01T00:00:01Z",
+      }),
+    ];
+
+    // The structural heuristic independently finds a `events`-level target
+    // keyed on the unrelated boolean `featured` field, sharing the SAME
+    // drillStepIndex (r1) the spec below also names.
+    const structuralPlans = detectDrillDownFoldPlan(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["events"]);
+    expect(structuralPlans[0]?.targets[0]?.joinFields).toEqual(["featured"]);
+    expect(structuralPlans[0]?.targets[0]?.drillStepIndex).toBe(1);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/events/detail",
+      resultsPath: "events.*.sessions",
+      joinFields: ["id"],
+    };
+
+    const resolved = resolveFoldPlan(steps, spec);
+
+    // Before the fix, the mismatched primaryArrayPath ('events' vs.
+    // ['events','*','sessions']) sent this spec into the independent-plan
+    // branch, whose specConsumesOnlyItsOwnIndices guard rejected it because
+    // its target's chain (drillStepIndex 1) was already consumedIndices —
+    // silently discarding the declared joinFields and array level entirely.
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["events", "*", "sessions"]);
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["id"]);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(1);
+  });
+});
+
 describe("resolveFoldPlan — multiple independent primaries", () => {
   it("returns a resolved fold plan for EVERY independent primary/drill-down pair when neither is disqualified", () => {
     const steps: MulticallFixtureStep[] = [
@@ -1575,5 +1627,80 @@ describe("resolveFoldPlan — large capture set performance regression", () => {
       },
     ]);
     expect(elapsedMs).toBeLessThan(2000);
+  });
+});
+
+describe("resolveApplicableFoldPlans — collapsing pagination/re-filter variant plans", () => {
+  it("collapses two re-queried primary occurrences that each independently drill a DIFFERENT item into one plan, keeping only the freshest", () => {
+    const SEARCH_URL = "https://api.example.com/catalog/search/";
+    const DETAIL_URL = "https://api.example.com/catalog/detail/";
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: SEARCH_URL,
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-1" }] },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      buildStep("d0", {
+        url: DETAIL_URL,
+        requestPostData: '{"sku":"sku-1"}',
+        responseBody: { detail: [{ sku: "sku-1", region: "north" }] },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      buildStep("r1", {
+        url: SEARCH_URL,
+        requestPostData: '{"page":2}',
+        responseBody: { results: [{ sku: "sku-2" }] },
+        timestamp: "2024-01-01T00:00:02Z",
+      }),
+      buildStep("d1", {
+        url: DETAIL_URL,
+        requestPostData: '{"sku":"sku-2"}',
+        responseBody: { detail: [{ sku: "sku-2", region: "south" }] },
+        timestamp: "2024-01-01T00:00:03Z",
+      }),
+    ];
+
+    // The structural detector itself still yields two separate plans here:
+    // r1's drill (d1) doesn't share a drillStepIndex with r0's drill (d0),
+    // so the freshest-wins superset check inside detectDrillDownFoldPlan
+    // never fires and both occurrences are pushed as their OWN plan.
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans.length).toBe(2);
+
+    // resolveApplicableFoldPlans is the emission-only boundary that must
+    // collapse these to one — the one anchored on the later (freshest)
+    // primary occurrence — so emitContractTs's single-primary hot path
+    // emits exactly one drill-down+fold block instead of one per variant.
+    const applicablePlans = resolveApplicableFoldPlans(
+      steps as unknown as Parameters<typeof resolveFoldPlan>[0],
+      null,
+      undefined
+    );
+
+    expect(applicablePlans.length).toBe(1);
+    expect(applicablePlans[0]?.primaryStepIndex).toBe(2);
+    expect(applicablePlans[0]?.targets[0]?.drillStepIndex).toBe(3);
+  });
+
+  it("keeps distinct targets that share the SAME primaryStepIndex, never dropping ties", () => {
+    const plan = detect(buildMulticallSingleShotSearchTwoIndependentArraysActionSteps());
+    expect(plan).not.toBeNull();
+
+    const structuralPlans = detectAll(
+      buildMulticallSingleShotSearchTwoIndependentArraysActionSteps()
+    );
+    const applicablePlans = resolveApplicableFoldPlans(
+      buildMulticallSingleShotSearchTwoIndependentArraysActionSteps() as unknown as Parameters<
+        typeof resolveFoldPlan
+      >[0],
+      null,
+      undefined
+    );
+
+    // Both structural plans anchor on independent primary arrays (not a
+    // shared primaryStepIndex/primaryArrayPath pair), so the collapse must
+    // leave both untouched rather than accidentally merging them.
+    expect(applicablePlans.length).toBe(structuralPlans.length);
   });
 });

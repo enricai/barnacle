@@ -6692,6 +6692,32 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
   }
+  // No exact (primaryStepIndex, primaryArrayPath) match, but a structural
+  // plan on the SAME primaryStepIndex may still have independently detected
+  // a target at the SAME drillStepIndex a spec target names — just at the
+  // wrong array level (e.g. a shallower structural guess that happens to
+  // share the spec's drill-down call). That structural target's own
+  // primaryArrayPath/drillArrayPath/joinFields describe the heuristic's
+  // guess, not the flow author's declaration, so the spec target replaces
+  // it wholesale rather than being discarded by the mismatched-array-path
+  // branch below or partially merged as if the array level matched.
+  const specDrillStepIndices = new Set(specPlan.targets.map((target) => target.drillStepIndex));
+  const sharedDrillPlan = structuralPlans.find(
+    (plan) =>
+      plan.primaryStepIndex === specPlan.primaryStepIndex &&
+      plan.targets.some((target) => specDrillStepIndices.has(target.drillStepIndex))
+  );
+  if (sharedDrillPlan !== undefined) {
+    const remainingTargets = sharedDrillPlan.targets.filter(
+      (target) => !specDrillStepIndices.has(target.drillStepIndex)
+    );
+    const otherPlans = structuralPlans.filter((plan) => plan !== sharedDrillPlan);
+    const keptStructuralPlans =
+      remainingTargets.length === 0
+        ? otherPlans
+        : [...otherPlans, { ...sharedDrillPlan, targets: remainingTargets }];
+    return [...keptStructuralPlans, specPlan];
+  }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
   // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
   // array on that step, not the whole step. A spec whose resultsPath names
@@ -6830,13 +6856,36 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
  * whether a declared foldReturn actually made it into the emitted output —
  * any future exclusion added to the single-primary hot path must be added
  * here too, and both call sites pick it up automatically.
+ *
+ * `resolveFoldPlan` itself can surface several plans for the SAME
+ * primaryArrayPath/endpoint — one per pagination/re-filter occurrence of the
+ * primary that independently threads a drill-down — because
+ * `selectEffectiveResponseBody`/`mergeFoldedPrimaryBodies` need every one of
+ * them to merge shapes for schema inference. Emission has no such need, so
+ * this collapses those down to the single freshest occurrence (highest
+ * `primaryStepIndex`) per distinct primaryArrayPath/endpoint before
+ * returning, keeping `resolveFoldPlan`'s own multi-plan output untouched.
  */
 export function resolveApplicableFoldPlans<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null,
   multiStepBody: string | undefined
 ): FoldPlan[] {
-  return multiStepBody ? [] : resolveFoldPlan(actions, foldReturnSpec);
+  if (multiStepBody) return [];
+  const plans = resolveFoldPlan(actions, foldReturnSpec);
+  const primaryKey = (plan: FoldPlan): string =>
+    `${endpointKey(actions[plan.primaryStepIndex]!.capture.url)}\u0000${plan.primaryArrayPath.join(".")}`;
+  const freshestStepIndexByPrimary = new Map<string, number>();
+  for (const plan of plans) {
+    const key = primaryKey(plan);
+    const freshest = freshestStepIndexByPrimary.get(key);
+    if (freshest === undefined || plan.primaryStepIndex > freshest) {
+      freshestStepIndexByPrimary.set(key, plan.primaryStepIndex);
+    }
+  }
+  return plans.filter(
+    (plan) => plan.primaryStepIndex === freshestStepIndexByPrimary.get(primaryKey(plan))
+  );
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
