@@ -40,7 +40,12 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
-import { clickActivationExpr } from "@/scraper/browser-click-expr";
+import {
+  clickActivationExpr,
+  MAX_SELECTION_ANCESTOR_DEPTH,
+  retargetToSelectionMarkerExpr,
+  WIDGET_KIT_SELECTION_MARKER_SELECTORS,
+} from "@/scraper/browser-click-expr";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -3739,31 +3744,6 @@ async function readElementSelectionFingerprint(
     return null;
   }
 }
-
-/**
- * How far up from the clicked leaf {@link selectionAncestorChanged} walks
- * looking for the option/toggle that carries the selection. Design-system
- * options nest their label 1-2 levels deep (a `<span title>` inside a
- * `role="option"`, plus the odd icon/wrapper); 6 matches the vacuous-click
- * ancestor guard in {@link verifyDomEffect}'s click branch and covers that
- * nesting without over-reaching into an outer listbox/group.
- */
-const MAX_SELECTION_ANCESTOR_DEPTH = 6;
-/**
- * Cross-vendor selector union for a selection-state widget that carries NO
- * standard selection `role` or `aria-*`/`data-state` marker — a component-kit
- * container whose selected-ness lives only in the library's own private
- * attribute. Same multi-vendor-union discipline as {@link INVALID_MARKER_CLASS_SOURCE}
- * and the `PROMPT_*_SELECTORS` unions: standards are checked FIRST (see
- * `hasMarker` in {@link selectionAncestorChanged}); this union is the fallback
- * for widgets that under-annotate ARIA, and no member is a per-site branch —
- * each is one component library's signature. Grows by a one-line edit.
- *
- * Members: `data-baseweb` (Uber Base Web — verified in a real capture to mark
- * 150 selection elements that expose no role/aria-state, so dropping it loses
- * real coverage). Add other under-annotating kits here as they surface.
- */
-const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(",");
 
 /**
  * Element-scoped selection read-back for the case the clicked node's OWN
@@ -10003,7 +9983,7 @@ export async function executeStepWithHealing(params: {
           // even though the leaf element is still live; re-anchor on the
           // leaf's own last two steps before giving up.
           const xpathTail = xpathTailForRetarget(xpath);
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${clickActivationExpr("el")} return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${retargetToSelectionMarkerExpr("el")} ${clickActivationExpr("el")} el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
