@@ -3861,11 +3861,18 @@ async function selectionSiblingCommittedValueChanged(
     const LEAF = ${JSON.stringify(leafXpath)};
     const BASE = ${JSON.stringify(preSelectionState)};
     const xpathOf = ${XPATH_OF_FN_SRC};
-    const NEARBY_CONTAINER_SEL = '[role="combobox"],[role="listbox"],[class*="Container"],[class*="Group"]';
     const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const leaf = r.singleNodeValue;
     if (!leaf) return false;
-    const container = (leaf.closest && leaf.closest(NEARBY_CONTAINER_SEL)) || leaf.parentElement;
+    // Prefer the outer combobox/group wrapper — the hidden committed-value
+    // control is typically a SIBLING of the option's own listbox, not a
+    // descendant of it, so a listbox-first match would miss it. Only fall
+    // back to the listbox itself (then the immediate parent) when no outer
+    // wrapper exists.
+    const container =
+      (leaf.closest && leaf.closest('[role="combobox"],[class*="Container"],[class*="Group"]')) ||
+      (leaf.closest && leaf.closest('[role="listbox"]')) ||
+      leaf.parentElement;
     if (!container || !container.querySelectorAll) return false;
     for (const control of container.querySelectorAll("input,select")) {
       const pre = BASE[xpathOf(control)];
