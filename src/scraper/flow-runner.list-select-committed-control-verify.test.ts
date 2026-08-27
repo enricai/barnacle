@@ -63,7 +63,14 @@ const fp = (over: Partial<Fingerprint>): Fingerprint => ({
 function makeTarget(siblingCommitted: boolean): FrameTarget {
   const leafFingerprint = fp({});
   const evaluate = vi.fn(async (expr: string) => {
-    if (expr.includes('querySelectorAll("input,select")')) return siblingCommitted;
+    if (expr.includes('querySelectorAll("input,select")')) {
+      // Mirrors the real function's own veto: with no baseline entries at
+      // all (`BASE = {}`) there is nothing to diff a sibling control
+      // against, so it can never credit the click regardless of what the
+      // widget's live DOM looks like.
+      if (expr.includes("const BASE = {}")) return false;
+      return siblingCommitted;
+    }
     if (expr.includes("SELECTION_ROLES")) return false;
     if (expr.includes('getAttribute("kind")')) return leafFingerprint;
     return null;
@@ -106,12 +113,14 @@ describe("flow-runner/verifyDomEffect — sibling committed-control selection fa
   });
 
   it("does NOT credit off a baseline-less option even when a sibling control happens to differ", async () => {
-    // No baseline entry for the resolved element at all — the element-scoped
-    // fast path and ancestor walk require SOME baseline presence upstream;
-    // the empty-baseline case still routes through the SAME three-stage
-    // check and defers correctly rather than trusting an unrelated control.
+    // No baseline entry for the resolved element, and no baseline entries at
+    // all in the pre-map — the element-scoped fast path and ancestor walk
+    // require SOME baseline presence upstream, and the sibling read-back has
+    // nothing to diff a committed control against either. The empty-baseline
+    // case still routes through the SAME three-stage check and defers
+    // correctly (false) rather than trusting an unrelated control.
     const target = makeTarget(true);
 
-    expect(await verifyDomEffect(target, optionClick, {})).toBe(true);
+    expect(await verifyDomEffect(target, optionClick, {})).toBe(false);
   });
 });
