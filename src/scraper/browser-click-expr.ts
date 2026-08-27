@@ -66,6 +66,32 @@ export const SELECTION_MARKER_ROLES = [
 export const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(",");
 
 /**
+ * Browser-context regex-literal source that recognizes a selection state
+ * expressed purely as a CSS class-name token — a custom option widget authored
+ * with no role, aria-state, or data-state marker, just a class swap on select
+ * (e.g. `class="option selected"`). Shared verbatim (not re-derived) across every
+ * "does this element carry a selection marker" predicate — the n+16 actuation
+ * retarget below, `flow-runner.ts`'s `selectionAncestorChanged` /
+ * `clickTargetHasSelectionMarker` verification walks, and the page-wide
+ * `DOM_SNAPSHOT_EXPR` diagnostic signature — so a class-only widget can never
+ * be invisible to the strict verification gate while still visible to the
+ * weak diagnostic one.
+ */
+export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
+  "/(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/";
+
+/**
+ * Cross-vendor selector union naming the element/class-token combinations
+ * {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} is known to appear on —
+ * shared between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
+ * `SELECTION_STATE_MAP_EXPR`'s baseline capture so a class-token-marked
+ * option element gets baseline coverage under the SAME vocabulary the
+ * diagnostic signature already uses, rather than a second drifting list.
+ */
+export const SELECTION_MARKER_CLASS_SELECTOR_SRC =
+  "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active";
+
+/**
  * How far up from a resolved leaf {@link retargetToSelectionMarkerExpr} (and
  * `flow-runner.ts`'s `selectionAncestorChanged`) walks looking for the
  * option/toggle that carries the selection marker. Design-system options nest
@@ -104,6 +130,7 @@ export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string)
   return `{
     const __smRoles = new Set(${JSON.stringify(SELECTION_MARKER_ROLES)});
     const __smKitSel = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const __smClassRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC};
     const __smHasMarker = (node) => {
       if (!node || typeof node.getAttribute !== "function") return false;
       if (
@@ -115,6 +142,7 @@ export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string)
       ) return true;
       if (__smRoles.has((node.getAttribute("role") || "").toLowerCase())) return true;
       if (typeof node.matches === "function" && node.matches(__smKitSel)) return true;
+      if (__smClassRx.test(node.getAttribute("class") || "")) return true;
       return false;
     };
     let __smNode = ${elVar};
