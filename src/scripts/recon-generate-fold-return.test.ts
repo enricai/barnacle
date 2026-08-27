@@ -1224,6 +1224,69 @@ describe("resolveFoldPlan", () => {
     expect(callCount).toBe(1);
   });
 
+  it("prefers the spec-declared nested plan over a shallow boolean-keyed structural plan when the primary op is captured twice at different indices", () => {
+    // r0 and r1 are both /catalog/search/ (a re-issued primary, e.g.
+    // pagination). Only r0's outer array item carries a scalar `active`
+    // field that happens to also appear in the drill's captured request —
+    // the structural heuristic has nothing else to go on, so it anchors on
+    // r0 and joins on that unrelated boolean rather than a real item field.
+    // r1's outer array wraps a NESTED `items` array (mirroring the
+    // nested-wildcard fixture above) whose real join field (`sku`) never
+    // threads into the drill's request, so the structural heuristic never
+    // considers r1 at all — only the spec's own resultsPath declaration can
+    // reach it.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          groups: [{ active: true, items: [{ sku: "sku-a" }, { sku: "sku-b" }] }],
+        },
+        timestamp: "2024-07-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":2}',
+        responseBody: {
+          groups: [{ items: [{ sku: "sku-c" }] }, { items: [{ sku: "sku-d" }] }],
+        },
+        timestamp: "2024-07-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"active":true,"sku":"sku-a"}',
+        responseBody: { prices: [{ sku: "sku-d", amount: 29.99 }] },
+        timestamp: "2024-07-01T00:00:02Z",
+      }),
+    ];
+
+    // The structural heuristic alone anchors on r0 (index 0), joining on the
+    // decoy `active` field — proving the shallow, wrong resolution this
+    // fixture is meant to isolate actually occurs on its own.
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.primaryStepIndex).toBe(0);
+    expect(heuristicOnly[0]?.primaryArrayPath).toEqual(["groups"]);
+    expect(heuristicOnly[0]?.targets[0]?.joinFields).toEqual(["active"]);
+
+    // The declared spec resolves against r1's nested `items` (the second
+    // outer group's item carries the real "sku-d" match, found only on the
+    // drill's own response), landing on the DIFFERENT capture index (1) of
+    // the same re-issued primary operation. The correct nested spec plan
+    // must take authority over the shallow structural one for the shared
+    // drill step, not be silently dropped by an exact-index guard.
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "https://api.example.com/catalog/pricing/",
+      resultsPath: "groups.*.items",
+      joinFields: ["sku"],
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.primaryStepIndex).toBe(1);
+    expect(merged[0]?.primaryArrayPath).toEqual(["groups", "*", "items"]);
+    expect(merged[0]?.targets[0]?.drillStepIndex).toBe(2);
+    expect(merged[0]?.targets[0]?.joinFields).toEqual(["sku"]);
+  });
+
   it("resolves a spec-declared resultsPath with a nested wildcard against a non-first outer group", () => {
     const steps: MulticallFixtureStep[] = [
       buildStep("r0", {
