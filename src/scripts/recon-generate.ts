@@ -6779,14 +6779,19 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // has already been proven independent by the samePrimaryPlan lookup above
   // (its primaryArrayPath differs from every structural plan's), so keying
   // solely on the step index would wrongly treat it as already consumed and
-  // silently drop it.
+  // silently drop it. consumedIndices tracks only the steps a plan folds
+  // FROM (each target's drillStepIndex), not its whole replay chain — a
+  // target's chain threads through steps it depends on to reach per-item
+  // data, but only its drillStepIndex is the call it actually folds from,
+  // so sweeping the whole chain would falsely claim steps the spec never
+  // contends for.
   const consumedIndices = new Set<number>();
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlans) {
     const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
     consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
     for (const target of plan.targets) {
-      for (const chainIndex of target.chain) consumedIndices.add(chainIndex);
+      consumedIndices.add(target.drillStepIndex);
     }
   }
   const specConsumesOnlyItsOwnIndices =
