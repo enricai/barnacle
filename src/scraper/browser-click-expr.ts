@@ -81,15 +81,19 @@ export const SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC =
   "/(?:^|\\s)(selected|active|checked|Mui-selected|is-selected)(?:\\s|$)/";
 
 /**
- * Cross-vendor selector union naming the element/class-token combinations
- * {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} is known to appear on —
- * shared between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
+ * Tag-agnostic class-token selector union — one bare `.token` clause per
+ * token {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} recognizes — shared
+ * between `DOM_SNAPSHOT_EXPR`'s page-wide signature and
  * `SELECTION_STATE_MAP_EXPR`'s baseline capture so a class-token-marked
- * option element gets baseline coverage under the SAME vocabulary the
- * diagnostic signature already uses, rather than a second drifting list.
+ * element gets baseline coverage under the SAME vocabulary the diagnostic
+ * signature already uses, rather than a second drifting list. Deliberately
+ * NOT tag-qualified (no `button.selected`/`[role=option].selected`/etc.):
+ * the whole point of this vocabulary extension is a widget authored with NO
+ * role/aria-state/component-kit marker — often a bare `<li>` or `<div>` — so
+ * gating the selector on a tag or role attribute would exclude exactly the
+ * elements it exists to catch.
  */
-export const SELECTION_MARKER_CLASS_SELECTOR_SRC =
-  "button.selected,button.active,button.checked,button.Mui-selected,button.is-selected,a.selected,a.active,a.checked,[role=button].selected,[role=button].active,[role=button].checked,[role=option].selected,[role=tab].active,[tabindex].selected,[tabindex].active,[tabindex].checked,input.selected,input.active";
+export const SELECTION_MARKER_CLASS_SELECTOR_SRC = ".selected,.active,.checked,.Mui-selected,.is-selected";
 
 /**
  * How far up from a resolved leaf {@link retargetToSelectionMarkerExpr} (and

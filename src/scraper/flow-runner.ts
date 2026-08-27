@@ -3711,7 +3711,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };
-  const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
+  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
     (el.tagName === "INPUT" || el.tagName === "SELECT") &&
