@@ -56,7 +56,10 @@ function run(el: FakeElement): { el: FakeElement; matched: boolean } {
     ${retargetToSelectionMarkerExpr("el", "matched")}
     return { el, matched };
   `;
-  const fn = new Function("__el", body) as (e: FakeElement) => { el: FakeElement; matched: boolean };
+  const fn = new Function("__el", body) as (e: FakeElement) => {
+    el: FakeElement;
+    matched: boolean;
+  };
   return fn(el);
 }
 
