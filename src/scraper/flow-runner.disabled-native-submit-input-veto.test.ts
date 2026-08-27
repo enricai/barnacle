@@ -126,7 +126,13 @@ function evaluateAbsolute(root: FakeElement, xp: string): FakeElement | null {
  * validation re-render whose htmlDelta/textChanged/formValueChanged signal
  * used to ride past a directly-disabled target) AND flips the input's own
  * `class` attribute — the element-scoped selection fingerprint
- * `verifyDomEffect`'s click branch actually diffs.
+ * `verifyDomEffect`'s click branch actually diffs. The class tokens
+ * (`btn-idle`/`btn-clicked`) are deliberately chosen to NOT match
+ * {@link SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC} (no `selected`/
+ * `selectable`/`active`/`checked` suffix) — a match there would make
+ * `clickTargetHasSelectionMarker` true and gate the n+16 fallback's weak
+ * htmlDelta/textChanged signal shut all on its own, letting the fallback
+ * test below pass even with the disabled veto fully neutered.
  */
 function buildSubmitInputTree(disabled: boolean): {
   htmlRoot: FakeElement;
@@ -151,7 +157,7 @@ function buildSubmitInputTree(disabled: boolean): {
     class: "btn-idle",
     onClick: () => {
       bodyRevision.n += 1;
-      input.attrs.class = "btn-active";
+      input.attrs.class = "btn-clicked";
     },
   });
   appendChild(form, input);
@@ -314,6 +320,30 @@ describe("flow-runner — disabled native submit input click veto", () => {
     ).rejects.toThrow(StepVerificationError);
 
     expect(bodyRevision.n).toBeGreaterThan(0);
+    // Isolate WHY the rejection happened, not just that it happened: every
+    // n+16 probe attempt must have reached the point where it actually
+    // observed the fallback's own click (nonzero htmlDelta from the
+    // validation-re-render growth, no network/url/selection signal — a click
+    // on an enabled target with this exact signal shape DOES verify, see the
+    // control-group test below) yet still scored `verified=false`. That
+    // combination is only possible via `clickBlockedByDisabled` — without it,
+    // `weakDomSignalsAllowed` (`!isFinalStep && !submitStep`, no
+    // checkbox/radio intent, no selection-marker target — all true here)
+    // would let the nonzero htmlDelta alone verify the click. This is what
+    // actually distinguishes this test from a rejection caused by an
+    // unrelated cascade failure (e.g. a mocking gap): a StepVerificationError
+    // that fires for some other reason would not carry this log signature.
+    const n16ProbeLogs = (testLogger.info as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes("n+16 probe:") && line.includes("fired=true"));
+    expect(n16ProbeLogs.length).toBeGreaterThan(0);
+    for (const line of n16ProbeLogs) {
+      expect(line).toContain("htmlDelta=52");
+      expect(line).toContain("network=false");
+      expect(line).toContain("url=false");
+      expect(line).toContain("selectionStateChanged=false");
+      expect(line).toContain("verified=false");
+    }
   });
 
   it("control group: the same markup without `disabled` DOES verify once the click fingerprint moves", async () => {
