@@ -6856,6 +6856,15 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
  * whether a declared foldReturn actually made it into the emitted output —
  * any future exclusion added to the single-primary hot path must be added
  * here too, and both call sites pick it up automatically.
+ *
+ * `resolveFoldPlan` itself can surface several plans for the SAME
+ * primaryArrayPath/endpoint — one per pagination/re-filter occurrence of the
+ * primary that independently threads a drill-down — because
+ * `selectEffectiveResponseBody`/`mergeFoldedPrimaryBodies` need every one of
+ * them to merge shapes for schema inference. Emission has no such need, so
+ * this collapses those down to the single freshest occurrence (highest
+ * `primaryStepIndex`) per distinct primaryArrayPath/endpoint before
+ * returning, keeping `resolveFoldPlan`'s own multi-plan output untouched.
  */
 export function resolveApplicableFoldPlans<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
