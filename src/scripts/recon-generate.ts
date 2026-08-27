@@ -6862,7 +6862,21 @@ export function resolveApplicableFoldPlans<T extends { capture: Capture; isMulti
   foldReturnSpec: FoldReturnSpec | null,
   multiStepBody: string | undefined
 ): FoldPlan[] {
-  return multiStepBody ? [] : resolveFoldPlan(actions, foldReturnSpec);
+  if (multiStepBody) return [];
+  const plans = resolveFoldPlan(actions, foldReturnSpec);
+  const primaryKey = (plan: FoldPlan): string =>
+    `${endpointKey(actions[plan.primaryStepIndex]!.capture.url)}\u0000${plan.primaryArrayPath.join(".")}`;
+  const freshestStepIndexByPrimary = new Map<string, number>();
+  for (const plan of plans) {
+    const key = primaryKey(plan);
+    const freshest = freshestStepIndexByPrimary.get(key);
+    if (freshest === undefined || plan.primaryStepIndex > freshest) {
+      freshestStepIndexByPrimary.set(key, plan.primaryStepIndex);
+    }
+  }
+  return plans.filter(
+    (plan) => plan.primaryStepIndex === freshestStepIndexByPrimary.get(primaryKey(plan))
+  );
 }
 
 /** Rebuilds `value` with every occurrence of `target` (compared by object
