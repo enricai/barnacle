@@ -6701,10 +6701,11 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // guess, not the flow author's declaration, so the spec target replaces
   // it wholesale rather than being discarded by the mismatched-array-path
   // branch below or partially merged as if the array level matched.
+  const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
   const specDrillStepIndices = new Set(specPlan.targets.map((target) => target.drillStepIndex));
   const sharedDrillPlan = structuralPlans.find(
     (plan) =>
-      plan.primaryStepIndex === specPlan.primaryStepIndex &&
+      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
       plan.targets.some((target) => specDrillStepIndices.has(target.drillStepIndex))
   );
   if (sharedDrillPlan !== undefined) {
@@ -6729,7 +6730,8 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   const consumedIndices = new Set<number>();
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlans) {
-    consumedPrimarySteps.add(`${plan.primaryStepIndex}:${JSON.stringify(plan.primaryArrayPath)}`);
+    const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
+    consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
     for (const target of plan.targets) {
       for (const chainIndex of target.chain) consumedIndices.add(chainIndex);
     }
@@ -6737,7 +6739,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   const specConsumesOnlyItsOwnIndices =
     !consumedIndices.has(specPlan.primaryStepIndex) &&
     !consumedPrimarySteps.has(
-      `${specPlan.primaryStepIndex}:${JSON.stringify(specPlan.primaryArrayPath)}`
+      `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
     ) &&
     specPlan.targets.every((target) =>
       target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
