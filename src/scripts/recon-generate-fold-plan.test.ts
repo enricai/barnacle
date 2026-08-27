@@ -1126,6 +1126,57 @@ describe("resolveFoldPlan — spec plan for a second, independent array on an al
   });
 });
 
+describe("resolveFoldPlan — spec target shares a drillStepIndex with a shallower structural target", () => {
+  it("replaces the structural target's array level/joinFields wholesale with the spec's own, instead of discarding the spec or merging only joinFields", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/events/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          events: [
+            { eventId: "e1", featured: true, sessions: [{ id: "s1" }, { id: "s2" }] },
+            { eventId: "e2", featured: false, sessions: [{ id: "s3" }] },
+          ],
+        },
+        timestamp: "2025-03-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/events/detail",
+        requestPostData: JSON.stringify({ featured: true }),
+        responseBody: { id: "s1", featured: true, venue: "Main Hall" },
+        timestamp: "2025-03-01T00:00:01Z",
+      }),
+    ];
+
+    // The structural heuristic independently finds a `events`-level target
+    // keyed on the unrelated boolean `featured` field, sharing the SAME
+    // drillStepIndex (r1) the spec below also names.
+    const structuralPlans = detectDrillDownFoldPlan(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["events"]);
+    expect(structuralPlans[0]?.targets[0]?.joinFields).toEqual(["featured"]);
+    expect(structuralPlans[0]?.targets[0]?.drillStepIndex).toBe(1);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/events/detail",
+      resultsPath: "events.*.sessions",
+      joinFields: ["id"],
+    };
+
+    const resolved = resolveFoldPlan(steps, spec);
+
+    // Before the fix, the mismatched primaryArrayPath ('events' vs.
+    // ['events','*','sessions']) sent this spec into the independent-plan
+    // branch, whose specConsumesOnlyItsOwnIndices guard rejected it because
+    // its target's chain (drillStepIndex 1) was already consumedIndices —
+    // silently discarding the declared joinFields and array level entirely.
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["events", "*", "sessions"]);
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["id"]);
+    expect(resolved[0]?.targets[0]?.drillStepIndex).toBe(1);
+  });
+});
+
 describe("resolveFoldPlan — multiple independent primaries", () => {
   it("returns a resolved fold plan for EVERY independent primary/drill-down pair when neither is disqualified", () => {
     const steps: MulticallFixtureStep[] = [

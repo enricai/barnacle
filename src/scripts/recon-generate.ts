@@ -6692,6 +6692,32 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
   }
+  // No exact (primaryStepIndex, primaryArrayPath) match, but a structural
+  // plan on the SAME primaryStepIndex may still have independently detected
+  // a target at the SAME drillStepIndex a spec target names — just at the
+  // wrong array level (e.g. a shallower structural guess that happens to
+  // share the spec's drill-down call). That structural target's own
+  // primaryArrayPath/drillArrayPath/joinFields describe the heuristic's
+  // guess, not the flow author's declaration, so the spec target replaces
+  // it wholesale rather than being discarded by the mismatched-array-path
+  // branch below or partially merged as if the array level matched.
+  const specDrillStepIndices = new Set(specPlan.targets.map((target) => target.drillStepIndex));
+  const sharedDrillPlan = structuralPlans.find(
+    (plan) =>
+      plan.primaryStepIndex === specPlan.primaryStepIndex &&
+      plan.targets.some((target) => specDrillStepIndices.has(target.drillStepIndex))
+  );
+  if (sharedDrillPlan !== undefined) {
+    const remainingTargets = sharedDrillPlan.targets.filter(
+      (target) => !specDrillStepIndices.has(target.drillStepIndex)
+    );
+    const otherPlans = structuralPlans.filter((plan) => plan !== sharedDrillPlan);
+    const keptStructuralPlans =
+      remainingTargets.length === 0
+        ? otherPlans
+        : [...otherPlans, { ...sharedDrillPlan, targets: remainingTargets }];
+    return [...keptStructuralPlans, specPlan];
+  }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
   // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
   // array on that step, not the whole step. A spec whose resultsPath names
