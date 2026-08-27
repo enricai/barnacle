@@ -103,12 +103,19 @@ function fakePage(): Page {
 type CommitShape = "none" | "class-token" | "hidden-sibling";
 
 /**
- * Builds a bare result list — no `role`/`aria-*`/`data-state` anywhere — with
- * a cousin hidden `<input>` that a real commit handler would populate. Both
- * `<li>` options start with NO selection class at all (unlike the sibling-
- * marker fixture in `flow-runner.class-token-selection-marker.test.ts`),
- * isolating this fixture's own commit signal rather than an untouched prior
- * selection.
+ * Builds a bare result list whose OPTIONS carry no `role`/`aria-*`/
+ * `data-state` — only a class-token. The first `<li>` already carries the
+ * `selected` class token (a default prior selection), which is what proves
+ * to `clickTargetHasSelectionMarker` that this group uses the class-token
+ * convention at all — without it, a click whose handler is entirely broken
+ * would look identical to a group that has no selection-state convention to
+ * violate, and the "unverified" assertion below would not actually exercise
+ * the fix. A `role="combobox"` trigger sits alongside the list purely so
+ * `selectionSiblingCommittedValueChanged`'s ancestor climb has a marker to
+ * find the shared wrapper by (mirrors every real widget's trigger button) —
+ * it is never the clicked target and carries none of the option's own
+ * selection state, so it does not undercut the "no ARIA on the option"
+ * claim under test.
  */
 function buildResultList(commitShape: CommitShape): {
   window: Window;
@@ -120,9 +127,11 @@ function buildResultList(commitShape: CommitShape): {
   const document = window.document;
   document.body.innerHTML = `
     <div class="result-picker">
-      <span class="picker-label">Choose a result</span>
+      <button role="combobox" aria-haspopup="listbox" class="trigger">
+        <span class="picker-label">Choose a result</span>
+      </button>
       <ul class="result-list">
-        <li class="result-item result-selectable" data-value="acme">Acme Co</li>
+        <li class="result-item result-selectable selected" data-value="acme">Acme Co</li>
         <li class="result-item result-selectable" data-value="globex">Globex Inc</li>
       </ul>
       <input type="hidden" id="selectedResult" value="" />
@@ -147,6 +156,9 @@ function buildResultList(commitShape: CommitShape): {
   const targetOptionEl = document.querySelector(
     "li[data-value='globex']"
   ) as unknown as HappyDomElement & { className: string };
+  const priorOptionEl = document.querySelector(
+    "li[data-value='acme']"
+  ) as unknown as HappyDomElement & { className: string };
   const label = document.querySelector(".picker-label") as unknown as { textContent: string };
   const hiddenInput = document.getElementById("selectedResult") as unknown as { value: string };
 
@@ -159,6 +171,7 @@ function buildResultList(commitShape: CommitShape): {
     // alone must never be enough to credit the click.
     label.textContent = "Globex Inc";
     if (commitShape === "class-token") {
+      priorOptionEl.className = "result-item result-selectable";
       targetOptionEl.className = "result-item result-selectable selected";
     }
     if (commitShape === "hidden-sibling") {
@@ -253,6 +266,7 @@ describe("flow-runner/executeStepWithHealing — class-only (no ARIA) selection-
 
     expect(label.textContent).toBe("Globex Inc");
     expect(hiddenInput.value).toBe("");
+    expect(targetOptionEl.className).not.toContain("selected");
   });
 
   it("verifies once the class token flips onto the clicked class-only option", async () => {
