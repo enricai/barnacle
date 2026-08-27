@@ -721,14 +721,26 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
 })`;
 /**
  * Browser-context predicate string: given an element `el` in scope, is it
- * disabled (native `disabled` property or `aria-disabled="true"`)? A click
- * that resolves to a disabled target cannot have done anything, regardless
- * of what other DOM signals moved. Interpolate into a `page.evaluate` expr
- * where `el` is bound.
+ * disabled — either directly (native `disabled` property or
+ * `aria-disabled="true"`) or via an ancestor within
+ * {@link MAX_SELECTION_ANCESTOR_DEPTH} levels? Stagehand can resolve a click
+ * to a decorative leaf (a plain `<span>`/text node) nested inside a
+ * non-form clickable wrapper (`<div role="button" aria-disabled="true">`) —
+ * the leaf itself carries no `disabled` property and no `aria-disabled`
+ * attribute of its own, so a leaf-only check misses it even though the
+ * click can't have done anything. Climbs the SAME bounded depth as
+ * {@link NEARBY_SELECTION_CONTAINER_FN_SRC} rather than an unbounded walk,
+ * so a disabled ancestor far up the tree (e.g. a disabled `<fieldset>`
+ * wrapping an entire form section) doesn't false-positive-veto an
+ * unrelated enabled control nested arbitrarily deep inside it. Interpolate
+ * into a `page.evaluate` expr where `el` is bound.
  */
 const DISABLED_MARKER_EL_EXPR = `((el) => {
-  if (el.disabled === true) return true;
-  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+  for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && el; depth++) {
+    if (el.disabled === true) return true;
+    if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+    el = el.parentElement;
+  }
   return false;
 })`;
 /**
