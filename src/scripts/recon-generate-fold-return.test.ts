@@ -712,6 +712,61 @@ describe("resolveFoldPlan", () => {
     expect(merged[0]?.targets[0]?.joinFields).toEqual(["accountId"]);
   });
 
+  it("unions a spec-declared target onto a structural plan anchored on a DIFFERENT capture of the same re-issued primary, instead of dropping it", () => {
+    // r0 and r1 are both /catalog/search/ (a re-issued primary): only r0's
+    // item threads `sku` into the pricing drill's request, so the structural
+    // heuristic anchors there; only r1's item's `sku` threads into the
+    // inventory drill's HEADER (invisible to the heuristic). The spec's
+    // target (inventory) does not overlap the structural plan's target
+    // (pricing) at all — the endpoint-identity match added to
+    // mergeSpecPlanOntoSamePrimary's consumed-primary check must union this
+    // in, not silently discard it just because the endpoint is already
+    // "consumed" by a different capture.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "sku-a" }] },
+        timestamp: "2024-10-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":2}',
+        responseBody: { results: [{ sku: "sku-b" }] },
+        timestamp: "2024-10-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/pricing/",
+        requestPostData: '{"sku":"sku-a"}',
+        responseBody: { prices: [{ sku: "sku-a", amount: 19.99 }] },
+        timestamp: "2024-10-01T00:00:02Z",
+      }),
+      buildStep("r3", {
+        url: "https://api.example.com/catalog/inventory/",
+        requestPostData: '{"lookup":true}',
+        responseBody: { stock: [{ sku: "sku-b", quantity: 3 }] },
+        timestamp: "2024-10-01T00:00:03Z",
+        requestHeaders: { "Content-Type": "application/json", "X-Item-Sku": "sku-b" },
+      }),
+    ];
+
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.primaryStepIndex).toBe(0);
+    expect(heuristicOnly[0]?.targets).toHaveLength(1);
+    expect(heuristicOnly[0]?.targets[0]?.drillStepIndex).toBe(2);
+
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "/catalog/inventory/",
+      resultsPath: "results",
+      joinFields: ["sku"],
+    });
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.primaryStepIndex).toBe(0);
+    expect(merged[0]?.targets.map((target) => target.drillStepIndex).sort()).toEqual([2, 3]);
+  });
+
   it("merges a spec-declared drill-down target onto the heuristic's plan for the same primary", () => {
     const steps = buildPartiallyThreadedTwoDrillDownActionSteps();
     const heuristicOnly = resolveFoldPlan(steps);

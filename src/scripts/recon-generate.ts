@@ -6640,13 +6640,15 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 
 /**
  * Unions a flow-declared `foldReturn` spec's drill-down target into the
- * structurally-detected plan for the SAME primary array (matched by
- * `primaryStepIndex` and `primaryArrayPath`), so a spec declaring an
- * independent target the heuristic missed is not silently discarded just
- * because the heuristic already resolved something for that primary. A spec
- * whose own primary/drill pair is entirely independent of every structural
- * plan — its `primaryStepIndex` and its target chains touch no index any
- * structural plan already consumes — is appended as a brand-new plan
+ * structurally-detected plan for the SAME primary array (matched by the
+ * primary step's endpoint identity — not its raw `primaryStepIndex`, which
+ * can differ across re-issued/paginated captures of the same operation —
+ * and `primaryArrayPath`), so a spec declaring an independent target the
+ * heuristic missed is not silently discarded just because the heuristic
+ * already resolved something for that primary. A spec whose own primary/drill
+ * pair is entirely independent of every structural plan — its primary
+ * endpoint identity and its target chains touch no index any structural plan
+ * already consumes — is appended as a brand-new plan
  * instead. Only a spec whose primary step is itself already consumed by an
  * unrelated structural plan's own chain (not its own primary) is left alone,
  * to avoid folding onto a step that plan already depends on. A spec
@@ -6661,6 +6663,15 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   if (foldReturnSpec === null) return [...structuralPlans];
   const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
   if (specPlan === null) return [...structuralPlans];
+  const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
+  // Deliberately keyed on the RAW primaryStepIndex (not endpoint identity):
+  // this branch trusts the structural target's own chain/drillArrayPath and
+  // only overrides joinFields, which is only safe when the spec resolved
+  // against the exact SAME capture the structural heuristic did. A spec that
+  // resolved onto a DIFFERENT capture of a re-issued primary (same endpoint,
+  // different index) may have matched a different item entirely, so it must
+  // fall through to the wholesale-replace (sharedDrillPlan) or union
+  // (consumedPrimarySteps) handling below instead of merging by identity.
   const samePrimaryPlan = structuralPlans.find(
     (plan) =>
       plan.primaryStepIndex === specPlan.primaryStepIndex &&
@@ -6701,7 +6712,6 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // guess, not the flow author's declaration, so the spec target replaces
   // it wholesale rather than being discarded by the mismatched-array-path
   // branch below or partially merged as if the array level matched.
-  const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
   const specDrillStepIndices = new Set(specPlan.targets.map((target) => target.drillStepIndex));
   const sharedDrillPlan = structuralPlans.find(
     (plan) =>
@@ -6744,7 +6754,25 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     specPlan.targets.every((target) =>
       target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
     );
-  return specConsumesOnlyItsOwnIndices ? [...structuralPlans, specPlan] : [...structuralPlans];
+  if (specConsumesOnlyItsOwnIndices) return [...structuralPlans, specPlan];
+  // The spec's primary endpoint/array is already consumed by a structural
+  // plan on a DIFFERENT capture of the same re-issued primary operation
+  // (paginated primary), but its own target chains touch no index that plan
+  // already depends on — this is the same identity, not a raw-index
+  // coincidence, so union the spec's targets onto it rather than silently
+  // dropping a declaration the flow author explicitly wrote.
+  const sameIdentityPlan = structuralPlans.find(
+    (plan) =>
+      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
+      JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath) &&
+      specPlan.targets.every(
+        (target) => !plan.targets.some((t) => t.drillStepIndex === target.drillStepIndex)
+      )
+  );
+  if (sameIdentityPlan === undefined) return [...structuralPlans];
+  return structuralPlans.map((plan) =>
+    plan === sameIdentityPlan ? { ...plan, targets: [...plan.targets, ...specPlan.targets] } : plan
+  );
 }
 
 /**
