@@ -241,9 +241,19 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + m
       foldReturnSpec: ENVELOPE_NESTED_MISMATCH_SPEC,
     });
 
-    // Same extracted actionSteps as the WITH case, but with the declared
-    // foldReturn withheld from emission — isolates what the SPEC's own
-    // `joinFields` contribute over the structural heuristic alone.
+    // Without a declared foldReturn, extractGraphQLActionSequence drops
+    // BOTH the query-primary (a non-mutation capture) and the GET
+    // drill-down (matches neither matchesFoldReturn nor
+    // matchesFoldReturnResults with a null spec) before the fold pipeline
+    // ever sees them — mirroring the falsifier in
+    // recon-generate-graphql-primary-get-drilldown-fold-runtime-e2e.test.ts.
+    const withoutActionCaptures = extractGraphQLActionSequence(withCaptures, null, null);
+    expect(withoutActionCaptures).toHaveLength(0);
+
+    const withoutStateIndex = indexStateValues(withCaptures, new Set(), new Set());
+    const withoutActionSteps = compileActionSteps(withoutActionCaptures, withoutStateIndex);
+    expect(withoutActionSteps).toHaveLength(0);
+
     const contractWithout = emitContractTs({
       siteId: "envelope-nested-mismatch-fold-test",
       pascal: "EnvelopeNestedMismatchFoldTest",
@@ -251,28 +261,27 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + m
       baseHeaders: { "Content-Type": "application/json" },
       minTime: 100,
       safeRps: 10,
-      responseBody: primaryResponseBody,
+      responseBody: {},
       gql: true,
       gqlQuery: CATALOG_SEARCH_QUERY,
       endpointPath: "/graphql",
       gqlOperationName: "catalogSearch",
       gqlVariables: {},
       auxFiles: [],
-      actionSteps: withActionSteps,
+      actionSteps: withoutActionSteps,
       foldReturnSpec: null,
     });
 
-    // The structural heuristic alone (independent of any foldReturn) still
-    // detects `sku` threading into the drill request, so both contracts
-    // reference the drill endpoint — what differs is which field the merge
-    // matches the drill response on.
+    // Withholding the declared foldReturn removes the drill-down from
+    // extraction entirely, so the WITHOUT contract has nothing to fold and
+    // must not reference the drill endpoint at all.
     expect(contractWith).not.toEqual(contractWithout);
     expect(contractWith).toContain("getGql(context.baseUrl)(");
     expect(contractWith).toContain("/listings/api/v1/details");
-    expect(contractWithout).toContain("/listings/api/v1/details");
+    expect(contractWithout).not.toContain("/listings/api/v1/details");
     expect(contractWith).toContain('m["id"]');
     expect(contractWithout).not.toContain('m["id"]');
-    expect(contractWithout).toContain('m["sku"]');
+    expect(contractWithout).not.toContain("foldItems");
 
     const executeHttpBodyWith = extractExecuteHttpBodyFromContract(contractWith);
     // The envelope's nested wildcard group must generalize across every
