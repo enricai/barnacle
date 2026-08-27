@@ -718,6 +718,18 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   return false;
 })`;
 /**
+ * Browser-context predicate string: given an element `el` in scope, is it
+ * disabled (native `disabled` property or `aria-disabled="true"`)? A click
+ * that resolves to a disabled target cannot have done anything, regardless
+ * of what other DOM signals moved. Interpolate into a `page.evaluate` expr
+ * where `el` is bound.
+ */
+const DISABLED_MARKER_EL_EXPR = `((el) => {
+  if (el.disabled === true) return true;
+  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+  return false;
+})`;
+/**
  * How many steps from the end of the flow are considered "trailing" for the
  * Tier 1 grace path. A verification failure on an optional step within this
  * window is treated as a benign no-op exit when a recent non-GET capture also
@@ -6999,6 +7011,18 @@ export async function verifyDomEffect(
         // DOM deltas.
         const xpath = xpathBody(selector);
         if (!xpath) return false;
+        // A click that resolved to a disabled (or aria-disabled) target can't
+        // have done anything — veto before trusting any other signal below.
+        const targetDisabledExpr = `(() => {
+          const isDisabled = ${DISABLED_MARKER_EL_EXPR};
+          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          const el = r.singleNodeValue;
+          return el ? isDisabled(el) : false;
+        })()`;
+        const targetDisabled = await target
+          .evaluate<boolean>(targetDisabledExpr)
+          .catch(() => false);
+        if (targetDisabled) return false;
         let inputType: string | null = null;
         try {
           // Trust boundary: xpath comes from Stagehand's own resolved selector
@@ -10098,6 +10122,24 @@ export async function executeStepWithHealing(params: {
           // verifying so the cascade routes to the fill-invalid-fields replan.
           // Confirmed no-op signature on the wizard ATS's COMPENSATION page (network=false
           // url=false htmlDelta>0 textChanged) mis-scored verified=true(dom).
+          // A click that resolved to a disabled (or aria-disabled) target
+          // can't have done anything — same veto as verifyDomEffect's click
+          // branch, applied here so the n+16 fallback can't ride past it on
+          // a weak htmlDelta/textChanged signal.
+          const clickBlockedByDisabled =
+            probeResult.kind === "click" &&
+            xpath !== null &&
+            (await (async (): Promise<boolean> => {
+              const disabledExpr = `(() => {
+                const isDisabled = ${DISABLED_MARKER_EL_EXPR};
+                const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                const el = r.singleNodeValue;
+                return el ? isDisabled(el) : false;
+              })()`;
+              return await (frameTarget ?? mainFrameTarget(page))
+                .evaluate<boolean>(disabledExpr)
+                .catch(() => false);
+            })());
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
@@ -10161,6 +10203,7 @@ export async function executeStepWithHealing(params: {
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step);
           let retryVerified =
+            !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
