@@ -40,7 +40,12 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
-import { clickActivationExpr } from "@/scraper/browser-click-expr";
+import {
+  clickActivationExpr,
+  MAX_SELECTION_ANCESTOR_DEPTH,
+  retargetToSelectionMarkerExpr,
+  WIDGET_KIT_SELECTION_MARKER_SELECTORS,
+} from "@/scraper/browser-click-expr";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -710,6 +715,18 @@ const INVALID_MARKER_EL_EXPR = `((el) => {
   const cls = (el.getAttribute && el.getAttribute("class")) || "";
   if (rx.test(cls)) return true;
   if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
+  return false;
+})`;
+/**
+ * Browser-context predicate string: given an element `el` in scope, is it
+ * disabled (native `disabled` property or `aria-disabled="true"`)? A click
+ * that resolves to a disabled target cannot have done anything, regardless
+ * of what other DOM signals moved. Interpolate into a `page.evaluate` expr
+ * where `el` is bound.
+ */
+const DISABLED_MARKER_EL_EXPR = `((el) => {
+  if (el.disabled === true) return true;
+  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
   return false;
 })`;
 /**
@@ -3628,6 +3645,14 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * rect + `getComputedStyle` idiom as `deep-locator-scan.ts`'s `IS_VISIBLE_EXPR`
  * (rather than `offsetParent`), so on-screen `position:fixed` controls — a
  * sticky Next/Submit bar, whose `offsetParent` is `null` — still enter the map.
+ * The visibility gate is waived for an `input`/`select` nested inside a nearby
+ * combobox/listbox/group container: a design-system option commits its real
+ * selection to a `display:none` or `aria-hidden` sibling input, not to the
+ * visible trigger label, so excluding it here would make that control
+ * permanently invisible to the read-back — the baseline is where a hidden
+ * committed-value control gets ITS OWN entry (keyed by its own xpath, reusing
+ * the existing `value` field), so a later diff has something to compare
+ * against.
  */
 const SELECTION_STATE_MAP_EXPR = `(() => {
   const b = document.body;
@@ -3641,9 +3666,13 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   };
   const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]";
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
+  const NEARBY_CONTAINER_SEL = '[role="combobox"],[role="listbox"],[class*="Container"],[class*="Group"]';
+  const isCommittedValueControl = (el) =>
+    (el.tagName === "INPUT" || el.tagName === "SELECT") &&
+    el.closest && el.closest(NEARBY_CONTAINER_SEL) !== null;
   const out = {};
   for (const el of b.querySelectorAll(sel)) {
-    if (!visible(el) || skip(el)) continue;
+    if ((!visible(el) && !isCommittedValueControl(el)) || skip(el)) continue;
     const ds = el.getAttribute("data-state") || "";
     out[xpathOf(el)] = ${selectionFingerprintObjSrc("el", "ds")};
   }
@@ -3729,31 +3758,6 @@ async function readElementSelectionFingerprint(
 }
 
 /**
- * How far up from the clicked leaf {@link selectionAncestorChanged} walks
- * looking for the option/toggle that carries the selection. Design-system
- * options nest their label 1-2 levels deep (a `<span title>` inside a
- * `role="option"`, plus the odd icon/wrapper); 6 matches the vacuous-click
- * ancestor guard in {@link verifyDomEffect}'s click branch and covers that
- * nesting without over-reaching into an outer listbox/group.
- */
-const MAX_SELECTION_ANCESTOR_DEPTH = 6;
-/**
- * Cross-vendor selector union for a selection-state widget that carries NO
- * standard selection `role` or `aria-*`/`data-state` marker — a component-kit
- * container whose selected-ness lives only in the library's own private
- * attribute. Same multi-vendor-union discipline as {@link INVALID_MARKER_CLASS_SOURCE}
- * and the `PROMPT_*_SELECTORS` unions: standards are checked FIRST (see
- * `hasMarker` in {@link selectionAncestorChanged}); this union is the fallback
- * for widgets that under-annotate ARIA, and no member is a per-site branch —
- * each is one component library's signature. Grows by a one-line edit.
- *
- * Members: `data-baseweb` (Uber Base Web — verified in a real capture to mark
- * 150 selection elements that expose no role/aria-state, so dropping it loses
- * real coverage). Add other under-annotating kits here as they surface.
- */
-const WIDGET_KIT_SELECTION_MARKER_SELECTORS = ["[data-baseweb]"].join(",");
-
-/**
  * Element-scoped selection read-back for the case the clicked node's OWN
  * fingerprint can't credit: a design-system option that wraps its label in a
  * child element (Base Web `tag`, and the standard listbox/combobox idiom where
@@ -3816,6 +3820,101 @@ async function selectionAncestorChanged(
         }
       }
       node = node.parentElement;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Structural marker probe for the n+16 fallback's weak-signal gate — reuses
+ * the SAME `hasMarker` predicate {@link selectionAncestorChanged} diffs
+ * against, but only asks presence, not before/after equality. A click that
+ * resolves onto (or under) a `role=option`/aria-selection/component-kit
+ * marker element must clear the strict {@link selectionAncestorChanged} /
+ * {@link selectionSiblingCommittedValueChanged} signal to be credited —
+ * html-byte-delta/text-change/form-value alone (a label re-render with no
+ * committed-control change) is exactly the reported defect
+ * (textChanged=true, selectionStateChanged=false, verified=true) this
+ * closes off. Returns `false` on any miss / malformed result / evaluate
+ * throw (defer to the strict signal already gating `retryVerified`).
+ */
+async function clickTargetHasSelectionMarker(
+  target: FrameTarget,
+  leafXpath: string
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const fp = (el) => { const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; };
+    const SELECTION_ROLES = new Set(["option", "tab", "switch", "radio", "checkbox", "menuitemcheckbox"]);
+    const KIT_MARKER_SEL = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const hasMarker = (el, f) => {
+      if (f.kind || f.ariaPressed || f.ariaChecked || f.ariaSelected || f.dataState || f.dataSelected || f.dataChecked || f.checked) return true;
+      if (SELECTION_ROLES.has((el.getAttribute("role") || "").toLowerCase())) return true;
+      if (el.matches(KIT_MARKER_SEL)) return true;
+      return false;
+    };
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    let node = r.singleNodeValue;
+    if (!node) return false;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (node.getAttribute && hasMarker(node, fp(node))) return true;
+      node = node.parentElement;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sibling read-back for the case NEITHER the clicked leaf NOR any of its
+ * ancestors ({@link selectionAncestorChanged}) ever change: a design-system
+ * combobox where the click re-renders only the visible trigger label, and the
+ * REAL committed selection lives on a hidden associated `<input>`/`<select>`
+ * that is a sibling/cousin of the leaf, not an ancestor — so an UP-only walk
+ * can never reach it. Finds the nearest combobox/listbox/group container
+ * around the leaf (the same idiom the `selectOption` verifier uses at the
+ * nested-input search), diffs every `input`/`select` inside it against the
+ * baseline entry {@link SELECTION_STATE_MAP_EXPR} captured for that control's
+ * OWN xpath (visibility-gate-waived there for exactly this control class).
+ * Returns `false` on any miss / malformed result / evaluate throw (defer to
+ * the ancestor and network/URL signals).
+ */
+async function selectionSiblingCommittedValueChanged(
+  target: FrameTarget,
+  leafXpath: string,
+  preSelectionState: Record<string, ElementSelectionFingerprint>
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const BASE = ${JSON.stringify(preSelectionState)};
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const leaf = r.singleNodeValue;
+    if (!leaf) return false;
+    // Prefer the outer combobox/group wrapper — the hidden committed-value
+    // control is typically a SIBLING of the option's own listbox, not a
+    // descendant of it, so a listbox-first match would miss it. Only fall
+    // back to the listbox itself (then the immediate parent) when no outer
+    // wrapper exists.
+    const container =
+      (leaf.closest && leaf.closest('[role="combobox"],[class*="Container"],[class*="Group"]')) ||
+      (leaf.closest && leaf.closest('[role="listbox"]')) ||
+      leaf.parentElement;
+    if (!container || !container.querySelectorAll) return false;
+    for (const control of container.querySelectorAll("input,select")) {
+      const pre = BASE[xpathOf(control)];
+      if (!pre) continue;
+      const now = typeof control.value === "string" ? control.value.slice(0, 200) : "";
+      if (pre.value !== now) return true;
     }
     return false;
   })()`;
@@ -6956,6 +7055,18 @@ export async function verifyDomEffect(
         // DOM deltas.
         const xpath = xpathBody(selector);
         if (!xpath) return false;
+        // A click that resolved to a disabled (or aria-disabled) target can't
+        // have done anything — veto before trusting any other signal below.
+        const targetDisabledExpr = `(() => {
+          const isDisabled = ${DISABLED_MARKER_EL_EXPR};
+          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          const el = r.singleNodeValue;
+          return el ? isDisabled(el) : false;
+        })()`;
+        const targetDisabled = await target
+          .evaluate<boolean>(targetDisabledExpr)
+          .catch(() => false);
+        if (targetDisabled) return false;
         let inputType: string | null = null;
         try {
           // Trust boundary: xpath comes from Stagehand's own resolved selector
@@ -6991,7 +7102,14 @@ export async function verifyDomEffect(
           // selection on the ancestor `role="option"`, not the clicked leaf —
           // so walk up to the nearest baseline-present selection ancestor and
           // diff THAT. No eligible ancestor → false (defer to network/URL).
-          return await selectionAncestorChanged(target, xpath, preSelectionState);
+          if (await selectionAncestorChanged(target, xpath, preSelectionState)) {
+            return true;
+          }
+          // Neither the leaf nor any ancestor moved: the widget's real commit
+          // may live on a hidden sibling `<input>`/`<select>` the click never
+          // re-renders visibly. Diff that control against its own baseline
+          // entry instead.
+          return await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState);
         }
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
@@ -9933,7 +10051,7 @@ export async function executeStepWithHealing(params: {
           // even though the leaf element is still live; re-anchor on the
           // leaf's own last two steps before giving up.
           const xpathTail = xpathTailForRetarget(xpath);
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } ${clickActivationExpr("el")} return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -10018,7 +10136,20 @@ export async function executeStepWithHealing(params: {
               // to the nearest baseline-present selection ancestor and diff THAT,
               // the same fallback `verifyDomEffect`'s primary read-back uses. No
               // eligible ancestor → false (defer to the other retry signals).
-              return await selectionAncestorChanged(
+              if (
+                await selectionAncestorChanged(
+                  frameTarget ?? mainFrameTarget(page),
+                  xpath,
+                  pre.selectionStateByXpath
+                )
+              ) {
+                return true;
+              }
+              // Neither the leaf nor any ancestor moved: the widget's real
+              // commit may live on a hidden sibling `<input>`/`<select>` the
+              // click never re-renders visibly. Diff that control against its
+              // own baseline entry instead.
+              return await selectionSiblingCommittedValueChanged(
                 frameTarget ?? mainFrameTarget(page),
                 xpath,
                 pre.selectionStateByXpath
@@ -10035,6 +10166,28 @@ export async function executeStepWithHealing(params: {
           // verifying so the cascade routes to the fill-invalid-fields replan.
           // Confirmed no-op signature on the wizard ATS's COMPENSATION page (network=false
           // url=false htmlDelta>0 textChanged) mis-scored verified=true(dom).
+          // A click that resolved to a disabled (or aria-disabled) target
+          // can't have done anything — same veto as verifyDomEffect's click
+          // branch, applied here so the n+16 fallback can't ride past it on
+          // a weak htmlDelta/textChanged signal.
+          const clickBlockedByDisabled =
+            probeResult.kind === "click" &&
+            xpath !== null &&
+            (await (async (): Promise<boolean> => {
+              const disabledExpr = `(() => {
+                const isDisabled = ${DISABLED_MARKER_EL_EXPR};
+                const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                let el = r.singleNodeValue;
+                if (!el && ${JSON.stringify(xpathTail)}) {
+                  const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                  el = r2.singleNodeValue;
+                }
+                return el ? isDisabled(el) : false;
+              })()`;
+              return await (frameTarget ?? mainFrameTarget(page))
+                .evaluate<boolean>(disabledExpr)
+                .catch(() => false);
+            })());
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
@@ -10094,10 +10247,21 @@ export async function executeStepWithHealing(params: {
           // earlier fill included), so it says nothing about whether THIS
           // control committed — only the element's own `checkboxStateVerified`
           // (or a real network/url/selection-state signal) may verify it.
+          // A click that resolved onto (or under) a selection-marker element
+          // (role=option, aria-selected/checked/pressed, a component-kit
+          // marker) must clear the strict retrySelectionStateChanged signal —
+          // the weak html/text/form-value OR-branch alone can never credit
+          // it, closing the reported textChanged=true/selectionStateChanged=
+          // false/verified=true defect.
+          const clickTargetIsSelectionMarker =
+            xpath !== null &&
+            (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
-            !isCheckboxOrRadioIntentStep(step);
+            !isCheckboxOrRadioIntentStep(step) &&
+            !clickTargetIsSelectionMarker;
           let retryVerified =
+            !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             (retryNetworkFired ||
