@@ -2153,3 +2153,58 @@ export function buildFoldReturnWildcardScalableActionSequence(n: number): Multic
 
   return [realPrimary, ...noiseSteps, realDrill];
 }
+
+const CATALOG_ENTRY_LOOKUP_URL = "https://api.example.com/catalog/entry-lookup";
+
+/**
+ * A paginated primary — the SAME search endpoint captured twice (`r0`, `r1`)
+ * with different request bodies, each returning a DIFFERENT single item —
+ * followed by one drill call (`r2`) engineered so the structural heuristic
+ * and a spec-declared `foldReturn` genuinely anchor on DIFFERENT captures of
+ * that primary, not merely a different array on the SAME capture (that split
+ * is {@link buildMulticallStructuralPlusSpecOnlySameStepActionSteps}'s case).
+ * `r0`'s outer item carries a `flagged: true` boolean that also appears in
+ * `r2`'s own request body, so the structural scan threads a join on that
+ * boolean and anchors on `r0` (`primaryStepIndex 0`) — `r1`'s outer item
+ * flips the SAME boolean to `false`, which never appears in `r2`'s request,
+ * so `r1` contributes no competing structural candidate at all. A declared
+ * spec naming the NESTED `entries[]` array (`resultsPath: "items.*.entries"`,
+ * `joinFields: ["id"]`) fails to resolve against `r0` (its nested `id` is
+ * `"e-shallow"`, absent from `r2`'s response) but succeeds against `r1`
+ * (`id: "e1"` IS present in `r2`'s response `entries[]`), so the spec
+ * resolver's own freshest-wins loop anchors on `r1` (`primaryStepIndex 1`)
+ * instead. The two resolvers land on different CAPTURES of the identical
+ * primary operation — proving the discard isn't limited to a single-capture,
+ * same-step array mismatch.
+ */
+export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldPaginatedPrimaryCaptureSplitActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        items: [{ itemId: "p0", flagged: true, entries: [{ id: "e-shallow", region: "north" }] }],
+      },
+      timestamp: "2025-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":2}',
+      responseBody: {
+        items: [{ itemId: "p1", flagged: false, entries: [{ id: "e1", region: "south" }] }],
+      },
+      timestamp: "2025-06-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_ENTRY_LOOKUP_URL,
+      requestPostData: '{"flagged":true}',
+      responseBody: {
+        entries: [
+          { id: "decoy", flagged: true },
+          { id: "e1", flagged: true },
+        ],
+      },
+      timestamp: "2025-06-01T00:00:02Z",
+    }),
+  ];
+}
