@@ -1704,3 +1704,85 @@ describe("resolveApplicableFoldPlans — collapsing pagination/re-filter variant
     expect(applicablePlans.length).toBe(structuralPlans.length);
   });
 });
+
+describe("resolveFoldPlan — spec primaryArrayPath as a descendant of a structural plan's own", () => {
+  it("replaces the shallower structural plan when the spec's array is a wildcard-tolerant prefix-extension of it, even when the spec's own drill chain reaches no index any structural plan already consumes", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          items: [{ active: true, variants: [{ sku: "v1" }, { sku: "v2" }] }],
+        },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/decoy/",
+        requestPostData: '{"active":true}',
+        responseBody: { decoy: [{ id: "decoy-1" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/variant-detail/",
+        requestPostData: '{"code":"C1"}',
+        responseBody: { info: [{ sku: "v1", code: "C1", price: 9.99 }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["items"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/variant-detail/",
+      resultsPath: "items.*.variants",
+      joinFields: ["sku"],
+    };
+
+    const plan = resolveFoldPlan(steps, spec);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryArrayPath).toEqual(["items", "*", "variants"]);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["sku"]);
+    // The shallower structural plan's own joinFields ("active") must not
+    // survive alongside the corrected, deeper spec plan.
+    expect(plan[0]?.targets.some((target) => target.joinFields.includes("active"))).toBe(false);
+  });
+
+  it("leaves the structural plan unchanged when the spec's primaryArrayPath is a genuinely unrelated array, not a prefix-extension", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          items: [{ active: true, id: "item-1" }],
+          categories: [{ name: "shoes" }],
+        },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/decoy/",
+        requestPostData: '{"active":true}',
+        responseBody: { decoy: [{ id: "decoy-1" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+    ];
+
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["items"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/decoy/",
+      resultsPath: "categories",
+      joinFields: ["name"],
+    };
+
+    const plan = resolveFoldPlan(steps, spec);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryArrayPath).toEqual(["items"]);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["active"]);
+  });
+});
