@@ -10133,7 +10133,11 @@ export async function executeStepWithHealing(params: {
               const disabledExpr = `(() => {
                 const isDisabled = ${DISABLED_MARKER_EL_EXPR};
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                const el = r.singleNodeValue;
+                let el = r.singleNodeValue;
+                if (!el && ${JSON.stringify(xpathTail)}) {
+                  const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                  el = r2.singleNodeValue;
+                }
                 return el ? isDisabled(el) : false;
               })()`;
               return await (frameTarget ?? mainFrameTarget(page))
