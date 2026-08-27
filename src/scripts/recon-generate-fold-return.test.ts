@@ -658,6 +658,60 @@ describe("resolveFoldPlan", () => {
     });
   });
 
+  it("lets a spec-declared plan displace a structural plan anchored on a DIFFERENT capture of the same re-issued primary operation", () => {
+    // r0 and r1 are both /catalog/search/ (a re-issued primary, e.g.
+    // pagination): r0's item threads `sku` into the drill's request body
+    // (so the structural heuristic anchors on r0), while ONLY r1's item
+    // carries the `accountId` the spec's declared joinFields names, and
+    // that value only ever appears on the drill's request HEADER (invisible
+    // to the structural heuristic, matching
+    // buildMulticallSingleShotSearchDrillDownHeaderThreadedJoinRequeriedPrimaryOverlapActionSteps's
+    // header-threading convention). Both plans target the SAME drill step
+    // (r2), so this is exactly the same-primary-operation, different-index
+    // conflict mergeSpecPlanOntoSamePrimary must resolve by identity, not by
+    // raw index equality.
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ sku: "sku-a", accountId: 99 }] },
+        timestamp: "2024-09-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: JSON.stringify({ page: 2 }),
+        responseBody: { results: [{ accountId: 42 }] },
+        timestamp: "2024-09-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/account-detail/",
+        requestPostData: JSON.stringify({ sku: "sku-a" }),
+        requestHeaders: { "Content-Type": "application/json", "X-Account-Id": "42" },
+        responseBody: { transactions: [{ transactionId: "t1" }] },
+        timestamp: "2024-09-01T00:00:02Z",
+      }),
+    ];
+
+    // The structural heuristic alone anchors on r0 (index 0) — only r0's
+    // item threads a value (`sku`) the drill's captured request carries.
+    const heuristicOnly = resolveFoldPlan(steps);
+    expect(heuristicOnly).toHaveLength(1);
+    expect(heuristicOnly[0]?.primaryStepIndex).toBe(0);
+
+    // The declared spec must take authority for the shared drill step, fully
+    // replacing the structural guess anchored on the other capture of the
+    // SAME primary operation — not being silently dropped.
+    const merged = resolveFoldPlan(steps, {
+      endpointPattern: "https://api.example.com/catalog/account-detail/",
+      resultsPath: "results",
+      joinFields: ["accountId"],
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.primaryStepIndex).toBe(1);
+    expect(merged[0]?.targets[0]?.drillStepIndex).toBe(2);
+    expect(merged[0]?.targets[0]?.joinFields).toEqual(["accountId"]);
+  });
+
   it("merges a spec-declared drill-down target onto the heuristic's plan for the same primary", () => {
     const steps = buildPartiallyThreadedTwoDrillDownActionSteps();
     const heuristicOnly = resolveFoldPlan(steps);
