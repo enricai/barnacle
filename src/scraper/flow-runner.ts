@@ -3632,6 +3632,38 @@ function elementSelectionFingerprintExpr(xpath: string): string {
 }
 
 /**
+ * In-page source for `(el) => Element | null`: the nearest ancestor of `el`,
+ * within {@link MAX_SELECTION_ANCESTOR_DEPTH} levels, whose subtree contains a
+ * selection-marker element (`role="combobox"`/`role="listbox"`, or a
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) — climbing ancestor
+ * levels rather than a single `closest()` call, because a design-system
+ * combobox's marker (the `role="combobox"` trigger) and its committed-value
+ * control (a hidden `<input>`) are commonly SIBLINGS under a shared wrapper
+ * that itself carries no role/class marker: `closest()` only searches
+ * self-and-ancestors of `el`, so it can never see a marker that lives on a
+ * cousin subtree. At each level, `querySelectorAll` searches the WHOLE
+ * subtree (not just direct children), so the marker may be nested arbitrarily
+ * deep under that ancestor. Returns the FIRST (nearest) qualifying ancestor,
+ * so a same-shaped input/select outside that common ancestor is never
+ * mistaken for the same control's committed-value sibling. Shared by
+ * {@link SELECTION_STATE_MAP_EXPR}'s `isCommittedValueControl` and
+ * {@link selectionSiblingCommittedValueChanged}'s container resolution so the
+ * baseline capture and the read-back agree on exactly what counts as
+ * "nearby" — two independently-drifting copies would silently disagree on
+ * which hidden controls get a baseline entry vs. which get diffed against
+ * one, reintroducing the bug this closes.
+ */
+const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
+    const MARKER_SEL = '[role="combobox"],[role="listbox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    let node = el.parentElement;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }`;
+
+/**
  * Browser-side expression: build `{ absolutePositionalXpath →
  * ElementSelectionFingerprint }` for every VISIBLE interactive element, the
  * pre-action baseline {@link verifyDomEffect} diffs the resolved element
@@ -3658,6 +3690,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   const b = document.body;
   if (!b) return {};
   const xpathOf = ${XPATH_OF_FN_SRC};
+  const nearbySelectionContainer = ${NEARBY_SELECTION_CONTAINER_FN_SRC};
   const visible = (el) => {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) return false;
@@ -3666,10 +3699,9 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   };
   const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]";
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
-  const NEARBY_CONTAINER_SEL = '[role="combobox"],[role="listbox"],[class*="Container"],[class*="Group"]';
   const isCommittedValueControl = (el) =>
     (el.tagName === "INPUT" || el.tagName === "SELECT") &&
-    el.closest && el.closest(NEARBY_CONTAINER_SEL) !== null;
+    nearbySelectionContainer(el) !== null;
   const out = {};
   for (const el of b.querySelectorAll(sel)) {
     if ((!visible(el) && !isCommittedValueControl(el)) || skip(el)) continue;
@@ -3897,18 +3929,15 @@ async function selectionSiblingCommittedValueChanged(
     const LEAF = ${JSON.stringify(leafXpath)};
     const BASE = ${JSON.stringify(preSelectionState)};
     const xpathOf = ${XPATH_OF_FN_SRC};
+    const nearbySelectionContainer = ${NEARBY_SELECTION_CONTAINER_FN_SRC};
     const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const leaf = r.singleNodeValue;
     if (!leaf) return false;
-    // Prefer the outer combobox/group wrapper — the hidden committed-value
-    // control is typically a SIBLING of the option's own listbox, not a
-    // descendant of it, so a listbox-first match would miss it. Only fall
-    // back to the listbox itself (then the immediate parent) when no outer
-    // wrapper exists.
-    const container =
-      (leaf.closest && leaf.closest('[role="combobox"],[class*="Container"],[class*="Group"]')) ||
-      (leaf.closest && leaf.closest('[role="listbox"]')) ||
-      leaf.parentElement;
+    // The hidden committed-value control's marker (the role=combobox trigger)
+    // is commonly a SIBLING of the leaf and the control, not an ancestor of
+    // either — climb bounded ancestor levels for the nearest subtree that
+    // contains a marker, rather than a single self-and-ancestors closest().
+    const container = nearbySelectionContainer(leaf) || leaf.parentElement;
     if (!container || !container.querySelectorAll) return false;
     for (const control of container.querySelectorAll("input,select")) {
       const pre = BASE[xpathOf(control)];
