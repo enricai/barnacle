@@ -6770,10 +6770,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       isDescendantArrayPath(specPlan.primaryArrayPath, plan.primaryArrayPath)
   );
   if (supersededShallowerPlan !== undefined) {
-    return [
-      ...structuralPlans.filter((plan) => plan !== supersededShallowerPlan),
-      specPlan,
-    ];
+    return [...structuralPlans.filter((plan) => plan !== supersededShallowerPlan), specPlan];
   }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
   // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
