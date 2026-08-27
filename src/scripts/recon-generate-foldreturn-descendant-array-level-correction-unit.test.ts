@@ -32,8 +32,8 @@ function buildDescendantArrayLevelSteps(): MulticallFixtureStep[] {
     }),
     buildStep("r2", {
       url: "https://api.example.com/catalog/detail2/",
-      requestPostData: '{"id":"item-1"}',
-      responseBody: { info: [{ id: "item-1", price: 9.99 }] },
+      requestPostData: '{"code":"C1"}',
+      responseBody: { info: [{ id: "item-1", code: "C1", price: 9.99 }] },
       timestamp: "2024-05-01T00:00:02Z",
     }),
   ];
