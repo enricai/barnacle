@@ -204,7 +204,9 @@ function makeTarget(window: Window, optionEl: HappyDomElement): FrameTarget {
   const xpath = absoluteXPathFor(optionEl);
   const selector = `xpath=${xpath}`;
 
-  guardedObserve.mockResolvedValue([{ selector, description: "Globex Inc result", method: "click" }]);
+  guardedObserve.mockResolvedValue([
+    { selector, description: "Globex Inc result", method: "click" },
+  ]);
   guardedAct.mockResolvedValue({
     success: true,
     message: "clicked",
