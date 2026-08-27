@@ -3628,6 +3628,14 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * rect + `getComputedStyle` idiom as `deep-locator-scan.ts`'s `IS_VISIBLE_EXPR`
  * (rather than `offsetParent`), so on-screen `position:fixed` controls — a
  * sticky Next/Submit bar, whose `offsetParent` is `null` — still enter the map.
+ * The visibility gate is waived for an `input`/`select` nested inside a nearby
+ * combobox/listbox/group container: a design-system option commits its real
+ * selection to a `display:none` or `aria-hidden` sibling input, not to the
+ * visible trigger label, so excluding it here would make that control
+ * permanently invisible to the read-back — the baseline is where a hidden
+ * committed-value control gets ITS OWN entry (keyed by its own xpath, reusing
+ * the existing `value` field), so a later diff has something to compare
+ * against.
  */
 const SELECTION_STATE_MAP_EXPR = `(() => {
   const b = document.body;
@@ -3641,9 +3649,13 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   };
   const sel = "button,[role=button],a,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]";
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
+  const NEARBY_CONTAINER_SEL = '[role="combobox"],[role="listbox"],[class*="Container"],[class*="Group"]';
+  const isCommittedValueControl = (el) =>
+    (el.tagName === "INPUT" || el.tagName === "SELECT") &&
+    el.closest && el.closest(NEARBY_CONTAINER_SEL) !== null;
   const out = {};
   for (const el of b.querySelectorAll(sel)) {
-    if (!visible(el) || skip(el)) continue;
+    if ((!visible(el) && !isCommittedValueControl(el)) || skip(el)) continue;
     const ds = el.getAttribute("data-state") || "";
     out[xpathOf(el)] = ${selectionFingerprintObjSrc("el", "ds")};
   }
@@ -3816,6 +3828,50 @@ async function selectionAncestorChanged(
         }
       }
       node = node.parentElement;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sibling read-back for the case NEITHER the clicked leaf NOR any of its
+ * ancestors ({@link selectionAncestorChanged}) ever change: a design-system
+ * combobox where the click re-renders only the visible trigger label, and the
+ * REAL committed selection lives on a hidden associated `<input>`/`<select>`
+ * that is a sibling/cousin of the leaf, not an ancestor — so an UP-only walk
+ * can never reach it. Finds the nearest combobox/listbox/group container
+ * around the leaf (the same idiom the `selectOption` verifier uses at the
+ * nested-input search), diffs every `input`/`select` inside it against the
+ * baseline entry {@link SELECTION_STATE_MAP_EXPR} captured for that control's
+ * OWN xpath (visibility-gate-waived there for exactly this control class).
+ * Returns `false` on any miss / malformed result / evaluate throw (defer to
+ * the ancestor and network/URL signals).
+ */
+async function selectionSiblingCommittedValueChanged(
+  target: FrameTarget,
+  leafXpath: string,
+  preSelectionState: Record<string, ElementSelectionFingerprint>
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const BASE = ${JSON.stringify(preSelectionState)};
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const NEARBY_CONTAINER_SEL = '[role="combobox"],[role="listbox"],[class*="Container"],[class*="Group"]';
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const leaf = r.singleNodeValue;
+    if (!leaf) return false;
+    const container = (leaf.closest && leaf.closest(NEARBY_CONTAINER_SEL)) || leaf.parentElement;
+    if (!container || !container.querySelectorAll) return false;
+    for (const control of container.querySelectorAll("input,select")) {
+      const pre = BASE[xpathOf(control)];
+      if (!pre) continue;
+      const now = typeof control.value === "string" ? control.value.slice(0, 200) : "";
+      if (pre.value !== now) return true;
     }
     return false;
   })()`;
@@ -6991,7 +7047,14 @@ export async function verifyDomEffect(
           // selection on the ancestor `role="option"`, not the clicked leaf —
           // so walk up to the nearest baseline-present selection ancestor and
           // diff THAT. No eligible ancestor → false (defer to network/URL).
-          return await selectionAncestorChanged(target, xpath, preSelectionState);
+          if (await selectionAncestorChanged(target, xpath, preSelectionState)) {
+            return true;
+          }
+          // Neither the leaf nor any ancestor moved: the widget's real commit
+          // may live on a hidden sibling `<input>`/`<select>` the click never
+          // re-renders visibly. Diff that control against its own baseline
+          // entry instead.
+          return await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState);
         }
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
@@ -10018,7 +10081,20 @@ export async function executeStepWithHealing(params: {
               // to the nearest baseline-present selection ancestor and diff THAT,
               // the same fallback `verifyDomEffect`'s primary read-back uses. No
               // eligible ancestor → false (defer to the other retry signals).
-              return await selectionAncestorChanged(
+              if (
+                await selectionAncestorChanged(
+                  frameTarget ?? mainFrameTarget(page),
+                  xpath,
+                  pre.selectionStateByXpath
+                )
+              ) {
+                return true;
+              }
+              // Neither the leaf nor any ancestor moved: the widget's real
+              // commit may live on a hidden sibling `<input>`/`<select>` the
+              // click never re-renders visibly. Diff that control against its
+              // own baseline entry instead.
+              return await selectionSiblingCommittedValueChanged(
                 frameTarget ?? mainFrameTarget(page),
                 xpath,
                 pre.selectionStateByXpath
