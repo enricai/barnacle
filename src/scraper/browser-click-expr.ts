@@ -90,10 +90,17 @@ export const MAX_SELECTION_ANCESTOR_DEPTH = 6;
  * untouched (falls back to the originally resolved leaf) — this is purely a
  * "prefer a better target if one exists" retarget, never a lookup failure.
  *
+ * Also declares `${matchedVar}` (a `let`, `false` unless a marker was found)
+ * so the caller can gate a subsequent `change` dispatch on an ACTUAL
+ * selection-marker match — dispatching `change` unconditionally on every
+ * click resolved through this xpath fallback would fire on unrelated
+ * elements too (a plain "Next" button, a link), tripping any delegated
+ * `change` listener a site has for unrelated form validation.
+ *
  * Leaves activation (the click gesture, and any subsequent `change` dispatch)
  * to the caller; this snippet only decides WHAT gets clicked, not HOW.
  */
-export function retargetToSelectionMarkerExpr(elVar: string): string {
+export function retargetToSelectionMarkerExpr(elVar: string, matchedVar: string): string {
   return `{
     const __smRoles = new Set(${JSON.stringify(SELECTION_MARKER_ROLES)});
     const __smKitSel = ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
@@ -112,7 +119,7 @@ export function retargetToSelectionMarkerExpr(elVar: string): string {
     };
     let __smNode = ${elVar};
     for (let __smDepth = 0; __smDepth < ${MAX_SELECTION_ANCESTOR_DEPTH} && __smNode; __smDepth++) {
-      if (__smHasMarker(__smNode)) { ${elVar} = __smNode; break; }
+      if (__smHasMarker(__smNode)) { ${elVar} = __smNode; ${matchedVar} = true; break; }
       __smNode = __smNode.parentElement;
     }
   }`;
