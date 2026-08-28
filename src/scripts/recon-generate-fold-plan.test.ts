@@ -1704,3 +1704,160 @@ describe("resolveApplicableFoldPlans — collapsing pagination/re-filter variant
     expect(applicablePlans.length).toBe(structuralPlans.length);
   });
 });
+
+describe("resolveFoldPlan — spec primaryArrayPath as a descendant of a structural plan's own", () => {
+  it("replaces the shallower structural plan when the spec's array is a wildcard-tolerant prefix-extension of it, even when the spec's own drill chain reaches no index any structural plan already consumes", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          items: [{ active: true, variants: [{ sku: "v1" }, { sku: "v2" }] }],
+        },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/decoy/",
+        requestPostData: '{"active":true}',
+        responseBody: { decoy: [{ id: "decoy-1" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/variant-detail/",
+        requestPostData: '{"code":"C1"}',
+        responseBody: { info: [{ sku: "v1", code: "C1", price: 9.99 }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+    ];
+
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["items"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/variant-detail/",
+      resultsPath: "items.*.variants",
+      joinFields: ["sku"],
+    };
+
+    const plan = resolveFoldPlan(steps, spec);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryArrayPath).toEqual(["items", "*", "variants"]);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["sku"]);
+    // The shallower structural plan's own joinFields ("active") must not
+    // survive alongside the corrected, deeper spec plan.
+    expect(plan[0]?.targets.some((target) => target.joinFields.includes("active"))).toBe(false);
+  });
+
+  it("leaves the structural plan unchanged when the spec's primaryArrayPath is a genuinely unrelated array, not a prefix-extension", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/search/",
+        requestPostData: '{"page":1}',
+        responseBody: {
+          items: [{ active: true, id: "item-1" }],
+          categories: [{ name: "shoes" }],
+        },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/decoy/",
+        requestPostData: '{"active":true}',
+        responseBody: { decoy: [{ id: "decoy-1" }] },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+    ];
+
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.primaryArrayPath).toEqual(["items"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/catalog/decoy/",
+      resultsPath: "categories",
+      joinFields: ["name"],
+    };
+
+    const plan = resolveFoldPlan(steps, spec);
+
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.primaryArrayPath).toEqual(["items"]);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["active"]);
+  });
+});
+
+describe("resolveFoldPlan — independence guard narrowed to each target's own drillStepIndex", () => {
+  it("keeps an independent spec plan whose drillStepIndex sits inside a structural target's chain, but is not that target's own drillStepIndex", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/orders/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { results: [{ orderId: "order-7" }] },
+        timestamp: "2024-06-01T00:00:00Z",
+      }),
+      // The structural drill (drillStepIndex 1): no foldable candidate of
+      // its own, but mints a token the LATER r3 hop threads onward — r2, in
+      // between, threads nothing from it, so the chain skips straight to r3.
+      buildStep("r1", {
+        url: "https://api.example.com/orders/order-7/status",
+        requestPostData: null,
+        responseBody: { lookupToken: "tok-1" },
+        timestamp: "2024-06-01T00:00:01Z",
+      }),
+      // An entirely independent primary array the spec below targets — its
+      // own request/response never threads r1's lookupToken.
+      buildStep("r2", {
+        url: "https://api.example.com/vendors/search",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: { vendors: [{ vendorId: "v1" }] },
+        timestamp: "2024-06-01T00:00:02Z",
+      }),
+      // Threads r1's lookupToken forward, so the structural chain extends
+      // here (index 3) even though r1 is the target's own drillStepIndex.
+      // Its response also carries "v1", which is what lets the spec below
+      // resolve THIS step as its own drillStepIndex via the response-match
+      // fallback (no request-side join needed).
+      buildStep("r3", {
+        url: "https://api.example.com/orders/order-7/confirm",
+        requestPostData: JSON.stringify({ token: "tok-1" }),
+        responseBody: { vendorId: "v1", confirmToken: "conf-9" },
+        timestamp: "2024-06-01T00:00:03Z",
+      }),
+      // The real chain terminal: threads r3's confirmToken, holding the
+      // per-item data the structural target actually folds.
+      buildStep("r4", {
+        url: "https://api.example.com/orders/order-7/history",
+        requestPostData: JSON.stringify({ token: "conf-9" }),
+        responseBody: { entries: [{ ts: "2024-06-01T00:00:04Z", event: "shipped" }] },
+        timestamp: "2024-06-01T00:00:04Z",
+      }),
+    ];
+
+    const structuralPlans = detectAll(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.targets[0]?.drillStepIndex).toBe(1);
+    // The chain reaches forward past its own drill, through a step (r3) it
+    // doesn't itself drill from, skipping the unrelated r2 in between.
+    expect(structuralPlans[0]?.targets[0]?.chain).toEqual([1, 3, 4]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "/orders/order-7/confirm",
+      resultsPath: "vendors",
+      joinFields: ["vendorId"],
+    };
+
+    const resolved = resolveFoldPlan(steps, spec);
+
+    // Before the fix, consumedIndices was built from the structural target's
+    // whole chain ([1, 3, 4]), so index 3 — the spec's own drillStepIndex —
+    // looked already consumed even though the structural target's own
+    // drillStepIndex is 1, not 3. specConsumesOnlyItsOwnIndices was
+    // wrongly false and the spec's independent plan was silently dropped.
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]?.primaryArrayPath).toEqual(["results"]);
+    expect(resolved[1]?.primaryArrayPath).toEqual(["vendors"]);
+    expect(resolved[1]?.targets[0]?.drillStepIndex).toBe(3);
+    expect(resolved[1]?.targets[0]?.joinFields).toEqual(["vendorId"]);
+  });
+});

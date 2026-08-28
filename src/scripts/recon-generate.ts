@@ -6639,6 +6639,26 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
 }
 
 /**
+ * True iff `candidate` names a strictly deeper array position than `base`
+ * on the same branch — every segment `base` fixes is either matched
+ * literally or bridged by an {@link ARRAY_WILDCARD_SEGMENT} on either side,
+ * and `candidate` has at least one further segment beyond `base`'s length.
+ * Used to recognize when a flow author's declared `foldReturn` array is the
+ * heuristic's own guess one (or more) levels too shallow, e.g. the
+ * structural heuristic resolves `groups.*` but the author declares
+ * `groups.*.members.*`.
+ */
+function isDescendantArrayPath(candidate: readonly string[], base: readonly string[]): boolean {
+  if (candidate.length <= base.length) return false;
+  return base.every(
+    (segment, i) =>
+      segment === candidate[i] ||
+      segment === ARRAY_WILDCARD_SEGMENT ||
+      candidate[i] === ARRAY_WILDCARD_SEGMENT
+  );
+}
+
+/**
  * Unions a flow-declared `foldReturn` spec's drill-down target into the
  * structurally-detected plan for the SAME primary array (matched by the
  * primary step's endpoint identity — not its raw `primaryStepIndex`, which
@@ -6653,7 +6673,13 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
  * unrelated structural plan's own chain (not its own primary) is left alone,
  * to avoid folding onto a step that plan already depends on. A spec
  * re-declaring a `drillStepIndex` the heuristic already found (for the SAME
- * primary) is skipped, not duplicated.
+ * primary) is skipped, not duplicated. A spec whose declared
+ * `primaryArrayPath` is a strict descendant of a same-identity structural
+ * plan's shallower array (see {@link isDescendantArrayPath}) is treated as
+ * the author correcting the heuristic's array level: the shallower
+ * structural plan is replaced wholesale by the spec plan, even when the
+ * spec's own drill indices look independent, so the heuristic's wrong-level
+ * guess never survives alongside the corrected one.
  */
 function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   structuralPlans: readonly FoldPlan[],
@@ -6729,6 +6755,23 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
         : [...otherPlans, { ...sharedDrillPlan, targets: remainingTargets }];
     return [...keptStructuralPlans, specPlan];
   }
+  // A structural plan on the SAME primary endpoint identity may have
+  // resolved an array that is a strict prefix of the spec's declared
+  // array — the heuristic guessed the right branch but stopped one (or
+  // more) levels too shallow. That plan's targets describe the heuristic's
+  // wrong-level guess, not the flow author's declaration, so the spec plan
+  // replaces it wholesale rather than being appended alongside it (which
+  // the independence guard below would otherwise do, since a
+  // level-correcting spec's own drill indices can look entirely
+  // independent) or silently dropped by the mismatched-array-path checks.
+  const supersededShallowerPlan = structuralPlans.find(
+    (plan) =>
+      endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
+      isDescendantArrayPath(specPlan.primaryArrayPath, plan.primaryArrayPath)
+  );
+  if (supersededShallowerPlan !== undefined) {
+    return [...structuralPlans.filter((plan) => plan !== supersededShallowerPlan), specPlan];
+  }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
   // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
   // array on that step, not the whole step. A spec whose resultsPath names
@@ -6736,14 +6779,19 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // has already been proven independent by the samePrimaryPlan lookup above
   // (its primaryArrayPath differs from every structural plan's), so keying
   // solely on the step index would wrongly treat it as already consumed and
-  // silently drop it.
+  // silently drop it. consumedIndices tracks only the steps a plan folds
+  // FROM (each target's drillStepIndex), not its whole replay chain — a
+  // target's chain threads through steps it depends on to reach per-item
+  // data, but only its drillStepIndex is the call it actually folds from,
+  // so sweeping the whole chain would falsely claim steps the spec never
+  // contends for.
   const consumedIndices = new Set<number>();
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlans) {
     const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
     consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
     for (const target of plan.targets) {
-      for (const chainIndex of target.chain) consumedIndices.add(chainIndex);
+      consumedIndices.add(target.drillStepIndex);
     }
   }
   const specConsumesOnlyItsOwnIndices =
