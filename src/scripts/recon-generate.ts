@@ -7090,6 +7090,14 @@ function pathAccessExpr(base: string, path: readonly string[]): string {
   );
 }
 
+/** Renders `BaseType["a"]["b"]` bracket TYPE indexing down `path` off
+ * `baseType` — the type-level counterpart of {@link pathAccessExpr}, used to
+ * type a value pulled from a generated response type at a runtime-detected
+ * path without hand-declaring its shape. */
+function pathAccessTypeExpr(baseType: string, path: readonly string[]): string {
+  return path.reduce((acc, key) => `${acc}[${JSON.stringify(key)}]`, baseType);
+}
+
 /** Rebuilds `base` with `leafExpr` spliced in at `path`, spreading every
  * ancestor level so sibling fields survive unchanged. `path: []` returns
  * `leafExpr` itself (the override IS the whole value). */
@@ -7147,6 +7155,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
   const totalAccessExpr = pathAccessExpr("page", totalPath);
   const arrayAccessExpr = pathAccessExpr("page", arrayPath);
   const identityAccessExpr = pathAccessExpr("item", [identityField]);
+  const itemTypeExpr = `${pathAccessTypeExpr(`${pascal}Response`, arrayPath)}[number]`;
   // `lastPage` is typed as ${pascal}Response (never null): the first page is
   // fetched before the loop starts, so there's nothing left to narrow.
   const withItemsOverrideExpr = buildNestedSpreadOverride(
@@ -7168,7 +7177,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     const PAGE_SIZE = ${pageSize};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
-    const itemsById = new Map<string, unknown>();
+    const itemsById = new Map<string, ${itemTypeExpr}>();
     let skip = 0;
     const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
     let lastPage: ${pascal}Response = page;
@@ -7806,12 +7815,21 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
    * pipeline) since a single-primary read flow carries no submitted payload
    * for those calls to reference.
    *
-   * `itemsExprOverride`, when given, replaces the `dataVarName`+`primaryArrayPath`
+   * `itemsOverride`, when given, replaces the `dataVarName`+`primaryArrayPath`
    * accessor with a caller-supplied items expression — used by the paginated
    * GraphQL fetch loop, whose merged/de-duplicated page items already sit in
-   * a flat runtime collection (`itemsById.values()`) rather than nested at
-   * `primaryArrayPath` inside a single response object. */
-  const buildFoldMergeLines = (dataVarName: string, itemsExprOverride?: string): string[] => {
+   * a flat runtime collection (`itemsById.values()`) at `itemsOverride.level`
+   * rather than nested at the full `primaryArrayPath` inside a single
+   * response object. `foldPlan.primaryArrayPath` may still declare depth
+   * BELOW `itemsOverride.level` (a fold plan resolved against a nested array
+   * inside each paginated item) — the residual suffix beyond `level` is
+   * descended into via the same `.flatMap`-based {@link pathToFoldAccessorExpr}
+   * the non-override branch already uses, so no depth the fold plan declares
+   * is silently dropped. */
+  const buildFoldMergeLines = (
+    dataVarName: string,
+    itemsOverride?: { expr: string; level: readonly string[] }
+  ): string[] => {
     const lines: string[] = [];
     for (const [planIndex, foldPlan] of singlePrimaryFoldPlans.entries()) {
       const primaryStep = actionSteps[foldPlan.primaryStepIndex];
@@ -7823,9 +7841,32 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       const planSuffix = singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
       const foldItemsVar = `foldItems${planSuffix}`;
-      const foldItemsExpr =
-        itemsExprOverride ??
-        pathToFoldAccessorExpr(`(${dataVarName} as ${primaryArrType})`, foldPlan.primaryArrayPath);
+      const foldItemsExpr = itemsOverride
+        ? (() => {
+            const { expr, level } = itemsOverride;
+            const levelPrefixesPrimaryArrayPath =
+              level.length <= foldPlan.primaryArrayPath.length &&
+              level.every((segment, i) => segment === foldPlan.primaryArrayPath[i]);
+            if (!levelPrefixesPrimaryArrayPath) {
+              throw new Error(
+                `emitContractTs: fold plan primary array path ${foldPlan.primaryArrayPath.join(".")} no longer extends the paginated collection's own array path ${level.join(".")} — the fold plan and this emitter have drifted out of sync`
+              );
+            }
+            // The residual already carries its own leading
+            // ARRAY_WILDCARD_SEGMENT whenever it crosses the array boundary
+            // `level` itself sits at (by construction, since `level` names
+            // an array path) — `expr` stands in for that same array, so
+            // pathToFoldAccessorExpr's own flatMap over `expr` consumes it;
+            // prepending a second one here would double-flatten.
+            const residualPath = foldPlan.primaryArrayPath.slice(level.length);
+            if (residualPath.length === 0) return expr;
+            const itemTypeExpr = `${pathAccessTypeExpr(`${pascal}Response`, level)}[number]`;
+            return pathToFoldAccessorExpr(`(${expr} as ${itemTypeExpr}[])`, residualPath);
+          })()
+        : pathToFoldAccessorExpr(
+            `(${dataVarName} as ${primaryArrType})`,
+            foldPlan.primaryArrayPath
+          );
       const itemVar = `item${planSuffix}`;
       lines.push(
         `    const ${foldItemsVar} = ${foldItemsExpr};`,
@@ -7915,7 +7956,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the loop) rather than `data`/`primaryArrayPath`, so every item folded
   // is the final merged item across all fetched pages, not just page one's.
   const paginatedFoldMergeLines = paginationSignal
-    ? buildFoldMergeLines("data", "[...itemsById.values()]")
+    ? buildFoldMergeLines("data", {
+        expr: "[...itemsById.values()]",
+        level: paginationSignal.arrayPath,
+      })
     : [];
 
   const executeHttpBody = multiStepBody
