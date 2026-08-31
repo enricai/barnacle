@@ -165,4 +165,17 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(result).toEqual({ injected: false, submitted: false });
   });
+
+  it("injects into an existing field with no enclosing form without attempting to submit", async () => {
+    const field = new FakeInput();
+    field.name = "h-captcha-response";
+
+    const target = makeFakeTarget({ document: makeFakeDocument([], field) });
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-formless");
+
+    expect(field.value).toBe("solved-token-formless");
+    expect(field.dispatched).toEqual(["change"]);
+    expect(result).toEqual({ injected: true, submitted: false });
+  });
 });
