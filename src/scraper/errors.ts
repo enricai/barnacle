@@ -48,7 +48,11 @@ export class CaptchaError extends ScraperError {
  * fast, correct-for-same-realm path) misses.
  */
 export function isCaptchaError(err: unknown): err is CaptchaError {
-  return err instanceof CaptchaError || (err instanceof Error && err.name === "CaptchaError");
+  return (
+    err instanceof CaptchaError ||
+    (err instanceof Error &&
+      (err.name === "CaptchaError" || err.name === "CaptchaSolverUnavailableError"))
+  );
 }
 
 /**
@@ -360,6 +364,7 @@ export class MissingFormMapKeyError extends ScraperError {
  */
 const SCRAPER_ERROR_NAMES = new Set([
   "CaptchaError",
+  "CaptchaSolverUnavailableError",
   "EmptyResultsError",
   "SelectorFailureError",
   "SessionTimeoutError",
@@ -377,7 +382,7 @@ const SCRAPER_ERROR_NAMES = new Set([
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 13 concrete subclasses defined in this file
+ * variant, matching any of the 14 concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

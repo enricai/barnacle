@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CaptchaError,
+  CaptchaSolverUnavailableError,
   CdpTransportClosedError,
   HttpRateLimitError,
   HttpSchemaError,
@@ -137,6 +139,34 @@ describe("CdpTransportClosedError", () => {
     expect(isCdpTransportClosedError(new TypeError("bad"))).toBe(false);
     expect(isCdpTransportClosedError(null)).toBe(false);
     expect(isCdpTransportClosedError(undefined)).toBe(false);
+  });
+});
+
+describe("CaptchaSolverUnavailableError", () => {
+  it("is a CaptchaError subclass, non-retryable, and named correctly", () => {
+    const err = new CaptchaSolverUnavailableError();
+    expect(err).toBeInstanceOf(CaptchaError);
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("CaptchaSolverUnavailableError");
+    expect(err.message).toBe("captcha solver unavailable: no provider configured");
+  });
+
+  it("is recognized by isCaptchaError and isScraperError, same-realm and cross-realm", () => {
+    const sameRealmErr = new CaptchaSolverUnavailableError();
+    expect(isCaptchaError(sameRealmErr)).toBe(true);
+    expect(isScraperError(sameRealmErr)).toBe(true);
+
+    class FakeCrossModuleCaptchaSolverUnavailableError extends Error {
+      constructor(message = "captcha solver unavailable: no provider configured") {
+        super(message);
+        this.name = "CaptchaSolverUnavailableError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleCaptchaSolverUnavailableError();
+    expect(crossRealmErr).not.toBeInstanceOf(CaptchaSolverUnavailableError);
+    expect(isCaptchaError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
   });
 });
 
