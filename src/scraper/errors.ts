@@ -52,6 +52,28 @@ export function isCaptchaError(err: unknown): err is CaptchaError {
 }
 
 /**
+ * No captcha-solver provider is configured (e.g. `TWOCAPTCHA_API_KEY` is
+ * unset). Distinct from a transport/solve failure so callers can tell "the
+ * capability isn't wired up" apart from "we tried and it failed" — the
+ * capability must fail cleanly here rather than silently skip the solve.
+ */
+export class CaptchaSolverUnavailableError extends CaptchaError {
+  constructor(message = "captcha solver unavailable: no provider configured") {
+    super(message);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof CaptchaSolverUnavailableError`. See {@link isCaptchaError} for why this exists. */
+export function isCaptchaSolverUnavailableError(
+  err: unknown
+): err is CaptchaSolverUnavailableError {
+  return (
+    err instanceof CaptchaSolverUnavailableError ||
+    (err instanceof Error && err.name === "CaptchaSolverUnavailableError")
+  );
+}
+
+/**
  * The scrape completed but returned no data. This is not a failure — it's
  * a legitimate empty result (e.g. a search returned zero matches). The
  * service layer handles this without throwing.
