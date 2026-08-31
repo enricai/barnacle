@@ -124,9 +124,8 @@ describe("fold plan primary op diverging from the emitted primary op", () => {
   it("never emits a fold cast against a path absent from the emitted primary's response type", () => {
     const actionSteps = buildActionSteps();
     const emittedPrimaryBody = catalogFacetsCapture(1);
-    const emittedPrimaryResponseBody = (
-      emittedPrimaryBody as { responseBody: unknown }
-    ).responseBody;
+    const emittedPrimaryResponseBody = (emittedPrimaryBody as { responseBody: unknown })
+      .responseBody;
 
     const buildContract = (): string =>
       emitContractTs({
