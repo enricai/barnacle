@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 /**
  * Regression for the `advanceGateActive` exclusion at the primary verifier
@@ -29,8 +29,10 @@ import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
+const infoMock = vi.fn();
+
 const testLogger = {
-  info: vi.fn(),
+  info: infoMock,
   warn: vi.fn(),
   error: vi.fn(),
   debug: vi.fn(),
@@ -165,4 +167,114 @@ describe("flow-runner/executeStepWithHealing — advance-transition poll fires f
     // Sanity: the initial STEP_PAUSE_MS snapshot wait still happened first.
     expect(waitForTimeout.mock.calls[0]?.[0]).toBe(STEP_PAUSE_MS);
   });
+});
+
+describe("flow-runner/executeStepWithHealing — advance-gate miss log reports the poll window actually used", () => {
+  let capturesDir: string;
+
+  beforeAll(() => {
+    capturesDir = resolveReconRunDir().graphqlDir;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Regression for the advance-gate miss log at flow-runner.ts (the
+   * `if (advanceGateActive && !networkIsRealAdvance)` branch): it used to
+   * always interpolate `ADVANCE_TRANSITION_POLL_MS` (4000) even when the
+   * preceding `waitForTransitionBody` call actually polled with the wider
+   * `CAPTCHA_TRANSITION_POLL_MS` (45000) window for a `captchaGated`
+   * submit/final step — misreporting a genuine 45s captcha-solve timeout as
+   * an ordinary 4s miss. Drives the SAME never-matching-capture setup
+   * through both a `captchaGated: true` and a `captchaGated: false` submit
+   * step under fake timers (so the 45s real wait is instant) and asserts
+   * the logged ms value tracks the branch actually taken.
+   */
+  it.each([
+    { captchaGated: true, expectedMs: 45_000 },
+    { captchaGated: false, expectedMs: 4_000 },
+  ])(
+    "logs $expectedMs ms when captchaGated=$captchaGated",
+    async ({ captchaGated, expectedMs }) => {
+      // Wipe captures left by sibling tests (this suite's captures dir is
+      // shared across the whole file) so `windowHasAdvanceTransition`'s
+      // preIdx-forward scan can't pick up an earlier test's matching
+      // transition body and false-positive the poll.
+      for (const filename of readdirSync(capturesDir)) {
+        rmSync(join(capturesDir, filename));
+      }
+      vi.useFakeTimers();
+      infoMock.mockClear();
+      const signalCounter = { n: 0 };
+      const waitForTimeout = vi
+        .fn()
+        .mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+      const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+        const src = String(expr);
+        if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
+        if (src.includes("isInvalid(el)")) return 0;
+        // No [data-sitekey] widget on the page: the captchaGated hook logs
+        // and falls through to the normal cascade/advance-gate poll below,
+        // which is the path this test exercises.
+        if (src.includes("data-sitekey")) return { siteKey: null, isInvisible: false };
+        return null;
+      });
+      const page = {
+        evaluate,
+        url: () => "https://apply.example.com/jobs/1/apply-portal/apply",
+        title: vi.fn().mockResolvedValue(""),
+        locator: vi.fn().mockReturnValue({
+          first: () => ({
+            isChecked: vi.fn().mockResolvedValue(false),
+            inputValue: vi.fn().mockResolvedValue(""),
+          }),
+        }),
+        waitForTimeout,
+      } as unknown as Page;
+      const stagehand = {
+        act: vi.fn().mockImplementation(async () => {
+          // Non-matching autosave POST only — the real transition body never
+          // lands, so the poll runs out its full window and the miss branch
+          // fires.
+          signalCounter.n += 1;
+          writeFileSync(
+            join(capturesDir, `003-apply-autosave-${captchaGated}.json`),
+            JSON.stringify({ requestPostData: "type=autosave&field=x" })
+          );
+          return {
+            success: true,
+            message: "clicked",
+            actionDescription: "Click the Submit button",
+            actions: [
+              {
+                selector: "button#submit",
+                description: "Click the Submit button",
+                method: "click",
+              },
+            ],
+          };
+        }),
+        observe: vi
+          .fn()
+          .mockResolvedValue([
+            { selector: "button#submit", description: "submit", method: "click" },
+          ]),
+      } as unknown as Stagehand;
+
+      const resultPromise = executeStepWithHealing({
+        ...baseParams(page, stagehand),
+        captchaGated,
+        signalCounter,
+      }).catch(() => undefined);
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      const missLog = infoMock.mock.calls
+        .map((call: unknown[]) => String(call[0]))
+        .find((msg: string) => msg.includes("no advance-transition (type=next) body matched"));
+      expect(missLog).toContain(`within ${expectedMs}ms poll`);
+    }
+  );
 });
