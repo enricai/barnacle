@@ -1705,7 +1705,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
       `const foldMatches0 = (r1 as { prices: Record<string, unknown>[] }).prices;`
     );
     expect(body).toContain(
-      `const foldMatch0 = foldMatches0.find((m) => String(m["sku"]) === String(item.sku)) ?? foldMatches0[0];`
+      `const foldMatch0 = foldMatches0.find((m) => String(m["sku"]) === String(item.sku));`
     );
     expect(body).toContain("Object.assign(item, foldMatch0 ?? {});");
 
@@ -1713,7 +1713,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
       `const foldMatches1 = (r2 as { stock: Record<string, unknown>[] }).stock;`
     );
     expect(body).toContain(
-      `const foldMatch1 = foldMatches1.find((m) => String(m["itemId"]) === String(item.itemId)) ?? foldMatches1[0];`
+      `const foldMatch1 = foldMatches1.find((m) => String(m["itemId"]) === String(item.itemId));`
     );
     expect(body).toContain("Object.assign(item, foldMatch1 ?? {});");
   });

@@ -4255,7 +4255,11 @@ function emitFoldMatchAndMergeLines(
             : `m[${JSON.stringify(lastSegment)}]`;
         return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
       })
-      .join(" && ")}) ?? foldMatches${suffix}[0];`,
+      .join(" && ")});`,
+    // No \`?? foldMatches${suffix}[0]\` fallback: when foldMatches is
+    // non-empty but nothing matches the join key, foldMatch stays
+    // undefined and the Object.assign below no-ops, leaving the item
+    // unfolded rather than grafting an unrelated sibling's data onto it.
     `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
   ];
 }
