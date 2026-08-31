@@ -68,7 +68,9 @@ function makeFakeDocument(forms: FakeForm[], existingField?: FakeInput) {
     querySelector: (selector: string) => {
       const match = /^\[name="([^"]+)"\]$/.exec(selector);
       if (!match) throw new Error(`unsupported document selector: ${selector}`);
-      return existingField?.name === match[1] ? existingField : null;
+      if (existingField?.name === match[1]) return existingField;
+      const created = forms.flatMap((form) => form.fields).find((f) => f.name === match[1]);
+      return created ?? null;
     },
     querySelectorAll: (selector: string) => {
       if (selector !== "form")

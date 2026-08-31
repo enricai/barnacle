@@ -62,7 +62,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).toHaveBeenCalledTimes(2);
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).toHaveBeenCalledTimes(1);
