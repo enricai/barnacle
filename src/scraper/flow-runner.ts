@@ -5048,7 +5048,11 @@ export interface InjectCaptchaTokenResult {
  * obtaining the token and for verifying the submit actually advanced.
  *
  * Returns `{ injected: false, submitted: false }` when no form exists to
- * attach a freshly created field to (nothing to submit against).
+ * attach a freshly created field to (nothing to submit against). When a
+ * fresh field must be created and the page has more than one `<form>`
+ * (e.g. a header search form alongside the actual application form),
+ * prefers the form containing a `[data-sitekey]` widget anchor over an
+ * unrelated earlier form in document order.
  */
 export async function injectCaptchaTokenAndSubmit(
   target: FrameTarget,
@@ -5060,7 +5064,9 @@ export async function injectCaptchaTokenAndSubmit(
     const token = ${JSON.stringify(token)};
     let field = document.querySelector('[name="' + responseField + '"]');
     if (!field) {
-      const form = document.querySelector("form");
+      const forms = Array.from(document.querySelectorAll("form"));
+      const form =
+        forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
       if (!form) return { injected: false, submitted: false };
       field = document.createElement("input");
       field.type = "hidden";
@@ -5079,7 +5085,7 @@ export async function injectCaptchaTokenAndSubmit(
     form.submit();
     return { injected: true, submitted: true };
   })()`;
-  return (await target.evaluate(expr)) as InjectCaptchaTokenResult;
+  return await target.evaluate<InjectCaptchaTokenResult>(expr);
 }
 
 /**
