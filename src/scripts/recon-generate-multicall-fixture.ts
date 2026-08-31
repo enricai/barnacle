@@ -697,6 +697,60 @@ export function buildMulticallNestedGroupedDrillDownMultiGroupActionSteps(): Mul
   ];
 }
 
+/**
+ * A grouped, nested-primary drill-down whose drilled endpoint requires TWO
+ * threaded params at once: the PARENT group's own `id` (a field that lives
+ * one level above the nested items and is unreachable once
+ * {@link pathToFoldAccessorExpr} `.flatMap`s the outer array away) and the
+ * matched ITEM's own `date` (an ordinary leaf on the nested object itself).
+ * Two groups, each with one entry, are captured so both params are proven to
+ * vary together rather than happening to match by coincidence with a single
+ * group/item pair:
+ *
+ * | groupId | itemDate     |
+ * | ------- | ------------ |
+ * | sec1    | 2024-01-01   |
+ * | sec2    | 2024-02-01   |
+ *
+ * A fold plan that only threads the item-level `date` (dropping `groupId`
+ * because it flatMaps away with the parent) would produce a drill URL
+ * missing `groupId` entirely, or one frozen to whichever group was matched
+ * during detection.
+ */
+export function buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            id: "sec1",
+            entries: [{ entryId: "e1", name: "Widget", date: "2024-01-01" }],
+          },
+          {
+            id: "sec2",
+            entries: [{ entryId: "e2", name: "Gadget", date: "2024-02-01" }],
+          },
+        ],
+      },
+      timestamp: "2024-12-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAIL_URL}?groupId=sec1&itemDate=2024-01-01`,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e1", description: "A widget." }] },
+      timestamp: "2024-12-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAIL_URL}?groupId=sec2&itemDate=2024-02-01`,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e2", description: "A gadget." }] },
+      timestamp: "2024-12-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
