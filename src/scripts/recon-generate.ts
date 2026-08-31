@@ -4232,34 +4232,38 @@ function emitFoldMatchAndMergeLines(
     `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
     target.chainArrayPath
   );
+  const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
+    const segments = f.split(".");
+    // The drill-down response is a DIFFERENT payload than the
+    // primary item, so it has no obligation to mirror the
+    // primary item's own nesting for the join key (e.g. a
+    // primary item's `identifiers.sku` is typically echoed
+    // back flat, as `sku`, on the drill response). Try the
+    // full nested path first (optional-chained, since an
+    // intermediate segment may not exist on a flat response),
+    // then fall back to the bare last segment.
+    const lastSegment = segments[segments.length - 1]!;
+    const bracket = (segment: string): string => (optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`);
+    const optionalBracketAccessor = segments.map((segment) => `?.[${JSON.stringify(segment)}]`).join("");
+    return segments.length > 1
+      ? `(${varName}${optionalBracketAccessor} ?? ${varName}${bracket(lastSegment)})`
+      : `${varName}${bracket(lastSegment)}`;
+  };
+  const joinCondition = target.joinFields
+    .map((f) => `String(${matchAccessorFor(f, "m", false)}) === String(${joinAccessor(f)})`)
+    .join(" && ");
+  // A sole candidate whose join field(s) aren't present on it at all
+  // (common: many drill endpoints don't echo the request key back onto
+  // the response row) is trusted as-is — there's no sibling it could be
+  // confused with. But a sole candidate that DOES carry the join field
+  // with a different value is a genuine mismatch and must not be grafted
+  // on; two-or-more candidates always require an actual join-key match.
+  const soleCandidateFieldsAbsent = target.joinFields
+    .map((f) => `${matchAccessorFor(f, `foldMatches${suffix}[0]`, true)} === undefined`)
+    .join(" && ");
   return [
     `      const foldMatches${suffix} = ${foldMatchesExpr};`,
-    `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-      .map((f) => {
-        const segments = f.split(".");
-        // The drill-down response is a DIFFERENT payload than the
-        // primary item, so it has no obligation to mirror the
-        // primary item's own nesting for the join key (e.g. a
-        // primary item's `identifiers.sku` is typically echoed
-        // back flat, as `sku`, on the drill response). Try the
-        // full nested path first (optional-chained, since an
-        // intermediate segment may not exist on a flat response),
-        // then fall back to the bare last segment.
-        const lastSegment = segments[segments.length - 1]!;
-        const optionalBracketAccessor = segments
-          .map((segment) => `?.[${JSON.stringify(segment)}]`)
-          .join("");
-        const matchAccessor =
-          segments.length > 1
-            ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
-            : `m[${JSON.stringify(lastSegment)}]`;
-        return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
-      })
-      .join(" && ")});`,
-    // No \`?? foldMatches${suffix}[0]\` fallback: when foldMatches is
-    // non-empty but nothing matches the join key, foldMatch stays
-    // undefined and the Object.assign below no-ops, leaving the item
-    // unfolded rather than grafting an unrelated sibling's data onto it.
+    `      const foldMatch${suffix} = foldMatches${suffix}.length === 1 && ${soleCandidateFieldsAbsent} ? foldMatches${suffix}[0] : foldMatches${suffix}.find((m) => ${joinCondition});`,
     `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
   ];
 }

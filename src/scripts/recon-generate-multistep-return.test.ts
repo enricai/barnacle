@@ -48,7 +48,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("return { data: r4 };");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
   });
 
@@ -62,7 +62,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(steps);
 
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
 
@@ -84,7 +84,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
 
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
