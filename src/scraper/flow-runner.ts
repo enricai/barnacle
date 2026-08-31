@@ -9884,21 +9884,20 @@ export async function executeStepWithHealing(params: {
     // the advance and triggers a retry that bounces the wizard back. The poll
     // short-circuits when the transition is already in-window (zero added latency
     // on the common path). Scoped by preCaptureIdx via an eviction-proof disk scan.
+    const advanceGateTimeoutMs =
+      captchaGated && isSubmitOrFinalStep ? CAPTCHA_TRANSITION_POLL_MS : ADVANCE_TRANSITION_POLL_MS;
     const networkIsRealAdvance = !advanceGateActive
       ? networkFired
       : await waitForTransitionBody({
           page,
           preIdx: preCaptureIdx,
           advanceTransitionBodyPattern,
-          timeoutMs:
-            captchaGated && isSubmitOrFinalStep
-              ? CAPTCHA_TRANSITION_POLL_MS
-              : ADVANCE_TRANSITION_POLL_MS,
+          timeoutMs: advanceGateTimeoutMs,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
     if (advanceGateActive && !networkIsRealAdvance) {
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${ADVANCE_TRANSITION_POLL_MS}ms poll (non-advancing POST); not treating as verified`
+        `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${advanceGateTimeoutMs}ms poll (non-advancing POST); not treating as verified`
       );
     }
     // DOM-only-advance veto (opt-in). A rephrase can turn an advance/"Next" step
