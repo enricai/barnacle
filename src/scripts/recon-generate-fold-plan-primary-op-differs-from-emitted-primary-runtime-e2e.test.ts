@@ -119,7 +119,10 @@ function writeRunDir(root: string): void {
     JSON.stringify(graphqlFacetsCapture(3))
   );
   // op B (carries foldReturn.resultsPath's array) captured once.
-  writeFileSync(join(root, "graphql", "003-browse-search.json"), JSON.stringify(graphqlSearchCapture()));
+  writeFileSync(
+    join(root, "graphql", "003-browse-search.json"),
+    JSON.stringify(graphqlSearchCapture())
+  );
   writeFileSync(
     join(root, "graphql", "004-browse-drill.json"),
     JSON.stringify(restDrillDownCapture())
