@@ -780,6 +780,10 @@ interface NormalizedStep {
   // Optional in the type so existing test fixtures + call sites that predate
   // the flag don't need to be touched — absence is treated as false.
   submitStep?: boolean;
+  // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts: opts a submit/
+  // transition step into the pluggable captcha-solve hook. Optional in the
+  // type for the same reason as submitStep — absence is treated as false.
+  captchaGated?: boolean;
   // Generator-only splicer hints (see RECON_FLOW_STEP_SCHEMA). Carried through
   // the normalize/denormalize round-trip so a hand-authored flow file's
   // payloadField/payloadFieldNone survives a recon run's write-back and reaches
@@ -803,6 +807,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           optional: s.optional,
           upload: s.upload,
           submitStep: s.submitStep,
+          captchaGated: s.captchaGated,
           payloadField: s.payloadField,
           payloadFieldNone: s.payloadFieldNone,
           targetId: s.targetId,
@@ -846,6 +851,7 @@ function denormalizeStep(step: NormalizedStep):
       optional?: true;
       upload?: true;
       submitStep?: true;
+      captchaGated?: true;
       payloadField?: string;
       payloadFieldNone?: true;
       targetId?: string;
@@ -857,7 +863,14 @@ function denormalizeStep(step: NormalizedStep):
   // it has no flags. Authored ("original") origin stays implicit — persisting it
   // on every step would needlessly object-ify the whole flow file.
   const hasIdentity = step.targetId !== undefined || step.origin === "replan";
-  if (!step.optional && !step.upload && !step.submitStep && !hasSplicerHint && !hasIdentity) {
+  if (
+    !step.optional &&
+    !step.upload &&
+    !step.submitStep &&
+    !step.captchaGated &&
+    !hasSplicerHint &&
+    !hasIdentity
+  ) {
     return step.instruction;
   }
   const out: {
@@ -865,6 +878,7 @@ function denormalizeStep(step: NormalizedStep):
     optional?: true;
     upload?: true;
     submitStep?: true;
+    captchaGated?: true;
     payloadField?: string;
     payloadFieldNone?: true;
     targetId?: string;
@@ -875,6 +889,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.optional) out.optional = true;
   if (step.upload) out.upload = true;
   if (step.submitStep) out.submitStep = true;
+  if (step.captchaGated) out.captchaGated = true;
   if (step.payloadField !== undefined) out.payloadField = step.payloadField;
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
