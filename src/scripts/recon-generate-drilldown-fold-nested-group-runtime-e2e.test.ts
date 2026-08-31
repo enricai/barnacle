@@ -61,11 +61,14 @@ describe("recon-generate drill-down fold — nested/grouped primary array runtim
       new Map()
     );
 
-    // Sanity: the flatMap accessor this test proves at runtime is actually
-    // present in the emitted source, not some other fold shape.
+    // Sanity: the nested-loop descent this test proves at runtime is actually
+    // present in the emitted source (not a `.flatMap` collection, which
+    // would discard the `g0` section binding), and in the right shape.
     expect(body).toContain(
-      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
+      "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
+    expect(body).toContain("for (const item of g0.entries) {");
+    expect(body).not.toContain(".flatMap(");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
