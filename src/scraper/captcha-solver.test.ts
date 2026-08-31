@@ -24,15 +24,19 @@ vi.mock("@/config", () => ({
   },
 }));
 
-const { loggerStub } = vi.hoisted(() => ({
-  loggerStub: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-    errorWithStack: vi.fn(),
-  },
-}));
+const { capturedLines, loggerStub } = vi.hoisted(() => {
+  const lines: string[] = [];
+  return {
+    capturedLines: lines,
+    loggerStub: {
+      info: vi.fn((msg: string) => lines.push(msg)),
+      warn: vi.fn((msg: string) => lines.push(msg)),
+      error: vi.fn((msg: string) => lines.push(msg)),
+      debug: vi.fn((msg: string) => lines.push(msg)),
+      errorWithStack: vi.fn((msg: string) => lines.push(msg)),
+    },
+  };
+});
 vi.mock("@/lib/logging", () => ({ getLogger: () => loggerStub }));
 
 import { solveCaptcha } from "@/scraper/captcha-solver";
@@ -48,6 +52,7 @@ function jsonResponse(body: unknown): {
 describe("scraper/captcha-solver", () => {
   beforeEach(() => {
     configRef.value = { scraper: { twoCaptchaApiKey: "test-2captcha-key" } };
+    capturedLines.length = 0;
     vi.clearAllMocks();
   });
 
@@ -77,6 +82,9 @@ describe("scraper/captcha-solver", () => {
     expect(result).toEqual({ token: "solved-token", provider: "2captcha", ms: expect.any(Number) });
     expect(calls[0]?.url).toBe("https://2captcha.com/in.php");
     expect(pollCount).toBe(2);
+    expect(capturedLines).toContainEqual(
+      expect.stringMatching(/^captcha-solve: provider=2captcha ms=\d+ ok=true$/)
+    );
   }, 30000);
 
   it("rejects with a distinct error when no provider key is configured, without calling fetch", async () => {
@@ -113,6 +121,10 @@ describe("scraper/captcha-solver", () => {
         fetchImpl,
       })
     ).rejects.toThrow(/2captcha createTask rejected/);
+
+    expect(capturedLines).toContainEqual(
+      expect.stringMatching(/^captcha-solve: provider=2captcha ms=\d+ ok=false$/)
+    );
   });
 
   it("never logs the configured API key or the resolved token", async () => {
@@ -131,9 +143,7 @@ describe("scraper/captcha-solver", () => {
       fetchImpl,
     });
 
-    const loggedText = [...loggerStub.info.mock.calls, ...loggerStub.error.mock.calls]
-      .flat()
-      .join(" ");
+    const loggedText = capturedLines.join(" ");
     expect(loggedText).not.toContain("test-2captcha-key");
     expect(loggedText).not.toContain("solved-token");
   });
