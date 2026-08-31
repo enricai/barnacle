@@ -2,11 +2,13 @@
 
 **This document contains mandatory development standards referenced by all code in this project.**
 
-Barnacle is a headless Node.js API that drives browser automation workflows via
-Stagehand, using Browserbase as the default session provider (Steel is a
-supported opt-in fallback via `SCRAPER_PROVIDER=steel`). Each supported site is a self-contained plugin; core handles
-sessions, retries, audit persistence, and response envelopes. All contributors
-must follow these patterns and rules. Code reviews will reference sections in this document.
+Barnacle turns any website into an API. It is a headless Node.js service that
+drives browser automation workflows via Stagehand, using Browserbase as the
+default session provider (Steel is a supported opt-in fallback via
+`SCRAPER_PROVIDER=steel`). Each supported site is a self-contained plugin;
+core handles sessions, retries, audit persistence, and response envelopes.
+All contributors must follow these patterns and rules. Code reviews will
+reference sections in this document.
 
 ---
 
