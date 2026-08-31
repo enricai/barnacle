@@ -13,8 +13,8 @@ import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { CaptchaError, CaptchaSolverUnavailableError } from "@/scraper/errors";
-import { rawFetch } from "@/scraper/raw-fetch";
 import type { FetchImpl } from "@/scraper/raw-fetch";
+import { rawFetch } from "@/scraper/raw-fetch";
 
 const logger = getLogger({ name: "scraper/captcha-solver" });
 
@@ -115,8 +115,14 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
     throw new CaptchaSolverUnavailableError();
   }
 
-  const { type, siteKey, pageUrl, isInvisible, userAgent, fetchImpl = undiciFetch as unknown as FetchImpl } =
-    request;
+  const {
+    type,
+    siteKey,
+    pageUrl,
+    isInvisible,
+    userAgent,
+    fetchImpl = undiciFetch as unknown as FetchImpl,
+  } = request;
 
   const startedAt = Date.now();
   try {
