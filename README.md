@@ -1,5 +1,9 @@
 # Barnacle
 
+Barnacle turns any website into an API. Point it at a site, describe the user
+flow, and it generates a plugin backed by direct HTTP calls with automatic
+browser fallback — no scraping code to maintain by hand.
+
 ## How it works
 
 Point Barnacle at a site, describe the user flow in plain English, and run three
