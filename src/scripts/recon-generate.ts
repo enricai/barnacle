@@ -7483,6 +7483,28 @@ export function emitContractTs(opts: {
     foldReturnSpec,
     multiStepBody
   );
+  // A fold plan's primaryStepIndex is resolved purely structurally (does the
+  // declared resultsPath resolve to an object array on that capture), with
+  // no comparison against the operation actually selected as primary for
+  // emission (gqlOperationName/gqlQuery, computed independently upstream).
+  // When they diverge, buildFoldMergeLines below would cast `data` to the
+  // fold plan's operation's shape even though `data` at runtime holds the
+  // emitted primary operation's response — a cast that can never typecheck.
+  // Scoped to gql: REST fold-plan/emitted-primary drift is a distinct,
+  // undocumented concern out of scope here.
+  if (gql) {
+    const emittedPrimaryIdentity = `${endpointPath}::${gqlOperationName ?? parsedOperationName(gqlQuery ?? "") ?? "anonymous"}`;
+    for (const plan of singlePrimaryFoldPlans) {
+      const primaryStep = actionSteps[plan.primaryStepIndex];
+      if (!primaryStep) continue;
+      const foldPrimaryIdentity = operationGroupKey(primaryStep.capture);
+      if (foldPrimaryIdentity !== emittedPrimaryIdentity) {
+        throw new Error(
+          `emitContractTs: fold plan primary operation ${foldPrimaryIdentity} differs from the emitted primary operation ${emittedPrimaryIdentity} — the declared foldReturn no longer applies to this run's selected primary; drop or re-resolve the foldReturn spec against the emitted primary operation`
+        );
+      }
+    }
+  }
   // A GraphQL primary with a resolved drill-down fold has no other REST
   // client to issue the drill request(s) with — getGql only ever speaks
   // GraphQL to the primary endpoint.
