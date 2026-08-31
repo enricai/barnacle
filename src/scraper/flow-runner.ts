@@ -9696,16 +9696,16 @@ export async function executeStepWithHealing(params: {
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
     // TransitionWorklet vs EditQuestionItem — identical URLs, only the body
-    // differs), a `networkFired` signal on an interior "Next" can be a
+    // differs), a `networkFired` signal on a "Next"/submit click can be a
     // non-advancing POST. When the flow configures `advanceTransitionBodyPattern`
-    // and THIS is a non-submit step whose ONLY positive signal is networkFired
-    // (no url/dom change), require a same-window capture body to match the
-    // transition pattern before trusting it. Final/submit steps keep their own
-    // (stronger) submit-verification gate below; sites without the pattern are
-    // unaffected.
+    // and the ONLY positive signal is networkFired (no url/dom change), require
+    // a same-window capture body to match the transition pattern before trusting
+    // it. This applies to final/submit steps too — the real transition body can
+    // land after the STEP_PAUSE_MS snapshot just as on an interior step, and
+    // final/submit steps additionally get their own (stronger) submit-verification
+    // gate below; sites without the pattern are unaffected.
     const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
-    const advanceGateActive =
-      advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !isFinalStep && !submitStep;
+    const advanceGateActive = advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork;
     // Advance-only-network step: the real TransitionWorklet(type="next") POST
     // often lands AFTER the STEP_PAUSE_MS snapshot (a WorkletPayload autosave
     // fires first), so poll for it — an immediate one-shot check false-negatives
