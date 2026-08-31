@@ -5020,6 +5020,68 @@ export async function waitForTransitionBody(params: {
   return false;
 }
 
+/** Result of {@link injectCaptchaTokenAndSubmit}'s `target.evaluate` call. */
+export interface InjectCaptchaTokenResult {
+  /** True once the response field held the token (created if it didn't already exist). */
+  injected: boolean;
+  /** True once `form.submit()` was invoked on the field's enclosing form. */
+  submitted: boolean;
+}
+
+/**
+ * Site-agnostic captcha-solve hand-off: given an already-solved token, commit
+ * it into the page's hidden response field and submit the gated form.
+ *
+ * Widgets of this shape create a hidden `<input name="{responseField}">`
+ * carrying the solved token and call `form.submit()` from their own render
+ * callback once a token is available (see the module's callers for the exact
+ * per-flow contract). This primitive reproduces that contract directly so the
+ * engine doesn't depend on the widget's callback closure firing: it finds (or
+ * creates) the named field on the page, commits `token` via the same
+ * React-safe native value setter used elsewhere in this file for text/file
+ * inputs (so a framework-tracked value listener still observes the change),
+ * fires a bubbling `change` event, then calls `form.submit()` on the field's
+ * enclosing form.
+ *
+ * Deliberately narrow: no polling, no verification, no wait budget — this
+ * only performs the inject+submit hand-off. The caller is responsible for
+ * obtaining the token and for verifying the submit actually advanced.
+ *
+ * Returns `{ injected: false, submitted: false }` when no form exists to
+ * attach a freshly created field to (nothing to submit against).
+ */
+export async function injectCaptchaTokenAndSubmit(
+  target: FrameTarget,
+  token: string,
+  responseField = "h-captcha-response"
+): Promise<InjectCaptchaTokenResult> {
+  const expr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const token = ${JSON.stringify(token)};
+    let field = document.querySelector('[name="' + responseField + '"]');
+    if (!field) {
+      const form = document.querySelector("form");
+      if (!form) return { injected: false, submitted: false };
+      field = document.createElement("input");
+      field.type = "hidden";
+      field.name = responseField;
+      form.appendChild(field);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(field, token);
+    } else {
+      field.value = token;
+    }
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    const form = field.closest("form");
+    if (!form) return { injected: true, submitted: false };
+    form.submit();
+    return { injected: true, submitted: true };
+  })()`;
+  return (await target.evaluate(expr)) as InjectCaptchaTokenResult;
+}
+
 /**
  * Site-agnostic select primitive: answer a native `<select>` dropdown by
  * directly setting its value in the DOM, bypassing Stagehand observe/act.
