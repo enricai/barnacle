@@ -2502,6 +2502,7 @@ async function main(): Promise<void> {
             optional: step.optional,
             upload: step.upload,
             submitStep: step.submitStep === true,
+            captchaGated: step.captchaGated === true,
             flowHasSubmitSemantics: flowHasSubmitSemantics({
               steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
               submitEndpointPattern,
