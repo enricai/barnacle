@@ -11,6 +11,7 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
+  buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
@@ -257,6 +258,40 @@ describe("buildMulticallNestedGroupedDrillDownMultiGroupActionSteps", () => {
     );
     expect(groupIndex).toBeGreaterThan(0);
     expect(body.sections[0]?.entries.some((entry) => entry.entryId === drilledEntryId)).toBe(false);
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps();
+
+  it("the primary response carries >=2 groups, each with an id and a nested item date", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { id: string; entries: { entryId: string; date: string }[] }[];
+    };
+    expect(body.sections.length).toBeGreaterThanOrEqual(2);
+    for (const section of body.sections) {
+      expect(section.id).toBeTruthy();
+      expect(section.entries.length).toBeGreaterThanOrEqual(1);
+      expect(section.entries[0]?.date).toBeTruthy();
+    }
+  });
+
+  it("both drill captures hit the same endpoint but differ in groupId AND itemDate", () => {
+    const drillSteps = steps.slice(1);
+    expect(drillSteps.length).toBeGreaterThanOrEqual(2);
+
+    const endpoints = new Set(drillSteps.map((step) => endpointKey(step.capture.url)));
+    expect(endpoints.size).toBe(1);
+
+    const params = drillSteps.map((step) => new URL(step.capture.url).searchParams);
+    const groupIds = new Set(params.map((p) => p.get("groupId")));
+    const itemDates = new Set(params.map((p) => p.get("itemDate")));
+    expect(groupIds.size).toBe(drillSteps.length);
+    expect(itemDates.size).toBe(drillSteps.length);
+    for (const p of params) {
+      expect(p.get("groupId")).toBeTruthy();
+      expect(p.get("itemDate")).toBeTruthy();
+    }
   });
 });
 
