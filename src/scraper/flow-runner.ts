@@ -10766,10 +10766,11 @@ export interface HealingFlowStep {
   /**
    * Opts this step into the pluggable captcha-solve hook. Mirrors
    * `submitStep`'s threading from the flow file / config manifest through to
-   * the cascade. Absent flows default false via the schema, so this is a
-   * no-op for every flow that doesn't declare it.
+   * the cascade. Optional (unlike `submitStep`) so the many pre-existing
+   * `HealingFlowStep` literals across call sites and fixtures don't need
+   * updating — absence is treated as false, matching the schema default.
    */
-  captchaGated: boolean;
+  captchaGated?: boolean;
 }
 
 /**
