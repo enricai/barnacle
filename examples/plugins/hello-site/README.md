@@ -1,5 +1,6 @@
 # hello-site — out-of-tree Barnacle plugin example
 
+Barnacle turns any website into an API, and a `SitePlugin` is how you teach it a new one.
 A minimal, runnable [`SitePlugin`](../../../src/site-plugin.ts) you can copy as a
 starting point for your own out-of-tree plugin. The stock Barnacle server
 discovers, validates, and registers it at startup from the `BARNACLE_PLUGINS`
