@@ -181,6 +181,31 @@ describe("buildConfigPlugin", () => {
     expect(steps[0]?.instruction).toBe("fill the Phone field with ");
   });
 
+  it("threads captchaGated through to the HealingFlowStep passed to runHealingFlow, mirroring submitStep", async () => {
+    mockRunHealingFlow.mockResolvedValueOnce({
+      submitVerified: true,
+      submitStepSkipped: false,
+      lastStepIndex: 1,
+    });
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      "click apply",
+      { step: "submit the application", submitStep: true, captchaGated: true },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const steps = mockRunHealingFlow.mock.calls[0]?.[0]?.steps as {
+      submitStep: boolean;
+      captchaGated: boolean;
+    }[];
+    expect(steps[0]?.captchaGated).toBe(false);
+    expect(steps[1]?.submitStep).toBe(true);
+    expect(steps[1]?.captchaGated).toBe(true);
+  });
+
   it("surfaces a failure when the flow's submitStep was skipped rather than verified", async () => {
     mockRunHealingFlow.mockResolvedValueOnce({
       submitVerified: false,

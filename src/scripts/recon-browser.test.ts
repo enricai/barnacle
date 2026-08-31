@@ -594,6 +594,34 @@ describe("recon-browser/denormalizeStep + normalizeFlow — targetId/origin roun
     expect(step!.origin).toBe("original");
     expect(step!.targetId).toBeUndefined();
   });
+
+  it("survives a captchaGated denormalize -> parse -> normalizeFlow round-trip, mirroring submitStep", () => {
+    const step = {
+      instruction: "Submit the application",
+      optional: false,
+      upload: false,
+      origin: "original" as const,
+      submitStep: true,
+      captchaGated: true,
+    };
+    const onDisk = RECON_FLOW_STEP_SCHEMA.parse(denormalizeStep(step));
+    const [roundTripped] = normalizeFlow([onDisk]);
+    expect(roundTripped!.submitStep).toBe(true);
+    expect(roundTripped!.captchaGated).toBe(true);
+  });
+
+  it("omits captchaGated from denormalized output when falsy (truthy-omit, like submitStep)", () => {
+    expect(
+      denormalizeStep({
+        instruction: "Submit the application",
+        optional: false,
+        upload: false,
+        origin: "original",
+        submitStep: true,
+        captchaGated: false,
+      })
+    ).toEqual({ step: "Submit the application", submitStep: true });
+  });
 });
 
 describe("recon-browser/persistReplannedFlow", () => {
