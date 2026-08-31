@@ -48,6 +48,7 @@ import {
   SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
   WIDGET_KIT_SELECTION_MARKER_SELECTORS,
 } from "@/scraper/browser-click-expr";
+import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -622,6 +623,17 @@ const PROMPT_SCOPE_ROOT_EXPR = `((w) => {
 const ADVANCE_TRANSITION_POLL_MS = 4_000;
 /** Poll interval for {@link ADVANCE_TRANSITION_POLL_MS}. */
 const ADVANCE_TRANSITION_POLL_INTERVAL_MS = 350;
+/**
+ * Widened transition-wait budget for a `captchaGated` submit/final step,
+ * layered strictly on top of {@link ADVANCE_TRANSITION_POLL_MS} rather than
+ * replacing it: the solve+inject+submit round trip (a 2Captcha create+poll
+ * cycle can run 10-30s+) eats into the window the plain advance-transition
+ * poll allows before the real transition body lands, so a captcha-gated
+ * step needs a longer budget than a non-captcha submit for the same
+ * `waitForTransitionBody` check. Non-captcha steps keep
+ * {@link ADVANCE_TRANSITION_POLL_MS} unchanged.
+ */
+const CAPTCHA_TRANSITION_POLL_MS = 45_000;
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -5020,6 +5032,74 @@ export async function waitForTransitionBody(params: {
   return false;
 }
 
+/** Result of {@link injectCaptchaTokenAndSubmit}'s `target.evaluate` call. */
+export interface InjectCaptchaTokenResult {
+  /** True once the response field held the token (created if it didn't already exist). */
+  injected: boolean;
+  /** True once `form.submit()` was invoked on the field's enclosing form. */
+  submitted: boolean;
+}
+
+/**
+ * Site-agnostic captcha-solve hand-off: given an already-solved token, commit
+ * it into the page's hidden response field and submit the gated form.
+ *
+ * Widgets of this shape create a hidden `<input name="{responseField}">`
+ * carrying the solved token and call `form.submit()` from their own render
+ * callback once a token is available (see the module's callers for the exact
+ * per-flow contract). This primitive reproduces that contract directly so the
+ * engine doesn't depend on the widget's callback closure firing: it finds (or
+ * creates) the named field on the page, commits `token` via the same
+ * React-safe native value setter used elsewhere in this file for text/file
+ * inputs (so a framework-tracked value listener still observes the change),
+ * fires a bubbling `change` event, then calls `form.submit()` on the field's
+ * enclosing form.
+ *
+ * Deliberately narrow: no polling, no verification, no wait budget — this
+ * only performs the inject+submit hand-off. The caller is responsible for
+ * obtaining the token and for verifying the submit actually advanced.
+ *
+ * Returns `{ injected: false, submitted: false }` when no form exists to
+ * attach a freshly created field to (nothing to submit against). When a
+ * fresh field must be created and the page has more than one `<form>`
+ * (e.g. a header search form alongside the actual application form),
+ * prefers the form containing a `[data-sitekey]` widget anchor over an
+ * unrelated earlier form in document order.
+ */
+export async function injectCaptchaTokenAndSubmit(
+  target: FrameTarget,
+  token: string,
+  responseField = "h-captcha-response"
+): Promise<InjectCaptchaTokenResult> {
+  const expr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const token = ${JSON.stringify(token)};
+    let field = document.querySelector('[name="' + responseField + '"]');
+    if (!field) {
+      const forms = Array.from(document.querySelectorAll("form"));
+      const form =
+        forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
+      if (!form) return { injected: false, submitted: false };
+      field = document.createElement("input");
+      field.type = "hidden";
+      field.name = responseField;
+      form.appendChild(field);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(field, token);
+    } else {
+      field.value = token;
+    }
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    const form = field.closest("form");
+    if (!form) return { injected: true, submitted: false };
+    form.submit();
+    return { injected: true, submitted: true };
+  })()`;
+  return await target.evaluate<InjectCaptchaTokenResult>(expr);
+}
+
 /**
  * Site-agnostic select primitive: answer a native `<select>` dropdown by
  * directly setting its value in the DOM, bypassing Stagehand observe/act.
@@ -7903,6 +7983,17 @@ export async function executeStepWithHealing(params: {
    */
   submitStep: boolean;
   /**
+   * When true (and this step is submit/final-shaped, i.e. `submitStep ||
+   * (isFinalStep && flowHasSubmitSemantics)`), the step opts into the
+   * pluggable captcha-solve hook: read the sitekey off the page, call
+   * `solveCaptcha`, inject the resolved token via
+   * `injectCaptchaTokenAndSubmit`, and widen the transition-wait poll
+   * budget for this step before falling through to the normal cascade.
+   * Set from the flow file's `captchaGated: true`. Absent/false steps run
+   * byte-for-byte identically to today — no solver call, no extra DOM read.
+   */
+  captchaGated?: boolean;
+  /**
    * Whether the FLOW (not just this step) has any submit semantics at all —
    * some step flagged `submitStep: true`, a `submitEndpointPattern`, or
    * `requireSubmitEndpointMatch`. Lets the cascade's `isFinalStep ||
@@ -8056,6 +8147,7 @@ export async function executeStepWithHealing(params: {
     optional,
     upload,
     submitStep,
+    captchaGated = false,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     stepIndex,
     totalSteps,
@@ -8285,6 +8377,86 @@ export async function executeStepWithHealing(params: {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by required-select primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom" });
     return "completed";
+  }
+
+  // Captcha-gated submit hook. Fires ONLY on a submit/final-shaped step
+  // (the same `submitStep || (isFinalStep && flowHasSubmitSemantics)` gate
+  // used throughout this file) that the flow file marked `captchaGated:
+  // true`. Reads the public sitekey off the page (frame-aware via
+  // `frameTarget`/`captchaTarget`), solves it via `solveCaptcha` (siteKey +
+  // pageUrl + userAgent only — never PII, never form values), then commits
+  // the token with the existing `injectCaptchaTokenAndSubmit` primitive.
+  // `solveCaptcha` throws `CaptchaSolverUnavailableError`/`CaptchaError`
+  // when no solver key is configured or the solve otherwise fails — that
+  // propagates out of this function unchanged, so the step fails cleanly
+  // instead of silently falling through as if unverified-but-passing.
+  const isSubmitOrFinalStep = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+  if (captchaGated && isSubmitOrFinalStep) {
+    const captchaTarget = frameTarget ?? mainFrameTarget(page);
+    const sitekeyProbeExpr = `(() => {
+      const el = document.querySelector("[data-sitekey]");
+      if (!el) return { siteKey: null, isInvisible: false };
+      return {
+        siteKey: el.getAttribute("data-sitekey"),
+        isInvisible: el.getAttribute("data-size") === "invisible",
+      };
+    })()`;
+    const { siteKey, isInvisible } = await captchaTarget.evaluate<{
+      siteKey: string | null;
+      isInvisible: boolean;
+    }>(sitekeyProbeExpr);
+    if (!siteKey) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step found no [data-sitekey] widget on the page; skipping the solve hook and falling through to the normal cascade`
+      );
+    } else {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: sitekey found, requesting solve`
+      );
+      const pageUrl = await captchaTarget.url();
+      const uaRaw = await page.evaluate("navigator.userAgent").catch(() => null);
+      const userAgent = typeof uaRaw === "string" ? uaRaw : undefined;
+      const solved = await solveCaptcha({
+        type: "hcaptcha",
+        siteKey,
+        pageUrl,
+        isInvisible,
+        userAgent,
+      }).catch((err: unknown) => {
+        logger.error(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
+        );
+        throw err;
+      });
+      const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
+      const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} submitted=${injectResult.submitted}`
+      );
+      // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
+      // poll loop), just with a widened budget so the solve+submit round trip
+      // doesn't eat into the plain ADVANCE_TRANSITION_POLL_MS window. A
+      // pattern-confirmed transition here is treated as verified the same way
+      // the probe-absent branch below treats a detected transition — the
+      // normal cascade/verifier still runs when the pattern doesn't confirm
+      // (or none is configured), so this never replaces that verifier.
+      if (advanceTransitionBodyPattern) {
+        const confirmed = await waitForTransitionBody({
+          page,
+          preIdx: preCaptchaCaptureIdx,
+          advanceTransitionBodyPattern,
+          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+        });
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit transition poll confirmed=${confirmed}`
+        );
+        if (confirmed) {
+          trajectory?.push({ stepIndex, verifiedBy: "network" });
+          return "completed";
+        }
+      }
+    }
   }
 
   // Snapshot the capture-meta tail length at step entry. The probe-absent
@@ -9696,16 +9868,16 @@ export async function executeStepWithHealing(params: {
     // Interior-advance transition gate (opt-in). On SPAs where a page advance
     // and a mere field-edit share one endpoint URL (the wizard ATS's `/gq`:
     // TransitionWorklet vs EditQuestionItem — identical URLs, only the body
-    // differs), a `networkFired` signal on an interior "Next" can be a
+    // differs), a `networkFired` signal on a "Next"/submit click can be a
     // non-advancing POST. When the flow configures `advanceTransitionBodyPattern`
-    // and THIS is a non-submit step whose ONLY positive signal is networkFired
-    // (no url/dom change), require a same-window capture body to match the
-    // transition pattern before trusting it. Final/submit steps keep their own
-    // (stronger) submit-verification gate below; sites without the pattern are
-    // unaffected.
+    // and the ONLY positive signal is networkFired (no url/dom change), require
+    // a same-window capture body to match the transition pattern before trusting
+    // it. This applies to final/submit steps too — the real transition body can
+    // land after the STEP_PAUSE_MS snapshot just as on an interior step, and
+    // final/submit steps additionally get their own (stronger) submit-verification
+    // gate below; sites without the pattern are unaffected.
     const isAdvanceOnlyNetwork = networkFired && !urlChanged && !domVerified;
-    const advanceGateActive =
-      advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork && !isFinalStep && !submitStep;
+    const advanceGateActive = advanceTransitionBodyPattern !== null && isAdvanceOnlyNetwork;
     // Advance-only-network step: the real TransitionWorklet(type="next") POST
     // often lands AFTER the STEP_PAUSE_MS snapshot (a WorkletPayload autosave
     // fires first), so poll for it — an immediate one-shot check false-negatives
@@ -9718,7 +9890,10 @@ export async function executeStepWithHealing(params: {
           page,
           preIdx: preCaptureIdx,
           advanceTransitionBodyPattern,
-          timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+          timeoutMs:
+            captchaGated && isSubmitOrFinalStep
+              ? CAPTCHA_TRANSITION_POLL_MS
+              : ADVANCE_TRANSITION_POLL_MS,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
     if (advanceGateActive && !networkIsRealAdvance) {
@@ -10293,7 +10468,10 @@ export async function executeStepWithHealing(params: {
               page,
               preIdx: preCaptureIdx,
               advanceTransitionBodyPattern,
-              timeoutMs: ADVANCE_TRANSITION_POLL_MS,
+              timeoutMs:
+                captchaGated && isSubmitOrFinalStep
+                  ? CAPTCHA_TRANSITION_POLL_MS
+                  : ADVANCE_TRANSITION_POLL_MS,
               intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
@@ -10695,6 +10873,14 @@ export interface HealingFlowStep {
   optional: boolean;
   upload: boolean;
   submitStep: boolean;
+  /**
+   * Opts this step into the pluggable captcha-solve hook. Mirrors
+   * `submitStep`'s threading from the flow file / config manifest through to
+   * the cascade. Optional (unlike `submitStep`) so the many pre-existing
+   * `HealingFlowStep` literals across call sites and fixtures don't need
+   * updating — absence is treated as false, matching the schema default.
+   */
+  captchaGated?: boolean;
 }
 
 /**
@@ -10923,6 +11109,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         optional: s.optional,
         upload: s.upload,
         submitStep: s.submitStep,
+        captchaGated: s.captchaGated === true,
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         stepIndex: i,
         totalSteps: () => steps.length,

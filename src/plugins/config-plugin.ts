@@ -124,6 +124,7 @@ function toHealingStep(
       optional: false,
       upload: false,
       submitStep: false,
+      captchaGated: false,
     };
   }
   return {
@@ -131,6 +132,7 @@ function toHealingStep(
     optional: step.optional,
     upload: step.upload,
     submitStep: step.submitStep,
+    captchaGated: step.captchaGated,
   };
 }
 

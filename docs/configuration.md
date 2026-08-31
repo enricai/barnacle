@@ -31,6 +31,7 @@ All variables are read once at process start; missing required ones exit the pro
 | `BROWSERBASE_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase account API key. |
 | `BROWSERBASE_PROJECT_ID` | — | Yes (if `SCRAPER_PROVIDER=browserbase`) | Browserbase project ID. |
 | `STEEL_API_KEY` | — | Yes (if `SCRAPER_PROVIDER=steel`) | Steel account API key. |
+| `TWOCAPTCHA_API_KEY` | — | No | 2Captcha account API key backing `solveCaptcha()` (`src/scraper/captcha-solver.ts`). Absent means the capability is cleanly unavailable — callers get a typed `CaptchaSolverUnavailableError`, never a silent skip. |
 | `ANTHROPIC_API_KEY` | — | Yes (if not using Bedrock) | Anthropic API key for Stagehand's LLM calls. |
 | `STAGEHAND_MODEL` | `anthropic/claude-sonnet-4-6` | No | Stagehand model. Use the `anthropic/` prefix — Stagehand 2.x's model map is stale and the prefix routes through AI-SDK's fallback path. |
 | `SCRAPER_PROXY_TYPE` | `residential` | No | `residential` (paid tiers) or `none` (free tier — rejects `useProxy=true` on hobby plans). Applies to both providers. |

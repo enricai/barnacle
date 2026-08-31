@@ -46,6 +46,12 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     submitStep: z.boolean().default(false),
     /**
+     * Opts a submit/transition step into the pluggable captcha-solve hook.
+     * Absent or false is a no-op for every existing flow; only a flow author
+     * who explicitly sets this pays the solve-hook cost.
+     */
+    captchaGated: z.boolean().default(false),
+    /**
      * Optional payload-field override for the generator's splicer. When set,
      * `resolveStepPayloadField` returns this field name verbatim instead of
      * inferring one from the instruction's English label — lets a flow author

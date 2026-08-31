@@ -48,7 +48,33 @@ export class CaptchaError extends ScraperError {
  * fast, correct-for-same-realm path) misses.
  */
 export function isCaptchaError(err: unknown): err is CaptchaError {
-  return err instanceof CaptchaError || (err instanceof Error && err.name === "CaptchaError");
+  return (
+    err instanceof CaptchaError ||
+    (err instanceof Error &&
+      (err.name === "CaptchaError" || err.name === "CaptchaSolverUnavailableError"))
+  );
+}
+
+/**
+ * No captcha-solver provider is configured (e.g. `TWOCAPTCHA_API_KEY` is
+ * unset). Distinct from a transport/solve failure so callers can tell "the
+ * capability isn't wired up" apart from "we tried and it failed" — the
+ * capability must fail cleanly here rather than silently skip the solve.
+ */
+export class CaptchaSolverUnavailableError extends CaptchaError {
+  constructor(message = "captcha solver unavailable: no provider configured") {
+    super(message);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof CaptchaSolverUnavailableError`. See {@link isCaptchaError} for why this exists. */
+export function isCaptchaSolverUnavailableError(
+  err: unknown
+): err is CaptchaSolverUnavailableError {
+  return (
+    err instanceof CaptchaSolverUnavailableError ||
+    (err instanceof Error && err.name === "CaptchaSolverUnavailableError")
+  );
 }
 
 /**
@@ -338,6 +364,7 @@ export class MissingFormMapKeyError extends ScraperError {
  */
 const SCRAPER_ERROR_NAMES = new Set([
   "CaptchaError",
+  "CaptchaSolverUnavailableError",
   "EmptyResultsError",
   "SelectorFailureError",
   "SessionTimeoutError",
@@ -355,7 +382,7 @@ const SCRAPER_ERROR_NAMES = new Set([
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 13 concrete subclasses defined in this file
+ * variant, matching any of the 14 concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

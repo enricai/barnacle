@@ -37,6 +37,12 @@ export interface AppConfig {
     browserbaseApiKey: string | undefined;
     browserbaseProjectId: string | undefined;
     steelApiKey: string | undefined;
+    /**
+     * 2Captcha API key that backs the default `solveCaptcha` provider
+     * (`src/scraper/captcha-solver.ts`). Absence makes the capability
+     * cleanly unavailable — callers get a typed error, never a silent skip.
+     */
+    twoCaptchaApiKey: string | undefined;
     anthropicApiKey: string | undefined;
     model: string;
     proxyType: string;
@@ -437,6 +443,7 @@ export function loadConfig(): AppConfig {
       browserbaseApiKey: process.env.BROWSERBASE_API_KEY,
       browserbaseProjectId: process.env.BROWSERBASE_PROJECT_ID,
       steelApiKey: process.env.STEEL_API_KEY,
+      twoCaptchaApiKey: process.env.TWOCAPTCHA_API_KEY,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,
       // Stagehand 2.x's modelToProviderMap is stale (knows only up to
       // claude-3-7-sonnet). Using the provider-prefixed form
