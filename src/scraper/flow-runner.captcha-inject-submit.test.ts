@@ -85,7 +85,10 @@ function makeFakeDocument(forms: FakeForm[], existingField?: FakeInput) {
 }
 
 /** Runs `injectCaptchaTokenAndSubmit`'s built expression against the given fake DOM globals. */
-function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument> }): FrameTarget {
+function makeFakeTarget(
+  globals: { document: ReturnType<typeof makeFakeDocument> },
+  opts: { rejectSetValue?: boolean } = {}
+): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: null,
@@ -96,7 +99,15 @@ function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument>
         "Event",
         `return ${expr as string}`
       ) as (doc: unknown, htmlInputEl: unknown, ev: unknown) => unknown;
-      return fn(globals.document, FakeHTMLInputElement, FakeEvent);
+      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent);
+      // Mirrors a widget whose render callback navigates synchronously from
+      // inside the set-value evaluate: the DOM mutation above already landed
+      // before the frame tears down, so the rejection surfaces only after
+      // the effect took place — exactly what the primitive tolerates.
+      if (opts.rejectSetValue && (expr as string).includes("descriptor.set.call")) {
+        throw new Error("simulated navigation: execution context destroyed");
+      }
+      return result;
     }) as FrameTarget["evaluate"],
     locator: () => ({ scope: "frame" as const }) as never,
     url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
@@ -179,5 +190,22 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(field.value).toBe("solved-token-formless");
     expect(field.dispatched).toEqual(["change"]);
     expect(result).toEqual({ injected: true, hasForm: false });
+  });
+
+  it("still lands the token when the set-value evaluate's own return rejects", async () => {
+    const form = new FakeForm();
+    const field = new FakeInput();
+    field.name = "h-captcha-response";
+    form.appendChild(field);
+
+    const target = makeFakeTarget(
+      { document: makeFakeDocument([form], field) },
+      { rejectSetValue: true }
+    );
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-navigated");
+
+    expect(field.value).toBe("solved-token-navigated");
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 });
