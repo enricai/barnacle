@@ -77,9 +77,9 @@ describe("recon-generate drill-down fold — nested fold threads BOTH a parent-s
 
     // #2: both the parent-only (`groupId`) and item-only (`itemDate`)
     // params interpolate off their own real binding.
-    expect(body).toContain("${g0.id}");
-    expect(body).toContain("${item.date}");
-    expect(body).toContain("${item.entryId}");
+    expect(body).toContain(`$${"{g0.id}"}`);
+    expect(body).toContain(`$${"{item.date}"}`);
+    expect(body).toContain(`$${"{item.entryId}"}`);
 
     // #3: the two captured groups/dates this fixture proves vary
     // (sec1/2024-01-01 and sec2/2024-02-01) never survive as frozen
