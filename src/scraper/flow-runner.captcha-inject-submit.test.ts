@@ -85,7 +85,10 @@ function makeFakeDocument(forms: FakeForm[], existingField?: FakeInput) {
 }
 
 /** Runs `injectCaptchaTokenAndSubmit`'s built expression against the given fake DOM globals. */
-function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument> }): FrameTarget {
+function makeFakeTarget(
+  globals: { document: ReturnType<typeof makeFakeDocument> },
+  opts: { rejectSetValue?: boolean } = {}
+): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: null,
@@ -96,7 +99,15 @@ function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument>
         "Event",
         `return ${expr as string}`
       ) as (doc: unknown, htmlInputEl: unknown, ev: unknown) => unknown;
-      return fn(globals.document, FakeHTMLInputElement, FakeEvent);
+      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent);
+      // Mirrors a widget whose render callback navigates synchronously from
+      // inside the set-value evaluate: the DOM mutation above already landed
+      // before the frame tears down, so the rejection surfaces only after
+      // the effect took place — exactly what the primitive tolerates.
+      if (opts.rejectSetValue && (expr as string).includes("descriptor.set.call")) {
+        throw new Error("simulated navigation: execution context destroyed");
+      }
+      return result;
     }) as FrameTarget["evaluate"],
     locator: () => ({ scope: "frame" as const }) as never,
     url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
@@ -105,7 +116,7 @@ function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument>
 }
 
 describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
-  it("sets an existing response field to the token and submits its form exactly once", async () => {
+  it("sets an existing response field to the token without submitting its form", async () => {
     const form = new FakeForm();
     const field = new FakeInput();
     field.name = "h-captcha-response";
@@ -117,8 +128,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-abc");
     expect(field.dispatched).toEqual(["change"]);
-    expect(form.submitCount).toBe(1);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(form.submitCount).toBe(0);
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("uses the configured response field name and honors it over the h-captcha default", async () => {
@@ -136,8 +147,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     );
 
     expect(field.value).toBe("solved-token-xyz");
-    expect(form.submitCount).toBe(1);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(form.submitCount).toBe(0);
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("creates a missing response field on the form carrying the widget anchor, not an earlier unrelated form", async () => {
@@ -155,9 +166,9 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(applicationForm.fields).toHaveLength(1);
     expect(applicationForm.fields[0]?.value).toBe("solved-token-created");
     expect(applicationForm.fields[0]?.dispatched).toEqual(["change"]);
-    expect(applicationForm.submitCount).toBe(1);
+    expect(applicationForm.submitCount).toBe(0);
     expect(headerSearchForm.submitCount).toBe(0);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("reports no-op when there is no form to attach a freshly created field to", async () => {
@@ -165,7 +176,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-orphan");
 
-    expect(result).toEqual({ injected: false, submitted: false });
+    expect(result).toEqual({ injected: false, hasForm: false });
   });
 
   it("injects into an existing field with no enclosing form without attempting to submit", async () => {
@@ -178,6 +189,23 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-formless");
     expect(field.dispatched).toEqual(["change"]);
-    expect(result).toEqual({ injected: true, submitted: false });
+    expect(result).toEqual({ injected: true, hasForm: false });
+  });
+
+  it("still lands the token when the set-value evaluate's own return rejects", async () => {
+    const form = new FakeForm();
+    const field = new FakeInput();
+    field.name = "h-captcha-response";
+    form.appendChild(field);
+
+    const target = makeFakeTarget(
+      { document: makeFakeDocument([form], field) },
+      { rejectSetValue: true }
+    );
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-navigated");
+
+    expect(field.value).toBe("solved-token-navigated");
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 });

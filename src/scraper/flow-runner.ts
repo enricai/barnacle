@@ -5032,45 +5032,65 @@ export async function waitForTransitionBody(params: {
   return false;
 }
 
-/** Result of {@link injectCaptchaTokenAndSubmit}'s `target.evaluate` call. */
+/** Result of {@link injectCaptchaTokenAndSubmit}'s precheck evaluate. */
 export interface InjectCaptchaTokenResult {
-  /** True once the response field held the token (created if it didn't already exist). */
+  /** True once a field to hold the token existed or a form was found to attach one to. */
   injected: boolean;
-  /** True once `form.submit()` was invoked on the field's enclosing form. */
-  submitted: boolean;
+  /** True once a `<form>` was found to submit — either the field's own or the sitekey-anchored form. */
+  hasForm: boolean;
 }
 
 /**
  * Site-agnostic captcha-solve hand-off: given an already-solved token, commit
- * it into the page's hidden response field and submit the gated form.
+ * it into the page's hidden response field and dispatch the framework-visible
+ * `change` event so the field's own value listener observes it.
  *
  * Widgets of this shape create a hidden `<input name="{responseField}">`
- * carrying the solved token and call `form.submit()` from their own render
- * callback once a token is available (see the module's callers for the exact
- * per-flow contract). This primitive reproduces that contract directly so the
- * engine doesn't depend on the widget's callback closure firing: it finds (or
- * creates) the named field on the page, commits `token` via the same
- * React-safe native value setter used elsewhere in this file for text/file
- * inputs (so a framework-tracked value listener still observes the change),
- * fires a bubbling `change` event, then calls `form.submit()` on the field's
- * enclosing form.
+ * carrying the solved token, and some widgets' own render callback submits
+ * the enclosing form as soon as a token lands — assigning the field's value
+ * can therefore itself navigate the frame synchronously, mid-evaluate. No
+ * eval this function issues after the precheck is depended on for a return
+ * value: only the precheck (a pure DOM query, which cannot navigate) is
+ * awaited for its result; the value-set and change-dispatch evals are fired
+ * and their rejections discarded, exactly like a navigating `form.submit()`
+ * would be.
  *
- * Deliberately narrow: no polling, no verification, no wait budget — this
- * only performs the inject+submit hand-off. The caller is responsible for
- * obtaining the token and for verifying the submit actually advanced.
+ * Deliberately narrow: no polling, no verification, no wait budget, and no
+ * explicit `form.submit()` — this only performs the inject hand-off. The
+ * caller decides whether an explicit submit is still needed (from its own
+ * transition-poll result) and is responsible for obtaining the token and
+ * verifying the advance actually happened.
  *
- * Returns `{ injected: false, submitted: false }` when no form exists to
- * attach a freshly created field to (nothing to submit against). When a
- * fresh field must be created and the page has more than one `<form>`
- * (e.g. a header search form alongside the actual application form),
- * prefers the form containing a `[data-sitekey]` widget anchor over an
- * unrelated earlier form in document order.
+ * Returns `{ injected: false, hasForm: false }` when no field exists and no
+ * form exists to attach a freshly created field to. When a fresh field must
+ * be created and the page has more than one `<form>` (e.g. a header search
+ * form alongside the actual application form), prefers the form containing
+ * a `[data-sitekey]` widget anchor over an unrelated earlier form in
+ * document order.
  */
 export async function injectCaptchaTokenAndSubmit(
   target: FrameTarget,
   token: string,
   responseField = "h-captcha-response"
 ): Promise<InjectCaptchaTokenResult> {
+  const precheckExpr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    if (field) return { fieldExists: true, hasForm: Boolean(field.closest("form")) };
+    const forms = Array.from(document.querySelectorAll("form"));
+    const form = forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
+    return { fieldExists: false, hasForm: Boolean(form) };
+  })()`;
+  // Purely a DOM query — reads but never mutates the page, so it cannot
+  // itself trigger navigation. This is the only evaluate call in this
+  // function whose return value is depended on.
+  const { fieldExists, hasForm } = await target.evaluate<{
+    fieldExists: boolean;
+    hasForm: boolean;
+  }>(precheckExpr);
+  const injected = fieldExists || hasForm;
+  if (!injected) return { injected, hasForm };
+
   const setValueExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const token = ${JSON.stringify(token)};
@@ -5079,7 +5099,7 @@ export async function injectCaptchaTokenAndSubmit(
       const forms = Array.from(document.querySelectorAll("form"));
       const form =
         forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
-      if (!form) return { injected: false, hasForm: false };
+      if (!form) return;
       field = document.createElement("input");
       field.type = "hidden";
       field.name = responseField;
@@ -5091,14 +5111,14 @@ export async function injectCaptchaTokenAndSubmit(
     } else {
       field.value = token;
     }
-    return { injected: true, hasForm: Boolean(field.closest("form")) };
   })()`;
-  // Setting the field's value cannot itself trigger navigation, so this is
-  // the only evaluate call whose return value the function depends on.
-  const { injected, hasForm } = await target.evaluate<{ injected: boolean; hasForm: boolean }>(
-    setValueExpr
-  );
-  if (!injected) return { injected, submitted: false };
+  // Setting the field's value can itself trigger navigation: on widgets whose
+  // response field is the widget's own hidden textarea, assigning it fires
+  // the widget's render callback, which may call form.submit() synchronously
+  // from inside this evaluate, tearing down the execution context before a
+  // return value marshals. Tolerate that the same way a navigating
+  // form.submit() is tolerated below — never depend on this call's result.
+  await target.evaluate(setValueExpr).catch(() => undefined);
 
   const dispatchChangeExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -5111,8 +5131,21 @@ export async function injectCaptchaTokenAndSubmit(
   // value — that rejection is the expected outcome of a navigating evaluate,
   // not a real failure, so it's discarded here rather than depended on.
   await target.evaluate(dispatchChangeExpr).catch(() => undefined);
-  if (!hasForm) return { injected, submitted: false };
 
+  return { injected, hasForm };
+}
+
+/**
+ * Explicit submit fallback for {@link injectCaptchaTokenAndSubmit} callers:
+ * used only when the caller's own transition poll observed no advance after
+ * the inject, so the widget's callback (if any) evidently didn't submit for
+ * us. Kept separate from the inject primitive so the caller can gate its use
+ * on an observed transition rather than firing it unconditionally.
+ */
+export async function submitCaptchaGatedForm(
+  target: FrameTarget,
+  responseField = "h-captcha-response"
+): Promise<void> {
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
@@ -5123,8 +5156,7 @@ export async function injectCaptchaTokenAndSubmit(
   // context before Runtime.evaluate can marshal a return value for this call —
   // that rejection is the expected outcome of a navigating evaluate, not a
   // real failure, so it's discarded here rather than awaited for a result.
-  target.evaluate(submitExpr).catch(() => undefined);
-  return { injected, submitted: true };
+  await target.evaluate(submitExpr).catch(() => undefined);
 }
 
 /**
@@ -8458,7 +8490,7 @@ export async function executeStepWithHealing(params: {
       const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
       const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} submitted=${injectResult.submitted}`
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm}`
       );
       // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
       // poll loop), just with a widened budget so the solve+submit round trip
@@ -8467,8 +8499,9 @@ export async function executeStepWithHealing(params: {
       // the probe-absent branch below treats a detected transition — the
       // normal cascade/verifier still runs when the pattern doesn't confirm
       // (or none is configured), so this never replaces that verifier.
+      let confirmed = false;
       if (advanceTransitionBodyPattern) {
-        const confirmed = await waitForTransitionBody({
+        confirmed = await waitForTransitionBody({
           page,
           preIdx: preCaptchaCaptureIdx,
           advanceTransitionBodyPattern,
@@ -8478,10 +8511,18 @@ export async function executeStepWithHealing(params: {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit transition poll confirmed=${confirmed}`
         );
-        if (confirmed) {
-          trajectory?.push({ stepIndex, verifiedBy: "network" });
-          return "completed";
-        }
+      }
+      // Some widgets' own render callback already submitted the form as a
+      // side effect of the inject (the poll above would have confirmed it);
+      // only issue an explicit submit when no transition was observed AND a
+      // form is known to exist to submit — otherwise this would double-submit
+      // a form the widget's own callback already advanced.
+      if (!confirmed && injectResult.hasForm) {
+        await submitCaptchaGatedForm(captchaTarget);
+      }
+      if (confirmed) {
+        trajectory?.push({ stepIndex, verifiedBy: "network" });
+        return "completed";
       }
     }
   }
