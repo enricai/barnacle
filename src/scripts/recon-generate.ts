@@ -4243,8 +4243,11 @@ function emitFoldMatchAndMergeLines(
     // intermediate segment may not exist on a flat response),
     // then fall back to the bare last segment.
     const lastSegment = segments[segments.length - 1]!;
-    const bracket = (segment: string): string => (optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`);
-    const optionalBracketAccessor = segments.map((segment) => `?.[${JSON.stringify(segment)}]`).join("");
+    const bracket = (segment: string): string =>
+      optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`;
+    const optionalBracketAccessor = segments
+      .map((segment) => `?.[${JSON.stringify(segment)}]`)
+      .join("");
     return segments.length > 1
       ? `(${varName}${optionalBracketAccessor} ?? ${varName}${bracket(lastSegment)})`
       : `${varName}${bracket(lastSegment)}`;
@@ -4914,7 +4917,7 @@ export function emitMultiStepExecuteHttp(
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(threadingScopes, chainCapture),
           ]);
-          return threadedFields.reduce((acc, { varName, field }) => {
+          const result = threadedFields.reduce((acc, { varName, field }) => {
             const replacement = `\${${scopedAccessor(varName, field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
             // accessor after the DRILL REQUEST's own top-level JSON key
@@ -4944,6 +4947,13 @@ export function emitMultiStepExecuteHttp(
               ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
               : withAccessorSwapped;
           }, text);
+          assertNoFrozenVaryingDrillParams(
+            "emitMultiStepExecuteHttp",
+            chainCapture,
+            result,
+            actions.map((a) => a.capture)
+          );
+          return result;
         };
 
         // Every chain step's response and produces are block-scoped to this
@@ -5547,6 +5557,136 @@ function collectRequestStringValues(capture: Capture): Set<string> {
     }
   }
   return values;
+}
+
+/** A drill request's query parameter or JSON body field, still left as a
+ * literal in the emitted call after threading, whose value differs between
+ * `capture` and some OTHER capture of the exact same endpoint elsewhere in
+ * the run — proof the literal is a per-drill value that varies, not a truly
+ * constant one. */
+interface FrozenVaryingDrillParam {
+  location: "query parameter" | "body field";
+  key: string;
+  frozenValue: string;
+  differingValue: string;
+}
+
+/**
+ * Finds every query param or JSON body leaf on `capture`'s own request that
+ * (a) was left as a literal in `renderedText` — never swapped for a
+ * `${...}` accessor by the threading pass above — and (b) took a different
+ * value on some OTHER capture matching the exact same endpoint (same
+ * origin+pathname, via {@link endpointKey}) anywhere in the run. Freezing
+ * such a value bakes ONE capture's drill parameter into every fold
+ * iteration's request, exactly the defect described in
+ * docs/recon-generate-nested-fold-flatmaps-away-the-parent-so-drill-params-freeze.md
+ * (a `packageCode`/`groupId`/`sailDate` triple that provably varies per
+ * cruise, silently frozen because no threaded field explained it). Path
+ * segments are deliberately not checked: {@link endpointKey} requires an
+ * identical pathname to group two captures at all, so no path segment can
+ * ever be observed to vary within a matched group.
+ */
+function findFrozenVaryingDrillParams(
+  capture: Capture,
+  renderedText: string,
+  allCaptures: readonly Capture[]
+): FrozenVaryingDrillParam[] {
+  const key = endpointKey(capture.url);
+  const sameEndpointCaptures = allCaptures.filter(
+    (c) => c !== capture && endpointKey(c.url) === key
+  );
+  if (sameEndpointCaptures.length === 0) return [];
+  const isFrozenLiteral = (value: string): boolean =>
+    value.length > 0 && renderedText.includes(value);
+  const frozen: FrozenVaryingDrillParam[] = [];
+  try {
+    const url = new URL(capture.url);
+    for (const [paramKey, value] of url.searchParams.entries()) {
+      if (!isFrozenLiteral(value)) continue;
+      const differing = sameEndpointCaptures
+        .map((c) => {
+          try {
+            return new URL(c.url).searchParams.get(paramKey);
+          } catch {
+            return null;
+          }
+        })
+        .find((v): v is string => v !== null && v !== value);
+      if (differing !== undefined) {
+        frozen.push({
+          location: "query parameter",
+          key: paramKey,
+          frozenValue: value,
+          differingValue: differing,
+        });
+      }
+    }
+  } catch {
+    // Relative or malformed URL — no query params to check.
+  }
+  const parsedBody = ((): unknown => {
+    try {
+      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
+        ? JSON.parse(capture.requestPostData)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsedBody !== undefined) {
+    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      const stringValue = String(value);
+      if (!isFrozenLiteral(stringValue)) continue;
+      const fieldPath = path.join(".");
+      const differing = sameEndpointCaptures
+        .map((c) => {
+          try {
+            const otherBody =
+              typeof c.requestPostData === "string" && c.requestPostData.length > 0
+                ? JSON.parse(c.requestPostData)
+                : undefined;
+            return otherBody === undefined ? undefined : readValueAtPath(otherBody, path);
+          } catch {
+            return undefined;
+          }
+        })
+        .find((v) => v !== undefined && String(v) !== stringValue);
+      if (differing !== undefined) {
+        frozen.push({
+          location: "body field",
+          key: fieldPath,
+          frozenValue: stringValue,
+          differingValue: String(differing),
+        });
+      }
+    }
+  }
+  return frozen;
+}
+
+/** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
+ * varying literal — shared by {@link parameterizeUrl} (below) and
+ * `emitMultiStepExecuteHttp`'s own `parameterize` so the two emitters can't
+ * drift on this guard. */
+function assertNoFrozenVaryingDrillParams(
+  emitterName: string,
+  capture: Capture,
+  renderedText: string,
+  allCaptures: readonly Capture[]
+): void {
+  const frozen = findFrozenVaryingDrillParams(capture, renderedText, allCaptures);
+  if (frozen.length === 0) return;
+  const described = frozen
+    .map(
+      (f) =>
+        `${f.location} "${f.key}" (froze "${f.frozenValue}", also captured as "${f.differingValue}")`
+    )
+    .join("; ");
+  throw new Error(
+    `${emitterName}: drill request to ${endpointKey(capture.url)} would freeze a value that varied across this run's own captures: ${described} — no threaded field (item or ancestor) explains it, so baking in one capture's literal would silently reuse it for every fold iteration; add the missing field to joinFields or make it resolvable from an ancestor binding`
+  );
 }
 
 /**
@@ -8124,7 +8264,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(threadingScopes, chainCapture),
           ]);
-          return threadedFields.reduce((acc, { varName, field }) => {
+          const result = threadedFields.reduce((acc, { varName, field }) => {
             const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
             const value = readValueAtPath(scopeObj, field.split("."));
             const stringValue =
@@ -8139,6 +8279,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               `\${${scopedAccessor(varName, field)}}`
             );
           }, withBase);
+          assertNoFrozenVaryingDrillParams(
+            "emitContractTs",
+            chainCapture,
+            result,
+            actionSteps.map((s) => s.capture)
+          );
+          return result;
         };
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
