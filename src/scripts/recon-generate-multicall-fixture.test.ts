@@ -10,9 +10,11 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
@@ -209,6 +211,32 @@ describe("buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstIte
   });
 });
 
+describe("buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps();
+
+  it("the drill request's own query param is identical across every capture of that endpoint", () => {
+    const drillSteps = steps.filter((s) => s.capture.url.includes("item-quote"));
+    expect(drillSteps).toHaveLength(2);
+
+    const qtyValues = drillSteps.map((s) => new URL(s.capture.url).searchParams.get("qty"));
+    expect(qtyValues).toEqual(["0", "0"]);
+  });
+
+  it("an unrelated primary field coincidentally matches the constant param's value for only one item", () => {
+    const body = steps[0]?.capture.responseBody as {
+      results: { itemId: string; discount: number }[];
+    };
+    const [firstItem, secondItem] = body.results;
+    expect(firstItem).toBeDefined();
+    expect(secondItem).toBeDefined();
+
+    // The coincidence must be per-item, not a fixture-wide constant: only
+    // the second item's `discount` collides with the constant `qty=0`.
+    expect(firstItem?.discount).not.toBe(0);
+    expect(secondItem?.discount).toBe(0);
+  });
+});
+
 describe("buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps", () => {
   const steps = buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps();
 
@@ -291,6 +319,48 @@ describe("buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps", () => 
     for (const p of params) {
       expect(p.get("groupId")).toBeTruthy();
       expect(p.get("itemDate")).toBeTruthy();
+    }
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps();
+
+  it("the primary response carries >=2 groups, each with >=3 items", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { id: string; entries: { entryId: string }[] }[];
+    };
+    expect(body.sections.length).toBeGreaterThanOrEqual(2);
+    for (const section of body.sections) {
+      expect(section.id).toBeTruthy();
+      expect(section.entries.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("every drill capture's query params carry only the group-level id, never any item field value", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { id: string; entries: { entryId: string }[] }[];
+    };
+    const itemFieldValues = new Set(
+      body.sections.flatMap((section) => section.entries.map((entry) => entry.entryId))
+    );
+
+    const drillSteps = steps.slice(1);
+    expect(drillSteps.length).toBeGreaterThanOrEqual(2);
+
+    const endpoints = new Set(drillSteps.map((step) => endpointKey(step.capture.url)));
+    expect(endpoints.size).toBe(1);
+
+    const groupIds = new Set(
+      drillSteps.map((step) => new URL(step.capture.url).searchParams.get("groupId"))
+    );
+    expect(groupIds.size).toBe(drillSteps.length);
+    for (const step of drillSteps) {
+      const params = new URL(step.capture.url).searchParams;
+      expect(params.get("groupId")).toBeTruthy();
+      for (const [, value] of params.entries()) {
+        expect(itemFieldValues.has(value)).toBe(false);
+      }
     }
   });
 });

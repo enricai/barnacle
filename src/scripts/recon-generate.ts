@@ -3342,7 +3342,15 @@ function pathToFoldAccessorExpr(expr: string, path: string[], depth = 0): string
  * can't collide either. Returns the loop's opening/closing lines (for the
  * caller to splice its own loop-body lines between) plus the ordered
  * (outer-to-inner) ancestor variable names — NOT including the innermost
- * item, which the caller names itself via `itemVar`.
+ * item, which the caller names itself via `itemVar`. Also splits the
+ * combined open/close into an ancestor-scope segment
+ * (`ancestorOpenLines`/`ancestorCloseLines`, empty when `path` crosses no
+ * wildcard) and an item-scope segment (`itemOpenLines`/`itemCloseLines`),
+ * so a caller whose per-target chain fetch never reads `itemVar` can splice
+ * that fetch between the two segments — once per ancestor tuple — instead
+ * of inside the item loop. `openLines`/`closeLines` remain the straight
+ * concatenation of the two segments, unchanged, for callers that don't need
+ * the split.
  */
 function pathToFoldLoopLines(
   expr: string,
@@ -3351,7 +3359,15 @@ function pathToFoldLoopLines(
   indent: string,
   varSuffix = "",
   depth = 0
-): { openLines: string[]; closeLines: string[]; ancestorVars: string[] } {
+): {
+  openLines: string[];
+  closeLines: string[];
+  ancestorVars: string[];
+  ancestorOpenLines: string[];
+  itemOpenLines: string[];
+  itemCloseLines: string[];
+  ancestorCloseLines: string[];
+} {
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     const finalExpr = `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
@@ -3361,21 +3377,22 @@ function pathToFoldLoopLines(
     // single-scope folds must emit byte-identical code, not merely
     // equivalent code, since nothing about a flat fold needs the nested-loop
     // rewrite in the first place.
-    if (depth === 0) {
-      const foldItemsVar = `foldItems${varSuffix}`;
-      return {
-        openLines: [
-          `${indent}const ${foldItemsVar} = ${finalExpr};`,
-          `${indent}for (const ${itemVar} of ${foldItemsVar}) {`,
-        ],
-        closeLines: [`${indent}}`],
-        ancestorVars: [],
-      };
-    }
+    const itemOpenLines =
+      depth === 0
+        ? [
+            `${indent}const foldItems${varSuffix} = ${finalExpr};`,
+            `${indent}for (const ${itemVar} of foldItems${varSuffix}) {`,
+          ]
+        : [`${indent}for (const ${itemVar} of ${finalExpr}) {`];
+    const itemCloseLines = [`${indent}}`];
     return {
-      openLines: [`${indent}for (const ${itemVar} of ${finalExpr}) {`],
-      closeLines: [`${indent}}`],
+      openLines: itemOpenLines,
+      closeLines: itemCloseLines,
       ancestorVars: [],
+      ancestorOpenLines: [],
+      itemOpenLines,
+      itemCloseLines,
+      ancestorCloseLines: [],
     };
   }
   const before = path.slice(0, wildcardIndex);
@@ -3383,10 +3400,19 @@ function pathToFoldLoopLines(
   const groupVar = `g${depth}${varSuffix}`;
   const outerExpr = `${expr}${pathToAccessor(before, { assertNonNull: false })}`;
   const inner = pathToFoldLoopLines(groupVar, after, itemVar, `${indent}  `, varSuffix, depth + 1);
+  const ancestorOpenLines = [
+    `${indent}for (const ${groupVar} of ${outerExpr}) {`,
+    ...inner.ancestorOpenLines,
+  ];
+  const ancestorCloseLines = [...inner.ancestorCloseLines, `${indent}}`];
   return {
-    openLines: [`${indent}for (const ${groupVar} of ${outerExpr}) {`, ...inner.openLines],
-    closeLines: [...inner.closeLines, `${indent}}`],
+    openLines: [...ancestorOpenLines, ...inner.itemOpenLines],
+    closeLines: [...inner.itemCloseLines, ...ancestorCloseLines],
     ancestorVars: [groupVar, ...inner.ancestorVars],
+    ancestorOpenLines,
+    itemOpenLines: inner.itemOpenLines,
+    itemCloseLines: inner.itemCloseLines,
+    ancestorCloseLines,
   };
 }
 
@@ -4843,15 +4869,24 @@ export function emitMultiStepExecuteHttp(
       // Nested `for` loops (not a `.flatMap`-derived collection) so every
       // intermediate array's binding stays addressable inside the innermost
       // loop body — see pathToFoldLoopLines's docstring.
-      const { openLines, closeLines, ancestorVars } = pathToFoldLoopLines(
-        `(${primaryStep.varName} as ${primaryArrType})`,
-        foldPlan.primaryArrayPath,
-        itemVar,
-        "    ",
-        planSuffix
-      );
+      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
+        pathToFoldLoopLines(
+          `(${primaryStep.varName} as ${primaryArrType})`,
+          foldPlan.primaryArrayPath,
+          itemVar,
+          "    ",
+          planSuffix
+        );
 
-      lines.push(...openLines);
+      lines.push(...ancestorOpenLines);
+      // Chain fetches for targets whose params + joinFields never reference
+      // itemVar are spliced here, above the item loop but inside the
+      // ancestor loop(s) — fetched once per ancestor tuple and reused by
+      // every descendant item's join/merge, instead of once per item.
+      const hoistedChainLines: string[] = [];
+      // Every target's join/merge — plus any non-hoistable target's own
+      // chain fetch — goes here, spliced inside the item loop.
+      const itemScopedLines: string[] = [];
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -4915,7 +4950,11 @@ export function emitMultiStepExecuteHttp(
           // invisible and gets frozen as a literal.
           const threadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              actions.map((a) => a.capture)
+            ),
           ]);
           const result = threadedFields.reduce((acc, { varName, field }) => {
             const replacement = `\${${scopedAccessor(varName, field)}}`;
@@ -4965,21 +5004,37 @@ export function emitMultiStepExecuteHttp(
         // templates by the pass above, same as it would be for any two
         // sequential non-fold steps) resolves them from this narrower scope.
         const chainDeclared = new Set<string>();
+        const chainLines: string[] = [];
+        // True once any chain step's parameterized url/headers/body actually
+        // ends up referencing `itemVar` — determined off the SAME
+        // `parameterize` substitutions the emitted call itself uses (not a
+        // fresh value scan), so this can never disagree with what the
+        // request literally interpolates. `ancestorVars.length === 0` means
+        // there is no ancestor loop to hoist into in the first place (a
+        // flat, single-level fold), so it is treated as item-scoped too —
+        // existing flat folds must keep emitting byte-identical code.
+        const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
+        let referencesItemVar = ancestorVars.length === 0;
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
-          lines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url, chainStep.capture)}\`, {`,
+          const paramUrl = parameterize(chainRendered.url, chainStep.capture);
+          const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
+          const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
+          if (
+            itemVarRefPattern.test(paramUrl) ||
+            itemVarRefPattern.test(paramHeaders) ||
+            itemVarRefPattern.test(paramBody)
+          ) {
+            referencesItemVar = true;
+          }
+          chainLines.push(
+            `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`,
             `        method: ${JSON.stringify(chainRendered.method)},`
           );
-          const joined = [
-            parameterize(chainRendered.headersExpr, chainStep.capture),
-            parameterize(chainRendered.bodyArg, chainStep.capture),
-          ]
-            .filter((s) => s !== "")
-            .join(" ");
-          if (joined !== "") lines.push(`        ${joined}`);
-          lines.push(
+          const joined = [paramHeaders, paramBody].filter((s) => s !== "").join(" ");
+          if (joined !== "") chainLines.push(`        ${joined}`);
+          chainLines.push(
             `        schema: ${chainRendered.schemaExpr},`,
             `      })) as Record<string, unknown>;`
           );
@@ -4989,17 +5044,34 @@ export function emitMultiStepExecuteHttp(
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
             const assertion = pathToAssertionType(p.path);
-            lines.push(
+            chainLines.push(
               `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
             );
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        lines.push(
-          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        const matchLines = emitFoldMatchAndMergeLines(
+          terminalStep,
+          target,
+          itemVar,
+          suffix,
+          joinAccessor
         );
+        if (referencesItemVar) {
+          itemScopedLines.push(...chainLines, ...matchLines);
+        } else {
+          hoistedChainLines.push(...chainLines);
+          itemScopedLines.push(...matchLines);
+        }
       }
-      lines.push(...closeLines, "");
+      lines.push(
+        ...hoistedChainLines,
+        ...itemOpenLines,
+        ...itemScopedLines,
+        ...itemCloseLines,
+        ...ancestorCloseLines,
+        ""
+      );
       continue;
     }
     // Every other chain step (already fully emitted, inline, by the fold
@@ -5531,17 +5603,53 @@ export interface FoldTarget {
  * path segment (e.g. `/orders/{id}`) rather than a query param or body
  * field. Numeric leaves are included because a join key is just as often a
  * numeric id (threaded as a query param string or a JSON body number
- * literal) as a string one. */
-function collectRequestStringValues(capture: Capture): Set<string> {
+ * literal) as a string one.
+ *
+ * `allCaptures`, when passed, gates every query param and body leaf on
+ * whether its OWN value (by param key / body path, via {@link endpointKey}'s
+ * same-endpoint grouping — the same grouping {@link
+ * findFrozenVaryingDrillParams} uses) ever differs on some other capture of
+ * the same endpoint. A value that never varies (e.g. `adults=2`) is left
+ * out, so callers matching by pure value equality (e.g. {@link
+ * findThreadedJoinFields}) can't bind that constant onto an unrelated field
+ * that coincidentally holds the same literal (e.g. a zero-valued `children`
+ * param matching a discount amount that also happens to be `0` in one
+ * capture, then diverges to a fraction in another). Path segments are
+ * exempt from this gate and always pass through — {@link endpointKey}
+ * already fixes the pathname, so a path segment can never be observed to
+ * vary within a matched group, the same rationale {@link
+ * findFrozenVaryingDrillParams} documents for the same exclusion. When no
+ * other capture of this endpoint exists in `allCaptures`, variance can't be
+ * observed either way, so every value is kept (unfiltered, matching the
+ * behavior when `allCaptures` is omitted). */
+function collectRequestStringValues(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Set<string> {
+  const sameEndpointCaptures = allCaptures
+    ? allCaptures.filter((c) => c !== capture && endpointKey(c.url) === endpointKey(capture.url))
+    : [];
+  const varies = (own: string, others: (string | undefined)[]): boolean =>
+    !allCaptures || sameEndpointCaptures.length === 0
+      ? true
+      : others.some((other) => other !== undefined && other !== own);
   const values = new Set<string>();
   try {
     const url = new URL(capture.url);
-    for (const v of url.searchParams.values()) values.add(v);
     for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
+    for (const [paramKey, value] of url.searchParams.entries()) {
+      const otherValues = sameEndpointCaptures.map((c) => {
+        try {
+          return new URL(c.url).searchParams.get(paramKey) ?? undefined;
+        } catch {
+          return undefined;
+        }
+      });
+      if (varies(value, otherValues)) values.add(value);
+    }
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
   }
-  for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
   const parsedBody = ((): unknown => {
     try {
       return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
@@ -5552,8 +5660,23 @@ function collectRequestStringValues(capture: Capture): Set<string> {
     }
   })();
   if (parsedBody !== undefined) {
-    for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (value === null) continue;
+      const stringValue = String(value);
+      const otherValues = sameEndpointCaptures.map((c) => {
+        try {
+          const otherBody =
+            typeof c.requestPostData === "string" && c.requestPostData.length > 0
+              ? JSON.parse(c.requestPostData)
+              : undefined;
+          if (otherBody === undefined) return undefined;
+          const otherValue = readValueAtPath(otherBody, path);
+          return otherValue === undefined ? undefined : String(otherValue);
+        } catch {
+          return undefined;
+        }
+      });
+      if (varies(stringValue, otherValues)) values.add(stringValue);
     }
   }
   return values;
@@ -5816,12 +5939,23 @@ function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[]
  * depends on. `scopes` is searched in the given order (innermost fold item
  * first, then each ancestor binding a nested loop keeps addressable), since
  * an ancestor field with the same name as an item field must not shadow the
- * item's own value. */
+ * item's own value.
+ *
+ * `allCaptures`, when passed, is forwarded to {@link
+ * collectRequestStringValues} to gate matching on cross-capture variance:
+ * a param whose own value never varies across other captures of the same
+ * endpoint is excluded from the candidate set entirely, so a constant like
+ * `children=0` can't bind to an unrelated item field (a discount amount, a
+ * departure port) purely because both happen to equal the same literal at
+ * generation time. Omitted for the candidate-array disambiguation callers,
+ * where narrowing by variance is a different concern than the URL/body
+ * over-threading this gate exists to prevent. */
 function findThreadedJoinFields(
   scopes: readonly { varName: string; obj: Record<string, unknown> }[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  allCaptures?: readonly Capture[]
 ): ThreadedField[] {
-  const requestValues = collectRequestStringValues(drillCapture);
+  const requestValues = collectRequestStringValues(drillCapture, allCaptures);
   if (requestValues.size === 0) return [];
   return scopes.flatMap(({ varName, obj }) =>
     [...walkItemFieldPaths(obj)]
@@ -8194,30 +8328,41 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             return foldPlan.primaryArrayPath.slice(level.length);
           })()
         : foldPlan.primaryArrayPath;
-      const { openLines, closeLines, ancestorVars } = itemsOverride
-        ? pathToFoldLoopLines(
-            residualPath.length === 0
-              ? itemsOverride.expr
-              : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
-            residualPath,
-            itemVar,
-            "    ",
-            planSuffix
-          )
-        : pathToFoldLoopLines(
-            `(${dataVarName} as ${primaryArrType})`,
-            foldPlan.primaryArrayPath,
-            itemVar,
-            "    ",
-            planSuffix
-          );
+      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
+        itemsOverride
+          ? pathToFoldLoopLines(
+              residualPath.length === 0
+                ? itemsOverride.expr
+                : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
+              residualPath,
+              itemVar,
+              "    ",
+              planSuffix
+            )
+          : pathToFoldLoopLines(
+              `(${dataVarName} as ${primaryArrType})`,
+              foldPlan.primaryArrayPath,
+              itemVar,
+              "    ",
+              planSuffix
+            );
       // Ancestor bindings within `itemsOverride.level` (if any) have no
       // runtime loop variable, since the paginated merge already flattened
       // across them — only the trailing `residualPath.length` ancestor
       // crossings correspond to `ancestorVars` above, so slice the
       // design-time ancestor chain to match.
       const residualAncestorCount = residualPath.filter((s) => s === ARRAY_WILDCARD_SEGMENT).length;
-      lines.push(...openLines);
+      lines.push(...ancestorOpenLines);
+      // Chain fetches for targets whose parameterized URL never interpolates
+      // `itemVar` are spliced here, above the item loop but inside the
+      // ancestor loop(s) — fetched once per ancestor tuple and reused by
+      // every descendant item's join/merge, mirroring
+      // emitMultiStepExecuteHttp's identical hoist (see its own comment).
+      const hoistedChainLines: string[] = [];
+      // Every target's join/merge — plus any non-hoistable target's own
+      // chain fetch — goes here, spliced inside the item loop.
+      const itemScopedLines: string[] = [];
+      const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
         if (!matchedPrimaryItem) {
@@ -8262,7 +8407,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               : rawUrl;
           const threadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              actionSteps.map((s) => s.capture)
+            ),
           ]);
           const result = threadedFields.reduce((acc, { varName, field }) => {
             const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
@@ -8287,17 +8436,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           );
           return result;
         };
+        const chainLines: string[] = [];
+        // True once any chain step's parameterized URL actually ends up
+        // referencing `itemVar`, off the SAME `parameterizeUrl` call the
+        // request literally interpolates — see emitMultiStepExecuteHttp's
+        // identical `referencesItemVar` for why this can't disagree with
+        // what's emitted. `ancestorVars.length === 0` means there's no
+        // ancestor loop to hoist into (a flat, single-level fold), so it's
+        // treated as item-scoped too — flat folds must keep emitting
+        // byte-identical code.
+        let referencesItemVar = ancestorVars.length === 0;
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
+          if (itemVarRefPattern.test(url)) referencesItemVar = true;
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
               chainStep.capture.responseBody,
             ]),
           });
-          lines.push(
+          chainLines.push(
             `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`,
             `        method: ${JSON.stringify(chainStep.capture.method)},`,
             `        schema: ${schemaExpr},`,
@@ -8306,11 +8466,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
-        lines.push(
-          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        const matchLines = emitFoldMatchAndMergeLines(
+          terminalStep,
+          target,
+          itemVar,
+          suffix,
+          joinAccessor
         );
+        if (referencesItemVar) {
+          itemScopedLines.push(...chainLines, ...matchLines);
+        } else {
+          hoistedChainLines.push(...chainLines);
+          itemScopedLines.push(...matchLines);
+        }
       }
-      lines.push(...closeLines, "");
+      lines.push(
+        ...hoistedChainLines,
+        ...itemOpenLines,
+        ...itemScopedLines,
+        ...itemCloseLines,
+        ...ancestorCloseLines,
+        ""
+      );
     }
     return lines;
   };
