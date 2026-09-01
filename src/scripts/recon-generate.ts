@@ -3342,7 +3342,15 @@ function pathToFoldAccessorExpr(expr: string, path: string[], depth = 0): string
  * can't collide either. Returns the loop's opening/closing lines (for the
  * caller to splice its own loop-body lines between) plus the ordered
  * (outer-to-inner) ancestor variable names — NOT including the innermost
- * item, which the caller names itself via `itemVar`.
+ * item, which the caller names itself via `itemVar`. Also splits the
+ * combined open/close into an ancestor-scope segment
+ * (`ancestorOpenLines`/`ancestorCloseLines`, empty when `path` crosses no
+ * wildcard) and an item-scope segment (`itemOpenLines`/`itemCloseLines`),
+ * so a caller whose per-target chain fetch never reads `itemVar` can splice
+ * that fetch between the two segments — once per ancestor tuple — instead
+ * of inside the item loop. `openLines`/`closeLines` remain the straight
+ * concatenation of the two segments, unchanged, for callers that don't need
+ * the split.
  */
 function pathToFoldLoopLines(
   expr: string,
@@ -3351,7 +3359,15 @@ function pathToFoldLoopLines(
   indent: string,
   varSuffix = "",
   depth = 0
-): { openLines: string[]; closeLines: string[]; ancestorVars: string[] } {
+): {
+  openLines: string[];
+  closeLines: string[];
+  ancestorVars: string[];
+  ancestorOpenLines: string[];
+  itemOpenLines: string[];
+  itemCloseLines: string[];
+  ancestorCloseLines: string[];
+} {
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     const finalExpr = `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
@@ -3361,21 +3377,22 @@ function pathToFoldLoopLines(
     // single-scope folds must emit byte-identical code, not merely
     // equivalent code, since nothing about a flat fold needs the nested-loop
     // rewrite in the first place.
-    if (depth === 0) {
-      const foldItemsVar = `foldItems${varSuffix}`;
-      return {
-        openLines: [
-          `${indent}const ${foldItemsVar} = ${finalExpr};`,
-          `${indent}for (const ${itemVar} of ${foldItemsVar}) {`,
-        ],
-        closeLines: [`${indent}}`],
-        ancestorVars: [],
-      };
-    }
+    const itemOpenLines =
+      depth === 0
+        ? [
+            `${indent}const foldItems${varSuffix} = ${finalExpr};`,
+            `${indent}for (const ${itemVar} of foldItems${varSuffix}) {`,
+          ]
+        : [`${indent}for (const ${itemVar} of ${finalExpr}) {`];
+    const itemCloseLines = [`${indent}}`];
     return {
-      openLines: [`${indent}for (const ${itemVar} of ${finalExpr}) {`],
-      closeLines: [`${indent}}`],
+      openLines: itemOpenLines,
+      closeLines: itemCloseLines,
       ancestorVars: [],
+      ancestorOpenLines: [],
+      itemOpenLines,
+      itemCloseLines,
+      ancestorCloseLines: [],
     };
   }
   const before = path.slice(0, wildcardIndex);
@@ -3383,10 +3400,19 @@ function pathToFoldLoopLines(
   const groupVar = `g${depth}${varSuffix}`;
   const outerExpr = `${expr}${pathToAccessor(before, { assertNonNull: false })}`;
   const inner = pathToFoldLoopLines(groupVar, after, itemVar, `${indent}  `, varSuffix, depth + 1);
+  const ancestorOpenLines = [
+    `${indent}for (const ${groupVar} of ${outerExpr}) {`,
+    ...inner.ancestorOpenLines,
+  ];
+  const ancestorCloseLines = [...inner.ancestorCloseLines, `${indent}}`];
   return {
-    openLines: [`${indent}for (const ${groupVar} of ${outerExpr}) {`, ...inner.openLines],
-    closeLines: [...inner.closeLines, `${indent}}`],
+    openLines: [...ancestorOpenLines, ...inner.itemOpenLines],
+    closeLines: [...inner.itemCloseLines, ...ancestorCloseLines],
     ancestorVars: [groupVar, ...inner.ancestorVars],
+    ancestorOpenLines,
+    itemOpenLines: inner.itemOpenLines,
+    itemCloseLines: inner.itemCloseLines,
+    ancestorCloseLines,
   };
 }
 
@@ -4843,15 +4869,24 @@ export function emitMultiStepExecuteHttp(
       // Nested `for` loops (not a `.flatMap`-derived collection) so every
       // intermediate array's binding stays addressable inside the innermost
       // loop body — see pathToFoldLoopLines's docstring.
-      const { openLines, closeLines, ancestorVars } = pathToFoldLoopLines(
-        `(${primaryStep.varName} as ${primaryArrType})`,
-        foldPlan.primaryArrayPath,
-        itemVar,
-        "    ",
-        planSuffix
-      );
+      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
+        pathToFoldLoopLines(
+          `(${primaryStep.varName} as ${primaryArrType})`,
+          foldPlan.primaryArrayPath,
+          itemVar,
+          "    ",
+          planSuffix
+        );
 
-      lines.push(...openLines);
+      lines.push(...ancestorOpenLines);
+      // Chain fetches for targets whose params + joinFields never reference
+      // itemVar are spliced here, above the item loop but inside the
+      // ancestor loop(s) — fetched once per ancestor tuple and reused by
+      // every descendant item's join/merge, instead of once per item.
+      const hoistedChainLines: string[] = [];
+      // Every target's join/merge — plus any non-hoistable target's own
+      // chain fetch — goes here, spliced inside the item loop.
+      const itemScopedLines: string[] = [];
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -4965,21 +5000,37 @@ export function emitMultiStepExecuteHttp(
         // templates by the pass above, same as it would be for any two
         // sequential non-fold steps) resolves them from this narrower scope.
         const chainDeclared = new Set<string>();
+        const chainLines: string[] = [];
+        // True once any chain step's parameterized url/headers/body actually
+        // ends up referencing `itemVar` — determined off the SAME
+        // `parameterize` substitutions the emitted call itself uses (not a
+        // fresh value scan), so this can never disagree with what the
+        // request literally interpolates. `ancestorVars.length === 0` means
+        // there is no ancestor loop to hoist into in the first place (a
+        // flat, single-level fold), so it is treated as item-scoped too —
+        // existing flat folds must keep emitting byte-identical code.
+        const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
+        let referencesItemVar = ancestorVars.length === 0;
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
-          lines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url, chainStep.capture)}\`, {`,
+          const paramUrl = parameterize(chainRendered.url, chainStep.capture);
+          const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
+          const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
+          if (
+            itemVarRefPattern.test(paramUrl) ||
+            itemVarRefPattern.test(paramHeaders) ||
+            itemVarRefPattern.test(paramBody)
+          ) {
+            referencesItemVar = true;
+          }
+          chainLines.push(
+            `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`,
             `        method: ${JSON.stringify(chainRendered.method)},`
           );
-          const joined = [
-            parameterize(chainRendered.headersExpr, chainStep.capture),
-            parameterize(chainRendered.bodyArg, chainStep.capture),
-          ]
-            .filter((s) => s !== "")
-            .join(" ");
-          if (joined !== "") lines.push(`        ${joined}`);
-          lines.push(
+          const joined = [paramHeaders, paramBody].filter((s) => s !== "").join(" ");
+          if (joined !== "") chainLines.push(`        ${joined}`);
+          chainLines.push(
             `        schema: ${chainRendered.schemaExpr},`,
             `      })) as Record<string, unknown>;`
           );
@@ -4989,17 +5040,34 @@ export function emitMultiStepExecuteHttp(
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
             const assertion = pathToAssertionType(p.path);
-            lines.push(
+            chainLines.push(
               `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
             );
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
-        lines.push(
-          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        const matchLines = emitFoldMatchAndMergeLines(
+          terminalStep,
+          target,
+          itemVar,
+          suffix,
+          joinAccessor
         );
+        if (referencesItemVar) {
+          itemScopedLines.push(...chainLines, ...matchLines);
+        } else {
+          hoistedChainLines.push(...chainLines);
+          itemScopedLines.push(...matchLines);
+        }
       }
-      lines.push(...closeLines, "");
+      lines.push(
+        ...hoistedChainLines,
+        ...itemOpenLines,
+        ...itemScopedLines,
+        ...itemCloseLines,
+        ...ancestorCloseLines,
+        ""
+      );
       continue;
     }
     // Every other chain step (already fully emitted, inline, by the fold
