@@ -102,6 +102,97 @@ function writeFlowFile(siteOutDir: string, opts: { withFoldReturn: boolean }): v
   writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify(flow));
 }
 
+const GROUPED_SEARCH_QUERY =
+  "query catalogSearch { catalogSearch { results { groups { groupId items { id title } } } } }";
+
+function groupedCatalogSearchCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "browse",
+    method: "POST",
+    url: "https://example.com/graphql",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({ query: GROUPED_SEARCH_QUERY, variables: {} }),
+    responseHeaders: {},
+    responseBody: {
+      data: {
+        catalogSearch: {
+          results: {
+            groups: [
+              {
+                groupId: "cat-1",
+                items: [
+                  { id: "item-1", title: "Item One" },
+                  { id: "item-1b", title: "Item One B" },
+                ],
+              },
+              { groupId: "cat-2", items: [{ id: "item-2", title: "Item Two" }] },
+            ],
+          },
+        },
+      },
+    },
+    operationName: "catalogSearch",
+    query: GROUPED_SEARCH_QUERY,
+    variables: {},
+    decodedParams: null,
+  };
+}
+
+function groupDrillCapture(): unknown {
+  return {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "browse",
+    method: "GET",
+    url: "https://example.com/catalog/api/v1/detail?category=cat-1",
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {
+      detail: [
+        { id: "item-1", weight: 12 },
+        { id: "item-1b", weight: 13 },
+      ],
+    },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+}
+
+function writeGroupedRunDir(root: string): void {
+  mkdirSync(join(root, "graphql"), { recursive: true });
+  mkdirSync(join(root, "replays"), { recursive: true });
+  mkdirSync(join(root, "aux"), { recursive: true });
+  writeFileSync(
+    join(root, "graphql", "000-browse-search.json"),
+    JSON.stringify(groupedCatalogSearchCapture())
+  );
+  writeFileSync(
+    join(root, "graphql", "001-browse-drill.json"),
+    JSON.stringify(groupDrillCapture())
+  );
+}
+
+function writeGroupedFlowFile(siteOutDir: string): void {
+  mkdirSync(siteOutDir, { recursive: true });
+  writeFileSync(
+    join(siteOutDir, "recon-flow.json"),
+    JSON.stringify({
+      steps: [{ step: "search the catalog" }],
+      foldReturn: {
+        endpointPattern: "/catalog/api/v1/detail",
+        resultsPath: "data.catalogSearch.results.groups.*.items",
+        drillResultsPath: "detail",
+        joinFields: ["id"],
+      },
+    })
+  );
+}
+
 let workDir: string | null = null;
 let siteOutDirWith: string | null = null;
 let siteOutDirWithout: string | null = null;
@@ -183,5 +274,40 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
 
     expect(result.status, out).toBe(0);
     expect(out).not.toContain("no fold plan resolved");
+  }, 30_000);
+
+  it("hoists an ancestor-only-scoped drill fetch above the item loop, firing once per group", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-gql-envelope-nested-hoist-"));
+    const runRoot = join(workDir, "run");
+    writeGroupedRunDir(runRoot);
+
+    const siteId = `gql-envelope-nested-hoist-run${process.pid}`;
+    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteId);
+    writeGroupedFlowFile(siteOutDirWith);
+
+    const result = run(runRoot, siteId);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDirWith, "contract.ts"), "utf8");
+    const ancestorLoopIndex = contract.indexOf("for (const g0 of");
+    const itemLoopIndex = contract.indexOf("for (const item of g0.items) {");
+    const fetchCallPrefix = [
+      "await httpClient(`",
+      "$",
+      "{context.baseUrl}/catalog/api/v1/detail",
+    ].join("");
+    const fetchIndex = contract.indexOf(fetchCallPrefix);
+    expect(ancestorLoopIndex).toBeGreaterThan(-1);
+    expect(itemLoopIndex).toBeGreaterThan(-1);
+    expect(fetchIndex).toBeGreaterThan(-1);
+    // The drill request is parameterized off the group-scoped `groupId`
+    // field (never `item.*`), so it's spliced ABOVE the item loop — once
+    // per ancestor group — instead of re-issued once per item.
+    expect(contract).toContain("$" + "{g0.groupId}");
+    expect(fetchIndex).toBeGreaterThan(ancestorLoopIndex);
+    expect(fetchIndex).toBeLessThan(itemLoopIndex);
+    expect(
+      contract.match(/await httpClient\(`\$\{context\.baseUrl\}\/catalog\/api\/v1\/detail/g)
+    ).toHaveLength(1);
   }, 30_000);
 });
