@@ -183,6 +183,49 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(1);
   });
 
+  it("resolves (never propagates) when the dispatch-only eval rejects with a navigation-shaped error", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, submitCount } = makeFakePage({ hasSitekey: true });
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true };
+      }
+      if (src.includes("dispatchEvent")) {
+        throw new Error("Execution context was destroyed");
+      }
+      if (src.includes("form.submit()")) {
+        submitCount.n += 1;
+        return undefined;
+      }
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+
+    expect(result).toBe("completed");
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("captchaGated step: token injected=true submitted=true")
+    );
+  });
+
   it("falls through untouched (no solve call) when captchaGated is unset", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
