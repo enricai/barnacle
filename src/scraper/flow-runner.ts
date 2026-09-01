@@ -5071,7 +5071,7 @@ export async function injectCaptchaTokenAndSubmit(
   token: string,
   responseField = "h-captcha-response"
 ): Promise<InjectCaptchaTokenResult> {
-  const injectExpr = `(() => {
+  const setValueExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const token = ${JSON.stringify(token)};
     let field = document.querySelector('[name="' + responseField + '"]');
@@ -5091,12 +5091,26 @@ export async function injectCaptchaTokenAndSubmit(
     } else {
       field.value = token;
     }
-    field.dispatchEvent(new Event("change", { bubbles: true }));
     return { injected: true, hasForm: Boolean(field.closest("form")) };
   })()`;
+  // Setting the field's value cannot itself trigger navigation, so this is
+  // the only evaluate call whose return value the function depends on.
   const { injected, hasForm } = await target.evaluate<{ injected: boolean; hasForm: boolean }>(
-    injectExpr
+    setValueExpr
   );
+  if (!injected) return { injected, submitted: false };
+
+  const dispatchChangeExpr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    if (field) field.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`;
+  // Dispatching "change" can trigger a page's own submit-on-token callback,
+  // which navigates the frame synchronously from within this call and tears
+  // down the execution context before Runtime.evaluate can marshal a return
+  // value — that rejection is the expected outcome of a navigating evaluate,
+  // not a real failure, so it's discarded here rather than depended on.
+  await target.evaluate(dispatchChangeExpr).catch(() => undefined);
   if (!hasForm) return { injected, submitted: false };
 
   const submitExpr = `(() => {
