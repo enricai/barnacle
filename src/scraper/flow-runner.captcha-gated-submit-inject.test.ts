@@ -62,7 +62,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).toHaveBeenCalledTimes(1);
@@ -142,7 +142,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(result).toEqual({ injected: false, submitted: false });
   });
 
-  it("resolves with submitted: true even when the submit-triggering evaluate rejects because form.submit() tore down the execution context", async () => {
+  it("resolves with submitted: true even when the dispatch and submit evaluates reject because a navigation tore down the execution context", async () => {
     const window = new Window({ url: "https://apply.example.com/application/abc-123" });
     const document = window.document;
     document.body.innerHTML = `
@@ -168,6 +168,6 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
       injected: true,
       submitted: true,
     });
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
   });
 });

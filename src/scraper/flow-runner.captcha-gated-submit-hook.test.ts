@@ -50,25 +50,30 @@ function makeFakePage(opts: { hasSitekey: boolean }): {
 
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
     const src = String(expr);
-    // injectCaptchaTokenAndSubmit now issues two SEPARATE evaluate calls — an
-    // inject-only expr (keyed on "dispatchEvent") followed by a
-    // submit-triggering expr (keyed on "form.submit()") — rather than one
-    // combined inject+submit expr. Both still contain "responseField" (the
-    // submit expr re-derives the field to find its enclosing form), so that
-    // alone can't disambiguate them; check the more specific markers instead.
+    // injectCaptchaTokenAndSubmit now issues three SEPARATE evaluate calls —
+    // a set-only expr (keyed on "hasForm", its unique return shape), a
+    // dispatch-only expr (keyed on "dispatchEvent"), and a submit-triggering
+    // expr (keyed on "form.submit()") — rather than one combined
+    // inject+submit expr. The set-only expr also contains "data-sitekey"
+    // (its form-preference logic), so the sitekey-read branch below must be
+    // checked via its more specific "getAttribute" marker, and the set-only
+    // branch must be checked before the generic "data-sitekey" branch.
     // Run against a bare fake DOM instead of re-deriving the exact expr string
     // (mirrors flow-runner.captcha-inject-submit.test.ts's technique,
     // simplified since that primitive already has its own dedicated unit tests).
+    if (src.includes("hasForm")) {
+      return { injected: true, hasForm: true };
+    }
     if (src.includes("dispatchEvent")) {
       field.value = "solved-token";
       field.dispatched.push("change");
-      return { injected: true, hasForm: true };
+      return undefined;
     }
     if (src.includes("form.submit()")) {
       submitCount.n += 1;
       return undefined;
     }
-    if (src.includes("data-sitekey")) {
+    if (src.includes("getAttribute")) {
       return opts.hasSitekey
         ? { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true }
         : { siteKey: null, isInvisible: false };
