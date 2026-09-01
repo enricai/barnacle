@@ -8328,30 +8328,41 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             return foldPlan.primaryArrayPath.slice(level.length);
           })()
         : foldPlan.primaryArrayPath;
-      const { openLines, closeLines, ancestorVars } = itemsOverride
-        ? pathToFoldLoopLines(
-            residualPath.length === 0
-              ? itemsOverride.expr
-              : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
-            residualPath,
-            itemVar,
-            "    ",
-            planSuffix
-          )
-        : pathToFoldLoopLines(
-            `(${dataVarName} as ${primaryArrType})`,
-            foldPlan.primaryArrayPath,
-            itemVar,
-            "    ",
-            planSuffix
-          );
+      const { ancestorOpenLines, itemOpenLines, itemCloseLines, ancestorCloseLines, ancestorVars } =
+        itemsOverride
+          ? pathToFoldLoopLines(
+              residualPath.length === 0
+                ? itemsOverride.expr
+                : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
+              residualPath,
+              itemVar,
+              "    ",
+              planSuffix
+            )
+          : pathToFoldLoopLines(
+              `(${dataVarName} as ${primaryArrType})`,
+              foldPlan.primaryArrayPath,
+              itemVar,
+              "    ",
+              planSuffix
+            );
       // Ancestor bindings within `itemsOverride.level` (if any) have no
       // runtime loop variable, since the paginated merge already flattened
       // across them — only the trailing `residualPath.length` ancestor
       // crossings correspond to `ancestorVars` above, so slice the
       // design-time ancestor chain to match.
       const residualAncestorCount = residualPath.filter((s) => s === ARRAY_WILDCARD_SEGMENT).length;
-      lines.push(...openLines);
+      lines.push(...ancestorOpenLines);
+      // Chain fetches for targets whose parameterized URL never interpolates
+      // `itemVar` are spliced here, above the item loop but inside the
+      // ancestor loop(s) — fetched once per ancestor tuple and reused by
+      // every descendant item's join/merge, mirroring
+      // emitMultiStepExecuteHttp's identical hoist (see its own comment).
+      const hoistedChainLines: string[] = [];
+      // Every target's join/merge — plus any non-hoistable target's own
+      // chain fetch — goes here, spliced inside the item loop.
+      const itemScopedLines: string[] = [];
+      const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
         if (!matchedPrimaryItem) {
@@ -8425,17 +8436,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           );
           return result;
         };
+        const chainLines: string[] = [];
+        // True once any chain step's parameterized URL actually ends up
+        // referencing `itemVar`, off the SAME `parameterizeUrl` call the
+        // request literally interpolates — see emitMultiStepExecuteHttp's
+        // identical `referencesItemVar` for why this can't disagree with
+        // what's emitted. `ancestorVars.length === 0` means there's no
+        // ancestor loop to hoist into (a flat, single-level fold), so it's
+        // treated as item-scoped too — flat folds must keep emitting
+        // byte-identical code.
+        let referencesItemVar = ancestorVars.length === 0;
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
+          if (itemVarRefPattern.test(url)) referencesItemVar = true;
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
               chainStep.capture.responseBody,
             ]),
           });
-          lines.push(
+          chainLines.push(
             `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`,
             `        method: ${JSON.stringify(chainStep.capture.method)},`,
             `        schema: ${schemaExpr},`,
@@ -8444,11 +8466,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
-        lines.push(
-          ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
+        const matchLines = emitFoldMatchAndMergeLines(
+          terminalStep,
+          target,
+          itemVar,
+          suffix,
+          joinAccessor
         );
+        if (referencesItemVar) {
+          itemScopedLines.push(...chainLines, ...matchLines);
+        } else {
+          hoistedChainLines.push(...chainLines);
+          itemScopedLines.push(...matchLines);
+        }
       }
-      lines.push(...closeLines, "");
+      lines.push(
+        ...hoistedChainLines,
+        ...itemOpenLines,
+        ...itemScopedLines,
+        ...itemCloseLines,
+        ...ancestorCloseLines,
+        ""
+      );
     }
     return lines;
   };
