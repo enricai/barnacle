@@ -5071,7 +5071,7 @@ export async function injectCaptchaTokenAndSubmit(
   token: string,
   responseField = "h-captcha-response"
 ): Promise<InjectCaptchaTokenResult> {
-  const expr = `(() => {
+  const injectExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const token = ${JSON.stringify(token)};
     let field = document.querySelector('[name="' + responseField + '"]');
@@ -5079,7 +5079,7 @@ export async function injectCaptchaTokenAndSubmit(
       const forms = Array.from(document.querySelectorAll("form"));
       const form =
         forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
-      if (!form) return { injected: false, submitted: false };
+      if (!form) return { injected: false, hasForm: false };
       field = document.createElement("input");
       field.type = "hidden";
       field.name = responseField;
@@ -5092,12 +5092,25 @@ export async function injectCaptchaTokenAndSubmit(
       field.value = token;
     }
     field.dispatchEvent(new Event("change", { bubbles: true }));
-    const form = field.closest("form");
-    if (!form) return { injected: true, submitted: false };
-    form.submit();
-    return { injected: true, submitted: true };
+    return { injected: true, hasForm: Boolean(field.closest("form")) };
   })()`;
-  return await target.evaluate<InjectCaptchaTokenResult>(expr);
+  const { injected, hasForm } = await target.evaluate<{ injected: boolean; hasForm: boolean }>(
+    injectExpr
+  );
+  if (!hasForm) return { injected, submitted: false };
+
+  const submitExpr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    const form = field ? field.closest("form") : null;
+    if (form) form.submit();
+  })()`;
+  // form.submit() navigates the frame synchronously, tearing down the execution
+  // context before Runtime.evaluate can marshal a return value for this call —
+  // that rejection is the expected outcome of a navigating evaluate, not a
+  // real failure, so it's discarded here rather than awaited for a result.
+  target.evaluate(submitExpr).catch(() => undefined);
+  return { injected, submitted: true };
 }
 
 /**

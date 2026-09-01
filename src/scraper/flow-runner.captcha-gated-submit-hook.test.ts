@@ -50,19 +50,23 @@ function makeFakePage(opts: { hasSitekey: boolean }): {
 
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
     const src = String(expr);
-    // Checked BEFORE the sitekey-probe branch: injectCaptchaTokenAndSubmit's
-    // real expression string always contains "data-sitekey" too (its
-    // create-missing-field fallback references the same anchor selector), so
-    // matching on "responseField" first disambiguates it from the probe expr.
-    if (src.includes("responseField")) {
-      // injectCaptchaTokenAndSubmit's inline expression — run against a bare fake
-      // DOM instead of re-deriving the exact expr string (mirrors
-      // flow-runner.captcha-inject-submit.test.ts's technique, simplified since
-      // that primitive already has its own dedicated unit tests).
+    // injectCaptchaTokenAndSubmit now issues two SEPARATE evaluate calls — an
+    // inject-only expr (keyed on "dispatchEvent") followed by a
+    // submit-triggering expr (keyed on "form.submit()") — rather than one
+    // combined inject+submit expr. Both still contain "responseField" (the
+    // submit expr re-derives the field to find its enclosing form), so that
+    // alone can't disambiguate them; check the more specific markers instead.
+    // Run against a bare fake DOM instead of re-deriving the exact expr string
+    // (mirrors flow-runner.captcha-inject-submit.test.ts's technique,
+    // simplified since that primitive already has its own dedicated unit tests).
+    if (src.includes("dispatchEvent")) {
       field.value = "solved-token";
       field.dispatched.push("change");
+      return { injected: true, hasForm: true };
+    }
+    if (src.includes("form.submit()")) {
       submitCount.n += 1;
-      return { injected: true, submitted: true };
+      return undefined;
     }
     if (src.includes("data-sitekey")) {
       return opts.hasSitekey
