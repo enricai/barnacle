@@ -311,15 +311,16 @@ describe("GraphQL query-primary + plain joinFields on a nested primary array + d
 
     // Runtime proof of Bug 1 + Bug 2: the outer `group-2` item is untouched
     // except for its nested `sailings` array's matching element (`id:
-    // "sail-2a"`) gaining the drilled `region` — never the decoy sharing
-    // `promoActive`, and never `Object.assign`ed onto the outer group.
+    // "sail-2a"`) — the primary's own `region: "north"` wins on collision
+    // (fold-merge is primary-wins), never the decoy sharing `promoActive`,
+    // and never `Object.assign`ed onto the outer group.
     expect(result.data).toEqual({
       groupSearch: {
         groups: [
           {
             groupId: "group-2",
             promoActive: true,
-            sailings: [{ id: "sail-2a", region: "south", promoActive: true }],
+            sailings: [{ id: "sail-2a", region: "north", promoActive: true }],
           },
         ],
       },
