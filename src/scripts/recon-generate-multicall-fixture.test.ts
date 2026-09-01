@@ -14,6 +14,7 @@ import {
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
+  buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps,
   buildMulticallSingleShotSearchDrillDownMultiMatchActionSteps,
   buildMulticallSingleShotSearchDrillDownNonFirstItemSkuActionSteps,
   buildMulticallSingleShotSearchDrillDownTypeMismatchJoinActionSteps,
@@ -207,6 +208,32 @@ describe("buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstIte
     expect(drillUrl).toContain(`region=${secondItem?.region}`);
     expect(drillUrl).toContain(`accountId=${secondItem?.accountId}`);
     expect(drillUrl).not.toContain(`region=${firstItem?.region}`);
+  });
+});
+
+describe("buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps", () => {
+  const steps = buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps();
+
+  it("the drill request's own query param is identical across every capture of that endpoint", () => {
+    const drillSteps = steps.filter((s) => s.capture.url.includes("item-quote"));
+    expect(drillSteps).toHaveLength(2);
+
+    const qtyValues = drillSteps.map((s) => new URL(s.capture.url).searchParams.get("qty"));
+    expect(qtyValues).toEqual(["0", "0"]);
+  });
+
+  it("an unrelated primary field coincidentally matches the constant param's value for only one item", () => {
+    const body = steps[0]?.capture.responseBody as {
+      results: { itemId: string; discount: number }[];
+    };
+    const [firstItem, secondItem] = body.results;
+    expect(firstItem).toBeDefined();
+    expect(secondItem).toBeDefined();
+
+    // The coincidence must be per-item, not a fixture-wide constant: only
+    // the second item's `discount` collides with the constant `qty=0`.
+    expect(firstItem?.discount).not.toBe(0);
+    expect(secondItem?.discount).toBe(0);
   });
 });
 
