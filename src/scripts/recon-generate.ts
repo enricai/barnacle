@@ -4251,7 +4251,7 @@ function emitFoldMatchAndMergeLines(
   if (target.chainArrayPath.length === 0) {
     return [
       `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
-      `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
+      `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
     ];
   }
   const foldMatchesExpr = pathToFoldAccessorExpr(
@@ -4293,7 +4293,7 @@ function emitFoldMatchAndMergeLines(
   return [
     `      const foldMatches${suffix} = ${foldMatchesExpr};`,
     `      const foldMatch${suffix} = foldMatches${suffix}.length === 1 && ${soleCandidateFieldsAbsent} ? foldMatches${suffix}[0] : foldMatches${suffix}.find((m) => ${joinCondition});`,
-    `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
+    `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
   ];
 }
 
@@ -7474,7 +7474,7 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
         )
       ) ?? drillItems?.[0];
     if (!primaryItems || !matchedItem || !drillMatch) return body;
-    return replaceByReference(body, matchedItem, { ...matchedItem, ...drillMatch });
+    return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
   }, initialBody);
 }
 
