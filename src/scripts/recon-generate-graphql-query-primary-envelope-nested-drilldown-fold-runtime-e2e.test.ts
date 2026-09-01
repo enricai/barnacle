@@ -207,12 +207,12 @@ describe("GraphQL-primary + data-enveloped nested-wildcard resultsPath drill-dow
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
     // The envelope's nested wildcard group must generalize across every
-    // outer group via .flatMap — a literal index into one group (e.g.
+    // outer group via a nested loop — a literal index into one group (e.g.
     // `.groups[0].items`) would silently drop every other group's items at
     // runtime.
-    expect(executeHttpBody).toContain(".flatMap(");
+    expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("for (const item of g0.items)");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({

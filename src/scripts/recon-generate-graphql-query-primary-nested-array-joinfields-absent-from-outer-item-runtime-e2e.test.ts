@@ -222,11 +222,11 @@ describe("GraphQL query-primary + nested-array joinFields absent from the outer 
     // Bug 2: the merge must land on the nested `entries[]` array declared by
     // `resultsPath` (`catalogBrowse.groups.*.entries`), not on the outer
     // `groups[]` item — so the loop must traverse into `entries` via a
-    // generalized `.flatMap`, never index a single literal group.
-    expect(executeHttpBody).toContain(".flatMap(");
+    // generalized nested loop, never index a single literal group.
+    expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).toContain("entries");
     expect(executeHttpBody).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("for (const item of g0.entries)");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({

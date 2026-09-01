@@ -1760,9 +1760,9 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     // have — see ARRAY_WILDCARD_SEGMENT in recon-generate.ts.
     const body = emit(steps, null);
     expect(body).toContain(
-      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
+      "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("for (const item of g0.entries) {");
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
@@ -1788,7 +1788,7 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     // whichever one the matched item happened to be captured in.
     const body = emit(steps, null);
     expect(body).toContain(
-      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
+      "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
     expect(body).not.toContain('sections["0"]');
     expect(body).not.toContain("sections[0]");

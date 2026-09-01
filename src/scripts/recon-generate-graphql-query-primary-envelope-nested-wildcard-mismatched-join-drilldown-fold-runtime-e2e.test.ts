@@ -285,12 +285,12 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + m
 
     const executeHttpBodyWith = extractExecuteHttpBodyFromContract(contractWith);
     // The envelope's nested wildcard group must generalize across every
-    // outer group via .flatMap — a literal index into one group (e.g.
+    // outer group via a nested loop — a literal index into one group (e.g.
     // `.groups[0].items`) would silently drop every other group's items at
     // runtime.
-    expect(executeHttpBodyWith).toContain(".flatMap(");
+    expect(executeHttpBodyWith).toContain("for (const g0 of");
     expect(executeHttpBodyWith).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBodyWith).toContain("for (const item of foldItems)");
+    expect(executeHttpBodyWith).toContain("for (const item of g0.items)");
     // The URL must be parameterized off `sku` — the field the captured
     // request actually varies on — even though the declared joinFields
     // name `id`, a field the request never carries.

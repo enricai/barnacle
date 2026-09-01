@@ -140,7 +140,8 @@ describe("recon-generate GraphQL-primary + nested-wildcard foldReturn — runtim
 
     const contractWith = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contractWith).toContain("/availability/api/v1/details");
-    expect(contractWith).toContain(".flatMap(");
+    expect(contractWith).toContain("for (const g0 of");
+    expect(contractWith).toContain("for (const item of g0.items)");
 
     rmSync(siteOutDir, { recursive: true, force: true });
     writeFlowFile(siteOutDir, { withFoldReturn: false });
