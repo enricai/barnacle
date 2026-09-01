@@ -353,6 +353,50 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
+  it("does not report completed from the captchaGated block when the 45s transition poll never confirms a match, even though all three evals resolved", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    // Real setTimeout-backed waitForTimeout so `vi.runAllTimersAsync()` can
+    // actually drive the CAPTCHA_TRANSITION_POLL_MS (45s) interval loop
+    // (mirrors flow-runner.submit-advance-transition-poll.test.ts's
+    // "logs $expectedMs ms when captchaGated=$captchaGated" harness).
+    (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementation(
+      (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+    );
+    // Only a non-matching capture is ever written — the real "type=next"
+    // transition body never lands, so the poll must run out its full window
+    // and report unconfirmed rather than short-circuiting to "completed"
+    // from injectResult.submitted (all three evals below resolve without
+    // error, which is exactly what must NOT be trusted alone).
+    writeFileSync(
+      join(capturesDir, "001-submit-autosave-only.json"),
+      JSON.stringify({ requestPostData: "type=autosave&field=x" })
+    );
+    const stagehand = {} as Stagehand;
+    vi.useFakeTimers();
+
+    const resultPromise = executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    ).catch(() => "not-completed" as const);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(result).not.toBe("completed");
+    // The evals still all resolved cleanly (token injected, form present) —
+    // proving this is gated on the observed transition, not on the evals
+    // returning without error.
+    expect(field.value).toBe("solved-token");
+    expect(field.dispatched).toEqual(["change"]);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("captchaGated step: post-submit transition poll confirmed=false")
+    );
+    // No transition was confirmed, so the explicit-submit fallback fires
+    // exactly once (hasForm=true) — this test only asserts on the
+    // completion gate itself, not on submit-count behavior.
+    expect(submitCount.n).toBe(1);
+  });
+
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {
     solveCaptchaMock.mockRejectedValue(new CaptchaSolverUnavailableError());
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
