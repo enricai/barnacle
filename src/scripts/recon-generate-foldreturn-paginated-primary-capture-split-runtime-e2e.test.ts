@@ -86,7 +86,10 @@ describe("recon-generate foldReturn onto a nested array whose primary op was cap
     );
 
     // Exactly one fold-loop block — the discarded-spec bug duplicated it.
-    const foldLoopOccurrences = body.match(/for \(const item of foldItems\)/g) ?? [];
+    // resultsPath crosses a wildcard ("items.*.entries"), so the fold-merge
+    // loop is a nested `for` over each group's entries, not a flattened
+    // `foldItems` — see pathToFoldLoopLines's docstring.
+    const foldLoopOccurrences = body.match(/for \(const item of g0\.entries\)/g) ?? [];
     expect(foldLoopOccurrences).toHaveLength(1);
 
     // The fold match must key on the declared `id` join field, never on the

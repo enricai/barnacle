@@ -376,7 +376,11 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // flattening all of them into the loop.
     const body = emit(buildMulticallNestedGroupedDrillDownMultiGroupActionSteps());
 
-    expect(body).toContain("for (const item of foldItems) {");
+    // resultsPath crosses the outer "sections" array, so the fold-merge
+    // loop is a nested `for` over every group (not a flattened
+    // `foldItems`) — see pathToFoldLoopLines's docstring.
+    expect(body).toContain("for (const g0 of");
+    expect(body).toContain("for (const item of g0.entries) {");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).not.toMatch(/sections\[("\d+"|\d+)\]/);
   });

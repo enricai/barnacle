@@ -132,15 +132,15 @@ describe("paginated GraphQL fold onto a primaryArrayPath deeper than the paginat
 
     const body = extractExecuteHttpBodyFromContract(contract);
 
-    // Exactly ONE flatMap: `itemsById.values()` already stands in for the
-    // pagination array's own iteration, so descending the residual
-    // `*.groups` suffix must not flatMap a second time on top of it.
-    const foldItemsLine = /const foldItems = ([\s\S]*?);\n/.exec(body);
-    expect(foldItemsLine).not.toBeNull();
-    const foldItemsExpr = foldItemsLine![1]!;
-    expect((foldItemsExpr.match(/\.flatMap\(/g) ?? []).length).toBe(1);
-    expect(foldItemsExpr).toContain("itemsById.values()");
-    expect(foldItemsExpr).toContain(".groups");
+    // `itemsById.values()` already stands in for the pagination array's own
+    // iteration, so descending the residual `*.groups` suffix is a nested
+    // `for` over each paginated item's groups (not a second flatMap) — see
+    // pathToFoldLoopLines's docstring.
+    const foldLoopLine = /for \(const g0 of \(([\s\S]*?)\)\) \{/.exec(body);
+    expect(foldLoopLine).not.toBeNull();
+    const foldLoopExpr = foldLoopLine![1]!;
+    expect(foldLoopExpr).toContain("itemsById.values()");
+    expect(body).toContain("for (const item of g0.groups) {");
 
     // The join/threaded URL param and the merge both read off the nested
     // group item's own `code` field, not the outer paginated item's.
