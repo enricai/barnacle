@@ -261,6 +261,62 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     );
   });
 
+  it("resolves (never propagates) when the set-value-only eval rejects with a navigation-shaped error", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true };
+      }
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      // The set-only expr also contains "data-sitekey" (its form-preference
+      // logic) and must be checked here, after the more specific
+      // "getAttribute" sitekey-probe branch above and the "hasForm"
+      // precheck branch, so this throw lands on the set-value eval itself —
+      // the one the recon doc's stack trace shows crashing — not the
+      // sitekey probe or the precheck.
+      if (src.includes("data-sitekey")) {
+        throw new Error("Execution context was destroyed");
+      }
+      if (src.includes("dispatchEvent")) {
+        field.value = "solved-token";
+        field.dispatched.push("change");
+        return undefined;
+      }
+      if (src.includes("form.submit()")) {
+        submitCount.n += 1;
+        return undefined;
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+
+    expect(result).toBe("completed");
+    // The transition was already confirmed (pre-seeded capture), so no
+    // explicit submit is issued despite the set-value-only eval's rejection.
+    expect(submitCount.n).toBe(0);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
+    );
+  });
+
   it("falls through untouched (no solve call) when captchaGated is unset", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
