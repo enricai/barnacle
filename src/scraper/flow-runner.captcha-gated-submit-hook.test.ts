@@ -180,7 +180,10 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     });
     expect(field.value).toBe("solved-token");
     expect(field.dispatched).toEqual(["change"]);
-    expect(submitCount.n).toBe(1);
+    // The transition was already confirmed (written to disk before the hook
+    // ran), so no explicit submit is issued — the widget's own callback (or,
+    // in this fake, the pre-seeded capture) already accounted for the advance.
+    expect(submitCount.n).toBe(0);
   });
 
   it("resolves (never propagates) when the dispatch-only eval rejects with a navigation-shaped error", async () => {
@@ -220,9 +223,11 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     );
 
     expect(result).toBe("completed");
-    expect(submitCount.n).toBe(1);
+    // The transition was already confirmed (pre-seeded capture), so no
+    // explicit submit is issued despite the dispatch-only eval's rejection.
+    expect(submitCount.n).toBe(0);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captchaGated step: token injected=true submitted=true")
+      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
     );
   });
 

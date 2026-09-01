@@ -105,7 +105,7 @@ function makeFakeTarget(globals: { document: ReturnType<typeof makeFakeDocument>
 }
 
 describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
-  it("sets an existing response field to the token and submits its form exactly once", async () => {
+  it("sets an existing response field to the token without submitting its form", async () => {
     const form = new FakeForm();
     const field = new FakeInput();
     field.name = "h-captcha-response";
@@ -117,8 +117,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-abc");
     expect(field.dispatched).toEqual(["change"]);
-    expect(form.submitCount).toBe(1);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(form.submitCount).toBe(0);
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("uses the configured response field name and honors it over the h-captcha default", async () => {
@@ -136,8 +136,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     );
 
     expect(field.value).toBe("solved-token-xyz");
-    expect(form.submitCount).toBe(1);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(form.submitCount).toBe(0);
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("creates a missing response field on the form carrying the widget anchor, not an earlier unrelated form", async () => {
@@ -155,9 +155,9 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(applicationForm.fields).toHaveLength(1);
     expect(applicationForm.fields[0]?.value).toBe("solved-token-created");
     expect(applicationForm.fields[0]?.dispatched).toEqual(["change"]);
-    expect(applicationForm.submitCount).toBe(1);
+    expect(applicationForm.submitCount).toBe(0);
     expect(headerSearchForm.submitCount).toBe(0);
-    expect(result).toEqual({ injected: true, submitted: true });
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 
   it("reports no-op when there is no form to attach a freshly created field to", async () => {
@@ -165,7 +165,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-orphan");
 
-    expect(result).toEqual({ injected: false, submitted: false });
+    expect(result).toEqual({ injected: false, hasForm: false });
   });
 
   it("injects into an existing field with no enclosing form without attempting to submit", async () => {
@@ -178,6 +178,6 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-formless");
     expect(field.dispatched).toEqual(["change"]);
-    expect(result).toEqual({ injected: true, submitted: false });
+    expect(result).toEqual({ injected: true, hasForm: false });
   });
 });
