@@ -1451,7 +1451,7 @@ describe("selectEffectiveResponseBody — flow-declared foldReturn", () => {
     // would fall through to drillItems?.[0] — the decoy — instead of
     // resolving the real match by coerced value equality.
     expect(selectEffectiveResponseBody(true, steps, null)).toEqual({
-      accounts: [{ accountId: "42", name: "Acme", transactionId: "t-real" }],
+      accounts: [{ accountId: 42, name: "Acme", transactionId: "t-real" }],
     });
   });
 
@@ -1528,7 +1528,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
 
@@ -1551,8 +1553,12 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // runtime; the emitted loop must select by the join field's value, not
     // by lifting foldMatches[0] straight off the response.
     expect(body).toContain(`foldMatches.find((m) => String(m["sku"]) === String(item.sku))`);
-    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatches[0] ?? {}).filter(([k]) => !(k in item))));"
+    );
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 
   it("emits a type-coerced join-key .find(...) match, not a bare === that could never match", () => {
@@ -1566,8 +1572,12 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       `foldMatches.find((m) => String(m["accountId"]) === String(item.accountId))`
     );
-    expect(body).not.toContain("Object.assign(item, foldMatches[0] ?? {});");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatches[0] ?? {}).filter(([k]) => !(k in item))));"
+    );
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 
   it("parameterizes every field of a composite joinFields declaration, not just the first", () => {
@@ -1576,7 +1586,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
 
     // Both join fields must re-key to the loop item, not just accountId.
     expect(body).toContain(
@@ -1600,7 +1612,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
@@ -1625,7 +1639,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).not.toContain("as { facets: Record<string, unknown>[] }");
     expect(body).not.toContain("as { errors: Record<string, unknown>[] }");
   });
@@ -1681,7 +1697,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
 
     // The declared drillResultsPath wins over findObjectArrayField's DFS
     // first match on the drill side, which would have picked the decoy
@@ -1707,7 +1725,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       `const foldMatch0 = foldMatches0.length === 1 && foldMatches0[0]?.["sku"] === undefined ? foldMatches0[0] : foldMatches0.find((m) => String(m["sku"]) === String(item.sku));`
     );
-    expect(body).toContain("Object.assign(item, foldMatch0 ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch0 ?? {}).filter(([k]) => !(k in item))));"
+    );
 
     expect(body).toContain(
       `const foldMatches1 = (r2 as { stock: Record<string, unknown>[] }).stock;`
@@ -1715,7 +1735,9 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     expect(body).toContain(
       `const foldMatch1 = foldMatches1.length === 1 && foldMatches1[0]?.["itemId"] === undefined ? foldMatches1[0] : foldMatches1.find((m) => String(m["itemId"]) === String(item.itemId));`
     );
-    expect(body).toContain("Object.assign(item, foldMatch1 ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch1 ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 });
 
@@ -1767,7 +1789,9 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).toContain("return { data: r0 };");
   });
 

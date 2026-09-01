@@ -145,7 +145,9 @@ describe("paginated GraphQL fold onto a primaryArrayPath deeper than the paginat
     // The join/threaded URL param and the merge both read off the nested
     // group item's own `code` field, not the outer paginated item's.
     expect(body).toContain("item.code");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 
   it("compiles with zero tsc diagnostics end to end through the real CLI", () => {

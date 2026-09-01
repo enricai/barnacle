@@ -49,7 +49,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 
   it("folds a single-shot (non-requeried) search's drill-down onto its results with no foldReturn declaration", () => {
@@ -63,7 +65,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).toContain("return { data: r0 };");
 
     const replayBody = { unused: true };
@@ -85,7 +89,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain("foldMatches.find(");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
   });
@@ -151,7 +157,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r5 = (await httpClient(");
     expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
     expect(body).toContain("const foldMatches = (r4 as");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     // r5 must not be re-issued a second time outside the fold loop.
     expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
   });
@@ -190,7 +198,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatch = r2 as Record<string, unknown>;");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).not.toContain("const foldMatches = ");
   });
 
@@ -381,7 +391,9 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // `foldItems`) — see pathToFoldLoopLines's docstring.
     expect(body).toContain("for (const g0 of");
     expect(body).toContain("for (const item of g0.entries) {");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).not.toMatch(/sections\[("\d+"|\d+)\]/);
   });
 
@@ -413,6 +425,8 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     expect(body).toContain("return { data: r3 };");
     expect(body).not.toContain("for (const item of foldItems) {");
-    expect(body).not.toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).not.toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
   });
 });

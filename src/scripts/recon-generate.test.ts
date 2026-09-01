@@ -2849,7 +2849,9 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
     expect(body).toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatches = (r2 as");
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     // r1/r2 are only ever issued inside the fold loop — never a second time
     // outside it.
     expect(body.match(/const r1 = \(await httpClient\(/g)).toHaveLength(1);
