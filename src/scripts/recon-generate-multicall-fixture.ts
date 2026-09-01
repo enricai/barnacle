@@ -337,6 +337,35 @@ export function buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps(): Mul
 }
 
 /**
+ * A shared-key/different-shape sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}: the
+ * primary item and the drill-down response both carry a `fees` field, but
+ * with incompatible shapes (`{ value }` on the primary vs `{ amount, total }`
+ * on the drill). Proves the fold merge preserves the primary's own `fees`
+ * value instead of letting the drill's differently-shaped `fees` clobber it.
+ */
+export function buildMulticallSingleShotSearchDrillDownSharedKeyDifferentShapeActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a", fees: { value: 5 } }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        prices: [{ sku: "sku-a", amount: 19.99, fees: { amount: 2, total: 21.99 } }],
+      },
+      timestamp: "2024-04-01T00:00:01Z",
+    }),
+  ];
+}
+
+/**
  * A nested-join-key sibling of {@link buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps}
  * with a SECOND primary item, so a per-item fold loop is actually exercised
  * (not just a single-item detection check): each primary `results[]` item
