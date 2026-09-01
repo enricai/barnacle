@@ -3327,6 +3327,69 @@ function pathToFoldAccessorExpr(expr: string, path: string[], depth = 0): string
   return `${outerExpr}.flatMap((${groupVar}) => ${pathToFoldAccessorExpr(groupVar, after, depth + 1)})`;
 }
 
+/**
+ * Emits nested `for` loops descending through every {@link
+ * ARRAY_WILDCARD_SEGMENT} in `path`, instead of {@link
+ * pathToFoldAccessorExpr}'s single `.flatMap` chain — a `.flatMap` callback
+ * only ever sees the group it flattens FROM, so the moment it returns the
+ * inner array, the outer (ancestor) object is gone from scope for the rest
+ * of the emitted fold body. A nested loop keeps every intermediate binding
+ * (`g0`, `g1`, ...) addressable inside the innermost loop, so a drill param
+ * that only lives on an ancestor object (e.g. a parent group id) can be read
+ * off that binding instead of being frozen as a literal. `varSuffix` mirrors
+ * the `itemVar`/`foldItemsVar` disambiguation suffix used when multiple fold
+ * plans share one function scope, so ancestor bindings from different plans
+ * can't collide either. Returns the loop's opening/closing lines (for the
+ * caller to splice its own loop-body lines between) plus the ordered
+ * (outer-to-inner) ancestor variable names — NOT including the innermost
+ * item, which the caller names itself via `itemVar`.
+ */
+function pathToFoldLoopLines(
+  expr: string,
+  path: string[],
+  itemVar: string,
+  indent: string,
+  varSuffix = "",
+  depth = 0
+): { openLines: string[]; closeLines: string[]; ancestorVars: string[] } {
+  const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
+  if (wildcardIndex === -1) {
+    const finalExpr = `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
+    // At depth 0 with no wildcard crossing at all (the overwhelmingly common
+    // single-level fold), keep emitting the original `const foldItems = ...;`
+    // binding rather than inlining the accessor into the `for` — existing
+    // single-scope folds must emit byte-identical code, not merely
+    // equivalent code, since nothing about a flat fold needs the nested-loop
+    // rewrite in the first place.
+    if (depth === 0) {
+      const foldItemsVar = `foldItems${varSuffix}`;
+      return {
+        openLines: [
+          `${indent}const ${foldItemsVar} = ${finalExpr};`,
+          `${indent}for (const ${itemVar} of ${foldItemsVar}) {`,
+        ],
+        closeLines: [`${indent}}`],
+        ancestorVars: [],
+      };
+    }
+    return {
+      openLines: [`${indent}for (const ${itemVar} of ${finalExpr}) {`],
+      closeLines: [`${indent}}`],
+      ancestorVars: [],
+    };
+  }
+  const before = path.slice(0, wildcardIndex);
+  const after = path.slice(wildcardIndex + 1);
+  const groupVar = `g${depth}${varSuffix}`;
+  const outerExpr = `${expr}${pathToAccessor(before, { assertNonNull: false })}`;
+  const inner = pathToFoldLoopLines(groupVar, after, itemVar, `${indent}  `, varSuffix, depth + 1);
+  return {
+    openLines: [`${indent}for (const ${groupVar} of ${outerExpr}) {`, ...inner.openLines],
+    closeLines: [...inner.closeLines, `${indent}}`],
+    ancestorVars: [groupVar, ...inner.ancestorVars],
+  };
+}
+
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
  * up the path if the tail is numeric or not a valid JS identifier. */
 function pathToVarName(path: string[]): string {
@@ -4169,30 +4232,41 @@ function emitFoldMatchAndMergeLines(
     `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
     target.chainArrayPath
   );
+  const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
+    const segments = f.split(".");
+    // The drill-down response is a DIFFERENT payload than the
+    // primary item, so it has no obligation to mirror the
+    // primary item's own nesting for the join key (e.g. a
+    // primary item's `identifiers.sku` is typically echoed
+    // back flat, as `sku`, on the drill response). Try the
+    // full nested path first (optional-chained, since an
+    // intermediate segment may not exist on a flat response),
+    // then fall back to the bare last segment.
+    const lastSegment = segments[segments.length - 1]!;
+    const bracket = (segment: string): string =>
+      optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`;
+    const optionalBracketAccessor = segments
+      .map((segment) => `?.[${JSON.stringify(segment)}]`)
+      .join("");
+    return segments.length > 1
+      ? `(${varName}${optionalBracketAccessor} ?? ${varName}${bracket(lastSegment)})`
+      : `${varName}${bracket(lastSegment)}`;
+  };
+  const joinCondition = target.joinFields
+    .map((f) => `String(${matchAccessorFor(f, "m", false)}) === String(${joinAccessor(f)})`)
+    .join(" && ");
+  // A sole candidate whose join field(s) aren't present on it at all
+  // (common: many drill endpoints don't echo the request key back onto
+  // the response row) is trusted as-is — there's no sibling it could be
+  // confused with. But a sole candidate that DOES carry the join field
+  // with a different value is a genuine mismatch and must not be grafted
+  // on; two-or-more candidates always require an actual join-key match.
+  const soleCandidateFieldsAbsent = target.joinFields
+    .map((f) => `${matchAccessorFor(f, `foldMatches${suffix}[0]`, true)} === undefined`)
+    .join(" && ");
   return [
     `      const foldMatches${suffix} = ${foldMatchesExpr};`,
-    `      const foldMatch${suffix} = foldMatches${suffix}.find((m) => ${target.joinFields
-      .map((f) => {
-        const segments = f.split(".");
-        // The drill-down response is a DIFFERENT payload than the
-        // primary item, so it has no obligation to mirror the
-        // primary item's own nesting for the join key (e.g. a
-        // primary item's `identifiers.sku` is typically echoed
-        // back flat, as `sku`, on the drill response). Try the
-        // full nested path first (optional-chained, since an
-        // intermediate segment may not exist on a flat response),
-        // then fall back to the bare last segment.
-        const lastSegment = segments[segments.length - 1]!;
-        const optionalBracketAccessor = segments
-          .map((segment) => `?.[${JSON.stringify(segment)}]`)
-          .join("");
-        const matchAccessor =
-          segments.length > 1
-            ? `(m${optionalBracketAccessor} ?? m[${JSON.stringify(lastSegment)}])`
-            : `m[${JSON.stringify(lastSegment)}]`;
-        return `String(${matchAccessor}) === String(${joinAccessor(f)})`;
-      })
-      .join(" && ")}) ?? foldMatches${suffix}[0];`,
+    `      const foldMatch${suffix} = foldMatches${suffix}.length === 1 && ${soleCandidateFieldsAbsent} ? foldMatches${suffix}[0] : foldMatches${suffix}.find((m) => ${joinCondition});`,
     `      Object.assign(${itemVar}, foldMatch${suffix} ?? {});`,
   ];
 }
@@ -4750,8 +4824,10 @@ export function emitMultiStepExecuteHttp(
       const primaryStep = actions[foldPlan.primaryStepIndex]!;
       // Read at the plan's OWN path rather than re-running the DFS: a
       // flow-declared `resultsPath` (see FoldReturnSpec) can name a different
-      // array than findObjectArrayField's first match.
-      const primaryItems = objectItemsAtPath(
+      // array than findObjectArrayField's first match. Ancestor-aware so a
+      // drill param living only on a parent object (e.g. a group id) has a
+      // real object to be read off of, not just the flattened leaf item.
+      const primaryItemsWithAncestors = objectItemsWithAncestorsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
@@ -4759,21 +4835,23 @@ export function emitMultiStepExecuteHttp(
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       // Plan-level suffix mirrors the target-level suffix below: multiple
       // loop blocks now sharing the same function scope can't declare
-      // unsuffixed `foldItems`/`item` locals without colliding. The
+      // unsuffixed `item`/ancestor-binding locals without colliding. The
       // overwhelmingly common single-plan case keeps the original
       // unsuffixed names.
       const planSuffix = foldPlans.length > 1 ? String(matchingPlanIndex) : "";
-      const foldItemsVar = `foldItems${planSuffix}`;
-      const foldItemsExpr = pathToFoldAccessorExpr(
-        `(${primaryStep.varName} as ${primaryArrType})`,
-        foldPlan.primaryArrayPath
-      );
       const itemVar = `item${planSuffix}`;
-
-      lines.push(
-        `    const ${foldItemsVar} = ${foldItemsExpr};`,
-        `    for (const ${itemVar} of ${foldItemsVar}) {`
+      // Nested `for` loops (not a `.flatMap`-derived collection) so every
+      // intermediate array's binding stays addressable inside the innermost
+      // loop body — see pathToFoldLoopLines's docstring.
+      const { openLines, closeLines, ancestorVars } = pathToFoldLoopLines(
+        `(${primaryStep.varName} as ${primaryArrType})`,
+        foldPlan.primaryArrayPath,
+        itemVar,
+        "    ",
+        planSuffix
       );
+
+      lines.push(...openLines);
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -4781,27 +4859,36 @@ export function emitMultiStepExecuteHttp(
         // target's drill request was actually built from, not always index
         // 0, and can differ per target even though every target now shares
         // the same runtime loop item.
-        const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
-        if (!firstItem) {
+        const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
+        if (!matchedPrimaryItem) {
           throw new Error(
             `emitMultiStepExecuteHttp: fold plan primary step ${primaryStep.varName} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
           );
         }
+        const { item: firstItem, ancestors: firstItemAncestors } = matchedPrimaryItem;
+        // Each ancestor binding (`g0`, `g1`, ...) paired with the design-time
+        // object it holds at runtime, so a threaded field resolved against
+        // that binding can be read off the same object `readValueAtPath`
+        // needs, and the runtime accessor built from the SAME variable name
+        // the emitted nested loop actually declares.
+        const ancestorObjByVar = new Map(
+          ancestorVars.map((varName, idx) => [varName, firstItemAncestors[idx]!] as const)
+        );
+        // Searched innermost-scope-first: the item's own field wins over an
+        // ancestor field of the same name.
+        const threadingScopes = [
+          { varName: itemVar, obj: firstItem },
+          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+        ];
         // Each target's chain variables and merge result get their own
         // suffixed local names so multiple independent targets sharing the
         // same loop body can each declare their own locals without
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
-        const joinAccessor = (field: string): string =>
-          `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
-        // A join field can reach the render either as the raw captured literal
-        // (URL query params) or as an already-generic `${payload.<field>}`
-        // reference (top-level JSON body keys — see
-        // applyPayloadKeyValueSubstitutions, which payload-ifies every scalar
-        // body key regardless of length, running BEFORE this fold branch ever
-        // sees the value). Both must resolve to the loop item's own field, not
-        // a caller-supplied payload value shared across every iteration.
+        const scopedAccessor = (varName: string, field: string): string =>
+          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+        const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Word-boundary anchored: a plain `.split(value).join(...)` would also
         // rewrite unrelated substrings that happen to contain the join value
         // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
@@ -4812,9 +4899,26 @@ export function emitMultiStepExecuteHttp(
             new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
             replacement
           );
-        const parameterize = (text: string): string =>
-          target.joinFields.reduce((acc, field) => {
-            const replacement = `\${${joinAccessor(field)}}`;
+        const parameterize = (text: string, chainCapture: Capture): string => {
+          // A join field can reach the render either as the raw captured
+          // literal (URL query params) or as an already-generic
+          // `${payload.<field>}` reference (top-level JSON body keys — see
+          // applyPayloadKeyValueSubstitutions, which payload-ifies every
+          // scalar body key regardless of length, running BEFORE this fold
+          // branch ever sees the value). Both must resolve to the loop
+          // item's (or ancestor's) own field, not a caller-supplied payload
+          // value shared across every iteration. Widened beyond
+          // `target.joinFields` to every field this specific chain hop's own
+          // captured request actually varies on (via findThreadedJoinFields,
+          // searched across the item AND every ancestor binding) — a param
+          // living only on a parent object is otherwise structurally
+          // invisible and gets frozen as a literal.
+          const threadedFields = dedupeThreadedFields([
+            ...target.joinFields.map((field) => ({ varName: itemVar, field })),
+            ...findThreadedJoinFields(threadingScopes, chainCapture),
+          ]);
+          const result = threadedFields.reduce((acc, { varName, field }) => {
+            const replacement = `\${${scopedAccessor(varName, field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
             // accessor after the DRILL REQUEST's own top-level JSON key
             // (`${payload.sku}`), never after `field`'s dot path into the
@@ -4831,7 +4935,8 @@ export function emitMultiStepExecuteHttp(
               .join(replacement)
               .split(`\${payload.${lastSegment}}`)
               .join(replacement);
-            const value = readValueAtPath(firstItem, field.split("."));
+            const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
+            const value = readValueAtPath(scopeObj, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -4842,6 +4947,14 @@ export function emitMultiStepExecuteHttp(
               ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
               : withAccessorSwapped;
           }, text);
+          assertNoFrozenVaryingDrillParams(
+            "emitMultiStepExecuteHttp",
+            chainCapture,
+            result,
+            actions.map((a) => a.capture)
+          );
+          return result;
+        };
 
         // Every chain step's response and produces are block-scoped to this
         // `for` — they never escape to the rest of the function. That is
@@ -4856,12 +4969,12 @@ export function emitMultiStepExecuteHttp(
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
           lines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url)}\`, {`,
+            `      const ${chainStep.varName} = (await httpClient(\`${parameterize(chainRendered.url, chainStep.capture)}\`, {`,
             `        method: ${JSON.stringify(chainRendered.method)},`
           );
           const joined = [
-            parameterize(chainRendered.headersExpr),
-            parameterize(chainRendered.bodyArg),
+            parameterize(chainRendered.headersExpr, chainStep.capture),
+            parameterize(chainRendered.bodyArg, chainStep.capture),
           ]
             .filter((s) => s !== "")
             .join(" ");
@@ -4886,7 +4999,7 @@ export function emitMultiStepExecuteHttp(
           ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
         );
       }
-      lines.push(`    }`, "");
+      lines.push(...closeLines, "");
       continue;
     }
     // Every other chain step (already fully emitted, inline, by the fold
@@ -5446,6 +5559,136 @@ function collectRequestStringValues(capture: Capture): Set<string> {
   return values;
 }
 
+/** A drill request's query parameter or JSON body field, still left as a
+ * literal in the emitted call after threading, whose value differs between
+ * `capture` and some OTHER capture of the exact same endpoint elsewhere in
+ * the run — proof the literal is a per-drill value that varies, not a truly
+ * constant one. */
+interface FrozenVaryingDrillParam {
+  location: "query parameter" | "body field";
+  key: string;
+  frozenValue: string;
+  differingValue: string;
+}
+
+/**
+ * Finds every query param or JSON body leaf on `capture`'s own request that
+ * (a) was left as a literal in `renderedText` — never swapped for a
+ * `${...}` accessor by the threading pass above — and (b) took a different
+ * value on some OTHER capture matching the exact same endpoint (same
+ * origin+pathname, via {@link endpointKey}) anywhere in the run. Freezing
+ * such a value bakes ONE capture's drill parameter into every fold
+ * iteration's request, exactly the defect described in
+ * docs/recon-generate-nested-fold-flatmaps-away-the-parent-so-drill-params-freeze.md
+ * (a `packageCode`/`groupId`/`sailDate` triple that provably varies per
+ * cruise, silently frozen because no threaded field explained it). Path
+ * segments are deliberately not checked: {@link endpointKey} requires an
+ * identical pathname to group two captures at all, so no path segment can
+ * ever be observed to vary within a matched group.
+ */
+function findFrozenVaryingDrillParams(
+  capture: Capture,
+  renderedText: string,
+  allCaptures: readonly Capture[]
+): FrozenVaryingDrillParam[] {
+  const key = endpointKey(capture.url);
+  const sameEndpointCaptures = allCaptures.filter(
+    (c) => c !== capture && endpointKey(c.url) === key
+  );
+  if (sameEndpointCaptures.length === 0) return [];
+  const isFrozenLiteral = (value: string): boolean =>
+    value.length > 0 && renderedText.includes(value);
+  const frozen: FrozenVaryingDrillParam[] = [];
+  try {
+    const url = new URL(capture.url);
+    for (const [paramKey, value] of url.searchParams.entries()) {
+      if (!isFrozenLiteral(value)) continue;
+      const differing = sameEndpointCaptures
+        .map((c) => {
+          try {
+            return new URL(c.url).searchParams.get(paramKey);
+          } catch {
+            return null;
+          }
+        })
+        .find((v): v is string => v !== null && v !== value);
+      if (differing !== undefined) {
+        frozen.push({
+          location: "query parameter",
+          key: paramKey,
+          frozenValue: value,
+          differingValue: differing,
+        });
+      }
+    }
+  } catch {
+    // Relative or malformed URL — no query params to check.
+  }
+  const parsedBody = ((): unknown => {
+    try {
+      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
+        ? JSON.parse(capture.requestPostData)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsedBody !== undefined) {
+    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
+        continue;
+      const stringValue = String(value);
+      if (!isFrozenLiteral(stringValue)) continue;
+      const fieldPath = path.join(".");
+      const differing = sameEndpointCaptures
+        .map((c) => {
+          try {
+            const otherBody =
+              typeof c.requestPostData === "string" && c.requestPostData.length > 0
+                ? JSON.parse(c.requestPostData)
+                : undefined;
+            return otherBody === undefined ? undefined : readValueAtPath(otherBody, path);
+          } catch {
+            return undefined;
+          }
+        })
+        .find((v) => v !== undefined && String(v) !== stringValue);
+      if (differing !== undefined) {
+        frozen.push({
+          location: "body field",
+          key: fieldPath,
+          frozenValue: stringValue,
+          differingValue: String(differing),
+        });
+      }
+    }
+  }
+  return frozen;
+}
+
+/** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
+ * varying literal — shared by {@link parameterizeUrl} (below) and
+ * `emitMultiStepExecuteHttp`'s own `parameterize` so the two emitters can't
+ * drift on this guard. */
+function assertNoFrozenVaryingDrillParams(
+  emitterName: string,
+  capture: Capture,
+  renderedText: string,
+  allCaptures: readonly Capture[]
+): void {
+  const frozen = findFrozenVaryingDrillParams(capture, renderedText, allCaptures);
+  if (frozen.length === 0) return;
+  const described = frozen
+    .map(
+      (f) =>
+        `${f.location} "${f.key}" (froze "${f.frozenValue}", also captured as "${f.differingValue}")`
+    )
+    .join("; ");
+  throw new Error(
+    `${emitterName}: drill request to ${endpointKey(capture.url)} would freeze a value that varied across this run's own captures: ${described} — no threaded field (item or ancestor) explains it, so baking in one capture's literal would silently reuse it for every fold iteration; add the missing field to joinFields or make it resolvable from an ancestor binding`
+  );
+}
+
 /**
  * Yields every string/numeric/boolean leaf reachable from `item` by walking nested
  * plain objects only (not arrays — a join key is a scalar field of the item
@@ -5541,17 +5784,55 @@ function collectCandidateIndicesAscending(
   return [...candidates].sort((a, b) => a - b);
 }
 
-function findThreadedJoinFields(item: Record<string, unknown>, drillCapture: Capture): string[] {
+/** A per-item field path to thread into a drill request, alongside the
+ * loop-scope binding it must be read off of — `item`/`item0`/... for the
+ * innermost fold item, or an ancestor binding like `g0`/`g1` for a param
+ * that only lives on a parent object a nested-loop emission ({@link
+ * pathToFoldLoopLines}) keeps in scope. */
+interface ThreadedField {
+  varName: string;
+  field: string;
+}
+
+/** Drops duplicate `(varName, field)` pairs, keeping the first (innermost-
+ * scope-first, by {@link findThreadedJoinFields}'s scope ordering)
+ * occurrence — the same field can otherwise appear twice when both
+ * `target.joinFields` and the request-value scan resolve to it. */
+function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[] {
+  const seen = new Set<string>();
+  return fields.filter(({ varName, field }) => {
+    const key = `${varName}.${field}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Every per-item field, across `scopes`, whose value also appears somewhere
+ * in `drillCapture`'s own request (URL, body, headers) — the fields a drill
+ * request actually threads out of its per-item scope(s), used both to widen
+ * URL/body parameterization beyond a fold target's own `joinFields` and (via
+ * a single-scope call) to disambiguate which candidate array a chained step
+ * depends on. `scopes` is searched in the given order (innermost fold item
+ * first, then each ancestor binding a nested loop keeps addressable), since
+ * an ancestor field with the same name as an item field must not shadow the
+ * item's own value. */
+function findThreadedJoinFields(
+  scopes: readonly { varName: string; obj: Record<string, unknown> }[],
+  drillCapture: Capture
+): ThreadedField[] {
   const requestValues = collectRequestStringValues(drillCapture);
   if (requestValues.size === 0) return [];
-  return [...walkItemFieldPaths(item)]
-    .filter(
-      ({ value: v }) =>
-        (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-        (typeof v === "number" && requestValues.has(String(v))) ||
-        (typeof v === "boolean" && requestValues.has(String(v)))
-    )
-    .map(({ path }) => path.join("."));
+  return scopes.flatMap(({ varName, obj }) =>
+    [...walkItemFieldPaths(obj)]
+      .filter(
+        ({ value: v }) =>
+          (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
+          (typeof v === "number" && requestValues.has(String(v))) ||
+          (typeof v === "boolean" && requestValues.has(String(v)))
+      )
+      .map(({ path }) => ({ varName, field: path.join(".") }))
+  );
 }
 
 /** Every string, numeric, and boolean leaf value present anywhere in a response —
@@ -5629,7 +5910,9 @@ function selectDisambiguatedCandidate(
   if (candidates.length === 0) return null;
   const requestValues = collectRequestValuesIncludingHeaders(capture);
   const threaded = candidates.find((candidate) =>
-    candidate.items.some((item) => findThreadedJoinFields(item, capture).length > 0)
+    candidate.items.some(
+      (item) => findThreadedJoinFields([{ varName: "item", obj: item }], capture).length > 0
+    )
   );
   if (threaded) return threaded;
   return candidates.reduce((richest, candidate) => {
@@ -5856,13 +6139,13 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       // — a flow that only ever drilled into a later item (never the
       // first) must still resolve.
       const primaryMatchedItemIndex = primaryArray.items.findIndex(
-        (item) => findThreadedJoinFields(item, drill.capture).length > 0
+        (item) => findThreadedJoinFields([{ varName: "item", obj: item }], drill.capture).length > 0
       );
       if (primaryMatchedItemIndex === -1) continue;
       const joinFields = findThreadedJoinFields(
-        primaryArray.items[primaryMatchedItemIndex]!,
+        [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
         drill.capture
-      );
+      ).map((f) => f.field);
 
       // Widened to a flat (non-array) object response when the drill step has
       // no object-array field of its own — see
@@ -6197,6 +6480,38 @@ function objectItemsAtPath(
   const after = path.slice(wildcardIndex + 1);
   const items = outer.flatMap((element) => objectItemsAtPath(element, after) ?? []);
   return items.length > 0 ? items : null;
+}
+
+/** Same flattening as {@link objectItemsAtPath}, but pairs each flattened
+ * leaf item with the ordered (outer-to-inner) chain of ancestor objects a
+ * `.flatMap` accessor would discard — one entry per {@link
+ * ARRAY_WILDCARD_SEGMENT} crossed on the way down. Index-aligned with
+ * {@link objectItemsAtPath}'s own output (same DFS/outer-array order), so a
+ * `FoldTarget.primaryMatchedItemIndex` resolves the same leaf item either
+ * way; this variant additionally exposes the ancestor objects a nested-loop
+ * emission ({@link pathToFoldLoopLines}) binds to `g0`/`g1`/... so drill
+ * threading can read a param off an ancestor scope, not only the item. */
+function objectItemsWithAncestorsAtPath(
+  body: unknown,
+  path: readonly string[],
+  ancestors: readonly Record<string, unknown>[] = []
+): { item: Record<string, unknown>; ancestors: Record<string, unknown>[] }[] {
+  const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
+  if (wildcardIndex === -1) {
+    const value = readValueAtPath(body, path);
+    if (Array.isArray(value)) {
+      return value.filter(isObjectArrayItem).map((item) => ({ item, ancestors: [...ancestors] }));
+    }
+    return isObjectArrayItem(value) ? [{ item: value, ancestors: [...ancestors] }] : [];
+  }
+  const outer = readValueAtPath(body, path.slice(0, wildcardIndex));
+  if (!Array.isArray(outer)) return [];
+  const after = path.slice(wildcardIndex + 1);
+  return outer.flatMap((element) =>
+    isObjectArrayItem(element)
+      ? objectItemsWithAncestorsAtPath(element, after, [...ancestors, element])
+      : []
+  );
 }
 
 /**
@@ -7827,15 +8142,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
     : "{ q: payload.query }";
 
-  /** Builds the `for (const item of foldItems) { ... }` block(s) that fold
-   * every resolved plan's drill-down data onto `dataVarName`'s primary array
-   * — the single-primary counterpart of emitMultiStepExecuteHttp's own
-   * per-item loop, sharing its match/merge tail via
-   * {@link emitFoldMatchAndMergeLines} so the two can't describe different
-   * merge semantics. Chain hops beyond the drill step itself are rendered
-   * directly off each hop's own captured request (no state-threading
-   * pipeline) since a single-primary read flow carries no submitted payload
-   * for those calls to reference.
+  /** Builds the nested `for` loop block(s) — see {@link pathToFoldLoopLines}
+   * — that fold every resolved plan's drill-down data onto `dataVarName`'s
+   * primary array — the single-primary counterpart of
+   * emitMultiStepExecuteHttp's own per-item loop, sharing its match/merge
+   * tail via {@link emitFoldMatchAndMergeLines} so the two can't describe
+   * different merge semantics. Chain hops beyond the drill step itself are
+   * rendered directly off each hop's own captured request (no state-
+   * threading pipeline) since a single-primary read flow carries no
+   * submitted payload for those calls to reference.
    *
    * `itemsOverride`, when given, replaces the `dataVarName`+`primaryArrayPath`
    * accessor with a caller-supplied items expression — used by the paginated
@@ -7845,9 +8160,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
    * response object. `foldPlan.primaryArrayPath` may still declare depth
    * BELOW `itemsOverride.level` (a fold plan resolved against a nested array
    * inside each paginated item) — the residual suffix beyond `level` is
-   * descended into via the same `.flatMap`-based {@link pathToFoldAccessorExpr}
-   * the non-override branch already uses, so no depth the fold plan declares
-   * is silently dropped. */
+   * descended into via the same nested-loop emission the non-override branch
+   * already uses, so no depth the fold plan declares is silently dropped.
+   * Ancestor bindings inside `level` itself have no runtime loop variable
+   * (the paginated merge already flattened across them), so only the
+   * residual's OWN ancestor crossings are addressable for threading here. */
   const buildFoldMergeLines = (
     dataVarName: string,
     itemsOverride?: { expr: string; level: readonly string[] }
@@ -7856,16 +8173,16 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     for (const [planIndex, foldPlan] of singlePrimaryFoldPlans.entries()) {
       const primaryStep = actionSteps[foldPlan.primaryStepIndex];
       if (!primaryStep) continue;
-      const primaryItems = objectItemsAtPath(
+      const primaryItemsWithAncestors = objectItemsWithAncestorsAtPath(
         primaryStep.capture.responseBody,
         foldPlan.primaryArrayPath
       );
       const primaryArrType = foldArrayAssertionType(foldPlan.primaryArrayPath);
       const planSuffix = singlePrimaryFoldPlans.length > 1 ? String(planIndex) : "";
-      const foldItemsVar = `foldItems${planSuffix}`;
-      const foldItemsExpr = itemsOverride
+      const itemVar = `item${planSuffix}`;
+      const residualPath = itemsOverride
         ? (() => {
-            const { expr, level } = itemsOverride;
+            const { level } = itemsOverride;
             const levelPrefixesPrimaryArrayPath =
               level.length <= foldPlan.primaryArrayPath.length &&
               level.every((segment, i) => segment === foldPlan.primaryArrayPath[i]);
@@ -7874,61 +8191,82 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 `emitContractTs: fold plan primary array path ${foldPlan.primaryArrayPath.join(".")} no longer extends the paginated collection's own array path ${level.join(".")} — the fold plan and this emitter have drifted out of sync`
               );
             }
-            // The residual already carries its own leading
-            // ARRAY_WILDCARD_SEGMENT whenever it crosses the array boundary
-            // `level` itself sits at (by construction, since `level` names
-            // an array path) — `expr` stands in for that same array, so
-            // pathToFoldAccessorExpr's own flatMap over `expr` consumes it;
-            // prepending a second one here would double-flatten.
-            const residualPath = foldPlan.primaryArrayPath.slice(level.length);
-            if (residualPath.length === 0) return expr;
-            const itemTypeExpr = `${pathAccessTypeExpr(`${pascal}Response`, level)}[number]`;
-            return pathToFoldAccessorExpr(`(${expr} as ${itemTypeExpr}[])`, residualPath);
+            return foldPlan.primaryArrayPath.slice(level.length);
           })()
-        : pathToFoldAccessorExpr(
+        : foldPlan.primaryArrayPath;
+      const { openLines, closeLines, ancestorVars } = itemsOverride
+        ? pathToFoldLoopLines(
+            residualPath.length === 0
+              ? itemsOverride.expr
+              : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
+            residualPath,
+            itemVar,
+            "    ",
+            planSuffix
+          )
+        : pathToFoldLoopLines(
             `(${dataVarName} as ${primaryArrType})`,
-            foldPlan.primaryArrayPath
+            foldPlan.primaryArrayPath,
+            itemVar,
+            "    ",
+            planSuffix
           );
-      const itemVar = `item${planSuffix}`;
-      lines.push(
-        `    const ${foldItemsVar} = ${foldItemsExpr};`,
-        `    for (const ${itemVar} of ${foldItemsVar}) {`
-      );
+      // Ancestor bindings within `itemsOverride.level` (if any) have no
+      // runtime loop variable, since the paginated merge already flattened
+      // across them — only the trailing `residualPath.length` ancestor
+      // crossings correspond to `ancestorVars` above, so slice the
+      // design-time ancestor chain to match.
+      const residualAncestorCount = residualPath.filter((s) => s === ARRAY_WILDCARD_SEGMENT).length;
+      lines.push(...openLines);
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
-        const firstItem = primaryItems?.[target.primaryMatchedItemIndex];
-        if (!firstItem) {
+        const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
+        if (!matchedPrimaryItem) {
           throw new Error(
             `emitContractTs: fold plan primary step ${foldPlan.primaryStepIndex} no longer resolves an object array at ${foldPlan.primaryArrayPath.join(".")} — the fold plan and this emitter have drifted out of sync`
           );
         }
+        const { item: firstItem, ancestors: fullAncestors } = matchedPrimaryItem;
+        const residualAncestors = fullAncestors.slice(fullAncestors.length - residualAncestorCount);
+        const ancestorObjByVar = new Map(
+          ancestorVars.map((varName, idx) => [varName, residualAncestors[idx]!] as const)
+        );
+        const threadingScopes = [
+          { varName: itemVar, obj: firstItem },
+          ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+        ];
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
-        const joinAccessor = (field: string): string =>
-          `${itemVar}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+        const scopedAccessor = (varName: string, field: string): string =>
+          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+        const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Same word-boundary-anchored swap emitMultiStepExecuteHttp's own
         // `parameterize` performs — a plain split/join would also rewrite
         // unrelated substrings that happen to contain the join value.
         //
         // Parameterizes off EVERY per-item field this specific chain hop's
-        // own captured request actually varies on (via findThreadedJoinFields),
-        // not just `target.joinFields` — `target.joinFields` names the field
-        // used to MATCH the drill's RESPONSE back onto the primary item (see
+        // own captured request actually varies on (via findThreadedJoinFields,
+        // searched across the item AND every ancestor binding), not just
+        // `target.joinFields` — `target.joinFields` names the field used to
+        // MATCH the drill's RESPONSE back onto the primary item (see
         // emitFoldMatchAndMergeLines), which for a spec-declared foldReturn
         // can legitimately be a field the request never carries at all (e.g.
         // an `id` echoed only in the response, while the request is keyed by
         // an unrelated field like a package code). Building the URL from only
         // `target.joinFields` in that case would leave it unparameterized —
-        // every item would fetch the SAME first-captured URL.
+        // every item would fetch the SAME first-captured URL. Searching
+        // ancestor scopes too is what lets a param that only lives on a
+        // parent object (e.g. a group id) resolve at all.
         const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
           const withBase =
             baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
               ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
               : rawUrl;
-          const threadedFields = new Set([
-            ...target.joinFields,
-            ...findThreadedJoinFields(firstItem, chainCapture),
+          const threadedFields = dedupeThreadedFields([
+            ...target.joinFields.map((field) => ({ varName: itemVar, field })),
+            ...findThreadedJoinFields(threadingScopes, chainCapture),
           ]);
-          return [...threadedFields].reduce((acc, field) => {
-            const value = readValueAtPath(firstItem, field.split("."));
+          const result = threadedFields.reduce((acc, { varName, field }) => {
+            const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
+            const value = readValueAtPath(scopeObj, field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -7938,9 +8276,16 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             if (stringValue === null) return acc;
             return acc.replace(
               new RegExp(`\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-              `\${${joinAccessor(field)}}`
+              `\${${scopedAccessor(varName, field)}}`
             );
           }, withBase);
+          assertNoFrozenVaryingDrillParams(
+            "emitContractTs",
+            chainCapture,
+            result,
+            actionSteps.map((s) => s.capture)
+          );
+          return result;
         };
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
@@ -7965,7 +8310,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           ...emitFoldMatchAndMergeLines(terminalStep, target, itemVar, suffix, joinAccessor)
         );
       }
-      lines.push(`    }`, "");
+      lines.push(...closeLines, "");
     }
     return lines;
   };

@@ -498,12 +498,12 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
     // The nested resultsPath's wildcard group must generalize across every
-    // outer group via .flatMap — a literal index into one group (e.g.
+    // outer group via a nested loop — a literal index into one group (e.g.
     // `.companies[0].postings`) would silently drop every other group's
     // items at runtime.
-    expect(executeHttpBody).toContain(".flatMap(");
+    expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).not.toMatch(/\.companies\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("for (const item of g0.postings)");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({

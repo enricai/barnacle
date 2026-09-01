@@ -48,7 +48,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("return { data: r4 };");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
   });
 
@@ -62,7 +62,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(steps);
 
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
 
@@ -84,7 +84,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
 
     expect(body).toContain("for (const item of foldItems) {");
-    expect(body).toContain("const foldMatch = foldMatches.find(");
+    expect(body).toContain("foldMatches.find(");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).toContain("return { data: r0 };");
     expect(body).not.toContain("return { data: r1 };");
@@ -376,7 +376,11 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // flattening all of them into the loop.
     const body = emit(buildMulticallNestedGroupedDrillDownMultiGroupActionSteps());
 
-    expect(body).toContain("for (const item of foldItems) {");
+    // resultsPath crosses the outer "sections" array, so the fold-merge
+    // loop is a nested `for` over every group (not a flattened
+    // `foldItems`) — see pathToFoldLoopLines's docstring.
+    expect(body).toContain("for (const g0 of");
+    expect(body).toContain("for (const item of g0.entries) {");
     expect(body).toContain("Object.assign(item, foldMatch ?? {});");
     expect(body).not.toMatch(/sections\[("\d+"|\d+)\]/);
   });

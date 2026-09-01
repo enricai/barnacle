@@ -697,6 +697,75 @@ export function buildMulticallNestedGroupedDrillDownMultiGroupActionSteps(): Mul
   ];
 }
 
+const CATALOG_ENTRY_DETAILS_URL = "https://api.example.com/catalog/entries/details";
+
+/**
+ * A grouped, nested-primary drill-down whose drilled endpoint requires TWO
+ * threaded params at once: the PARENT group's own `id` (a field that lives
+ * one level above the nested items and is unreachable once
+ * {@link pathToFoldAccessorExpr} `.flatMap`s the outer array away) and the
+ * matched ITEM's own `date` (an ordinary leaf on the nested object itself).
+ * The drilled entry's own `entryId` rides along as a THIRD query param (not
+ * a URL path segment, so every drill capture shares one `endpointKey` — see
+ * below) purely so a caller resolving this fixture against an explicit
+ * `resultsPath: "sections.*.entries"` foldReturn spec has a join value to
+ * bind the drill onto its OWN matched entry.
+ *
+ * `r2` is a decoy: same drilled pathname, but every one of its own param
+ * values (`entryId`/`groupId`/`itemDate`) is foreign to the primary
+ * response, so neither the structural heuristic nor a `joinFields:
+ * ["entryId"]` spec ever threads a target onto it — it exists solely so
+ * `findFrozenVaryingDrillParams`'s same-endpoint variance check (keyed on
+ * `endpointKey`, i.e. origin+pathname, not query) has a second, genuinely
+ * differing capture to compare `groupId`/`itemDate` against, proving the
+ * hard-fail guard actually has something to catch if either param were
+ * emitted as a literal instead of threaded off its own (item or ancestor)
+ * binding:
+ *
+ * | capture | entryId       | groupId         | itemDate     |
+ * | ------- | ------------- | --------------- | ------------ |
+ * | r1      | e1            | sec1            | 2024-01-01   |
+ * | r2      | zzz-unrelated | zzz-unrelated-g | 1900-01-01   |
+ *
+ * A fold plan that only threads the item-level `date` (dropping `groupId`
+ * because it flatMaps away with the parent) would produce a drill URL
+ * missing `groupId` entirely, or one frozen to whichever group was matched
+ * during detection.
+ */
+export function buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            id: "sec1",
+            entries: [{ entryId: "e1", name: "Widget", date: "2024-01-01" }],
+          },
+          {
+            id: "sec2",
+            entries: [{ entryId: "e2", name: "Gadget", date: "2024-02-01" }],
+          },
+        ],
+      },
+      timestamp: "2024-12-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?entryId=e1&groupId=sec1&itemDate=2024-01-01`,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e1", description: "A widget." }] },
+      timestamp: "2024-12-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?entryId=zzz-unrelated&groupId=zzz-unrelated-g&itemDate=1900-01-01`,
+      requestPostData: null,
+      responseBody: { details: [] },
+      timestamp: "2024-12-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 

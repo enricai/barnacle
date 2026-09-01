@@ -26,6 +26,10 @@ const SECTIONS_BODY = {
 };
 const DETAILS_BODY = { details: [{ entryId: "e2", description: "A gadget." }] };
 const NO_MATCH_DETAILS_BODY = { details: [] };
+// A non-empty candidate array whose sole entry's join key ("eZZ") does not
+// match any real entryId — the wrong-sibling-grafting scenario, distinct
+// from the true-empty-candidates case above.
+const WRONG_SIBLING_DETAILS_BODY = { details: [{ entryId: "eZZ", description: "Not this one." }] };
 
 /** Stubs `fetch` to answer the fixture's calls, in call order, with each
  * call's own real-shaped captured body. */
@@ -61,11 +65,14 @@ describe("recon-generate drill-down fold — nested/grouped primary array runtim
       new Map()
     );
 
-    // Sanity: the flatMap accessor this test proves at runtime is actually
-    // present in the emitted source, not some other fold shape.
+    // Sanity: the nested-loop descent this test proves at runtime is actually
+    // present in the emitted source (not a `.flatMap` collection, which
+    // would discard the `g0` section binding), and in the right shape.
     expect(body).toContain(
-      "const foldItems = (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections.flatMap((g0) => g0.entries);"
+      "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
+    expect(body).toContain("for (const item of g0.entries) {");
+    expect(body).not.toContain(".flatMap(");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
@@ -104,6 +111,66 @@ describe("recon-generate drill-down fold — nested/grouped primary array runtim
           label: "clearance",
           entries: [
             { entryId: "e2", name: "Gadget", description: "A gadget." },
+            { entryId: "e4", name: "Thingamajig" },
+          ],
+        },
+      ],
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(5);
+  });
+
+  it("leaves an item unfolded when its drill response has a non-matching candidate, instead of grafting the wrong sibling", async () => {
+    const actionSteps = buildMulticallNestedGroupedDrillDownMultiGroupActionSteps();
+
+    const body = emitMultiStepExecuteHttp(
+      actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      null,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map()
+    );
+
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    // Only the e2 call comes back with a WRONG (non-matching) sibling; the
+    // rest come back empty as before. e2 must stay untouched — not spliced
+    // with "eZZ"'s description.
+    stubSequentialFetch([
+      SECTIONS_BODY,
+      NO_MATCH_DETAILS_BODY,
+      NO_MATCH_DETAILS_BODY,
+      WRONG_SIBLING_DETAILS_BODY,
+      NO_MATCH_DETAILS_BODY,
+    ]);
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com" });
+
+    expect(result.data).toEqual({
+      sections: [
+        {
+          label: "featured",
+          entries: [
+            { entryId: "e1", name: "Widget" },
+            { entryId: "e3", name: "Doohickey" },
+          ],
+        },
+        {
+          label: "clearance",
+          entries: [
+            { entryId: "e2", name: "Gadget" },
             { entryId: "e4", name: "Thingamajig" },
           ],
         },

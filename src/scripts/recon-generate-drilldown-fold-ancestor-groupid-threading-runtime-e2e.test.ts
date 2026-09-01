@@ -2,17 +2,16 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Mirrors recon-generate-drilldown-fold-return-graphql-get-drill-runtime-e2e.test.ts
- * but gives the GraphQL query-primary a two-level nested array
- * (`search.groups.*.items`), matching the doc's reported `cruises.*.sailings`
- * shape. Proves the fix resolves a fold plan through a nested wildcard
- * resultsPath declared on a single-primary GraphQL flow — not just the flat
- * resultsPath case, and not just the structural-heuristic multi-step path
- * already covered by recon-generate-fold-return.test.ts.
+ * Proves the actual root-cause fix this subtask exists for: a drill param
+ * that lives ONLY on the ancestor group object (`groupId`), never on the
+ * leaf item, threads into the emitted drill URL as `${g0.groupId}` — not
+ * frozen as the first-captured literal `"g1"`. Every other fold test in this
+ * suite either has no ancestor-only param to thread, or only proves the
+ * nested-loop shape without a real ancestor field ever making it into a
+ * rendered request.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -34,18 +33,8 @@ function graphqlSearchCapture(): unknown {
     responseBody: {
       search: {
         groups: [
-          {
-            items: [
-              { id: "item-a", name: "Widget" },
-              { id: "item-b", name: "Gadget" },
-            ],
-          },
-          {
-            items: [
-              { id: "item-c", name: "Sprocket" },
-              { id: "item-d", name: "Cog" },
-            ],
-          },
+          { groupId: "g1", items: [{ id: "item-a", name: "Widget" }] },
+          { groupId: "g2", items: [{ id: "item-c", name: "Sprocket" }] },
         ],
       },
     },
@@ -61,7 +50,7 @@ function restDrillDownCapture(): unknown {
     timestamp: "2024-01-01T00:00:01Z",
     phase: "browse",
     method: "GET",
-    url: "https://example.com/availability/api/v1/details?id=item-a",
+    url: "https://example.com/availability/api/v1/groups/g1/items/item-a/details",
     status: 200,
     requestHeaders: {},
     requestPostData: null,
@@ -88,19 +77,17 @@ function writeRunDir(root: string): void {
   );
 }
 
-function writeFlowFile(siteOutDir: string, opts: { withFoldReturn: boolean }): void {
+function writeFlowFile(siteOutDir: string): void {
   mkdirSync(siteOutDir, { recursive: true });
   const flow: Record<string, unknown> = {
     steps: [{ step: "search for groups" }],
-  };
-  if (opts.withFoldReturn) {
-    flow.foldReturn = {
-      endpointPattern: "/availability/api/v1/details",
+    foldReturn: {
+      endpointPattern: "/availability/api/v1/groups/",
       resultsPath: "search.groups.*.items",
       drillResultsPath: "details",
       joinFields: ["id"],
-    };
-  }
+    },
+  };
   writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify(flow));
 }
 
@@ -122,36 +109,23 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   );
 }
 
-describe("recon-generate GraphQL-primary + nested-wildcard foldReturn — runtime e2e", () => {
-  it("resolves a fold plan through a nested wildcard resultsPath and emits a flatMap over the drill endpoint", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-gql-nested-wildcard-fold-"));
+describe("recon-generate drill-down fold — ancestor-only groupId threading runtime e2e", () => {
+  it("threads a group-only groupId into the drill URL as an ancestor accessor, not a frozen literal", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-ancestor-thread-"));
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot);
 
-    const siteId = `gql-nested-wildcard-fold-test-run${process.pid}`;
+    const siteId = `ancestor-thread-test-run${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
-    writeFlowFile(siteOutDir, { withFoldReturn: true });
+    writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
-
     expect(result.status, out).toBe(0);
-    expect(out).not.toContain("no fold plan resolved");
 
-    const contractWith = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contractWith).toContain("/availability/api/v1/details");
-    expect(contractWith).toContain("for (const g0 of");
-    expect(contractWith).toContain("for (const item of g0.items)");
-
-    rmSync(siteOutDir, { recursive: true, force: true });
-    writeFlowFile(siteOutDir, { withFoldReturn: false });
-
-    const resultWithout = run(runRoot, siteId);
-    expect(resultWithout.status, `${resultWithout.stdout}\n${resultWithout.stderr}`).toBe(0);
-
-    const contractWithout = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contractWithout).not.toContain("/availability/api/v1/details");
-
-    expect(contractWith).not.toEqual(contractWithout);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain("for (const g0 of");
+    expect(contract).toContain("g0.groupId");
+    expect(contract).not.toContain("/groups/g1/");
   }, 30_000);
 });
