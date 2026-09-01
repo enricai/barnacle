@@ -2277,3 +2277,46 @@ export function buildMulticallSingleShotSearchDrillDownNestedJoinFieldPaginatedP
     }),
   ];
 }
+
+const CATALOG_ITEM_QUOTE_URL = "https://api.example.com/catalog/item-quote";
+
+/**
+ * A search → per-item drill-down flow whose drill request carries a `qty`
+ * query param that is CONSTANT across every capture of that endpoint in the
+ * run (`qty=0` on both items' own drill requests), while the SECOND item
+ * also happens to carry a `discount` field that is `0` — the same literal
+ * (the first item's own `discount`, `99`, never collides, proving the
+ * coincidence is per-item, not a fixture-wide constant). Matching `qty`'s
+ * literal `"0"` against the primary purely by value equality (the pre-fix
+ * behavior) binds `qty` to `discount` for the second item specifically, so
+ * its emitted call would read `qty=${item.discount}` instead of the true,
+ * always-`0` `qty`. The item's own `itemId` still varies across both drill
+ * requests (`i1`/`i2`), proving real per-item threading is unaffected.
+ */
+export function buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [
+          { itemId: "i1", discount: 99 },
+          { itemId: "i2", discount: 0 },
+        ],
+      },
+      timestamp: "2025-07-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ITEM_QUOTE_URL}?itemId=i1&qty=0`,
+      requestPostData: null,
+      responseBody: { quotes: [{ itemId: "i1", price: 9.99 }] },
+      timestamp: "2025-07-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ITEM_QUOTE_URL}?itemId=i2&qty=0`,
+      requestPostData: null,
+      responseBody: { quotes: [{ itemId: "i2", price: 14.99 }] },
+      timestamp: "2025-07-01T00:00:02Z",
+    }),
+  ];
+}

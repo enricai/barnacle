@@ -4950,7 +4950,11 @@ export function emitMultiStepExecuteHttp(
           // invisible and gets frozen as a literal.
           const threadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              actions.map((a) => a.capture)
+            ),
           ]);
           const result = threadedFields.reduce((acc, { varName, field }) => {
             const replacement = `\${${scopedAccessor(varName, field)}}`;
@@ -5599,17 +5603,53 @@ export interface FoldTarget {
  * path segment (e.g. `/orders/{id}`) rather than a query param or body
  * field. Numeric leaves are included because a join key is just as often a
  * numeric id (threaded as a query param string or a JSON body number
- * literal) as a string one. */
-function collectRequestStringValues(capture: Capture): Set<string> {
+ * literal) as a string one.
+ *
+ * `allCaptures`, when passed, gates every query param and body leaf on
+ * whether its OWN value (by param key / body path, via {@link endpointKey}'s
+ * same-endpoint grouping — the same grouping {@link
+ * findFrozenVaryingDrillParams} uses) ever differs on some other capture of
+ * the same endpoint. A value that never varies (e.g. `adults=2`) is left
+ * out, so callers matching by pure value equality (e.g. {@link
+ * findThreadedJoinFields}) can't bind that constant onto an unrelated field
+ * that coincidentally holds the same literal (e.g. a zero-valued `children`
+ * param matching a discount amount that also happens to be `0` in one
+ * capture, then diverges to a fraction in another). Path segments are
+ * exempt from this gate and always pass through — {@link endpointKey}
+ * already fixes the pathname, so a path segment can never be observed to
+ * vary within a matched group, the same rationale {@link
+ * findFrozenVaryingDrillParams} documents for the same exclusion. When no
+ * other capture of this endpoint exists in `allCaptures`, variance can't be
+ * observed either way, so every value is kept (unfiltered, matching the
+ * behavior when `allCaptures` is omitted). */
+function collectRequestStringValues(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Set<string> {
+  const sameEndpointCaptures = allCaptures
+    ? allCaptures.filter((c) => c !== capture && endpointKey(c.url) === endpointKey(capture.url))
+    : [];
+  const varies = (own: string, others: (string | undefined)[]): boolean =>
+    !allCaptures || sameEndpointCaptures.length === 0
+      ? true
+      : others.some((other) => other !== undefined && other !== own);
   const values = new Set<string>();
   try {
     const url = new URL(capture.url);
-    for (const v of url.searchParams.values()) values.add(v);
     for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
+    for (const [paramKey, value] of url.searchParams.entries()) {
+      const otherValues = sameEndpointCaptures.map((c) => {
+        try {
+          return new URL(c.url).searchParams.get(paramKey) ?? undefined;
+        } catch {
+          return undefined;
+        }
+      });
+      if (varies(value, otherValues)) values.add(value);
+    }
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
   }
-  for (const v of jsonBodyLeafValues(capture.requestPostData) ?? []) values.add(v);
   const parsedBody = ((): unknown => {
     try {
       return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
@@ -5620,8 +5660,23 @@ function collectRequestStringValues(capture: Capture): Set<string> {
     }
   })();
   if (parsedBody !== undefined) {
-    for (const { value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (typeof value === "number" || typeof value === "boolean") values.add(String(value));
+    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+      if (value === null) continue;
+      const stringValue = String(value);
+      const otherValues = sameEndpointCaptures.map((c) => {
+        try {
+          const otherBody =
+            typeof c.requestPostData === "string" && c.requestPostData.length > 0
+              ? JSON.parse(c.requestPostData)
+              : undefined;
+          if (otherBody === undefined) return undefined;
+          const otherValue = readValueAtPath(otherBody, path);
+          return otherValue === undefined ? undefined : String(otherValue);
+        } catch {
+          return undefined;
+        }
+      });
+      if (varies(stringValue, otherValues)) values.add(stringValue);
     }
   }
   return values;
@@ -5884,12 +5939,23 @@ function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[]
  * depends on. `scopes` is searched in the given order (innermost fold item
  * first, then each ancestor binding a nested loop keeps addressable), since
  * an ancestor field with the same name as an item field must not shadow the
- * item's own value. */
+ * item's own value.
+ *
+ * `allCaptures`, when passed, is forwarded to {@link
+ * collectRequestStringValues} to gate matching on cross-capture variance:
+ * a param whose own value never varies across other captures of the same
+ * endpoint is excluded from the candidate set entirely, so a constant like
+ * `children=0` can't bind to an unrelated item field (a discount amount, a
+ * departure port) purely because both happen to equal the same literal at
+ * generation time. Omitted for the candidate-array disambiguation callers,
+ * where narrowing by variance is a different concern than the URL/body
+ * over-threading this gate exists to prevent. */
 function findThreadedJoinFields(
   scopes: readonly { varName: string; obj: Record<string, unknown> }[],
-  drillCapture: Capture
+  drillCapture: Capture,
+  allCaptures?: readonly Capture[]
 ): ThreadedField[] {
-  const requestValues = collectRequestStringValues(drillCapture);
+  const requestValues = collectRequestStringValues(drillCapture, allCaptures);
   if (requestValues.size === 0) return [];
   return scopes.flatMap(({ varName, obj }) =>
     [...walkItemFieldPaths(obj)]
@@ -8330,7 +8396,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               : rawUrl;
           const threadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(threadingScopes, chainCapture),
+            ...findThreadedJoinFields(
+              threadingScopes,
+              chainCapture,
+              actionSteps.map((s) => s.capture)
+            ),
           ]);
           const result = threadedFields.reduce((acc, { varName, field }) => {
             const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
