@@ -410,7 +410,9 @@ describe("recon-generate chained drill-down fold executeHttp — generated-and-r
     // The generated code must reference the terminal chain step's response
     // directly as a merge candidate, not run array-only `.find()` machinery
     // over a value that is a plain object at runtime.
-    expect(body).toContain("Object.assign(item, foldMatch ?? {});");
+    expect(body).toContain(
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
+    );
     expect(body).not.toContain("const foldMatches = ");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
