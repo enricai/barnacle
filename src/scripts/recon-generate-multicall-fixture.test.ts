@@ -10,6 +10,7 @@ import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
+  buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
@@ -291,6 +292,48 @@ describe("buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps", () => 
     for (const p of params) {
       expect(p.get("groupId")).toBeTruthy();
       expect(p.get("itemDate")).toBeTruthy();
+    }
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps();
+
+  it("the primary response carries >=2 groups, each with >=3 items", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { id: string; entries: { entryId: string }[] }[];
+    };
+    expect(body.sections.length).toBeGreaterThanOrEqual(2);
+    for (const section of body.sections) {
+      expect(section.id).toBeTruthy();
+      expect(section.entries.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("every drill capture's query params carry only the group-level id, never any item field value", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { id: string; entries: { entryId: string }[] }[];
+    };
+    const itemFieldValues = new Set(
+      body.sections.flatMap((section) => section.entries.map((entry) => entry.entryId))
+    );
+
+    const drillSteps = steps.slice(1);
+    expect(drillSteps.length).toBeGreaterThanOrEqual(2);
+
+    const endpoints = new Set(drillSteps.map((step) => endpointKey(step.capture.url)));
+    expect(endpoints.size).toBe(1);
+
+    const groupIds = new Set(
+      drillSteps.map((step) => new URL(step.capture.url).searchParams.get("groupId"))
+    );
+    expect(groupIds.size).toBe(drillSteps.length);
+    for (const step of drillSteps) {
+      const params = new URL(step.capture.url).searchParams;
+      expect(params.get("groupId")).toBeTruthy();
+      for (const [, value] of params.entries()) {
+        expect(itemFieldValues.has(value)).toBe(false);
+      }
     }
   });
 });

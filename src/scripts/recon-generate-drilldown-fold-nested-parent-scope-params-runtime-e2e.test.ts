@@ -4,7 +4,10 @@ import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitMultiStepExecuteHttp, type FoldReturnSpec } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps } from "@/scripts/recon-generate-multicall-fixture";
+import {
+  buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
+  buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
+} from "@/scripts/recon-generate-multicall-fixture";
 
 /**
  * Regression coverage for a nested fold whose drill request needs one param
@@ -156,5 +159,133 @@ describe("recon-generate drill-down fold — nested fold threads BOTH a parent-s
     expect(String(calls[2]![0])).toContain("entryId=e2");
     expect(String(calls[2]![0])).toContain("groupId=sec2");
     expect(String(calls[2]![0])).toContain("itemDate=2024-02-01");
+  });
+});
+
+const ANCESTOR_ONLY_SPEC: FoldReturnSpec = {
+  endpointPattern: "catalog/entries/details",
+  resultsPath: "sections.*.entries",
+  drillResultsPath: "details",
+  joinFields: ["entryId"],
+};
+
+function emitAncestorOnlyBody(): string {
+  const actionSteps = buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps();
+  return emitMultiStepExecuteHttp(
+    actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map(),
+    null,
+    new Map(),
+    new Map(),
+    new Set(),
+    [],
+    new Map(),
+    new Map(),
+    ANCESTOR_ONLY_SPEC
+  );
+}
+
+/**
+ * Regression coverage for a nested fold whose drill request only needs the
+ * PARENT group's own `id` — never any field on the nested item. The
+ * hoisting fix must splice this fetch above the item loop and reuse it for
+ * every item in the group, instead of re-issuing it once per item.
+ */
+describe("recon-generate drill-down fold — nested fold threads ONLY an ancestor-scope drill param", () => {
+  it("at runtime, calls the drill endpoint exactly once per group (not once per item) and joins every item its own fields", async () => {
+    const body = emitAncestorOnlyBody();
+    const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
+    const httpClient = createHttpClient({
+      schema: z.unknown(),
+      bottleneck: limiter,
+      baseHeaders: { "Content-Type": "application/json" },
+    });
+
+    // Call order: r0 (primary), then one drill per GROUP (sec1, sec2) — not
+    // one per item, even though each group holds 3 items — then the
+    // fixture's own trailing decoy call.
+    stubSequentialFetch([
+      {
+        sections: [
+          {
+            id: "sec1",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e2", name: "Gadget" },
+              { entryId: "e3", name: "Doohickey" },
+            ],
+          },
+          {
+            id: "sec2",
+            entries: [
+              { entryId: "e4", name: "Thingamajig" },
+              { entryId: "e5", name: "Contraption" },
+              { entryId: "e6", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      {
+        details: [
+          { entryId: "e4", description: "A thingamajig." },
+          { entryId: "e5", description: "A contraption." },
+          { entryId: "e6", description: "A gizmo." },
+        ],
+      },
+      // The fixture's own trailing decoy call (unrelated `groupId`, never
+      // matched onto any fold target) — every real generated plugin
+      // re-issues every captured action, matched fold targets or not.
+      { details: [] },
+    ]);
+
+    const executeHttp = evalExecuteHttpBody(body, httpClient, z);
+    const result = await executeHttp({ BaseUrl: "https://api.example.com" });
+
+    expect(result.data).toEqual({
+      sections: [
+        {
+          id: "sec1",
+          entries: [
+            { entryId: "e1", name: "Widget", description: "A widget." },
+            { entryId: "e2", name: "Gadget", description: "A gadget." },
+            { entryId: "e3", name: "Doohickey", description: "A doohickey." },
+          ],
+        },
+        {
+          id: "sec2",
+          entries: [
+            { entryId: "e4", name: "Thingamajig", description: "A thingamajig." },
+            { entryId: "e5", name: "Contraption", description: "A contraption." },
+            { entryId: "e6", name: "Gizmo", description: "A gizmo." },
+          ],
+        },
+      ],
+    });
+
+    // #1: exactly 4 fetches total — the primary, ONE drill per group (not
+    // one per item, which would make 6 in a 2-group/3-item-each fixture),
+    // and the fixture's own trailing decoy call.
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls).toHaveLength(4);
+    expect(String(calls[1]![0])).toContain("groupId=sec1");
+    expect(String(calls[2]![0])).toContain("groupId=sec2");
+    expect(String(calls[3]![0])).toContain("groupId=zzz-unrelated-g");
   });
 });

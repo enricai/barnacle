@@ -766,6 +766,78 @@ export function buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps():
   ];
 }
 
+/**
+ * A grouped, nested-primary drill-down whose drilled endpoint needs ONLY the
+ * PARENT group's `id` — never any field on the nested item itself. Each
+ * group carries >=3 items so a per-group drill (one fetch, reused by every
+ * item) is distinguishable at runtime from a per-item drill (one fetch per
+ * item). The drilled endpoint returns the WHOLE group's entries in one
+ * response (keyed by `entryId`), mirroring a real ancestor-scoped drill that
+ * fetches "everything for this group" rather than one row per item — so the
+ * join still resolves each item's own fields from a single per-group
+ * response.
+ *
+ * `r1` is the real drill (matches group `sec1` via its response's
+ * `entryId`s). `r2` is a decoy — same drilled pathname, but its `groupId`
+ * and every `details` entryId are foreign to the primary response — so
+ * {@link findFrozenVaryingDrillParams}'s same-endpoint variance check has a
+ * second, genuinely differing capture to compare `groupId` against, proving
+ * the hard-fail guard actually has something to catch if it were emitted as
+ * a literal instead of threaded off the ancestor binding, while still
+ * leaving exactly one REAL, resolvable target for the fold plan (mirroring
+ * {@link buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps}'s
+ * own real/decoy split).
+ */
+export function buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            id: "sec1",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e2", name: "Gadget" },
+              { entryId: "e3", name: "Doohickey" },
+            ],
+          },
+          {
+            id: "sec2",
+            entries: [
+              { entryId: "e4", name: "Thingamajig" },
+              { entryId: "e5", name: "Contraption" },
+              { entryId: "e6", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-01-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?groupId=sec1`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      timestamp: "2025-01-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?groupId=zzz-unrelated-g`,
+      requestPostData: null,
+      responseBody: {
+        details: [{ entryId: "zzz-unrelated", description: "An unrelated entry." }],
+      },
+      timestamp: "2025-01-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
