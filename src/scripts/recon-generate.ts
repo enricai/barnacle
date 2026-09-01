@@ -3355,6 +3355,23 @@ function pathToFoldLoopLines(
   const wildcardIndex = path.indexOf(ARRAY_WILDCARD_SEGMENT);
   if (wildcardIndex === -1) {
     const finalExpr = `${expr}${pathToAccessor(path, { assertNonNull: false })}`;
+    // At depth 0 with no wildcard crossing at all (the overwhelmingly common
+    // single-level fold), keep emitting the original `const foldItems = ...;`
+    // binding rather than inlining the accessor into the `for` — existing
+    // single-scope folds must emit byte-identical code, not merely
+    // equivalent code, since nothing about a flat fold needs the nested-loop
+    // rewrite in the first place.
+    if (depth === 0) {
+      const foldItemsVar = `foldItems${varSuffix}`;
+      return {
+        openLines: [
+          `${indent}const ${foldItemsVar} = ${finalExpr};`,
+          `${indent}for (const ${itemVar} of ${foldItemsVar}) {`,
+        ],
+        closeLines: [`${indent}}`],
+        ancestorVars: [],
+      };
+    }
     return {
       openLines: [`${indent}for (const ${itemVar} of ${finalExpr}) {`],
       closeLines: [`${indent}}`],
@@ -8030,19 +8047,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           })()
         : foldPlan.primaryArrayPath;
       const { openLines, closeLines, ancestorVars } = itemsOverride
-        ? residualPath.length === 0
-          ? {
-              openLines: [`    for (const ${itemVar} of ${itemsOverride.expr}) {`],
-              closeLines: [`    }`],
-              ancestorVars: [] as string[],
-            }
-          : pathToFoldLoopLines(
-              `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
-              residualPath,
-              itemVar,
-              "    ",
-              planSuffix
-            )
+        ? pathToFoldLoopLines(
+            residualPath.length === 0
+              ? itemsOverride.expr
+              : `(${itemsOverride.expr} as ${pathAccessTypeExpr(`${pascal}Response`, itemsOverride.level)}[number][])`,
+            residualPath,
+            itemVar,
+            "    ",
+            planSuffix
+          )
         : pathToFoldLoopLines(
             `(${dataVarName} as ${primaryArrType})`,
             foldPlan.primaryArrayPath,
