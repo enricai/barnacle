@@ -62,7 +62,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).toHaveBeenCalledTimes(1);
@@ -142,7 +142,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(result).toEqual({ injected: false, submitted: false });
   });
 
-  it("resolves with submitted: true even when the submit-triggering evaluate rejects because form.submit() tore down the execution context", async () => {
+  it("resolves with submitted: true even when the dispatch and submit evaluates reject because a navigation tore down the execution context", async () => {
     const window = new Window({ url: "https://apply.example.com/application/abc-123" });
     const document = window.document;
     document.body.innerHTML = `
@@ -168,6 +168,46 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
       injected: true,
       submitted: true,
     });
-    expect(target.evaluate).toHaveBeenCalledTimes(2);
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  it("resolves with injected: true and still submits when only the change-dispatch evaluate rejects because a navigation tore down the execution context", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    const target = makeRealDomTarget(window);
+    const realEvaluate = target.evaluate as unknown as ReturnType<typeof vi.fn>;
+    const injectImplementation = realEvaluate.getMockImplementation() as (expr: unknown) => unknown;
+    let callCount = 0;
+    realEvaluate.mockImplementation(async (expr: unknown) => {
+      callCount += 1;
+      if (callCount === 2) {
+        throw new Error("Execution context was destroyed");
+      }
+      return injectImplementation(expr);
+    });
+
+    const field = document.querySelector('[name="h-captcha-response"]') as unknown as {
+      value: string;
+    };
+
+    await expect(injectCaptchaTokenAndSubmit(target, "solved-token-abc")).resolves.toEqual({
+      injected: true,
+      submitted: true,
+    });
+    expect(field.value).toBe("solved-token-abc");
+    expect(submitSpy).toHaveBeenCalledTimes(1);
+    expect(target.evaluate).toHaveBeenCalledTimes(3);
   });
 });
