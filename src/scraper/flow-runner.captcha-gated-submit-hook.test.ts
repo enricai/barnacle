@@ -186,6 +186,36 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
+  it("issues exactly one explicit submit when the transition poll finds no matching capture", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    // No capture is written, so waitForTransitionBody's initial check never
+    // matches: the widget's own callback evidently didn't submit for us, so
+    // the hook must issue exactly one explicit tolerant submit itself. Force
+    // the poll's deadline to already be past on its first loop check so the
+    // test doesn't pay the real widened (45s) captcha poll budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    ).catch(() => {
+      // Falling through into the full cascade on this bare fake once the
+      // captcha hook's own poll exhausts is expected to eventually fail;
+      // only the pre-fallthrough submit count is under test here.
+    });
+    nowSpy.mockRestore();
+
+    expect(result).not.toBe("completed");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+  });
+
   it("resolves (never propagates) when the dispatch-only eval rejects with a navigation-shaped error", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
