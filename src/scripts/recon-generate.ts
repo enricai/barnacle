@@ -4986,13 +4986,18 @@ export function emitMultiStepExecuteHttp(
               ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
               : withAccessorSwapped;
           }, text);
+          const withDrillParamBindings = applyDrillParamBindings(
+            foldReturnSpec,
+            chainCapture,
+            result
+          );
           assertNoFrozenVaryingDrillParams(
             "emitMultiStepExecuteHttp",
             chainCapture,
-            result,
+            withDrillParamBindings,
             actions.map((a) => a.capture)
           );
-          return result;
+          return withDrillParamBindings;
         };
 
         // Every chain step's response and produces are block-scoped to this
@@ -5789,6 +5794,57 @@ function findFrozenVaryingDrillParams(
   return frozen;
 }
 
+/** Renders a {@link FoldReturnSpec.drillParamBindings} entry's default value
+ * as a JS literal — a `string` default is quoted so the emitted `??` operand
+ * is valid source text, while `int`/`boolean` defaults print as their bare
+ * JS `typeof` (already enforced by {@link DRILL_PARAM_BINDING_TYPEOF} at
+ * parse time). */
+function formatDrillParamBindingDefault(
+  type: "int" | "string" | "boolean",
+  value: string | number | boolean
+): string {
+  return type === "string" ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Rewrites the still-literal value of any query param on `text` that has a
+ * {@link FoldReturnSpec.drillParamBindings} entry into a
+ * `${payload.<field> ?? <default>}` accessor — but only when `capture` (the
+ * request `text` was rendered from) matches the spec's OWN
+ * `endpointPattern`, via {@link compileFoldReturnEndpointMatcher}. That
+ * guard is the point: two drill-downs in the same chain can share a query
+ * param name (`adults`), and only the one the flow author actually bound is
+ * allowed to have it rewritten — an unrelated same-shaped endpoint elsewhere
+ * in the chain is left untouched.
+ *
+ * Purely additive: a spec with no `drillParamBindings`, or a capture that
+ * doesn't match `endpointPattern`, returns `text` unchanged. A param already
+ * rewritten to a `${...}` accessor by the threaded-fields substitution pass
+ * (run immediately before this) is left alone too — this only fires on a
+ * value still sitting in the text as a literal.
+ *
+ * Anchored to the exact `key=value` query pair (via a `[?&]key=` prefix,
+ * consuming up to the next `&`) rather than a bare literal-value swap, so a
+ * path segment or unrelated param that happens to hold the same literal
+ * value is never touched.
+ */
+export function applyDrillParamBindings(
+  spec: FoldReturnSpec | null,
+  capture: Capture,
+  text: string
+): string {
+  if (spec?.drillParamBindings === undefined) return text;
+  if (!compileFoldReturnEndpointMatcher(spec)(capture)) return text;
+  return Object.entries(spec.drillParamBindings).reduce((acc, [paramName, binding]) => {
+    const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
+    const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
+    return acc.replace(paramRx, (full, prefix: string, value: string) =>
+      value.startsWith("${") ? full : `${prefix}${accessor}`
+    );
+  }, text);
+}
+
 /** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
  * varying literal — shared by {@link parameterizeUrl} (below) and
  * `emitMultiStepExecuteHttp`'s own `parameterize` so the two emitters can't
@@ -6518,6 +6574,21 @@ export interface FoldReturnSpec {
    * a join key nested under an object, not just a top-level property, can be
    * declared. */
   joinFields: string[];
+  /** Binds a drill request's query params to fields on the CALLER's payload
+   * instead of a primary-response field or a frozen literal — the only two
+   * sources {@link findFrozenVaryingDrillParams} otherwise draws from. Keyed
+   * by the drill query-param name; each entry names the payload field it
+   * reads, the type to coerce it to, and the default used when the caller
+   * omits it, so today's frozen-literal behavior is preserved until a caller
+   * opts in. */
+  drillParamBindings?: Record<
+    string,
+    {
+      payloadField: string;
+      type: "int" | "string" | "boolean";
+      default: string | number | boolean;
+    }
+  >;
 }
 
 /**
@@ -6543,12 +6614,14 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
       return null;
     }
-    const { endpointPattern, resultsPath, drillResultsPath, joinFields } = foldReturn as {
-      endpointPattern?: unknown;
-      resultsPath?: unknown;
-      drillResultsPath?: unknown;
-      joinFields?: unknown;
-    };
+    const { endpointPattern, resultsPath, drillResultsPath, joinFields, drillParamBindings } =
+      foldReturn as {
+        endpointPattern?: unknown;
+        resultsPath?: unknown;
+        drillResultsPath?: unknown;
+        joinFields?: unknown;
+        drillParamBindings?: unknown;
+      };
     if (
       typeof endpointPattern !== "string" ||
       typeof resultsPath !== "string" ||
@@ -6560,15 +6633,67 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     ) {
       return null;
     }
+    const parsedDrillParamBindings =
+      drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
+    if (drillParamBindings !== undefined && parsedDrillParamBindings === null) {
+      return null;
+    }
     return {
       endpointPattern,
       resultsPath,
       ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
       joinFields,
+      ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/** The JS `typeof` a `drillParamBindings` entry's `default` must match for
+ * its declared `type` — the same "assert the type, then check the default
+ * agrees" pattern the rest of {@link parseFoldReturnSpec} uses for its other
+ * fields, so a mistyped default is rejected at parse time rather than
+ * surfacing as a runtime coercion mismatch downstream. */
+const DRILL_PARAM_BINDING_TYPEOF: Record<"int" | "string" | "boolean", string> = {
+  int: "number",
+  string: "string",
+  boolean: "boolean",
+};
+
+/** Validates the `drillParamBindings` map on an object-form `foldReturn`
+ * block, returning `null` on any malformed entry so the caller can drop the
+ * whole `foldReturn` — mirroring how {@link parseFoldReturnSpec} already
+ * treats a malformed `joinFields`/`drillResultsPath`. */
+function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindings"] | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const parsed: Record<
+    string,
+    { payloadField: string; type: "int" | "string" | "boolean"; default: string | number | boolean }
+  > = {};
+  for (const [paramName, entry] of entries) {
+    if (entry === null || typeof entry !== "object") return null;
+    const {
+      payloadField,
+      type,
+      default: defaultValue,
+    } = entry as {
+      payloadField?: unknown;
+      type?: unknown;
+      default?: unknown;
+    };
+    if (
+      typeof payloadField !== "string" ||
+      payloadField.length === 0 ||
+      (type !== "int" && type !== "string" && type !== "boolean") ||
+      typeof defaultValue !== DRILL_PARAM_BINDING_TYPEOF[type]
+    ) {
+      return null;
+    }
+    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
+  }
+  return parsed;
 }
 
 /** Reads the value at an exact JSON path out of a response body, or
@@ -8010,6 +8135,28 @@ export function emitContractTs(opts: {
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     Boolean(inputBody) && applicantContactFieldNames.has(name);
 
+  // A declared foldReturn.drillParamBindings names drill query params that
+  // are caller-driven instead of frozen literals (see
+  // recon-generate-foldreturn-cannot-bind-drill-query-param-to-caller-payload.md)
+  // — each binding's payloadField becomes a typed, defaulted, optional
+  // payload field, so omitting it preserves today's frozen-literal behavior
+  // and supplying it lets the caller drive the drill request. Sorted by
+  // payloadField for the same deterministic-output ordering the other
+  // discovered-field loops already keep.
+  const drillParamBindingEntries = Object.values(foldReturnSpec?.drillParamBindings ?? {}).sort(
+    (a, b) => a.payloadField.localeCompare(b.payloadField)
+  );
+  for (const binding of drillParamBindingEntries) {
+    if (isReservedByApplicantContactSchema(binding.payloadField)) continue;
+    const zod =
+      binding.type === "int"
+        ? `z.coerce.number().int().optional().default(${JSON.stringify(binding.default)})`
+        : binding.type === "boolean"
+          ? `z.coerce.boolean().optional().default(${JSON.stringify(binding.default)})`
+          : `z.string().optional().default(${JSON.stringify(binding.default)})`;
+    addExtendField(binding.payloadField, `  ${binding.payloadField}: ${zod},`);
+  }
+
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. A query-type flow (no ApplicantContactSchema base) still
   // needs these fields spelled out explicitly.
@@ -8428,13 +8575,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               `\${${scopedAccessor(varName, field)}}`
             );
           }, withBase);
+          const withDrillParamBindings = applyDrillParamBindings(
+            foldReturnSpec,
+            chainCapture,
+            result
+          );
           assertNoFrozenVaryingDrillParams(
             "emitContractTs",
             chainCapture,
-            result,
+            withDrillParamBindings,
             actionSteps.map((s) => s.capture)
           );
-          return result;
+          return withDrillParamBindings;
         };
         const chainLines: string[] = [];
         // True once any chain step's parameterized URL actually ends up
