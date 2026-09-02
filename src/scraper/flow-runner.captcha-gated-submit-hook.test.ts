@@ -440,6 +440,37 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(1);
   });
 
+  it("throws CaptchaError (never falls through to the cascade) when no callback is discoverable and neither the inject nor the explicit fallback submit produces a confirmed transition", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // No callbackName => callbackDiscovered=false; no capture is ever
+    // written, so the post-inject poll AND the post-fallback-submit re-poll
+    // both find nothing to confirm. Force performance.now() past the
+    // deadline on the first check so the test doesn't pay either widened
+    // (45s) poll's real wall-clock budget.
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    await expect(
+      executeStepWithHealing(
+        baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+      )
+    ).rejects.toThrow(/no render-config callback could be found/);
+    nowSpy.mockRestore();
+
+    expect(field.value).toBe("solved-token");
+    // The explicit fallback still fires exactly once (hasForm=true) before
+    // the failure is surfaced — the fix doesn't skip the fallback, it just
+    // stops trusting silence as success once the fallback also produces no
+    // confirmed transition.
+    expect(submitCount.n).toBe(1);
+  });
+
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {
     solveCaptchaMock.mockRejectedValue(new CaptchaSolverUnavailableError());
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
