@@ -8356,6 +8356,106 @@ export async function executeStepWithHealing(params: {
   // moved so it can be reassigned.
   let frameTarget = params.frameTarget;
   let frameReresolveAttempted = false;
+  // Emailed-verification hook. Runs FIRST — before upload/select/checkbox/
+  // radio/prompt-selector/captcha or any other cascade primitive — so an
+  // `emailStep: true` step with no allocated inbox fails loud instead of
+  // being silently claimed by an unrelated primitive that happens to match
+  // the step's instruction text. Polls the run's allocated testmail inbox,
+  // extracts a link or code from the matched message, and either navigates
+  // to the link (gating "completed" on the same transition poll the captcha
+  // hook reuses) or splices the code into this step's fill value and falls
+  // through to the normal cascade below. Never logs the extracted link/code
+  // — either can be a single-use credential — and never navigates off the
+  // current page's registrable domain, so a poisoned inbox message can't
+  // redirect the session.
+  if (emailStep) {
+    if (!allocatedInbox) {
+      // No inbox to poll — fail loud, exactly like the captcha no-key path.
+      throw new EmailStepInboxUnavailableError(
+        "emailStep set but no testmail inbox allocated (pass --allocate-email)"
+      );
+    }
+    const cfg = emailStepConfig ?? {};
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: polling inbox ${allocatedInbox.address} (subjectContains=${cfg.subjectContains ?? "*"})`
+    );
+    const msg = await pollTestmailInbox({
+      inbox: allocatedInbox,
+      subjectContains: cfg.subjectContains,
+      timeoutMs: cfg.timeoutMs ?? 120_000,
+    }).catch((err: unknown) => {
+      logger.error(
+        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: no matching email within budget (${toErrorMessage(err)}); failing the step`
+      );
+      throw err;
+    });
+
+    if ((cfg.extract ?? "link") === "link") {
+      const emailStepTarget = frameTarget ?? mainFrameTarget(page);
+      const currentPageUrl = await emailStepTarget.url();
+      const url = extractLinkFromMessage(msg, cfg.linkPattern, currentPageUrl);
+      if (!url) {
+        throw new EmailStepExtractError("no link matched in the verification email");
+      }
+      // Allowlist gate: the link's host must share the current page origin's
+      // registrable domain (or be a declared `ownBackendHostnames` entry) —
+      // never follow a link from untrusted inbox content off-domain.
+      const fallbackDomain = (() => {
+        try {
+          return registrableDomain(new URL(currentPageUrl).hostname);
+        } catch {
+          return null;
+        }
+      })();
+      const linkHost = (() => {
+        try {
+          return new URL(url).hostname;
+        } catch {
+          return null;
+        }
+      })();
+      if (!linkHost || !isAllowedFixtureHost(linkHost, ownBackendHostnames, fallbackDomain)) {
+        throw new EmailStepExtractError(
+          "extracted link's host is outside the current page's registrable domain; refusing to navigate"
+        );
+      }
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: navigating to extracted link`
+      );
+      const preIdx = latestCaptureIndex(recentCaptures);
+      await page.goto(url); // NEVER log the URL body — it can be a single-use credential
+      // Gate advance on the same transition poll the captcha hook reuses.
+      if (advanceTransitionBodyPattern) {
+        const confirmed = await waitForTransitionBody({
+          page,
+          preIdx,
+          advanceTransitionBodyPattern,
+          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+        });
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} emailStep: post-navigate transition poll confirmed=${confirmed}`
+        );
+        if (confirmed) {
+          trajectory?.push({ stepIndex, verifiedBy: "network" });
+        }
+      }
+      return "completed";
+    }
+
+    // extract:"code" — splice the extracted code into this step's fill
+    // value and fall through to the pre-existing fill primitive below,
+    // rather than returning early or re-running Stagehand's act/observe
+    // resolution against the code.
+    const code = extractCodeFromMessage(msg, cfg.codePattern);
+    if (!code) {
+      throw new EmailStepExtractError("no code matched in the verification email");
+    }
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
+    );
+    step = spliceEmailStepFillValue(step, code);
+  }
   /**
    * Re-resolves a frame that lost the attach race at step entry —
    * `resolveFrameTarget`'s per-step poll (called once in the runner's step
@@ -8641,105 +8741,6 @@ export async function executeStepWithHealing(params: {
         return "completed";
       }
     }
-  }
-
-  // Emailed-verification hook. Fires whenever the flow file marked this step
-  // `emailStep: true`, regardless of submit/final shape (unlike `captchaGated`,
-  // an emailed continuation can land anywhere in the flow). Polls the run's
-  // allocated testmail inbox, extracts a link or code from the matched
-  // message, and either navigates to the link (gating "completed" on the
-  // same transition poll the captcha hook reuses) or splices the code into
-  // this step's fill value and falls through to the normal cascade below.
-  // Never logs the extracted link/code — either can be a single-use
-  // credential — and never navigates off the current page's registrable
-  // domain, so a poisoned inbox message can't redirect the session.
-  if (emailStep) {
-    if (!allocatedInbox) {
-      // No inbox to poll — fail loud, exactly like the captcha no-key path.
-      throw new EmailStepInboxUnavailableError(
-        "emailStep set but no testmail inbox allocated (pass --allocate-email)"
-      );
-    }
-    const cfg = emailStepConfig ?? {};
-    logger.info(
-      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: polling inbox ${allocatedInbox.address} (subjectContains=${cfg.subjectContains ?? "*"})`
-    );
-    const msg = await pollTestmailInbox({
-      inbox: allocatedInbox,
-      subjectContains: cfg.subjectContains,
-      timeoutMs: cfg.timeoutMs ?? 120_000,
-    }).catch((err: unknown) => {
-      logger.error(
-        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: no matching email within budget (${toErrorMessage(err)}); failing the step`
-      );
-      throw err;
-    });
-
-    if ((cfg.extract ?? "link") === "link") {
-      const emailStepTarget = frameTarget ?? mainFrameTarget(page);
-      const currentPageUrl = await emailStepTarget.url();
-      const url = extractLinkFromMessage(msg, cfg.linkPattern, currentPageUrl);
-      if (!url) {
-        throw new EmailStepExtractError("no link matched in the verification email");
-      }
-      // Allowlist gate: the link's host must share the current page origin's
-      // registrable domain (or be a declared `ownBackendHostnames` entry) —
-      // never follow a link from untrusted inbox content off-domain.
-      const fallbackDomain = (() => {
-        try {
-          return registrableDomain(new URL(currentPageUrl).hostname);
-        } catch {
-          return null;
-        }
-      })();
-      const linkHost = (() => {
-        try {
-          return new URL(url).hostname;
-        } catch {
-          return null;
-        }
-      })();
-      if (!linkHost || !isAllowedFixtureHost(linkHost, ownBackendHostnames, fallbackDomain)) {
-        throw new EmailStepExtractError(
-          "extracted link's host is outside the current page's registrable domain; refusing to navigate"
-        );
-      }
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: navigating to extracted link`
-      );
-      const preIdx = latestCaptureIndex(recentCaptures);
-      await page.goto(url); // NEVER log the URL body — it can be a single-use credential
-      // Gate advance on the same transition poll the captcha hook reuses.
-      if (advanceTransitionBodyPattern) {
-        const confirmed = await waitForTransitionBody({
-          page,
-          preIdx,
-          advanceTransitionBodyPattern,
-          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
-          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
-        });
-        logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} emailStep: post-navigate transition poll confirmed=${confirmed}`
-        );
-        if (confirmed) {
-          trajectory?.push({ stepIndex, verifiedBy: "network" });
-        }
-      }
-      return "completed";
-    }
-
-    // extract:"code" — splice the extracted code into this step's fill
-    // value and fall through to the pre-existing fill primitive below,
-    // rather than returning early or re-running Stagehand's act/observe
-    // resolution against the code.
-    const code = extractCodeFromMessage(msg, cfg.codePattern);
-    if (!code) {
-      throw new EmailStepExtractError("no code matched in the verification email");
-    }
-    logger.info(
-      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
-    );
-    step = spliceEmailStepFillValue(step, code);
   }
 
   // Snapshot the capture-meta tail length at step entry. The probe-absent
