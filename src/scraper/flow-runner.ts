@@ -5081,7 +5081,7 @@ function findCaptchaCallbackExprSrc(): string {
       ? entries.find(function (entry) { return String(entry.widgetId) === widgetId; }) ?? entries[0]
       : entries[0];
     if (match && typeof match.callback === "function") {
-      return { kind: "captured", invoke: match.callback };
+      return { kind: "captured", invoke: match.callback, widgetId: match.widgetId };
     }
     return null;
   }`;
@@ -5091,12 +5091,17 @@ function findCaptchaCallbackExprSrc(): string {
  * Site-agnostic captcha-solve hand-off: given an already-solved token,
  * discover the widget's registered callback — a `data-callback` attribute
  * naming a `window` global, or (absent that) a callback captured from a
- * programmatic `hcaptcha.render({ callback })` call — and invoke it with the
- * token so the site assembles its own submit (its own hidden fields, its own
- * submit path); only when no callback is discoverable does this fall back to
- * setting the hidden response field directly and dispatching the
- * framework-visible `change` event so the field's own value listener
- * observes it.
+ * programmatic `hcaptcha.render({ callback })` call — and deliver the token
+ * so the site assembles its own submit (its own hidden fields, its own
+ * submit path). When the captured render config's real `widgetId` is known
+ * and `window.hcaptcha.execute` is available, the preferred delivery is
+ * `hcaptcha.execute(widgetId)`, letting the callback fire as a natural
+ * consequence of hCaptcha's own execute/verify cycle; only when no
+ * widgetId/execute path is available does this fall back to invoking the
+ * captured callback directly. Only when no callback is discoverable at all
+ * does this fall back to setting the hidden response field directly and
+ * dispatching the framework-visible `change` event so the field's own value
+ * listener observes it.
  *
  * Widgets of this shape anchor a `[data-sitekey]` element whose
  * `data-callback` attribute names a function on `window`; that callback (not
@@ -5156,17 +5161,32 @@ export async function injectCaptchaTokenAndSubmit(
       ${findCaptchaCallbackExprSrc()}
       const sitekeyEl = document.querySelector("[data-sitekey]");
       const found = __findCaptchaCallback(sitekeyEl);
-      if (found) found.invoke(${JSON.stringify(token)});
+      if (!found) return;
+      const canExecute =
+        found.kind === "captured" &&
+        found.widgetId !== undefined &&
+        found.widgetId !== null &&
+        window.hcaptcha &&
+        typeof window.hcaptcha.execute === "function";
+      if (canExecute) {
+        window.hcaptcha.execute(found.widgetId);
+        return;
+      }
+      found.invoke(${JSON.stringify(token)});
     })()`;
-    // Invoking the widget's own callback can navigate the frame synchronously
-    // from within this call (the callback is free to build its own fields and
-    // submit), tearing down the execution context before a return value
-    // marshals — that rejection is the expected outcome, not a real failure,
-    // so it's discarded here rather than depended on. Re-resolving the
-    // callback here (rather than passing a reference from the precheck)
-    // is required for the captured-callback case: it's an anonymous closure
-    // living in the registry, not a named `window` global, so it cannot be
-    // marshalled back from the precheck's evaluate call.
+    // Invoking the widget's own callback (or, when the widget's real
+    // `widgetId` is known from a captured `hcaptcha.render` call, triggering
+    // `hcaptcha.execute(widgetId)` so the callback fires as a consequence of
+    // hCaptcha's own execute/verify cycle rather than a bypassed direct call)
+    // can navigate the frame synchronously from within this call (the
+    // callback is free to build its own fields and submit), tearing down the
+    // execution context before a return value marshals — that rejection is
+    // the expected outcome, not a real failure, so it's discarded here rather
+    // than depended on. Re-resolving the callback here (rather than passing a
+    // reference from the precheck) is required for the captured-callback
+    // case: it's an anonymous closure living in the registry, not a named
+    // `window` global, so it cannot be marshalled back from the precheck's
+    // evaluate call.
     await target.evaluate(invokeCallbackExpr).catch(() => undefined);
     return { injected, hasForm, callbackDiscovered };
   }
