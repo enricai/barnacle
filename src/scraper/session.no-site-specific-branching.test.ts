@@ -12,10 +12,7 @@ import { describe, expect, it } from "vitest";
  * rather than by exercising the code.
  */
 
-const captureSource = readFileSync(
-  join(__dirname, "captcha-callback-capture.ts"),
-  "utf-8"
-);
+const captureSource = readFileSync(join(__dirname, "captcha-callback-capture.ts"), "utf-8");
 
 /** Slices the source from a start marker to the end of the file. */
 function sliceFrom(source: string, startMarker: string): string {
