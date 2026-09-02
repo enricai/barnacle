@@ -7967,6 +7967,13 @@ export function emitContractTs(opts: {
    * payload schema so those references typecheck. Shares the accumulator with
    * emitBrowserFlowTs so schema and flow can never drift. */
   payloadFieldNames?: Set<string>;
+  /** Subset of `payloadFieldNames` a flow step registered as `optional: true`
+   * (required wins when the same field is also registered by a non-optional
+   * step, mirroring the request-surface "widest wins" rule). Marks the
+   * corresponding payload-schema field `.optional()` and is threaded into
+   * {@link renderGqlVariablesExpr} so an absent optional facet drops its
+   * segment instead of splicing `undefined` into a GraphQL filter string. */
+  optionalPayloadFieldNames?: ReadonlySet<string>;
   /** Response-header/cookie-origin state bindings collected from the action
    * sequence's produces[] (see `collectHeaderBindings`) — rendered as
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
@@ -8021,6 +8028,7 @@ export function emitContractTs(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     payloadFieldNames,
+    optionalPayloadFieldNames = new Set<string>(),
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
   } = opts;
@@ -8238,7 +8246,9 @@ export function emitContractTs(opts: {
   if (payloadFieldNames) {
     for (const name of [...payloadFieldNames].sort()) {
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`);
+      const zod = name === "Email" ? "z.email()" : "z.string()";
+      const suffix = optionalPayloadFieldNames.has(name) ? ".optional()" : "";
+      addExtendField(name, `  ${name}: ${zod}${suffix},`);
     }
   }
 
@@ -8475,7 +8485,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? JSON.stringify(gqlOperationName)
     : JSON.stringify(`${pascal}Search`);
   const gqlVariablesExpr = gqlOperationName
-    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
+    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
     : "{ q: payload.query }";
 
   /** Builds the nested `for` loop block(s) — see {@link pathToFoldLoopLines}
@@ -9202,7 +9212,7 @@ export function emitBrowserFlowTs(opts: {
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-}): { code: string; payloadFieldNames: Set<string> } {
+}): { code: string; payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const {
     siteId,
     pascal,
@@ -9215,6 +9225,17 @@ export function emitBrowserFlowTs(opts: {
   } = opts;
 
   const payloadFieldNames = new Set<string>();
+  // Widest wins, mirroring the request-surface precedent above: a field is
+  // only optional if EVERY step that registers it does so as optional.
+  const optionalPayloadFieldNames = new Set<string>();
+  const requiredPayloadFieldNames = new Set<string>();
+  const registerFieldOptionality = (field: string, optional: boolean): void => {
+    if (optional && !requiredPayloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+    if (!optional) {
+      requiredPayloadFieldNames.add(field);
+      optionalPayloadFieldNames.delete(field);
+    }
+  };
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
@@ -9261,16 +9282,21 @@ export function emitBrowserFlowTs(opts: {
       field === null && !(isObj && step.payloadFieldNone)
         ? resolveCompositePersonaFields(instruction, knownFieldValues)
         : null;
-    if (field !== null) payloadFieldNames.add(field);
+    const optional = isObj ? step.optional === true : false;
+    if (field !== null) {
+      payloadFieldNames.add(field);
+      registerFieldOptionality(field, optional);
+    }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
       payloadFieldNames.add(composite.fieldB);
+      registerFieldOptionality(composite.fieldA, optional);
+      registerFieldOptionality(composite.fieldB, optional);
     }
     const instructionExpr =
       composite !== null
         ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
         : buildStepInstructionExpr(instruction, field);
-    const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
@@ -9419,7 +9445,7 @@ ${flowStepsBlock}
 `
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
-  return { code, payloadFieldNames };
+  return { code, payloadFieldNames, optionalPayloadFieldNames };
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -10183,6 +10209,7 @@ async function main(): Promise<void> {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     payloadFieldNames: browserFlow.payloadFieldNames,
+    optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
     headerBindings,
     unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
   };
