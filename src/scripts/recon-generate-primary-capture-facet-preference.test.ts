@@ -185,4 +185,29 @@ describe("selectPrimaryGraphQLOperation facet preference", () => {
 
     expect(result?.capture).toBe(ownBackendFacetBearing);
   });
+
+  it("prefers the capture that splices more caller facets over a same-operation capture with a larger response that splices fewer facets", () => {
+    const twoFacetCapture = gqlCapture({
+      variables: { filters: "category:kitchen|priceRange:10~50" },
+      responseBody: { catalogSearch: { items: [{ id: 1, name: "Item 1" }] } },
+    });
+    const oneFacetCapture = gqlCapture({
+      variables: { filters: "category:kitchen" },
+      responseBody: {
+        catalogSearch: {
+          items: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Item ${i}` })),
+        },
+      },
+    });
+
+    const captures = [oneFacetCapture, twoFacetCapture];
+    const flowSteps = [
+      { step: "select 'kitchen' from the Category dropdown", payloadField: "category" },
+      { step: "select '10~50' from the Price Range dropdown", payloadField: "priceRange" },
+    ];
+
+    const result = selectPrimaryGraphQLOperation(captures, flowSteps, EMPTY_VOCABULARY);
+
+    expect(result?.capture).toBe(twoFacetCapture);
+  });
 });
