@@ -83,8 +83,11 @@ describe("emitContractTs — facet-string splice drops an omitted optional facet
     // region's unit carries its own "|" separator, and brand's optional unit
     // carries its own ";" separator — neither is flattened to a single
     // recovered delimiter shared across every unit.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("`region:${payload.Region}|`");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("...(payload.Brand ? [`brand:${payload.Brand};`] : [])");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("`len:${payload.Len}`");
   });
 });

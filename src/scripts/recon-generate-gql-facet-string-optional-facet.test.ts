@@ -46,9 +46,12 @@ describe("emitContractTs — facet-string GraphQL variable with optional facets"
     expect(getGqlCall).toContain('"productSearch_Products"');
     // Required facet always included, unconditionally, carrying its own
     // trailing delimiter so mixed delimiters in the source string survive.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("`region:${payload.Region}|`");
     // Optional facets are only included when their payload field is present.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("...(payload.Brand ? [`brand:${payload.Brand}|`] : [])");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal generated template-literal source, not interpolating here.
     expect(getGqlCall).toContain("...(payload.Len ? [`len:${payload.Len}`] : [])");
     // Segments are concatenated, each unit already carrying its delimiter.
     expect(getGqlCall).toMatch(/\]\.join\(""\)/);
