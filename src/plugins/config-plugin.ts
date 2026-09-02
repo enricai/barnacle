@@ -229,6 +229,17 @@ export async function buildConfigPlugin(
   const hasEmailStep = spec.flow.steps.some((s) => typeof s !== "string" && s.emailStep === true);
   const declaredFields = new Set(Object.keys((spec.request.properties as object) ?? {}));
 
+  // `allocatedInbox` is derived from `payload.Email` at request time (see
+  // `execute` below) — fail at load time when a manifest opts into
+  // `emailStep` without declaring the field it will be sourced from, instead
+  // of throwing an unhelpful TypeError deep inside `testmailInboxFromAddress`
+  // on the first real request.
+  if (hasEmailStep && !declaredFields.has("Email")) {
+    throw new Error(
+      `config plugin "${metadata.siteId}": emailStep requires an "Email" field in spec.request.properties`
+    );
+  }
+
   const plugin: SitePlugin<unknown, unknown> = {
     meta: {
       siteId: metadata.siteId,

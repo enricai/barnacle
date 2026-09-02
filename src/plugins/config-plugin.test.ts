@@ -331,6 +331,25 @@ describe("buildConfigPlugin", () => {
     expect(deps.steps[1]?.emailStep).toBe(true);
     expect(deps.steps[1]?.emailStepConfig).toEqual({ extract: "code", action: "fill" });
   });
+
+  it("rejects a manifest declaring emailStep with no Email field in request.properties", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps[1] = {
+      step: "fill verification code with ''",
+      emailStep: true,
+    };
+    (
+      manifest.spec as {
+        request: { type: string; required: string[]; properties: Record<string, unknown> };
+      }
+    ).request = {
+      type: "object",
+      required: ["FirstName"],
+      properties: { FirstName: { type: "string" } },
+    };
+
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/emailStep requires an "Email" field/);
+  });
 });
 
 describe("buildRephraseModelForContext (via execute)", () => {
