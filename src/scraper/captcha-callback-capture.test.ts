@@ -123,6 +123,17 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     expect(Object.keys(registry)).toHaveLength(0);
   });
 
+  it("never throws and leaves the registry empty when hcaptcha never appears on the page", () => {
+    const sandbox = makeFakeWindow();
+
+    expect(() => runScript(sandbox)).not.toThrow();
+
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, unknown>;
+    expect(registry).toEqual({});
+  });
+
   it("is idempotent when the init script is injected more than once", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
