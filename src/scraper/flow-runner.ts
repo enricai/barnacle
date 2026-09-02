@@ -11210,6 +11210,14 @@ export interface HealingFlowStep {
    * updating — absence is treated as false, matching the schema default.
    */
   captchaGated?: boolean;
+  /**
+   * Opts this step into the `emailStep` inbox-poll hook. Mirrors
+   * `captchaGated`'s threading — optional so existing `HealingFlowStep`
+   * literals don't need updating; absence is treated as false.
+   */
+  emailStep?: boolean;
+  /** Config for an `emailStep`. Ignored unless {@link emailStep} is true. */
+  emailStepConfig?: EmailStepConfig;
 }
 
 /**
@@ -11269,6 +11277,12 @@ export interface RunHealingFlowDeps {
    * behavior: no race, liveness relies solely on the `page.url()` gates.
    */
   deathSignal?: Promise<never>;
+  /**
+   * Testmail inbox allocated for this run's `emailStep` hooks. Required for
+   * any step with `emailStep: true` — omitted (default null) throws
+   * {@link EmailStepInboxUnavailableError} for such a step.
+   */
+  allocatedInbox?: TestmailInbox | null;
 }
 
 /** SPA-readiness gate defaults — match the recon CLI's post-navigation wait. */
@@ -11439,6 +11453,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         upload: s.upload,
         submitStep: s.submitStep,
         captchaGated: s.captchaGated === true,
+        emailStep: s.emailStep === true,
+        emailStepConfig: s.emailStepConfig,
+        allocatedInbox: deps.allocatedInbox ?? null,
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         stepIndex: i,
         totalSteps: () => steps.length,
