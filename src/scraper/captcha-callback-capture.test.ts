@@ -99,8 +99,8 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const registry = (sandbox.window as Record<string, unknown>)[
       HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
     ] as Record<string, { callback: () => void }>;
-    expect(registry["site-c::1"].callback).toBe(callbackOne);
-    expect(registry["site-c::2"].callback).toBe(callbackTwo);
+    expect(registry["site-c::1"]?.callback).toBe(callbackOne);
+    expect(registry["site-c::2"]?.callback).toBe(callbackTwo);
   });
 
   it("still returns the real widget id and never throws when render has no callback", () => {
