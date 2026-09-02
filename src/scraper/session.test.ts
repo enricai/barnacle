@@ -50,8 +50,17 @@ vi.mock("@/config", () => ({
   },
 }));
 
-const { fakeConn } = vi.hoisted(() => ({
+const { fakeConn, fakePage } = vi.hoisted(() => ({
   fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+  fakePage: {
+    getSessionForFrame: vi.fn().mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      off: vi.fn(),
+    }),
+    mainFrameId: vi.fn().mockReturnValue("main-frame"),
+    frameForId: vi.fn().mockReturnValue({ evaluate: vi.fn().mockResolvedValue(undefined) }),
+  },
 }));
 
 vi.mock("@browserbasehq/stagehand", () => ({
@@ -60,7 +69,11 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
     this.browserbaseSessionID = "bb-session-id";
-    this.context = { conn: fakeConn, addInitScript: vi.fn().mockResolvedValue(undefined) };
+    this.context = {
+      conn: fakeConn,
+      addInitScript: vi.fn().mockResolvedValue(undefined),
+      awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+    };
   }),
 }));
 

@@ -1,3 +1,7 @@
+import type { Page } from "@browserbasehq/stagehand";
+
+import { getLogger } from "@/lib/logging";
+
 /**
  * Site-agnostic capture of hCaptcha's programmatic render config. When a
  * site calls `hcaptcha.render(container, { sitekey, callback })` rather than
@@ -9,6 +13,8 @@
  * registry a flow hook can query later, regardless of which plugin or site
  * triggered the render.
  */
+
+const logger = getLogger({ name: "scraper/captcha-callback-capture" });
 
 /** Page-global property name the capture script stores its registry under. */
 export const HCAPTCHA_CALLBACK_REGISTRY_GLOBAL = "__barnacleHcaptchaCallbacks";
@@ -85,4 +91,42 @@ export function buildHcaptchaCallbackCaptureScript(): string {
       // property is already non-configurable on some builds; nothing to wrap
     }
   })();`;
+}
+
+/**
+ * Re-asserts the capture script into every frame's own realm as it attaches
+ * or navigates, closing the race where a same-origin iframe's own script
+ * assigns `window.hcaptcha` and calls `render` before `context.addInitScript`'s
+ * effect is observably in place in that frame's realm (a CDP round-trip race
+ * under some session providers). Complements, rather than replaces, the
+ * context-level install — that install remains the first line of defense for
+ * the common case (fast frames, no race).
+ *
+ * Frame-agnostic: this listens for `Page.frameAttached`/`Page.frameNavigated`
+ * on the main frame's CDP session and evaluates the (idempotent) capture
+ * script into whichever frame each event names, regardless of which site or
+ * plugin owns that frame.
+ */
+export function installHcaptchaCallbackCaptureOnAllFrames(page: Page): void {
+  const session = page.getSessionForFrame(page.mainFrameId());
+  const script = buildHcaptchaCallbackCaptureScript();
+
+  const evaluateIntoFrame = (frameId: string): void => {
+    page
+      .frameForId(frameId)
+      .evaluate(script)
+      .catch((err: unknown) => {
+        logger.warn(`hcaptcha callback capture: per-frame re-assert failed: ${String(err)}`);
+      });
+  };
+
+  session.send("Page.enable").catch((err: unknown) => {
+    logger.warn(`hcaptcha callback capture: Page.enable failed: ${String(err)}`);
+  });
+  session.on<{ frameId: string }>("Page.frameAttached", (params) => {
+    evaluateIntoFrame(params.frameId);
+  });
+  session.on<{ frame: { id: string } }>("Page.frameNavigated", (params) => {
+    evaluateIntoFrame(params.frame.id);
+  });
 }

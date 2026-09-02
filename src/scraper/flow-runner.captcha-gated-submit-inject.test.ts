@@ -64,7 +64,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).not.toHaveBeenCalled();
@@ -171,7 +172,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
       hasForm: true,
       callbackDiscovered: false,
     });
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
   });
 
   it("resolves with injected: true when only the change-dispatch evaluate rejects because a navigation tore down the execution context", async () => {
@@ -212,7 +214,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     });
     expect(field.value).toBe("solved-token-abc");
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
   });
 
   it("invokes the widget's registered data-callback with the token, letting it append its own field", async () => {
@@ -406,5 +409,83 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
     expect(result).not.toMatchObject({ callbackDiscovered: true });
     expect(submitSpy).not.toHaveBeenCalled();
+  });
+
+  it("wraps an already-plain-assigned window.hcaptcha.render at solve time and discovers the callback it captures, with no registry or data-callback attribute pre-existing", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+      appendChild: (node: unknown) => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    const capturedCallback = (token: string): void => {
+      const extraField = document.createElement("input");
+      extraField.type = "hidden";
+      extraField.name = "extra-companion-field";
+      extraField.value = token;
+      form.appendChild(extraField);
+    };
+
+    // The exact live-page shape the doc reports: a plain, unwrapped
+    // `window.hcaptcha` object already assigned before solve time — no
+    // `__barnacleWrapped` render, no registry, no data-callback attribute.
+    (window as unknown as Record<string, unknown>).hcaptcha = {
+      render: (_container: unknown, _config: unknown) => 99,
+    };
+
+    const target = makeRealDomTarget(window);
+    const realEvaluate = target.evaluate as unknown as ReturnType<typeof vi.fn>;
+    const injectImplementation = realEvaluate.getMockImplementation() as (expr: unknown) => unknown;
+    let callCount = 0;
+    realEvaluate.mockImplementation(async (expr: unknown) => {
+      callCount += 1;
+      // The capture script (`buildHcaptchaCallbackCaptureScript`) is a
+      // self-invoking statement ending in `;`, not the `(() => {...})()`
+      // expression shape `makeRealDomTarget`'s `return (${expr})` wrapping
+      // assumes — wrapping it in a further `return (...)` is a syntax
+      // error, so it must run unwrapped here, exactly like a real
+      // `target.evaluate` (which evaluates the string directly, with no
+      // such wrapping) would run it.
+      if (callCount === 2) {
+        new Function("window", expr as string)(window);
+      }
+      const result = callCount === 2 ? undefined : await injectImplementation(expr);
+      // Call #2 is the late-wrap fallback's install of the callback-capture
+      // script, which — for an already-plain-assigned window.hcaptcha —
+      // wraps its `render` in place. Firing a render call immediately after
+      // that install mirrors the exact race the fallback exists to close: a
+      // render happening between the precheck's first (empty) lookup and
+      // the late re-check that follows the wrap.
+      if (callCount === 2) {
+        (
+          window as unknown as Record<string, unknown> & {
+            hcaptcha: { render: (container: unknown, config: unknown) => unknown };
+          }
+        ).hcaptcha.render(document.querySelector("[data-sitekey]"), {
+          sitekey: "fake-sitekey",
+          callback: capturedCallback,
+        });
+      }
+      return result;
+    });
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-late-wrap");
+
+    const extraField = document.querySelector('[name="extra-companion-field"]') as unknown as {
+      value: string;
+    };
+    expect(extraField).not.toBeNull();
+    expect(extraField.value).toBe("solved-token-late-wrap");
+    expect(submitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 });

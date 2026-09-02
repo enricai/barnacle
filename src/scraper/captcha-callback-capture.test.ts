@@ -1,10 +1,14 @@
+import fs from "node:fs";
+import path from "node:path";
 import vm from "node:vm";
 
-import { describe, expect, it } from "vitest";
+import type { Page } from "@browserbasehq/stagehand";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildHcaptchaCallbackCaptureScript,
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
+  installHcaptchaCallbackCaptureOnAllFrames,
 } from "@/scraper/captcha-callback-capture";
 
 /**
@@ -153,5 +157,83 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
       HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
     ] as Record<string, unknown>;
     expect(Object.keys(registry)).toHaveLength(1);
+  });
+});
+
+describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
+  /**
+   * Fakes the CDP `session.on`/`send` surface {@link CDPSessionLike} exposes,
+   * capturing registered handlers so the test can fire a `Page.frameAttached`
+   * event the way the real CDP session would.
+   */
+  function makeFakeSession(): {
+    session: {
+      send: ReturnType<typeof vi.fn>;
+      on: ReturnType<typeof vi.fn>;
+      off: ReturnType<typeof vi.fn>;
+    };
+    handlers: Record<string, (params: unknown) => void>;
+  } {
+    const handlers: Record<string, (params: unknown) => void> = {};
+    const session = {
+      send: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn((event: string, handler: (params: unknown) => void) => {
+        handlers[event] = handler;
+      }),
+      off: vi.fn(),
+    };
+    return { session, handlers };
+  }
+
+  it("evaluates the capture script into a newly attached child frame specifically, not the main frame", () => {
+    const { session, handlers } = makeFakeSession();
+    const mainFrameEvaluate = vi.fn().mockResolvedValue(undefined);
+    const childFrameEvaluate = vi.fn().mockResolvedValue(undefined);
+    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
+      "main-frame": { evaluate: mainFrameEvaluate },
+      "child-frame": { evaluate: childFrameEvaluate },
+    };
+    const page = {
+      getSessionForFrame: vi.fn().mockReturnValue(session),
+      mainFrameId: vi.fn().mockReturnValue("main-frame"),
+      frameForId: vi.fn((frameId: string) => frames[frameId]),
+    } as unknown as Page;
+
+    installHcaptchaCallbackCaptureOnAllFrames(page);
+
+    expect(page.getSessionForFrame).toHaveBeenCalledWith("main-frame");
+    expect(session.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
+    expect(session.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
+
+    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
+
+    expect(page.frameForId).toHaveBeenCalledWith("child-frame");
+    expect(childFrameEvaluate).toHaveBeenCalledWith(buildHcaptchaCallbackCaptureScript());
+    expect(mainFrameEvaluate).not.toHaveBeenCalled();
+  });
+
+  it("evaluates the capture script into the frame named by a frameNavigated event", () => {
+    const { session, handlers } = makeFakeSession();
+    const navigatedFrameEvaluate = vi.fn().mockResolvedValue(undefined);
+    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
+      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
+      "navigated-frame": { evaluate: navigatedFrameEvaluate },
+    };
+    const page = {
+      getSessionForFrame: vi.fn().mockReturnValue(session),
+      mainFrameId: vi.fn().mockReturnValue("main-frame"),
+      frameForId: vi.fn((frameId: string) => frames[frameId]),
+    } as unknown as Page;
+
+    installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Page.frameNavigated"]?.({ frame: { id: "navigated-frame" } });
+
+    expect(page.frameForId).toHaveBeenCalledWith("navigated-frame");
+    expect(navigatedFrameEvaluate).toHaveBeenCalledWith(buildHcaptchaCallbackCaptureScript());
+  });
+
+  it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
+    const source = fs.readFileSync(path.join(__dirname, "captcha-callback-capture.ts"), "utf8");
+    expect(source).not.toMatch(/siteId|pluginName|plugin\.meta/i);
   });
 });

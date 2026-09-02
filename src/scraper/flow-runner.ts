@@ -49,7 +49,10 @@ import {
   SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
   WIDGET_KIT_SELECTION_MARKER_SELECTORS,
 } from "@/scraper/browser-click-expr";
-import { HCAPTCHA_CALLBACK_REGISTRY_GLOBAL } from "@/scraper/captcha-callback-capture";
+import {
+  buildHcaptchaCallbackCaptureScript,
+  HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
+} from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   fillDeepLocatorCandidate,
@@ -5100,10 +5103,14 @@ function findCaptchaCallbackExprSrc(): string {
  * `hcaptcha.execute(widgetId)`, letting the callback fire as a natural
  * consequence of hCaptcha's own execute/verify cycle; only when no
  * widgetId/execute path is available does this fall back to invoking the
- * captured callback directly. Only when no callback is discoverable at all
- * does this fall back to setting the hidden response field directly and
- * dispatching the framework-visible `change` event so the field's own value
- * listener observes it.
+ * captured callback directly. When no callback is discoverable at precheck
+ * time, this re-installs the callback-capture script and retries the lookup
+ * once — catching a widget whose `hcaptcha.render` call happens on demand
+ * rather than on page load, after this frame missed both session.ts's
+ * page-init-script install and the per-frame attach install. Only when the
+ * late retry also finds nothing does this fall back to setting the hidden
+ * response field directly and dispatching the framework-visible `change`
+ * event so the field's own value listener observes it.
  *
  * Widgets of this shape anchor a `[data-sitekey]` element whose
  * `data-callback` attribute names a function on `window`; that callback (not
@@ -5191,6 +5198,49 @@ export async function injectCaptchaTokenAndSubmit(
     // evaluate call.
     await target.evaluate(invokeCallbackExpr).catch(() => undefined);
     return { injected, hasForm, callbackDiscovered };
+  }
+
+  // Belt-and-suspenders: this frame missed session.ts's page-init-script
+  // install and bugfix-001's per-frame attach install (it either attached
+  // before the listener was wired, or never fired an observed attach/
+  // navigate event this run). Installing the capture script now is still
+  // idempotent and still cheap, and it's the only remaining chance to catch
+  // a widget that calls `hcaptcha.render` on demand rather than on load.
+  // Re-run the precheck's callback lookup once more before giving up and
+  // falling through to the raw field-set path below.
+  await target.evaluate(buildHcaptchaCallbackCaptureScript()).catch(() => undefined);
+  const latePrecheckExpr = `(() => {
+    ${findCaptchaCallbackExprSrc()}
+    const sitekeyEl = document.querySelector("[data-sitekey]");
+    return Boolean(__findCaptchaCallback(sitekeyEl));
+  })()`;
+  const lateCallbackDiscovered = await target
+    .evaluate<boolean>(latePrecheckExpr)
+    .catch(() => false);
+  if (lateCallbackDiscovered) {
+    const invokeLateCallbackExpr = `(() => {
+      ${findCaptchaCallbackExprSrc()}
+      const sitekeyEl = document.querySelector("[data-sitekey]");
+      const found = __findCaptchaCallback(sitekeyEl);
+      if (!found) return;
+      const canExecute =
+        found.kind === "captured" &&
+        found.widgetId !== undefined &&
+        found.widgetId !== null &&
+        window.hcaptcha &&
+        typeof window.hcaptcha.execute === "function";
+      if (canExecute) {
+        window.hcaptcha.execute(found.widgetId);
+        return;
+      }
+      found.invoke(${JSON.stringify(token)});
+    })()`;
+    // Same navigate-mid-evaluate tolerance as the non-late invoke above:
+    // the callback (or execute's own verify cycle) is free to submit the
+    // form synchronously, tearing down the execution context before a
+    // return value marshals.
+    await target.evaluate(invokeLateCallbackExpr).catch(() => undefined);
+    return { injected, hasForm, callbackDiscovered: true };
   }
 
   const setValueExpr = `(() => {
@@ -8853,8 +8903,15 @@ export async function executeStepWithHealing(params: {
       });
       const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
       const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+      const registryState = await captchaTarget.evaluate<"absent" | "empty" | "populated">(
+        `(() => {
+          const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
+          if (!registry) return "absent";
+          return Object.keys(registry).length === 0 ? "empty" : "populated";
+        })()`
+      );
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered}`
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
       );
       // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
       // poll loop), just with a widened budget so the solve+submit round trip
