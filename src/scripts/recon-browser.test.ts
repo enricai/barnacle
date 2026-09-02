@@ -622,6 +622,37 @@ describe("recon-browser/denormalizeStep + normalizeFlow — targetId/origin roun
       })
     ).toEqual({ step: "Submit the application", submitStep: true });
   });
+
+  it("survives an emailStep + emailStepConfig denormalize -> parse -> normalizeFlow round-trip, mirroring submitStep/captchaGated", () => {
+    const step = {
+      instruction: "Click the verification link in the email",
+      optional: false,
+      upload: false,
+      origin: "original" as const,
+      emailStep: true,
+      emailStepConfig: { subjectContains: "Verify your email", extract: "link" as const },
+    };
+    const onDisk = RECON_FLOW_STEP_SCHEMA.parse(denormalizeStep(step));
+    const [roundTripped] = normalizeFlow([onDisk]);
+    expect(roundTripped!.emailStep).toBe(true);
+    expect(roundTripped!.emailStepConfig).toEqual({
+      subjectContains: "Verify your email",
+      extract: "link",
+      action: "navigate",
+    });
+  });
+
+  it("omits emailStep/emailStepConfig from denormalized output when falsy (truthy-omit, like captchaGated)", () => {
+    expect(
+      denormalizeStep({
+        instruction: "Click Continue",
+        optional: false,
+        upload: false,
+        origin: "original",
+        emailStep: false,
+      })
+    ).toBe("Click Continue");
+  });
 });
 
 describe("recon-browser/persistReplannedFlow", () => {
