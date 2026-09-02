@@ -92,7 +92,16 @@ function makeFakeDocument(
 /** Runs `injectCaptchaTokenAndSubmit`'s built expression against the given fake DOM globals. */
 function makeFakeTarget(
   globals: { document: ReturnType<typeof makeFakeDocument>; window?: Record<string, unknown> },
-  opts: { rejectSetValue?: boolean } = {}
+  opts: {
+    rejectSetValue?: boolean;
+    /**
+     * Simulates a widget calling `hcaptcha.render` immediately after the
+     * late-install script wraps `window.hcaptcha.render` — mirroring a
+     * widget that renders on demand rather than on page load, which is the
+     * scenario the late-install re-check exists to catch.
+     */
+    onLateInstall?: (window: Record<string, unknown>) => void;
+  } = {}
 ): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
@@ -105,13 +114,17 @@ function makeFakeTarget(
         "window",
         `return ${expr as string}`
       ) as (doc: unknown, htmlInputEl: unknown, ev: unknown, window: unknown) => unknown;
-      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent, globals.window ?? {});
+      const window = globals.window ?? {};
+      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent, window);
       // Mirrors a widget whose render callback navigates synchronously from
       // inside the set-value evaluate: the DOM mutation above already landed
       // before the frame tears down, so the rejection surfaces only after
       // the effect took place — exactly what the primitive tolerates.
       if (opts.rejectSetValue && (expr as string).includes("descriptor.set.call")) {
         throw new Error("simulated navigation: execution context destroyed");
+      }
+      if (opts.onLateInstall && (expr as string).includes("__barnacleWrapped")) {
+        opts.onLateInstall(window);
       }
       return result;
     }) as FrameTarget["evaluate"],
@@ -264,5 +277,42 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(field.value).toBe("solved-token-nocallback");
     expect(field.dispatched).toEqual(["change"]);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
+  });
+
+  it("invokes a late-installed captured callback instead of the raw field-set path when the precheck found none", async () => {
+    const form = new FakeForm();
+    form.hasSitekeyAnchor = true;
+
+    const sitekeyEl = {
+      getAttribute: (name: string) => (name === "data-sitekey" ? "sk-late" : null),
+    };
+
+    const calls: string[] = [];
+    const window = {
+      hcaptcha: {
+        render: (_container: unknown, _config: unknown) => "widget-late",
+      },
+    };
+
+    const target = makeFakeTarget(
+      { document: makeFakeDocument([form], undefined, sitekeyEl), window },
+      {
+        onLateInstall: (win) => {
+          const hcaptcha = win.hcaptcha as {
+            render: (container: unknown, config: unknown) => string;
+          };
+          hcaptcha.render(
+            {},
+            { sitekey: "sk-late", callback: (token: string) => calls.push(token) }
+          );
+        },
+      }
+    );
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-late");
+
+    expect(calls).toEqual(["solved-token-late"]);
+    expect(form.fields).toHaveLength(0);
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 });

@@ -64,7 +64,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).not.toHaveBeenCalled();
@@ -171,7 +172,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
       hasForm: true,
       callbackDiscovered: false,
     });
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
   });
 
   it("resolves with injected: true when only the change-dispatch evaluate rejects because a navigation tore down the execution context", async () => {
@@ -212,7 +214,8 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     });
     expect(field.value).toBe("solved-token-abc");
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(target.evaluate).toHaveBeenCalledTimes(3);
+    // precheck, late-install, late-precheck, set-value, dispatch-change
+    expect(target.evaluate).toHaveBeenCalledTimes(5);
   });
 
   it("invokes the widget's registered data-callback with the token, letting it append its own field", async () => {
