@@ -121,6 +121,13 @@ endpoint, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default), gated by
 `SCRAPER_CAPTURE_SESSION_IP` (default `true`). Recon-browser never calls it —
 it exists for the dispatch path's per-submission telemetry (5D).
 
+`createBrowserSession()` also installs the hCaptcha render-config
+callback-capture init script (`src/scraper/captcha-callback-capture.ts`) via
+`context.addInitScript` immediately after the session is created, for both
+providers — no siteId/plugin conditional. This monkeypatches
+`hcaptcha.render` before any site script runs, so a flow hook can later read
+back a programmatically-registered `callback` that never appears in the DOM.
+
 ### 1b — CDP session-level network capture
 
 A single listener attaches to the page's main CDP session and pairs

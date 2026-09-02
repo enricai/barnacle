@@ -68,7 +68,7 @@ function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
     // (mirrors flow-runner.captcha-inject-submit.test.ts's technique,
     // simplified since that primitive already has its own dedicated unit tests).
     if (src.includes("hasForm")) {
-      return { injected: true, hasForm: true, callback: opts.callbackName ?? null };
+      return { injected: true, hasForm: true, callbackDiscovered: Boolean(opts.callbackName) };
     }
     if (src.includes("window[")) {
       callbackInvokedWith.token = "solved-token";
@@ -437,6 +437,58 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // No transition was confirmed, so the explicit-submit fallback fires
     // exactly once (hasForm=true) — this test only asserts on the
     // completion gate itself, not on submit-count behavior.
+    expect(submitCount.n).toBe(1);
+  });
+
+  it("throws CaptchaError (never falls through to the cascade) when no callback is discoverable and neither the inject nor the explicit fallback submit produces a confirmed transition", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // No callbackName => callbackDiscovered=false; no capture is ever
+    // written, so the post-inject poll AND the post-fallback-submit re-poll
+    // both find nothing to confirm. Force performance.now() past the
+    // deadline on the first check so the test doesn't pay either widened
+    // (45s) poll's real wall-clock budget.
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    await expect(
+      executeStepWithHealing(
+        baseParams(page, stagehand, {
+          captchaGated: true,
+          advanceTransitionBodyPattern: "type=next",
+        })
+      )
+    ).rejects.toThrow(/no render-config callback could be found/);
+    nowSpy.mockRestore();
+
+    expect(field.value).toBe("solved-token");
+    // The explicit fallback still fires exactly once (hasForm=true) before
+    // the failure is surfaced — the fix doesn't skip the fallback, it just
+    // stops trusting silence as success once the fallback also produces no
+    // confirmed transition.
+    expect(submitCount.n).toBe(1);
+  });
+
+  it("does not throw CaptchaError when no callback is discoverable but no advanceTransitionBodyPattern is configured (nothing to poll, cascade must still run)", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
+    ).catch(() => "cascade-fallthrough" as const);
+
+    // With no pattern configured, no poll ever runs, so the new CaptchaError
+    // guard must stay dormant and this falls through to the normal cascade
+    // (which is expected to eventually fail on this bare fake page/stagehand,
+    // but NOT via a thrown CaptchaError about a missing callback).
+    expect(result).toBe("cascade-fallthrough");
+    expect(field.value).toBe("solved-token");
     expect(submitCount.n).toBe(1);
   });
 

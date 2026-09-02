@@ -135,7 +135,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(field.value).toBe("solved-token-abc");
     expect(field.dispatched).toEqual(["change"]);
     expect(form.submitCount).toBe(0);
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("uses the configured response field name and honors it over the h-captcha default", async () => {
@@ -154,7 +154,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-xyz");
     expect(form.submitCount).toBe(0);
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("creates a missing response field on the form carrying the widget anchor, not an earlier unrelated form", async () => {
@@ -174,7 +174,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(applicationForm.fields[0]?.dispatched).toEqual(["change"]);
     expect(applicationForm.submitCount).toBe(0);
     expect(headerSearchForm.submitCount).toBe(0);
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("reports no-op when there is no form to attach a freshly created field to", async () => {
@@ -182,7 +182,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-orphan");
 
-    expect(result).toEqual({ injected: false, hasForm: false });
+    expect(result).toEqual({ injected: false, hasForm: false, callbackDiscovered: false });
   });
 
   it("injects into an existing field with no enclosing form without attempting to submit", async () => {
@@ -195,7 +195,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-formless");
     expect(field.dispatched).toEqual(["change"]);
-    expect(result).toEqual({ injected: true, hasForm: false });
+    expect(result).toEqual({ injected: true, hasForm: false, callbackDiscovered: false });
   });
 
   it("still lands the token when the set-value evaluate's own return rejects", async () => {
@@ -212,7 +212,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-navigated");
 
     expect(field.value).toBe("solved-token-navigated");
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("invokes the widget's registered data-callback with the token instead of the bare set-value path", async () => {
@@ -241,7 +241,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(calls).toEqual(["solved-token-callback"]);
     expect(field.value).toBe("");
     expect(field.dispatched).toEqual([]);
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 
   it("falls back to the set-value+dispatch-change path when data-callback names no function on window", async () => {
@@ -263,6 +263,6 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(field.value).toBe("solved-token-nocallback");
     expect(field.dispatched).toEqual(["change"]);
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 });

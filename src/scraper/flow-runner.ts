@@ -49,6 +49,7 @@ import {
   SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
   WIDGET_KIT_SELECTION_MARKER_SELECTORS,
 } from "@/scraper/browser-click-expr";
+import { HCAPTCHA_CALLBACK_REGISTRY_GLOBAL } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   fillDeepLocatorCandidate,
@@ -65,6 +66,7 @@ import {
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import {
+  CaptchaError,
   EmailStepExtractError,
   EmailStepInboxUnavailableError,
   type RunHealingFlowResult,
@@ -5043,16 +5045,63 @@ export interface InjectCaptchaTokenResult {
   injected: boolean;
   /** True once a `<form>` was found to submit — either the field's own or the sitekey-anchored form. */
   hasForm: boolean;
+  /**
+   * True once a callback was discoverable — either a `data-callback`
+   * attribute naming a global, or a callback captured from a programmatic
+   * `hcaptcha.render({ callback })` call — and was invoked with the token.
+   * False means neither existed, so the raw field-set fallback ran instead.
+   */
+  callbackDiscovered: boolean;
+}
+
+/**
+ * Shared in-page discovery of the widget's callback, used identically by
+ * `injectCaptchaTokenAndSubmit`'s precheck (to decide the branch) and its
+ * invoke step (to re-resolve and call it) without ever marshalling a
+ * function reference across the evaluate boundary. Checks the declarative
+ * `data-callback` attribute first, then falls back to the registry
+ * `@/scraper/captcha-callback-capture`'s init script populates for sites
+ * that register the callback programmatically via `hcaptcha.render`.
+ */
+function findCaptchaCallbackExprSrc(): string {
+  return `function __findCaptchaCallback(sitekeyEl) {
+    if (!sitekeyEl) return null;
+    const attrName = sitekeyEl.getAttribute("data-callback");
+    if (attrName && typeof window[attrName] === "function") {
+      return { kind: "attribute", invoke: window[attrName] };
+    }
+    const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
+    if (!registry) return null;
+    const sitekey = sitekeyEl.getAttribute("data-sitekey");
+    const widgetId = sitekeyEl.getAttribute("data-hcaptcha-widget-id");
+    const entries = Object.keys(registry)
+      .map(function (key) { return registry[key]; })
+      .filter(function (entry) { return entry.sitekey === sitekey; });
+    const match = widgetId
+      ? entries.find(function (entry) { return String(entry.widgetId) === widgetId; }) ?? entries[0]
+      : entries[0];
+    if (match && typeof match.callback === "function") {
+      return { kind: "captured", invoke: match.callback, widgetId: match.widgetId };
+    }
+    return null;
+  }`;
 }
 
 /**
  * Site-agnostic captcha-solve hand-off: given an already-solved token,
- * discover the widget's registered `data-callback` and invoke it with the
- * token so the site assembles its own submit (its own hidden fields, its own
- * submit path); only when no callback is discoverable does this fall back to
- * setting the hidden response field directly and dispatching the
- * framework-visible `change` event so the field's own value listener
- * observes it.
+ * discover the widget's registered callback — a `data-callback` attribute
+ * naming a `window` global, or (absent that) a callback captured from a
+ * programmatic `hcaptcha.render({ callback })` call — and deliver the token
+ * so the site assembles its own submit (its own hidden fields, its own
+ * submit path). When the captured render config's real `widgetId` is known
+ * and `window.hcaptcha.execute` is available, the preferred delivery is
+ * `hcaptcha.execute(widgetId)`, letting the callback fire as a natural
+ * consequence of hCaptcha's own execute/verify cycle; only when no
+ * widgetId/execute path is available does this fall back to invoking the
+ * captured callback directly. Only when no callback is discoverable at all
+ * does this fall back to setting the hidden response field directly and
+ * dispatching the framework-visible `change` event so the field's own value
+ * listener observes it.
  *
  * Widgets of this shape anchor a `[data-sitekey]` element whose
  * `data-callback` attribute names a function on `window`; that callback (not
@@ -5086,40 +5135,60 @@ export async function injectCaptchaTokenAndSubmit(
   responseField = "h-captcha-response"
 ): Promise<InjectCaptchaTokenResult> {
   const precheckExpr = `(() => {
+    ${findCaptchaCallbackExprSrc()}
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
     const sitekeyEl = document.querySelector("[data-sitekey]");
-    const callbackName = sitekeyEl ? sitekeyEl.getAttribute("data-callback") : null;
-    const callbackExists = Boolean(callbackName) && typeof window[callbackName] === "function";
-    const callback = callbackExists ? callbackName : null;
-    if (field) return { fieldExists: true, hasForm: Boolean(field.closest("form")), callback };
+    const callbackDiscovered = Boolean(__findCaptchaCallback(sitekeyEl));
+    if (field) return { fieldExists: true, hasForm: Boolean(field.closest("form")), callbackDiscovered };
     const forms = Array.from(document.querySelectorAll("form"));
     const form = forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
-    return { fieldExists: false, hasForm: Boolean(form), callback };
+    return { fieldExists: false, hasForm: Boolean(form), callbackDiscovered };
   })()`;
   // Purely a DOM query — reads but never mutates the page, so it cannot
   // itself trigger navigation. This is the only evaluate call in this
   // function whose return value is depended on.
-  const { fieldExists, hasForm, callback } = await target.evaluate<{
+  const { fieldExists, hasForm, callbackDiscovered } = await target.evaluate<{
     fieldExists: boolean;
     hasForm: boolean;
-    callback: string | null;
+    callbackDiscovered: boolean;
   }>(precheckExpr);
   const injected = fieldExists || hasForm;
-  if (!injected) return { injected, hasForm };
+  if (!injected) return { injected, hasForm, callbackDiscovered };
 
-  if (callback) {
+  if (callbackDiscovered) {
     const invokeCallbackExpr = `(() => {
-      const token = ${JSON.stringify(token)};
-      window[${JSON.stringify(callback)}](token);
+      ${findCaptchaCallbackExprSrc()}
+      const sitekeyEl = document.querySelector("[data-sitekey]");
+      const found = __findCaptchaCallback(sitekeyEl);
+      if (!found) return;
+      const canExecute =
+        found.kind === "captured" &&
+        found.widgetId !== undefined &&
+        found.widgetId !== null &&
+        window.hcaptcha &&
+        typeof window.hcaptcha.execute === "function";
+      if (canExecute) {
+        window.hcaptcha.execute(found.widgetId);
+        return;
+      }
+      found.invoke(${JSON.stringify(token)});
     })()`;
-    // Invoking the widget's own callback can navigate the frame synchronously
-    // from within this call (the callback is free to build its own fields and
-    // submit), tearing down the execution context before a return value
-    // marshals — that rejection is the expected outcome, not a real failure,
-    // so it's discarded here rather than depended on.
+    // Invoking the widget's own callback (or, when the widget's real
+    // `widgetId` is known from a captured `hcaptcha.render` call, triggering
+    // `hcaptcha.execute(widgetId)` so the callback fires as a consequence of
+    // hCaptcha's own execute/verify cycle rather than a bypassed direct call)
+    // can navigate the frame synchronously from within this call (the
+    // callback is free to build its own fields and submit), tearing down the
+    // execution context before a return value marshals — that rejection is
+    // the expected outcome, not a real failure, so it's discarded here rather
+    // than depended on. Re-resolving the callback here (rather than passing a
+    // reference from the precheck) is required for the captured-callback
+    // case: it's an anonymous closure living in the registry, not a named
+    // `window` global, so it cannot be marshalled back from the precheck's
+    // evaluate call.
     await target.evaluate(invokeCallbackExpr).catch(() => undefined);
-    return { injected, hasForm };
+    return { injected, hasForm, callbackDiscovered };
   }
 
   const setValueExpr = `(() => {
@@ -5163,7 +5232,7 @@ export async function injectCaptchaTokenAndSubmit(
   // not a real failure, so it's discarded here rather than depended on.
   await target.evaluate(dispatchChangeExpr).catch(() => undefined);
 
-  return { injected, hasForm };
+  return { injected, hasForm, callbackDiscovered };
 }
 
 /**
@@ -8783,7 +8852,7 @@ export async function executeStepWithHealing(params: {
       const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
       const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm}`
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered}`
       );
       // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
       // poll loop), just with a widened budget so the solve+submit round trip
@@ -8812,10 +8881,36 @@ export async function executeStepWithHealing(params: {
       // a form the widget's own callback already advanced.
       if (!confirmed && injectResult.hasForm) {
         await submitCaptchaGatedForm(captchaTarget);
+        if (advanceTransitionBodyPattern) {
+          confirmed = await waitForTransitionBody({
+            page,
+            preIdx: preCaptchaCaptureIdx,
+            advanceTransitionBodyPattern,
+            timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+            intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+          });
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-fallback-submit transition poll confirmed=${confirmed}`
+          );
+        }
       }
       if (confirmed) {
         trajectory?.push({ stepIndex, verifiedBy: "network" });
         return "completed";
+      }
+      // No render-config callback was discoverable AND neither the inject's
+      // own submit path nor the explicit fallback submit produced a
+      // confirmed transition: the token was never actually delivered
+      // through the site's own submit machinery. Fail loudly instead of
+      // falling through to the normal cascade as if the solve had worked —
+      // that's exactly the misleading "token injected=true" silent no-op
+      // this hook must not produce. Only applies when a pattern is actually
+      // configured to poll for — with none configured, no poll ever ran, so
+      // there's nothing here to contradict the normal cascade/verifier.
+      if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
+        throw new CaptchaError(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
+        );
       }
     }
   }

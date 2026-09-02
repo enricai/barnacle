@@ -1,6 +1,7 @@
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 
+import { HCAPTCHA_CALLBACK_REGISTRY_GLOBAL } from "@/scraper/captcha-callback-capture";
 import { injectCaptchaTokenAndSubmit } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 
@@ -67,7 +68,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(field.value).toBe("solved-token-abc");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("creates a hidden response field on the form carrying the sitekey anchor without submitting it", async () => {
@@ -103,7 +104,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(field.parentElement.id).toBe("application");
     expect(applicationSubmitSpy).not.toHaveBeenCalled();
     expect(headerSubmitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("honors a configured response field name over the h-captcha default", async () => {
@@ -131,7 +132,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     };
     expect(field.value).toBe("solved-token-xyz");
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
   it("reports no-op when there is no form to attach a freshly created field to", async () => {
@@ -140,7 +141,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-orphan");
 
-    expect(result).toEqual({ injected: false, hasForm: false });
+    expect(result).toEqual({ injected: false, hasForm: false, callbackDiscovered: false });
   });
 
   it("resolves with injected: true even when the value-set evaluate rejects because assigning the field navigated and tore down the execution context", async () => {
@@ -168,6 +169,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     await expect(injectCaptchaTokenAndSubmit(target, "solved-token-abc")).resolves.toEqual({
       injected: true,
       hasForm: true,
+      callbackDiscovered: false,
     });
     expect(target.evaluate).toHaveBeenCalledTimes(3);
   });
@@ -206,6 +208,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     await expect(injectCaptchaTokenAndSubmit(target, "solved-token-abc")).resolves.toEqual({
       injected: true,
       hasForm: true,
+      callbackDiscovered: false,
     });
     expect(field.value).toBe("solved-token-abc");
     expect(submitSpy).not.toHaveBeenCalled();
@@ -246,7 +249,99 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(extraField).not.toBeNull();
     expect(extraField.value).toBe("solved-token-callback");
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
+  });
+
+  it("invokes a callback captured from a programmatic hcaptcha.render({ callback }) call when no data-callback attribute exists", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+      appendChild: (node: unknown) => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    const capturedCallback = (token: string): void => {
+      const extraField = document.createElement("input");
+      extraField.type = "hidden";
+      extraField.name = "extra-companion-field";
+      extraField.value = token;
+      form.appendChild(extraField);
+    };
+    (window as unknown as Record<string, unknown>)[HCAPTCHA_CALLBACK_REGISTRY_GLOBAL] = {
+      "fake-sitekey::1": { sitekey: "fake-sitekey", widgetId: 1, callback: capturedCallback },
+    };
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-captured");
+
+    const extraField = document.querySelector('[name="extra-companion-field"]') as unknown as {
+      value: string;
+    };
+    expect(extraField).not.toBeNull();
+    expect(extraField.value).toBe("solved-token-captured");
+    expect(submitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
+  });
+
+  it("prefers hcaptcha.execute(widgetId) over the bare captured callback when the real widgetId and execute are both known", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+      appendChild: (node: unknown) => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    const directInvoke = vi.fn();
+    const capturedCallback = (token: string): void => {
+      directInvoke(token);
+      const extraField = document.createElement("input");
+      extraField.type = "hidden";
+      extraField.name = "extra-companion-field";
+      extraField.value = token;
+      form.appendChild(extraField);
+    };
+    (window as unknown as Record<string, unknown>)[HCAPTCHA_CALLBACK_REGISTRY_GLOBAL] = {
+      "fake-sitekey::7": { sitekey: "fake-sitekey", widgetId: 7, callback: capturedCallback },
+    };
+
+    // Mirrors hCaptcha's own execute/verify cycle: execute() is what actually
+    // resolves and invokes the widget's registered callback, so a code path
+    // that bypasses execute() and calls the captured callback directly would
+    // never touch this mock at all.
+    const execute = vi.fn().mockImplementation((widgetId: number) => {
+      capturedCallback(`verified-via-execute-${widgetId}`);
+    });
+    (window as unknown as Record<string, unknown>).hcaptcha = { execute };
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-captured");
+
+    expect(execute).toHaveBeenCalledWith(7);
+    expect(directInvoke).toHaveBeenCalledWith("verified-via-execute-7");
+    const extraField = document.querySelector('[name="extra-companion-field"]') as unknown as {
+      value: string;
+    };
+    expect(extraField.value).toBe("verified-via-execute-7");
+    expect(submitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 
   it("falls back to the set-value+dispatch-change path when no data-callback is discoverable", async () => {
@@ -278,6 +373,38 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(field.value).toBe("solved-token-nocallback");
     expect(changeListener).toHaveBeenCalledTimes(1);
     expect(submitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ injected: true, hasForm: true });
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
+  });
+
+  it("distinguishes callbackDiscovered: false from the success shape when neither a data-callback attribute nor a matching render-config entry exists", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    // A registry that exists (a render call happened elsewhere on the page)
+    // but has no entry for this widget's sitekey — the discovery walk must
+    // still report false rather than mistaking "registry present" for
+    // "callback found".
+    (window as unknown as Record<string, unknown>)[HCAPTCHA_CALLBACK_REGISTRY_GLOBAL] = {
+      "other-sitekey::7": { sitekey: "other-sitekey", widgetId: 7, callback: vi.fn() },
+    };
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-no-match");
+
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
+    expect(result).not.toMatchObject({ callbackDiscovered: true });
+    expect(submitSpy).not.toHaveBeenCalled();
   });
 });

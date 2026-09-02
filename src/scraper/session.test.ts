@@ -9,6 +9,7 @@
 import { Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { HCAPTCHA_CALLBACK_REGISTRY_GLOBAL } from "@/scraper/captcha-callback-capture";
 import { createBrowserSession } from "@/scraper/session";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
@@ -59,7 +60,7 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.init = vi.fn().mockResolvedValue(undefined);
     this.close = vi.fn().mockResolvedValue(undefined);
     this.browserbaseSessionID = "bb-session-id";
-    this.context = { conn: fakeConn };
+    this.context = { conn: fakeConn, addInitScript: vi.fn().mockResolvedValue(undefined) };
   }),
 }));
 
@@ -162,6 +163,22 @@ describe("scraper/session router", () => {
     configRef.value.scraper.provider = "steel";
     const session = await createBrowserSession({ provider: "steel" });
     expect(session.provider).toBe("steel");
+  });
+
+  it("installs the hCaptcha callback-capture init script on the browserbase provider", async () => {
+    configRef.value.scraper.provider = "browserbase";
+    const session = await createBrowserSession();
+    const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
+    expect(addInitScript).toHaveBeenCalledTimes(1);
+    expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+  });
+
+  it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
+    configRef.value.scraper.provider = "steel";
+    const session = await createBrowserSession();
+    const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
+    expect(addInitScript).toHaveBeenCalledTimes(1);
+    expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
   });
 });
 
