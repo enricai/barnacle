@@ -258,6 +258,33 @@ describe("flow-runner/executeStepWithHealing — emailStep hook", () => {
     );
   });
 
+  it("never logs the spliced code when it falls through into sibling select/checkbox/radio/prompt-selector primitives", async () => {
+    pollTestmailInboxMock.mockResolvedValue(makeMessage({ text: "Your code is 837465" }));
+    const page = makeFakePage();
+    const stagehand = {} as Stagehand;
+
+    await executeStepWithHealing(
+      baseParams(page, stagehand, {
+        emailStep: true,
+        allocatedInbox: inbox,
+        emailStepConfig: { extract: "code" },
+        // No "select"/"check"/"radio" verb — matches parseFillStep only, so
+        // the prompt-selector primitive's own re-parse picks the spliced
+        // code up directly as its `option` (parsedFill.value).
+        step: "Fill in the verification code field with 'placeholder'",
+      })
+    ).catch(() => {
+      // Cascade fallthrough on this bare fake page eventually fails past
+      // every primitive; only that none of them logged the code is under test.
+    });
+
+    for (const mockFn of [testLogger.info, testLogger.warn, testLogger.error, testLogger.debug]) {
+      for (const call of (mockFn as ReturnType<typeof vi.fn>).mock.calls) {
+        expect(String(call[0])).not.toContain("837465");
+      }
+    }
+  });
+
   it("falls through untouched (no inbox poll) when emailStep is unset", async () => {
     const page = makeFakePage();
     const stagehand = {} as Stagehand;

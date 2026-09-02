@@ -5255,12 +5255,14 @@ async function trySelectPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find the target select — the one whose
   // nearby text matches the question label (or, when no label, any select).
   // Try a deterministic option match first; if it hits, apply immediately (no
@@ -5645,12 +5647,14 @@ async function tryCheckboxPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
   // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
   // checkboxes. Question label = the group's legend / associated label; each
@@ -6013,12 +6017,14 @@ async function tryRadioPrimitive(params: {
   captureFn?: JudgeCaptureFn;
   // Returns the selected radio's DOM id on success (empty string if none), or
   // null when unhandled. See trySelectPrimitive for the id-as-targetId rationale.
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseRadioStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
   // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
   // container with radios. Question label = the group's legend / associated label; each option
@@ -6326,8 +6332,10 @@ async function tryPromptSelectorPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   // A prompt-selector widget's search box renders a real <input>, so flow/
   // replan generation routinely describes filling it as a FILL step ("Fill in
   // the 'How Did You Hear About Us?' field with 'Internet/Online'") rather
@@ -6360,7 +6368,7 @@ async function tryPromptSelectorPrimitive(params: {
           : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -8096,6 +8104,18 @@ function spliceEmailStepFillValue(step: string, code: string): string {
     : `${step} with '${code}'`;
 }
 
+/**
+ * Masks `text` when it equals `sensitiveValue` (the emailStep-extracted code
+ * spliced into the step's fill value, see {@link spliceEmailStepFillValue}).
+ * The select/checkbox/radio/prompt-selector primitives all re-parse the
+ * (possibly code-bearing) instruction independently of the fill primitive,
+ * so each one's own "option"/diagnostic logging must redact it too — the
+ * code is a single-use credential and must never reach the logs verbatim.
+ */
+function redactIfSensitive(text: string, sensitiveValue?: string): string {
+  return sensitiveValue && text === sensitiveValue ? "[redacted]" : text;
+}
+
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -8349,6 +8369,11 @@ export async function executeStepWithHealing(params: {
   // pre-existing fill cascade downstream picks it up as the value to type
   // without re-running Stagehand's act/observe resolution a second time.
   let step = params.step;
+  // Set only by the emailStep code-extract path below. Threaded into every
+  // select/checkbox/radio/prompt-selector primitive call further down so
+  // each one's own re-parse of `step` (now code-bearing) redacts the code
+  // out of its diagnostic logging too, not just the fill primitive's.
+  let emailStepCode: string | undefined;
   // Mutable (not the destructured const above) so a lost frame-attach race
   // can be upgraded in place once the OOPIF attaches later in the cascade —
   // see reresolveFrameTargetIfLost below. Every existing reference in this
@@ -8454,6 +8479,7 @@ export async function executeStepWithHealing(params: {
     logger.info(
       `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
     );
+    emailStepCode = code;
     step = spliceEmailStepFillValue(step, code);
   }
   /**
@@ -8562,6 +8588,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (selectTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
@@ -8581,6 +8608,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (checkboxTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
@@ -8601,6 +8629,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (radioTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
@@ -8626,6 +8655,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (promptSelectorTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by prompt-selector primitive`);
