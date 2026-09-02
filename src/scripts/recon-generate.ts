@@ -5926,9 +5926,7 @@ export function applyDrillParamBindings(
     const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
     const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
-    return acc.replace(paramRx, (full, prefix: string, value: string) =>
-      value.startsWith("${") ? full : `${prefix}${accessor}`
-    );
+    return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
   }, text);
 }
 
