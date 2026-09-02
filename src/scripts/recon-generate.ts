@@ -9009,17 +9009,6 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     env = process.env,
   } = opts;
-  // A config-only manifest has no testmail inbox allocation path (see
-  // buildConfigPlugin's own emailStep rejection in src/plugins/config-plugin.ts)
-  // — silently dropping the flag here would emit a manifest that loads
-  // successfully but LLM-acts blind on the step, reproducing the exact
-  // symptom this generator exists to prevent. Fail loud at generation time
-  // instead of at plugin-load time.
-  if (flowSteps.some((step) => typeof step !== "string" && step.emailStep === true)) {
-    throw new Error(
-      `site "${siteId}": emailStep is not supported in config-only manifests (no testmail inbox allocation path); use a module plugin (--emit module) instead`
-    );
-  }
   const payloadFieldNames = new Set<string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
 
@@ -9037,8 +9026,16 @@ export function emitConfigManifest(opts: {
       const optional = isObj ? step.optional === true : false;
       const upload = isObj ? step.upload === true : false;
       const submitStep = isObj ? step.submitStep === true : false;
-      if (!optional && !upload && !submitStep) return rewritten;
-      return { step: rewritten, optional, upload, submitStep };
+      const emailStep = isObj ? step.emailStep === true : false;
+      const emailStepConfig = isObj ? step.emailStepConfig : undefined;
+      if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+      return {
+        step: rewritten,
+        optional,
+        upload,
+        submitStep,
+        ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+      };
     }
     const field = resolveStepPayloadField(
       instruction,
@@ -9052,8 +9049,16 @@ export function emitConfigManifest(opts: {
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
-    if (!optional && !upload && !submitStep) return rewritten;
-    return { step: rewritten, optional, upload, submitStep };
+    const emailStep = isObj ? step.emailStep === true : false;
+    const emailStepConfig = isObj ? step.emailStepConfig : undefined;
+    if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+    return {
+      step: rewritten,
+      optional,
+      upload,
+      submitStep,
+      ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+    };
   });
 
   // The last step of a submission flow is structurally the submit — force

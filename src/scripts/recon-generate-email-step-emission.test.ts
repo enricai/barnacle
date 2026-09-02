@@ -64,19 +64,32 @@ describe("emitBrowserFlowTs — emailStep emission", () => {
     expect(code).not.toContain("payload.Confirmation");
   });
 
-  it("emitConfigManifest rejects an emailStep:true step instead of silently dropping the flag (mirrors buildConfigPlugin's runtime guard)", () => {
-    expect(() =>
-      emitConfigManifest({
-        siteId: "recon-site-4",
-        baseUrl: "https://careers.example.org",
-        flowSteps: [
-          {
-            step: "Click the verification link sent to your email",
-            emailStep: true,
-            emailStepConfig: { extract: "link" },
-          },
-        ],
-      })
-    ).toThrow(/emailStep is not supported in config-only manifests/);
+  it("emitConfigManifest carries an emailStep:true step's emailStep/emailStepConfig verbatim into spec.flow.steps (mirrors buildConfigPlugin's runtime support)", () => {
+    const json = emitConfigManifest({
+      siteId: "recon-site-4",
+      baseUrl: "https://careers.example.org",
+      isSubmissionFlow: true,
+      flowSteps: [
+        "Fill in the application form",
+        {
+          step: "Click the verification link sent to your email",
+          emailStep: true,
+          emailStepConfig: { subjectContains: "Verify your email", extract: "link" },
+        },
+        { step: "Click the Submit button", submitStep: true },
+      ],
+    });
+    const manifest = JSON.parse(json);
+    const emailStepEntry = manifest.spec.flow.steps.find(
+      (step: unknown) =>
+        typeof step === "object" &&
+        step !== null &&
+        (step as { emailStep?: boolean }).emailStep === true
+    );
+
+    expect(emailStepEntry).toMatchObject({
+      emailStep: true,
+      emailStepConfig: { subjectContains: "Verify your email", extract: "link" },
+    });
   });
 });
