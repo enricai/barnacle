@@ -29,6 +29,7 @@ describe("applyDrillParamBindings", () => {
     });
     const result = applyDrillParamBindings(spec, capture, SAILINGS_URL);
     expect(result).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${payload.adults ?? 2}&children=${payload.children ?? 0}"
     );
   });
@@ -69,6 +70,7 @@ describe("applyDrillParamBindings", () => {
     expect(applyDrillParamBindings(null, capture, SAILINGS_URL)).toBe(SAILINGS_URL);
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder in the test description, not a template
   it("leaves a param already rewritten to a ${...} accessor by the threading pass alone", () => {
     const spec = buildSpec();
     const capture = buildCapture({
@@ -78,8 +80,10 @@ describe("applyDrillParamBindings", () => {
       timestamp: "2024-11-01T00:00:00Z",
     });
     const alreadyThreaded =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=0";
     expect(applyDrillParamBindings(spec, capture, alreadyThreaded)).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=${payload.children ?? 0}"
     );
   });
@@ -102,6 +106,7 @@ describe("applyDrillParamBindings", () => {
       timestamp: "2024-11-01T00:00:00Z",
     });
     expect(applyDrillParamBindings(spec, capture, url)).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       'https://api.example.com/itinerary/api/v1/sailings?filterXtype=unrelated&filter.type=${payload.filterType ?? "cabin"}'
     );
   });

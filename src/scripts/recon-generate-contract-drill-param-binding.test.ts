@@ -103,6 +103,7 @@ describe("emitContractTs — drillParamBindings wired into its own fold paramete
 
     const contract = buildContract(actionSteps);
 
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain('region=${payload.region ?? "unset"}');
     expect(contract).not.toContain("region=us");
     expect(contract).not.toContain("region=eu");

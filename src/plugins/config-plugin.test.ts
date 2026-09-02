@@ -348,7 +348,9 @@ describe("buildConfigPlugin", () => {
       properties: { FirstName: { type: "string" } },
     };
 
-    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/emailStep requires an "Email" field/);
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(
+      /emailStep requires an "Email" field/
+    );
   });
 });
 

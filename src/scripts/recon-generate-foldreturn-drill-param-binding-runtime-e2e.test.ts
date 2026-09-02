@@ -86,6 +86,7 @@ describe("recon-generate — drillParamBindings wired into emitMultiStepExecuteH
   it("emits the payload accessor (with default) for a bound drill param instead of the frozen literal", () => {
     const body = emitBody(BOUND_SPEC);
 
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(body).toContain("qty=${payload.quantity ?? 5}");
     expect(body).not.toContain("qty=0");
   });
@@ -97,6 +98,7 @@ describe("recon-generate — drillParamBindings wired into emitMultiStepExecuteH
     expect(unbound).toContain("qty=0");
     expect(unbound).not.toContain("${payload.quantity");
     expect(unbound.split("qty=0").join("qty=X")).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       bound.split("qty=${payload.quantity ?? 5}").join("qty=X")
     );
   });

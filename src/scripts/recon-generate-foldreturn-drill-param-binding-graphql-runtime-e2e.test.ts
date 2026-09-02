@@ -192,12 +192,14 @@ function buildContract(
 }
 
 describe("declared drillParamBindings on the GraphQL single-primary fold path — emission and runtime e2e", () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder in the test description, not a template
   it("emits the bound `${payload.<field> ?? <default>}` accessor into the drill URL instead of freezing the captured literal", () => {
     const { executeHttpBody } = buildContract(
       JOB_OPENINGS_SPEC_WITH_BINDING,
       "JobOpeningsBoundFoldTest"
     );
 
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(executeHttpBody).toContain("${payload.radius ?? 10}");
     expect(executeHttpBody).not.toContain("radius=10");
   });
