@@ -81,6 +81,7 @@ import {
 } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
+import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
@@ -11218,6 +11219,52 @@ export interface HealingFlowStep {
   emailStep?: boolean;
   /** Config for an `emailStep`. Ignored unless {@link emailStep} is true. */
   emailStepConfig?: EmailStepConfig;
+  /**
+   * Opts this step into {@link executeNavigateStep} instead of the
+   * self-heal cascade: a direct `page.goto` to this URL, gated by
+   * {@link waitForSpaReady}, for multi-page capture flows that need to
+   * change pages rather than act on the current one. Undefined (default)
+   * preserves today's behavior — every step runs through
+   * `executeStepWithHealing`.
+   */
+  navigateTo?: string;
+}
+
+/**
+ * Navigates `page` directly to `url` and waits for the SPA to hydrate,
+ * bypassing the self-heal cascade entirely — a multi-page capture flow's
+ * page transitions are a known URL, not an element to locate and click, so
+ * there is nothing for the cascade's DOM-healing attempts to add. Matches
+ * {@link executeStepWithHealing}'s `"completed"|"skipped"` outcome contract
+ * so `runHealingFlow`'s step loop (stuck-detection, `submitStep` gating,
+ * trajectory) needs zero changes to also handle navigate steps.
+ */
+export async function executeNavigateStep(params: {
+  page: Page;
+  url: string;
+  optional: boolean;
+  logger: Logger;
+  waitUntil?: "load" | "domcontentloaded" | "networkidle";
+  timeoutMs?: number;
+}): Promise<"completed" | "skipped"> {
+  const { page, url, optional, logger: log, waitUntil, timeoutMs } = params;
+  try {
+    await page.goto(url, {
+      waitUntil: waitUntil ?? "domcontentloaded",
+      timeoutMs: timeoutMs ?? GOTO_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (optional) {
+      log.warn(`navigate step: goto failed for optional step, skipping: ${toErrorMessage(err)}`);
+      return "skipped";
+    }
+    throw new StepVerificationError(
+      `navigate step failed: goto to ${url} threw: ${toErrorMessage(err)}`,
+      "navigate-failed"
+    );
+  }
+  await waitForSpaReady(page, log);
+  return "completed";
 }
 
 /**
@@ -11372,48 +11419,61 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
-      // Resolved fresh per step (not cached across the run) so a cross-origin
-      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
-      // wizard embedded later in the DOM) is picked up as soon as it's
-      // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
-      // falls back to the main-frame target when `frameSelector` is null/unresolvable,
-      // so this is a no-op for every flow that doesn't declare one.
-      const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
-      await waitForChildFrameReady(frameTarget);
-      const stepPromise = executeStepWithHealing({
-        stagehand,
-        page,
-        step: s.instruction,
-        optional: s.optional,
-        upload: s.upload,
-        submitStep: s.submitStep,
-        captchaGated: s.captchaGated === true,
-        emailStep: s.emailStep === true,
-        emailStepConfig: s.emailStepConfig,
-        allocatedInbox: deps.allocatedInbox ?? null,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        stepIndex: i,
-        totalSteps: () => steps.length,
-        phase: "flow",
-        signalCounter,
-        recentCaptures,
-        recentCaptureMeta,
-        anthropic,
-        rephraseModel,
-        logger,
-        uploadFixture,
-        frameTarget,
-        isFinalStep: i === steps.length - 1,
-        submitEndpointPattern: deps.submitEndpointPattern ?? null,
-        submittedStateSelectors: deps.submittedStateSelectors ?? [],
-        requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-        advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
-        successUrlFragments: deps.successUrlFragments ?? [],
-        successPageTitleHints: deps.successPageTitleHints ?? [],
-        ownBackendHostnames: deps.ownBackendHostnames ?? [],
-        knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
-        wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      });
+      // A navigateTo step is a direct page.goto, not an act/observe against
+      // the current DOM, so it has no target frame to resolve and skips
+      // straight to executeNavigateStep instead of the self-heal cascade.
+      let stepPromise: Promise<"completed" | "skipped">;
+      if (s.navigateTo !== undefined) {
+        stepPromise = executeNavigateStep({
+          page,
+          url: s.navigateTo,
+          optional: s.optional,
+          logger,
+        });
+      } else {
+        // Resolved fresh per step (not cached across the run) so a cross-origin
+        // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+        // wizard embedded later in the DOM) is picked up as soon as it's
+        // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
+        // falls back to the main-frame target when `frameSelector` is null/unresolvable,
+        // so this is a no-op for every flow that doesn't declare one.
+        const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+        await waitForChildFrameReady(frameTarget);
+        stepPromise = executeStepWithHealing({
+          stagehand,
+          page,
+          step: s.instruction,
+          optional: s.optional,
+          upload: s.upload,
+          submitStep: s.submitStep,
+          captchaGated: s.captchaGated === true,
+          emailStep: s.emailStep === true,
+          emailStepConfig: s.emailStepConfig,
+          allocatedInbox: deps.allocatedInbox ?? null,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          stepIndex: i,
+          totalSteps: () => steps.length,
+          phase: "flow",
+          signalCounter,
+          recentCaptures,
+          recentCaptureMeta,
+          anthropic,
+          rephraseModel,
+          logger,
+          uploadFixture,
+          frameTarget,
+          isFinalStep: i === steps.length - 1,
+          submitEndpointPattern: deps.submitEndpointPattern ?? null,
+          submittedStateSelectors: deps.submittedStateSelectors ?? [],
+          requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+          advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
+          successUrlFragments: deps.successUrlFragments ?? [],
+          successPageTitleHints: deps.successPageTitleHints ?? [],
+          ownBackendHostnames: deps.ownBackendHostnames ?? [],
+          knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
+          wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
+        });
+      }
       const outcome = deps.deathSignal
         ? await raceAgainstTeardown(stepPromise, deps.deathSignal)
         : await stepPromise;
