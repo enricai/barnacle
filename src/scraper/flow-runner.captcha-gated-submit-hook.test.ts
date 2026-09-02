@@ -70,6 +70,9 @@ function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
     if (src.includes("hasForm")) {
       return { injected: true, hasForm: true, callbackDiscovered: Boolean(opts.callbackName) };
     }
+    if (src.includes("Object.keys(registry)")) {
+      return opts.callbackName ? "populated" : "absent";
+    }
     if (src.includes("window[")) {
       callbackInvokedWith.token = "solved-token";
       return undefined;
@@ -196,6 +199,47 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
+  it("logs registryState=absent vs registryState=empty depending on whether the callback-capture registry global exists on the captcha target", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page: absentPage } = makeFakePage({ hasSitekey: true });
+    const stagehand = {} as Stagehand;
+
+    await executeStepWithHealing(
+      baseParams(absentPage, stagehand, {
+        captchaGated: true,
+        advanceTransitionBodyPattern: null,
+      })
+    );
+
+    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=absent"));
+
+    testLogger.info.mockClear();
+    const { page: emptyPage } = makeFakePage({ hasSitekey: true });
+    (emptyPage.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("Object.keys(registry)")) return "empty";
+      if (src.includes("hasForm")) return { injected: true, hasForm: true, callbackDiscovered: false };
+      if (src.includes("dispatchEvent")) return undefined;
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+
+    await executeStepWithHealing(
+      baseParams(emptyPage, stagehand, {
+        captchaGated: true,
+        advanceTransitionBodyPattern: null,
+      })
+    );
+
+    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=empty"));
+  });
+
   it("invokes a discoverable widget callback with the solved token instead of the set-value fallback, and never fires the explicit submit when the transition poll confirms via that path", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount, callbackInvokedWith } = makeFakePage({
@@ -277,6 +321,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
       if (src.includes("getAttribute")) {
         return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
       }
+      if (src.includes("Object.keys(registry)")) return "absent";
       if (src === "navigator.userAgent") return "test-agent/1.0";
       if (src.includes("outerHTML")) return { html: 0, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;
@@ -312,6 +357,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
       if (src.includes("hasForm")) {
         return { injected: true, hasForm: true };
       }
+      if (src.includes("Object.keys(registry)")) return "absent";
       if (src.includes("getAttribute")) {
         return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
       }

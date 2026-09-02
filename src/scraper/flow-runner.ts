@@ -8853,8 +8853,15 @@ export async function executeStepWithHealing(params: {
       });
       const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
       const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+      const registryState = await captchaTarget.evaluate<"absent" | "empty" | "populated">(
+        `(() => {
+          const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
+          if (!registry) return "absent";
+          return Object.keys(registry).length === 0 ? "empty" : "populated";
+        })()`
+      );
       logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered}`
+        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
       );
       // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
       // poll loop), just with a widened budget so the solve+submit round trip
