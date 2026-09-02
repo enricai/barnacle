@@ -2421,3 +2421,37 @@ export function buildMulticallSingleShotSearchDrillDownConstantParamCoincidentVa
     }),
   ];
 }
+
+/**
+ * A single-shot sibling of
+ * {@link buildMulticallSingleShotSearchDrillDownConstantParamCoincidentValueActionSteps}
+ * with only ONE drill capture of the quote endpoint (not two): the search
+ * response's sole item carries an unrelated `discount: 0` field, and that
+ * item's own drill request carries a bound `qty=0` query param — the same
+ * literal. With a second same-endpoint capture, {@link
+ * collectRequestStringValues}'s `varies()` gate can exclude a param whose
+ * value never differs across sibling captures; with only one capture,
+ * `sameEndpointCaptures.length === 0` and `varies()` defaults to `true`,
+ * letting the literal `0` into the coincidence-threading candidate set and
+ * actually reproducing the reported bug (matching `qty`'s literal against
+ * the primary's `discount` field purely by value equality, ahead of the
+ * declared `drillParamBindings` override).
+ */
+export function buildMulticallSingleShotSearchDrillDownBoundConstantParamCoincidentValueActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ itemId: "i1", discount: 0 }],
+      },
+      timestamp: "2025-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ITEM_QUOTE_URL}?itemId=i1&qty=0`,
+      requestPostData: null,
+      responseBody: { quotes: [{ itemId: "i1", price: 9.99 }] },
+      timestamp: "2025-08-01T00:00:01Z",
+    }),
+  ];
+}
