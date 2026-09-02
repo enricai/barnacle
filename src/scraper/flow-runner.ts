@@ -81,6 +81,7 @@ import {
 } from "@/scraper/frame-target";
 import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
+import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
@@ -11218,6 +11219,52 @@ export interface HealingFlowStep {
   emailStep?: boolean;
   /** Config for an `emailStep`. Ignored unless {@link emailStep} is true. */
   emailStepConfig?: EmailStepConfig;
+  /**
+   * Opts this step into {@link executeNavigateStep} instead of the
+   * self-heal cascade: a direct `page.goto` to this URL, gated by
+   * {@link waitForSpaReady}, for multi-page capture flows that need to
+   * change pages rather than act on the current one. Undefined (default)
+   * preserves today's behavior — every step runs through
+   * `executeStepWithHealing`.
+   */
+  navigateTo?: string;
+}
+
+/**
+ * Navigates `page` directly to `url` and waits for the SPA to hydrate,
+ * bypassing the self-heal cascade entirely — a multi-page capture flow's
+ * page transitions are a known URL, not an element to locate and click, so
+ * there is nothing for the cascade's DOM-healing attempts to add. Matches
+ * {@link executeStepWithHealing}'s `"completed"|"skipped"` outcome contract
+ * so `runHealingFlow`'s step loop (stuck-detection, `submitStep` gating,
+ * trajectory) needs zero changes to also handle navigate steps.
+ */
+export async function executeNavigateStep(params: {
+  page: Page;
+  url: string;
+  optional: boolean;
+  logger: Logger;
+  waitUntil?: "load" | "domcontentloaded" | "networkidle";
+  timeoutMs?: number;
+}): Promise<"completed" | "skipped"> {
+  const { page, url, optional, logger: log, waitUntil, timeoutMs } = params;
+  try {
+    await page.goto(url, {
+      waitUntil: waitUntil ?? "domcontentloaded",
+      timeoutMs: timeoutMs ?? GOTO_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (optional) {
+      log.warn(`navigate step: goto failed for optional step, skipping: ${toErrorMessage(err)}`);
+      return "skipped";
+    }
+    throw new StepVerificationError(
+      `navigate step failed: goto to ${url} threw: ${toErrorMessage(err)}`,
+      "navigate-failed"
+    );
+  }
+  await waitForSpaReady(page, log);
+  return "completed";
 }
 
 /**
@@ -11283,71 +11330,6 @@ export interface RunHealingFlowDeps {
    * {@link EmailStepInboxUnavailableError} for such a step.
    */
   allocatedInbox?: TestmailInbox | null;
-}
-
-/** SPA-readiness gate defaults — match the recon CLI's post-navigation wait. */
-const SPA_READINESS_TIMEOUT_MS = 15_000;
-const SPA_READINESS_POLL_MS = 500;
-const SPA_MIN_BODY_LENGTH = 5_000;
-
-/**
- * Block until a just-navigated SPA has actually hydrated, so the flow does not
- * begin stepping against a shell page. `page.goto(..., "networkidle")` on a
- * bot-managed/CDN-fronted single-page app resolves during the challenge/redirect —
- * before the client framework renders the real DOM — so the first steps would
- * otherwise probe an empty page, find no candidates, and (being optional) skip
- * the entire flow. The recon CLI has this gate inline; generated plugins call it
- * here so they inherit the same behavior. Polls `document.body.outerHTML.length`
- * up to a threshold, then proceeds regardless (best-effort, never throws).
- *
- * Each `document.body.outerHTML.length` read is itself bounded by a watchdog
- * (capped to one poll interval) and treated as "still 0 chars" on timeout —
- * same pattern as `waitForChildFrameReady`'s `isReady()` probe. Without this,
- * a single wedged CDP round-trip inside `readBodyLength` would pend forever
- * and the `while (Date.now() < deadline)` loop below would never be
- * re-entered, defeating the very deadline it exists to enforce.
- * `page.waitForTimeout(pollMs)` is left unguarded: it is a plain delay (no
- * DOM/network read whose response can be lost), so it does not carry the
- * "wedged read" failure mode this fix targets.
- */
-export async function waitForSpaReady(
-  page: Page,
-  logger: Logger,
-  opts: { timeoutMs?: number; pollMs?: number; minBodyLength?: number } = {}
-): Promise<void> {
-  const timeoutMs = opts.timeoutMs ?? SPA_READINESS_TIMEOUT_MS;
-  const pollMs = opts.pollMs ?? SPA_READINESS_POLL_MS;
-  const minBodyLength = opts.minBodyLength ?? SPA_MIN_BODY_LENGTH;
-  const bodyLengthExpr = "document.body ? document.body.outerHTML.length : 0";
-
-  const readBodyLength = async (): Promise<number> => {
-    const raw = await withWatchdog(() => page.evaluate(bodyLengthExpr), {
-      timeoutMs: pollMs,
-      label: "flow-runner: spa readiness body-length probe",
-    }).catch(() => 0);
-    return typeof raw === "number" ? raw : 0;
-  };
-
-  let bodyLength = await readBodyLength();
-  if (bodyLength >= minBodyLength) {
-    return;
-  }
-
-  logger.info(
-    `spa readiness: body ${bodyLength} chars < ${minBodyLength} threshold — waiting for SPA to render`
-  );
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(pollMs);
-    bodyLength = await readBodyLength();
-    if (bodyLength >= minBodyLength) {
-      logger.info(`spa readiness: body grew to ${bodyLength} chars — SPA rendered`);
-      return;
-    }
-  }
-  logger.warn(
-    `spa readiness: body still ${bodyLength} chars after ${timeoutMs}ms — proceeding with possibly incomplete page`
-  );
 }
 
 /**
@@ -11437,48 +11419,61 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
-      // Resolved fresh per step (not cached across the run) so a cross-origin
-      // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
-      // wizard embedded later in the DOM) is picked up as soon as it's
-      // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
-      // falls back to the main-frame target when `frameSelector` is null/unresolvable,
-      // so this is a no-op for every flow that doesn't declare one.
-      const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
-      await waitForChildFrameReady(frameTarget);
-      const stepPromise = executeStepWithHealing({
-        stagehand,
-        page,
-        step: s.instruction,
-        optional: s.optional,
-        upload: s.upload,
-        submitStep: s.submitStep,
-        captchaGated: s.captchaGated === true,
-        emailStep: s.emailStep === true,
-        emailStepConfig: s.emailStepConfig,
-        allocatedInbox: deps.allocatedInbox ?? null,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        stepIndex: i,
-        totalSteps: () => steps.length,
-        phase: "flow",
-        signalCounter,
-        recentCaptures,
-        recentCaptureMeta,
-        anthropic,
-        rephraseModel,
-        logger,
-        uploadFixture,
-        frameTarget,
-        isFinalStep: i === steps.length - 1,
-        submitEndpointPattern: deps.submitEndpointPattern ?? null,
-        submittedStateSelectors: deps.submittedStateSelectors ?? [],
-        requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
-        advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
-        successUrlFragments: deps.successUrlFragments ?? [],
-        successPageTitleHints: deps.successPageTitleHints ?? [],
-        ownBackendHostnames: deps.ownBackendHostnames ?? [],
-        knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
-        wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
-      });
+      // A navigateTo step is a direct page.goto, not an act/observe against
+      // the current DOM, so it has no target frame to resolve and skips
+      // straight to executeNavigateStep instead of the self-heal cascade.
+      let stepPromise: Promise<"completed" | "skipped">;
+      if (s.navigateTo !== undefined) {
+        stepPromise = executeNavigateStep({
+          page,
+          url: s.navigateTo,
+          optional: s.optional,
+          logger,
+        });
+      } else {
+        // Resolved fresh per step (not cached across the run) so a cross-origin
+        // iframe that attaches mid-flow (e.g. after an "Apply" click reveals a
+        // wizard embedded later in the DOM) is picked up as soon as it's
+        // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
+        // falls back to the main-frame target when `frameSelector` is null/unresolvable,
+        // so this is a no-op for every flow that doesn't declare one.
+        const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+        await waitForChildFrameReady(frameTarget);
+        stepPromise = executeStepWithHealing({
+          stagehand,
+          page,
+          step: s.instruction,
+          optional: s.optional,
+          upload: s.upload,
+          submitStep: s.submitStep,
+          captchaGated: s.captchaGated === true,
+          emailStep: s.emailStep === true,
+          emailStepConfig: s.emailStepConfig,
+          allocatedInbox: deps.allocatedInbox ?? null,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          stepIndex: i,
+          totalSteps: () => steps.length,
+          phase: "flow",
+          signalCounter,
+          recentCaptures,
+          recentCaptureMeta,
+          anthropic,
+          rephraseModel,
+          logger,
+          uploadFixture,
+          frameTarget,
+          isFinalStep: i === steps.length - 1,
+          submitEndpointPattern: deps.submitEndpointPattern ?? null,
+          submittedStateSelectors: deps.submittedStateSelectors ?? [],
+          requireSubmitEndpointMatch: deps.requireSubmitEndpointMatch ?? false,
+          advanceTransitionBodyPattern: deps.advanceTransitionBodyPattern ?? null,
+          successUrlFragments: deps.successUrlFragments ?? [],
+          successPageTitleHints: deps.successPageTitleHints ?? [],
+          ownBackendHostnames: deps.ownBackendHostnames ?? [],
+          knownErrorClassPrefixes: deps.knownErrorClassPrefixes ?? [],
+          wizardExitButtonLabels: deps.wizardExitButtonLabels ?? [],
+        });
+      }
       const outcome = deps.deathSignal
         ? await raceAgainstTeardown(stepPromise, deps.deathSignal)
         : await stepPromise;

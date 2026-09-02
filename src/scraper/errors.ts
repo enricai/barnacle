@@ -159,7 +159,8 @@ export type StepVerificationErrorKind =
   | "replan-cycle-detected"
   | "wizard-regression"
   | "flow-timeout"
-  | "submit-skipped";
+  | "submit-skipped"
+  | "navigate-failed";
 
 /**
  * Recon-only: a flow step in recon-browser.ts could not be acted on. Eight
@@ -212,6 +213,9 @@ export type StepVerificationErrorKind =
  *     (optional step, no candidate resolved) rather than run and verified. A
  *     flow that never submitted must never be reported as successful, so
  *     this is thrown instead of letting the flow complete silently.
+ *   - "navigate-failed": a `navigateTo` step's `page.goto` rejected and the
+ *     step was not `optional` — a required multi-page capture flow cannot
+ *     proceed past a page it never reached.
  *
  * Non-retryable — the runtime path never sees this.
  */

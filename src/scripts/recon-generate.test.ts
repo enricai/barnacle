@@ -2029,7 +2029,8 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 
   it("waits for SPA hydration after navigating (so early steps don't skip a shell page)", () => {
-    expect(code).toContain("import { type HealingFlowStep, runHealingFlow, waitForSpaReady }");
+    expect(code).toContain("import { type HealingFlowStep, runHealingFlow }");
+    expect(code).toContain('import { waitForSpaReady } from "');
     expect(code).toContain("await waitForSpaReady(page, logger);");
   });
 
@@ -2099,6 +2100,19 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
     expect(code).not.toContain("payload.Resume");
     expect(code).toContain("uploadFixture: null");
     expect(code).toContain("TODO: this flow uploads");
+  });
+});
+
+describe("emitBrowserFlowTs — navigateTo step", () => {
+  it("emits the captured navigateTo URL as a literal, bypassing payload splicing", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: false,
+      flowSteps: [{ step: "Go to the unfiltered report", navigateTo: "https://x/report?all=true" }],
+    });
+    expect(code).toContain('navigateTo: "https://x/report?all=true"');
   });
 });
 

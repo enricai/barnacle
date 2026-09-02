@@ -8970,6 +8970,7 @@ type FlowStepInput =
       payloadFieldNone?: boolean;
       emailStep?: boolean;
       emailStepConfig?: EmailStepConfig;
+      navigateTo?: string;
     };
 
 /**
@@ -9299,6 +9300,15 @@ export function emitBrowserFlowTs(opts: {
     // resolver entirely and never contributes a payload.<field> splice — its
     // instruction is emitted as a plain literal, same as buildStepInstructionExpr
     // does for a field-less step.
+    // A navigateTo step is a direct page.goto captured by recon-browser, not
+    // a prose instruction — it bypasses resolveStepPayloadField/the self-heal
+    // cascade entirely (see executeNavigateStep), so its URL is emitted as a
+    // plain literal rather than routed through payload.<field> splicing.
+    if (isObj && step.navigateTo !== undefined) {
+      const optional = step.optional === true;
+      const submitStep = step.submitStep === true;
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${JSON.stringify(step.navigateTo)} },`;
+    }
     if (isObj && step.emailStep === true) {
       usesEmailStep = true;
       const optional = step.optional === true;
@@ -9403,7 +9413,8 @@ import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
-import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
+import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
+import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
 import ${
     isSubmissionFlow
