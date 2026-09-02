@@ -233,6 +233,34 @@ describe("flow-runner/executeStepWithHealing — emailStep hook", () => {
     }
   });
 
+  it("splices an extracted link into the fill value instead of navigating when action:'fill' is set", async () => {
+    pollTestmailInboxMock.mockResolvedValue(
+      makeMessage({ text: "Confirm: https://apply.example.com/verify?t=super-secret-token" })
+    );
+    const page = makeFakePage();
+    const stagehand = {} as Stagehand;
+
+    await executeStepWithHealing(
+      baseParams(page, stagehand, {
+        emailStep: true,
+        allocatedInbox: inbox,
+        emailStepConfig: { extract: "link", action: "fill" },
+        step: "Fill in the verification link field with 'placeholder'",
+      })
+    ).catch(() => {
+      // Falling through into the full cascade on this bare fake page is
+      // expected to eventually fail past the fill primitive; only the
+      // pre-fallthrough splice + non-navigate is under test here.
+    });
+
+    expect(page.goto).not.toHaveBeenCalled();
+    for (const mockFn of [testLogger.info, testLogger.warn, testLogger.error, testLogger.debug]) {
+      for (const call of (mockFn as ReturnType<typeof vi.fn>).mock.calls) {
+        expect(String(call[0])).not.toContain("super-secret-token");
+      }
+    }
+  });
+
   it("splices an extracted code into the fill value and falls through to the cascade instead of returning early", async () => {
     pollTestmailInboxMock.mockResolvedValue(makeMessage({ text: "Your code is 837465" }));
     const page = makeFakePage();

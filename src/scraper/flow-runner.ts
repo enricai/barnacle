@@ -8444,43 +8444,59 @@ export async function executeStepWithHealing(params: {
           "extracted link's host is outside the current page's registrable domain; refusing to navigate"
         );
       }
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: navigating to extracted link`
-      );
-      const preIdx = latestCaptureIndex(recentCaptures);
-      await page.goto(url); // NEVER log the URL body — it can be a single-use credential
-      // Gate advance on the same transition poll the captcha hook reuses.
-      if (advanceTransitionBodyPattern) {
-        const confirmed = await waitForTransitionBody({
-          page,
-          preIdx,
-          advanceTransitionBodyPattern,
-          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
-          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
-        });
+      if (cfg.action === "fill") {
+        // extract:"link" + action:"fill" — splice the link into this step's
+        // fill value instead of navigating, same as the extract:"code" path
+        // below, for flows whose verification step is a paste-the-link field
+        // rather than a page transition.
+        logger.info(`${formatStepPrefix(stepIndex, totalSteps)} emailStep: link extracted`);
+        emailStepCode = url;
+        step = spliceEmailStepFillValue(step, url);
+      } else {
         logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} emailStep: post-navigate transition poll confirmed=${confirmed}`
+          `${formatStepPrefix(stepIndex, totalSteps)} emailStep: navigating to extracted link`
         );
-        if (confirmed) {
-          trajectory?.push({ stepIndex, verifiedBy: "network" });
+        const preIdx = latestCaptureIndex(recentCaptures);
+        await page.goto(url); // NEVER log the URL body — it can be a single-use credential
+        // Gate advance on the same transition poll the captcha hook reuses.
+        if (advanceTransitionBodyPattern) {
+          const confirmed = await waitForTransitionBody({
+            page,
+            preIdx,
+            advanceTransitionBodyPattern,
+            timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+            intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+          });
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} emailStep: post-navigate transition poll confirmed=${confirmed}`
+          );
+          if (confirmed) {
+            trajectory?.push({ stepIndex, verifiedBy: "network" });
+          }
         }
+        return "completed";
       }
-      return "completed";
     }
 
-    // extract:"code" — splice the extracted code into this step's fill
-    // value and fall through to the pre-existing fill primitive below,
-    // rather than returning early or re-running Stagehand's act/observe
-    // resolution against the code.
-    const code = extractCodeFromMessage(msg, cfg.codePattern);
-    if (!code) {
-      throw new EmailStepExtractError("no code matched in the verification email");
+    if (cfg.extract === "link") {
+      // extract:"link" + action:"fill" already spliced `url` into `step`
+      // above; fall through to the normal fill cascade below, same as the
+      // extract:"code" path.
+    } else {
+      // extract:"code" — splice the extracted code into this step's fill
+      // value and fall through to the pre-existing fill primitive below,
+      // rather than returning early or re-running Stagehand's act/observe
+      // resolution against the code.
+      const code = extractCodeFromMessage(msg, cfg.codePattern);
+      if (!code) {
+        throw new EmailStepExtractError("no code matched in the verification email");
+      }
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
+      );
+      emailStepCode = code;
+      step = spliceEmailStepFillValue(step, code);
     }
-    logger.info(
-      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
-    );
-    emailStepCode = code;
-    step = spliceEmailStepFillValue(step, code);
   }
   /**
    * Re-resolves a frame that lost the attach race at step entry —
@@ -9823,8 +9839,8 @@ export async function executeStepWithHealing(params: {
               );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
-                  ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
-                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${dateFill.postValue})`;
+                  ? `html5-date-fallback: filled ${dateFill.inputType}="${redactIfSensitive(dateFill.postValue, emailStepCode)}"`
+                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${redactIfSensitive(dateFill.postValue, emailStepCode)})`;
                 // Override the act result based on the deterministic fill
                 // outcome — the helper bypasses Stagehand's schema-error
                 // failure mode by writing directly via the native setter.
@@ -9847,8 +9863,8 @@ export async function executeStepWithHealing(params: {
                 );
                 if (datepickerFill !== null) {
                   record.errorMessage = datepickerFill.filled
-                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`
-                    : `text-datepicker-fill: failed to commit "${fillValue.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`
+                    : `text-datepicker-fill: failed to commit "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
                   if (datepickerFill.filled) {
                     record.actResultSuccess = true;
                     resolvedAction = overriddenTarget;
@@ -9869,11 +9885,11 @@ export async function executeStepWithHealing(params: {
                   );
                   if (readback !== null) {
                     if (readback.outcome === "rejected") {
-                      record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "differs") {
                       logger.info(
-                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" got "${redactIfSensitive(readback.postValue.slice(0, 60), emailStepCode)}" (framework reformatted)`
                       );
                     }
                   }
@@ -10344,14 +10360,14 @@ export async function executeStepWithHealing(params: {
           if (datepickerFill !== null) {
             if (datepickerFill.filled) {
               datepickerCommitted = true;
-              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`;
+              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`;
             } else {
               // A gated-in datepicker that neither gesture commits is a real fill
               // failure (per fillTextDatepickerInput's contract) — authoritative,
               // so suppress the weak view-swap/form-value acceptance and escalate.
               datepickerRejected = true;
               record.actResultSuccess = false;
-              record.errorMessage = `text-datepicker-fill: failed to commit "${fillIntent.value.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+              record.errorMessage = `text-datepicker-fill: failed to commit "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
             }
           } else {
             // Not a datepicker — the fill was genuinely rejected. Same message
@@ -10359,7 +10375,7 @@ export async function executeStepWithHealing(params: {
             // failure dump reads identically regardless of which path caught it.
             datepickerRejected = true;
             record.actResultSuccess = false;
-            record.errorMessage = `fill-value-rejected: tried "${fillIntent.value.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+            record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
           }
         }
       }

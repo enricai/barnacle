@@ -180,7 +180,9 @@ describe("EmailStepInboxUnavailableError", () => {
     expect(err).toBeInstanceOf(ScraperError);
     expect(err.retryable).toBe(false);
     expect(err.name).toBe("EmailStepInboxUnavailableError");
-    expect(err.message).toBe("emailStep set but no testmail inbox allocated (pass --allocate-email)");
+    expect(err.message).toBe(
+      "emailStep set but no testmail inbox allocated (pass --allocate-email)"
+    );
   });
 
   it("isEmailStepInboxUnavailableError recognizes a same-realm instance and a name-tagged plain Error", () => {
@@ -189,7 +191,9 @@ describe("EmailStepInboxUnavailableError", () => {
     expect(isScraperError(sameRealmErr)).toBe(true);
 
     class FakeCrossModuleEmailStepInboxUnavailableError extends Error {
-      constructor(message = "emailStep set but no testmail inbox allocated (pass --allocate-email)") {
+      constructor(
+        message = "emailStep set but no testmail inbox allocated (pass --allocate-email)"
+      ) {
         super(message);
         this.name = "EmailStepInboxUnavailableError";
       }
