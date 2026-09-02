@@ -2029,7 +2029,8 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   });
 
   it("waits for SPA hydration after navigating (so early steps don't skip a shell page)", () => {
-    expect(code).toContain("import { type HealingFlowStep, runHealingFlow, waitForSpaReady }");
+    expect(code).toContain("import { type HealingFlowStep, runHealingFlow }");
+    expect(code).toContain('import { waitForSpaReady } from "');
     expect(code).toContain("await waitForSpaReady(page, logger);");
   });
 

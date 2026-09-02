@@ -9403,7 +9403,8 @@ import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `
 
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
-import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
+import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
+import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
 import ${
     isSubmissionFlow

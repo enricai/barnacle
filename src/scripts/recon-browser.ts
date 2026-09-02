@@ -104,7 +104,6 @@ import {
   selectBodyExcerpt,
   snapshotPage,
   TRAILING_GRACE_WINDOW,
-  waitForSpaReady,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
 import {
@@ -112,6 +111,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";

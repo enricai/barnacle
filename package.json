@@ -192,6 +192,10 @@
       "types": "./dist/scraper/session-browserbase.d.ts",
       "default": "./dist/scraper/session-browserbase.js"
     },
+    "./scraper/spa-readiness": {
+      "types": "./dist/scraper/spa-readiness.d.ts",
+      "default": "./dist/scraper/spa-readiness.js"
+    },
     "./scraper/stagehand-guard": {
       "types": "./dist/scraper/stagehand-guard.d.ts",
       "default": "./dist/scraper/stagehand-guard.js"
