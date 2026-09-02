@@ -458,7 +458,10 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
 
     await expect(
       executeStepWithHealing(
-        baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+        baseParams(page, stagehand, {
+          captchaGated: true,
+          advanceTransitionBodyPattern: "type=next",
+        })
       )
     ).rejects.toThrow(/no render-config callback could be found/);
     nowSpy.mockRestore();

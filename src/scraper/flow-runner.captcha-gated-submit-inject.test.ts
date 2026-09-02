@@ -375,4 +375,36 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
+
+  it("distinguishes callbackDiscovered: false from the success shape when neither a data-callback attribute nor a matching render-config entry exists", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    // A registry that exists (a render call happened elsewhere on the page)
+    // but has no entry for this widget's sitekey — the discovery walk must
+    // still report false rather than mistaking "registry present" for
+    // "callback found".
+    (window as unknown as Record<string, unknown>)[HCAPTCHA_CALLBACK_REGISTRY_GLOBAL] = {
+      "other-sitekey::7": { sitekey: "other-sitekey", widgetId: 7, callback: vi.fn() },
+    };
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-no-match");
+
+    expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
+    expect(result).not.toMatchObject({ callbackDiscovered: true });
+    expect(submitSpy).not.toHaveBeenCalled();
+  });
 });
