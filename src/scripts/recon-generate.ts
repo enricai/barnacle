@@ -5283,8 +5283,6 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
 
 // ── code emitters ─────────────────────────────────────────────────────────────
 
-/** Generates a complete contract.ts source string for a plugin — exported so
- * unit tests can drive the emitter directly without spawning the CLI. */
 /**
  * Splices payload fields into a string variable that packs filter facets as
  * delimited `key:value` segments (e.g. a product-catalog `filters` variable
@@ -7886,6 +7884,8 @@ export function buildContractChecklist(opts: {
   ].filter((line) => line !== "");
 }
 
+/** Generates a complete contract.ts source string for a plugin — exported so
+ * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
   siteId: string;
   /**
