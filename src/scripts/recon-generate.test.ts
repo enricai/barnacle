@@ -2103,6 +2103,19 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
   });
 });
 
+describe("emitBrowserFlowTs — navigateTo step", () => {
+  it("emits the captured navigateTo URL as a literal, bypassing payload splicing", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: false,
+      flowSteps: [{ step: "Go to the unfiltered report", navigateTo: "https://x/report?all=true" }],
+    });
+    expect(code).toContain('navigateTo: "https://x/report?all=true"');
+  });
+});
+
 describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => {
   const flowSteps = [
     "Fill in the First Name field with 'Reginald'",
