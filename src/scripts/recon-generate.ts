@@ -7972,8 +7972,7 @@ export function emitContractTs(opts: {
    * step, mirroring the request-surface "widest wins" rule). Marks the
    * corresponding payload-schema field `.optional()` and is threaded into
    * {@link renderGqlVariablesExpr} so an absent optional facet drops its
-   * segment instead of splicing `undefined` into a GraphQL filter string. */
-  optionalPayloadFieldNames?: ReadonlySet<string>;
+   * segment instead of splicing `undefined` into a GraphQL filter string. */  optionalPayloadFieldNames?: ReadonlySet<string>;
   /** Response-header/cookie-origin state bindings collected from the action
    * sequence's produces[] (see `collectHeaderBindings`) — rendered as
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
@@ -8028,8 +8027,7 @@ export function emitContractTs(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     payloadFieldNames,
-    optionalPayloadFieldNames = new Set<string>(),
-    headerBindings = [],
+    optionalPayloadFieldNames = new Set<string>(),    headerBindings = [],
     unpopulatedDeclaredVariables = [],
   } = opts;
 
