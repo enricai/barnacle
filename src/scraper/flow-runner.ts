@@ -40,6 +40,7 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
+import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import {
   clickActivationExpr,
   MAX_SELECTION_ANCESTOR_DEPTH,
@@ -64,6 +65,8 @@ import {
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import {
+  EmailStepExtractError,
+  EmailStepInboxUnavailableError,
   type RunHealingFlowResult,
   SessionTimeoutError,
   StepVerificationError,
@@ -86,6 +89,7 @@ import {
 } from "@/scraper/submit-control";
 import { withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
+import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/flow-runner" });
@@ -5251,12 +5255,14 @@ async function trySelectPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find the target select — the one whose
   // nearby text matches the question label (or, when no label, any select).
   // Try a deterministic option match first; if it hits, apply immediately (no
@@ -5641,12 +5647,14 @@ async function tryCheckboxPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
   // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
   // checkboxes. Question label = the group's legend / associated label; each
@@ -6009,12 +6017,14 @@ async function tryRadioPrimitive(params: {
   captureFn?: JudgeCaptureFn;
   // Returns the selected radio's DOM id on success (empty string if none), or
   // null when unhandled. See trySelectPrimitive for the id-as-targetId rationale.
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseRadioStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
   // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
   // container with radios. Question label = the group's legend / associated label; each option
@@ -6322,8 +6332,10 @@ async function tryPromptSelectorPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
+  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  redactValue?: string;
 }): Promise<string | null> {
-  const { page, target, instruction, logger, anthropic, captureFn } = params;
+  const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   // A prompt-selector widget's search box renders a real <input>, so flow/
   // replan generation routinely describes filling it as a FILL step ("Fill in
   // the 'How Did You Hear About Us?' field with 'Internet/Online'") rather
@@ -6356,7 +6368,7 @@ async function tryPromptSelectorPrimitive(params: {
           : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${option.slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -8005,6 +8017,105 @@ function assertProbeSessionAlive(page: Page, stepIndex: number, totalSteps?: () 
   }
 }
 
+/**
+ * Resolved shape of a step's `emailStepConfig`, mirroring `RECON_FLOW_STEP_SCHEMA`'s
+ * `emailStepConfig` object 1:1 (`src/lib/llm/schemas.ts`). Declared locally
+ * because this module consumes the already-parsed config, not the zod schema
+ * itself.
+ */
+export interface EmailStepConfig {
+  subjectContains?: string;
+  extract?: "link" | "code";
+  linkPattern?: string;
+  codePattern?: string;
+  action?: "navigate" | "fill";
+  timeoutMs?: number;
+}
+
+/** Matches `re` against `text`, falling back to `html`; returns the first capture group, or the full match when the pattern has none. Shared by {@link extractLinkFromMessage}'s pattern branch and {@link extractCodeFromMessage}. */
+function firstRegexMatch(text: string | null, html: string | null, re: RegExp): string | null {
+  const match = text?.match(re) ?? html?.match(re) ?? null;
+  if (!match) return null;
+  return match[1] ?? match[0] ?? null;
+}
+
+/**
+ * Extracts the verification URL from a testmail message. Why this exists: the
+ * `emailStep` hook must resolve a link out of arbitrary inbox HTML/text
+ * without a flow author having to hand-write a regex for every ATS's email
+ * template — a caller-supplied `linkPattern` covers the templates that need
+ * precision, and the default (first http(s) URL sharing the current page's
+ * registrable domain) covers the rest. Returns `null` — never a guess — when
+ * nothing matches, so the caller fails loudly instead of navigating blind.
+ */
+export function extractLinkFromMessage(
+  msg: TestmailMessage,
+  pattern: string | undefined,
+  currentPageUrl: string
+): string | null {
+  if (pattern) {
+    return firstRegexMatch(msg.text, msg.html, new RegExp(pattern));
+  }
+  const fallbackDomain = ((): string | null => {
+    try {
+      return registrableDomain(new URL(currentPageUrl).hostname);
+    } catch {
+      return null;
+    }
+  })();
+  if (!fallbackDomain) return null;
+  const candidateUrls = [msg.text, msg.html]
+    .filter((body): body is string => typeof body === "string")
+    .flatMap((body) => body.match(/https?:\/\/\S+/g) ?? []);
+  return (
+    candidateUrls.find((url) => {
+      try {
+        return registrableDomain(new URL(url).hostname) === fallbackDomain;
+      } catch {
+        return false;
+      }
+    }) ?? null
+  );
+}
+
+/**
+ * Extracts the OTP/code from a testmail message, defaulting to the first
+ * 4-8 digit run (the common OTP shape) so most flows need no `codePattern`.
+ * Sibling of {@link extractLinkFromMessage} — see that function's docblock
+ * for why the default-vs-pattern split exists.
+ */
+export function extractCodeFromMessage(
+  msg: TestmailMessage,
+  pattern: string | undefined
+): string | null {
+  return firstRegexMatch(msg.text, msg.html, pattern ? new RegExp(pattern) : /\b\d{4,8}\b/);
+}
+
+/**
+ * Splices an `emailStep` code-extraction result into a fill step's quoted
+ * value so the pre-existing fill cascade (`parseFillStep`/`parseFillValueIntent`,
+ * both of which read the value out of the instruction's own quoted text)
+ * picks it up as the value to type without any of those parsers needing to
+ * know the value came from an inbox rather than the flow's payload.
+ */
+function spliceEmailStepFillValue(step: string, code: string): string {
+  return /with\s+'[^']*'/i.test(step)
+    ? step.replace(/with\s+'[^']*'/i, `with '${code}'`)
+    : `${step} with '${code}'`;
+}
+
+/**
+ * Masks `text` when it equals `sensitiveValue` (the emailStep-extracted code
+ * spliced into the step's fill value, see {@link spliceEmailStepFillValue}).
+ * The select/checkbox/radio/prompt-selector primitives all re-parse the
+ * (possibly code-bearing) instruction independently of the fill primitive,
+ * so each one's own "option"/diagnostic logging must redact it too — the
+ * code is a single-use credential and must never reach the logs verbatim.
+ */
+function redactIfSensitive(text: string, sensitiveValue?: string): string {
+  return sensitiveValue && text === sensitiveValue ? "[redacted]" : text;
+}
+
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -8052,6 +8163,24 @@ export async function executeStepWithHealing(params: {
    * byte-for-byte identically to today — no solver call, no extra DOM read.
    */
   captchaGated?: boolean;
+  /**
+   * When true, the step opts into the emailed-verification hook: poll
+   * {@link params.allocatedInbox} for a matching testmail message, extract a
+   * link or code from it, and either navigate to the link (gating "completed"
+   * on the same transition poll the captcha hook reuses) or splice the
+   * extracted code into the step's fill value and fall through to the normal
+   * fill cascade. Set from the flow file's `emailStep: true`. Absent/false
+   * steps run byte-for-byte identically to today.
+   */
+  emailStep?: boolean;
+  /** Config for an `emailStep`. Ignored unless {@link emailStep} is true. */
+  emailStepConfig?: EmailStepConfig;
+  /**
+   * The run's allocated testmail inbox, or `null` when none was allocated.
+   * `emailStep:true` with a `null` inbox throws {@link EmailStepInboxUnavailableError}
+   * — the capability must fail loud, never silently skip the email step.
+   */
+  allocatedInbox?: TestmailInbox | null;
   /**
    * Whether the FLOW (not just this step) has any submit semantics at all —
    * some step flagged `submitStep: true`, a `submitEndpointPattern`, or
@@ -8202,11 +8331,13 @@ export async function executeStepWithHealing(params: {
   const {
     stagehand,
     page,
-    step,
     optional,
     upload,
     submitStep,
     captchaGated = false,
+    emailStep = false,
+    emailStepConfig,
+    allocatedInbox = null,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     stepIndex,
     totalSteps,
@@ -8233,6 +8364,16 @@ export async function executeStepWithHealing(params: {
     trajectory,
     onStepFailure,
   } = params;
+  // Mutable: the `emailStep` code-extract path splices the extracted code
+  // into this instruction (see the emailStep hook block below) so the
+  // pre-existing fill cascade downstream picks it up as the value to type
+  // without re-running Stagehand's act/observe resolution a second time.
+  let step = params.step;
+  // Set only by the emailStep code-extract path below. Threaded into every
+  // select/checkbox/radio/prompt-selector primitive call further down so
+  // each one's own re-parse of `step` (now code-bearing) redacts the code
+  // out of its diagnostic logging too, not just the fill primitive's.
+  let emailStepCode: string | undefined;
   // Mutable (not the destructured const above) so a lost frame-attach race
   // can be upgraded in place once the OOPIF attaches later in the cascade —
   // see reresolveFrameTargetIfLost below. Every existing reference in this
@@ -8240,6 +8381,123 @@ export async function executeStepWithHealing(params: {
   // moved so it can be reassigned.
   let frameTarget = params.frameTarget;
   let frameReresolveAttempted = false;
+  // Emailed-verification hook. Runs FIRST — before upload/select/checkbox/
+  // radio/prompt-selector/captcha or any other cascade primitive — so an
+  // `emailStep: true` step with no allocated inbox fails loud instead of
+  // being silently claimed by an unrelated primitive that happens to match
+  // the step's instruction text. Polls the run's allocated testmail inbox,
+  // extracts a link or code from the matched message, and either navigates
+  // to the link (gating "completed" on the same transition poll the captcha
+  // hook reuses) or splices the code into this step's fill value and falls
+  // through to the normal cascade below. Never logs the extracted link/code
+  // — either can be a single-use credential — and never navigates off the
+  // current page's registrable domain, so a poisoned inbox message can't
+  // redirect the session.
+  if (emailStep) {
+    if (!allocatedInbox) {
+      // No inbox to poll — fail loud, exactly like the captcha no-key path.
+      throw new EmailStepInboxUnavailableError(
+        "emailStep set but no testmail inbox allocated (pass --allocate-email)"
+      );
+    }
+    const cfg = emailStepConfig ?? {};
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} emailStep: polling inbox ${allocatedInbox.address} (subjectContains=${cfg.subjectContains ?? "*"})`
+    );
+    const msg = await pollTestmailInbox({
+      inbox: allocatedInbox,
+      subjectContains: cfg.subjectContains,
+      timeoutMs: cfg.timeoutMs ?? 120_000,
+    }).catch((err: unknown) => {
+      logger.error(
+        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: no matching email within budget (${toErrorMessage(err)}); failing the step`
+      );
+      throw err;
+    });
+
+    if ((cfg.extract ?? "link") === "link") {
+      const emailStepTarget = frameTarget ?? mainFrameTarget(page);
+      const currentPageUrl = await emailStepTarget.url();
+      const url = extractLinkFromMessage(msg, cfg.linkPattern, currentPageUrl);
+      if (!url) {
+        throw new EmailStepExtractError("no link matched in the verification email");
+      }
+      // Allowlist gate: the link's host must share the current page origin's
+      // registrable domain (or be a declared `ownBackendHostnames` entry) —
+      // never follow a link from untrusted inbox content off-domain.
+      const fallbackDomain = (() => {
+        try {
+          return registrableDomain(new URL(currentPageUrl).hostname);
+        } catch {
+          return null;
+        }
+      })();
+      const linkHost = (() => {
+        try {
+          return new URL(url).hostname;
+        } catch {
+          return null;
+        }
+      })();
+      if (!linkHost || !isAllowedFixtureHost(linkHost, ownBackendHostnames, fallbackDomain)) {
+        throw new EmailStepExtractError(
+          "extracted link's host is outside the current page's registrable domain; refusing to navigate"
+        );
+      }
+      if (cfg.action === "fill") {
+        // extract:"link" + action:"fill" — splice the link into this step's
+        // fill value instead of navigating, same as the extract:"code" path
+        // below, for flows whose verification step is a paste-the-link field
+        // rather than a page transition.
+        logger.info(`${formatStepPrefix(stepIndex, totalSteps)} emailStep: link extracted`);
+        emailStepCode = url;
+        step = spliceEmailStepFillValue(step, url);
+      } else {
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} emailStep: navigating to extracted link`
+        );
+        const preIdx = latestCaptureIndex(recentCaptures);
+        await page.goto(url); // NEVER log the URL body — it can be a single-use credential
+        // Gate advance on the same transition poll the captcha hook reuses.
+        if (advanceTransitionBodyPattern) {
+          const confirmed = await waitForTransitionBody({
+            page,
+            preIdx,
+            advanceTransitionBodyPattern,
+            timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+            intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+          });
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} emailStep: post-navigate transition poll confirmed=${confirmed}`
+          );
+          if (confirmed) {
+            trajectory?.push({ stepIndex, verifiedBy: "network" });
+          }
+        }
+        return "completed";
+      }
+    }
+
+    if (cfg.extract === "link") {
+      // extract:"link" + action:"fill" already spliced `url` into `step`
+      // above; fall through to the normal fill cascade below, same as the
+      // extract:"code" path.
+    } else {
+      // extract:"code" — splice the extracted code into this step's fill
+      // value and fall through to the pre-existing fill primitive below,
+      // rather than returning early or re-running Stagehand's act/observe
+      // resolution against the code.
+      const code = extractCodeFromMessage(msg, cfg.codePattern);
+      if (!code) {
+        throw new EmailStepExtractError("no code matched in the verification email");
+      }
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} emailStep: code extracted (len ${code.length})`
+      );
+      emailStepCode = code;
+      step = spliceEmailStepFillValue(step, code);
+    }
+  }
   /**
    * Re-resolves a frame that lost the attach race at step entry —
    * `resolveFrameTarget`'s per-step poll (called once in the runner's step
@@ -8346,6 +8604,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (selectTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by select primitive`);
@@ -8365,6 +8624,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (checkboxTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
@@ -8385,6 +8645,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (radioTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by radio primitive`);
@@ -8410,6 +8671,7 @@ export async function executeStepWithHealing(params: {
     logger,
     anthropic,
     captureFn,
+    redactValue: emailStepCode,
   });
   if (promptSelectorTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by prompt-selector primitive`);
@@ -9577,8 +9839,8 @@ export async function executeStepWithHealing(params: {
               );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
-                  ? `html5-date-fallback: filled ${dateFill.inputType}="${dateFill.postValue}"`
-                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${dateFill.postValue})`;
+                  ? `html5-date-fallback: filled ${dateFill.inputType}="${redactIfSensitive(dateFill.postValue, emailStepCode)}"`
+                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${redactIfSensitive(dateFill.postValue, emailStepCode)})`;
                 // Override the act result based on the deterministic fill
                 // outcome — the helper bypasses Stagehand's schema-error
                 // failure mode by writing directly via the native setter.
@@ -9601,8 +9863,8 @@ export async function executeStepWithHealing(params: {
                 );
                 if (datepickerFill !== null) {
                   record.errorMessage = datepickerFill.filled
-                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`
-                    : `text-datepicker-fill: failed to commit "${fillValue.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`
+                    : `text-datepicker-fill: failed to commit "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
                   if (datepickerFill.filled) {
                     record.actResultSuccess = true;
                     resolvedAction = overriddenTarget;
@@ -9623,11 +9885,11 @@ export async function executeStepWithHealing(params: {
                   );
                   if (readback !== null) {
                     if (readback.outcome === "rejected") {
-                      record.errorMessage = `fill-value-rejected: tried "${fillValue.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "differs") {
                       logger.info(
-                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${fillValue.slice(0, 60)}" got "${readback.postValue.slice(0, 60)}" (framework reformatted)`
+                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" got "${redactIfSensitive(readback.postValue.slice(0, 60), emailStepCode)}" (framework reformatted)`
                       );
                     }
                   }
@@ -10098,14 +10360,14 @@ export async function executeStepWithHealing(params: {
           if (datepickerFill !== null) {
             if (datepickerFill.filled) {
               datepickerCommitted = true;
-              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${datepickerFill.postValue}"`;
+              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`;
             } else {
               // A gated-in datepicker that neither gesture commits is a real fill
               // failure (per fillTextDatepickerInput's contract) — authoritative,
               // so suppress the weak view-swap/form-value acceptance and escalate.
               datepickerRejected = true;
               record.actResultSuccess = false;
-              record.errorMessage = `text-datepicker-fill: failed to commit "${fillIntent.value.slice(0, 60)}" (post=${datepickerFill.postValue})`;
+              record.errorMessage = `text-datepicker-fill: failed to commit "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
             }
           } else {
             // Not a datepicker — the fill was genuinely rejected. Same message
@@ -10113,7 +10375,7 @@ export async function executeStepWithHealing(params: {
             // failure dump reads identically regardless of which path caught it.
             datepickerRejected = true;
             record.actResultSuccess = false;
-            record.errorMessage = `fill-value-rejected: tried "${fillIntent.value.slice(0, 60)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+            record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
           }
         }
       }

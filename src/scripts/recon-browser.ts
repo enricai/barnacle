@@ -88,6 +88,7 @@ import {
   anthropicModelName,
   type CaptureFn,
   capturesAfterIndex,
+  type EmailStepConfig,
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
@@ -119,7 +120,7 @@ import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
-import { allocateTestmailInbox } from "@/testmail/client";
+import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
 configureHttpDispatcher();
@@ -784,6 +785,12 @@ interface NormalizedStep {
   // transition step into the pluggable captcha-solve hook. Optional in the
   // type for the same reason as submitStep — absence is treated as false.
   captchaGated?: boolean;
+  // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts: opts a step into the
+  // pluggable emailed-verification hook. Optional in the type for the same
+  // reason as captchaGated — absence is treated as false.
+  emailStep?: boolean;
+  // Config for an `emailStep`. Ignored unless `emailStep` is true.
+  emailStepConfig?: EmailStepConfig;
   // Generator-only splicer hints (see RECON_FLOW_STEP_SCHEMA). Carried through
   // the normalize/denormalize round-trip so a hand-authored flow file's
   // payloadField/payloadFieldNone survives a recon run's write-back and reaches
@@ -808,6 +815,8 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           upload: s.upload,
           submitStep: s.submitStep,
           captchaGated: s.captchaGated,
+          emailStep: s.emailStep,
+          emailStepConfig: s.emailStepConfig,
           payloadField: s.payloadField,
           payloadFieldNone: s.payloadFieldNone,
           targetId: s.targetId,
@@ -852,6 +861,8 @@ function denormalizeStep(step: NormalizedStep):
       upload?: true;
       submitStep?: true;
       captchaGated?: true;
+      emailStep?: true;
+      emailStepConfig?: EmailStepConfig;
       payloadField?: string;
       payloadFieldNone?: true;
       targetId?: string;
@@ -868,6 +879,7 @@ function denormalizeStep(step: NormalizedStep):
     !step.upload &&
     !step.submitStep &&
     !step.captchaGated &&
+    !step.emailStep &&
     !hasSplicerHint &&
     !hasIdentity
   ) {
@@ -879,6 +891,8 @@ function denormalizeStep(step: NormalizedStep):
     upload?: true;
     submitStep?: true;
     captchaGated?: true;
+    emailStep?: true;
+    emailStepConfig?: EmailStepConfig;
     payloadField?: string;
     payloadFieldNone?: true;
     targetId?: string;
@@ -890,6 +904,8 @@ function denormalizeStep(step: NormalizedStep):
   if (step.upload) out.upload = true;
   if (step.submitStep) out.submitStep = true;
   if (step.captchaGated) out.captchaGated = true;
+  if (step.emailStep) out.emailStep = true;
+  if (step.emailStepConfig !== undefined) out.emailStepConfig = step.emailStepConfig;
   if (step.payloadField !== undefined) out.payloadField = step.payloadField;
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
@@ -2195,11 +2211,12 @@ async function main(): Promise<void> {
   // BEFORE substituting placeholders in the flow. Subsequent ${ENV_VAR}
   // tokens anywhere in the flow's instruction strings resolve to the
   // freshly-allocated address.
+  let allocatedInbox: TestmailInbox | null = null;
   if (allocateEmailEnvVar) {
-    const inbox = allocateTestmailInbox();
-    process.env[allocateEmailEnvVar] = inbox.address;
+    allocatedInbox = allocateTestmailInbox();
+    process.env[allocateEmailEnvVar] = allocatedInbox.address;
     logger.info(
-      `bound allocated testmail address to env var ${allocateEmailEnvVar}=${inbox.address}`
+      `bound allocated testmail address to env var ${allocateEmailEnvVar}=${allocatedInbox.address}`
     );
   }
 
@@ -2503,6 +2520,9 @@ async function main(): Promise<void> {
             upload: step.upload,
             submitStep: step.submitStep === true,
             captchaGated: step.captchaGated === true,
+            emailStep: step.emailStep === true,
+            emailStepConfig: step.emailStepConfig,
+            allocatedInbox,
             flowHasSubmitSemantics: flowHasSubmitSemantics({
               steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
               submitEndpointPattern,

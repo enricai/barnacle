@@ -357,6 +357,48 @@ export class MissingFormMapKeyError extends ScraperError {
 }
 
 /**
+ * The `emailStep` hook ran but no testmail inbox was allocated for this run.
+ * Distinct from a failed poll/extract so callers can tell "the capability
+ * isn't wired up" apart from "we polled and found nothing" — the capability
+ * must fail cleanly here rather than silently skip the email step.
+ */
+export class EmailStepInboxUnavailableError extends ScraperError {
+  constructor(message = "emailStep set but no testmail inbox allocated (pass --allocate-email)") {
+    super(message, false);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof EmailStepInboxUnavailableError`. See {@link isCaptchaError} for why this exists. */
+export function isEmailStepInboxUnavailableError(
+  err: unknown
+): err is EmailStepInboxUnavailableError {
+  return (
+    err instanceof EmailStepInboxUnavailableError ||
+    (err instanceof Error && err.name === "EmailStepInboxUnavailableError")
+  );
+}
+
+/**
+ * The `emailStep` hook polled the allocated inbox but the message matched no
+ * configured link/code extraction pattern. Non-retryable — the inbox is
+ * wired up correctly, so retrying the same poll won't surface a different
+ * message; this must fail loudly rather than silently skip the step.
+ */
+export class EmailStepExtractError extends ScraperError {
+  constructor(message = "no link/code matched in the verification email") {
+    super(message, false);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof EmailStepExtractError`. See {@link isCaptchaError} for why this exists. */
+export function isEmailStepExtractError(err: unknown): err is EmailStepExtractError {
+  return (
+    err instanceof EmailStepExtractError ||
+    (err instanceof Error && err.name === "EmailStepExtractError")
+  );
+}
+
+/**
  * The full set of `name` values `ScraperError` subclasses stamp via
  * `new.target.name` in the base constructor — used by {@link isScraperError}
  * to recognize a cross-realm `ScraperError` when `instanceof` misses. Must
@@ -377,12 +419,14 @@ const SCRAPER_ERROR_NAMES = new Set([
   "HttpRateLimitError",
   "HttpUrlLockedError",
   "MissingFormMapKeyError",
+  "EmailStepInboxUnavailableError",
+  "EmailStepExtractError",
 ]);
 
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 14 concrete subclasses defined in this file
+ * variant, matching any of the 16 concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

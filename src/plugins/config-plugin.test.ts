@@ -305,6 +305,16 @@ describe("buildConfigPlugin", () => {
     expect(CONFIG_PLUGIN_MANIFEST.safeParse(manifest).success).toBe(false);
     await expect(buildConfigPlugin(manifest)).rejects.toThrow(/frameSelector/);
   });
+
+  it("rejects a manifest declaring emailStep on a flow step", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps[1] = {
+      step: "fill verification code with ''",
+      emailStep: true,
+    };
+
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/emailStep is not supported/);
+  });
 });
 
 describe("buildRephraseModelForContext (via execute)", () => {
