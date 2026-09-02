@@ -12,6 +12,7 @@ import {
   buildKnownFieldValues,
   collectHeaderBindings,
   compileActionSteps,
+  countSpliceableFacets,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
   emitConfigManifest,
@@ -71,6 +72,28 @@ const BASE_OPTS = {
   endpointPath: "/api/search",
   auxFiles: [],
 };
+
+describe("countSpliceableFacets", () => {
+  it("counts every segment whose key matches a given field", () => {
+    expect(countSpliceableFacets("ship:IC|visiting:CARI", ["ship", "visiting", "port"])).toBe(2);
+  });
+
+  it("counts a single matching segment", () => {
+    expect(countSpliceableFacets("visiting:CARI", ["ship", "visiting", "port"])).toBe(1);
+  });
+
+  it("returns 0 for a non-string value", () => {
+    expect(countSpliceableFacets(42, ["ship"])).toBe(0);
+  });
+
+  it("returns 0 when no segment carries a facet shape", () => {
+    expect(countSpliceableFacets("just a plain string", ["ship"])).toBe(0);
+  });
+
+  it("returns 0 when segments carry facet shape but no key matches", () => {
+    expect(countSpliceableFacets("region:EU", ["ship", "visiting"])).toBe(0);
+  });
+});
 
 describe("emitContractTs — multipart plugin", () => {
   const source = emitContractTs({
@@ -1068,6 +1091,53 @@ describe("foldReturn-admitted read+drill classification — no mutation present 
     const actionSteps = compileActionSteps(actionCaptures, stateIndex);
     const isSubmissionFlow = actionSteps.length > 1 && graphqlActionSequenceHasMutation;
     expect(isSubmissionFlow).toBe(false);
+  });
+});
+
+describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks response size (#bugfix-003)", () => {
+  const BASE = "https://catalog.example.com";
+  const QUERY = `query SearchProducts($filters: String) {
+  searchProducts(filters: $filters) { category priceRange }
+}`;
+
+  const searchCapture = (filters: string, paddingLength: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"query":"SearchProducts","variables":{"filters":"${filters}"}}`,
+    responseHeaders: {},
+    responseBody:
+      paddingLength > 0
+        ? { data: { products: [{ id: "1", padding: "x".repeat(paddingLength) }] } }
+        : { data: { products: [{ id: "1" }] } },
+    operationName: "SearchProducts",
+    query: QUERY,
+    variables: { filters },
+    decodedParams: null,
+  });
+
+  const flowSteps = [
+    { step: "irrelevant instruction one", payloadField: "category" },
+    { step: "irrelevant instruction two", payloadField: "priceRange" },
+  ];
+
+  it("picks the two-facet capture over a larger one-facet capture of the same operation", () => {
+    const twoFacetCapture = searchCapture("category:widgets|priceRange:10~50", 0);
+    const oneFacetCapture = searchCapture("category:widgets", 20);
+
+    const primary = selectPrimaryGraphQLOperation(
+      [twoFacetCapture, oneFacetCapture],
+      flowSteps,
+      EMPTY_VOCABULARY,
+      {},
+      [],
+      null
+    );
+
+    expect(primary?.capture).toBe(twoFacetCapture);
   });
 });
 

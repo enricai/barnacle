@@ -1464,18 +1464,21 @@ export function selectPrimaryGraphQLOperation(
   // splice would actually have somewhere to land, not merely if a facet name
   // appears somewhere in its query/variables text (fieldScore's substring
   // match is incidental and can be satisfied by an unfiltered decoy).
-  const facetSpliceable = (c: Capture): boolean => {
+  const spliceableFacetCount = (c: Capture): number => {
     if (c.variables === null || typeof c.variables !== "object" || Array.isArray(c.variables)) {
-      return false;
+      return 0;
     }
-    return Object.values(c.variables as Record<string, unknown>).some(
-      (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
+    return Math.max(
+      0,
+      ...Object.values(c.variables as Record<string, unknown>).map((value) =>
+        countSpliceableFacets(value, payloadFieldList)
+      )
     );
   };
   // A facet-spliceable candidate must win over any non-facet candidate
   // regardless of size/recurrence/phase — those signals only decide among
   // candidates of the same facet-spliceability tier, never across tiers.
-  const facetCandidates = candidates.filter((c) => facetSpliceable(c));
+  const facetCandidates = candidates.filter((c) => spliceableFacetCount(c) > 0);
   const scoringPool = facetCandidates.length > 0 ? facetCandidates : candidates;
 
   const operationNameCounts = new Map<string, number>();
@@ -1487,6 +1490,7 @@ export function selectPrimaryGraphQLOperation(
   const maxSize = Math.max(...scoringPool.map(responseSize), 1);
   const maxFieldMatch = Math.max(...scoringPool.map(fieldMatchCount), 1);
   const maxRecurrence = Math.max(...Array.from(operationNameCounts.values()), 1);
+  const maxFacetCount = Math.max(...scoringPool.map(spliceableFacetCount), 1);
 
   const scored = scoringPool.map((capture) => {
     const sizeScore = responseSize(capture) / maxSize;
@@ -1494,11 +1498,13 @@ export function selectPrimaryGraphQLOperation(
     const phaseScore = capture.phase !== "home" ? 1 : 0;
     const recurrenceScore =
       (operationNameCounts.get(operationGroupKey(capture)) ?? 0) / maxRecurrence;
-    const facetScore = facetSpliceable(capture) ? 1 : 0;
+    const facetScore = spliceableFacetCount(capture) / maxFacetCount;
     // Field correlation carries the heaviest weight so a smaller facet-matching
     // operation outranks a larger decoy — size alone must not decide this.
-    // facetScore breaks ties among same-operation candidates in favor of the
-    // one spliceFacetsIntoStringVariable can actually act on.
+    // facetScore is normalized by how many caller facets a capture's variables
+    // can actually absorb, so a candidate that splices more facets always
+    // outranks a same-tier candidate that splices fewer, even with a smaller
+    // response body — as long as its own weight dominates sizeScore's.
     const score =
       fieldScore * 0.35 +
       sizeScore * 0.15 +
@@ -5307,16 +5313,39 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * stays byte-identical to the plain template literal whenever no matched
  * facet is optional (the existing default).
  */
+
+/**
+ * Counts the `key:value` segments of a facet-packed string value whose key
+ * correlates (case-insensitively) with one of `fields` — the same
+ * segment-split and matching rule {@link spliceFacetsIntoStringVariable}
+ * uses to decide what it can splice, exposed as a number so callers can
+ * compare how much of a candidate's facet string is actually wireable
+ * instead of only whether any of it is.
+ */
+export function countSpliceableFacets(value: unknown, fields: readonly string[]): number {
+  if (typeof value !== "string") return 0;
+  const segments = value.split(/([|,;])/);
+  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
+  if (!hasFacetShape) return 0;
+  let count = 0;
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    if (!segment.includes(":")) continue;
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    if (fields.some((field) => field.toLowerCase() === facetKey.toLowerCase())) count++;
+  }
+  return count;
+}
+
 export function spliceFacetsIntoStringVariable(
   value: unknown,
   fields: readonly string[],
   optionalFields: ReadonlySet<string> = new Set()
 ): string | null {
   if (typeof value !== "string") return null;
+  if (countSpliceableFacets(value, fields) === 0) return null;
   const segments = value.split(/([|,;])/);
-  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
-  if (!hasFacetShape) return null;
-  let hasMatch = false;
   let hasOptionalMatch = false;
   const matchedFieldFor = (segment: string): string | undefined => {
     const colonIndex = segment.indexOf(":");
@@ -5328,10 +5357,8 @@ export function spliceFacetsIntoStringVariable(
     if (!segment.includes(":")) continue;
     const matchedField = matchedFieldFor(segment);
     if (!matchedField) continue;
-    hasMatch = true;
     if (optionalFields.has(matchedField)) hasOptionalMatch = true;
   }
-  if (!hasMatch) return null;
   if (!hasOptionalMatch) {
     const body = segments
       .map((segment, index) => {
