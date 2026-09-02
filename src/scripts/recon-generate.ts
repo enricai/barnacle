@@ -8575,13 +8575,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               `\${${scopedAccessor(varName, field)}}`
             );
           }, withBase);
+          const withDrillParamBindings = applyDrillParamBindings(
+            foldReturnSpec,
+            chainCapture,
+            result
+          );
           assertNoFrozenVaryingDrillParams(
             "emitContractTs",
             chainCapture,
-            result,
+            withDrillParamBindings,
             actionSteps.map((s) => s.capture)
           );
-          return result;
+          return withDrillParamBindings;
         };
         const chainLines: string[] = [];
         // True once any chain step's parameterized URL actually ends up
