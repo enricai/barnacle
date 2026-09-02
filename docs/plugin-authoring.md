@@ -187,6 +187,13 @@ is supported in config-only manifests: `buildConfigPlugin` derives the
 `testmailInboxFromAddress` before calling `runHealingFlow`, so the payload's
 `Email` must itself be a testmail address (`{namespace}.{tag}@inbox.testmail.app`).
 
+For module plugins, `recon:generate` emits the same sourcing pattern in the
+generated browser-flow file: an `allocatedInbox` local resolved once per run
+via `testmailInboxFromAddress(payload.Email)` and passed to `runHealingFlow`'s
+`allocatedInbox` option — never a hardcoded inbox. To wire a production
+mailbox, supply a real `Email` on the request payload; the flow polls whatever
+address the caller sends, config- and payload-driven throughout.
+
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in
 `src/plugins/discover.ts` — core registers `POST /v1/my-site/run` at startup.
 ```ts
