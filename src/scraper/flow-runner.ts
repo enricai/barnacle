@@ -8884,8 +8884,10 @@ export async function executeStepWithHealing(params: {
       // through the site's own submit machinery. Fail loudly instead of
       // falling through to the normal cascade as if the solve had worked —
       // that's exactly the misleading "token injected=true" silent no-op
-      // this hook must not produce.
-      if (!injectResult.callbackDiscovered) {
+      // this hook must not produce. Only applies when a pattern is actually
+      // configured to poll for — with none configured, no poll ever ran, so
+      // there's nothing here to contradict the normal cascade/verifier.
+      if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
         throw new CaptchaError(
           `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
         );

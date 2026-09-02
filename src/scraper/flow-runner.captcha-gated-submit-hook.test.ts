@@ -471,6 +471,24 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(1);
   });
 
+  it("does not throw CaptchaError when no callback is discoverable but no advanceTransitionBodyPattern is configured (nothing to poll, cascade must still run)", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
+    ).catch(() => "cascade-fallthrough" as const);
+
+    // With no pattern configured, no poll ever runs, so the new CaptchaError
+    // guard must stay dormant and this falls through to the normal cascade
+    // (which is expected to eventually fail on this bare fake page/stagehand,
+    // but NOT via a thrown CaptchaError about a missing callback).
+    expect(result).toBe("cascade-fallthrough");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+  });
+
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {
     solveCaptchaMock.mockRejectedValue(new CaptchaSolverUnavailableError());
     const { page, submitCount } = makeFakePage({ hasSitekey: true });
