@@ -210,7 +210,10 @@ describe("buildConfigPlugin", () => {
     const manifest = baseManifest();
     (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
       "click apply",
-      { step: "go to the dashboard", navigateTo: "https://apply.acme.example/{{ .request.FirstName }}" },
+      {
+        step: "go to the dashboard",
+        navigateTo: "https://apply.acme.example/{{ .request.FirstName }}",
+      },
     ];
     const plugin = await buildConfigPlugin(manifest);
     const { session, context } = mockExecuteDeps();
