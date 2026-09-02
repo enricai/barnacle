@@ -6518,6 +6518,21 @@ export interface FoldReturnSpec {
    * a join key nested under an object, not just a top-level property, can be
    * declared. */
   joinFields: string[];
+  /** Binds a drill request's query params to fields on the CALLER's payload
+   * instead of a primary-response field or a frozen literal — the only two
+   * sources {@link findFrozenVaryingDrillParams} otherwise draws from. Keyed
+   * by the drill query-param name; each entry names the payload field it
+   * reads, the type to coerce it to, and the default used when the caller
+   * omits it, so today's frozen-literal behavior is preserved until a caller
+   * opts in. */
+  drillParamBindings?: Record<
+    string,
+    {
+      payloadField: string;
+      type: "int" | "string" | "boolean";
+      default: string | number | boolean;
+    }
+  >;
 }
 
 /**
@@ -6543,12 +6558,14 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
       return null;
     }
-    const { endpointPattern, resultsPath, drillResultsPath, joinFields } = foldReturn as {
-      endpointPattern?: unknown;
-      resultsPath?: unknown;
-      drillResultsPath?: unknown;
-      joinFields?: unknown;
-    };
+    const { endpointPattern, resultsPath, drillResultsPath, joinFields, drillParamBindings } =
+      foldReturn as {
+        endpointPattern?: unknown;
+        resultsPath?: unknown;
+        drillResultsPath?: unknown;
+        joinFields?: unknown;
+        drillParamBindings?: unknown;
+      };
     if (
       typeof endpointPattern !== "string" ||
       typeof resultsPath !== "string" ||
@@ -6560,15 +6577,67 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
     ) {
       return null;
     }
+    const parsedDrillParamBindings =
+      drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
+    if (drillParamBindings !== undefined && parsedDrillParamBindings === null) {
+      return null;
+    }
     return {
       endpointPattern,
       resultsPath,
       ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
       joinFields,
+      ...(parsedDrillParamBindings !== undefined
+        ? { drillParamBindings: parsedDrillParamBindings }
+        : {}),
     };
   } catch {
     return null;
   }
+}
+
+/** The JS `typeof` a `drillParamBindings` entry's `default` must match for
+ * its declared `type` — the same "assert the type, then check the default
+ * agrees" pattern the rest of {@link parseFoldReturnSpec} uses for its other
+ * fields, so a mistyped default is rejected at parse time rather than
+ * surfacing as a runtime coercion mismatch downstream. */
+const DRILL_PARAM_BINDING_TYPEOF: Record<"int" | "string" | "boolean", string> = {
+  int: "number",
+  string: "string",
+  boolean: "boolean",
+};
+
+/** Validates the `drillParamBindings` map on an object-form `foldReturn`
+ * block, returning `null` on any malformed entry so the caller can drop the
+ * whole `foldReturn` — mirroring how {@link parseFoldReturnSpec} already
+ * treats a malformed `joinFields`/`drillResultsPath`. */
+function parseDrillParamBindings(
+  raw: unknown
+): FoldReturnSpec["drillParamBindings"] | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const parsed: Record<
+    string,
+    { payloadField: string; type: "int" | "string" | "boolean"; default: string | number | boolean }
+  > = {};
+  for (const [paramName, entry] of entries) {
+    if (entry === null || typeof entry !== "object") return null;
+    const { payloadField, type, default: defaultValue } = entry as {
+      payloadField?: unknown;
+      type?: unknown;
+      default?: unknown;
+    };
+    if (
+      typeof payloadField !== "string" ||
+      payloadField.length === 0 ||
+      (type !== "int" && type !== "string" && type !== "boolean") ||
+      typeof defaultValue !== DRILL_PARAM_BINDING_TYPEOF[type]
+    ) {
+      return null;
+    }
+    parsed[paramName] = { payloadField, type, default: defaultValue as string | number | boolean };
+  }
+  return parsed;
 }
 
 /** Reads the value at an exact JSON path out of a response body, or

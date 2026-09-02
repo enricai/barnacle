@@ -455,6 +455,76 @@ describe("parseFoldReturnSpec", () => {
   it("returns null on malformed JSON", () => {
     expect(parseFoldReturnSpec("{not json")).toBeNull();
   });
+
+  it("parses a well-formed drillParamBindings map", () => {
+    const spec = {
+      ...SINGLE_SHOT_SPEC,
+      drillParamBindings: {
+        adults: { payloadField: "adults", type: "int", default: 2 },
+        children: { payloadField: "children", type: "int", default: 0 },
+      },
+    };
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: spec }))).toEqual(spec);
+  });
+
+  it("parses to a spec without drillParamBindings when omitted", () => {
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: SINGLE_SHOT_SPEC }))).not.toHaveProperty(
+      "drillParamBindings"
+    );
+  });
+
+  it("returns null when a binding's payloadField is a non-string", () => {
+    expect(
+      parseFoldReturnSpec(
+        flowFile({
+          foldReturn: {
+            ...SINGLE_SHOT_SPEC,
+            drillParamBindings: { adults: { payloadField: 42, type: "int", default: 2 } },
+          },
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("returns null when a binding declares an unrecognized type", () => {
+    expect(
+      parseFoldReturnSpec(
+        flowFile({
+          foldReturn: {
+            ...SINGLE_SHOT_SPEC,
+            drillParamBindings: {
+              adults: { payloadField: "adults", type: "float", default: 2 },
+            },
+          },
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("returns null when a binding's default typeof disagrees with its type", () => {
+    expect(
+      parseFoldReturnSpec(
+        flowFile({
+          foldReturn: {
+            ...SINGLE_SHOT_SPEC,
+            drillParamBindings: {
+              adults: { payloadField: "adults", type: "int", default: "2" },
+            },
+          },
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("parses a boolean-typed binding", () => {
+    const spec = {
+      ...SINGLE_SHOT_SPEC,
+      drillParamBindings: {
+        includeTaxes: { payloadField: "includeTaxes", type: "boolean", default: true },
+      },
+    };
+    expect(parseFoldReturnSpec(flowFile({ foldReturn: spec }))).toEqual(spec);
+  });
 });
 
 describe("resolveFoldPlan", () => {
