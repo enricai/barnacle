@@ -83,4 +83,26 @@ describe("applyDrillParamBindings", () => {
       "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=${payload.children ?? 0}"
     );
   });
+
+  it("treats a dotted param name as a literal, not a regex wildcard, so an unrelated param with one extra char isn't corrupted", () => {
+    const spec: FoldReturnSpec = {
+      endpointPattern: "itinerary/api/v1/sailings",
+      resultsPath: "data.cruises",
+      joinFields: ["id"],
+      drillParamBindings: {
+        "filter.type": { payloadField: "filterType", type: "string", default: "cabin" },
+      },
+    };
+    const url =
+      "https://api.example.com/itinerary/api/v1/sailings?filterXtype=unrelated&filter.type=cabin";
+    const capture = buildCapture({
+      url,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    expect(applyDrillParamBindings(spec, capture, url)).toBe(
+      'https://api.example.com/itinerary/api/v1/sailings?filterXtype=unrelated&filter.type=${payload.filterType ?? "cabin"}'
+    );
+  });
 });

@@ -5832,7 +5832,8 @@ export function applyDrillParamBindings(
   if (!compileFoldReturnEndpointMatcher(spec)(capture)) return text;
   return Object.entries(spec.drillParamBindings).reduce((acc, [paramName, binding]) => {
     const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
-    const paramRx = new RegExp(`([?&]${paramName}=)([^&]*)`, "g");
+    const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
     return acc.replace(paramRx, (full, prefix: string, value: string) =>
       value.startsWith("${") ? full : `${prefix}${accessor}`
     );
