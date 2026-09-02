@@ -158,6 +158,21 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     ] as Record<string, unknown>;
     expect(Object.keys(registry)).toHaveLength(1);
   });
+
+  it("wraps an already-assigned unwrapped hcaptcha.render even when the registry global pre-exists", () => {
+    const sandbox = makeFakeWindow();
+    (sandbox.window as Record<string, unknown>)[HCAPTCHA_CALLBACK_REGISTRY_GLOBAL] = {};
+
+    const render = (): string => "widget-late";
+    (sandbox.window as Record<string, unknown>).hcaptcha = { render };
+
+    runScript(sandbox);
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean };
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+  });
 });
 
 describe("installHcaptchaCallbackCaptureOnAllFrames", () => {

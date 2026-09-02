@@ -29,9 +29,7 @@ export const HCAPTCHA_CALLBACK_REGISTRY_GLOBAL = "__barnacleHcaptchaCallbacks";
 export function buildHcaptchaCallbackCaptureScript(): string {
   return `(function () {
     const REGISTRY_KEY = ${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)};
-    if (window[REGISTRY_KEY]) return;
-    const registry = {};
-    window[REGISTRY_KEY] = registry;
+    const registry = window[REGISTRY_KEY] || (window[REGISTRY_KEY] = {});
 
     function recordRender(config, widgetId) {
       if (!config || typeof config !== "object") return;
@@ -70,19 +68,27 @@ export function buildHcaptchaCallbackCaptureScript(): string {
       return hcaptcha;
     }
 
+    const descriptor = Object.getOwnPropertyDescriptor(window, "hcaptcha");
+    if (descriptor && descriptor.get && descriptor.get.__barnacleGetter) {
+      wrapHcaptchaObject(descriptor.get());
+      return;
+    }
+
     const existing = window.hcaptcha;
     if (existing) {
       wrapHcaptchaObject(existing);
       return;
     }
     let stored;
+    function get() {
+      return stored;
+    }
+    get.__barnacleGetter = true;
     try {
       Object.defineProperty(window, "hcaptcha", {
         configurable: true,
         enumerable: true,
-        get: function () {
-          return stored;
-        },
+        get: get,
         set: function (value) {
           stored = wrapHcaptchaObject(value);
         },
