@@ -7677,13 +7677,12 @@ interface PaginationSignal {
 }
 
 /**
- * Detects whether a read-only GraphQL primary operation exposes a bounded
- * paging signal: a total/count field in the captured response alongside a
- * skip+count (or offset+limit) shaped pagination variable whose declared
- * page size evenly divides the captured page's item count. When present,
- * {@link emitContractTs} emits a paging loop instead of a single fixed page.
+ * Detects a bounded paging signal from a single response/variables pair: a
+ * total/count field in the captured response alongside a skip+count (or
+ * offset+limit) shaped pagination variable whose declared page size evenly
+ * divides the captured page's item count.
  */
-function detectPaginationSignal(
+function detectPaginationSignalFromSample(
   responseBody: unknown,
   gqlVariables: unknown
 ): PaginationSignal | null {
@@ -7713,6 +7712,39 @@ function detectPaginationSignal(
     pageSize: container.pageSize,
     identityField,
   };
+}
+
+/**
+ * Detects whether a read-only GraphQL primary operation exposes a bounded
+ * paging signal, per {@link detectPaginationSignalFromSample}. When present,
+ * {@link emitContractTs} emits a paging loop instead of a single fixed page.
+ *
+ * Pagination is a property of the *operation*, not of any single capture: a
+ * selected primary capture can be a partial/last page (fails the `%
+ * pageSize` check) while another 2xx capture of the SAME operation
+ * (matched via {@link operationGroupKey}'s endpointPath::operationName
+ * identity) independently proves the operation paginates. When the primary
+ * sample fails, every same-identity sibling in `allCaptures` is checked in
+ * turn and the signal is built from the first one whose own response/
+ * variables satisfy the check — real cross-capture proof, not a relaxed or
+ * defaulted check on the primary sample itself.
+ */
+function detectPaginationSignal(
+  responseBody: unknown,
+  gqlVariables: unknown,
+  operationIdentity?: string | null,
+  allCaptures?: readonly Capture[]
+): PaginationSignal | null {
+  const primarySignal = detectPaginationSignalFromSample(responseBody, gqlVariables);
+  if (primarySignal) return primarySignal;
+  if (!operationIdentity || !allCaptures) return null;
+  for (const capture of allCaptures) {
+    if (capture.status < 200 || capture.status >= 300) continue;
+    if (operationGroupKey(capture) !== operationIdentity) continue;
+    const siblingSignal = detectPaginationSignalFromSample(capture.responseBody, capture.variables);
+    if (siblingSignal) return siblingSignal;
+  }
+  return null;
 }
 
 /** Renders `base.a.b` / `base["a-b"].c`, using bracket access for any path
@@ -7922,6 +7954,11 @@ export function emitContractTs(opts: {
    * with keys bound to `payload.<Field>` where they correlate with
    * `payloadFieldNames`. */
   gqlVariables?: unknown;
+  /** Every capture from the recon run (2xx and non-2xx alike), used by
+   * {@link detectPaginationSignal} to prove pagination from a same-operation
+   * sibling capture when the selected primary capture is a partial page.
+   * Defaults to `[]` for call sites that don't have the raw run captures. */
+  allCaptures?: readonly Capture[];
   auxFiles: string[];
   /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
   multiStepBody?: string;
@@ -8019,6 +8056,7 @@ export function emitContractTs(opts: {
     endpointPath,
     gqlOperationName,
     gqlVariables,
+    allCaptures = [],
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
@@ -8108,7 +8146,12 @@ export function emitContractTs(opts: {
   // already owns its own per-call semantics.
   const paginationSignal =
     !multiStepBody && gql && gqlOperationName
-      ? detectPaginationSignal(responseBody, gqlVariables)
+      ? detectPaginationSignal(
+          responseBody,
+          gqlVariables,
+          `${endpointPath}::${gqlOperationName}`,
+          allCaptures
+        )
       : null;
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
   // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
@@ -10200,6 +10243,7 @@ async function main(): Promise<void> {
       : (fallbackGraphQLCapture?.operationName ??
         parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
     gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
+    allCaptures: captures,
     auxFiles,
     multiStepBody,
     omitExecuteHttp: browserFlowOnly,
