@@ -4986,13 +4986,18 @@ export function emitMultiStepExecuteHttp(
               ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
               : withAccessorSwapped;
           }, text);
+          const withDrillParamBindings = applyDrillParamBindings(
+            foldReturnSpec,
+            chainCapture,
+            result
+          );
           assertNoFrozenVaryingDrillParams(
             "emitMultiStepExecuteHttp",
             chainCapture,
-            result,
+            withDrillParamBindings,
             actions.map((a) => a.capture)
           );
-          return result;
+          return withDrillParamBindings;
         };
 
         // Every chain step's response and produces are block-scoped to this
