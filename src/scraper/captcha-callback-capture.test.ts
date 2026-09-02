@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import vm from "node:vm";
 
 import type { Page } from "@browserbasehq/stagehand";
@@ -228,5 +230,10 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
 
     expect(page.frameForId).toHaveBeenCalledWith("navigated-frame");
     expect(navigatedFrameEvaluate).toHaveBeenCalledWith(buildHcaptchaCallbackCaptureScript());
+  });
+
+  it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
+    const source = fs.readFileSync(path.join(__dirname, "captcha-callback-capture.ts"), "utf8");
+    expect(source).not.toMatch(/siteId|pluginName|plugin\.meta/i);
   });
 });
