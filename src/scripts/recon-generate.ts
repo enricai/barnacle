@@ -5789,6 +5789,56 @@ function findFrozenVaryingDrillParams(
   return frozen;
 }
 
+/** Renders a {@link FoldReturnSpec.drillParamBindings} entry's default value
+ * as a JS literal — a `string` default is quoted so the emitted `??` operand
+ * is valid source text, while `int`/`boolean` defaults print as their bare
+ * JS `typeof` (already enforced by {@link DRILL_PARAM_BINDING_TYPEOF} at
+ * parse time). */
+function formatDrillParamBindingDefault(
+  type: "int" | "string" | "boolean",
+  value: string | number | boolean
+): string {
+  return type === "string" ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Rewrites the still-literal value of any query param on `text` that has a
+ * {@link FoldReturnSpec.drillParamBindings} entry into a
+ * `${payload.<field> ?? <default>}` accessor — but only when `capture` (the
+ * request `text` was rendered from) matches the spec's OWN
+ * `endpointPattern`, via {@link compileFoldReturnEndpointMatcher}. That
+ * guard is the point: two drill-downs in the same chain can share a query
+ * param name (`adults`), and only the one the flow author actually bound is
+ * allowed to have it rewritten — an unrelated same-shaped endpoint elsewhere
+ * in the chain is left untouched.
+ *
+ * Purely additive: a spec with no `drillParamBindings`, or a capture that
+ * doesn't match `endpointPattern`, returns `text` unchanged. A param already
+ * rewritten to a `${...}` accessor by the threaded-fields substitution pass
+ * (run immediately before this) is left alone too — this only fires on a
+ * value still sitting in the text as a literal.
+ *
+ * Anchored to the exact `key=value` query pair (via a `[?&]key=` prefix,
+ * consuming up to the next `&`) rather than a bare literal-value swap, so a
+ * path segment or unrelated param that happens to hold the same literal
+ * value is never touched.
+ */
+export function applyDrillParamBindings(
+  spec: FoldReturnSpec | null,
+  capture: Capture,
+  text: string
+): string {
+  if (spec?.drillParamBindings === undefined) return text;
+  if (!compileFoldReturnEndpointMatcher(spec)(capture)) return text;
+  return Object.entries(spec.drillParamBindings).reduce((acc, [paramName, binding]) => {
+    const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
+    const paramRx = new RegExp(`([?&]${paramName}=)([^&]*)`, "g");
+    return acc.replace(paramRx, (full, prefix: string, value: string) =>
+      value.startsWith("${") ? full : `${prefix}${accessor}`
+    );
+  }, text);
+}
+
 /** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
  * varying literal — shared by {@link parameterizeUrl} (below) and
  * `emitMultiStepExecuteHttp`'s own `parameterize` so the two emitters can't

@@ -1,0 +1,85 @@
+import { describe, expect, it } from "vitest";
+import { applyDrillParamBindings, type FoldReturnSpec } from "@/scripts/recon-generate";
+import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
+
+const SAILINGS_URL = "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=2&children=0";
+const UNRELATED_URL = "https://api.example.com/itinerary/api/v1/availability?adults=2&children=0";
+
+function buildSpec(): FoldReturnSpec {
+  return {
+    endpointPattern: "itinerary/api/v1/sailings",
+    resultsPath: "data.cruises",
+    joinFields: ["id"],
+    drillParamBindings: {
+      adults: { payloadField: "adults", type: "int", default: 2 },
+      children: { payloadField: "children", type: "int", default: 0 },
+    },
+  };
+}
+
+describe("applyDrillParamBindings", () => {
+  it("rewrites every bound param's still-literal value to a payload accessor, leaving every other segment byte-identical", () => {
+    const spec = buildSpec();
+    const capture = buildCapture({
+      url: SAILINGS_URL,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    const result = applyDrillParamBindings(spec, capture, SAILINGS_URL);
+    expect(result).toBe(
+      "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${payload.adults ?? 2}&children=${payload.children ?? 0}"
+    );
+  });
+
+  it("passes the text through unchanged when the capture's URL doesn't match endpointPattern", () => {
+    const spec = buildSpec();
+    const capture = buildCapture({
+      url: UNRELATED_URL,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    expect(applyDrillParamBindings(spec, capture, UNRELATED_URL)).toBe(UNRELATED_URL);
+  });
+
+  it("passes the text through unchanged when the spec declares no drillParamBindings", () => {
+    const spec: FoldReturnSpec = {
+      endpointPattern: "itinerary/api/v1/sailings",
+      resultsPath: "data.cruises",
+      joinFields: ["id"],
+    };
+    const capture = buildCapture({
+      url: SAILINGS_URL,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    expect(applyDrillParamBindings(spec, capture, SAILINGS_URL)).toBe(SAILINGS_URL);
+  });
+
+  it("passes the text through unchanged when spec is null", () => {
+    const capture = buildCapture({
+      url: SAILINGS_URL,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    expect(applyDrillParamBindings(null, capture, SAILINGS_URL)).toBe(SAILINGS_URL);
+  });
+
+  it("leaves a param already rewritten to a ${...} accessor by the threading pass alone", () => {
+    const spec = buildSpec();
+    const capture = buildCapture({
+      url: SAILINGS_URL,
+      requestPostData: null,
+      responseBody: {},
+      timestamp: "2024-11-01T00:00:00Z",
+    });
+    const alreadyThreaded =
+      "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=0";
+    expect(applyDrillParamBindings(spec, capture, alreadyThreaded)).toBe(
+      "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=${payload.children ?? 0}"
+    );
+  });
+});
