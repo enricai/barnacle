@@ -1,6 +1,6 @@
 {
   "name": "@enricai/barnacle",
-  "version": "1.12.35",
+  "version": "1.12.36",
   "description": "Barnacle turns any website into an API. POST a structured payload to a typed endpoint and Barnacle drives a browser session through the target site, returning a structured result.",
   "license": "MIT",
   "author": "Enricai",
