@@ -71,7 +71,7 @@ describe("applyDrillParamBindings", () => {
   });
 
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder in the test description, not a template
-  it("leaves a param already rewritten to a ${...} accessor by the threading pass alone", () => {
+  it("overrides a param already rewritten to a ${...} accessor by the threading pass", () => {
     const spec = buildSpec();
     const capture = buildCapture({
       url: SAILINGS_URL,
@@ -84,7 +84,7 @@ describe("applyDrillParamBindings", () => {
       "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=0";
     expect(applyDrillParamBindings(spec, capture, alreadyThreaded)).toBe(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${g0.occupancy.adults}&children=${payload.children ?? 0}"
+      "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=${payload.adults ?? 2}&children=${payload.children ?? 0}"
     );
   });
 
