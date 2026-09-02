@@ -8130,6 +8130,28 @@ export function emitContractTs(opts: {
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     Boolean(inputBody) && applicantContactFieldNames.has(name);
 
+  // A declared foldReturn.drillParamBindings names drill query params that
+  // are caller-driven instead of frozen literals (see
+  // recon-generate-foldreturn-cannot-bind-drill-query-param-to-caller-payload.md)
+  // — each binding's payloadField becomes a typed, defaulted, optional
+  // payload field, so omitting it preserves today's frozen-literal behavior
+  // and supplying it lets the caller drive the drill request. Sorted by
+  // payloadField for the same deterministic-output ordering the other
+  // discovered-field loops already keep.
+  const drillParamBindingEntries = Object.values(foldReturnSpec?.drillParamBindings ?? {}).sort(
+    (a, b) => a.payloadField.localeCompare(b.payloadField)
+  );
+  for (const binding of drillParamBindingEntries) {
+    if (isReservedByApplicantContactSchema(binding.payloadField)) continue;
+    const zod =
+      binding.type === "int"
+        ? `z.coerce.number().int().optional().default(${JSON.stringify(binding.default)})`
+        : binding.type === "boolean"
+          ? `z.coerce.boolean().optional().default(${JSON.stringify(binding.default)})`
+          : `z.string().optional().default(${JSON.stringify(binding.default)})`;
+    addExtendField(binding.payloadField, `  ${binding.payloadField}: ${zod},`);
+  }
+
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. A query-type flow (no ApplicantContactSchema base) still
   // needs these fields spelled out explicitly.
