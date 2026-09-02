@@ -201,6 +201,30 @@ import { BUILTIN_SITE_PLUGINS } from "@/plugins/discover";
 BUILTIN_SITE_PLUGINS.push(mySitePlugin as SitePlugin<unknown, unknown>);
 ```
 
+## Public subpath compatibility
+
+Once `recon:generate` has ever emitted an import of a symbol from a given
+public subpath (e.g. `import { waitForThing } from "@/scraper/some-module";`),
+that subpath must keep re-exporting the symbol indefinitely, even after the
+symbol's canonical implementation moves elsewhere. Generated plugin code
+across every operator's tree keeps importing from the subpath it was
+generated against — it is never regenerated in place — so moving a symbol's
+home and dropping the old subpath's re-export breaks every generated file
+still importing from there, silently, on the next deploy.
+
+If a symbol's implementation moves (e.g. from `@/scraper/some-module` to
+`@/scraper/some-other-module`), keep a re-export at the old subpath:
+
+```ts
+// @/scraper/some-module.ts
+export { waitForThing } from "@/scraper/some-other-module";
+```
+
+Removing a public subpath re-export outright is a **breaking change**: it
+requires a major-version bump and a migration note in the changelog telling
+operators which import to update in their generated code. It must never ship
+as part of a minor or patch release.
+
 ## Wire up the nightly smoke test and maintenance loop
 
 Add a step to `.github/workflows/smoke.yml`:
