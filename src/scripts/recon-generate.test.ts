@@ -12,6 +12,7 @@ import {
   buildKnownFieldValues,
   collectHeaderBindings,
   compileActionSteps,
+  countSpliceableFacets,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
   emitConfigManifest,
@@ -71,6 +72,28 @@ const BASE_OPTS = {
   endpointPath: "/api/search",
   auxFiles: [],
 };
+
+describe("countSpliceableFacets", () => {
+  it("counts every segment whose key matches a given field", () => {
+    expect(countSpliceableFacets("ship:IC|visiting:CARI", ["ship", "visiting", "port"])).toBe(2);
+  });
+
+  it("counts a single matching segment", () => {
+    expect(countSpliceableFacets("visiting:CARI", ["ship", "visiting", "port"])).toBe(1);
+  });
+
+  it("returns 0 for a non-string value", () => {
+    expect(countSpliceableFacets(42, ["ship"])).toBe(0);
+  });
+
+  it("returns 0 when no segment carries a facet shape", () => {
+    expect(countSpliceableFacets("just a plain string", ["ship"])).toBe(0);
+  });
+
+  it("returns 0 when segments carry facet shape but no key matches", () => {
+    expect(countSpliceableFacets("region:EU", ["ship", "visiting"])).toBe(0);
+  });
+});
 
 describe("emitContractTs — multipart plugin", () => {
   const source = emitContractTs({
