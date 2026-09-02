@@ -5283,8 +5283,6 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
 
 // ── code emitters ─────────────────────────────────────────────────────────────
 
-/** Generates a complete contract.ts source string for a plugin — exported so
- * unit tests can drive the emitter directly without spawning the CLI. */
 /**
  * Splices payload fields into a string variable that packs filter facets as
  * delimited `key:value` segments (e.g. a product-catalog `filters` variable
@@ -5298,26 +5296,81 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * delimiter-separated `key:value` segment, and strings whose facet keys
  * correlate with none of `fields`, so opaque tokens, JSON blobs, and plain
  * literals fall through to the existing JSON.stringify path unchanged.
+ *
+ * When a matched facet's field is in `optionalFields`, its segment is
+ * emitted as a conditionally-included array element (`...(payload.<field> ?
+ * [...] : [])`) instead of being spliced inline into a flat template, so an
+ * absent optional facet (e.g. a caller who supplies `region` but omits
+ * `brand`) drops its whole `key:value` segment and delimiter at runtime
+ * rather than emitting `key:undefined`. The array is joined with the
+ * delimiter recovered from the string's own first separator, so output
+ * stays byte-identical to the plain template literal whenever no matched
+ * facet is optional (the existing default).
  */
-function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[]): string | null {
+export function spliceFacetsIntoStringVariable(
+  value: unknown,
+  fields: readonly string[],
+  optionalFields: ReadonlySet<string> = new Set()
+): string | null {
   if (typeof value !== "string") return null;
   const segments = value.split(/([|,;])/);
   const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
   if (!hasFacetShape) return null;
   let hasMatch = false;
-  const body = segments
-    .map((segment, index) => {
-      if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
-      const colonIndex = segment.indexOf(":");
-      const facetKey = segment.slice(0, colonIndex);
-      const matchedField = fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
-      if (!matchedField) return escapeForTemplateLiteral(segment);
-      hasMatch = true;
-      return `${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}`;
-    })
-    .join("");
+  let hasOptionalMatch = false;
+  const matchedFieldFor = (segment: string): string | undefined => {
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    return fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
+  };
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    if (!segment.includes(":")) continue;
+    const matchedField = matchedFieldFor(segment);
+    if (!matchedField) continue;
+    hasMatch = true;
+    if (optionalFields.has(matchedField)) hasOptionalMatch = true;
+  }
   if (!hasMatch) return null;
-  return `\`${body}\``;
+  if (!hasOptionalMatch) {
+    const body = segments
+      .map((segment, index) => {
+        if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
+        const matchedField = matchedFieldFor(segment);
+        if (!matchedField) return escapeForTemplateLiteral(segment);
+        const colonIndex = segment.indexOf(":");
+        const facetKey = segment.slice(0, colonIndex);
+        return `${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}`;
+      })
+      .join("");
+    return `\`${body}\``;
+  }
+  // Each unit carries its OWN trailing delimiter (the literal separator that
+  // followed it in the source string), so dropping an omitted optional
+  // facet's unit removes its segment and delimiter together without
+  // disturbing a differently-delimited neighbor (e.g. "a:1|b:2;c:3" keeps
+  // "|" before b and ";" before c even when b is optional and absent).
+  const elements: string[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    const trailingDelimiter = (segments[index + 1] as string | undefined) ?? "";
+    const matchedField = segment.includes(":") ? matchedFieldFor(segment) : undefined;
+    if (!matchedField) {
+      elements.push(
+        `\`${escapeForTemplateLiteral(segment)}${escapeForTemplateLiteral(trailingDelimiter)}\``
+      );
+      continue;
+    }
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    const segmentLiteral = `\`${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}${escapeForTemplateLiteral(trailingDelimiter)}\``;
+    elements.push(
+      optionalFields.has(matchedField)
+        ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])`
+        : segmentLiteral
+    );
+  }
+  return `[${elements.join(", ")}].join("")`;
 }
 
 /**
@@ -5328,17 +5381,23 @@ function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[
  * a string packing facets in a delimited `key:value` grammar (see
  * {@link spliceFacetsIntoStringVariable}), a correlated facet's value slot is
  * spliced with `payload.<Field>` instead of freezing the whole string; any
- * other value is emitted verbatim via JSON.stringify.
+ * other value is emitted verbatim via JSON.stringify. `optionalFieldNames`
+ * marks which of `payloadFieldNames` a facet-string splice should treat as
+ * optional (see {@link spliceFacetsIntoStringVariable}); it has no effect on
+ * top-level key correlation.
  */
 function renderGqlVariablesExpr(
   variables: unknown,
-  payloadFieldNames: Set<string> | undefined
+  payloadFieldNames: Set<string> | undefined,
+  optionalFieldNames: ReadonlySet<string> = new Set()
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
   const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
     const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-    const facetSpliceExpr = matchedField ? null : spliceFacetsIntoStringVariable(value, fields);
+    const facetSpliceExpr = matchedField
+      ? null
+      : spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
     const valueExpr = matchedField
       ? `payload.${matchedField}`
       : (facetSpliceExpr ?? JSON.stringify(value));
@@ -7825,6 +7884,8 @@ export function buildContractChecklist(opts: {
   ].filter((line) => line !== "");
 }
 
+/** Generates a complete contract.ts source string for a plugin — exported so
+ * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
   siteId: string;
   /**
@@ -7913,6 +7974,12 @@ export function emitContractTs(opts: {
    * payload schema so those references typecheck. Shares the accumulator with
    * emitBrowserFlowTs so schema and flow can never drift. */
   payloadFieldNames?: Set<string>;
+  /** Subset of `payloadFieldNames` a flow step registered as `optional: true`
+   * (required wins when the same field is also registered by a non-optional
+   * step, mirroring the request-surface "widest wins" rule). Marks the
+   * corresponding payload-schema field `.optional()` and is threaded into
+   * {@link renderGqlVariablesExpr} so an absent optional facet drops its
+   * segment instead of splicing `undefined` into a GraphQL filter string. */ optionalPayloadFieldNames?: ReadonlySet<string>;
   /** Response-header/cookie-origin state bindings collected from the action
    * sequence's produces[] (see `collectHeaderBindings`) — rendered as
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
@@ -7967,6 +8034,7 @@ export function emitContractTs(opts: {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     payloadFieldNames,
+    optionalPayloadFieldNames = new Set<string>(),
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
   } = opts;
@@ -8184,7 +8252,9 @@ export function emitContractTs(opts: {
   if (payloadFieldNames) {
     for (const name of [...payloadFieldNames].sort()) {
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: ${name === "Email" ? "z.email()" : "z.string()"},`);
+      const zod = name === "Email" ? "z.email()" : "z.string()";
+      const suffix = optionalPayloadFieldNames.has(name) ? ".optional()" : "";
+      addExtendField(name, `  ${name}: ${zod}${suffix},`);
     }
   }
 
@@ -8421,7 +8491,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
     ? JSON.stringify(gqlOperationName)
     : JSON.stringify(`${pascal}Search`);
   const gqlVariablesExpr = gqlOperationName
-    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames)
+    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
     : "{ q: payload.query }";
 
   /** Builds the nested `for` loop block(s) — see {@link pathToFoldLoopLines}
@@ -9148,7 +9218,7 @@ export function emitBrowserFlowTs(opts: {
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-}): { code: string; payloadFieldNames: Set<string> } {
+}): { code: string; payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const {
     siteId,
     pascal,
@@ -9161,6 +9231,17 @@ export function emitBrowserFlowTs(opts: {
   } = opts;
 
   const payloadFieldNames = new Set<string>();
+  // Widest wins, mirroring the request-surface precedent above: a field is
+  // only optional if EVERY step that registers it does so as optional.
+  const optionalPayloadFieldNames = new Set<string>();
+  const requiredPayloadFieldNames = new Set<string>();
+  const registerFieldOptionality = (field: string, optional: boolean): void => {
+    if (optional && !requiredPayloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+    if (!optional) {
+      requiredPayloadFieldNames.add(field);
+      optionalPayloadFieldNames.delete(field);
+    }
+  };
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
@@ -9207,16 +9288,21 @@ export function emitBrowserFlowTs(opts: {
       field === null && !(isObj && step.payloadFieldNone)
         ? resolveCompositePersonaFields(instruction, knownFieldValues)
         : null;
-    if (field !== null) payloadFieldNames.add(field);
+    const optional = isObj ? step.optional === true : false;
+    if (field !== null) {
+      payloadFieldNames.add(field);
+      registerFieldOptionality(field, optional);
+    }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
       payloadFieldNames.add(composite.fieldB);
+      registerFieldOptionality(composite.fieldA, optional);
+      registerFieldOptionality(composite.fieldB, optional);
     }
     const instructionExpr =
       composite !== null
         ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
         : buildStepInstructionExpr(instruction, field);
-    const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
@@ -9365,7 +9451,7 @@ ${flowStepsBlock}
 `
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
-  return { code, payloadFieldNames };
+  return { code, payloadFieldNames, optionalPayloadFieldNames };
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -10129,6 +10215,7 @@ async function main(): Promise<void> {
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
     payloadFieldNames: browserFlow.payloadFieldNames,
+    optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
     headerBindings,
     unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
   };
