@@ -5046,18 +5046,25 @@ export interface InjectCaptchaTokenResult {
 }
 
 /**
- * Site-agnostic captcha-solve hand-off: given an already-solved token, commit
- * it into the page's hidden response field and dispatch the framework-visible
- * `change` event so the field's own value listener observes it.
+ * Site-agnostic captcha-solve hand-off: given an already-solved token,
+ * discover the widget's registered `data-callback` and invoke it with the
+ * token so the site assembles its own submit (its own hidden fields, its own
+ * submit path); only when no callback is discoverable does this fall back to
+ * setting the hidden response field directly and dispatching the
+ * framework-visible `change` event so the field's own value listener
+ * observes it.
  *
- * Widgets of this shape create a hidden `<input name="{responseField}">`
- * carrying the solved token, and some widgets' own render callback submits
- * the enclosing form as soon as a token lands — assigning the field's value
- * can therefore itself navigate the frame synchronously, mid-evaluate. No
- * eval this function issues after the precheck is depended on for a return
- * value: only the precheck (a pure DOM query, which cannot navigate) is
- * awaited for its result; the value-set and change-dispatch evals are fired
- * and their rejections discarded, exactly like a navigating `form.submit()`
+ * Widgets of this shape anchor a `[data-sitekey]` element whose
+ * `data-callback` attribute names a function on `window`; that callback (not
+ * a bare field assignment) is what some sites depend on to append companion
+ * hidden fields before submitting. Invoking it — or, absent one, assigning
+ * the response field's value — can itself navigate the frame synchronously,
+ * mid-evaluate, on widgets whose callback (or value-set side effect) submits
+ * the enclosing form as soon as a token lands. No eval this function issues
+ * after the precheck is depended on for a return value: only the precheck (a
+ * pure DOM query, which cannot navigate) is awaited for its result; the
+ * callback-invoke and the value-set/change-dispatch evals are fired and
+ * their rejections discarded, exactly like a navigating `form.submit()`
  * would be.
  *
  * Deliberately narrow: no polling, no verification, no wait budget, and no
@@ -5081,20 +5088,39 @@ export async function injectCaptchaTokenAndSubmit(
   const precheckExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
-    if (field) return { fieldExists: true, hasForm: Boolean(field.closest("form")) };
+    const sitekeyEl = document.querySelector("[data-sitekey]");
+    const callbackName = sitekeyEl ? sitekeyEl.getAttribute("data-callback") : null;
+    const callbackExists = Boolean(callbackName) && typeof window[callbackName] === "function";
+    const callback = callbackExists ? callbackName : null;
+    if (field) return { fieldExists: true, hasForm: Boolean(field.closest("form")), callback };
     const forms = Array.from(document.querySelectorAll("form"));
     const form = forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
-    return { fieldExists: false, hasForm: Boolean(form) };
+    return { fieldExists: false, hasForm: Boolean(form), callback };
   })()`;
   // Purely a DOM query — reads but never mutates the page, so it cannot
   // itself trigger navigation. This is the only evaluate call in this
   // function whose return value is depended on.
-  const { fieldExists, hasForm } = await target.evaluate<{
+  const { fieldExists, hasForm, callback } = await target.evaluate<{
     fieldExists: boolean;
     hasForm: boolean;
+    callback: string | null;
   }>(precheckExpr);
   const injected = fieldExists || hasForm;
   if (!injected) return { injected, hasForm };
+
+  if (callback) {
+    const invokeCallbackExpr = `(() => {
+      const token = ${JSON.stringify(token)};
+      window[${JSON.stringify(callback)}](token);
+    })()`;
+    // Invoking the widget's own callback can navigate the frame synchronously
+    // from within this call (the callback is free to build its own fields and
+    // submit), tearing down the execution context before a return value
+    // marshals — that rejection is the expected outcome, not a real failure,
+    // so it's discarded here rather than depended on.
+    await target.evaluate(invokeCallbackExpr).catch(() => undefined);
+    return { injected, hasForm };
+  }
 
   const setValueExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
