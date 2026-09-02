@@ -21,9 +21,11 @@ import {
   runHealingFlow,
   selectionCountFromSignature,
   shouldCaptureSelectionState,
+  waitForSpaReady as waitForSpaReadyFromFlowRunner,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
 import { type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
+import { waitForSpaReady as waitForSpaReadyFromSpaReadiness } from "@/scraper/spa-readiness";
 import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Capture } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
@@ -1786,5 +1788,11 @@ describe("flow-runner/parseWidgetOptionClickStep — cascading-multiselect categ
   it("returns null when there's no click verb or no category/option noun", () => {
     expect(parseWidgetOptionClickStep("open the 'Job Boards' category")).toBeNull();
     expect(parseWidgetOptionClickStep("click the 'Job Boards' button")).toBeNull();
+  });
+});
+
+describe("flow-runner/waitForSpaReady re-export", () => {
+  it("re-exports the same function reference consumer code generated against an older engine version imported from @/scraper/flow-runner", () => {
+    expect(waitForSpaReadyFromFlowRunner).toBe(waitForSpaReadyFromSpaReadiness);
   });
 });
