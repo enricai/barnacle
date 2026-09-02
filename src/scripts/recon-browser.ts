@@ -89,6 +89,7 @@ import {
   type CaptureFn,
   capturesAfterIndex,
   type EmailStepConfig,
+  executeNavigateStep,
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
@@ -111,10 +112,10 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
-import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
+import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
@@ -803,6 +804,10 @@ interface NormalizedStep {
   // recognize an already-covered target regardless of instruction wording.
   targetId?: string;
   origin: "original" | "replan";
+  // See RECON_FLOW_STEP_SCHEMA in src/lib/llm/schemas.ts: opts this step into
+  // executeNavigateStep (a direct page.goto) instead of the self-heal cascade.
+  // Optional for the same reason as submitStep — absence is treated as false.
+  navigateTo?: string;
 }
 
 function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep[] {
@@ -822,6 +827,7 @@ function normalizeFlow(steps: z.infer<typeof RECON_FLOW_SCHEMA>): NormalizedStep
           targetId: s.targetId,
           // Preserve a persisted replan marker across runs; absence = authored.
           origin: s.origin ?? "original",
+          navigateTo: s.navigateTo,
         }
   );
 }
@@ -867,13 +873,16 @@ function denormalizeStep(step: NormalizedStep):
       payloadFieldNone?: true;
       targetId?: string;
       origin?: "replan";
+      navigateTo?: string;
     } {
   const hasSplicerHint = step.payloadField !== undefined || step.payloadFieldNone === true;
-  // targetId and a "replan" origin are load-bearing identity that must survive
-  // the round-trip, so a step carrying either is forced to object form even when
-  // it has no flags. Authored ("original") origin stays implicit — persisting it
-  // on every step would needlessly object-ify the whole flow file.
-  const hasIdentity = step.targetId !== undefined || step.origin === "replan";
+  // targetId, a "replan" origin, and navigateTo are load-bearing identity that
+  // must survive the round-trip, so a step carrying any of them is forced to
+  // object form even when it has no flags. Authored ("original") origin stays
+  // implicit — persisting it on every step would needlessly object-ify the
+  // whole flow file.
+  const hasIdentity =
+    step.targetId !== undefined || step.origin === "replan" || step.navigateTo !== undefined;
   if (
     !step.optional &&
     !step.upload &&
@@ -897,6 +906,7 @@ function denormalizeStep(step: NormalizedStep):
     payloadFieldNone?: true;
     targetId?: string;
     origin?: "replan";
+    navigateTo?: string;
   } = {
     step: step.instruction,
   };
@@ -910,6 +920,7 @@ function denormalizeStep(step: NormalizedStep):
   if (step.payloadFieldNone === true) out.payloadFieldNone = true;
   if (step.targetId !== undefined) out.targetId = step.targetId;
   if (step.origin === "replan") out.origin = "replan";
+  if (step.navigateTo !== undefined) out.navigateTo = step.navigateTo;
   return out;
 }
 
@@ -2485,48 +2496,62 @@ async function main(): Promise<void> {
         // No-ops (zero delay) when frameTarget.frame is null.
         await waitForChildFrameReady(frameTarget);
         try {
-          const stepPromise = executeStepWithHealing({
-            stagehand,
-            page,
-            frameTarget,
-            step: step.instruction,
-            optional: step.optional,
-            upload: step.upload,
-            submitStep: step.submitStep === true,
-            captchaGated: step.captchaGated === true,
-            emailStep: step.emailStep === true,
-            emailStepConfig: step.emailStepConfig,
-            allocatedInbox,
-            flowHasSubmitSemantics: flowHasSubmitSemantics({
-              steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
-              submitEndpointPattern,
-              requireSubmitEndpointMatch,
-            }),
-            stepIndex: i,
-            totalSteps: () => plan.length,
-            phase: currentPhase,
-            signalCounter,
-            recentCaptures,
-            recentCaptureMeta,
-            anthropic,
-            rephraseModel,
-            logger,
-            uploadFixture,
-            isFinalStep: i === plan.length - 1,
-            submitEndpointPattern,
-            submittedStateSelectors,
-            requireSubmitEndpointMatch,
-            advanceTransitionBodyPattern,
-            successUrlFragments,
-            successPageTitleHints,
-            ownBackendHostnames,
-            knownErrorClassPrefixes,
-            wizardExitButtonLabels,
-            getSuppressedAisdkElementIdErrorCount: session.getSuppressedAisdkElementIdErrorCount,
-            trajectory,
-            captureFn,
-            onStepFailure: dumpStepFailure,
-          });
+          // A navigateTo step is a direct page.goto, not an act/observe against
+          // the current DOM, so it skips straight to executeNavigateStep
+          // instead of the self-heal cascade.
+          const stepPromise: Promise<"completed" | "skipped"> =
+            step.navigateTo !== undefined
+              ? executeNavigateStep({
+                  page,
+                  url: step.navigateTo,
+                  optional: step.optional,
+                  logger,
+                  waitUntil: GOTO_WAIT_UNTIL,
+                  timeoutMs: GOTO_TIMEOUT_MS,
+                })
+              : executeStepWithHealing({
+                  stagehand,
+                  page,
+                  frameTarget,
+                  step: step.instruction,
+                  optional: step.optional,
+                  upload: step.upload,
+                  submitStep: step.submitStep === true,
+                  captchaGated: step.captchaGated === true,
+                  emailStep: step.emailStep === true,
+                  emailStepConfig: step.emailStepConfig,
+                  allocatedInbox,
+                  flowHasSubmitSemantics: flowHasSubmitSemantics({
+                    steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
+                    submitEndpointPattern,
+                    requireSubmitEndpointMatch,
+                  }),
+                  stepIndex: i,
+                  totalSteps: () => plan.length,
+                  phase: currentPhase,
+                  signalCounter,
+                  recentCaptures,
+                  recentCaptureMeta,
+                  anthropic,
+                  rephraseModel,
+                  logger,
+                  uploadFixture,
+                  isFinalStep: i === plan.length - 1,
+                  submitEndpointPattern,
+                  submittedStateSelectors,
+                  requireSubmitEndpointMatch,
+                  advanceTransitionBodyPattern,
+                  successUrlFragments,
+                  successPageTitleHints,
+                  ownBackendHostnames,
+                  knownErrorClassPrefixes,
+                  wizardExitButtonLabels,
+                  getSuppressedAisdkElementIdErrorCount:
+                    session.getSuppressedAisdkElementIdErrorCount,
+                  trajectory,
+                  captureFn,
+                  onStepFailure: dumpStepFailure,
+                });
           // Races the step's own promise against the session's teardown death
           // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
           // transport is reaped mid-step, the in-flight promise above never
