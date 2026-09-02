@@ -5171,7 +5171,11 @@ export async function injectCaptchaTokenAndSubmit(
  * used only when the caller's own transition poll observed no advance after
  * the inject, so the widget's callback (if any) evidently didn't submit for
  * us. Kept separate from the inject primitive so the caller can gate its use
- * on an observed transition rather than firing it unconditionally.
+ * on an observed transition rather than firing it unconditionally. Prefers
+ * `form.requestSubmit()` so any submit-event listener (including one that
+ * calls `preventDefault()` and drives its own submit logic) and native form
+ * validation still run, matching real-browser submit semantics; falls back
+ * to the bare `form.submit()` only when `requestSubmit` isn't available.
  */
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
@@ -5181,7 +5185,7 @@ export async function submitCaptchaGatedForm(
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
     const form = field ? field.closest("form") : null;
-    if (form) form.submit();
+    if (form) (form.requestSubmit ? form.requestSubmit() : form.submit());
   })()`;
   // form.submit() navigates the frame synchronously, tearing down the execution
   // context before Runtime.evaluate can marshal a return value for this call —
