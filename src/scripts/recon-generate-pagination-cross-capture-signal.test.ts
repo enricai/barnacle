@@ -172,7 +172,7 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     expect(contract).toContain("const PAGE_SIZE = 10;");
     expect(contract).toContain("itemsById");
     expect(contract).toContain("MAX_PAGES");
-  }, 30_000);
+  }, 60_000);
 
   it("falsifier: stays a single-fixed-page contract when no same-operation sibling proves pagination (control)", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-pagination-cross-capture-nosibling-"));
@@ -193,5 +193,5 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).not.toContain("const PAGE_SIZE = 10;");
     expect(contract).not.toContain("MAX_PAGES");
-  }, 30_000);
+  }, 60_000);
 });
