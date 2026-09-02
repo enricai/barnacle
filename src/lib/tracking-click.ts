@@ -19,7 +19,7 @@ import {
 import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import { captureBeaconEvent } from "@/lib/telemetry/beacon-capture";
-import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
+import { createBrowserSession } from "@/scraper/session";
 
 const logger = getLogger({ name: "tracking-click" });
 
@@ -63,7 +63,7 @@ async function captureBeaconOutcomeSafely(
  * the same never-throw contract `getOutboundIp` itself already applies.
  */
 async function resolveSessionIp(
-  session: Awaited<ReturnType<typeof createBrowserbaseBrowserSession>> | undefined
+  session: Awaited<ReturnType<typeof createBrowserSession>> | undefined
 ): Promise<string | null> {
   if (!session?.getOutboundIp) return null;
   try {
@@ -87,9 +87,10 @@ async function executeTrackingClick(
   const startedAt = Date.now();
   recordTrackingClickAttempt(siteId);
 
-  let session: Awaited<ReturnType<typeof createBrowserbaseBrowserSession>> | undefined;
+  let session: Awaited<ReturnType<typeof createBrowserSession>> | undefined;
   try {
-    session = await createBrowserbaseBrowserSession({
+    session = await createBrowserSession({
+      provider: "browserbase",
       advancedStealth: true,
       browserbaseSessionCreateParams: { timeout: BROWSERBASE_SESSION_TIMEOUT_SECONDS },
     });

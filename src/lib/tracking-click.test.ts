@@ -22,8 +22,8 @@ const mockCreateSession = vi.hoisted(() =>
   })
 );
 
-vi.mock("@/scraper/session-browserbase", () => ({
-  createBrowserbaseBrowserSession: mockCreateSession,
+vi.mock("@/scraper/session", () => ({
+  createBrowserSession: mockCreateSession,
 }));
 
 vi.mock("@/lib/dd-metrics", () => ({
@@ -69,6 +69,7 @@ describe("fireTrackingClick", () => {
     await drainTrackingClicks();
 
     expect(mockCreateSession).toHaveBeenCalledWith({
+      provider: "browserbase",
       advancedStealth: true,
       browserbaseSessionCreateParams: { timeout: 300 },
     });
