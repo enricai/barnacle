@@ -66,6 +66,19 @@ It round-trips losslessly through replan write-back, and `recon:generate`
 threads it verbatim into both emit paths' `meta.displayName` /
 `metadata.displayName` when present, leaving it unset otherwise.
 
+**Emailed verification:** a step targeting an emailed link or code (magic-link
+sign-in, OTP confirmation) sets `emailStep: true` plus an `emailStepConfig`
+object — `extract` (`"link"` | `"code"`, default `"link"`), `subjectContains`,
+`linkPattern`/`codePattern` overrides, `action` (`"navigate"` | `"fill"`,
+default `"navigate"`), and `timeoutMs` (default 120s — real inbox delivery is
+slower than a captcha solve). The hook pauses the cascade, polls the run's
+allocated testmail inbox for a matching message, and extracts a link or code
+from it before acting. This requires an inbox allocated for the run (the
+recon CLI's `--allocate-email` flag); **config-only `*.plugin.json` manifests
+cannot declare `emailStep`** — `buildConfigPlugin` rejects the manifest at
+load time rather than silently falling through to a plain fill with no email
+polled. See [docs/plugin-authoring.md](./plugin-authoring.md#register-the-plugin).
+
 `observe()` cannot see into a cross-origin OOPIF at all — every scoping form
 returns zero candidates even though the frame is attached. For a frame-scoped
 step, the cascade falls back to `page.deepLocator()` whenever `observe()`
