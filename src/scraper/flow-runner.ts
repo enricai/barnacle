@@ -66,6 +66,7 @@ import {
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 import {
+  CaptchaError,
   EmailStepExtractError,
   EmailStepInboxUnavailableError,
   type RunHealingFlowResult,
@@ -8860,10 +8861,34 @@ export async function executeStepWithHealing(params: {
       // a form the widget's own callback already advanced.
       if (!confirmed && injectResult.hasForm) {
         await submitCaptchaGatedForm(captchaTarget);
+        if (advanceTransitionBodyPattern) {
+          confirmed = await waitForTransitionBody({
+            page,
+            preIdx: preCaptchaCaptureIdx,
+            advanceTransitionBodyPattern,
+            timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+            intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+          });
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-fallback-submit transition poll confirmed=${confirmed}`
+          );
+        }
       }
       if (confirmed) {
         trajectory?.push({ stepIndex, verifiedBy: "network" });
         return "completed";
+      }
+      // No render-config callback was discoverable AND neither the inject's
+      // own submit path nor the explicit fallback submit produced a
+      // confirmed transition: the token was never actually delivered
+      // through the site's own submit machinery. Fail loudly instead of
+      // falling through to the normal cascade as if the solve had worked —
+      // that's exactly the misleading "token injected=true" silent no-op
+      // this hook must not produce.
+      if (!injectResult.callbackDiscovered) {
+        throw new CaptchaError(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
+        );
       }
     }
   }
