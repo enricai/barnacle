@@ -187,15 +187,19 @@ describe("selectPrimaryGraphQLOperation facet preference", () => {
   });
 
   it("prefers the capture that splices more caller facets over a same-operation capture with a larger response that splices fewer facets", () => {
+    // oneFacetCapture's `note` field incidentally mentions "priceRange" so
+    // fieldMatchCount ties both candidates at 2/2 — this isolates facetScore
+    // as the only signal that can distinguish "splices 1 facet" from
+    // "splices 2 facets"; without it sizeScore's larger response wins.
     const twoFacetCapture = gqlCapture({
       variables: { filters: "category:kitchen|priceRange:10~50" },
       responseBody: { catalogSearch: { items: [{ id: 1, name: "Item 1" }] } },
     });
     const oneFacetCapture = gqlCapture({
-      variables: { filters: "category:kitchen" },
+      variables: { filters: "category:kitchen", note: "priceRange" },
       responseBody: {
         catalogSearch: {
-          items: Array.from({ length: 200 }, (_, i) => ({ id: i, name: `Item ${i}` })),
+          items: Array.from({ length: 3 }, (_, i) => ({ id: i, name: `Item ${i}` })),
         },
       },
     });
