@@ -1469,7 +1469,7 @@ export function selectPrimaryGraphQLOperation(
       return false;
     }
     return Object.values(c.variables as Record<string, unknown>).some(
-      (value) => spliceFacetsIntoStringVariable(value, payloadFieldList) !== null
+      (value) => countSpliceableFacets(value, payloadFieldList) > 0
     );
   };
   // A facet-spliceable candidate must win over any non-facet candidate
@@ -5307,16 +5307,39 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * stays byte-identical to the plain template literal whenever no matched
  * facet is optional (the existing default).
  */
+
+/**
+ * Counts the `key:value` segments of a facet-packed string value whose key
+ * correlates (case-insensitively) with one of `fields` — the same
+ * segment-split and matching rule {@link spliceFacetsIntoStringVariable}
+ * uses to decide what it can splice, exposed as a number so callers can
+ * compare how much of a candidate's facet string is actually wireable
+ * instead of only whether any of it is.
+ */
+export function countSpliceableFacets(value: unknown, fields: readonly string[]): number {
+  if (typeof value !== "string") return 0;
+  const segments = value.split(/([|,;])/);
+  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
+  if (!hasFacetShape) return 0;
+  let count = 0;
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    if (!segment.includes(":")) continue;
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    if (fields.some((field) => field.toLowerCase() === facetKey.toLowerCase())) count++;
+  }
+  return count;
+}
+
 export function spliceFacetsIntoStringVariable(
   value: unknown,
   fields: readonly string[],
   optionalFields: ReadonlySet<string> = new Set()
 ): string | null {
   if (typeof value !== "string") return null;
+  if (countSpliceableFacets(value, fields) === 0) return null;
   const segments = value.split(/([|,;])/);
-  const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
-  if (!hasFacetShape) return null;
-  let hasMatch = false;
   let hasOptionalMatch = false;
   const matchedFieldFor = (segment: string): string | undefined => {
     const colonIndex = segment.indexOf(":");
@@ -5328,10 +5351,8 @@ export function spliceFacetsIntoStringVariable(
     if (!segment.includes(":")) continue;
     const matchedField = matchedFieldFor(segment);
     if (!matchedField) continue;
-    hasMatch = true;
     if (optionalFields.has(matchedField)) hasOptionalMatch = true;
   }
-  if (!hasMatch) return null;
   if (!hasOptionalMatch) {
     const body = segments
       .map((segment, index) => {
