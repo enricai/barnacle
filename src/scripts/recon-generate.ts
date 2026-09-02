@@ -6587,9 +6587,7 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
       resultsPath,
       ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
       joinFields,
-      ...(parsedDrillParamBindings !== undefined
-        ? { drillParamBindings: parsedDrillParamBindings }
-        : {}),
+      ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
     };
   } catch {
     return null;
@@ -6611,9 +6609,7 @@ const DRILL_PARAM_BINDING_TYPEOF: Record<"int" | "string" | "boolean", string> =
  * block, returning `null` on any malformed entry so the caller can drop the
  * whole `foldReturn` — mirroring how {@link parseFoldReturnSpec} already
  * treats a malformed `joinFields`/`drillResultsPath`. */
-function parseDrillParamBindings(
-  raw: unknown
-): FoldReturnSpec["drillParamBindings"] | null {
+function parseDrillParamBindings(raw: unknown): FoldReturnSpec["drillParamBindings"] | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const entries = Object.entries(raw as Record<string, unknown>);
   const parsed: Record<
@@ -6622,7 +6618,11 @@ function parseDrillParamBindings(
   > = {};
   for (const [paramName, entry] of entries) {
     if (entry === null || typeof entry !== "object") return null;
-    const { payloadField, type, default: defaultValue } = entry as {
+    const {
+      payloadField,
+      type,
+      default: defaultValue,
+    } = entry as {
       payloadField?: unknown;
       type?: unknown;
       default?: unknown;
