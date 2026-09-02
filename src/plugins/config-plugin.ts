@@ -225,6 +225,18 @@ export async function buildConfigPlugin(
   const hasSubmitStep = spec.flow.steps.some((s) => typeof s !== "string" && s.submitStep === true);
   const declaredFields = new Set(Object.keys((spec.request.properties as object) ?? {}));
 
+  // `runHealingFlow`/`RunHealingFlowDeps` has no allocated-inbox mechanism for
+  // config-manifest plugins (there is no per-request testmail allocation path
+  // outside the recon CLI's `--allocate-email` flag), so a manifest declaring
+  // `emailStep` would otherwise silently fall through to the plain fill
+  // cascade with no email polled — fail at load time instead of misfiring
+  // silently on the first request.
+  if (spec.flow.steps.some((s) => typeof s !== "string" && s.emailStep === true)) {
+    throw new Error(
+      `config plugin "${metadata.siteId}": emailStep is not supported in config-only manifests (no testmail inbox allocation path); use a module plugin instead`
+    );
+  }
+
   const plugin: SitePlugin<unknown, unknown> = {
     meta: {
       siteId: metadata.siteId,
