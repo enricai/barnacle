@@ -39,7 +39,7 @@ const injectCaptchaTokenAndSubmitBlock = sliceBetween(
 const submitCaptchaGatedFormBlock = sliceBetween(
   flowRunnerSource,
   "export async function submitCaptchaGatedForm(",
-  "\nexport interface"
+  "\n/**\n * Site-agnostic select primitive"
 );
 
 const captchaGatedHookBlock = sliceBetween(
