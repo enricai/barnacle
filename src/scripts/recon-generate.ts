@@ -5905,10 +5905,11 @@ function formatDrillParamBindingDefault(
  * in the chain is left untouched.
  *
  * Purely additive: a spec with no `drillParamBindings`, or a capture that
- * doesn't match `endpointPattern`, returns `text` unchanged. A param already
- * rewritten to a `${...}` accessor by the threaded-fields substitution pass
- * (run immediately before this) is left alone too — this only fires on a
- * value still sitting in the text as a literal.
+ * doesn't match `endpointPattern`, returns `text` unchanged. A declared
+ * binding always wins, even over a value the threaded-fields substitution
+ * pass (run immediately before this) already rewrote into a `${...}`
+ * accessor — the flow author's binding is authoritative regardless of
+ * ordering against that pass.
  *
  * Anchored to the exact `key=value` query pair (via a `[?&]key=` prefix,
  * consuming up to the next `&`) rather than a bare literal-value swap, so a
@@ -5926,9 +5927,7 @@ export function applyDrillParamBindings(
     const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
     const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
-    return acc.replace(paramRx, (full, prefix: string, value: string) =>
-      value.startsWith("${") ? full : `${prefix}${accessor}`
-    );
+    return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
   }, text);
 }
 
