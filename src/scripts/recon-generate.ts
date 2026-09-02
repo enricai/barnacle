@@ -5309,7 +5309,7 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * stays byte-identical to the plain template literal whenever no matched
  * facet is optional (the existing default).
  */
-function spliceFacetsIntoStringVariable(
+export function spliceFacetsIntoStringVariable(
   value: unknown,
   fields: readonly string[],
   optionalFields: ReadonlySet<string> = new Set()
