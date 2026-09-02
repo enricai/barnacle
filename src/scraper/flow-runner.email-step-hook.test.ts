@@ -14,10 +14,7 @@ vi.mock("@/testmail/client", async () => {
   return { ...actual, pollTestmailInbox: pollTestmailInboxMock };
 });
 
-import {
-  EmailStepExtractError,
-  EmailStepInboxUnavailableError,
-} from "@/scraper/errors";
+import { EmailStepExtractError, EmailStepInboxUnavailableError } from "@/scraper/errors";
 import {
   executeStepWithHealing,
   extractCodeFromMessage,
@@ -130,9 +127,9 @@ describe("extractLinkFromMessage / extractCodeFromMessage (pure helpers)", () =>
 
   it("honors a caller-supplied linkPattern over the domain-filtered default", () => {
     const msg = makeMessage({ text: "Confirm: https://apply.example.com/confirm/xyz-789 done" });
-    expect(
-      extractLinkFromMessage(msg, "confirm/([\\w-]+)", "https://apply.example.com/app")
-    ).toBe("xyz-789");
+    expect(extractLinkFromMessage(msg, "confirm/([\\w-]+)", "https://apply.example.com/app")).toBe(
+      "xyz-789"
+    );
   });
 
   it("extracts a 4-8 digit code by default", () => {
@@ -156,9 +153,7 @@ describe("flow-runner/executeStepWithHealing — emailStep hook", () => {
     const stagehand = {} as Stagehand;
 
     await expect(
-      executeStepWithHealing(
-        baseParams(page, stagehand, { emailStep: true, allocatedInbox: null })
-      )
+      executeStepWithHealing(baseParams(page, stagehand, { emailStep: true, allocatedInbox: null }))
     ).rejects.toThrow(EmailStepInboxUnavailableError);
 
     expect(pollTestmailInboxMock).not.toHaveBeenCalled();
@@ -230,9 +225,7 @@ describe("flow-runner/executeStepWithHealing — emailStep hook", () => {
     );
 
     expect(result).toBe("completed");
-    expect(page.goto).toHaveBeenCalledWith(
-      "https://apply.example.com/verify?t=super-secret-token"
-    );
+    expect(page.goto).toHaveBeenCalledWith("https://apply.example.com/verify?t=super-secret-token");
     for (const mockFn of [testLogger.info, testLogger.warn, testLogger.error, testLogger.debug]) {
       for (const call of (mockFn as ReturnType<typeof vi.fn>).mock.calls) {
         expect(String(call[0])).not.toContain("super-secret-token");
