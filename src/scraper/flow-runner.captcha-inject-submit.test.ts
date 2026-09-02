@@ -63,9 +63,14 @@ class FakeEvent {
   }
 }
 
-function makeFakeDocument(forms: FakeForm[], existingField?: FakeInput) {
+function makeFakeDocument(
+  forms: FakeForm[],
+  existingField?: FakeInput,
+  sitekeyEl: { getAttribute: (name: string) => string | null } | null = null
+) {
   return {
     querySelector: (selector: string) => {
+      if (selector === "[data-sitekey]") return sitekeyEl;
       const match = /^\[name="([^"]+)"\]$/.exec(selector);
       if (!match) throw new Error(`unsupported document selector: ${selector}`);
       if (existingField?.name === match[1]) return existingField;
@@ -86,7 +91,7 @@ function makeFakeDocument(forms: FakeForm[], existingField?: FakeInput) {
 
 /** Runs `injectCaptchaTokenAndSubmit`'s built expression against the given fake DOM globals. */
 function makeFakeTarget(
-  globals: { document: ReturnType<typeof makeFakeDocument> },
+  globals: { document: ReturnType<typeof makeFakeDocument>; window?: Record<string, unknown> },
   opts: { rejectSetValue?: boolean } = {}
 ): FrameTarget {
   return {
@@ -97,9 +102,10 @@ function makeFakeTarget(
         "document",
         "HTMLInputElement",
         "Event",
+        "window",
         `return ${expr as string}`
-      ) as (doc: unknown, htmlInputEl: unknown, ev: unknown) => unknown;
-      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent);
+      ) as (doc: unknown, htmlInputEl: unknown, ev: unknown, window: unknown) => unknown;
+      const result = fn(globals.document, FakeHTMLInputElement, FakeEvent, globals.window ?? {});
       // Mirrors a widget whose render callback navigates synchronously from
       // inside the set-value evaluate: the DOM mutation above already landed
       // before the frame tears down, so the rejection surfaces only after
@@ -206,6 +212,57 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-navigated");
 
     expect(field.value).toBe("solved-token-navigated");
+    expect(result).toEqual({ injected: true, hasForm: true });
+  });
+
+  it("invokes the widget's registered data-callback with the token instead of the bare set-value path", async () => {
+    const form = new FakeForm();
+    const field = new FakeInput();
+    field.name = "h-captcha-response";
+    form.appendChild(field);
+
+    const calls: string[] = [];
+    const window = {
+      onCaptchaSolved: (token: string) => {
+        calls.push(token);
+      },
+    };
+    const sitekeyEl = {
+      getAttribute: (name: string) => (name === "data-callback" ? "onCaptchaSolved" : null),
+    };
+
+    const target = makeFakeTarget({
+      document: makeFakeDocument([form], field, sitekeyEl),
+      window,
+    });
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-callback");
+
+    expect(calls).toEqual(["solved-token-callback"]);
+    expect(field.value).toBe("");
+    expect(field.dispatched).toEqual([]);
+    expect(result).toEqual({ injected: true, hasForm: true });
+  });
+
+  it("falls back to the set-value+dispatch-change path when data-callback names no function on window", async () => {
+    const form = new FakeForm();
+    const field = new FakeInput();
+    field.name = "h-captcha-response";
+    form.appendChild(field);
+
+    const sitekeyEl = {
+      getAttribute: (name: string) => (name === "data-callback" ? "missingFn" : null),
+    };
+
+    const target = makeFakeTarget({
+      document: makeFakeDocument([form], field, sitekeyEl),
+      window: {},
+    });
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-nocallback");
+
+    expect(field.value).toBe("solved-token-nocallback");
+    expect(field.dispatched).toEqual(["change"]);
     expect(result).toEqual({ injected: true, hasForm: true });
   });
 });

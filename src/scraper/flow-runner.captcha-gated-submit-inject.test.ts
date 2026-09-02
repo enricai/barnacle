@@ -25,9 +25,10 @@ function makeRealDomTarget(window: Window): FrameTarget {
         "document",
         "HTMLInputElement",
         "Event",
+        "window",
         `return (${expr as string})`
-      ) as (doc: unknown, htmlInputEl: unknown, ev: unknown) => unknown;
-      return fn(document, window.HTMLInputElement, window.Event);
+      ) as (doc: unknown, htmlInputEl: unknown, ev: unknown, win: unknown) => unknown;
+      return fn(document, window.HTMLInputElement, window.Event, window);
     }) as FrameTarget["evaluate"],
     locator: () => ({ scope: "frame" as const }) as never,
     url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
@@ -209,5 +210,74 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     expect(field.value).toBe("solved-token-abc");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(target.evaluate).toHaveBeenCalledTimes(3);
+  });
+
+  it("invokes the widget's registered data-callback with the token, letting it append its own field", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey" data-callback="onCaptchaSolved"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+      appendChild: (node: unknown) => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    (window as unknown as Record<string, unknown>).onCaptchaSolved = (token: string) => {
+      const extraField = document.createElement("input");
+      extraField.type = "hidden";
+      extraField.name = "extra-companion-field";
+      extraField.value = token;
+      form.appendChild(extraField);
+    };
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-callback");
+
+    const extraField = document.querySelector('[name="extra-companion-field"]') as unknown as {
+      value: string;
+    };
+    expect(extraField).not.toBeNull();
+    expect(extraField.value).toBe("solved-token-callback");
+    expect(submitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ injected: true, hasForm: true });
+  });
+
+  it("falls back to the set-value+dispatch-change path when no data-callback is discoverable", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form id="application">
+        <div data-sitekey="fake-sitekey"></div>
+        <input type="hidden" name="h-captcha-response" value="" />
+      </form>
+    `;
+    const form = document.getElementById("application") as unknown as {
+      submit: () => void;
+    };
+    const submitSpy = vi.fn();
+    form.submit = submitSpy;
+
+    const field = document.querySelector('[name="h-captcha-response"]') as unknown as {
+      value: string;
+      addEventListener: (type: string, listener: () => void) => void;
+    };
+    const changeListener = vi.fn();
+    field.addEventListener("change", changeListener);
+
+    const target = makeRealDomTarget(window);
+
+    const result = await injectCaptchaTokenAndSubmit(target, "solved-token-nocallback");
+
+    expect(field.value).toBe("solved-token-nocallback");
+    expect(changeListener).toHaveBeenCalledTimes(1);
+    expect(submitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ injected: true, hasForm: true });
   });
 });

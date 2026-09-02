@@ -40,36 +40,46 @@ interface FakeField {
 }
 
 /** Minimal fake `<form>`/hCaptcha-widget DOM + Stagehand `Page`, driven entirely through `page.evaluate`. */
-function makeFakePage(opts: { hasSitekey: boolean }): {
+function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
   page: Page;
   field: FakeField;
   submitCount: { n: number };
+  callbackInvokedWith: { token: string | null };
 } {
   const field: FakeField = { value: "", dispatched: [] };
   const submitCount = { n: 0 };
+  const callbackInvokedWith: { token: string | null } = { token: null };
 
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
     const src = String(expr);
-    // injectCaptchaTokenAndSubmit now issues three SEPARATE evaluate calls —
-    // a set-only expr (keyed on "hasForm", its unique return shape), a
-    // dispatch-only expr (keyed on "dispatchEvent"), and a submit-triggering
-    // expr (keyed on "form.submit()") — rather than one combined
-    // inject+submit expr. The set-only expr also contains "data-sitekey"
-    // (its form-preference logic), so the sitekey-read branch below must be
-    // checked via its more specific "getAttribute" marker, and the set-only
-    // branch must be checked before the generic "data-sitekey" branch.
+    // injectCaptchaTokenAndSubmit's precheck expr is keyed on "hasForm", its
+    // unique return shape, and now also discovers a widget's data-callback:
+    // when opts.callbackName is set the precheck reports it, which routes to
+    // a callback-invoke expr (keyed on "window[") INSTEAD of the set-value
+    // (unmatched, discarded) + dispatch-only expr (keyed on "dispatchEvent")
+    // fallback pair. submitCaptchaGatedForm's explicit fallback submit expr
+    // is keyed on "requestSubmit" (its now-preferred call), not the bare
+    // "form.submit()" it falls back to only when requestSubmit is absent.
+    // The set-only expr also contains "data-sitekey" (its form-preference
+    // logic), so the sitekey-read branch below must be checked via its more
+    // specific "getAttribute" marker, and the set-only branch must be
+    // checked before the generic "data-sitekey" branch.
     // Run against a bare fake DOM instead of re-deriving the exact expr string
     // (mirrors flow-runner.captcha-inject-submit.test.ts's technique,
     // simplified since that primitive already has its own dedicated unit tests).
     if (src.includes("hasForm")) {
-      return { injected: true, hasForm: true };
+      return { injected: true, hasForm: true, callback: opts.callbackName ?? null };
+    }
+    if (src.includes("window[")) {
+      callbackInvokedWith.token = "solved-token";
+      return undefined;
     }
     if (src.includes("dispatchEvent")) {
       field.value = "solved-token";
       field.dispatched.push("change");
       return undefined;
     }
-    if (src.includes("form.submit()")) {
+    if (src.includes("requestSubmit")) {
       submitCount.n += 1;
       return undefined;
     }
@@ -97,7 +107,7 @@ function makeFakePage(opts: { hasSitekey: boolean }): {
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
   } as unknown as Page;
 
-  return { page, field, submitCount };
+  return { page, field, submitCount, callbackInvokedWith };
 }
 
 function baseParams(
@@ -186,6 +196,39 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
+  it("invokes a discoverable widget callback with the solved token instead of the set-value fallback, and never fires the explicit submit when the transition poll confirms via that path", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount, callbackInvokedWith } = makeFakePage({
+      hasSitekey: true,
+      callbackName: "onCaptchaSolved",
+    });
+    // Written BEFORE the hook runs, so waitForTransitionBody's initial
+    // (non-polling) check already matches it — the confirmed transition here
+    // is what the callback's own submit would have produced, not the
+    // explicit fallback (which must stay at 0 throughout).
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+
+    expect(result).toBe("completed");
+    expect(callbackInvokedWith.token).toBe("solved-token");
+    // The callback path never touches the response field or dispatches
+    // "change" — that's the set-value+dispatch fallback's job, exercised
+    // only when no callback is discoverable (see the other cases above).
+    expect(field.value).toBe("");
+    expect(field.dispatched).toEqual([]);
+    expect(submitCount.n).toBe(0);
+  });
+
   it("issues exactly one explicit submit when the transition poll finds no matching capture", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
@@ -227,7 +270,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
       if (src.includes("dispatchEvent")) {
         throw new Error("Execution context was destroyed");
       }
-      if (src.includes("form.submit()")) {
+      if (src.includes("requestSubmit")) {
         submitCount.n += 1;
         return undefined;
       }
@@ -286,7 +329,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
         field.dispatched.push("change");
         return undefined;
       }
-      if (src.includes("form.submit()")) {
+      if (src.includes("requestSubmit")) {
         submitCount.n += 1;
         return undefined;
       }
