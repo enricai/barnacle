@@ -68,3 +68,52 @@ describe("RECON_FLOW_STEP_SCHEMA captchaGated marker", () => {
     });
   });
 });
+
+describe("RECON_FLOW_STEP_SCHEMA emailStep marker", () => {
+  it("defaults emailStep to false and leaves emailStepConfig undefined when absent", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({ step: "click submit" });
+
+    expect(parsed).toMatchObject({ emailStep: false });
+    expect((parsed as { emailStepConfig?: unknown }).emailStepConfig).toBeUndefined();
+  });
+
+  it("round-trips emailStep:true with a fully-specified emailStepConfig", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({
+      step: "verify email",
+      emailStep: true,
+      emailStepConfig: {
+        subjectContains: "Verify your account",
+        extract: "code",
+        linkPattern: "https://example.com/verify\\?token=(\\w+)",
+        codePattern: "\\b\\d{6}\\b",
+        action: "fill",
+        timeoutMs: 60_000,
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      emailStep: true,
+      emailStepConfig: {
+        subjectContains: "Verify your account",
+        extract: "code",
+        linkPattern: "https://example.com/verify\\?token=(\\w+)",
+        codePattern: "\\b\\d{6}\\b",
+        action: "fill",
+        timeoutMs: 60_000,
+      },
+    });
+  });
+
+  it("defaults emailStepConfig.extract to link and action to navigate when omitted", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({
+      step: "verify email",
+      emailStep: true,
+      emailStepConfig: {},
+    });
+
+    expect(parsed).toMatchObject({
+      emailStep: true,
+      emailStepConfig: { extract: "link", action: "navigate" },
+    });
+  });
+});
