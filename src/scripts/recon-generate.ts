@@ -46,6 +46,7 @@ import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
+import type { EmailStepConfig } from "@/scraper/flow-runner";
 import {
   type Capture,
   type RateLimitFinding,
@@ -8854,6 +8855,8 @@ type FlowStepInput =
       submitStep?: boolean;
       payloadField?: string;
       payloadFieldNone?: boolean;
+      emailStep?: boolean;
+      emailStepConfig?: EmailStepConfig;
     };
 
 /**
@@ -9023,8 +9026,16 @@ export function emitConfigManifest(opts: {
       const optional = isObj ? step.optional === true : false;
       const upload = isObj ? step.upload === true : false;
       const submitStep = isObj ? step.submitStep === true : false;
-      if (!optional && !upload && !submitStep) return rewritten;
-      return { step: rewritten, optional, upload, submitStep };
+      const emailStep = isObj ? step.emailStep === true : false;
+      const emailStepConfig = isObj ? step.emailStepConfig : undefined;
+      if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+      return {
+        step: rewritten,
+        optional,
+        upload,
+        submitStep,
+        ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+      };
     }
     const field = resolveStepPayloadField(
       instruction,
@@ -9038,8 +9049,16 @@ export function emitConfigManifest(opts: {
     const optional = isObj ? step.optional === true : false;
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
-    if (!optional && !upload && !submitStep) return rewritten;
-    return { step: rewritten, optional, upload, submitStep };
+    const emailStep = isObj ? step.emailStep === true : false;
+    const emailStepConfig = isObj ? step.emailStepConfig : undefined;
+    if (!optional && !upload && !submitStep && !emailStep) return rewritten;
+    return {
+      step: rewritten,
+      optional,
+      upload,
+      submitStep,
+      ...(emailStep ? { emailStep, emailStepConfig: emailStepConfig ?? {} } : {}),
+    };
   });
 
   // The last step of a submission flow is structurally the submit — force
@@ -9145,10 +9164,25 @@ export function emitBrowserFlowTs(opts: {
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
+  let usesEmailStep = false;
 
   const stepLiterals = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // An emailStep is a distinct capability, not an ordinary instruction: it
+    // polls the allocated inbox at runtime rather than reading anything off
+    // the payload, so it bypasses resolveStepPayloadField/the composite-persona
+    // resolver entirely and never contributes a payload.<field> splice — its
+    // instruction is emitted as a plain literal, same as buildStepInstructionExpr
+    // does for a field-less step.
+    if (isObj && step.emailStep === true) {
+      usesEmailStep = true;
+      const optional = step.optional === true;
+      const upload = step.upload === true;
+      const submitStep = step.submitStep === true;
+      const emailStepConfigExpr = JSON.stringify(step.emailStepConfig ?? {});
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep}, emailStep: true, emailStepConfig: ${emailStepConfigExpr} },`;
+    }
     // ${RECON_PASSWORD} is reserved-tooling, not a domain-vocabulary concern —
     // it names a credential the recon capture needed to authenticate, not a
     // piece of the caller's applicant identity, so it never reaches
@@ -9241,7 +9275,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow, waitForSpaReady } from "${ENGINE_PKG}/scraper/flow-runner";
-import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";
+import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
 import ${
     isSubmissionFlow
       ? `type { ${pascal}Payload, ${pascal}Response }`
@@ -9276,7 +9310,7 @@ export async function run${pascal}BrowserFlow(
   // networkidle can resolve before a bot-managed/CDN-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
-${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}
+${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}${usesEmailStep ? "\n  // Resolved once per run from the caller-supplied Email — the emailStep hook\n  // polls this inbox rather than a freshly allocated one, since the applicant\n  // (not this run) owns the address the ATS actually emails.\n  const allocatedInbox = testmailInboxFromAddress(payload.Email);\n" : ""}
   const FLOW_STEPS: HealingFlowStep[] = [
 ${flowStepsBlock}
   ];
@@ -9292,7 +9326,7 @@ ${flowStepsBlock}
     logger,
     anthropic: buildAnthropicClient(),
     rephraseModel: buildRephraseModel(),
-    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}
+    uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}
   });
 
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts

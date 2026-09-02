@@ -33,8 +33,9 @@ import {
   allocateTestmailInbox,
   pollTestmailInbox,
   resetTestmailClientForTests,
+  testmailInboxFromAddress,
 } from "@/testmail/client";
-import { TestmailTimeoutError } from "@/testmail/errors";
+import { TestmailApiError, TestmailTimeoutError } from "@/testmail/errors";
 
 function mockFetchOnce(body: unknown, status = 200): void {
   vi.stubGlobal(
@@ -85,6 +86,34 @@ describe("allocateTestmailInbox", () => {
   it("respects the `namespace` opts override", () => {
     const inbox = allocateTestmailInbox({ namespace: "other-namespace" });
     expect(inbox.address).toMatch(/^other-namespace\./);
+  });
+});
+
+describe("testmailInboxFromAddress", () => {
+  it("parses the tag out of the local part after the first dot", () => {
+    const inbox = testmailInboxFromAddress("ns.barnacle-abc123@inbox.testmail.app");
+    expect(inbox.tag).toBe("barnacle-abc123");
+  });
+
+  it("preserves the address verbatim", () => {
+    const inbox = testmailInboxFromAddress("ns.barnacle-abc123@inbox.testmail.app");
+    expect(inbox.address).toBe("ns.barnacle-abc123@inbox.testmail.app");
+  });
+
+  it("sets timestampFrom to approximately now", () => {
+    const before = Date.now();
+    const inbox = testmailInboxFromAddress("ns.barnacle-abc123@inbox.testmail.app");
+    const after = Date.now();
+    expect(inbox.timestampFrom).toBeGreaterThanOrEqual(before);
+    expect(inbox.timestampFrom).toBeLessThanOrEqual(after);
+  });
+
+  it("throws TestmailApiError when the host is not inbox.testmail.app", () => {
+    expect(() => testmailInboxFromAddress("ns.tag@example.com")).toThrow(TestmailApiError);
+  });
+
+  it("throws TestmailApiError when the local part has no '.' separator", () => {
+    expect(() => testmailInboxFromAddress("notag@inbox.testmail.app")).toThrow(TestmailApiError);
   });
 });
 

@@ -112,6 +112,32 @@ export function allocateTestmailInbox(opts: AllocateTestmailInboxOptions = {}): 
   return { address, tag, timestampFrom };
 }
 
+const TESTMAIL_ADDRESS_HOST = "inbox.testmail.app";
+
+/**
+ * Build a `TestmailInbox` from an already-known address (e.g. sourced from
+ * an applicant's payload) instead of minting a fresh random one. No network
+ * call, matching `allocateTestmailInbox`'s own no-network design — testmail
+ * addresses are implicitly valid the moment they're well-formed.
+ */
+export function testmailInboxFromAddress(address: string): TestmailInbox {
+  const [localPart, host] = address.split("@");
+  if (!localPart || host !== TESTMAIL_ADDRESS_HOST) {
+    throw new TestmailApiError(
+      `invalid testmail address "${address}"; expected "{namespace}.{tag}@${TESTMAIL_ADDRESS_HOST}"`
+    );
+  }
+  const separatorIndex = localPart.indexOf(".");
+  if (separatorIndex === -1) {
+    throw new TestmailApiError(
+      `invalid testmail address "${address}"; local part must be "{namespace}.{tag}"`
+    );
+  }
+  const tag = localPart.slice(separatorIndex + 1);
+  const timestampFrom = Date.now();
+  return { address, tag, timestampFrom };
+}
+
 /**
  * Build the singleton GraphQL client. Lazily initialised so the module
  * import doesn't fail when TESTMAIL_API_KEY isn't set (the helpers

@@ -306,14 +306,51 @@ describe("buildConfigPlugin", () => {
     await expect(buildConfigPlugin(manifest)).rejects.toThrow(/frameSelector/);
   });
 
-  it("rejects a manifest declaring emailStep on a flow step", async () => {
+  it("runs an emailStep manifest through runHealingFlow with an allocatedInbox derived from payload.Email", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps[1] = {
+      step: "fill verification code with ''",
+      emailStep: true,
+      emailStepConfig: { extract: "code", action: "fill" },
+    };
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    const result = await plugin.execute(
+      { FirstName: "J", Email: "ns.tag@inbox.testmail.app" },
+      session,
+      context
+    );
+
+    expect((result.data as { confirmationId?: string }).confirmationId).toBe("X");
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as {
+      allocatedInbox?: { address?: string };
+      steps: { emailStep?: boolean; emailStepConfig?: { extract?: string; action?: string } }[];
+    };
+    expect(deps.allocatedInbox?.address).toBe("ns.tag@inbox.testmail.app");
+    expect(deps.steps[1]?.emailStep).toBe(true);
+    expect(deps.steps[1]?.emailStepConfig).toEqual({ extract: "code", action: "fill" });
+  });
+
+  it("rejects a manifest declaring emailStep with no Email field in request.properties", async () => {
     const manifest = baseManifest();
     (manifest.spec as { flow: { steps: unknown[] } }).flow.steps[1] = {
       step: "fill verification code with ''",
       emailStep: true,
     };
+    (
+      manifest.spec as {
+        request: { type: string; required: string[]; properties: Record<string, unknown> };
+      }
+    ).request = {
+      type: "object",
+      required: ["FirstName"],
+      properties: { FirstName: { type: "string" } },
+    };
 
-    await expect(buildConfigPlugin(manifest)).rejects.toThrow(/emailStep is not supported/);
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow(
+      /emailStep requires an "Email" field/
+    );
   });
 });
 

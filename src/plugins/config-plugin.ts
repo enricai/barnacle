@@ -34,6 +34,7 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
 import { guardedExtract } from "@/scraper/stagehand-guard";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "@/site-plugin";
+import { testmailInboxFromAddress } from "@/testmail/client";
 
 /** JSON-Schema fragment as it appears verbatim in a manifest; converted to Zod at build time. */
 const jsonSchemaFragment = z.record(z.string(), z.unknown());
@@ -133,6 +134,8 @@ function toHealingStep(
     upload: step.upload,
     submitStep: step.submitStep,
     captchaGated: step.captchaGated,
+    emailStep: step.emailStep,
+    emailStepConfig: step.emailStepConfig,
   };
 }
 
@@ -223,17 +226,17 @@ export async function buildConfigPlugin(
 
   const hasUploadStep = spec.flow.steps.some((s) => typeof s !== "string" && s.upload === true);
   const hasSubmitStep = spec.flow.steps.some((s) => typeof s !== "string" && s.submitStep === true);
+  const hasEmailStep = spec.flow.steps.some((s) => typeof s !== "string" && s.emailStep === true);
   const declaredFields = new Set(Object.keys((spec.request.properties as object) ?? {}));
 
-  // `runHealingFlow`/`RunHealingFlowDeps` has no allocated-inbox mechanism for
-  // config-manifest plugins (there is no per-request testmail allocation path
-  // outside the recon CLI's `--allocate-email` flag), so a manifest declaring
-  // `emailStep` would otherwise silently fall through to the plain fill
-  // cascade with no email polled — fail at load time instead of misfiring
-  // silently on the first request.
-  if (spec.flow.steps.some((s) => typeof s !== "string" && s.emailStep === true)) {
+  // `allocatedInbox` is derived from `payload.Email` at request time (see
+  // `execute` below) — fail at load time when a manifest opts into
+  // `emailStep` without declaring the field it will be sourced from, instead
+  // of throwing an unhelpful TypeError deep inside `testmailInboxFromAddress`
+  // on the first real request.
+  if (hasEmailStep && !declaredFields.has("Email")) {
     throw new Error(
-      `config plugin "${metadata.siteId}": emailStep is not supported in config-only manifests (no testmail inbox allocation path); use a module plugin instead`
+      `config plugin "${metadata.siteId}": emailStep requires an "Email" field in spec.request.properties`
     );
   }
 
@@ -269,6 +272,9 @@ export async function buildConfigPlugin(
         ? new Anthropic({ apiKey: context.config.scraper.anthropicApiKey })
         : null;
       const rephraseModel = buildRephraseModelForContext(context.config);
+      const allocatedInbox = hasEmailStep
+        ? testmailInboxFromAddress(payload.Email as string)
+        : null;
 
       const flowResult = await runHealingFlow({
         stagehand,
@@ -278,6 +284,7 @@ export async function buildConfigPlugin(
         anthropic,
         rephraseModel,
         deathSignal,
+        allocatedInbox,
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,

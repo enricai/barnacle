@@ -73,11 +73,12 @@ object — `extract` (`"link"` | `"code"`, default `"link"`), `subjectContains`,
 default `"navigate"`), and `timeoutMs` (default 120s — real inbox delivery is
 slower than a captcha solve). The hook pauses the cascade, polls the run's
 allocated testmail inbox for a matching message, and extracts a link or code
-from it before acting. This requires an inbox allocated for the run (the
-recon CLI's `--allocate-email` flag); **config-only `*.plugin.json` manifests
-cannot declare `emailStep`** — `buildConfigPlugin` rejects the manifest at
-load time rather than silently falling through to a plain fill with no email
-polled. See [docs/plugin-authoring.md](./plugin-authoring.md#register-the-plugin).
+from it before acting. This requires an allocated inbox: the recon CLI's
+`--allocate-email` flag for module plugins, or, for **config-only
+`*.plugin.json` manifests**, `buildConfigPlugin` deriving an `allocatedInbox`
+from the request payload's `Email` field (via `testmailInboxFromAddress`) —
+no separate allocation flag needed there. See
+[docs/plugin-authoring.md](./plugin-authoring.md#register-the-plugin).
 
 `observe()` cannot see into a cross-origin OOPIF at all — every scoping form
 returns zero candidates even though the frame is attached. For a frame-scoped
@@ -342,6 +343,15 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   Writes `src/sites/my-site/{contract.ts, flows/browser-flow.ts, index.ts,
   fixtures/}` from Phases 1–3 artifacts. Pass `--force` to overwrite. Review
   the generated code before registering the plugin.
+
+  A flow step marked `emailStep: true` is emitted into `browser-flow.ts` as
+  `{ emailStep: true, emailStepConfig: {...} }` on that step's literal — the
+  flag and config are data, read at runtime by the shared flow-runner
+  (`src/scraper/flow-runner.ts`), which polls the run's allocated inbox via
+  `pollTestmailInbox`, extracts the verification link/code, and threads it
+  into the step's action. The inbox itself comes from the run's allocated
+  testmail inbox (`allocateTestmailInbox()`), not from the site's payload —
+  v1 recon only ever exercises the testmail path.
 - **4g — Shared helpers.** Plugins should not write raw `fetch`/`undici`
   calls. Use `createHttpClient(opts)` (`src/scraper/http-client.ts`) and
   `createGraphqlClient(opts)` (`src/scraper/graphql-client.ts`) — typed

@@ -19,6 +19,8 @@ import {
   executeStepWithHealing,
   extractCodeFromMessage,
   extractLinkFromMessage,
+  type HealingFlowStep,
+  runHealingFlow,
 } from "@/scraper/flow-runner";
 import type { TestmailInbox, TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -107,6 +109,10 @@ function makeFakePage(url = "https://apply.example.com/application/abc-123"): Pa
       }),
     }),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    frames: () => [],
+    getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
   } as unknown as Page;
 }
 
@@ -323,6 +329,75 @@ describe("flow-runner/executeStepWithHealing — emailStep hook", () => {
       // Same rationale as the captcha-hook precedent: cascade fallthrough on
       // this bare fake is expected to fail; only "the hook never ran" matters.
     });
+
+    expect(pollTestmailInboxMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Proves `runHealingFlow` (the plugin-facing wrapper) actually threads a
+ * step's `emailStep`/`emailStepConfig` and `deps.allocatedInbox` into its
+ * `executeStepWithHealing` call, rather than silently dropping them — the
+ * bug this subtask fixes. Distinct from the `executeStepWithHealing` suite
+ * above, which only proves the hook works when invoked directly.
+ */
+function healingFlowStep(overrides: Partial<HealingFlowStep> = {}): HealingFlowStep {
+  return {
+    instruction: "Fill in the verification code field with 'placeholder'",
+    optional: false,
+    upload: false,
+    submitStep: false,
+    ...overrides,
+  };
+}
+
+describe("flow-runner/runHealingFlow — threads emailStep/allocatedInbox through to executeStepWithHealing", () => {
+  beforeEach(() => {
+    pollTestmailInboxMock.mockReset();
+  });
+
+  it("invokes pollTestmailInbox with deps.allocatedInbox when a step carries emailStep:true", async () => {
+    pollTestmailInboxMock.mockResolvedValue(
+      makeMessage({ text: "Confirm: https://apply.example.com/verify?t=super-secret-token" })
+    );
+    const page = makeFakePage();
+    const stagehand = {} as Stagehand;
+
+    await runHealingFlow({
+      stagehand,
+      page,
+      steps: [
+        healingFlowStep({
+          instruction: "Fill in the verification link field with 'placeholder'",
+          emailStep: true,
+          emailStepConfig: { extract: "link" },
+        }),
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      allocatedInbox: inbox,
+    });
+
+    expect(pollTestmailInboxMock).toHaveBeenCalledWith(expect.objectContaining({ inbox }));
+  });
+
+  it("throws EmailStepInboxUnavailableError via runHealingFlow when emailStep:true but deps.allocatedInbox is omitted", async () => {
+    const page = makeFakePage();
+    const stagehand = {} as Stagehand;
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [healingFlowStep({ emailStep: true })],
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      })
+    ).rejects.toThrow(EmailStepInboxUnavailableError);
 
     expect(pollTestmailInboxMock).not.toHaveBeenCalled();
   });

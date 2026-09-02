@@ -182,11 +182,17 @@ converter supports only `object`, `string`, `number`, `integer`, `boolean`,
 A flow step's `emailStep: true` (pause, poll the run's allocated testmail
 inbox, extract a link/code from the matched message, then navigate/fill it —
 see `emailStepConfig` on `RECON_FLOW_STEP_SCHEMA` in `src/lib/llm/schemas.ts`)
-is **not supported in config-only manifests**: there is no per-request
-testmail-inbox allocation path outside the recon CLI's `--allocate-email`
-flag, so `buildConfigPlugin` rejects the manifest at load time rather than
-silently falling through to a plain fill with no email polled. Use a module
-plugin (`execute`/`runHealingFlow`) if the flow needs `emailStep`.
+is supported in config-only manifests: `buildConfigPlugin` derives the
+`allocatedInbox` from the request payload's `Email` field via
+`testmailInboxFromAddress` before calling `runHealingFlow`, so the payload's
+`Email` must itself be a testmail address (`{namespace}.{tag}@inbox.testmail.app`).
+
+For module plugins, `recon:generate` emits the same sourcing pattern in the
+generated browser-flow file: an `allocatedInbox` local resolved once per run
+via `testmailInboxFromAddress(payload.Email)` and passed to `runHealingFlow`'s
+`allocatedInbox` option — never a hardcoded inbox. To wire a production
+mailbox, supply a real `Email` on the request payload; the flow polls whatever
+address the caller sends, config- and payload-driven throughout.
 
 **In-tree (bundled built-ins only):** push to `BUILTIN_SITE_PLUGINS` in
 `src/plugins/discover.ts` — core registers `POST /v1/my-site/run` at startup.
