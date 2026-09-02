@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { emitBrowserFlowTs } from "@/scripts/recon-generate";
+import { emitBrowserFlowTs, emitConfigManifest } from "@/scripts/recon-generate";
 
 /** Minimal opts that satisfy emitBrowserFlowTs for a submission flow, mirroring
  * recon-generate-frame-selector.test.ts's own disjoint fixture. */
@@ -62,5 +62,21 @@ describe("emitBrowserFlowTs — emailStep emission", () => {
 
     expect(payloadFieldNames.size).toBe(0);
     expect(code).not.toContain("payload.Confirmation");
+  });
+
+  it("emitConfigManifest rejects an emailStep:true step instead of silently dropping the flag (mirrors buildConfigPlugin's runtime guard)", () => {
+    expect(() =>
+      emitConfigManifest({
+        siteId: "recon-site-4",
+        baseUrl: "https://careers.example.org",
+        flowSteps: [
+          {
+            step: "Click the verification link sent to your email",
+            emailStep: true,
+            emailStepConfig: { extract: "link" },
+          },
+        ],
+      })
+    ).toThrow(/emailStep is not supported in config-only manifests/);
   });
 });

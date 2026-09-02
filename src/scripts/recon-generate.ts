@@ -9009,6 +9009,17 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     env = process.env,
   } = opts;
+  // A config-only manifest has no testmail inbox allocation path (see
+  // buildConfigPlugin's own emailStep rejection in src/plugins/config-plugin.ts)
+  // — silently dropping the flag here would emit a manifest that loads
+  // successfully but LLM-acts blind on the step, reproducing the exact
+  // symptom this generator exists to prevent. Fail loud at generation time
+  // instead of at plugin-load time.
+  if (flowSteps.some((step) => typeof step !== "string" && step.emailStep === true)) {
+    throw new Error(
+      `site "${siteId}": emailStep is not supported in config-only manifests (no testmail inbox allocation path); use a module plugin (--emit module) instead`
+    );
+  }
   const payloadFieldNames = new Set<string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
 
