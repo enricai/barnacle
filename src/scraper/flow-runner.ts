@@ -95,6 +95,8 @@ import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 
+export { waitForSpaReady } from "@/scraper/spa-readiness";
+
 const logger = getLogger({ name: "scraper/flow-runner" });
 
 /** Cap on the rolling capture-filename window held in memory for failure dumps. */
