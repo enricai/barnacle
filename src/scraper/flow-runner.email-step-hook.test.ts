@@ -109,6 +109,10 @@ function makeFakePage(url = "https://apply.example.com/application/abc-123"): Pa
       }),
     }),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    frames: () => [],
+    getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
   } as unknown as Page;
 }
 
