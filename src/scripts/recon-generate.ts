@@ -5298,26 +5298,72 @@ function bindOptionLiteral(headerBindings: HeaderProduce[]): string {
  * delimiter-separated `key:value` segment, and strings whose facet keys
  * correlate with none of `fields`, so opaque tokens, JSON blobs, and plain
  * literals fall through to the existing JSON.stringify path unchanged.
+ *
+ * When a matched facet's field is in `optionalFields`, its segment is
+ * emitted as a conditionally-included array element (`...(payload.<field> ?
+ * [...] : [])`) instead of being spliced inline into a flat template, so an
+ * absent optional facet (e.g. a caller who supplies `region` but omits
+ * `brand`) drops its whole `key:value` segment and delimiter at runtime
+ * rather than emitting `key:undefined`. The array is joined with the
+ * delimiter recovered from the string's own first separator, so output
+ * stays byte-identical to the plain template literal whenever no matched
+ * facet is optional (the existing default).
  */
-function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[]): string | null {
+function spliceFacetsIntoStringVariable(
+  value: unknown,
+  fields: readonly string[],
+  optionalFields: ReadonlySet<string> = new Set()
+): string | null {
   if (typeof value !== "string") return null;
   const segments = value.split(/([|,;])/);
   const hasFacetShape = segments.some((segment, index) => index % 2 === 0 && segment.includes(":"));
   if (!hasFacetShape) return null;
   let hasMatch = false;
-  const body = segments
-    .map((segment, index) => {
-      if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
-      const colonIndex = segment.indexOf(":");
-      const facetKey = segment.slice(0, colonIndex);
-      const matchedField = fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
-      if (!matchedField) return escapeForTemplateLiteral(segment);
-      hasMatch = true;
-      return `${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}`;
-    })
-    .join("");
+  let hasOptionalMatch = false;
+  const matchedFieldFor = (segment: string): string | undefined => {
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    return fields.find((field) => field.toLowerCase() === facetKey.toLowerCase());
+  };
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    if (!segment.includes(":")) continue;
+    const matchedField = matchedFieldFor(segment);
+    if (!matchedField) continue;
+    hasMatch = true;
+    if (optionalFields.has(matchedField)) hasOptionalMatch = true;
+  }
   if (!hasMatch) return null;
-  return `\`${body}\``;
+  if (!hasOptionalMatch) {
+    const body = segments
+      .map((segment, index) => {
+        if (index % 2 !== 0 || !segment.includes(":")) return escapeForTemplateLiteral(segment);
+        const matchedField = matchedFieldFor(segment);
+        if (!matchedField) return escapeForTemplateLiteral(segment);
+        const colonIndex = segment.indexOf(":");
+        const facetKey = segment.slice(0, colonIndex);
+        return `${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}`;
+      })
+      .join("");
+    return `\`${body}\``;
+  }
+  const delimiter = segments.find((_segment, index) => index % 2 !== 0) ?? "|";
+  const elements: string[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    const matchedField = segment.includes(":") ? matchedFieldFor(segment) : undefined;
+    if (!matchedField) {
+      elements.push(`\`${escapeForTemplateLiteral(segment)}\``);
+      continue;
+    }
+    const colonIndex = segment.indexOf(":");
+    const facetKey = segment.slice(0, colonIndex);
+    const segmentLiteral = `\`${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}\``;
+    elements.push(
+      optionalFields.has(matchedField) ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])` : segmentLiteral
+    );
+  }
+  return `[${elements.join(", ")}].join(${JSON.stringify(delimiter)})`;
 }
 
 /**
@@ -5328,17 +5374,23 @@ function spliceFacetsIntoStringVariable(value: unknown, fields: readonly string[
  * a string packing facets in a delimited `key:value` grammar (see
  * {@link spliceFacetsIntoStringVariable}), a correlated facet's value slot is
  * spliced with `payload.<Field>` instead of freezing the whole string; any
- * other value is emitted verbatim via JSON.stringify.
+ * other value is emitted verbatim via JSON.stringify. `optionalFieldNames`
+ * marks which of `payloadFieldNames` a facet-string splice should treat as
+ * optional (see {@link spliceFacetsIntoStringVariable}); it has no effect on
+ * top-level key correlation.
  */
 function renderGqlVariablesExpr(
   variables: unknown,
-  payloadFieldNames: Set<string> | undefined
+  payloadFieldNames: Set<string> | undefined,
+  optionalFieldNames: ReadonlySet<string> = new Set()
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
   const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
     const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-    const facetSpliceExpr = matchedField ? null : spliceFacetsIntoStringVariable(value, fields);
+    const facetSpliceExpr = matchedField
+      ? null
+      : spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
     const valueExpr = matchedField
       ? `payload.${matchedField}`
       : (facetSpliceExpr ?? JSON.stringify(value));
