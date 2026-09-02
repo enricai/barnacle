@@ -344,13 +344,14 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   fixtures/}` from Phases 1–3 artifacts. Pass `--force` to overwrite. Review
   the generated code before registering the plugin.
 
-  A flow step marked `emailStep: true` gets the inbox-poll + extract + act
-  sequence spliced into the generated `browser-flow.ts` — the emitted step
-  polls the allocated inbox via `pollTestmailInbox`, extracts the
-  verification link/code, and threads it into the following action. The
-  generated code resolves the mailbox from the caller's payload/config (e.g.
-  `payload.Email`), never a hardcoded address, even though v1 recon only
-  ever exercises the testmail path end to end.
+  A flow step marked `emailStep: true` is emitted into `browser-flow.ts` as
+  `{ emailStep: true, emailStepConfig: {...} }` on that step's literal — the
+  flag and config are data, read at runtime by the shared flow-runner
+  (`src/scraper/flow-runner.ts`), which polls the run's allocated inbox via
+  `pollTestmailInbox`, extracts the verification link/code, and threads it
+  into the step's action. The inbox itself comes from the run's allocated
+  testmail inbox (`allocateTestmailInbox()`), not from the site's payload —
+  v1 recon only ever exercises the testmail path.
 - **4g — Shared helpers.** Plugins should not write raw `fetch`/`undici`
   calls. Use `createHttpClient(opts)` (`src/scraper/http-client.ts`) and
   `createGraphqlClient(opts)` (`src/scraper/graphql-client.ts`) — typed
