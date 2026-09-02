@@ -4,11 +4,15 @@ import {
   CaptchaError,
   CaptchaSolverUnavailableError,
   CdpTransportClosedError,
+  EmailStepExtractError,
+  EmailStepInboxUnavailableError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpUrlLockedError,
   isCaptchaError,
   isCdpTransportClosedError,
+  isEmailStepExtractError,
+  isEmailStepInboxUnavailableError,
   isHttpSchemaError,
   isScraperError,
   MissingFormMapKeyError,
@@ -167,6 +171,72 @@ describe("CaptchaSolverUnavailableError", () => {
     expect(crossRealmErr).not.toBeInstanceOf(CaptchaSolverUnavailableError);
     expect(isCaptchaError(crossRealmErr)).toBe(true);
     expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+});
+
+describe("EmailStepInboxUnavailableError", () => {
+  it("is non-retryable, instanceof ScraperError, and named correctly", () => {
+    const err = new EmailStepInboxUnavailableError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("EmailStepInboxUnavailableError");
+    expect(err.message).toBe("emailStep set but no testmail inbox allocated (pass --allocate-email)");
+  });
+
+  it("isEmailStepInboxUnavailableError recognizes a same-realm instance and a name-tagged plain Error", () => {
+    const sameRealmErr = new EmailStepInboxUnavailableError();
+    expect(isEmailStepInboxUnavailableError(sameRealmErr)).toBe(true);
+    expect(isScraperError(sameRealmErr)).toBe(true);
+
+    class FakeCrossModuleEmailStepInboxUnavailableError extends Error {
+      constructor(message = "emailStep set but no testmail inbox allocated (pass --allocate-email)") {
+        super(message);
+        this.name = "EmailStepInboxUnavailableError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleEmailStepInboxUnavailableError();
+    expect(crossRealmErr).not.toBeInstanceOf(EmailStepInboxUnavailableError);
+    expect(isEmailStepInboxUnavailableError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("isEmailStepInboxUnavailableError returns false for an unrelated Error", () => {
+    expect(isEmailStepInboxUnavailableError(new Error("plain"))).toBe(false);
+    expect(isEmailStepInboxUnavailableError(null)).toBe(false);
+    expect(isEmailStepInboxUnavailableError(undefined)).toBe(false);
+  });
+});
+
+describe("EmailStepExtractError", () => {
+  it("is non-retryable, instanceof ScraperError, and named correctly", () => {
+    const err = new EmailStepExtractError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("EmailStepExtractError");
+    expect(err.message).toBe("no link/code matched in the verification email");
+  });
+
+  it("isEmailStepExtractError recognizes a same-realm instance and a name-tagged plain Error", () => {
+    const sameRealmErr = new EmailStepExtractError();
+    expect(isEmailStepExtractError(sameRealmErr)).toBe(true);
+    expect(isScraperError(sameRealmErr)).toBe(true);
+
+    class FakeCrossModuleEmailStepExtractError extends Error {
+      constructor(message = "no link/code matched in the verification email") {
+        super(message);
+        this.name = "EmailStepExtractError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleEmailStepExtractError();
+    expect(crossRealmErr).not.toBeInstanceOf(EmailStepExtractError);
+    expect(isEmailStepExtractError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("isEmailStepExtractError returns false for an unrelated Error", () => {
+    expect(isEmailStepExtractError(new Error("plain"))).toBe(false);
+    expect(isEmailStepExtractError(null)).toBe(false);
+    expect(isEmailStepExtractError(undefined)).toBe(false);
   });
 });
 
