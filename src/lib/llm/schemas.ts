@@ -80,6 +80,14 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
       })
       .optional(),
     /**
+     * Explicit mid-flow navigation target for a step, e.g. a dashboard app
+     * switching from a filtered report URL to an unfiltered one. When set,
+     * the runtime navigates to this URL instead of inferring the action from
+     * the step's prose — lets a flow author declare a real page transition
+     * the LLM would otherwise have to guess at from free text.
+     */
+    navigateTo: z.string().min(1).optional(),
+    /**
      * Optional payload-field override for the generator's splicer. When set,
      * `resolveStepPayloadField` returns this field name verbatim instead of
      * inferring one from the instruction's English label — lets a flow author

@@ -117,3 +117,23 @@ describe("RECON_FLOW_STEP_SCHEMA emailStep marker", () => {
     });
   });
 });
+
+describe("RECON_FLOW_STEP_SCHEMA navigateTo field", () => {
+  it("round-trips navigateTo unchanged when present", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({
+      step: "go to the unfiltered listing",
+      navigateTo: "https://example.com/list",
+    });
+
+    expect(parsed).toMatchObject({
+      step: "go to the unfiltered listing",
+      navigateTo: "https://example.com/list",
+    });
+  });
+
+  it("leaves navigateTo undefined when omitted", () => {
+    const parsed = RECON_FLOW_STEP_SCHEMA.parse({ step: "click submit" });
+
+    expect((parsed as { navigateTo?: unknown }).navigateTo).toBeUndefined();
+  });
+});
