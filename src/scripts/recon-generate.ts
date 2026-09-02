@@ -5360,7 +5360,9 @@ function spliceFacetsIntoStringVariable(
     const facetKey = segment.slice(0, colonIndex);
     const segmentLiteral = `\`${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}\``;
     elements.push(
-      optionalFields.has(matchedField) ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])` : segmentLiteral
+      optionalFields.has(matchedField)
+        ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])`
+        : segmentLiteral
     );
   }
   return `[${elements.join(", ")}].join(${JSON.stringify(delimiter)})`;
