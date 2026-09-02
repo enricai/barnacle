@@ -5103,10 +5103,14 @@ function findCaptchaCallbackExprSrc(): string {
  * `hcaptcha.execute(widgetId)`, letting the callback fire as a natural
  * consequence of hCaptcha's own execute/verify cycle; only when no
  * widgetId/execute path is available does this fall back to invoking the
- * captured callback directly. Only when no callback is discoverable at all
- * does this fall back to setting the hidden response field directly and
- * dispatching the framework-visible `change` event so the field's own value
- * listener observes it.
+ * captured callback directly. When no callback is discoverable at precheck
+ * time, this re-installs the callback-capture script and retries the lookup
+ * once — catching a widget whose `hcaptcha.render` call happens on demand
+ * rather than on page load, after this frame missed both session.ts's
+ * page-init-script install and the per-frame attach install. Only when the
+ * late retry also finds nothing does this fall back to setting the hidden
+ * response field directly and dispatching the framework-visible `change`
+ * event so the field's own value listener observes it.
  *
  * Widgets of this shape anchor a `[data-sitekey]` element whose
  * `data-callback` attribute names a function on `window`; that callback (not
