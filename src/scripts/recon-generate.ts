@@ -5347,25 +5347,32 @@ export function spliceFacetsIntoStringVariable(
       .join("");
     return `\`${body}\``;
   }
-  const delimiter = segments.find((_segment, index) => index % 2 !== 0) ?? "|";
+  // Each unit carries its OWN trailing delimiter (the literal separator that
+  // followed it in the source string), so dropping an omitted optional
+  // facet's unit removes its segment and delimiter together without
+  // disturbing a differently-delimited neighbor (e.g. "a:1|b:2;c:3" keeps
+  // "|" before b and ";" before c even when b is optional and absent).
   const elements: string[] = [];
   for (let index = 0; index < segments.length; index += 2) {
     const segment = segments[index] as string;
+    const trailingDelimiter = (segments[index + 1] as string | undefined) ?? "";
     const matchedField = segment.includes(":") ? matchedFieldFor(segment) : undefined;
     if (!matchedField) {
-      elements.push(`\`${escapeForTemplateLiteral(segment)}\``);
+      elements.push(
+        `\`${escapeForTemplateLiteral(segment)}${escapeForTemplateLiteral(trailingDelimiter)}\``
+      );
       continue;
     }
     const colonIndex = segment.indexOf(":");
     const facetKey = segment.slice(0, colonIndex);
-    const segmentLiteral = `\`${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}\``;
+    const segmentLiteral = `\`${escapeForTemplateLiteral(`${facetKey}:`)}\${payload.${matchedField}}${escapeForTemplateLiteral(trailingDelimiter)}\``;
     elements.push(
       optionalFields.has(matchedField)
         ? `...(payload.${matchedField} ? [${segmentLiteral}] : [])`
         : segmentLiteral
     );
   }
-  return `[${elements.join(", ")}].join(${JSON.stringify(delimiter)})`;
+  return `[${elements.join(", ")}].join("")`;
 }
 
 /**

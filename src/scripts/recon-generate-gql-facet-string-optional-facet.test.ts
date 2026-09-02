@@ -44,13 +44,14 @@ describe("emitContractTs — facet-string GraphQL variable with optional facets"
     const getGqlCall = getGqlCallMatch?.[0] ?? "";
 
     expect(getGqlCall).toContain('"productSearch_Products"');
-    // Required facet always included, unconditionally.
-    expect(getGqlCall).toContain("`region:${payload.Region}`");
+    // Required facet always included, unconditionally, carrying its own
+    // trailing delimiter so mixed delimiters in the source string survive.
+    expect(getGqlCall).toContain("`region:${payload.Region}|`");
     // Optional facets are only included when their payload field is present.
-    expect(getGqlCall).toContain("...(payload.Brand ? [`brand:${payload.Brand}`] : [])");
+    expect(getGqlCall).toContain("...(payload.Brand ? [`brand:${payload.Brand}|`] : [])");
     expect(getGqlCall).toContain("...(payload.Len ? [`len:${payload.Len}`] : [])");
-    // Segments are joined with the original delimiter, not frozen inline.
-    expect(getGqlCall).toMatch(/\]\.join\("\|"\)/);
+    // Segments are concatenated, each unit already carrying its delimiter.
+    expect(getGqlCall).toMatch(/\]\.join\(""\)/);
   });
 
   it("marks the optional facet fields .optional() in the payload schema while the required facet stays required", () => {

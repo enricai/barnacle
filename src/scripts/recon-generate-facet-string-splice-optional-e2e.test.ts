@@ -155,14 +155,18 @@ describe("recon-generate CLI — GraphQL filters-string facet splice with option
 
     // (b) the filters segments are conditionally joined — the required facet
     // (region) always contributes, the optional facets (brand, len) are each
-    // guarded on their payload value.
-    expect(contract).toMatch(/\.join\("\|"\)/);
+    // guarded on their payload value. Each unit carries its own trailing
+    // delimiter, so the units are concatenated rather than joined on a
+    // single recovered delimiter.
+    expect(contract).toMatch(/\.join\(""\)/);
     expect(contract).toMatch(/payload\.Brand\s*\?/);
     expect(contract).toMatch(/payload\.Len\s*\?/);
     expect(contract).not.toMatch(/payload\.Region\s*\?/);
 
     // (c) the payload schema marks the optional facets `.optional()`.
-    const schemaMatch = contract.match(/PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/);
+    const schemaMatch = contract.match(
+      /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
+    );
     expect(schemaMatch).not.toBeNull();
     const schema = schemaMatch?.[0] ?? "";
     expect(schema).toMatch(/Brand:[^\n]*\.optional\(\)/);
