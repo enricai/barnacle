@@ -68,7 +68,7 @@ function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
     // (mirrors flow-runner.captcha-inject-submit.test.ts's technique,
     // simplified since that primitive already has its own dedicated unit tests).
     if (src.includes("hasForm")) {
-      return { injected: true, hasForm: true, callback: opts.callbackName ?? null };
+      return { injected: true, hasForm: true, callbackDiscovered: Boolean(opts.callbackName) };
     }
     if (src.includes("window[")) {
       callbackInvokedWith.token = "solved-token";
