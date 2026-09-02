@@ -206,6 +206,22 @@ describe("buildConfigPlugin", () => {
     expect(steps[1]?.captchaGated).toBe(true);
   });
 
+  it("forwards a templated navigateTo through to the HealingFlowStep passed to runHealingFlow", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps = [
+      "click apply",
+      { step: "go to the dashboard", navigateTo: "https://apply.acme.example/{{ .request.FirstName }}" },
+    ];
+    const plugin = await buildConfigPlugin(manifest);
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const steps = mockRunHealingFlow.mock.calls[0]?.[0]?.steps as { navigateTo?: string }[];
+    expect(steps[0]?.navigateTo).toBeUndefined();
+    expect(steps[1]?.navigateTo).toBe("https://apply.acme.example/J");
+  });
+
   it("surfaces a failure when the flow's submitStep was skipped rather than verified", async () => {
     mockRunHealingFlow.mockResolvedValueOnce({
       submitVerified: false,
