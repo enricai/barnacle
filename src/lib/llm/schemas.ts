@@ -52,6 +52,34 @@ export const RECON_FLOW_STEP_SCHEMA = z.union([
      */
     captchaGated: z.boolean().default(false),
     /**
+     * Opts a step into the emailed-verification hook: pause, poll the run's
+     * allocated testmail inbox for a matching message, extract a link or code
+     * from it, and act (navigate to the link, or fill the code into the field
+     * the step's prose targets). Absent/false is a no-op for every existing flow.
+     */
+    emailStep: z.boolean().default(false),
+    /** Config for an `emailStep`. Ignored unless `emailStep` is true. */
+    emailStepConfig: z
+      .object({
+        /** Case-insensitive subject substring to match (passed to pollTestmailInbox.subjectContains). */
+        subjectContains: z.string().optional(),
+        /** What to pull out of the matched message. */
+        extract: z.enum(["link", "code"]).default("link"),
+        /**
+         * For extract:"link" — regex to pick the URL from message text/html
+         * (first capture group, else full match). Defaults to the first http(s)
+         * URL whose host matches the current page origin's registrable domain.
+         */
+        linkPattern: z.string().optional(),
+        /** For extract:"code" — regex for the OTP/code (defaults to /\b\d{4,8}\b/). */
+        codePattern: z.string().optional(),
+        /** How to act. "navigate" = goto the link. "fill" = type the code into the step's target field. */
+        action: z.enum(["navigate", "fill"]).default("navigate"),
+        /** Poll budget ms (default 120_000 — real inbox delivery is slower than a captcha solve). */
+        timeoutMs: z.number().optional(),
+      })
+      .optional(),
+    /**
      * Optional payload-field override for the generator's splicer. When set,
      * `resolveStepPayloadField` returns this field name verbatim instead of
      * inferring one from the instruction's English label — lets a flow author
