@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { applyDrillParamBindings, type FoldReturnSpec } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
-const SAILINGS_URL = "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=2&children=0";
+const SAILINGS_URL =
+  "https://api.example.com/itinerary/api/v1/sailings?packageCode=abc&adults=2&children=0";
 const UNRELATED_URL = "https://api.example.com/itinerary/api/v1/availability?adults=2&children=0";
 
 function buildSpec(): FoldReturnSpec {
