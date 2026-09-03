@@ -1285,7 +1285,7 @@ function firstGraphQLCapture(
   );
 }
 
-interface PrimaryGraphQLOperation {
+export interface PrimaryGraphQLOperation {
   capture: Capture;
   endpointPath: string;
   unpopulatedDeclaredVariables: string[];
@@ -1606,7 +1606,7 @@ export function firstEndpointPath(
 // requests (auth tokens, candidate IDs, application IDs). Single-endpoint
 // sites (job search, pricing APIs) have one action capture and skip this path.
 
-interface ActionCapture {
+export interface ActionCapture {
   capture: Capture;
   index: number;
 }
@@ -1778,7 +1778,7 @@ export function extractGraphQLActionSequence(
  * primary operation was actually selected -- mutation/submission flows keep
  * every step, since state-threading depends on each one.
  */
-function dedupRedundantSameOperationCaptures(
+export function dedupRedundantSameOperationCaptures(
   actions: ActionCapture[],
   primary: PrimaryGraphQLOperation | null
 ): ActionCapture[] {
