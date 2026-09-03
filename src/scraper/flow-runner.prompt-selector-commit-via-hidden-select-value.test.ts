@@ -62,6 +62,37 @@ const WIDGET_HTML = `
   </div>
 </div>`;
 
+// A second, sibling prompt-selector field under the SAME `role=group` ancestor
+// (well within MAX_SELECTION_ANCESTOR_DEPTH of src-widget) whose OWN hidden
+// select is pre-populated with a value whose option text substring-matches
+// OPTION — modeling a neighboring field the applicant already filled in
+// before this step ran. Regression for the sibling-widget false-positive:
+// the hidden-select corroboration must never credit src-widget's commit
+// using a DIFFERENT widget's paired hidden select.
+const SIBLING_WIDGET_HTML = `
+<div data-automation-id="applyFlowMyInfoPage">
+  <div role="group" aria-labelledby="source-section">
+    <span id="source-section">${QUESTION_LABEL}</span>
+    <div data-automation-id="formField-source">
+      <div id="src-widget" role="combobox" aria-haspopup="listbox" aria-controls="src-popup"
+           aria-invalid="true" tabindex="0"><span></span></div>
+      <select id="hidden-sel" name="source" class="form-control dropdown-hide">
+        <option value="">Select</option>
+        <option value="${HIDDEN_SELECT_OPTION_VALUE}">${HIDDEN_SELECT_OPTION_TEXT}</option>
+        <option value="referral">Referral</option>
+      </select>
+    </div>
+    <div data-automation-id="formField-referral-source">
+      <div id="referral-src-widget" role="combobox" aria-haspopup="listbox" aria-controls="referral-src-popup"
+           aria-label="Referral Source" aria-invalid="false" tabindex="0"><span></span></div>
+      <select id="referral-hidden-sel" name="referral-source" class="form-control dropdown-hide">
+        <option value="">Select</option>
+        <option value="${HIDDEN_SELECT_OPTION_VALUE}" selected>${HIDDEN_SELECT_OPTION_TEXT}</option>
+      </select>
+    </div>
+  </div>
+</div>`;
+
 /**
  * A bespoke (not `buildPromptWidgetHarness`) harness: that shared helper
  * always writes the widget's own committed-value label node and clears
@@ -71,14 +102,14 @@ const WIDGET_HTML = `
  * nowhere at all) — the opener's own text/invalid-marker state never
  * changes either way, modeling the reported ambiguous-readback shape.
  */
-function buildHarness(params: { commitsToHiddenSelect: boolean }): {
+function buildHarness(params: { commitsToHiddenSelect: boolean; withSiblingWidget?: boolean }): {
   page: unknown;
   target: FrameTarget;
   clicks: string[];
 } {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
-  document.body.innerHTML = WIDGET_HTML;
+  document.body.innerHTML = params.withSiblingWidget ? SIBLING_WIDGET_HTML : WIDGET_HTML;
 
   // happy-dom's default `offsetParent` is `undefined`, not the browser's real
   // `null` for a `display:none` element — stand it in for "no layout box" so
@@ -86,6 +117,10 @@ function buildHarness(params: { commitsToHiddenSelect: boolean }): {
   // recognizes this select as the opener's hidden shadow control.
   const hiddenSelect = document.getElementById("hidden-sel") as unknown as Element;
   Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+  if (params.withSiblingWidget) {
+    const referralHiddenSelect = document.getElementById("referral-hidden-sel") as unknown as Element;
+    Object.defineProperty(referralHiddenSelect, "offsetParent", { value: null, configurable: true });
+  }
 
   const clicks: string[] = [];
   let popupOpen = false;
@@ -259,6 +294,30 @@ describe("flow-runner/commitPromptOption corroborates an ambiguous opener readba
     // The primitive's own readback never reports ok:true, so it never credits
     // this widget as `dom`-verified — the corroboration never fabricates a
     // commit that didn't happen.
+    expect(trajectory).toEqual([]);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("did not commit; falling through to cascade")
+    );
+  });
+
+  it("does not credit the widget using a SIBLING field's already-populated hidden select", async () => {
+    const stagehandAct = vi.fn();
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target } = buildHarness({ commitsToHiddenSelect: false, withSiblingWidget: true });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const stepParams = baseParams(page as unknown as Page, stagehand, STEP, target);
+    await executeStepWithHealing({
+      ...stepParams,
+      stepIndex: 22,
+      trajectory,
+    } as never).catch(() => undefined);
+
+    // The sibling "referral-source" field's hidden select already holds a
+    // value whose option text substring-matches OPTION, but it is paired
+    // with the OTHER widget (referral-src-widget), not src-widget. The
+    // corroboration must never cross-attribute it to src-widget's commit.
     expect(trajectory).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("did not commit; falling through to cascade")

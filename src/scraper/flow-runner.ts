@@ -515,8 +515,8 @@ const PROMPT_TRIGGER_SELECTORS = [
  * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
  * this ties "opener" to the exact same union `tryPromptSelectorPrimitive`
  * recognizes, so a select is excluded precisely when the primitive that
- * should own it would actually claim it. This is a detection primitive
- * only: no call site wires it up yet.
+ * should own it would actually claim it. Consumed by {@link commitPromptOption}'s
+ * hidden-select-value corroboration when the opener's own readback is inconclusive.
  */
 export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
@@ -7109,6 +7109,27 @@ async function commitPromptOption(params: {
           const selects = cnode.querySelectorAll ? Array.from(cnode.querySelectorAll("select")) : [];
           for (const sel of selects) {
             if (!isPairedHiddenSelect(sel)) continue;
+            // isPairedHiddenSelect only proves SOME opener sits near this select —
+            // in a form with multiple prompt-selector fields sharing an outer
+            // ancestor within MAX_SELECTION_ANCESTOR_DEPTH, that opener can be a
+            // SIBLING widget's, not w's. Mirror OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+            // own climb-then-scan-openers shape, but require w itself to be among
+            // the openers found at the NEAREST level that has any — the same level
+            // isPairedHiddenSelect stopped at — so a neighboring field's
+            // already-committed hidden select never corroborates this widget's commit.
+            let snode = sel.parentElement;
+            let pairedWithW = false;
+            for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
+              const openersHere = snode.querySelectorAll
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel)
+                : [];
+              if (openersHere.length > 0) {
+                pairedWithW = openersHere.includes(w);
+                break;
+              }
+              snode = snode.parentElement;
+            }
+            if (!pairedWithW) continue;
             const v = (sel.value || "").trim();
             if (!v) continue;
             const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
