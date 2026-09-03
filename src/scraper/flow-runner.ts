@@ -7134,7 +7134,10 @@ async function commitPromptOption(params: {
             if (!v) continue;
             const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
             const optText = selOpt ? norm(selOpt.textContent || selOpt.label || "") : "";
-            if (!wantText || !optText || optText.includes(wantText)) { hiddenSelectMatches = true; break; }
+            // A selected option with no visible text (icon-only, value-only markup)
+            // carries no corroborating signal — treating it as a match would credit
+            // ANY selection change, including a different option than requested.
+            if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
           }
           cnode = cnode.parentElement;
         }

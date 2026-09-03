@@ -39,6 +39,13 @@ const OPTIONS = [
 const HIDDEN_SELECT_OPTION_TEXT = `${OPTION} — via referral program`;
 const HIDDEN_SELECT_OPTION_VALUE = "job-boards-referral";
 
+// An UNRELATED option whose <option> node carries a value but no visible
+// text (icon-only / value-only markup some sites render). Regression: the
+// hidden-select corroboration must never credit a commit just because SOME
+// option got selected — an empty-text selected option carries no signal
+// that it is the REQUESTED option, so it must not corroborate on its own.
+const EMPTY_TEXT_OPTION_VALUE = "unrelated-blank-label";
+
 const testLogger = {
   info: vi.fn(),
   warn: vi.fn(),
@@ -57,6 +64,7 @@ const WIDGET_HTML = `
         <option value="">Select</option>
         <option value="${HIDDEN_SELECT_OPTION_VALUE}">${HIDDEN_SELECT_OPTION_TEXT}</option>
         <option value="referral">Referral</option>
+        <option value="${EMPTY_TEXT_OPTION_VALUE}"></option>
       </select>
     </div>
   </div>
@@ -102,7 +110,11 @@ const SIBLING_WIDGET_HTML = `
  * nowhere at all) — the opener's own text/invalid-marker state never
  * changes either way, modeling the reported ambiguous-readback shape.
  */
-function buildHarness(params: { commitsToHiddenSelect: boolean; withSiblingWidget?: boolean }): {
+function buildHarness(params: {
+  commitsToHiddenSelect: boolean;
+  withSiblingWidget?: boolean;
+  commitsToEmptyTextOption?: boolean;
+}): {
   page: unknown;
   target: FrameTarget;
   clicks: string[];
@@ -146,8 +158,9 @@ function buildHarness(params: { commitsToHiddenSelect: boolean; withSiblingWidge
       selectedIndex: number;
       options: ArrayLike<{ value: string }>;
     };
-    const idx = Array.from(select.options).findIndex((o) => o.value === HIDDEN_SELECT_OPTION_VALUE);
-    select.value = HIDDEN_SELECT_OPTION_VALUE;
+    const targetValue = params.commitsToEmptyTextOption ? EMPTY_TEXT_OPTION_VALUE : HIDDEN_SELECT_OPTION_VALUE;
+    const idx = Array.from(select.options).findIndex((o) => o.value === targetValue);
+    select.value = targetValue;
     select.selectedIndex = idx;
   };
 
@@ -318,6 +331,29 @@ describe("flow-runner/commitPromptOption corroborates an ambiguous opener readba
     // value whose option text substring-matches OPTION, but it is paired
     // with the OTHER widget (referral-src-widget), not src-widget. The
     // corroboration must never cross-attribute it to src-widget's commit.
+    expect(trajectory).toEqual([]);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("did not commit; falling through to cascade")
+    );
+  });
+
+  it("does not credit the widget when the hidden select's value changed to an UNRELATED option with no visible text", async () => {
+    const stagehandAct = vi.fn();
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target } = buildHarness({ commitsToHiddenSelect: true, commitsToEmptyTextOption: true });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const stepParams = baseParams(page as unknown as Page, stagehand, STEP, target);
+    await executeStepWithHealing({
+      ...stepParams,
+      stepIndex: 23,
+      trajectory,
+    } as never).catch(() => undefined);
+
+    // The hidden select's value changed to a DIFFERENT option than requested,
+    // and that option's node has no visible text — the corroboration must not
+    // treat an empty-text selected option as a stand-in match for anything.
     expect(trajectory).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("did not commit; falling through to cascade")
