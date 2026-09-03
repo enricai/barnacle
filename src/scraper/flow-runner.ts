@@ -517,7 +517,9 @@ const PROMPT_TRIGGER_SELECTORS = [
  * recognizes, so a select is excluded precisely when the primitive that
  * should own it would actually claim it. Wired into every `<select>` list
  * `trySelectPrimitive` and `applySelectValue` build, so those primitives fall
- * through and let `tryPromptSelectorPrimitive` claim the opener instead.
+ * through and let `tryPromptSelectorPrimitive` claim the opener instead — and
+ * consumed by {@link commitPromptOption}'s hidden-select-value corroboration
+ * when the opener's own readback is inconclusive.
  */
 export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
@@ -7082,6 +7084,7 @@ async function commitPromptOption(params: {
     const isRequestedLeaf = norm(chosenOption.text) === wantOpt;
     const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const buttonValue = ${BUTTON_VALUE_EXPR};
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
@@ -7104,10 +7107,55 @@ async function commitPromptOption(params: {
         if (node.getAttribute && isInvalid(node)) { stillInvalid = true; break; }
         node = node.parentElement;
       }
+      // Corroborating signal when the opener's own text/activedescendant read is
+      // inconclusive: the paired native <select> Base Web (and similar vendors)
+      // keeps in sync BEHIND the real widget now holds a non-empty CURRENT value
+      // (read-only — never written here) that, when its selected option's own
+      // text is available, also matches the requested option.
+      let hiddenSelectMatches = false;
+      if (!textMatches) {
+        let cnode = w;
+        for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && cnode && !hiddenSelectMatches; d++) {
+          const selects = cnode.querySelectorAll ? Array.from(cnode.querySelectorAll("select")) : [];
+          for (const sel of selects) {
+            if (!isPairedHiddenSelect(sel)) continue;
+            // isPairedHiddenSelect only proves SOME opener sits near this select —
+            // in a form with multiple prompt-selector fields sharing an outer
+            // ancestor within MAX_SELECTION_ANCESTOR_DEPTH, that opener can be a
+            // SIBLING widget's, not w's. Mirror OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+            // own climb-then-scan-openers shape, but require w itself to be among
+            // the openers found at the NEAREST level that has any — the same level
+            // isPairedHiddenSelect stopped at — so a neighboring field's
+            // already-committed hidden select never corroborates this widget's commit.
+            let snode = sel.parentElement;
+            let pairedWithW = false;
+            for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
+              const openersHere = snode.querySelectorAll
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel)
+                : [];
+              if (openersHere.length > 0) {
+                pairedWithW = openersHere.includes(w);
+                break;
+              }
+              snode = snode.parentElement;
+            }
+            if (!pairedWithW) continue;
+            const v = (sel.value || "").trim();
+            if (!v) continue;
+            const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+            const optText = selOpt ? norm(selOpt.textContent || selOpt.label || "") : "";
+            // A selected option with no visible text (icon-only, value-only markup)
+            // carries no corroborating signal — treating it as a match would credit
+            // ANY selection change, including a different option than requested.
+            if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
+          }
+          cnode = cnode.parentElement;
+        }
+      }
       // A category click may leave the widget's aria-invalid unset until final
       // submit, so !stillInvalid alone only counts as success when this click
       // landed on the requested leaf option, not an intermediate category.
-      return { ok: textMatches || (isRequestedLeaf && !stillInvalid), id: w.id || "" };
+      return { ok: textMatches || (isRequestedLeaf && !stillInvalid) || hiddenSelectMatches, id: w.id || "" };
     })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedLeaf)})`;
     const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
       ok: boolean;
