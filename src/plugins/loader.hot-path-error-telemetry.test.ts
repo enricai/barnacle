@@ -8,7 +8,13 @@ import errorHandlerPlugin from "@/api/plugins/error-handler";
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
-import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
+import {
+  HttpBotChallengeError,
+  HttpRateLimitError,
+  HttpSchemaError,
+  HttpServerError,
+  HttpUrlLockedError,
+} from "@/scraper/errors";
 import type { SitePlugin } from "@/site-plugin";
 
 const mockCaptureSubmissionEnvelope = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -214,4 +220,91 @@ describe("dispatch — hotPathError telemetry recorded before browser fallback e
 
     await app.close();
   });
+});
+
+describe("dispatch — hotPathError telemetry recorded before a not-falling-back rethrow", () => {
+  const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
+  const preservedEnv = {
+    DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+
+  beforeEach(() => {
+    process.env.DEV_BYPASS_AUTH = "true";
+    process.env.NODE_ENV = "test";
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+    mockGetCachedResponse.mockReturnValue({ value: undefined, key: "test-key" });
+    mockGetOrCreateInFlight.mockImplementation((_key: string, producer: () => Promise<unknown>) =>
+      producer()
+    );
+  });
+
+  afterEach(() => {
+    if (preservedEnv.DEV_BYPASS_AUTH === undefined) delete process.env.DEV_BYPASS_AUTH;
+    else process.env.DEV_BYPASS_AUTH = preservedEnv.DEV_BYPASS_AUTH;
+    if (preservedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = preservedEnv.NODE_ENV;
+    vi.clearAllMocks();
+  });
+
+  async function buildAppWithPlugin(
+    plugin: SitePlugin<unknown, unknown>
+  ): Promise<Parameters<typeof registerRoutes>[0]> {
+    const app = Fastify({
+      loggerInstance: getLogger({ name: "loader-hot-path-error-rethrow-test" }),
+      genReqId: () => "req-hot-path-error-rethrow",
+    });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(errorHandlerPlugin);
+    await app.register(authPlugin);
+    await registerRoutes(app, cfgStub, [plugin]);
+    await app.ready();
+    return app;
+  }
+
+  it.each([
+    ["HttpRateLimitError", () => new HttpRateLimitError("http 429 rate limit exceeded"), 429],
+    ["HttpUrlLockedError", () => new HttpUrlLockedError("requisition url locked"), 429],
+  ])(
+    "records hotPathError on the error-status envelope call and rethrows without invoking execute for %s",
+    async (errorName, makeError, expectedStatus) => {
+      const siteId = `hot-path-error-rethrow-${errorName.toLowerCase()}`;
+      const executeSpy = vi.fn().mockResolvedValue({ data: { ok: true, path: "browser" } });
+      const plugin: SitePlugin<unknown, unknown> = {
+        meta: {
+          siteId,
+          displayName: "Hot Path Error Rethrow Test",
+          bodySchema: z.object({}),
+          responseSchema: z.unknown(),
+        },
+        executeHttp: async () => {
+          throw makeError();
+        },
+        execute: executeSpy,
+      };
+      const app = await buildAppWithPlugin(plugin);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/${siteId}/run`,
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(expectedStatus);
+      expect(executeSpy).not.toHaveBeenCalled();
+
+      expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledTimes(1);
+      expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+        expect.objectContaining({
+          siteId,
+          status: "error",
+          errorMessage: expect.any(String),
+          hotPathError: { name: errorName, message: expect.any(String), code: null },
+        })
+      );
+
+      await app.close();
+    }
+  );
 });

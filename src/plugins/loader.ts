@@ -261,6 +261,7 @@ async function runPluginPipeline<TResult>(
       )) as SitePluginResult<TResult>;
     }
     if (isHttpRateLimitError(httpErr)) {
+      context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
         `hot path rate-limited for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
@@ -268,6 +269,7 @@ async function runPluginPipeline<TResult>(
       recordDdRateLimit(plugin.meta.siteId);
     }
     if (isHttpUrlLockedError(httpErr)) {
+      context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
         `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
