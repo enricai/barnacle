@@ -22,8 +22,16 @@ function makeSubmitLine(): Record<string, unknown> {
     status: "submitted",
     auditPayload: { verified: true, applicationId: "app-xyz" },
     errorMessage: null,
+    hotPathError: null,
     durationMs: 4321,
     ts: "2026-07-26T10:00:00.000Z",
+  };
+}
+
+function makeSubmitLineWithHotPathError(): Record<string, unknown> {
+  return {
+    ...makeSubmitLine(),
+    hotPathError: { name: "TimeoutError", message: "navigation timed out", code: "ETIMEDOUT" },
   };
 }
 
@@ -117,6 +125,50 @@ describe("submitRecordSchema", () => {
         provider: "steel",
         ip: null,
         ipCapturedAt: null,
+      });
+    }
+  });
+
+  it("accepts a line with hotPathError omitted", () => {
+    const { hotPathError: _hotPathError, ...withoutHotPathError } = makeSubmitLine();
+    const result = submitRecordSchema.safeParse(withoutHotPathError);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hotPathError).toBeUndefined();
+    }
+  });
+
+  it("accepts a null hotPathError", () => {
+    const result = submitRecordSchema.safeParse({ ...makeSubmitLine(), hotPathError: null });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hotPathError).toBeNull();
+    }
+  });
+
+  it("accepts a record carrying a populated hotPathError block", () => {
+    const result = submitRecordSchema.safeParse(makeSubmitLineWithHotPathError());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hotPathError).toEqual({
+        name: "TimeoutError",
+        message: "navigation timed out",
+        code: "ETIMEDOUT",
+      });
+    }
+  });
+
+  it("accepts a hotPathError block with a null code", () => {
+    const result = submitRecordSchema.safeParse({
+      ...makeSubmitLine(),
+      hotPathError: { name: "ScraperError", message: "site rejected the submission", code: null },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hotPathError).toEqual({
+        name: "ScraperError",
+        message: "site rejected the submission",
+        code: null,
       });
     }
   });

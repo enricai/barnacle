@@ -40,6 +40,26 @@ export const sessionTelemetrySchema = z.object({
 export type SessionTelemetry = z.infer<typeof sessionTelemetrySchema>;
 
 /**
+ * The identity of a throw caught on the hot submit path before it was
+ * swallowed by fallback handling or rethrown, so the reconciliation record
+ * carries the throw's constructor name, message, and site-reported error
+ * code as durable fact instead of something a reader has to infer.
+ *
+ * Unlike `session`/`errorMessage` on `submitRecordSchema`, this field is
+ * `.optional()` as well as `.nullable()`: every existing writer of a submit
+ * record predates the field, so requiring it present would force an
+ * unrelated migration of every call site instead of the one that populates
+ * it (a separate change).
+ */
+export const hotPathErrorSchema = z.object({
+  name: z.string(),
+  message: z.string(),
+  code: z.string().nullable(),
+});
+
+export type HotPathError = z.infer<typeof hotPathErrorSchema>;
+
+/**
  * Submit-side record: the existing submission envelope shape plus an opaque
  * `joinKeys` bag.
  */
@@ -53,6 +73,7 @@ export const submitRecordSchema = z.object({
   status: z.enum(["submitted", "error"]),
   auditPayload: z.unknown(),
   errorMessage: z.string().nullable(),
+  hotPathError: hotPathErrorSchema.nullable().optional(),
   durationMs: z.number(),
   ts: z.string(),
 });
