@@ -7551,7 +7551,15 @@ export async function verifyDomEffect(
           // ancestor, and — since some resolved xpaths land on a sibling label rather
           // than the combobox itself — the nearest combobox within the same
           // field-group container, for a nested input value, falling back to visible
-          // text or an aria label/valuetext.
+          // text or an aria label/valuetext. `combo.textContent`/`el.textContent`
+          // is NEVER read directly: for a composite opener+hidden-`<select>`
+          // widget (role="combobox" on the shared container, resolved xpath
+          // landing on the sibling hidden select) that concatenates EVERY
+          // option's text, so it "matches" whatever the requested option is
+          // regardless of what actually got selected — read only the
+          // COMMITTED signal (aria-activedescendant's referenced node, the
+          // select's own selectedIndex option, or the opener's displayed text
+          // with any nested select/listbox option list stripped out first).
           const exprCustom = `(() => {
             const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
             const el = r.singleNodeValue;
@@ -7564,9 +7572,28 @@ export async function verifyDomEffect(
             combo = combo || el;
             const nestedInput = combo.querySelector && combo.querySelector('input');
             const value = (nestedInput && nestedInput.value) || el.value || "";
-            const text = (combo.textContent || el.textContent || "").trim();
+            const adid = (combo.getAttribute && combo.getAttribute('aria-activedescendant')) ||
+              (el.getAttribute && el.getAttribute('aria-activedescendant'));
+            const adNode = adid && document.getElementById(adid);
+            const adText = adNode ? (adNode.textContent || "").trim() : "";
+            const selectEl = el.tagName === "SELECT" ? el : (combo.tagName === "SELECT" ? combo : null);
+            const selectedOptText = selectEl && selectEl.selectedIndex >= 0 && selectEl.options[selectEl.selectedIndex]
+              ? (selectEl.options[selectEl.selectedIndex].textContent || "").trim()
+              : "";
+            // If combo itself IS the <select> (role="combobox" placed directly
+            // on the native select rather than a wrapping container),
+            // querySelectorAll('select,...') below only prunes DESCENDANTS —
+            // combo's own concatenated option text survives untouched. Skip
+            // the whole-text fallback entirely for that shape; selectedOptText
+            // above already reads its single committed option.
+            const clone = combo.tagName !== "SELECT" && combo.cloneNode ? combo.cloneNode(true) : null;
+            if (clone && clone.querySelectorAll) {
+              clone.querySelectorAll('select,[role="listbox"]').forEach((n) => n.remove());
+            }
+            const ownText = clone ? (clone.textContent || "").trim() : "";
             const ariaText = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('aria-valuetext'))) || "";
-            return { value: String(value).trim(), text: String(text || ariaText).trim() };
+            const text = adText || selectedOptText || ownText || ariaText;
+            return { value: String(value).trim(), text: String(text || "").trim() };
           })()`;
           try {
             const customResult = await target.evaluate(exprCustom);
