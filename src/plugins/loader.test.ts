@@ -562,6 +562,114 @@ describe("dispatch — executeHttp hot-path branches", () => {
   });
 });
 
+describe("dispatch — hotPathError telemetry + browserFallbackGate", () => {
+  const mockHttpExecute = vi.fn();
+
+  const makeContext = (): SitePluginContext => ({
+    ...stubContext,
+    telemetry: new RunTelemetry(),
+  });
+
+  const httpPlugin: SitePlugin<unknown, unknown> = {
+    meta: {
+      siteId: "gate-site",
+      displayName: "Gate Site",
+      bodySchema: {} as never,
+      responseSchema: {} as never,
+    },
+    execute: mockPluginExecute,
+    executeHttp: mockHttpExecute,
+  };
+
+  beforeEach(() => {
+    mockCaptureSubmissionEnvelope.mockResolvedValue(undefined);
+    mockPluginExecute.mockResolvedValue({ data: { result: "ok" } });
+    mockHttpExecute.mockResolvedValue({ data: { result: "hot" } });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    resetMetrics();
+  });
+
+  it("records hotPathError on the success envelope when the hot path fails then the fallback succeeds, with no gate declared", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("schema mismatch"));
+    const context = makeContext();
+    await dispatch(httpPlugin, {}, context);
+    expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        hotPathError: { name: "HttpSchemaError", message: "schema mismatch", code: null },
+      })
+    );
+  });
+
+  it("records hotPathError on the error envelope when the hot path fails then the fallback also fails", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("schema mismatch"));
+    mockPluginExecute.mockRejectedValueOnce(new Error("browser also failed"));
+    const context = makeContext();
+    await expect(dispatch(httpPlugin, {}, context)).rejects.toThrow("browser also failed");
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        hotPathError: { name: "HttpSchemaError", message: "schema mismatch", code: null },
+      })
+    );
+  });
+
+  it("skips the browser fallback and rethrows the original error when browserFallbackGate is false", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("permanently broken"));
+    const gatedPlugin: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "gated-off-site", browserFallbackGate: false },
+    };
+    const context = makeContext();
+    let caught: unknown;
+    try {
+      await dispatch(gatedPlugin, {}, context);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HttpSchemaError);
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+    expect(mockRunWithSession).not.toHaveBeenCalled();
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        hotPathError: { name: "HttpSchemaError", message: "permanently broken", code: null },
+      })
+    );
+  });
+
+  it("skips the browser fallback when browserFallbackGate is a predicate returning false for this error", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("predicate-denied"));
+    const gate = vi.fn().mockReturnValue(false);
+    const gatedPlugin: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "gated-predicate-site", browserFallbackGate: gate },
+    };
+    const context = makeContext();
+    await expect(dispatch(gatedPlugin, {}, context)).rejects.toBeInstanceOf(HttpSchemaError);
+    expect(gate).toHaveBeenCalledWith(expect.any(HttpSchemaError));
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+  });
+
+  it("preserves today's cascade behavior when browserFallbackGate is a predicate returning true", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("predicate-allowed"));
+    const gate = vi.fn().mockReturnValue(true);
+    const gatedPlugin: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "gated-predicate-true-site", browserFallbackGate: gate },
+    };
+    const context = makeContext();
+    const result = await dispatch(gatedPlugin, {}, context);
+    expect(gate).toHaveBeenCalledWith(expect.any(HttpSchemaError));
+    expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+    expect(result.data).toEqual({ result: "ok" });
+  });
+});
+
 describe("dispatch — cache integration", () => {
   const mockHttpExecute = vi.fn();
 

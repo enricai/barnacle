@@ -30,7 +30,7 @@ import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
 import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
-import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
+import { type HotPathErrorTelemetry, RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
 import { fireTrackingClick } from "@/lib/tracking-click";
 import {
@@ -43,6 +43,7 @@ import {
   isHttpUrlLockedError,
   isScraperError,
   type NeedsUserInfoResult,
+  type ScraperError,
 } from "@/scraper/errors";
 import {
   recordFallbackActivation,
@@ -153,6 +154,33 @@ async function withSessionTelemetry<T>(
 }
 
 /**
+ * Extracts the durable identity of a hot-path throw for telemetry — the
+ * error's own `.code`, when present, since scraper error subclasses don't
+ * declare one on their own type and this is the only generic way to read a
+ * site-reported code off an arbitrary thrown value.
+ */
+function toHotPathErrorTelemetry(err: ScraperError): HotPathErrorTelemetry {
+  const code = (err as unknown as { code?: unknown }).code;
+  return {
+    name: err.constructor.name,
+    message: err.message,
+    code: typeof code === "string" ? code : null,
+  };
+}
+
+/**
+ * Consults `plugin.meta.browserFallbackGate` to decide whether a hot-path
+ * throw may cascade into the Stagehand browser fallback. Absent gate
+ * preserves today's unconditional cascade; `false` (or a predicate
+ * resolving `false` for this error) means fail fast instead.
+ */
+function isFallbackAllowed(plugin: SitePlugin<unknown, unknown>, err: ScraperError): boolean {
+  const gate = plugin.meta.browserFallbackGate;
+  if (gate === undefined) return true;
+  return typeof gate === "function" ? gate(err) : gate;
+}
+
+/**
  * Runs the hot path (when available) + fallback pipeline for a single
  * submission. Extracted so dispatch() reads as a linear "run pipeline,
  * record audit, return" sequence rather than a `let result` mutated across
@@ -207,6 +235,13 @@ async function runPluginPipeline<TResult>(
       isHttpBotChallengeError(httpErr) ||
       isHttpServerError(httpErr)
     ) {
+      context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
+      if (!isFallbackAllowed(plugin, httpErr)) {
+        logger.warn(
+          `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — browser fallback gated off, not falling back`
+        );
+        throw httpErr;
+      }
       logger.warn(
         `hot path failed for ${plugin.meta.siteId} (${httpErr.constructor.name}): ${httpErr.message} — engaging browser fallback`
       );
@@ -375,6 +410,7 @@ export async function dispatch<TResult>(
       status: "submitted",
       auditPayload: result.auditPayload ?? result.data,
       errorMessage: null,
+      hotPathError: successSnapshot.hotPathError,
       durationMs,
     });
 
@@ -426,6 +462,7 @@ export async function dispatch<TResult>(
       status: "error",
       auditPayload: null,
       errorMessage: toErrorMessage(err),
+      hotPathError: errorSnapshot.hotPathError,
       durationMs,
     });
 
