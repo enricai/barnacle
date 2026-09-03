@@ -5779,7 +5779,8 @@ async function tryFillRequiredSelectsPrimitive(params: {
   // (MUI marks NativeSelect via any of these). Reuses the isUnfilled / selLabelText
   // shape from trySelectPrimitive.
   const enumerateExpr = `(() => {
-    const selects = Array.from(document.querySelectorAll("select"));
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s));
     if (selects.length === 0) return { candidates: [] };
     const selLabelText = (sel) => {
       const parts = [];
