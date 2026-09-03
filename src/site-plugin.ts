@@ -141,6 +141,16 @@ export interface SitePluginMeta {
    */
   browserbaseSessionCreateParams?: BrowserbaseSessionCreateParams;
   /**
+   * Gates whether the loader may cascade a hot-path (`executeHttp`) throw into
+   * the Stagehand browser fallback. Called with the hot-path error before
+   * `execute()` runs, so a plugin can allow fallback for some error types
+   * (e.g. a transient `HttpServerError`) but not others (e.g. a persistently
+   * broken `HttpSchemaError`) instead of an all-or-nothing switch. `false` is
+   * shorthand for "never fall back." Absent means today's behavior: the
+   * loader always cascades, unconditionally.
+   */
+  browserFallbackGate?: boolean | ((error: ScraperError) => boolean);
+  /**
    * Optional semver range string declaring which plugin API version this plugin
    * targets (e.g. `"^1.0.0"`). Core compares this against `PLUGIN_API_VERSION`
    * at load time and disables the plugin on a major-version mismatch. Absent
