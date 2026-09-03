@@ -503,6 +503,33 @@ const PROMPT_TRIGGER_SELECTORS = [
   "[data-automation-id='promptSelectionLabel']",
 ].join(",");
 /**
+ * In-page predicate source for `(el) => boolean`: true when `el` is a
+ * `<select>` that is a design-system combobox opener's paired-but-hidden
+ * shadow control (Base Web `bb-customSelect` and any other vendor matching
+ * {@link PROMPT_TRIGGER_SELECTORS}) — a `<select>` with no layout box
+ * (`offsetParent === null`, the same idiom `DOM_SNAPSHOT_EXPR` uses for
+ * `display:none`-driven hiding classes like `dropdown-hide`) whose nearby
+ * container also holds a {@link PROMPT_TRIGGER_SELECTORS} opener element
+ * other than itself. The bounded-ancestor-climb-then-subtree-search shape
+ * mirrors {@link NEARBY_SELECTION_CONTAINER_FN_SRC}, but searches for
+ * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
+ * this ties "opener" to the exact same union `tryPromptSelectorPrimitive`
+ * recognizes, so a select is excluded precisely when the primitive that
+ * should own it would actually claim it. This is a detection primitive
+ * only: no call site wires it up yet.
+ */
+export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
+    if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
+    const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    let node = el.parentElement;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      const openers = node.querySelectorAll ? Array.from(node.querySelectorAll(triggerSel)) : [];
+      if (openers.some((opener) => opener !== el)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }`;
+/**
  * Cross-vendor selector union for an OPTION rendered inside the opened popup —
  * standards first (`role=option`), then the widget-kit option markers. Sibling
  * of {@link PROMPT_TRIGGER_SELECTORS}; same union discipline and guard treatment.
