@@ -62,13 +62,15 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
 }
 
 /**
- * `role="combobox"` on the SHARED CONTAINER itself, not on a descendant —
- * the exact shape that makes `container.querySelector('[role="combobox"]')`
- * return null (querySelector never matches the calling element) and, pre-fix,
- * fell through to reading the resolved select's own raw `textContent`.
+ * `role="combobox"` on the resolved xpath's OWN element (the shared
+ * container, wrapping both the visible opener label and the hidden native
+ * `<select>`) — the exact shape where `el.closest('[role="combobox"]')`
+ * self-matches on `el`, so `combo === el` and, pre-fix, `combo.textContent`
+ * concatenated the opener label AND every `<option>`'s text.
  */
 function buildWidget(params: { committed: boolean }): {
   window: Window;
+  container: HappyDomElement;
   hiddenSelect: HappyDomElement;
 } {
   const window = new Window({ url: "https://apply.example.com/onboard/a/1" });
@@ -78,19 +80,16 @@ function buildWidget(params: { committed: boolean }): {
       <span class="opener-label">Choose a country</span>
       <select class="hidden-shadow-select">
         <option value="">Select</option>
-        <option id="opt-us" value="us"${params.committed ? " selected" : ""}>United States</option>
+        <option id="opt-us" value="us">United States</option>
         <option value="ca">Canada</option>
       </select>
     </div>
   `;
+  const container = document.querySelector(".widget-container") as unknown as HappyDomElement;
   const hiddenSelect = document.querySelector(
     "select.hidden-shadow-select"
   ) as unknown as HappyDomElement;
-  if (params.committed) {
-    (hiddenSelect as unknown as { value: string; selectedIndex: number }).value = "us";
-    (hiddenSelect as unknown as { value: string; selectedIndex: number }).selectedIndex = 1;
-  }
-  return { window, hiddenSelect };
+  return { window, container, hiddenSelect };
 }
 
 /** Wires the real generated expression string against a live happy-dom document. */
@@ -137,10 +136,10 @@ function selectAction(xpath: string): Action {
 }
 
 describe("flow-runner/verifyDomEffect — composite opener+hidden-select selectOption verification", () => {
-  it("verifies via the opener's own committed signal (aria-activedescendant + the select's own selectedIndex option), not raw concatenated text", async () => {
-    const { window, hiddenSelect } = buildWidget({ committed: true });
+  it("verifies via the opener's own committed signal (aria-activedescendant pointing at the selected option), not raw concatenated text", async () => {
+    const { window, container, hiddenSelect } = buildWidget({ committed: true });
     const target = makeTarget(window);
-    const xpath = absoluteXPathFor(hiddenSelect);
+    const xpath = absoluteXPathFor(container);
 
     const preValue = (hiddenSelect as unknown as { value: string }).value;
     const preSelectedIndex = (hiddenSelect as unknown as { selectedIndex: number }).selectedIndex;
@@ -156,19 +155,20 @@ describe("flow-runner/verifyDomEffect — composite opener+hidden-select selectO
     );
   });
 
-  it("does NOT verify merely because the target option's text exists SOMEWHERE in the hidden select's option list — nothing was actually committed", async () => {
-    const { window, hiddenSelect } = buildWidget({ committed: false });
+  it("does NOT verify merely because the target option's text exists SOMEWHERE in the widget's concatenated text — nothing was actually committed", async () => {
+    const { window, container, hiddenSelect } = buildWidget({ committed: false });
     const target = makeTarget(window);
-    const xpath = absoluteXPathFor(hiddenSelect);
+    const xpath = absoluteXPathFor(container);
 
     const preValue = (hiddenSelect as unknown as { value: string }).value;
     const preSelectedIndex = (hiddenSelect as unknown as { selectedIndex: number }).selectedIndex;
 
-    // Sanity: the report's false-positive/false-negative failure mode — the
-    // raw (uncommitted) select's overall textContent DOES contain the target
-    // substring, purely because "United States" is one of its options.
+    // Sanity: the report's false-positive failure mode — the widget's overall
+    // (uncommitted) concatenated textContent DOES contain the target
+    // substring, purely because "United States" is one of the hidden
+    // select's options, not because it was ever selected.
     const rawTextContent = (
-      hiddenSelect as unknown as { textContent: string }
+      container as unknown as { textContent: string }
     ).textContent.toLowerCase();
     expect(rawTextContent).toContain("united states");
 
