@@ -173,6 +173,52 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     };
     expect(hcaptcha.render.__barnacleWrapped).toBe(true);
   });
+
+  it("re-wraps the current window.hcaptcha via the getter branch when render is reassigned after the setter already wrapped it once", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const originalRender = (): string => "widget-original";
+    (sandbox.window as Record<string, unknown>).hcaptcha = { render: originalRender };
+
+    const hcaptchaAfterSetter = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean };
+    };
+    expect(hcaptchaAfterSetter.render.__barnacleWrapped).toBe(true);
+
+    const freshUnwrappedRender = (): string => "widget-retampered";
+    hcaptchaAfterSetter.render = freshUnwrappedRender as unknown as {
+      __barnacleWrapped?: boolean;
+    };
+    expect(hcaptchaAfterSetter.render).toBe(freshUnwrappedRender);
+
+    runScript(sandbox);
+
+    const hcaptchaAfterRewrap = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptchaAfterRewrap.render.__barnacleWrapped).toBe(true);
+    expect(hcaptchaAfterRewrap.render).not.toBe(freshUnwrappedRender);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptchaAfterRewrap.render("h-captcha", {
+      sitekey: "site-f",
+      callback,
+    });
+
+    expect(widgetId).toBe("widget-retampered");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-f::widget-retampered"]).toEqual({
+      sitekey: "site-f",
+      widgetId: "widget-retampered",
+      callback,
+    });
+  });
 });
 
 describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
