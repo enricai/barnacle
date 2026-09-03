@@ -67,9 +67,10 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
  * return null (querySelector never matches the calling element) and, pre-fix,
  * fell through to reading the resolved select's own raw `textContent`.
  */
-function buildWidget(params: {
-  committed: boolean;
-}): { window: Window; hiddenSelect: HappyDomElement } {
+function buildWidget(params: { committed: boolean }): {
+  window: Window;
+  hiddenSelect: HappyDomElement;
+} {
   const window = new Window({ url: "https://apply.example.com/onboard/a/1" });
   const document = window.document;
   document.body.innerHTML = `
@@ -82,7 +83,9 @@ function buildWidget(params: {
       </select>
     </div>
   `;
-  const hiddenSelect = document.querySelector("select.hidden-shadow-select") as unknown as HappyDomElement;
+  const hiddenSelect = document.querySelector(
+    "select.hidden-shadow-select"
+  ) as unknown as HappyDomElement;
   if (params.committed) {
     (hiddenSelect as unknown as { value: string; selectedIndex: number }).value = "us";
     (hiddenSelect as unknown as { value: string; selectedIndex: number }).selectedIndex = 1;
@@ -91,7 +94,7 @@ function buildWidget(params: {
 }
 
 /** Wires the real generated expression string against a live happy-dom document. */
-function makeTarget(window: Window, hiddenSelect: HappyDomElement): FrameTarget {
+function makeTarget(window: Window): FrameTarget {
   const document = window.document;
   const documentElement = document.documentElement as unknown as HappyDomElement;
   const win = window as unknown as { XPathResult?: unknown };
@@ -108,8 +111,6 @@ function makeTarget(window: Window, hiddenSelect: HappyDomElement): FrameTarget 
     const fn = new window.Function("document", `return (${src});`) as (d: unknown) => unknown;
     return fn(document);
   }) as FrameTarget["evaluate"];
-
-  const xpath = absoluteXPathFor(hiddenSelect);
 
   return {
     frame: null,
@@ -138,7 +139,7 @@ function selectAction(xpath: string): Action {
 describe("flow-runner/verifyDomEffect — composite opener+hidden-select selectOption verification", () => {
   it("verifies via the opener's own committed signal (aria-activedescendant + the select's own selectedIndex option), not raw concatenated text", async () => {
     const { window, hiddenSelect } = buildWidget({ committed: true });
-    const target = makeTarget(window, hiddenSelect);
+    const target = makeTarget(window);
     const xpath = absoluteXPathFor(hiddenSelect);
 
     const preValue = (hiddenSelect as unknown as { value: string }).value;
@@ -157,7 +158,7 @@ describe("flow-runner/verifyDomEffect — composite opener+hidden-select selectO
 
   it("does NOT verify merely because the target option's text exists SOMEWHERE in the hidden select's option list — nothing was actually committed", async () => {
     const { window, hiddenSelect } = buildWidget({ committed: false });
-    const target = makeTarget(window, hiddenSelect);
+    const target = makeTarget(window);
     const xpath = absoluteXPathFor(hiddenSelect);
 
     const preValue = (hiddenSelect as unknown as { value: string }).value;
