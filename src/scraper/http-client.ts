@@ -11,11 +11,40 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  isHttpRateLimitError,
   type ScraperError,
   UnknownScraperError,
 } from "@/scraper/errors";
+import { sleep } from "@/scraper/frame-target";
 
 const logger = getLogger({ name: "scraper/http-client" });
+
+/**
+ * Ceiling on how long the hot path will honor a server-supplied
+ * `Retry-After` before giving up on it — otherwise an ATS handing back a
+ * multi-hour `Retry-After` would hang the request well past any reasonable
+ * retry budget. Matches p-retry's own `maxTimeout` scale (below) rather than
+ * an arbitrary larger number, since both express "how long is this hot path
+ * willing to wait for one attempt."
+ */
+const MAX_RETRY_AFTER_MS = 10_000;
+
+/**
+ * Parses a `Retry-After` header value into milliseconds, clamped to
+ * {@link MAX_RETRY_AFTER_MS}. Supports both forms the spec allows: an
+ * integer number of seconds, or an HTTP-date. Returns `undefined` when the
+ * header is absent or unparseable so the caller can fall back to p-retry's
+ * own exponential backoff instead.
+ */
+function parseRetryAfterMs(headers: Headers): number | undefined {
+  const raw = headers.get("Retry-After");
+  if (raw === null) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.min(Math.max(seconds, 0) * 1_000, MAX_RETRY_AFTER_MS);
+  const dateMs = Date.parse(raw);
+  if (Number.isNaN(dateMs)) return undefined;
+  return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_AFTER_MS);
+}
 
 /**
  * One-shot diagnostic: when `CAPTURE_BASELINE_BODIES=1`, write each successful
@@ -385,9 +414,12 @@ export function createHttpClient<TResponse>(
           }
 
           if (response.status === 429) {
-            // Rate limit — not a transient failure, abort retry.
-            throw new AbortError(
-              new HttpRateLimitError(`http 429 from ${url} — rate limit exceeded`)
+            // Rate limit — transient, thrown plainly (not AbortError-wrapped)
+            // so p-retry's own `retries` budget applies; onFailedAttempt
+            // below honors Retry-After before the next attempt fires.
+            throw new HttpRateLimitError(
+              `http 429 from ${url} — rate limit exceeded`,
+              parseRetryAfterMs(response.headers)
             );
           }
 
@@ -467,10 +499,16 @@ export function createHttpClient<TResponse>(
           maxTimeout: 1_000,
           randomize: true,
           signal: init.signal,
-          onFailedAttempt: (context) => {
+          onFailedAttempt: async (context) => {
             logger.warn(
               `http hot-path attempt ${context.attemptNumber} failed: ${context.error.message}; ${context.retriesLeft} retries left`
             );
+            // p-retry awaits this hook before scheduling its own exponential
+            // backoff timer, so honoring a server-supplied Retry-After here
+            // composes with — rather than replaces — the existing config.
+            if (isHttpRateLimitError(context.error) && context.error.retryAfterMs !== undefined) {
+              await sleep(context.error.retryAfterMs);
+            }
           },
         }
       )

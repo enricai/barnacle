@@ -282,14 +282,27 @@ export function isHttpServerError(err: unknown): err is HttpServerError {
 }
 
 /**
- * The direct-HTTP hot path received a 429 rate-limit response. Non-retryable
- * and NOT a fallback trigger — a 429 means the configured rps ceiling is too
- * high; the right response is to back off and surface the metric, not burn a
- * session.
+ * The direct-HTTP hot path received a 429 rate-limit response. Not a
+ * fallback trigger — a 429 means the configured rps ceiling is too high; the
+ * right response is to back off and surface the metric, not burn a session.
+ * `retryable` stays `false` here because this class's own flag is not what
+ * drives the hot path's retry decision (unlike `classifyResponseBody`
+ * results) — `http-client.ts` throws this plainly, un-wrapped in
+ * `AbortError`, so p-retry's own `retries` budget applies to it directly;
+ * see the 429 branch in `createHttpClient` for the resulting bounded
+ * back-off, honoring `retryAfterMs` when the server sent one.
  */
 export class HttpRateLimitError extends ScraperError {
-  constructor(message = "http 429 rate limit exceeded") {
+  /**
+   * Parsed `Retry-After` delay in milliseconds, when the 429 response
+   * carried that header. `undefined` when absent — the caller falls back to
+   * p-retry's own exponential backoff.
+   */
+  readonly retryAfterMs: number | undefined;
+
+  constructor(message = "http 429 rate limit exceeded", retryAfterMs?: number) {
     super(message, false);
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
