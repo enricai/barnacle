@@ -1285,7 +1285,7 @@ function firstGraphQLCapture(
   );
 }
 
-interface PrimaryGraphQLOperation {
+export interface PrimaryGraphQLOperation {
   capture: Capture;
   endpointPath: string;
   unpopulatedDeclaredVariables: string[];
@@ -1606,7 +1606,7 @@ export function firstEndpointPath(
 // requests (auth tokens, candidate IDs, application IDs). Single-endpoint
 // sites (job search, pricing APIs) have one action capture and skip this path.
 
-interface ActionCapture {
+export interface ActionCapture {
   capture: Capture;
   index: number;
 }
@@ -1763,6 +1763,30 @@ export function extractGraphQLActionSequence(
       if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
       return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
+}
+
+/**
+ * Drops redundant re-issues of the primary GraphQL read operation from a
+ * `extractGraphQLActionSequence` result. A read flow can capture the same
+ * query multiple times -- pagination, re-filtering across phases, an SPA
+ * re-firing it during a funnel walk -- and every occurrence but the primary's
+ * own qualifies for {@link extractGraphQLActionSequence} the same way a
+ * genuinely distinct step (the `foldReturn` drill, another endpoint) does.
+ * Left undeduped, the read-flow fold-merge emission chains each redundant
+ * occurrence in as its own `httpClient` call instead of fetching the primary
+ * once (with paging) and folding only the real drill. Only applies when a
+ * primary operation was actually selected -- mutation/submission flows keep
+ * every step, since state-threading depends on each one.
+ */
+export function dedupRedundantSameOperationCaptures(
+  actions: ActionCapture[],
+  primary: PrimaryGraphQLOperation | null
+): ActionCapture[] {
+  if (!primary) return actions;
+  const primaryGroupKey = operationGroupKey(primary.capture);
+  return actions.filter(
+    (a) => a.capture === primary.capture || operationGroupKey(a.capture) !== primaryGroupKey
+  );
 }
 
 /**
@@ -9905,7 +9929,7 @@ async function main(): Promise<void> {
   // when it isn't a strict undercount of what the same captures' own
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
-    ? graphqlActionSequence
+    ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
     : collapseRedundantPatches(extractActionSequence(captures, submitPatterns, foldReturnSpec));
   // The same undercount hazard applies one layer below the manifest: a
   // flow-declared submitEndpointPattern that matches only one section's URL
@@ -9920,7 +9944,10 @@ async function main(): Promise<void> {
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
       : gql
-        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        ? dedupRedundantSameOperationCaptures(
+            extractGraphQLActionSequence(captures, null, foldReturnSpec),
+            primaryGraphQLOperation
+          )
         : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
@@ -9961,7 +9988,10 @@ async function main(): Promise<void> {
     submitEndpointPattern === null
       ? null
       : gql
-        ? extractGraphQLActionSequence(captures, null, foldReturnSpec)
+        ? dedupRedundantSameOperationCaptures(
+            extractGraphQLActionSequence(captures, null, foldReturnSpec),
+            primaryGraphQLOperation
+          )
         : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
