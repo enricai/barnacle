@@ -3645,6 +3645,16 @@ interface ElementSelectionFingerprint {
   dataChecked: string;
   checked: string;
   value: string;
+  /**
+   * The element's OWN `aria-expanded` value, verbatim (not blanked). Optional
+   * (not every caller/fixture populates it) and deliberately excluded from
+   * {@link selectionFingerprintChanged} and every ancestor `changed()` diff —
+   * those must stay byte-identical to preserve the deliberate accordion/
+   * tooltip exclusion. Consulted ONLY by {@link comboboxOpenerPanelOpened},
+   * whose dedicated pre/post check additionally requires the opener's owned
+   * panel to render option content before crediting a bare disclosure flip.
+   */
+  ariaExpanded?: string;
 }
 
 /**
@@ -3686,7 +3696,7 @@ const XPATH_OF_FN_SRC = `(node) => {
  * popover isn't mistaken for a selection.
  */
 function selectionFingerprintObjSrc(elVar: string, dsVar: string): string {
-  return `{ kind: ${elVar}.getAttribute("kind") || "", cls: ${elVar}.getAttribute("class") || "", ariaPressed: ${elVar}.getAttribute("aria-pressed") || "", ariaChecked: ${elVar}.getAttribute("aria-checked") || "", ariaSelected: ${elVar}.getAttribute("aria-selected") || "", dataState: (${dsVar} === "open" || ${dsVar} === "closed") ? "" : ${dsVar}, dataSelected: ${elVar}.hasAttribute("data-selected") ? "1" : "", dataChecked: ${elVar}.hasAttribute("data-checked") ? "1" : "", checked: (${elVar}.type === "checkbox" || ${elVar}.type === "radio") ? (${elVar}.checked ? "1" : "0") : "", value: typeof ${elVar}.value === "string" ? ${elVar}.value.slice(0, 200) : "" }`;
+  return `{ kind: ${elVar}.getAttribute("kind") || "", cls: ${elVar}.getAttribute("class") || "", ariaPressed: ${elVar}.getAttribute("aria-pressed") || "", ariaChecked: ${elVar}.getAttribute("aria-checked") || "", ariaSelected: ${elVar}.getAttribute("aria-selected") || "", dataState: (${dsVar} === "open" || ${dsVar} === "closed") ? "" : ${dsVar}, dataSelected: ${elVar}.hasAttribute("data-selected") ? "1" : "", dataChecked: ${elVar}.hasAttribute("data-checked") ? "1" : "", checked: (${elVar}.type === "checkbox" || ${elVar}.type === "radio") ? (${elVar}.checked ? "1" : "0") : "", value: typeof ${elVar}.value === "string" ? ${elVar}.value.slice(0, 200) : "", ariaExpanded: ${elVar}.getAttribute("aria-expanded") || "" }`;
 }
 
 /**
@@ -3774,7 +3784,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };
-  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
+  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox],[role=combobox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
     (el.tagName === "INPUT" || el.tagName === "SELECT") &&
@@ -3843,6 +3853,7 @@ function asSelectionFingerprint(raw: unknown): ElementSelectionFingerprint | nul
     dataChecked: typeof r.dataChecked === "string" ? r.dataChecked : "",
     checked: typeof r.checked === "string" ? r.checked : "",
     value: typeof r.value === "string" ? r.value : "",
+    ariaExpanded: typeof r.ariaExpanded === "string" ? r.ariaExpanded : "",
   };
 }
 
@@ -4043,6 +4054,80 @@ async function selectionSiblingCommittedValueChanged(
       if (!pre) continue;
       const now = typeof control.value === "string" ? control.value.slice(0, 200) : "";
       if (pre.value !== now) return true;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dedicated pre/post check crediting exactly one case none of the fingerprint
+ * diffs above can see: a raw click resolved onto (or under) a
+ * {@link PROMPT_TRIGGER_SELECTORS}-shaped combobox opener that GENUINELY opened
+ * its owned option panel. Opening a widget only flips `aria-expanded`, which
+ * {@link selectionFingerprintObjSrc}'s shared fingerprint deliberately blanks out
+ * of `dataState` and which {@link selectionFingerprintChanged} /
+ * {@link selectionAncestorChanged}'s `changed()` never compare — by design, so a
+ * bare accordion/tooltip disclosure is never mistaken for a selection. That
+ * leaves a replanner-generated two-step "click to open the dropdown"
+ * instruction with no signal at all: the fingerprint tiers above never move,
+ * so the open-click is scored phantom even though it genuinely exposed the
+ * option panel.
+ *
+ * This function is independent of those tiers rather than folded into their
+ * `changed()`: it reads the new {@link ElementSelectionFingerprint.ariaExpanded}
+ * field, but ONLY on a node that itself matches {@link PROMPT_TRIGGER_SELECTORS},
+ * and ONLY credits it when the opener's `aria-owns`/`aria-controls` scope (the
+ * SAME {@link PROMPT_SCOPE_ROOT_EXPR} resolution `tryPromptSelectorPrimitive`
+ * uses) now actually contains {@link PROMPT_OPTION_SELECTORS} content — never a
+ * bare `aria-expanded` flip with nothing rendered underneath. That second
+ * condition is what keeps a bare accordion/tooltip trigger (which flips
+ * `aria-expanded` but owns no option panel) excluded, preserving the existing
+ * deliberate exclusion.
+ *
+ * Walks from the leaf up to {@link MAX_SELECTION_ANCESTOR_DEPTH} for the NEAREST
+ * trigger match (mirrors {@link selectionAncestorChanged}'s climb, since
+ * Stagehand may resolve the click onto a label/icon child of the opener rather
+ * than the opener itself). No baseline entry for that trigger, no trigger
+ * match, a trigger that was already expanded pre-click, or a trigger that's
+ * still collapsed post-click → `false` (defer to the network/URL signal).
+ * Returns `false` on any evaluate throw.
+ */
+async function comboboxOpenerPanelOpened(
+  target: FrameTarget,
+  leafXpath: string,
+  preSelectionState: Record<string, ElementSelectionFingerprint>
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const BASE = ${JSON.stringify(preSelectionState)};
+    const TRIGGER_SEL = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    const OPTION_SEL = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const scopeRootOf = ${PROMPT_SCOPE_ROOT_EXPR};
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    let node = r.singleNodeValue;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (node.getAttribute && node.matches && node.matches(TRIGGER_SEL)) {
+        const pre = BASE[xpathOf(node)];
+        if (!pre) return false;
+        const wasCollapsed = pre.ariaExpanded !== "true";
+        const nowExpanded = (node.getAttribute("aria-expanded") || "") === "true";
+        if (!wasCollapsed || !nowExpanded) return false;
+        // scopeRootOf falls back to \`document\` when the trigger has no
+        // aria-controls/aria-owns ref AND no inline popup in its own subtree.
+        // That fallback is a page-wide search, not the opener's OWNED scope —
+        // crediting through it would let an unrelated widget's already-open
+        // options (elsewhere on the page) falsely credit THIS trigger's click.
+        const scope = scopeRootOf(node);
+        if (!scope || scope === document || !scope.querySelector) return false;
+        return !!scope.querySelector(OPTION_SEL);
+      }
+      node = node.parentElement;
     }
     return false;
   })()`;
@@ -7516,7 +7601,17 @@ export async function verifyDomEffect(
           // may live on a hidden sibling `<input>`/`<select>` the click never
           // re-renders visibly. Diff that control against its own baseline
           // entry instead.
-          return await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState);
+          if (await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState)) {
+            return true;
+          }
+          // No selection fingerprint moved anywhere: the click may still have
+          // genuinely opened a combobox's owned option panel (a two-step
+          // "click to open the dropdown" instruction), which flips only
+          // `aria-expanded` — deliberately excluded from every fingerprint
+          // diff above so a bare accordion/tooltip disclosure is never
+          // credited. This dedicated check additionally requires the opener's
+          // owned panel to now render option content before crediting it.
+          return await comboboxOpenerPanelOpened(target, xpath, preSelectionState);
         }
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
