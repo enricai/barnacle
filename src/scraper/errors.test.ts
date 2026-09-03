@@ -6,9 +6,11 @@ import {
   CdpTransportClosedError,
   EmailStepExtractError,
   EmailStepInboxUnavailableError,
+  BrowserbaseSessionCreateRateLimitError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpUrlLockedError,
+  isBrowserbaseSessionCreateRateLimitError,
   isCaptchaError,
   isCdpTransportClosedError,
   isEmailStepExtractError,
@@ -38,6 +40,49 @@ describe("HttpUrlLockedError", () => {
   it("accepts a custom message", () => {
     const err = new HttpUrlLockedError("url locked on j-12345");
     expect(err.message).toBe("url locked on j-12345");
+  });
+});
+
+describe("BrowserbaseSessionCreateRateLimitError", () => {
+  it("is non-retryable, instanceof ScraperError, and recognized by isScraperError", () => {
+    const err = new BrowserbaseSessionCreateRateLimitError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("BrowserbaseSessionCreateRateLimitError");
+    expect(isScraperError(err)).toBe(true);
+  });
+
+  it("is recognized by isBrowserbaseSessionCreateRateLimitError, same-realm and cross-realm", () => {
+    class FakeCrossModuleBrowserbaseSessionCreateRateLimitError extends Error {
+      constructor(message = "browserbase session-create rate limit exceeded") {
+        super(message);
+        this.name = "BrowserbaseSessionCreateRateLimitError";
+      }
+    }
+
+    const sameRealmErr = new BrowserbaseSessionCreateRateLimitError();
+    expect(isBrowserbaseSessionCreateRateLimitError(sameRealmErr)).toBe(true);
+
+    const crossRealmErr = new FakeCrossModuleBrowserbaseSessionCreateRateLimitError();
+    expect(crossRealmErr).not.toBeInstanceOf(BrowserbaseSessionCreateRateLimitError);
+    expect(isBrowserbaseSessionCreateRateLimitError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+  });
+
+  it("recognizes Stagehand's raw 'Unknown error: 429' throw by message, without instanceof", () => {
+    const stagehandThrow = new Error("Unknown error: 429");
+    expect(isBrowserbaseSessionCreateRateLimitError(stagehandThrow)).toBe(true);
+  });
+
+  it("does not match a 5xx 'Unknown error' or the ATS HttpRateLimitError", () => {
+    expect(isBrowserbaseSessionCreateRateLimitError(new Error("Unknown error: 500"))).toBe(false);
+    expect(isBrowserbaseSessionCreateRateLimitError(new HttpRateLimitError())).toBe(false);
+  });
+
+  it("returns false for a generic unrelated Error", () => {
+    expect(isBrowserbaseSessionCreateRateLimitError(new Error("plain"))).toBe(false);
+    expect(isBrowserbaseSessionCreateRateLimitError(null)).toBe(false);
+    expect(isBrowserbaseSessionCreateRateLimitError(undefined)).toBe(false);
   });
 });
 
