@@ -7576,10 +7576,17 @@ export async function verifyDomEffect(
               (el.getAttribute && el.getAttribute('aria-activedescendant'));
             const adNode = adid && document.getElementById(adid);
             const adText = adNode ? (adNode.textContent || "").trim() : "";
-            const selectedOptText = el.tagName === "SELECT" && el.selectedIndex >= 0 && el.options[el.selectedIndex]
-              ? (el.options[el.selectedIndex].textContent || "").trim()
+            const selectEl = el.tagName === "SELECT" ? el : (combo.tagName === "SELECT" ? combo : null);
+            const selectedOptText = selectEl && selectEl.selectedIndex >= 0 && selectEl.options[selectEl.selectedIndex]
+              ? (selectEl.options[selectEl.selectedIndex].textContent || "").trim()
               : "";
-            const clone = combo.cloneNode ? combo.cloneNode(true) : null;
+            // If combo itself IS the <select> (role="combobox" placed directly
+            // on the native select rather than a wrapping container),
+            // querySelectorAll('select,...') below only prunes DESCENDANTS —
+            // combo's own concatenated option text survives untouched. Skip
+            // the whole-text fallback entirely for that shape; selectedOptText
+            // above already reads its single committed option.
+            const clone = combo.tagName !== "SELECT" && combo.cloneNode ? combo.cloneNode(true) : null;
             if (clone && clone.querySelectorAll) {
               clone.querySelectorAll('select,[role="listbox"]').forEach((n) => n.remove());
             }

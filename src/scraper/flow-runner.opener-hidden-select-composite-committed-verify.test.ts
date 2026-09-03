@@ -180,4 +180,45 @@ describe("flow-runner/verifyDomEffect — composite opener+hidden-select selectO
       preSelectedIndex
     );
   });
+
+  it("does NOT verify when role=combobox sits directly on the hidden <select> itself, reached via a nested container.querySelector lookup", async () => {
+    const window = new Window({ url: "https://apply.example.com/onboard/a/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="widget-Container">
+        <span class="opener-label">Choose a country</span>
+        <select role="combobox" class="hidden-shadow-select">
+          <option value="">Select</option>
+          <option id="opt-us" value="us">United States</option>
+          <option value="ca">Canada</option>
+        </select>
+      </div>
+    `;
+    const target = makeTarget(window);
+    const label = document.querySelector(".opener-label") as unknown as HappyDomElement;
+    const hiddenSelect = document.querySelector(
+      "select.hidden-shadow-select"
+    ) as unknown as HappyDomElement;
+    const xpath = absoluteXPathFor(label);
+
+    const preValue = (hiddenSelect as unknown as { value: string }).value;
+    const preSelectedIndex = (hiddenSelect as unknown as { selectedIndex: number }).selectedIndex;
+
+    // Sanity: same false-positive trap — combo (the select itself, found via
+    // the field-group container fallback) still concatenates every option's
+    // text, purely because clone-and-strip only prunes DESCENDANTS and combo
+    // here IS the select being cloned.
+    const rawTextContent = (
+      hiddenSelect as unknown as { textContent: string }
+    ).textContent.toLowerCase();
+    expect(rawTextContent).toContain("united states");
+
+    const result = await verifyDomEffect(target, selectAction(xpath));
+
+    expect(result).toBe(false);
+    expect((hiddenSelect as unknown as { value: string }).value).toBe(preValue);
+    expect((hiddenSelect as unknown as { selectedIndex: number }).selectedIndex).toBe(
+      preSelectedIndex
+    );
+  });
 });
