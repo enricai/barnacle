@@ -78,7 +78,12 @@ vi.mock("@/lib/dd-metrics", () => ({
 interface RunTelemetryDouble {
   addJoinKeys(fields: Record<string, unknown>): void;
   recordSession(info: SessionTelemetry): void;
-  snapshot(): { joinKeys: Record<string, unknown> | null; session: SessionTelemetry | null };
+  recordHotPathError(error: { name: string; message: string; code: string | null }): void;
+  snapshot(): {
+    joinKeys: Record<string, unknown> | null;
+    session: SessionTelemetry | null;
+    hotPathError: { name: string; message: string; code: string | null } | null;
+  };
 }
 
 // recordSession() stores a defensive copy, whole-object last-write-wins —
@@ -93,6 +98,7 @@ interface RunTelemetryDouble {
 function createRunTelemetryDouble(): RunTelemetryDouble {
   let joinKeys: Record<string, unknown> | null = null;
   let session: SessionTelemetry | null = null;
+  let hotPathError: { name: string; message: string; code: string | null } | null = null;
   return {
     addJoinKeys(fields) {
       joinKeys = { ...(joinKeys ?? {}), ...fields };
@@ -100,10 +106,14 @@ function createRunTelemetryDouble(): RunTelemetryDouble {
     recordSession(info) {
       session = { ...info };
     },
+    recordHotPathError(error) {
+      hotPathError = { ...error };
+    },
     snapshot() {
       return {
         joinKeys: joinKeys ? { ...joinKeys } : null,
         session: session ? { ...session } : null,
+        hotPathError: hotPathError ? { ...hotPathError } : null,
       };
     },
   };
