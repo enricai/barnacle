@@ -130,8 +130,13 @@ function buildHarness(params: {
   const hiddenSelect = document.getElementById("hidden-sel") as unknown as Element;
   Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
   if (params.withSiblingWidget) {
-    const referralHiddenSelect = document.getElementById("referral-hidden-sel") as unknown as Element;
-    Object.defineProperty(referralHiddenSelect, "offsetParent", { value: null, configurable: true });
+    const referralHiddenSelect = document.getElementById(
+      "referral-hidden-sel"
+    ) as unknown as Element;
+    Object.defineProperty(referralHiddenSelect, "offsetParent", {
+      value: null,
+      configurable: true,
+    });
   }
 
   const clicks: string[] = [];
@@ -158,7 +163,9 @@ function buildHarness(params: {
       selectedIndex: number;
       options: ArrayLike<{ value: string }>;
     };
-    const targetValue = params.commitsToEmptyTextOption ? EMPTY_TEXT_OPTION_VALUE : HIDDEN_SELECT_OPTION_VALUE;
+    const targetValue = params.commitsToEmptyTextOption
+      ? EMPTY_TEXT_OPTION_VALUE
+      : HIDDEN_SELECT_OPTION_VALUE;
     const idx = Array.from(select.options).findIndex((o) => o.value === targetValue);
     select.value = targetValue;
     select.selectedIndex = idx;
@@ -317,7 +324,10 @@ describe("flow-runner/commitPromptOption corroborates an ambiguous opener readba
     const stagehandAct = vi.fn();
     const stagehandObserve = vi.fn().mockResolvedValue([]);
     const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
-    const { page, target } = buildHarness({ commitsToHiddenSelect: false, withSiblingWidget: true });
+    const { page, target } = buildHarness({
+      commitsToHiddenSelect: false,
+      withSiblingWidget: true,
+    });
 
     const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
     const stepParams = baseParams(page as unknown as Page, stagehand, STEP, target);
@@ -341,7 +351,10 @@ describe("flow-runner/commitPromptOption corroborates an ambiguous opener readba
     const stagehandAct = vi.fn();
     const stagehandObserve = vi.fn().mockResolvedValue([]);
     const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
-    const { page, target } = buildHarness({ commitsToHiddenSelect: true, commitsToEmptyTextOption: true });
+    const { page, target } = buildHarness({
+      commitsToHiddenSelect: true,
+      commitsToEmptyTextOption: true,
+    });
 
     const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
     const stepParams = baseParams(page as unknown as Page, stagehand, STEP, target);
