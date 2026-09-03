@@ -84,12 +84,12 @@ function writeRunDir(root: string): void {
     JSON.stringify(detailDrillCapture("2024-01-01T00:00:02Z"))
   );
   writeFileSync(
-    join(root, "graphql", "003-click-the-first-cruise-r.json"),
+    join(root, "graphql", "003-click-the-first-item-li.json"),
     // The exact atomic leaked value ("north-metro") from the drill's
     // response, which the drill's own request never echoes -- this is what
     // triggers the buggy forward sweep in computeFoldChain.
     JSON.stringify(
-      catalogSearchCapture("click-the-first-cruise-r", "north-metro", "2024-01-01T00:00:03Z")
+      catalogSearchCapture("click-the-first-item-li", "north-metro", "2024-01-01T00:00:03Z")
     )
   );
 }
