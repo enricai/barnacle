@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BrowserbaseSessionCreateRateLimitError,
   CaptchaError,
   CaptchaSolverUnavailableError,
   CdpTransportClosedError,
   EmailStepExtractError,
   EmailStepInboxUnavailableError,
-  BrowserbaseSessionCreateRateLimitError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpUrlLockedError,
