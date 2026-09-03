@@ -7275,12 +7275,14 @@ export async function hasUnfilledRequiredControlForStep(
     // (button/aria-haspopup shapes with no native input/select at all) to
     // the container-widget union already covered.
     const controls = Array.from(document.querySelectorAll(
-      "input,select,textarea,[role=combobox],[role=listbox],.bb-custom-select-container,[class*='MultiCheckboxInput']," + triggerSel
+      "input,select,textarea,[role=combobox],[role=listbox]," + triggerSel
     ));
     for (const el of controls) {
       if (!isRequired(el) && !(el.querySelector && el.querySelector("[required],[aria-required=true]"))) {
         // container widgets carry required on an inner element; allow those
-        if (!/bb-custom-select-container|MultiCheckboxInput/.test((el.getAttribute && el.getAttribute("class")) || "")) continue;
+        const isTriggerWidget =
+          (el.matches && el.matches(triggerSel)) || (el.querySelector && !!el.querySelector(triggerSel));
+        if (!isTriggerWidget) continue;
       }
       // is it empty/invalid?
       const emptyOrInvalid = isEmptyish(el) || (el.querySelector && !!el.querySelector("[aria-invalid=true]"));
