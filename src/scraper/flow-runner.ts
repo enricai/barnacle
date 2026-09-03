@@ -515,8 +515,9 @@ const PROMPT_TRIGGER_SELECTORS = [
  * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
  * this ties "opener" to the exact same union `tryPromptSelectorPrimitive`
  * recognizes, so a select is excluded precisely when the primitive that
- * should own it would actually claim it. This is a detection primitive
- * only: no call site wires it up yet.
+ * should own it would actually claim it. Wired into every `<select>` list
+ * `trySelectPrimitive` and `applySelectValue` build, so those primitives fall
+ * through and let `tryPromptSelectorPrimitive` claim the opener instead.
  */
 export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
@@ -5479,7 +5480,8 @@ async function applySelectValue(
   value: string
 ): Promise<{ ok: boolean; stillInvalid: boolean }> {
   const setExpr = `((selIdx, value) => {
-    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s))[selIdx];
     if (!sel) return { ok: false };
     const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
     if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
@@ -5493,7 +5495,8 @@ async function applySelectValue(
   await page.waitForTimeout(SELECT_SETTLE_MS);
   const invalidExpr = `((selIdx) => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
-    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s))[selIdx];
     if (!sel) return false;
     let node = sel;
     for (let depth = 0; depth < 6 && node; depth++) {
@@ -5512,7 +5515,7 @@ async function applySelectValue(
  * select, no commit) and should fall through to the cascade. The id becomes the
  * step's stable `targetId` for cross-run convergence.
  */
-async function trySelectPrimitive(params: {
+export async function trySelectPrimitive(params: {
   page: Page;
   target: FrameTarget;
   instruction: string;
@@ -5540,8 +5543,12 @@ async function trySelectPrimitive(params: {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const wantOpt = norm(option);
     // All native selects, INCLUDING tabindex=-1 (MuiNativeSelect) which the
-    // a11y tree — and therefore Stagehand observe — never surfaces.
-    const selects = Array.from(document.querySelectorAll("select"));
+    // a11y tree — and therefore Stagehand observe — never surfaces. Excludes
+    // a design-system combobox opener's paired-but-hidden shadow <select>
+    // (Base Web etc.) so tryPromptSelectorPrimitive gets first refusal on it
+    // instead of this primitive silently writing a value the opener never sees.
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s));
     if (selects.length === 0) return { selectPresent: false };
     // FAST PATH — deterministic option match: exactly one select has an option
     // matching the flow's answer text. Unambiguous (the option text itself
@@ -5772,7 +5779,8 @@ async function tryFillRequiredSelectsPrimitive(params: {
   // (MUI marks NativeSelect via any of these). Reuses the isUnfilled / selLabelText
   // shape from trySelectPrimitive.
   const enumerateExpr = `(() => {
-    const selects = Array.from(document.querySelectorAll("select"));
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s));
     if (selects.length === 0) return { candidates: [] };
     const selLabelText = (sel) => {
       const parts = [];
