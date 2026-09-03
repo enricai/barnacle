@@ -76,10 +76,61 @@ describe("scraper/http-client createHttpClient", () => {
     );
   });
 
-  it("throws HttpRateLimitError on 429", async () => {
+  it("throws HttpRateLimitError once bounded retries are exhausted on repeated 429s", async () => {
     mockFetch(429, {});
     const client = makeClient();
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpRateLimitError);
+    // retries: 2 => 3 total attempts before giving up.
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it("honors Retry-After (seconds form) and resolves after a 429 then a 200", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 429,
+          ok: false,
+          text: vi.fn().mockResolvedValue("{}"),
+          headers: new Headers({ "Retry-After": "0.05" }),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers(),
+        })
+    );
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: "Widget" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors Retry-After (HTTP-date form) and resolves after a 429 then a 200", async () => {
+    const retryAt = new Date(Date.now() + 50).toUTCString();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 429,
+          ok: false,
+          text: vi.fn().mockResolvedValue("{}"),
+          headers: new Headers({ "Retry-After": retryAt }),
+        })
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers(),
+        })
+    );
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: "Widget" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
   });
 
   it("throws HttpServerError on 500", async () => {
@@ -197,13 +248,6 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
       HttpBotChallengeError
     );
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-  });
-
-  it("does NOT retry on 429 — AbortError stops p-retry immediately", async () => {
-    mockFetch(429, {});
-    const client = makeClient();
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpRateLimitError);
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 

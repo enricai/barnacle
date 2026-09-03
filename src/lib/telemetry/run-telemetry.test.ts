@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 
 describe("RunTelemetry", () => {
-  it("snapshot() starts with joinKeys null and session null", () => {
+  it("snapshot() starts with joinKeys null, session null, and hotPathError null", () => {
     const telemetry = new RunTelemetry();
 
-    expect(telemetry.snapshot()).toEqual({ joinKeys: null, session: null });
+    expect(telemetry.snapshot()).toEqual({ joinKeys: null, session: null, hotPathError: null });
   });
 
   it("addJoinKeys() merges across calls with later keys winning on collision", () => {
@@ -42,6 +42,19 @@ describe("RunTelemetry", () => {
     });
   });
 
+  it("recordHotPathError() is whole-object last-write-wins", () => {
+    const telemetry = new RunTelemetry();
+
+    telemetry.recordHotPathError({ name: "TimeoutError", message: "first", code: "ETIMEDOUT" });
+    telemetry.recordHotPathError({ name: "ScraperError", message: "second", code: null });
+
+    expect(telemetry.snapshot().hotPathError).toEqual({
+      name: "ScraperError",
+      message: "second",
+      code: null,
+    });
+  });
+
   it("snapshot() returns a defensive copy that mutation does not affect the collector", () => {
     const telemetry = new RunTelemetry();
     telemetry.addJoinKeys({ foo: "bar" });
@@ -64,6 +77,7 @@ describe("RunTelemetry", () => {
         ip: "203.0.113.42",
         ipCapturedAt: "2026-07-28T00:00:00Z",
       },
+      hotPathError: null,
     });
   });
 });

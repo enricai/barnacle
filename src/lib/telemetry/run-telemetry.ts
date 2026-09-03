@@ -17,10 +17,18 @@ export interface SessionTelemetry {
   ipCapturedAt: string | null;
 }
 
+/** The identity of a throw caught on the hot submit path, recorded once per run. */
+export interface HotPathErrorTelemetry {
+  name: string;
+  message: string;
+  code: string | null;
+}
+
 /** Point-in-time view of everything accumulated on a `RunTelemetry` instance. */
 export interface RunTelemetrySnapshot {
   joinKeys: Record<string, unknown> | null;
   session: SessionTelemetry | null;
+  hotPathError: HotPathErrorTelemetry | null;
 }
 
 /**
@@ -34,6 +42,7 @@ export interface RunTelemetrySnapshot {
 export interface RunTelemetryHandle {
   addJoinKeys(fields: Record<string, unknown>): void;
   recordSession(info: SessionTelemetry): void;
+  recordHotPathError(error: HotPathErrorTelemetry): void;
   snapshot(): RunTelemetrySnapshot;
 }
 
@@ -48,6 +57,7 @@ export interface RunTelemetryHandle {
 export class RunTelemetry implements RunTelemetryHandle {
   private joinKeys: Record<string, unknown> | null = null;
   private session: SessionTelemetry | null = null;
+  private hotPathError: HotPathErrorTelemetry | null = null;
 
   /**
    * Merges `fields` into the accumulated join-key bag. Later calls win on
@@ -68,6 +78,15 @@ export class RunTelemetry implements RunTelemetryHandle {
   }
 
   /**
+   * Records the throw caught on the hot submit path. Last-write-wins
+   * (whole-object replace) since a run has at most one hot-path throw,
+   * matching the same reasoning as `recordSession`.
+   */
+  recordHotPathError(error: HotPathErrorTelemetry): void {
+    this.hotPathError = error;
+  }
+
+  /**
    * Returns a defensive copy of everything accumulated so far. `joinKeys`
    * stays `null` (not `{}`) when nothing was ever added, so dispatch can
    * keep emitting `joinKeys: null` unchanged until a plugin actually writes
@@ -77,6 +96,7 @@ export class RunTelemetry implements RunTelemetryHandle {
     return {
       joinKeys: this.joinKeys ? { ...this.joinKeys } : null,
       session: this.session ? { ...this.session } : null,
+      hotPathError: this.hotPathError ? { ...this.hotPathError } : null,
     };
   }
 }
