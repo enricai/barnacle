@@ -5761,7 +5761,7 @@ export function chooseRequiredSelectOption(options: readonly string[]): string |
  * No-op (returns false → cascade) when the step isn't a catch-all or no
  * required-empty select is present, so radio/checkbox catch-alls are unaffected.
  */
-async function tryFillRequiredSelectsPrimitive(params: {
+export async function tryFillRequiredSelectsPrimitive(params: {
   page: Page;
   target: FrameTarget;
   instruction: string;
