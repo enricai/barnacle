@@ -64,6 +64,17 @@ export interface PopupSpec {
    * the inter-call collision FIX A's option-mark clearing must handle.
    */
   keepPopupMounted?: boolean;
+  /**
+   * Id of a sibling native `<select>` this widget keeps in sync behind the
+   * scenes (the Base Web `bb-customSelect` opener + hidden `dropdown-hide`
+   * `<select>` shape) — models "Base Web syncs the opener text AND the
+   * hidden `<select>`" (report, Appendix). On a leaf commit, the harness sets
+   * this select's value to whichever of its own `<option>`s has matching
+   * text, AFTER the opener's own committed state is written — so a test can
+   * assert the opener is what actually got driven, and the hidden select
+   * only reflects that after the fact rather than being written directly.
+   */
+  syncsHiddenSelectId?: string;
 }
 
 /**
@@ -296,6 +307,22 @@ export function buildPromptWidgetHarness(params: {
             // hidden). Keeping it mounted lets a stale option mark survive into a
             // later step — the scenario FIX A's option-mark clearing guards.
             if (!params.popupByWidgetId[owningId]?.keepPopupMounted) popup?.remove();
+            // Base Web-style sync: AFTER the opener's own committed state is
+            // written above, mirror the choice into the paired hidden
+            // `<select>` — the real widget's behavior, and never the primitive's
+            // own doing (it must drive the opener, not this select).
+            const hiddenSelectId = params.popupByWidgetId[owningId]?.syncsHiddenSelectId;
+            const hiddenSelect = hiddenSelectId ? document.getElementById(hiddenSelectId) : null;
+            if (hiddenSelect) {
+              const options = Array.from(hiddenSelect.querySelectorAll("option")) as unknown as {
+                value: string;
+                textContent: string | null;
+              }[];
+              const matchedOption = options.find((o) => o.textContent?.trim() === label);
+              if (matchedOption) {
+                (hiddenSelect as unknown as { value: string }).value = matchedOption.value;
+              }
+            }
           }
         }
       },

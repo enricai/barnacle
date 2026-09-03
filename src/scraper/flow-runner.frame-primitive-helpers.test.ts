@@ -98,6 +98,7 @@ describe("flow-runner/snapshotPage", () => {
       dataChecked: "",
       checked: "",
       value: "",
+      ariaExpanded: "",
     };
     const targetEvaluate = vi
       .fn()

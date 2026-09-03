@@ -503,6 +503,36 @@ const PROMPT_TRIGGER_SELECTORS = [
   "[data-automation-id='promptSelectionLabel']",
 ].join(",");
 /**
+ * In-page predicate source for `(el) => boolean`: true when `el` is a
+ * `<select>` that is a design-system combobox opener's paired-but-hidden
+ * shadow control (Base Web `bb-customSelect` and any other vendor matching
+ * {@link PROMPT_TRIGGER_SELECTORS}) — a `<select>` with no layout box
+ * (`offsetParent === null`, the same idiom `DOM_SNAPSHOT_EXPR` uses for
+ * `display:none`-driven hiding classes like `dropdown-hide`) whose nearby
+ * container also holds a {@link PROMPT_TRIGGER_SELECTORS} opener element
+ * other than itself. The bounded-ancestor-climb-then-subtree-search shape
+ * mirrors {@link NEARBY_SELECTION_CONTAINER_FN_SRC}, but searches for
+ * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
+ * this ties "opener" to the exact same union `tryPromptSelectorPrimitive`
+ * recognizes, so a select is excluded precisely when the primitive that
+ * should own it would actually claim it. Wired into every `<select>` list
+ * `trySelectPrimitive` and `applySelectValue` build, so those primitives fall
+ * through and let `tryPromptSelectorPrimitive` claim the opener instead — and
+ * consumed by {@link commitPromptOption}'s hidden-select-value corroboration
+ * when the opener's own readback is inconclusive.
+ */
+export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
+    if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
+    const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    let node = el.parentElement;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      const openers = node.querySelectorAll ? Array.from(node.querySelectorAll(triggerSel)) : [];
+      if (openers.some((opener) => opener !== el)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }`;
+/**
  * Cross-vendor selector union for an OPTION rendered inside the opened popup —
  * standards first (`role=option`), then the widget-kit option markers. Sibling
  * of {@link PROMPT_TRIGGER_SELECTORS}; same union discipline and guard treatment.
@@ -3618,6 +3648,16 @@ interface ElementSelectionFingerprint {
   dataChecked: string;
   checked: string;
   value: string;
+  /**
+   * The element's OWN `aria-expanded` value, verbatim (not blanked). Optional
+   * (not every caller/fixture populates it) and deliberately excluded from
+   * {@link selectionFingerprintChanged} and every ancestor `changed()` diff —
+   * those must stay byte-identical to preserve the deliberate accordion/
+   * tooltip exclusion. Consulted ONLY by {@link comboboxOpenerPanelOpened},
+   * whose dedicated pre/post check additionally requires the opener's owned
+   * panel to render option content before crediting a bare disclosure flip.
+   */
+  ariaExpanded?: string;
 }
 
 /**
@@ -3659,7 +3699,7 @@ const XPATH_OF_FN_SRC = `(node) => {
  * popover isn't mistaken for a selection.
  */
 function selectionFingerprintObjSrc(elVar: string, dsVar: string): string {
-  return `{ kind: ${elVar}.getAttribute("kind") || "", cls: ${elVar}.getAttribute("class") || "", ariaPressed: ${elVar}.getAttribute("aria-pressed") || "", ariaChecked: ${elVar}.getAttribute("aria-checked") || "", ariaSelected: ${elVar}.getAttribute("aria-selected") || "", dataState: (${dsVar} === "open" || ${dsVar} === "closed") ? "" : ${dsVar}, dataSelected: ${elVar}.hasAttribute("data-selected") ? "1" : "", dataChecked: ${elVar}.hasAttribute("data-checked") ? "1" : "", checked: (${elVar}.type === "checkbox" || ${elVar}.type === "radio") ? (${elVar}.checked ? "1" : "0") : "", value: typeof ${elVar}.value === "string" ? ${elVar}.value.slice(0, 200) : "" }`;
+  return `{ kind: ${elVar}.getAttribute("kind") || "", cls: ${elVar}.getAttribute("class") || "", ariaPressed: ${elVar}.getAttribute("aria-pressed") || "", ariaChecked: ${elVar}.getAttribute("aria-checked") || "", ariaSelected: ${elVar}.getAttribute("aria-selected") || "", dataState: (${dsVar} === "open" || ${dsVar} === "closed") ? "" : ${dsVar}, dataSelected: ${elVar}.hasAttribute("data-selected") ? "1" : "", dataChecked: ${elVar}.hasAttribute("data-checked") ? "1" : "", checked: (${elVar}.type === "checkbox" || ${elVar}.type === "radio") ? (${elVar}.checked ? "1" : "0") : "", value: typeof ${elVar}.value === "string" ? ${elVar}.value.slice(0, 200) : "", ariaExpanded: ${elVar}.getAttribute("aria-expanded") || "" }`;
 }
 
 /**
@@ -3747,7 +3787,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   };
-  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
+  const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox],[role=combobox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
     (el.tagName === "INPUT" || el.tagName === "SELECT") &&
@@ -3816,6 +3856,7 @@ function asSelectionFingerprint(raw: unknown): ElementSelectionFingerprint | nul
     dataChecked: typeof r.dataChecked === "string" ? r.dataChecked : "",
     checked: typeof r.checked === "string" ? r.checked : "",
     value: typeof r.value === "string" ? r.value : "",
+    ariaExpanded: typeof r.ariaExpanded === "string" ? r.ariaExpanded : "",
   };
 }
 
@@ -4016,6 +4057,80 @@ async function selectionSiblingCommittedValueChanged(
       if (!pre) continue;
       const now = typeof control.value === "string" ? control.value.slice(0, 200) : "";
       if (pre.value !== now) return true;
+    }
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dedicated pre/post check crediting exactly one case none of the fingerprint
+ * diffs above can see: a raw click resolved onto (or under) a
+ * {@link PROMPT_TRIGGER_SELECTORS}-shaped combobox opener that GENUINELY opened
+ * its owned option panel. Opening a widget only flips `aria-expanded`, which
+ * {@link selectionFingerprintObjSrc}'s shared fingerprint deliberately blanks out
+ * of `dataState` and which {@link selectionFingerprintChanged} /
+ * {@link selectionAncestorChanged}'s `changed()` never compare — by design, so a
+ * bare accordion/tooltip disclosure is never mistaken for a selection. That
+ * leaves a replanner-generated two-step "click to open the dropdown"
+ * instruction with no signal at all: the fingerprint tiers above never move,
+ * so the open-click is scored phantom even though it genuinely exposed the
+ * option panel.
+ *
+ * This function is independent of those tiers rather than folded into their
+ * `changed()`: it reads the new {@link ElementSelectionFingerprint.ariaExpanded}
+ * field, but ONLY on a node that itself matches {@link PROMPT_TRIGGER_SELECTORS},
+ * and ONLY credits it when the opener's `aria-owns`/`aria-controls` scope (the
+ * SAME {@link PROMPT_SCOPE_ROOT_EXPR} resolution `tryPromptSelectorPrimitive`
+ * uses) now actually contains {@link PROMPT_OPTION_SELECTORS} content — never a
+ * bare `aria-expanded` flip with nothing rendered underneath. That second
+ * condition is what keeps a bare accordion/tooltip trigger (which flips
+ * `aria-expanded` but owns no option panel) excluded, preserving the existing
+ * deliberate exclusion.
+ *
+ * Walks from the leaf up to {@link MAX_SELECTION_ANCESTOR_DEPTH} for the NEAREST
+ * trigger match (mirrors {@link selectionAncestorChanged}'s climb, since
+ * Stagehand may resolve the click onto a label/icon child of the opener rather
+ * than the opener itself). No baseline entry for that trigger, no trigger
+ * match, a trigger that was already expanded pre-click, or a trigger that's
+ * still collapsed post-click → `false` (defer to the network/URL signal).
+ * Returns `false` on any evaluate throw.
+ */
+async function comboboxOpenerPanelOpened(
+  target: FrameTarget,
+  leafXpath: string,
+  preSelectionState: Record<string, ElementSelectionFingerprint>
+): Promise<boolean> {
+  const expr = `(() => {
+    const LEAF = ${JSON.stringify(leafXpath)};
+    const BASE = ${JSON.stringify(preSelectionState)};
+    const TRIGGER_SEL = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    const OPTION_SEL = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const scopeRootOf = ${PROMPT_SCOPE_ROOT_EXPR};
+    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    let node = r.singleNodeValue;
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (node.getAttribute && node.matches && node.matches(TRIGGER_SEL)) {
+        const pre = BASE[xpathOf(node)];
+        if (!pre) return false;
+        const wasCollapsed = pre.ariaExpanded !== "true";
+        const nowExpanded = (node.getAttribute("aria-expanded") || "") === "true";
+        if (!wasCollapsed || !nowExpanded) return false;
+        // scopeRootOf falls back to \`document\` when the trigger has no
+        // aria-controls/aria-owns ref AND no inline popup in its own subtree.
+        // That fallback is a page-wide search, not the opener's OWNED scope —
+        // crediting through it would let an unrelated widget's already-open
+        // options (elsewhere on the page) falsely credit THIS trigger's click.
+        const scope = scopeRootOf(node);
+        if (!scope || scope === document || !scope.querySelector) return false;
+        return !!scope.querySelector(OPTION_SEL);
+      }
+      node = node.parentElement;
     }
     return false;
   })()`;
@@ -5367,7 +5482,8 @@ async function applySelectValue(
   value: string
 ): Promise<{ ok: boolean; stillInvalid: boolean }> {
   const setExpr = `((selIdx, value) => {
-    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s))[selIdx];
     if (!sel) return { ok: false };
     const desc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
     if (desc && desc.set) { desc.set.call(sel, value); } else { sel.value = value; }
@@ -5381,7 +5497,8 @@ async function applySelectValue(
   await page.waitForTimeout(SELECT_SETTLE_MS);
   const invalidExpr = `((selIdx) => {
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
-    const sel = Array.from(document.querySelectorAll("select"))[selIdx];
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const sel = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s))[selIdx];
     if (!sel) return false;
     let node = sel;
     for (let depth = 0; depth < 6 && node; depth++) {
@@ -5400,7 +5517,7 @@ async function applySelectValue(
  * select, no commit) and should fall through to the cascade. The id becomes the
  * step's stable `targetId` for cross-run convergence.
  */
-async function trySelectPrimitive(params: {
+export async function trySelectPrimitive(params: {
   page: Page;
   target: FrameTarget;
   instruction: string;
@@ -5428,8 +5545,12 @@ async function trySelectPrimitive(params: {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const wantOpt = norm(option);
     // All native selects, INCLUDING tabindex=-1 (MuiNativeSelect) which the
-    // a11y tree — and therefore Stagehand observe — never surfaces.
-    const selects = Array.from(document.querySelectorAll("select"));
+    // a11y tree — and therefore Stagehand observe — never surfaces. Excludes
+    // a design-system combobox opener's paired-but-hidden shadow <select>
+    // (Base Web etc.) so tryPromptSelectorPrimitive gets first refusal on it
+    // instead of this primitive silently writing a value the opener never sees.
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s));
     if (selects.length === 0) return { selectPresent: false };
     // FAST PATH — deterministic option match: exactly one select has an option
     // matching the flow's answer text. Unambiguous (the option text itself
@@ -5640,7 +5761,7 @@ export function chooseRequiredSelectOption(options: readonly string[]): string |
  * No-op (returns false → cascade) when the step isn't a catch-all or no
  * required-empty select is present, so radio/checkbox catch-alls are unaffected.
  */
-async function tryFillRequiredSelectsPrimitive(params: {
+export async function tryFillRequiredSelectsPrimitive(params: {
   page: Page;
   target: FrameTarget;
   instruction: string;
@@ -5660,7 +5781,8 @@ async function tryFillRequiredSelectsPrimitive(params: {
   // (MUI marks NativeSelect via any of these). Reuses the isUnfilled / selLabelText
   // shape from trySelectPrimitive.
   const enumerateExpr = `(() => {
-    const selects = Array.from(document.querySelectorAll("select"));
+    const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+    const selects = Array.from(document.querySelectorAll("select")).filter((s) => !isOpenerPairedHidden(s));
     if (selects.length === 0) return { candidates: [] };
     const selLabelText = (sel) => {
       const parts = [];
@@ -6962,6 +7084,7 @@ async function commitPromptOption(params: {
     const isRequestedLeaf = norm(chosenOption.text) === wantOpt;
     const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
+      const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const buttonValue = ${BUTTON_VALUE_EXPR};
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
@@ -6984,10 +7107,55 @@ async function commitPromptOption(params: {
         if (node.getAttribute && isInvalid(node)) { stillInvalid = true; break; }
         node = node.parentElement;
       }
+      // Corroborating signal when the opener's own text/activedescendant read is
+      // inconclusive: the paired native <select> Base Web (and similar vendors)
+      // keeps in sync BEHIND the real widget now holds a non-empty CURRENT value
+      // (read-only — never written here) that, when its selected option's own
+      // text is available, also matches the requested option.
+      let hiddenSelectMatches = false;
+      if (!textMatches) {
+        let cnode = w;
+        for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && cnode && !hiddenSelectMatches; d++) {
+          const selects = cnode.querySelectorAll ? Array.from(cnode.querySelectorAll("select")) : [];
+          for (const sel of selects) {
+            if (!isPairedHiddenSelect(sel)) continue;
+            // isPairedHiddenSelect only proves SOME opener sits near this select —
+            // in a form with multiple prompt-selector fields sharing an outer
+            // ancestor within MAX_SELECTION_ANCESTOR_DEPTH, that opener can be a
+            // SIBLING widget's, not w's. Mirror OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+            // own climb-then-scan-openers shape, but require w itself to be among
+            // the openers found at the NEAREST level that has any — the same level
+            // isPairedHiddenSelect stopped at — so a neighboring field's
+            // already-committed hidden select never corroborates this widget's commit.
+            let snode = sel.parentElement;
+            let pairedWithW = false;
+            for (let sd = 0; sd < ${MAX_SELECTION_ANCESTOR_DEPTH} && snode && !pairedWithW; sd++) {
+              const openersHere = snode.querySelectorAll
+                ? Array.from(snode.querySelectorAll(${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})).filter((o) => o !== sel)
+                : [];
+              if (openersHere.length > 0) {
+                pairedWithW = openersHere.includes(w);
+                break;
+              }
+              snode = snode.parentElement;
+            }
+            if (!pairedWithW) continue;
+            const v = (sel.value || "").trim();
+            if (!v) continue;
+            const selOpt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+            const optText = selOpt ? norm(selOpt.textContent || selOpt.label || "") : "";
+            // A selected option with no visible text (icon-only, value-only markup)
+            // carries no corroborating signal — treating it as a match would credit
+            // ANY selection change, including a different option than requested.
+            if (wantText && optText && optText.includes(wantText)) { hiddenSelectMatches = true; break; }
+          }
+          cnode = cnode.parentElement;
+        }
+      }
       // A category click may leave the widget's aria-invalid unset until final
       // submit, so !stillInvalid alone only counts as success when this click
       // landed on the requested leaf option, not an intermediate category.
-      return { ok: textMatches || (isRequestedLeaf && !stillInvalid), id: w.id || "" };
+      return { ok: textMatches || (isRequestedLeaf && !stillInvalid) || hiddenSelectMatches, id: w.id || "" };
     })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedLeaf)})`;
     const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
       ok: boolean;
@@ -7383,7 +7551,15 @@ export async function verifyDomEffect(
           // ancestor, and — since some resolved xpaths land on a sibling label rather
           // than the combobox itself — the nearest combobox within the same
           // field-group container, for a nested input value, falling back to visible
-          // text or an aria label/valuetext.
+          // text or an aria label/valuetext. `combo.textContent`/`el.textContent`
+          // is NEVER read directly: for a composite opener+hidden-`<select>`
+          // widget (role="combobox" on the shared container, resolved xpath
+          // landing on the sibling hidden select) that concatenates EVERY
+          // option's text, so it "matches" whatever the requested option is
+          // regardless of what actually got selected — read only the
+          // COMMITTED signal (aria-activedescendant's referenced node, the
+          // select's own selectedIndex option, or the opener's displayed text
+          // with any nested select/listbox option list stripped out first).
           const exprCustom = `(() => {
             const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
             const el = r.singleNodeValue;
@@ -7396,9 +7572,28 @@ export async function verifyDomEffect(
             combo = combo || el;
             const nestedInput = combo.querySelector && combo.querySelector('input');
             const value = (nestedInput && nestedInput.value) || el.value || "";
-            const text = (combo.textContent || el.textContent || "").trim();
+            const adid = (combo.getAttribute && combo.getAttribute('aria-activedescendant')) ||
+              (el.getAttribute && el.getAttribute('aria-activedescendant'));
+            const adNode = adid && document.getElementById(adid);
+            const adText = adNode ? (adNode.textContent || "").trim() : "";
+            const selectEl = el.tagName === "SELECT" ? el : (combo.tagName === "SELECT" ? combo : null);
+            const selectedOptText = selectEl && selectEl.selectedIndex >= 0 && selectEl.options[selectEl.selectedIndex]
+              ? (selectEl.options[selectEl.selectedIndex].textContent || "").trim()
+              : "";
+            // If combo itself IS the <select> (role="combobox" placed directly
+            // on the native select rather than a wrapping container),
+            // querySelectorAll('select,...') below only prunes DESCENDANTS —
+            // combo's own concatenated option text survives untouched. Skip
+            // the whole-text fallback entirely for that shape; selectedOptText
+            // above already reads its single committed option.
+            const clone = combo.tagName !== "SELECT" && combo.cloneNode ? combo.cloneNode(true) : null;
+            if (clone && clone.querySelectorAll) {
+              clone.querySelectorAll('select,[role="listbox"]').forEach((n) => n.remove());
+            }
+            const ownText = clone ? (clone.textContent || "").trim() : "";
             const ariaText = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('aria-valuetext'))) || "";
-            return { value: String(value).trim(), text: String(text || ariaText).trim() };
+            const text = adText || selectedOptText || ownText || ariaText;
+            return { value: String(value).trim(), text: String(text || "").trim() };
           })()`;
           try {
             const customResult = await target.evaluate(exprCustom);
@@ -7489,7 +7684,17 @@ export async function verifyDomEffect(
           // may live on a hidden sibling `<input>`/`<select>` the click never
           // re-renders visibly. Diff that control against its own baseline
           // entry instead.
-          return await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState);
+          if (await selectionSiblingCommittedValueChanged(target, xpath, preSelectionState)) {
+            return true;
+          }
+          // No selection fingerprint moved anywhere: the click may still have
+          // genuinely opened a combobox's owned option panel (a two-step
+          // "click to open the dropdown" instruction), which flips only
+          // `aria-expanded` — deliberately excluded from every fingerprint
+          // diff above so a bare accordion/tooltip disclosure is never
+          // credited. This dedicated check additionally requires the opener's
+          // owned panel to now render option content before crediting it.
+          return await comboboxOpenerPanelOpened(target, xpath, preSelectionState);
         }
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
