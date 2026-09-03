@@ -99,6 +99,12 @@ function buildOpenerHiddenSelectWidget(params: { fieldId: string; options: reado
   const hiddenSelect = document.getElementById(`rcf${fieldId}`) as unknown as { value: string };
   const panelEl = document.getElementById(`panel-${fieldId}`) as unknown as HappyDomElement;
 
+  // happy-dom implements no layout engine, so `offsetParent` never reflects
+  // `dropdown-hide`'s CSS — stand it in for the browser's real display:none
+  // so OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's `offsetParent === null` gate sees
+  // this select as hidden, exactly like its sibling fixtures do.
+  Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+
   // Genuine open gesture: renders the options into the aria-owns panel only
   // once clicked — the same "no native <select>/<input> a focused probe can
   // see until opened" shape PROMPT_TRIGGER_SELECTORS targets.
