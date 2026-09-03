@@ -631,7 +631,7 @@ describe("dispatch — hotPathError telemetry + browserFallbackGate", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(HttpSchemaError);
+    expect((caught as Error).message).toBe("permanently broken");
     expect(mockPluginExecute).not.toHaveBeenCalled();
     expect(mockRunWithSession).not.toHaveBeenCalled();
     expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
@@ -650,7 +650,7 @@ describe("dispatch — hotPathError telemetry + browserFallbackGate", () => {
       meta: { ...httpPlugin.meta, siteId: "gated-predicate-site", browserFallbackGate: gate },
     };
     const context = makeContext();
-    await expect(dispatch(gatedPlugin, {}, context)).rejects.toBeInstanceOf(HttpSchemaError);
+    await expect(dispatch(gatedPlugin, {}, context)).rejects.toThrow("predicate-denied");
     expect(gate).toHaveBeenCalledWith(expect.any(HttpSchemaError));
     expect(mockPluginExecute).not.toHaveBeenCalled();
   });
