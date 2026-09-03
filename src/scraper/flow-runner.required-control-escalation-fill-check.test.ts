@@ -228,6 +228,47 @@ describe("hasUnfilledRequiredControlForStep — prompt-selector widget family (r
       hasUnfilledRequiredControlForStep(target, "Fill in the Middle Name field with 'Q'")
     ).resolves.toBe(false);
   });
+
+  it("returns true for a composite opener+hidden-select widget whose container carries a non-vendor class name", async () => {
+    // Same ARIA/DOM shape OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR recognizes
+    // elsewhere in this file (role=combobox opener paired with a hidden
+    // native select) — the opener itself carries no required/aria-required
+    // marker (design systems typically only expose that on the opener via
+    // a class-styled shell, not a native attribute), and the container class
+    // is a made-up name that is neither of the hardcoded vendor literals
+    // ("bb-custom-select-container", "MultiCheckboxInput") the old regex
+    // looked for. Only the generic triggerSel-based opener detection — not
+    // the vendor class name — makes this widget resolve as a real control.
+    const requiredHtml = `
+      <div id="formField-employmentType" class="totally-unbranded-widget-shell">
+        <label id="employmentType-label">Employment Type</label>
+        <button role="combobox" aria-haspopup="listbox" aria-owns="employmentType-listbox" aria-controls="employmentType-listbox" aria-labelledby="employmentType-label"></button>
+        <select id="employmentType-select" style="display:none">
+          <option value="">-</option>
+        </select>
+      </div>
+    `;
+    const requiredTarget = makeDomFrameTarget(requiredHtml);
+    await expect(
+      hasUnfilledRequiredControlForStep(requiredTarget, "Select 'Full-Time' for 'Employment Type'")
+    ).resolves.toBe(true);
+
+    // Sibling assertion: an ordinary container with the same non-vendor class
+    // but no opener/trigger widget at all still resolves false — the fix
+    // must not turn every non-vendor-classed container into a false positive.
+    const optionalHtml = `
+      <div id="formField-referralSource" class="totally-unbranded-widget-shell">
+        <label for="referralSource-select">Referral Source</label>
+        <select id="referralSource-select" style="display:none">
+          <option value="">-</option>
+        </select>
+      </div>
+    `;
+    const optionalTarget = makeDomFrameTarget(optionalHtml);
+    await expect(
+      hasUnfilledRequiredControlForStep(optionalTarget, "Select 'Friend' for 'Referral Source'")
+    ).resolves.toBe(false);
+  });
 });
 
 describe("parseCheckStep", () => {
