@@ -4091,8 +4091,14 @@ async function comboboxOpenerPanelOpened(
         const wasCollapsed = pre.ariaExpanded !== "true";
         const nowExpanded = (node.getAttribute("aria-expanded") || "") === "true";
         if (!wasCollapsed || !nowExpanded) return false;
+        // scopeRootOf falls back to \`document\` when the trigger has no
+        // aria-controls/aria-owns ref AND no inline popup in its own subtree.
+        // That fallback is a page-wide search, not the opener's OWNED scope —
+        // crediting through it would let an unrelated widget's already-open
+        // options (elsewhere on the page) falsely credit THIS trigger's click.
         const scope = scopeRootOf(node);
-        return !!(scope && scope.querySelector && scope.querySelector(OPTION_SEL));
+        if (!scope || scope === document || !scope.querySelector) return false;
+        return !!scope.querySelector(OPTION_SEL);
       }
       node = node.parentElement;
     }

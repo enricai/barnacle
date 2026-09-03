@@ -196,4 +196,36 @@ describe("flow-runner/verifyDomEffect — combobox opener open-click credit", ()
 
     expect(await verifyDomEffect(target, clickActionFor(selector), pre)).toBe(false);
   });
+
+  it("does NOT credit an opener with no aria-controls/aria-owns and no inline popup, even when an unrelated widget elsewhere on the page has open options", async () => {
+    const window = new Window({ url: "https://directory.example.com/results" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <button data-automation-id="promptIcon" aria-expanded="false">Open</button>
+      <ul role="listbox"><li role="option">Unrelated option from a different widget</li></ul>
+    `;
+
+    const trigger = document.querySelector(
+      '[data-automation-id="promptIcon"]'
+    ) as unknown as HappyDomElement & {
+      setAttribute: (name: string, value: string) => void;
+    };
+
+    (
+      trigger as unknown as {
+        addEventListener: (type: string, cb: (ev: unknown) => void) => void;
+      }
+    ).addEventListener("click", () => {
+      trigger.setAttribute("aria-expanded", "true");
+    });
+
+    const target = makeTarget(window);
+    const xpath = absoluteXPathFor(trigger);
+    const selector = `xpath=${xpath}`;
+    const pre = { [xpath]: collapsedBaseline() };
+
+    (trigger as unknown as { click: () => void }).click();
+
+    expect(await verifyDomEffect(target, clickActionFor(selector), pre)).toBe(false);
+  });
 });
