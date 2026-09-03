@@ -184,6 +184,12 @@ describe("scraper/session router", () => {
     const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
     expect(addInitScript).toHaveBeenCalledTimes(1);
     expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+
+    const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
+      on: ReturnType<typeof vi.fn>;
+    };
+    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
@@ -192,6 +198,12 @@ describe("scraper/session router", () => {
     const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
     expect(addInitScript).toHaveBeenCalledTimes(1);
     expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+
+    const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
+      on: ReturnType<typeof vi.fn>;
+    };
+    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
   });
 });
 
