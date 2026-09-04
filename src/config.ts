@@ -50,6 +50,20 @@ export interface AppConfig {
     poolSize: number;
     minActionDelayMs: number;
     maxActionDelayMs: number;
+    /**
+     * Ceiling on concurrent in-flight session-create calls to the scraper
+     * provider. Kept well below `poolSize` so a pool-refill surge (e.g. after
+     * a restart) paces its create calls instead of firing them all at once.
+     */
+    sessionCreateMaxConcurrent: number;
+    /**
+     * Minimum spacing enforced between successive session-create calls,
+     * regardless of concurrency — the piece `poolSize`'s bare concurrency
+     * cap doesn't provide on its own.
+     */
+    sessionCreateMinIntervalMs: number;
+    /** Bounded retry count for a single session-create call before giving up. */
+    sessionCreateMaxRetries: number;
     readinessQueueThreshold: number;
     /**
      * Default ceiling for expensive cascade-exhausted replans in a single recon
@@ -456,6 +470,9 @@ export function loadConfig(): AppConfig {
       poolSize: getNumericEnv("SESSION_POOL_SIZE", 3),
       minActionDelayMs: getNumericEnv("SCRAPER_MIN_ACTION_DELAY_MS", 500),
       maxActionDelayMs: getNumericEnv("SCRAPER_MAX_ACTION_DELAY_MS", 1500),
+      sessionCreateMaxConcurrent: getNumericEnv("SESSION_CREATE_MAX_CONCURRENT", 2),
+      sessionCreateMinIntervalMs: getNumericEnv("SESSION_CREATE_MIN_INTERVAL_MS", 250),
+      sessionCreateMaxRetries: getNumericEnv("SESSION_CREATE_MAX_RETRIES", 3),
       readinessQueueThreshold: getNumericEnv("READINESS_QUEUE_THRESHOLD", 20),
       maxCascadeReplans: getNumericEnv("RECON_MAX_CASCADE_REPLANS", 5),
       maxProbeReplans: getNumericEnv("RECON_MAX_PROBE_REPLANS", 5),

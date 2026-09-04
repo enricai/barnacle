@@ -337,6 +337,41 @@ export function isHttpUrlLockedError(err: unknown): err is HttpUrlLockedError {
 }
 
 /**
+ * Browserbase (or another session provider) rejected a `POST /sessions/start`
+ * call with a 429 — surfaced by Stagehand's client as the literal string
+ * `"Unknown error: 429"` (`@browserbasehq/stagehand`'s `v3/api.js`). This is
+ * a session-*creation* rejection, not the ATS hot path's {@link
+ * HttpRateLimitError} and not the Fastify service-level rate limiter — the
+ * three are distinct 429 signals and must not be conflated. `retryable`
+ * stays `false` here because retry policy for this signal lives in the
+ * session-create pacing/back-off logic, not on the error itself.
+ */
+export class BrowserbaseSessionCreateRateLimitError extends ScraperError {
+  constructor(message = "browserbase session-create rate limit exceeded") {
+    super(message, false);
+  }
+}
+
+/**
+ * Matches a thrown error against the literal `"Unknown error: 429"` shape
+ * Stagehand's client throws for a session-create 429, regardless of whether
+ * it was constructed as a {@link BrowserbaseSessionCreateRateLimitError} or
+ * arrived as Stagehand's own raw `Error`. Deliberately narrow — matches ONLY
+ * this exact session-create signal, never the ATS hot-path "http 429" or the
+ * Fastify "Barnacle rate limited" message.
+ */
+export function isBrowserbaseSessionCreateRateLimitError(
+  err: unknown
+): err is BrowserbaseSessionCreateRateLimitError {
+  return (
+    err instanceof BrowserbaseSessionCreateRateLimitError ||
+    (err instanceof Error &&
+      (err.name === "BrowserbaseSessionCreateRateLimitError" ||
+        err.message.includes("Unknown error: 429")))
+  );
+}
+
+/**
  * Structured result returned (not thrown) by the hot path when it cannot
  * complete the application because the user must supply additional data.
  * Assignable as the `data` payload of a `SitePluginResult` so dispatch can
@@ -435,6 +470,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "HttpServerError",
   "HttpRateLimitError",
   "HttpUrlLockedError",
+  "BrowserbaseSessionCreateRateLimitError",
   "MissingFormMapKeyError",
   "EmailStepInboxUnavailableError",
   "EmailStepExtractError",
@@ -443,7 +479,7 @@ const SCRAPER_ERROR_NAMES = new Set([
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 16 concrete subclasses defined in this file
+ * variant, matching any of the 17 concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

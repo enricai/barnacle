@@ -38,6 +38,9 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.sessionIpEchoUrl).toBe("https://api.ipify.org?format=json");
     expect(cfg.scraper.sessionIpTimeoutMs).toBe(10_000);
     expect(cfg.scraper.maxTransportRetries).toBe(3);
+    expect(cfg.scraper.sessionCreateMaxConcurrent).toBe(2);
+    expect(cfg.scraper.sessionCreateMinIntervalMs).toBe(250);
+    expect(cfg.scraper.sessionCreateMaxRetries).toBe(3);
     // Default trustProxy=true matches the most common deploy shape
     // (behind an ALB/nginx/Cloudflare); bare-metal runners must opt out.
     expect(cfg.trustProxy).toBe(true);
@@ -61,6 +64,16 @@ describe("config/loadConfig", () => {
     process.env.RECON_MAX_TRANSPORT_RETRIES = "7";
     const cfg = loadConfig();
     expect(cfg.scraper.maxTransportRetries).toBe(7);
+  });
+
+  it("overrides session-create pacing via env", () => {
+    process.env.SESSION_CREATE_MAX_CONCURRENT = "5";
+    process.env.SESSION_CREATE_MIN_INTERVAL_MS = "800";
+    process.env.SESSION_CREATE_MAX_RETRIES = "6";
+    const cfg = loadConfig();
+    expect(cfg.scraper.sessionCreateMaxConcurrent).toBe(5);
+    expect(cfg.scraper.sessionCreateMinIntervalMs).toBe(800);
+    expect(cfg.scraper.sessionCreateMaxRetries).toBe(6);
   });
 
   it("overrides frame timeout budgets via env", () => {

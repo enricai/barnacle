@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
 import { isCdpTransportClosedError } from "@/scraper/errors";
+import { createBrowserSession } from "@/scraper/session";
 import {
   createBrowserbaseBrowserSession,
   makeFilteredStagehandLogger,
@@ -38,6 +39,10 @@ const { configRef } = vi.hoisted(() => ({
         captureSessionIp: true,
         sessionIpEchoUrl: "https://api.ipify.org?format=json",
         sessionIpTimeoutMs: 10000,
+        provider: "browserbase" as "browserbase" | "steel",
+        sessionCreateMaxConcurrent: 2,
+        sessionCreateMinIntervalMs: 250,
+        sessionCreateMaxRetries: 3,
       },
       bedrock: {
         region: "us-east-1",
@@ -56,6 +61,18 @@ vi.mock("@/config", () => ({
   },
 }));
 
+const { fakePage } = vi.hoisted(() => ({
+  fakePage: {
+    getSessionForFrame: vi.fn().mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      off: vi.fn(),
+    }),
+    mainFrameId: vi.fn().mockReturnValue("main-frame"),
+    frameForId: vi.fn().mockReturnValue({ evaluate: vi.fn().mockResolvedValue(undefined) }),
+  },
+}));
+
 vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@browserbasehq/stagehand")>();
   return {
@@ -66,10 +83,24 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
       this.browserbaseSessionID = "bb-session-id";
       this.context = {
         conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+        addInitScript: vi.fn().mockResolvedValue(undefined),
+        awaitActivePage: vi.fn().mockResolvedValue(fakePage),
       };
     }),
   };
 });
+
+vi.mock("steel-sdk", () => ({
+  default: vi.fn(function (this: Record<string, unknown>) {
+    this.sessions = {
+      create: vi.fn().mockResolvedValue({
+        id: "steel-session-id",
+        websocketUrl: "wss://connect.steel.dev?sessionId=steel-session-id",
+      }),
+      release: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
+}));
 
 const { heartbeatHandleRef } = vi.hoisted(() => ({
   heartbeatHandleRef: { value: { stop: vi.fn() } },
@@ -482,5 +513,50 @@ describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () 
     });
 
     expect(session.getCdpTransportClosedError?.()).toBeUndefined();
+  });
+});
+
+describe("createBrowserSession session-create-limiter wiring around the real Stagehand.init call", () => {
+  beforeEach(() => {
+    configRef.value.scraper.provider = "browserbase";
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  it("retries a 'Unknown error: 429' from stagehand.init() and resolves, instead of failing the first attempt", async () => {
+    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.init = vi.fn().mockRejectedValue(new Error("Unknown error: 429"));
+      this.close = vi.fn().mockResolvedValue(undefined);
+      this.browserbaseSessionID = "bb-session-id";
+      this.context = {
+        conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+        addInitScript: vi.fn().mockResolvedValue(undefined),
+        awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+      };
+    } as unknown as typeof Stagehand);
+
+    const session = await createBrowserSession();
+
+    expect(session.provider).toBe("browserbase");
+    expect(vi.mocked(Stagehand)).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a non-429 init failure without retry or masking", async () => {
+    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.init = vi.fn().mockRejectedValue(new Error("ECONNRESET: connection reset"));
+      this.close = vi.fn().mockResolvedValue(undefined);
+      this.browserbaseSessionID = "bb-session-id";
+      this.context = {
+        conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+        addInitScript: vi.fn().mockResolvedValue(undefined),
+        awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+      };
+    } as unknown as typeof Stagehand);
+
+    await expect(createBrowserSession()).rejects.toThrow("ECONNRESET: connection reset");
+    expect(vi.mocked(Stagehand)).toHaveBeenCalledTimes(1);
   });
 });

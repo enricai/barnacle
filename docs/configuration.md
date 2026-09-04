@@ -37,6 +37,9 @@ All variables are read once at process start; missing required ones exit the pro
 | `SCRAPER_PROXY_TYPE` | `residential` | No | `residential` (paid tiers) or `none` (free tier — rejects `useProxy=true` on hobby plans). Applies to both providers. |
 | `SCRAPER_SOLVE_CAPTCHA` | `true` | No | Enable the provider's built-in CAPTCHA solver. Requires a paid plan; set `false` on the free tier. Applies to both providers. |
 | `SESSION_POOL_SIZE` | `3` | No | Maximum concurrent browser sessions. Applies to both providers. |
+| `SESSION_CREATE_MAX_CONCURRENT` | `2` | No | Maximum concurrent session-create (`stagehand.init()`) calls in flight process-wide, independent of `SESSION_POOL_SIZE`. |
+| `SESSION_CREATE_MIN_INTERVAL_MS` | `250` | No | Minimum spacing between session-create attempts (ms), pacing restart surges so queued pool tasks don't all hit the provider's create endpoint at once. |
+| `SESSION_CREATE_MAX_RETRIES` | `3` | No | Max attempts (including the first) for a session-create call that keeps hitting a Browserbase 429 ("Unknown error: 429"), backing off exponentially between attempts. |
 | `SCRAPER_MIN_ACTION_DELAY_MS` | `500` | No | Minimum delay between scraper actions (ms). Jitter applied on top. |
 | `SCRAPER_MAX_ACTION_DELAY_MS` | `1500` | No | Maximum delay between scraper actions (ms). |
 | `STAGEHAND_API_TIMEOUT_MS` | `120000` | No | Anthropic SDK request timeout (ms). Raise on slow network paths to `api.anthropic.com`. |
