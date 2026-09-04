@@ -37,7 +37,7 @@ export async function scheduleSessionCreate<T>(fn: () => Promise<T>): Promise<T>
               raw instanceof Error ? raw.message : undefined
             );
           }
-          throw new AbortError(raw instanceof Error ? raw.message : String(raw));
+          throw new AbortError(raw instanceof Error ? raw : new Error(String(raw)));
         }
       }),
     {

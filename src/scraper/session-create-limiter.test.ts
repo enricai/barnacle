@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { BrowserbaseSessionCreateRateLimitError } from "@/scraper/errors";
+import { BrowserbaseSessionCreateRateLimitError, CaptchaError } from "@/scraper/errors";
 import { scheduleSessionCreate } from "@/scraper/session-create-limiter";
 
 describe("scraper/session-create-limiter", () => {
@@ -67,6 +67,17 @@ describe("scraper/session-create-limiter", () => {
       await vi.runAllTimersAsync();
       await assertion;
       expect(attempts).toBe(1);
+    });
+
+    it("preserves the original error's type/instanceof through the limiter", async () => {
+      const fn = async (): Promise<never> => {
+        throw new CaptchaError("captcha detected during init");
+      };
+
+      const call = scheduleSessionCreate(fn);
+      const assertion = expect(call).rejects.toBeInstanceOf(CaptchaError);
+      await vi.runAllTimersAsync();
+      await assertion;
     });
   });
 });
