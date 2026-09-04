@@ -32,6 +32,9 @@ const { configRef } = vi.hoisted(() => ({
         captureSessionIp: true,
         sessionIpEchoUrl: "https://api.ipify.org?format=json",
         sessionIpTimeoutMs: 10000,
+        sessionCreateMaxConcurrent: 2,
+        sessionCreateMinIntervalMs: 250,
+        sessionCreateMaxRetries: 3,
       },
       bedrock: {
         region: "us-east-1",
@@ -125,6 +128,14 @@ vi.mock("@/scraper/session-ip", () => ({
   resolveSessionOutboundIp,
 }));
 
+vi.mock("@/scraper/session-browserbase", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/session-browserbase")>();
+  return {
+    ...actual,
+    createBrowserbaseBrowserSession: vi.fn(actual.createBrowserbaseBrowserSession),
+  };
+});
+
 const defaultConfig = (): typeof configRef.value => ({
   scraper: {
     provider: "browserbase",
@@ -141,6 +152,9 @@ const defaultConfig = (): typeof configRef.value => ({
     captureSessionIp: true,
     sessionIpEchoUrl: "https://api.ipify.org?format=json",
     sessionIpTimeoutMs: 10000,
+    sessionCreateMaxConcurrent: 2,
+    sessionCreateMinIntervalMs: 250,
+    sessionCreateMaxRetries: 3,
   },
   bedrock: {
     region: "us-east-1",
@@ -364,5 +378,51 @@ describe("BrowserSession.getOutboundIp", () => {
     expect(await session.getOutboundIp?.()).toBeNull();
     expect(await session.getOutboundIp?.()).toBeNull();
     expect(resolveSessionOutboundIp).not.toHaveBeenCalled();
+  });
+});
+
+describe("createBrowserSession session-create pacing/back-off wiring", () => {
+  beforeEach(() => {
+    configRef.value = defaultConfig();
+    vi.mocked(createBrowserbaseBrowserSession).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("paces a restart surge and retries session-create 429s through to resolution", async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const timestamps: number[] = [];
+    vi.mocked(createBrowserbaseBrowserSession).mockImplementation(async () => {
+      attempts += 1;
+      timestamps.push(Date.now());
+      if (attempts <= 2) throw new Error("Unknown error: 429");
+      return {
+        provider: "browserbase" as const,
+        stagehand: new Stagehand({} as never),
+      } as unknown as Awaited<ReturnType<typeof createBrowserbaseBrowserSession>>;
+    });
+
+    const calls = Promise.all([createBrowserSession(), createBrowserSession()]);
+    await vi.runAllTimersAsync();
+    const sessions = await calls;
+
+    expect(sessions.every((session) => session.provider === "browserbase")).toBe(true);
+    expect(attempts).toBeGreaterThanOrEqual(3);
+    const [first, second] = timestamps as [number, number];
+    expect(second - first).toBeGreaterThanOrEqual(250);
+  });
+
+  it("surfaces a non-session-create-429 init failure immediately, with no retry", async () => {
+    let attempts = 0;
+    vi.mocked(createBrowserbaseBrowserSession).mockImplementation(async () => {
+      attempts += 1;
+      throw new Error("ANTHROPIC_API_KEY is required");
+    });
+
+    await expect(createBrowserSession()).rejects.toThrow("ANTHROPIC_API_KEY is required");
+    expect(attempts).toBe(1);
   });
 });
