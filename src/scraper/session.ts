@@ -4,6 +4,7 @@ import {
   installHcaptchaCallbackCaptureOnAllFrames,
 } from "@/scraper/captcha-callback-capture";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
+import { scheduleSessionCreate } from "@/scraper/session-create-limiter";
 import type { BrowserSession, BrowserSessionOptions } from "@/scraper/session-shared";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
 
@@ -33,13 +34,14 @@ export type {
  */
 export async function createBrowserSession(opts?: BrowserSessionOptions): Promise<BrowserSession> {
   const provider = opts?.provider ?? config.scraper.provider;
-  const session =
+  const session = await scheduleSessionCreate(() =>
     provider === "browserbase"
-      ? await createBrowserbaseBrowserSession({
+      ? createBrowserbaseBrowserSession({
           advancedStealth: opts?.advancedStealth,
           browserbaseSessionCreateParams: opts?.browserbaseSessionCreateParams,
         })
-      : await createSteelBrowserSession();
+      : createSteelBrowserSession()
+  );
   await session.stagehand.context.addInitScript(buildHcaptchaCallbackCaptureScript());
   const page = await session.stagehand.context.awaitActivePage();
   installHcaptchaCallbackCaptureOnAllFrames(page);
