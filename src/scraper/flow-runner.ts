@@ -566,7 +566,7 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     // shared by the classic sr-only clip technique (explicit width:1px;height:1px) and
     // a real browser's transform:scale(0) (which collapses the bounding rect itself) —
     // technique-agnostic, unlike enumerating every CSS property that can shrink a box.
-    const hasTinyFootprint = rect.width <= 1 && rect.height <= 1;
+    const hasTinyFootprint = rect.width <= 1 || rect.height <= 1;
     const clipMatch = /rect\\(\\s*([\\d.]+)px[,\\s]+([\\d.]+)px[,\\s]+([\\d.]+)px[,\\s]+([\\d.]+)px\\s*\\)/.exec(style.clip || "");
     const isClipZeroArea = !!clipMatch && (parseFloat(clipMatch[3]) - parseFloat(clipMatch[1]) <= 0 || parseFloat(clipMatch[2]) - parseFloat(clipMatch[4]) <= 0);
     // Only treat clip-path as a hiding signal when it collapses the element to
