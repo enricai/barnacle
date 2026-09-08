@@ -5074,7 +5074,9 @@ export function emitMultiStepExecuteHttp(
               .split(`\${payload.${lastSegment}}`)
               .join(replacement);
             const scopeObj =
-              valueField.varName === itemVar ? firstItem : ancestorObjByVar.get(valueField.varName)!;
+              valueField.varName === itemVar
+                ? firstItem
+                : ancestorObjByVar.get(valueField.varName)!;
             const value = readValueAtPath(scopeObj, valueField.field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
@@ -8959,7 +8961,9 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
           const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
             const scopeObj =
-              valueField.varName === itemVar ? firstItem : ancestorObjByVar.get(valueField.varName)!;
+              valueField.varName === itemVar
+                ? firstItem
+                : ancestorObjByVar.get(valueField.varName)!;
             const value = readValueAtPath(scopeObj, valueField.field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0

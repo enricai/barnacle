@@ -18,16 +18,19 @@ import {
 const BASE = "https://api.example.com";
 
 /**
- * `emitContractTs` (the real contract.ts generation entry point) hits the
- * same scope-coincidence ambiguity commit 52a166f only regression-tested
- * against `emitMultiStepExecuteHttp` directly: a threaded drill param's
- * literal value is resolvable from BOTH the matched (first) item's own field
- * AND an ancestor field of the same value, while every sibling item's own
- * field diverges. Only the ancestor binding is valid for every sibling.
+ * `emitContractTs` must hoist BOTH threaded drill params to the ancestor
+ * binding when each is independently scope-coincident — not just one of
+ * them. This generalizes
+ * `recon-generate-contract-scope-coincident-drill-hoist-runtime-e2e.test.ts`
+ * (a single coincident param) to two simultaneously threaded params, one
+ * resolvable via a top-level ancestor field (`code`) and the other via a
+ * distinct nested ancestor sub-path (`flagshipEntry.code`). A fold plan that
+ * hoists only one of the two params would still issue a fetch per item
+ * instead of per group.
  */
 
 const SEARCH_QUERY =
-  "query catalogSearch { catalog { sections { code entries { id code title } } } }";
+  "query catalogSearch { catalog { sections { code flagshipEntry { code } entries { id code flagCode title } } } }";
 
 function catalogSearchCapture(): unknown {
   return {
@@ -45,18 +48,20 @@ function catalogSearchCapture(): unknown {
           sections: [
             {
               code: "sec1",
+              flagshipEntry: { code: "flg1" },
               entries: [
-                { id: "e1", code: "sec1", title: "Widget" },
-                { id: "e2", code: "e2-code", title: "Gadget" },
-                { id: "e3", code: "e3-code", title: "Doohickey" },
+                { id: "e1", code: "sec1", flagCode: "flg1", title: "Widget" },
+                { id: "e2", code: "e2-code", flagCode: "flg1", title: "Gadget" },
+                { id: "e3", code: "sec1", flagCode: "flg3-code", title: "Doohickey" },
               ],
             },
             {
               code: "sec2",
+              flagshipEntry: { code: "flg2" },
               entries: [
-                { id: "e4", code: "sec2", title: "Thingamajig" },
-                { id: "e5", code: "e5-code", title: "Contraption" },
-                { id: "e6", code: "e6-code", title: "Gizmo" },
+                { id: "e4", code: "sec2", flagCode: "flg2", title: "Thingamajig" },
+                { id: "e5", code: "e5-code", flagCode: "flg2", title: "Contraption" },
+                { id: "e6", code: "sec2", flagCode: "flg6-code", title: "Gizmo" },
               ],
             },
           ],
@@ -75,7 +80,7 @@ function entryDetailsCapture(): unknown {
     timestamp: "2024-01-01T00:00:01Z",
     phase: "browse",
     method: "GET",
-    url: `${BASE}/listings/api/v1/details?code=sec1`,
+    url: `${BASE}/listings/api/v1/details?code=sec1&flag=flg1`,
     status: 200,
     requestHeaders: {},
     requestPostData: null,
@@ -99,7 +104,7 @@ function decoyDetailsCapture(): unknown {
     timestamp: "2024-01-01T00:00:02Z",
     phase: "browse",
     method: "GET",
-    url: `${BASE}/listings/api/v1/details?code=zzz-unrelated`,
+    url: `${BASE}/listings/api/v1/details?code=zzz-unrelated&flag=zzz-unrelated-flag`,
     status: 200,
     requestHeaders: {},
     requestPostData: null,
@@ -173,8 +178,8 @@ function evalSinglePrimaryExecuteHttp(
   return factory(getGql, httpClient, z, queryText);
 }
 
-describe("emitContractTs — scope-coincident drill param still hoists to the ancestor binding", () => {
-  it("emits the drill fetch call site bound to the ancestor field only, between the ancestor and item loop opens", () => {
+describe("emitContractTs — dual scope-coincident drill params both hoist to the ancestor binding", () => {
+  it("emits the drill fetch call site bound to both ancestor fields only, between the ancestor and item loop opens", () => {
     const captures = [
       catalogSearchCapture(),
       entryDetailsCapture(),
@@ -195,8 +200,8 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
     const primaryResponseBody = actionSteps[0]!.capture.responseBody;
 
     const contract = emitContractTs({
-      siteId: "scope-coincident-contract-test",
-      pascal: "ScopeCoincidentContractTest",
+      siteId: "dual-scope-coincident-contract-test",
+      pascal: "DualScopeCoincidentContractTest",
       baseUrl: BASE,
       baseHeaders: { "Content-Type": "application/json" },
       minTime: 100,
@@ -226,9 +231,11 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
     expect(itemLoopIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(executeHttpBody).toContain("/listings/api/v1/details?code=${g0.code}");
-    expect(executeHttpBody).not.toContain("/listings/api/v1/details?code=${item");
+    expect(executeHttpBody).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+      "/listings/api/v1/details?code=${g0.code}&flag=${g0.flagshipEntry.code}"
+    );
+    expect(executeHttpBody).not.toContain("${item");
   });
 
   it("at runtime, calls the drill endpoint exactly once per group and joins every sibling item correctly, byte-identical to the expected per-item merge", async () => {
@@ -248,8 +255,8 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
     const primaryResponseBody = actionSteps[0]!.capture.responseBody;
 
     const contract = emitContractTs({
-      siteId: "scope-coincident-contract-test",
-      pascal: "ScopeCoincidentContractTest",
+      siteId: "dual-scope-coincident-contract-test",
+      pascal: "DualScopeCoincidentContractTest",
       baseUrl: BASE,
       baseHeaders: { "Content-Type": "application/json" },
       minTime: 100,
@@ -305,7 +312,7 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
       executeHttpBody,
       getGql,
       httpClient,
-      "SCOPECOINCIDENTCONTRACTTEST_QUERY",
+      "DUALSCOPECOINCIDENTCONTRACTTEST_QUERY",
       SEARCH_QUERY
     );
     const result = await executeHttp({}, { baseUrl: BASE });
@@ -318,18 +325,56 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
           sections: [
             {
               code: "sec1",
+              flagshipEntry: { code: "flg1" },
               entries: [
-                { id: "e1", code: "sec1", title: "Widget", description: "A widget." },
-                { id: "e2", code: "e2-code", title: "Gadget", description: "A gadget." },
-                { id: "e3", code: "e3-code", title: "Doohickey", description: "A doohickey." },
+                {
+                  id: "e1",
+                  code: "sec1",
+                  flagCode: "flg1",
+                  title: "Widget",
+                  description: "A widget.",
+                },
+                {
+                  id: "e2",
+                  code: "e2-code",
+                  flagCode: "flg1",
+                  title: "Gadget",
+                  description: "A gadget.",
+                },
+                {
+                  id: "e3",
+                  code: "sec1",
+                  flagCode: "flg3-code",
+                  title: "Doohickey",
+                  description: "A doohickey.",
+                },
               ],
             },
             {
               code: "sec2",
+              flagshipEntry: { code: "flg2" },
               entries: [
-                { id: "e4", code: "sec2", title: "Thingamajig", description: "A thingamajig." },
-                { id: "e5", code: "e5-code", title: "Contraption", description: "A contraption." },
-                { id: "e6", code: "e6-code", title: "Gizmo", description: "A gizmo." },
+                {
+                  id: "e4",
+                  code: "sec2",
+                  flagCode: "flg2",
+                  title: "Thingamajig",
+                  description: "A thingamajig.",
+                },
+                {
+                  id: "e5",
+                  code: "e5-code",
+                  flagCode: "flg2",
+                  title: "Contraption",
+                  description: "A contraption.",
+                },
+                {
+                  id: "e6",
+                  code: "sec2",
+                  flagCode: "flg6-code",
+                  title: "Gizmo",
+                  description: "A gizmo.",
+                },
               ],
             },
           ],
@@ -339,11 +384,12 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
 
     // Exactly 2 fetches — one drill per group, not one per item (which would
     // make 6 across a 2-group/3-item fixture) and not only for the
-    // coincidentally-matching item (which would make 2 anyway here, but
-    // would silently drop siblings whose own `code` diverges).
+    // coincidentally-matching item.
     const calls = vi.mocked(fetch).mock.calls;
     expect(calls).toHaveLength(2);
     expect(String(calls[0]![0])).toContain("code=sec1");
+    expect(String(calls[0]![0])).toContain("flag=flg1");
     expect(String(calls[1]![0])).toContain("code=sec2");
+    expect(String(calls[1]![0])).toContain("flag=flg2");
   });
 });

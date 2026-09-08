@@ -74,6 +74,7 @@ describe("recon-generate drill-down fold — scope-coincident drill param still 
     expect(itemLoopIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(body).toContain("catalog/entries/details?code=${g0.masterCode}");
     expect(body).not.toContain("catalog/entries/details?code=${item");
   });

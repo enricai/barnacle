@@ -23,7 +23,8 @@ const DISTINCT_VALUE_SPEC: FoldReturnSpec = {
 };
 
 function emitBody(): string {
-  const actionSteps = buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps();
+  const actionSteps =
+    buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps();
   return emitMultiStepExecuteHttp(
     actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
     null,
