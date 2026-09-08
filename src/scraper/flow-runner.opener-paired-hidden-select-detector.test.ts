@@ -248,6 +248,40 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     ).toBe(false);
   });
 
+  it("returns true for a select hidden via the classic screen-reader-only clip technique (clip:rect(0,0,0,0) + 1x1 rect, offsetParent non-null, on-screen)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-sronly-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-sronly" name="rcf-sronly" class="form-control"
+                style="position:absolute; clip: rect(0px, 0px, 0px, 0px); width:1px; height:1px;">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-sronly-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-sronly") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    // Simulate a real browser: offsetParent non-null (still in flow), and the
+    // bounding rect reflects the element's own declared 1x1 box, on-screen —
+    // NOT the all-zero rect happy-dom's non-layout-engine default would give,
+    // which would make this case pass trivially without exercising the fix.
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 1, height: 1, top: 10, left: 10, right: 11, bottom: 11 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
   it("returns false for a hidden select whose climbed ancestor happens to contain an unrelated opener and an unrelated already-open widget's options (no actual pairing between them)", () => {
     const window = new Window({ url: "https://careers.example.com/apply/job/1" });
     const document = window.document;

@@ -516,11 +516,21 @@ const PROMPT_OPTION_SELECTORS = [
  * In-page predicate source for `(el) => boolean`: true when `el` is a
  * `<select>` that is a design-system combobox opener's paired-but-hidden
  * shadow control (Base Web `bb-customSelect` and any other vendor matching
- * {@link PROMPT_TRIGGER_SELECTORS}) — a `<select>` hidden by ANY technique
- * (`offsetParent === null` for `display:none`-driven hiding classes like
- * `dropdown-hide`, or the zero-rect/`visibility:hidden` idiom
- * `IS_VISIBLE_EXPR` and the local `visible` helper elsewhere in this file
- * already use, inverted here) whose nearby container also holds a
+ * {@link PROMPT_TRIGGER_SELECTORS}). Two independent signals both have to
+ * hold, and each is deliberately technique-agnostic rather than an exact
+ * enumeration: (1) hiddenness — `offsetParent === null`, a zero-size rect,
+ * `display:none`/`visibility:hidden`/`opacity:0`, off-screen positioning, OR
+ * any of the layout-fingerprint checks that generalize across the remaining
+ * CSS hiding techniques (`hasTinyFootprint` for the sr-only clip idiom and
+ * `transform:scale(0)`'s collapsed rect, a parsed `clip:` rect of zero area,
+ * an active `clip-path`, a `scale(0)`/zero `matrix()` transform, or an
+ * ancestor whose own box is collapsed to near-zero while clipping overflow)
+ * — and (2) opener-pairing — described below — which is what makes the
+ * hiddenness check safe to broaden: a false-positive on hiddenness alone
+ * (e.g. some other reason a real, standalone select reports a tiny rect)
+ * still can't misfire unless that same select also sits paired with a
+ * rendered combobox opener, which an ordinary select never does. Signal (2)
+ * requires the select's nearby container to also hold a
  * {@link PROMPT_TRIGGER_SELECTORS} opener element, other than itself, that is
  * ARIA-wired to a listbox panel — via `aria-owns`/`aria-controls`/
  * `aria-haspopup="listbox"` declared on the opener (accepted unresolved only
@@ -552,7 +562,32 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     const isOffscreen = rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight;
-    const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0 || isOffscreen;
+    // A near-zero footprint (<=1px either dimension) is the layout-level fingerprint
+    // shared by the classic sr-only clip technique (explicit width:1px;height:1px) and
+    // a real browser's transform:scale(0) (which collapses the bounding rect itself) —
+    // technique-agnostic, unlike enumerating every CSS property that can shrink a box.
+    const hasTinyFootprint = rect.width <= 1 && rect.height <= 1;
+    const clipMatch = /rect\\(\\s*([\\d.]+)px[,\\s]+([\\d.]+)px[,\\s]+([\\d.]+)px[,\\s]+([\\d.]+)px\\s*\\)/.exec(style.clip || "");
+    const isClipZeroArea = !!clipMatch && (parseFloat(clipMatch[3]) - parseFloat(clipMatch[1]) <= 0 || parseFloat(clipMatch[2]) - parseFloat(clipMatch[4]) <= 0);
+    const hasClipPath = !!style.clipPath && style.clipPath !== "none";
+    const hasZeroScale = /scale\\(\\s*0(?:\\.0+)?\\s*(?:,\\s*0(?:\\.0+)?\\s*)?\\)/.test(style.transform || "") || /matrix\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,/.test(style.transform || "");
+    // Ancestor overflow-clipping: a wrapper with overflow:hidden collapsed to a
+    // near-zero box clips its whole subtree to invisibility even though the
+    // select's own box, style and offsetParent all look ordinary.
+    const isAncestorClipped = (() => {
+      let anc = el.parentElement;
+      for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anc; d++) {
+        const ancStyle = getComputedStyle(anc);
+        const overflowHides = ancStyle.overflow === "hidden" || ancStyle.overflow === "clip" || ancStyle.overflowX === "hidden" || ancStyle.overflowY === "hidden";
+        if (overflowHides) {
+          const ancRect = anc.getBoundingClientRect();
+          if (ancRect.width <= 1 || ancRect.height <= 1) return true;
+        }
+        anc = anc.parentElement;
+      }
+      return false;
+    })();
+    const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0 || isOffscreen || hasTinyFootprint || isClipZeroArea || hasClipPath || hasZeroScale || isAncestorClipped;
     if (!isHidden) return false;
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
     const optionSel = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
