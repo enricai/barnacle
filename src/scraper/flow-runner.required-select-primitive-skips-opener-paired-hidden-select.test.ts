@@ -44,6 +44,28 @@ const HIDDEN_THEN_VISIBLE_SELECT_HTML = `
   </div>
 `;
 
+// Mirrors the recon report's consent/State fields: `dropdown-hide` selects
+// whose hiding mechanism is NOT `offsetParent === null` (e.g. `visibility:
+// hidden`), so a predicate that only checks `offsetParent` would wrongly
+// treat this like the ordinary visible select and let the native path write
+// to it instead of falling through to the opener path.
+const VISIBILITY_HIDDEN_OPENER_PAIRED_HTML = `
+  <div class="bb-custom-select-container bb-customSelect">
+    <span class="bb-custom-select-opener"
+          role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-owns="bb-customSelect-Dt4T0-panel"
+          aria-activedescendant="bb-customSelect-Dt4T0-selectedOption"
+          aria-labelledby="bb-customSelect-Dt4T0-label"
+          tabindex="0"><span></span></span>
+    <select id="state-select" name="state-select"
+            class="form-control dropdown-hide" style="visibility:hidden" aria-required="true">
+      <option value="">Select</option>
+      <option value="georgia">Georgia</option>
+      <option value="florida">Florida</option>
+    </select>
+  </div>
+`;
+
 const testLogger = {
   info: () => undefined,
   warn: () => undefined,
@@ -69,6 +91,16 @@ function buildHarness(html: string): {
   const visibleSelect = document.getElementById("phone-type");
   if (visibleSelect) {
     Object.defineProperty(visibleSelect, "offsetParent", {
+      value: document.body,
+      configurable: true,
+    });
+  }
+  // Forces the `offsetParent !== null` branch a naive predicate would rely on
+  // to wrongly call this "visible" — the select is still hidden via
+  // `visibility: hidden`, which only the broadened check catches.
+  const visibilityHiddenSelect = document.getElementById("state-select");
+  if (visibilityHiddenSelect) {
+    Object.defineProperty(visibilityHiddenSelect, "offsetParent", {
       value: document.body,
       configurable: true,
     });
@@ -131,5 +163,22 @@ describe("flow-runner/tryFillRequiredSelectsPrimitive skips an opener-paired hid
 
     const visibleValue = (await evaluate(`document.getElementById("phone-type").value`)) as string;
     expect(visibleValue).toBe("mobile");
+  });
+
+  it("does not write a required opener-paired select hidden via visibility:hidden despite a non-null offsetParent", async () => {
+    const { page, target, evaluate } = buildHarness(VISIBILITY_HIDDEN_OPENER_PAIRED_HTML);
+
+    const allCommitted = await tryFillRequiredSelectsPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: "fill any remaining required question",
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(allCommitted).toBe(false);
+
+    const hiddenValue = (await evaluate(`document.getElementById("state-select").value`)) as string;
+    expect(hiddenValue).toBe("");
   });
 });

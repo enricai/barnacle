@@ -43,15 +43,22 @@ const testLogger = {
   debug: () => undefined,
 } as unknown as Logger;
 
-function buildHarness(): { page: unknown; target: FrameTarget } {
+function buildHarness(hiddenSelectHasOffsetParent = false): { page: unknown; target: FrameTarget } {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
   document.body.innerHTML = PAGE_HTML;
   // happy-dom implements no layout engine, so `offsetParent` never reflects
   // `dropdown-hide`'s CSS — stand it in for the browser's own display:none
-  // null, the same idiom the detector's own test uses.
+  // null, the same idiom the detector's own test uses. happy-dom also never
+  // computes real layout, so `getBoundingClientRect()` stays 0x0 regardless
+  // of `offsetParent` — the shape a real browser produces for a
+  // `visibility: hidden`-style ancestor, where `offsetParent` stays non-null
+  // but the box collapses to zero.
   const hiddenSelect = document.getElementById("rcf3553");
-  Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+  Object.defineProperty(hiddenSelect, "offsetParent", {
+    value: hiddenSelectHasOffsetParent ? document.body : null,
+    configurable: true,
+  });
   const visibleSelect = document.getElementById("phone-type");
   Object.defineProperty(visibleSelect, "offsetParent", {
     value: document.body,
@@ -82,6 +89,25 @@ function buildHarness(): { page: unknown; target: FrameTarget } {
 describe("flow-runner/trySelectPrimitive skips an opener-paired hidden select", () => {
   it("falls through (null) without writing the hidden dropdown-hide select paired with a combobox opener", async () => {
     const { page, target } = buildHarness();
+
+    const targetId = await trySelectPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: `select 'Georgia'`,
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(targetId).toBeNull();
+
+    const hiddenValue = (await target.evaluate(
+      `document.getElementById("rcf3553").value`
+    )) as string;
+    expect(hiddenValue).toBe("");
+  });
+
+  it("falls through (null) for the same opener-paired select when its offsetParent is non-null (zero-size box)", async () => {
+    const { page, target } = buildHarness(true);
 
     const targetId = await trySelectPrimitive({
       page: page as unknown as Page,

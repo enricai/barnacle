@@ -68,13 +68,17 @@ function fakePage(): Page {
  * until opened" behavior and forcing the resolver to actually drive the
  * opener rather than reading a pre-rendered popup.
  */
-function buildOpenerHiddenSelectWidget(params: { fieldId: string; options: readonly string[] }): {
+function buildOpenerHiddenSelectWidget(params: {
+  fieldId: string;
+  options: readonly string[];
+  hidingMechanism: "offsetParent" | "rect";
+}): {
   window: Window;
   openerEl: HappyDomElement;
   hiddenSelect: { value: string };
   panelEl: HappyDomElement;
 } {
-  const { fieldId, options } = params;
+  const { fieldId, options, hidingMechanism } = params;
   const window = new HappyDomWindow({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
   const optionsHtml = options
@@ -100,10 +104,16 @@ function buildOpenerHiddenSelectWidget(params: { fieldId: string; options: reado
   const panelEl = document.getElementById(`panel-${fieldId}`) as unknown as HappyDomElement;
 
   // happy-dom implements no layout engine, so `offsetParent` never reflects
-  // `dropdown-hide`'s CSS — stand it in for the browser's real display:none
-  // so OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's `offsetParent === null` gate sees
-  // this select as hidden, exactly like its sibling fixtures do.
-  Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+  // `dropdown-hide`'s CSS. The `offsetParent` mechanism stands it in for the
+  // browser's real display:none, exercising OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+  // `offsetParent === null` gate. The `rect` mechanism instead exercises the
+  // gate's zero-size fallback: happy-dom's un-styled `getBoundingClientRect()`
+  // is already 0x0 by default (offsetParent stays its native `undefined`,
+  // never `null`), matching a real element hidden via zero width/height
+  // rather than removed from the layout tree.
+  if (hidingMechanism === "offsetParent") {
+    Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+  }
 
   // Genuine open gesture: renders the options into the aria-owns panel only
   // once clicked — the same "no native <select>/<input> a focused probe can
@@ -228,7 +238,7 @@ function baseParams(
 }
 
 describe("flow-runner/executeStepWithHealing — opener+hidden-select composite widget resolves to the opener", () => {
-  it.each([
+  const fields = [
     { name: "consent Yes/No", fieldId: "consent", options: ["Yes", "No"], want: "Yes" },
     {
       name: "Country",
@@ -242,12 +252,20 @@ describe("flow-runner/executeStepWithHealing — opener+hidden-select composite 
       options: ["Alabama", "Alaska", "Georgia"],
       want: "Georgia",
     },
-  ])(
-    "drives the opener span, never the hidden dropdown-hide <select>, for the $name field",
-    async ({ fieldId, options, want }) => {
+  ] as const;
+  const hidingMechanisms = ["offsetParent", "rect"] as const;
+
+  it.each(
+    hidingMechanisms.flatMap((hidingMechanism) =>
+      fields.map((field) => ({ ...field, hidingMechanism }))
+    )
+  )(
+    "drives the opener span, never the hidden dropdown-hide <select>, for the $name field ($hidingMechanism hiding)",
+    async ({ fieldId, options, want, hidingMechanism }) => {
       const { window, openerEl, hiddenSelect } = buildOpenerHiddenSelectWidget({
         fieldId,
         options,
+        hidingMechanism,
       });
       const target = makeTarget(window);
       const page = fakePage();

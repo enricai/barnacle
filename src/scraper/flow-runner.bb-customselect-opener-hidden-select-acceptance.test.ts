@@ -156,4 +156,76 @@ describe("flow-runner acceptance: bb-customSelect-shaped select step resolves vi
     expect(hiddenSelectWrites[0]?.value).toBe("georgia");
     expect((hiddenSelectEl as unknown as { value: string }).value).toBe("georgia");
   });
+
+  it("drives the opener even when the hidden select keeps a layout box (non-null offsetParent), the shape the recon report's 1.12.39 log still fails on", async () => {
+    vi.clearAllMocks();
+    const stagehandAct = vi.fn();
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target, window, clicks } = buildPromptWidgetHarness({
+      html: STATE_FIELD_HTML,
+      popupByWidgetId: {
+        "state-opener": {
+          options: ["Alabama", "Alaska", "Georgia"],
+          syncsHiddenSelectId: "state-hidden",
+        },
+      },
+    });
+
+    // Unlike the offsetParent-null case above, fake a non-null offsetParent
+    // here: some real Base Web `dropdown-hide` shells are visually hidden via
+    // `visibility:hidden`/zero-size clipping rather than `display:none`, which
+    // keeps a layout box and therefore a non-null `offsetParent` in a real
+    // browser. The recon report's 1.12.39 log shows exactly this shape
+    // exhausting every native-select attempt because the old detection
+    // predicate keyed on `offsetParent === null`. This proves the broadened
+    // OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR still routes to the opener path.
+    const hiddenSelectEl = window.document.getElementById("state-hidden");
+    if (!hiddenSelectEl) throw new Error("fixture missing #state-hidden");
+    Object.defineProperty(hiddenSelectEl, "offsetParent", {
+      value: window.document.body,
+      configurable: true,
+    });
+    let hiddenSelectValue = "";
+    const hiddenSelectWrites: { value: string; clicksAtWrite: number }[] = [];
+    Object.defineProperty(hiddenSelectEl, "value", {
+      get: () => hiddenSelectValue,
+      set: (v: string) => {
+        hiddenSelectValue = v;
+        hiddenSelectWrites.push({ value: v, clicksAtWrite: clicks.length });
+      },
+      configurable: true,
+    });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      `Select 'Georgia' in the 'State/Province' dropdown`,
+      target
+    );
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("resolved by select primitive")
+    );
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(stagehandObserve).not.toHaveBeenCalled();
+    expect(trajectory).toEqual([{ stepIndex: 5, verifiedBy: "dom", targetId: "state-opener" }]);
+
+    expect(
+      window.document.querySelector("#state-opener [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("Georgia");
+
+    expect(hiddenSelectWrites).toHaveLength(1);
+    expect(hiddenSelectWrites[0]?.clicksAtWrite).toBeGreaterThanOrEqual(2);
+    expect(hiddenSelectWrites[0]?.value).toBe("georgia");
+    expect((hiddenSelectEl as unknown as { value: string }).value).toBe("georgia");
+  });
 });
