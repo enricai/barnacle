@@ -5239,6 +5239,50 @@ export async function waitForTransitionBody(params: {
   return false;
 }
 
+/**
+ * Reduces a URL to origin+pathname (query/hash ignored) so a captcha
+ * target's post-submit `url()` can be compared to its pre-submit baseline
+ * without a same-page query-string change (e.g. a step counter) registering
+ * as a false advance. Unparseable URLs compare equal only to themselves.
+ */
+function originAndPathOf(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Polls the captcha target's URL for an origin/path change after a
+ * multipart form submit, which navigates the page without producing any
+ * matchable XHR body for {@link waitForTransitionBody} to catch — the
+ * regex-based poll alone silently misses a full-page submit advance. Runs
+ * independently of whether `advanceTransitionBodyPattern` is configured.
+ */
+async function waitForCaptchaNavigation(params: {
+  page: Page;
+  captchaTarget: FrameTarget;
+  baselineUrl: string;
+  timeoutMs: number;
+  intervalMs: number;
+}): Promise<boolean> {
+  const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
+  const baseline = originAndPathOf(baselineUrl);
+  const check = async (): Promise<boolean> => {
+    const currentUrl = await captchaTarget.url().catch(() => baselineUrl);
+    return originAndPathOf(currentUrl) !== baseline;
+  };
+  if (await check()) return true;
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    await page.waitForTimeout(intervalMs);
+    if (await check()) return true;
+  }
+  return false;
+}
+
 /** Result of {@link injectCaptchaTokenAndSubmit}'s precheck evaluate. */
 export interface InjectCaptchaTokenResult {
   /** True once a field to hold the token existed or a form was found to attach one to. */
@@ -9244,15 +9288,36 @@ export async function executeStepWithHealing(params: {
         trajectory?.push({ stepIndex, verifiedBy: "network" });
         return "completed";
       }
+      // A full-page multipart form submit (no matching XHR body, or no
+      // pattern configured at all) still navigates the page — that's a
+      // real advance the requestPostData-based poll above can never see.
+      // This poll runs regardless of whether advanceTransitionBodyPattern
+      // is set: it's an additional signal, not a replacement for the
+      // pattern-based one.
+      const navigationConfirmed = await waitForCaptchaNavigation({
+        page,
+        captchaTarget,
+        baselineUrl: pageUrl,
+        timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+        intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+      });
+      if (navigationConfirmed) {
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit navigation to a new origin/path confirmed the advance`
+        );
+        trajectory?.push({ stepIndex, verifiedBy: "url" });
+        return "completed";
+      }
       // No render-config callback was discoverable AND neither the inject's
       // own submit path nor the explicit fallback submit produced a
-      // confirmed transition: the token was never actually delivered
-      // through the site's own submit machinery. Fail loudly instead of
-      // falling through to the normal cascade as if the solve had worked —
-      // that's exactly the misleading "token injected=true" silent no-op
-      // this hook must not produce. Only applies when a pattern is actually
-      // configured to poll for — with none configured, no poll ever ran, so
-      // there's nothing here to contradict the normal cascade/verifier.
+      // confirmed transition, network or navigation: the token was never
+      // actually delivered through the site's own submit machinery. Fail
+      // loudly instead of falling through to the normal cascade as if the
+      // solve had worked — that's exactly the misleading "token
+      // injected=true" silent no-op this hook must not produce. Only
+      // applies when a pattern is actually configured to poll for — with
+      // none configured, no network poll ever ran, so there's nothing here
+      // to contradict the normal cascade/verifier.
       if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
         throw new CaptchaError(
           `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
