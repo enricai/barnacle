@@ -575,7 +575,7 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     // corners, an avatar circle) leaves the element fully visible and must
     // not be misread as hidden.
     const cp = style.clipPath || "";
-    const hasClipPath = /circle\\(\\s*0(?:px|%)?\\s*\\)/i.test(cp) || /ellipse\\(\\s*0(?:px|%)?\\s+0(?:px|%)?\\s*\\)/i.test(cp) || /inset\\(\\s*50%\\s*\\)/i.test(cp) || /polygon\\(\\s*(?:0%?\\s+0%?\\s*,?\\s*)+\\)/i.test(cp);
+    const hasClipPath = /circle\\(\\s*0(?:px|%)?\\s*(?:at\\s[^)]*)?\\)/i.test(cp) || /ellipse\\(\\s*0(?:px|%)?\\s+0(?:px|%)?\\s*(?:at\\s[^)]*)?\\)/i.test(cp) || /inset\\(\\s*50%\\s*\\)/i.test(cp) || /polygon\\(\\s*(?:0%?\\s+0%?\\s*,?\\s*)+\\)/i.test(cp);
     const hasZeroScale = /scale\\(\\s*0(?:\\.0+)?\\s*(?:,\\s*0(?:\\.0+)?\\s*)?\\)/.test(style.transform || "") || /matrix\\(\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,\\s*0\\s*,/.test(style.transform || "");
     // Ancestor overflow-clipping: a wrapper with overflow:hidden collapsed to a
     // near-zero box clips its whole subtree to invisibility even though the

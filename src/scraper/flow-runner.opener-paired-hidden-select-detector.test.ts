@@ -332,4 +332,32 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
       opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
     ).toBe(false);
   });
+
+  it("returns true for a select hidden via a zero-radius circle() clip-path carrying a position clause, e.g. circle(0px at center)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-zero-circle-at-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-zero-circle-at" name="rcf-zero-circle-at" class="form-control"
+                style="clip-path: circle(0px at center)">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-zero-circle-at-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-zero-circle-at") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
 });
