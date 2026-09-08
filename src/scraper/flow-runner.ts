@@ -503,15 +503,33 @@ const PROMPT_TRIGGER_SELECTORS = [
   "[data-automation-id='promptSelectionLabel']",
 ].join(",");
 /**
+ * Cross-vendor selector union for an OPTION rendered inside the opened popup —
+ * standards first (`role=option`), then the widget-kit option markers. Sibling
+ * of {@link PROMPT_TRIGGER_SELECTORS}; same union discipline and guard treatment.
+ */
+const PROMPT_OPTION_SELECTORS = [
+  "[role='option']",
+  "[data-automation-id='promptOption']",
+  "[data-uxi-widget-type='selectinputlistitem']",
+].join(",");
+/**
  * In-page predicate source for `(el) => boolean`: true when `el` is a
  * `<select>` that is a design-system combobox opener's paired-but-hidden
  * shadow control (Base Web `bb-customSelect` and any other vendor matching
- * {@link PROMPT_TRIGGER_SELECTORS}) — a `<select>` with no layout box
- * (`offsetParent === null`, the same idiom `DOM_SNAPSHOT_EXPR` uses for
- * `display:none`-driven hiding classes like `dropdown-hide`) whose nearby
- * container also holds a {@link PROMPT_TRIGGER_SELECTORS} opener element
- * other than itself. The bounded-ancestor-climb-then-subtree-search shape
- * mirrors {@link NEARBY_SELECTION_CONTAINER_FN_SRC}, but searches for
+ * {@link PROMPT_TRIGGER_SELECTORS}) — a `<select>` hidden by ANY technique
+ * (`offsetParent === null` for `display:none`-driven hiding classes like
+ * `dropdown-hide`, or the zero-rect/`visibility:hidden` idiom
+ * `IS_VISIBLE_EXPR` and the local `visible` helper elsewhere in this file
+ * already use, inverted here) whose nearby container also holds a
+ * {@link PROMPT_TRIGGER_SELECTORS} opener element, other than itself, that is
+ * actually paired to a rendered `role=listbox`-shaped panel — via
+ * `aria-owns`/`aria-controls` resolving to a `role=listbox` (or one
+ * containing a {@link PROMPT_OPTION_SELECTORS} match), or a
+ * {@link PROMPT_OPTION_SELECTORS} match rendered in the same climbed
+ * container. That panel check keeps the broadened hidden test from
+ * misclassifying an incidental nearby combobox as a paired shadow select.
+ * The bounded-ancestor-climb-then-subtree-search shape mirrors
+ * {@link NEARBY_SELECTION_CONTAINER_FN_SRC}, but searches for
  * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
  * this ties "opener" to the exact same union `tryPromptSelectorPrimitive`
  * recognizes, so a select is excluded precisely when the primitive that
@@ -522,26 +540,26 @@ const PROMPT_TRIGGER_SELECTORS = [
  * when the opener's own readback is inconclusive.
  */
 export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
-    if (!el || el.tagName !== "SELECT" || el.offsetParent !== null) return false;
+    if (!el || el.tagName !== "SELECT") return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden";
+    if (!isHidden) return false;
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
+    const optionSel = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
+    const hasRenderedPanel = (opener) => {
+      const ownsId = opener.getAttribute("aria-owns") || opener.getAttribute("aria-controls");
+      const target = ownsId ? document.getElementById(ownsId) : null;
+      return !!target && (target.getAttribute("role") === "listbox" || target.querySelector(optionSel) !== null);
+    };
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       const openers = node.querySelectorAll ? Array.from(node.querySelectorAll(triggerSel)) : [];
-      if (openers.some((opener) => opener !== el)) return true;
+      if (openers.some((opener) => opener !== el && (hasRenderedPanel(opener) || node.querySelector(optionSel) !== null))) return true;
       node = node.parentElement;
     }
     return false;
   }`;
-/**
- * Cross-vendor selector union for an OPTION rendered inside the opened popup —
- * standards first (`role=option`), then the widget-kit option markers. Sibling
- * of {@link PROMPT_TRIGGER_SELECTORS}; same union discipline and guard treatment.
- */
-const PROMPT_OPTION_SELECTORS = [
-  "[role='option']",
-  "[data-automation-id='promptOption']",
-  "[data-uxi-widget-type='selectinputlistitem']",
-].join(",");
 /**
  * Cross-vendor selector union for an in-popup filter/typeahead input — standards
  * first, then the widget-kit's bare filter `<input>` (which carries no
