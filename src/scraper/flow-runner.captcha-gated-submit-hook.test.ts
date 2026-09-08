@@ -11,7 +11,7 @@ process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "recon-captcha-gated-subm
 const { solveCaptchaMock } = vi.hoisted(() => ({ solveCaptchaMock: vi.fn() }));
 vi.mock("@/scraper/captcha-solver", () => ({ solveCaptcha: solveCaptchaMock }));
 
-import { CaptchaSolverUnavailableError } from "@/scraper/errors";
+import { CaptchaError, CaptchaSolverUnavailableError } from "@/scraper/errors";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
@@ -409,6 +409,61 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
         "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+  });
+
+  it("proves the retry budget is bounded: registryState stays empty on every attempt and the step throws CaptchaError rather than looping forever", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field } = makeFakePage({ hasSitekey: true });
+    // No callback is ever discoverable and the registry never populates, so
+    // every attempt hits the registry-race retry branch until the budget
+    // (CAPTCHA_REGISTRY_RETRY_ATTEMPTS) is exhausted, at which point the loop
+    // must fall through to the "no callback discoverable, no confirmed
+    // transition" throw instead of retrying indefinitely.
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      if (src.includes("Boolean(__findCaptchaCallback")) return false;
+      if (src.includes('return "absent"')) return "empty";
+      if (src.includes("dispatchEvent")) {
+        field.value = "solved-token";
+        field.dispatched.push("change");
+        return undefined;
+      }
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    // Force every poll deadline past immediately across all bounded attempts
+    // so the test doesn't pay the real widened (45s) captcha poll budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy.mockImplementation(() => Number.POSITIVE_INFINITY);
+    const stagehand = {} as Stagehand;
+
+    await expect(
+      executeStepWithHealing(
+        baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+      )
+    ).rejects.toThrow(CaptchaError);
+    nowSpy.mockRestore();
+
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(3);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 2; retrying"
       )
     );
   });
