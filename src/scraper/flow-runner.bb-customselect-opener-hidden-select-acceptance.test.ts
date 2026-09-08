@@ -228,4 +228,96 @@ describe("flow-runner acceptance: bb-customSelect-shaped select step resolves vi
     expect(hiddenSelectWrites[0]?.value).toBe("georgia");
     expect((hiddenSelectEl as unknown as { value: string }).value).toBe("georgia");
   });
+
+  it("drives the opener even when the hidden select is only visually hidden via opacity:0 with a real layout box, the CSS-driven shape neither offsetParent-null nor a zero rect catches", async () => {
+    vi.clearAllMocks();
+    const stagehandAct = vi.fn();
+    const stagehandObserve = vi.fn().mockResolvedValue([]);
+    const stagehand = { act: stagehandAct, observe: stagehandObserve } as unknown as Stagehand;
+    const { page, target, window, clicks } = buildPromptWidgetHarness({
+      html: STATE_FIELD_HTML,
+      popupByWidgetId: {
+        "state-opener": {
+          options: ["Alabama", "Alaska", "Georgia"],
+          syncsHiddenSelectId: "state-hidden",
+        },
+      },
+    });
+
+    // Unlike both cases above, give the hidden select a genuine layout box
+    // (non-zero rect, non-null offsetParent) — the CSS-driven `opacity:0`
+    // technique keeps a control laid out and interactable-by-coordinate while
+    // making it invisible, which is exactly what the offsetParent-null and
+    // zero-rect gates above CANNOT see. This proves the broadened
+    // OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's `parseFloat(style.opacity) === 0`
+    // arm — not a layout-collapse signal — still routes to the opener path.
+    const hiddenSelectEl = window.document.getElementById("state-hidden");
+    if (!hiddenSelectEl) throw new Error("fixture missing #state-hidden");
+    hiddenSelectEl.setAttribute("style", "opacity:0");
+    Object.defineProperty(hiddenSelectEl, "offsetParent", {
+      value: window.document.body,
+      configurable: true,
+    });
+    Object.defineProperty(hiddenSelectEl, "getBoundingClientRect", {
+      value: () => ({
+        x: 10,
+        y: 10,
+        top: 10,
+        left: 10,
+        right: 210,
+        bottom: 40,
+        width: 200,
+        height: 30,
+      }),
+      configurable: true,
+    });
+    let hiddenSelectValue = "";
+    const hiddenSelectWrites: { value: string; clicksAtWrite: number }[] = [];
+    Object.defineProperty(hiddenSelectEl, "value", {
+      get: () => hiddenSelectValue,
+      set: (v: string) => {
+        hiddenSelectValue = v;
+        hiddenSelectWrites.push({ value: v, clicksAtWrite: clicks.length });
+      },
+      configurable: true,
+    });
+
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+    const params = baseParams(
+      page as unknown as Page,
+      stagehand,
+      `Select 'Georgia' in the 'State/Province' dropdown`,
+      target
+    );
+
+    const result = await executeStepWithHealing({ ...params, trajectory } as never);
+
+    expect(result).toBe("completed");
+    // The select primitive's own enumeration must see ZERO eligible
+    // <select>s — proof the opacity:0 arm of OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR
+    // excluded the hidden select from candidacy entirely, as opposed to
+    // attempting and merely failing to commit for an unrelated reason.
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("select primitive: no <select> on page")
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("resolved by select primitive")
+    );
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(stagehandObserve).not.toHaveBeenCalled();
+    expect(trajectory).toEqual([{ stepIndex: 5, verifiedBy: "dom", targetId: "state-opener" }]);
+
+    expect(
+      window.document.querySelector("#state-opener [data-automation-id='promptSelectionLabel']")
+        ?.textContent
+    ).toBe("Georgia");
+
+    expect(hiddenSelectWrites).toHaveLength(1);
+    expect(hiddenSelectWrites[0]?.clicksAtWrite).toBeGreaterThanOrEqual(2);
+    expect(hiddenSelectWrites[0]?.value).toBe("georgia");
+    expect((hiddenSelectEl as unknown as { value: string }).value).toBe("georgia");
+  });
 });

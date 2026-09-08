@@ -166,6 +166,62 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
   });
 
+  it("returns true for a select paired with a combobox opener + rendered panel, hidden via opacity:0 (offsetParent non-null, non-zero rect)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-opacity-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-opacity" name="rcf-opacity" class="form-control" style="opacity:0">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-opacity-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-opacity") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
+
+  it("returns true for a select paired with a combobox opener + rendered panel, hidden via off-screen positioning (offsetParent non-null, non-zero rect)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-offscreen-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-offscreen" name="rcf-offscreen" class="form-control" style="position:absolute;left:-9999px">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-offscreen-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-offscreen") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 100, height: 20, top: 0, left: -9999, right: -9899, bottom: 20 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
   it("returns false for a genuinely visible, in-layout select paired with a combobox opener (native-select path, mirrors the report's working 'phone Type' sibling)", () => {
     const window = new Window({ url: "https://careers.example.com/apply/job/1" });
     const document = window.document;
@@ -192,6 +248,40 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     ).toBe(false);
   });
 
+  it("returns true for a select hidden via the classic screen-reader-only clip technique (clip:rect(0,0,0,0) + 1x1 rect, offsetParent non-null, on-screen)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-sronly-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-sronly" name="rcf-sronly" class="form-control"
+                style="position:absolute; clip: rect(0px, 0px, 0px, 0px); width:1px; height:1px;">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-sronly-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-sronly") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    // Simulate a real browser: offsetParent non-null (still in flow), and the
+    // bounding rect reflects the element's own declared 1x1 box, on-screen —
+    // NOT the all-zero rect happy-dom's non-layout-engine default would give,
+    // which would make this case pass trivially without exercising the fix.
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 1, height: 1, top: 10, left: 10, right: 11, bottom: 11 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
   it("returns false for a hidden select whose climbed ancestor happens to contain an unrelated opener and an unrelated already-open widget's options (no actual pairing between them)", () => {
     const window = new Window({ url: "https://careers.example.com/apply/job/1" });
     const document = window.document;
@@ -213,5 +303,121 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     const select = document.getElementById("hidden-sel") as unknown as HappyDomElement;
     expect(select).toBeTruthy();
     expect(opensAsHiddenShadowSelect(withOffsetParent(select, null))).toBe(false);
+  });
+
+  it("returns false for a genuinely visible, paired select with a decorative (non-hiding) clip-path, e.g. rounded corners", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-decorative-clip-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-decorative-clip" name="rcf-decorative-clip" class="form-control"
+                style="clip-path: inset(0 round 4px)">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-decorative-clip-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-decorative-clip") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(false);
+  });
+
+  it("returns true for a select hidden via a zero-radius circle() clip-path carrying a position clause, e.g. circle(0px at center)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-zero-circle-at-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-zero-circle-at" name="rcf-zero-circle-at" class="form-control"
+                style="clip-path: circle(0px at center)">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-zero-circle-at-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-zero-circle-at") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
+
+  it("returns true for a select hidden via transform: scale(0), computed as a zero matrix()", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-zero-scale-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-zero-scale" name="rcf-zero-scale" class="form-control"
+                style="transform: matrix(0, 0, 0, 0, 0, 0)">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-zero-scale-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-zero-scale") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
+
+  it("returns true for a select whose own box looks ordinary but sits inside an overflow:hidden ancestor collapsed to a near-zero box", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-ancestor-clip-panel"
+              tabindex="0"><span></span></span>
+        <div class="collapsed-wrapper" style="overflow: hidden">
+          <select id="rcf-ancestor-clip" name="rcf-ancestor-clip" class="form-control">
+            <option value="">Select</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <ul id="bb-customSelect-ancestor-clip-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-ancestor-clip") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    // The select's own box is stubbed to look ordinary (withNonZeroRect); happy-dom's
+    // layout-less default zero rect on the collapsed wrapper ancestor stands in for a
+    // real browser's collapsed-box ancestor, isolating the ancestor-clip signal.
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
   });
 });
