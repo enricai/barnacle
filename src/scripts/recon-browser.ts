@@ -2687,13 +2687,14 @@ async function main(): Promise<void> {
           // re-propose the identical failed step against a page it no longer
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
-          if (hasPageAlreadyAdvancedPastStep(urlAtStepStart, readLiveUrl())) {
+          const urlAfterFailure = readLiveUrl();
+          if (hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
             logger.info(
-              `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${readLiveUrl()}); treating as completed and resuming remaining tail`
+              `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
             );
             consecutiveStaleSkips = 0;
             lastSuccessNetworkCount = signalCounter.n;
-            lastSuccessUrl = readLiveUrl();
+            lastSuccessUrl = urlAfterFailure;
             completedSteps.push(step.instruction);
             continue;
           }
