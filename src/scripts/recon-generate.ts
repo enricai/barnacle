@@ -8721,9 +8721,16 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         const ancestorObjByVar = new Map(
           ancestorVars.map((varName, idx) => [varName, residualAncestors[idx]!] as const)
         );
+        // Searched ancestor-scope-first (outer to inner, then item last):
+        // a drill whose value is resolvable from an ancestor binding
+        // should bind there rather than to the item, so its parameterized
+        // request never references itemVar and the referencesItemVar
+        // hoist gate (below) can lift the fetch above the per-item loop
+        // instead of pinning it inside for byte-identical ancestor-scoped
+        // data. Mirrors emitMultiStepExecuteHttp's identical hoist.
         const threadingScopes = [
-          { varName: itemVar, obj: firstItem },
           ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          { varName: itemVar, obj: firstItem },
         ];
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const scopedAccessor = (varName: string, field: string): string =>
@@ -8735,9 +8742,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         //
         // Parameterizes off EVERY per-item field this specific chain hop's
         // own captured request actually varies on (via findThreadedJoinFields,
-        // searched across the item AND every ancestor binding), not just
-        // `target.joinFields` — `target.joinFields` names the field used to
-        // MATCH the drill's RESPONSE back onto the primary item (see
+        // searched across every ancestor binding first, then the item —
+        // see threadingScopes above), not just `target.joinFields` —
+        // `target.joinFields` names the field used to MATCH the drill's
+        // RESPONSE back onto the primary item (see
         // emitFoldMatchAndMergeLines), which for a spec-declared foldReturn
         // can legitimately be a field the request never carries at all (e.g.
         // an `id` echoed only in the response, while the request is keyed by
