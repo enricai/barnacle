@@ -11,8 +11,8 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
-  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps,
+  buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
   buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps,
@@ -463,9 +463,7 @@ describe("buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamAc
     );
     expect(matchingSection).toBeTruthy();
     expect(matchingSection?.masterCode).not.toBe(code);
-    expect(
-      matchingSection?.entries.filter((entry) => entry.code === code).length
-    ).toBe(1);
+    expect(matchingSection?.entries.filter((entry) => entry.code === code).length).toBe(1);
   });
 
   it("that single drill response's rows resolve to multiple sibling items under the same ancestor", () => {
