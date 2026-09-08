@@ -166,6 +166,62 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
   });
 
+  it("returns true for a select paired with a combobox opener + rendered panel, hidden via opacity:0 (offsetParent non-null, non-zero rect)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-opacity-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-opacity" name="rcf-opacity" class="form-control" style="opacity:0">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-opacity-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-opacity") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
+
+  it("returns true for a select paired with a combobox opener + rendered panel, hidden via off-screen positioning (offsetParent non-null, non-zero rect)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-offscreen-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-offscreen" name="rcf-offscreen" class="form-control" style="position:absolute;left:-9999px">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-offscreen-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-offscreen") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 100, height: 20, top: 0, left: -9999, right: -9899, bottom: 20 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
   it("returns false for a genuinely visible, in-layout select paired with a combobox opener (native-select path, mirrors the report's working 'phone Type' sibling)", () => {
     const window = new Window({ url: "https://careers.example.com/apply/job/1" });
     const document = window.document;

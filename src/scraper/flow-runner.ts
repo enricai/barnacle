@@ -551,7 +551,8 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     if (!el || el.tagName !== "SELECT") return false;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
-    const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden";
+    const isOffscreen = rect.right <= 0 || rect.bottom <= 0 || rect.left >= window.innerWidth || rect.top >= window.innerHeight;
+    const isHidden = el.offsetParent === null || (rect.width === 0 && rect.height === 0) || style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0 || isOffscreen;
     if (!isHidden) return false;
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
     const optionSel = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
