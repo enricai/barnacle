@@ -141,12 +141,10 @@ describe("recon-browser already-advanced replan regression (offline fixture)", (
   });
 
   it("does not treat a same-origin-and-path query/hash-only change as advancement (fails closed toward replanning)", () => {
-    expect(
-      hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}?modal=open`)
-    ).toBe(false);
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}#section`)).toBe(
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}?modal=open`)).toBe(
       false
     );
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}#section`)).toBe(false);
   });
 
   it("demonstrates the destructive outcome the pre-replan short-circuit exists to prevent: without it, none of the existing splice-time guards catch the re-authored earlier-form bridge", () => {
