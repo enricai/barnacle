@@ -71,7 +71,7 @@ function fakePage(): Page {
 function buildOpenerHiddenSelectWidget(params: {
   fieldId: string;
   options: readonly string[];
-  hidingMechanism: "offsetParent" | "rect";
+  hidingMechanism: "offsetParent" | "rect" | "opacity" | "offscreen";
 }): {
   window: Window;
   openerEl: HappyDomElement;
@@ -113,6 +113,55 @@ function buildOpenerHiddenSelectWidget(params: {
   // rather than removed from the layout tree.
   if (hidingMechanism === "offsetParent") {
     Object.defineProperty(hiddenSelect, "offsetParent", { value: null, configurable: true });
+  }
+
+  // The `opacity` mechanism keeps offsetParent non-null and the rect a
+  // realistic non-zero, in-viewport box — only `opacity: 0` marks the
+  // element hidden, exercising OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+  // `parseFloat(style.opacity) === 0` gate rather than either fallback.
+  if (hidingMechanism === "opacity") {
+    Object.defineProperty(hiddenSelect, "offsetParent", {
+      value: document.body,
+      configurable: true,
+    });
+    (hiddenSelect as unknown as HappyDomElement).setAttribute("style", "opacity: 0;");
+    Object.defineProperty(hiddenSelect, "getBoundingClientRect", {
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 20,
+        top: 0,
+        left: 0,
+        right: 100,
+        bottom: 20,
+      }),
+      configurable: true,
+    });
+  }
+
+  // The `offscreen` mechanism keeps offsetParent non-null and a normal
+  // opacity, but positions a real-sized box entirely off the negative
+  // viewport edge, exercising OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR's
+  // `rect.right <= 0 || rect.bottom <= 0` gate.
+  if (hidingMechanism === "offscreen") {
+    Object.defineProperty(hiddenSelect, "offsetParent", {
+      value: document.body,
+      configurable: true,
+    });
+    Object.defineProperty(hiddenSelect, "getBoundingClientRect", {
+      value: () => ({
+        x: -9999,
+        y: -9999,
+        width: 100,
+        height: 20,
+        top: -9999,
+        left: -9999,
+        right: -9899,
+        bottom: -9979,
+      }),
+      configurable: true,
+    });
   }
 
   // Genuine open gesture: renders the options into the aria-owns panel only
@@ -253,7 +302,7 @@ describe("flow-runner/executeStepWithHealing — opener+hidden-select composite 
       want: "Georgia",
     },
   ] as const;
-  const hidingMechanisms = ["offsetParent", "rect"] as const;
+  const hidingMechanisms = ["offsetParent", "rect", "opacity", "offscreen"] as const;
 
   it.each(
     hidingMechanisms.flatMap((hidingMechanism) =>
