@@ -248,6 +248,66 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     ).toBe(false);
   });
 
+  it("returns true for a select paired with a combobox opener + rendered panel, collapsed on HEIGHT only (height:0, natural/non-zero width, offsetParent non-null, on-screen)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-heightonly-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-heightonly" name="rcf-heightonly" class="form-control"
+                style="height:0;overflow:hidden">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-heightonly-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-heightonly") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 200, height: 0, top: 0, left: 0, right: 200, bottom: 0 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
+  it("returns true for a select paired with a combobox opener + rendered panel, collapsed on WIDTH only (width:0, natural/non-zero height, offsetParent non-null, on-screen)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-widthonly-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-widthonly" name="rcf-widthonly" class="form-control"
+                style="width:0;overflow:hidden">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-widthonly-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-widthonly") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    Object.defineProperty(select, "getBoundingClientRect", {
+      value: () => ({ width: 0, height: 20, top: 0, left: 0, right: 0, bottom: 20 }),
+      configurable: true,
+    });
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, document.body))).toBe(true);
+  });
+
   it("returns true for a select hidden via the classic screen-reader-only clip technique (clip:rect(0,0,0,0) + 1x1 rect, offsetParent non-null, on-screen)", () => {
     const window = new Window({ url: "https://careers.example.com/apply/job/1" });
     const document = window.document;
