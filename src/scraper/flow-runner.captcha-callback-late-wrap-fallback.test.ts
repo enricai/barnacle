@@ -149,11 +149,22 @@ describe("flow-runner/executeStepWithHealing — captcha late-wrap re-check upgr
   it("upgrades to the callback-invoke path instead of the raw field-set fallback once the late install finds a callback", async () => {
     const { page, field, callbackInvokedWith } = makeFakePage({ lateCallbackFound: true });
     const stagehand = {} as Stagehand;
+    // No advanceTransitionBodyPattern is configured, so the navigation-credit
+    // poll (running regardless of pattern config) is the only poll left to
+    // exhaust; force it past its deadline on the first check instead of
+    // paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     await executeStepWithHealing(baseParams(page, stagehand)).catch(() => {
       // Only the inject primitive's chosen branch is under test here, not
       // the step's eventual poll/verify outcome.
     });
+    nowSpy.mockRestore();
 
     expect(callbackInvokedWith.token).toBe("solved-token");
     // The raw field-set fallback never ran: no value was assigned to the
@@ -164,11 +175,20 @@ describe("flow-runner/executeStepWithHealing — captcha late-wrap re-check upgr
   it("falls through to the raw field-set fallback when the late install also finds no callback", async () => {
     const { page, field, callbackInvokedWith } = makeFakePage({ lateCallbackFound: false });
     const stagehand = {} as Stagehand;
+    // Same rationale as above: force the navigation-credit poll past its
+    // deadline instead of paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     await executeStepWithHealing(baseParams(page, stagehand)).catch(() => {
       // Only the inject primitive's chosen branch is under test here, not
       // the step's eventual poll/verify outcome.
     });
+    nowSpy.mockRestore();
 
     expect(callbackInvokedWith.token).toBeNull();
     expect(field.value).toBe("solved-token");

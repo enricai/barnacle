@@ -11,7 +11,7 @@ process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "recon-captcha-gated-subm
 const { solveCaptchaMock } = vi.hoisted(() => ({ solveCaptchaMock: vi.fn() }));
 vi.mock("@/scraper/captcha-solver", () => ({ solveCaptcha: solveCaptchaMock }));
 
-import { CaptchaSolverUnavailableError } from "@/scraper/errors";
+import { CaptchaError, CaptchaSolverUnavailableError } from "@/scraper/errors";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
@@ -40,7 +40,11 @@ interface FakeField {
 }
 
 /** Minimal fake `<form>`/hCaptcha-widget DOM + Stagehand `Page`, driven entirely through `page.evaluate`. */
-function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
+function makeFakePage(opts: {
+  hasSitekey: boolean;
+  callbackName?: string;
+  navigatesOnSubmit?: boolean;
+}): {
   page: Page;
   field: FakeField;
   submitCount: { n: number };
@@ -99,7 +103,10 @@ function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
 
   const page = {
     evaluate,
-    url: () => "https://apply.example.com/application/abc-123",
+    url: () =>
+      opts.navigatesOnSubmit && submitCount.n > 0
+        ? "https://apply.example.com/application/thank-you"
+        : "https://apply.example.com/application/abc-123",
     title: vi.fn().mockResolvedValue(""),
     locator: vi.fn().mockReturnValue({
       first: () => ({
@@ -203,6 +210,16 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page: absentPage } = makeFakePage({ hasSitekey: true });
     const stagehand = {} as Stagehand;
+    // No advanceTransitionBodyPattern is configured, so the navigation-credit
+    // poll (running regardless of pattern config) is the only poll left to
+    // exhaust; force it past its deadline on the first check instead of
+    // paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     await executeStepWithHealing(
       baseParams(absentPage, stagehand, {
@@ -245,6 +262,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     });
 
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=empty"));
+    nowSpy.mockRestore();
   });
 
   it("invokes a discoverable widget callback with the solved token instead of the set-value fallback, and never fires the explicit submit when the transition poll confirms via that path", async () => {
@@ -280,14 +298,18 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
-  it("issues exactly one explicit submit when the transition poll finds no matching capture", async () => {
+  it("issues one explicit submit per bounded retry attempt when the transition poll finds no matching capture (registryState=absent races the bounded retry budget)", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
     // No capture is written, so waitForTransitionBody's initial check never
     // matches: the widget's own callback evidently didn't submit for us, so
-    // the hook must issue exactly one explicit tolerant submit itself. Force
-    // the poll's deadline to already be past on its first loop check so the
-    // test doesn't pay the real widened (45s) captcha poll budget.
+    // the hook must issue an explicit tolerant submit itself. No callback is
+    // discoverable here, so registryState stays "absent" on every attempt,
+    // which the bounded registry-retry loop treats as the intermittent
+    // attach race and retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times
+    // before falling through. Force the poll's deadline to already be past
+    // on its first loop check so the test doesn't pay the real widened (45s)
+    // captcha poll budget across all three attempts.
     const nowSpy = vi.spyOn(performance, "now");
     let calls = 0;
     nowSpy.mockImplementation(() => {
@@ -307,7 +329,203 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
 
     expect(result).not.toBe("completed");
     expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(3);
+  });
+
+  it("recovers from a transient registry-empty result within the bounded retry budget: registryState=empty on attempt 1, then populated with a confirming transition capture on attempt 2, resolves completed", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    // Simulates the intermittent attach-timing race the bounded retry loop
+    // exists for: the registry global reports "empty" on the first
+    // attempt (callback hasn't attached yet), then "populated" on the
+    // second attempt, at which point a confirming transition capture is
+    // also written — proving a retry-recovered completion, not just a
+    // final state that was already correct.
+    let registryCalls = 0;
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      // The late-callback-discovery boolean re-check (injectCaptchaTokenAndSubmit's
+      // fallback path) also inlines `getAttribute` calls via `findCaptchaCallbackExprSrc`,
+      // so it must be matched here — before the generic "getAttribute" sitekey-probe
+      // branch below — with an explicit `false`, or its truthy-object interception
+      // would flip callbackDiscovered to true on a page with no discoverable callback.
+      if (src.includes("Boolean(__findCaptchaCallback")) return false;
+      if (src.includes('return "absent"')) {
+        registryCalls += 1;
+        if (registryCalls === 1) return "empty";
+        writeFileSync(
+          join(capturesDir, "001-submit-real.json"),
+          JSON.stringify({
+            requestPostData: "type=next&step=review",
+            variables: { input: { type: "next" } },
+          })
+        );
+        return "populated";
+      }
+      if (src.includes("dispatchEvent")) {
+        field.value = "solved-token";
+        field.dispatched.push("change");
+        return undefined;
+      }
+      if (src.includes("requestSubmit")) {
+        submitCount.n += 1;
+        return undefined;
+      }
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    // Attempt 1's polls never confirm (no capture on disk yet); force their
+    // deadlines past immediately so the test doesn't pay the real widened
+    // (45s) budget. Attempt 2's poll confirms on its un-timed first check
+    // (the capture is written before that poll runs), so it never touches
+    // performance.now() again.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+    nowSpy.mockRestore();
+
+    expect(result).toBe("completed");
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(2);
+    // One explicit fallback submit on attempt 1 (unconfirmed); attempt 2
+    // confirms via the transition poll before any fallback submit is
+    // needed, so the count stays at 1, not 2.
     expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+  });
+
+  it("proves the retry budget is bounded: registryState stays empty on every attempt and the step throws CaptchaError rather than looping forever", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field } = makeFakePage({ hasSitekey: true });
+    // No callback is ever discoverable and the registry never populates, so
+    // every attempt hits the registry-race retry branch until the budget
+    // (CAPTCHA_REGISTRY_RETRY_ATTEMPTS) is exhausted, at which point the loop
+    // must fall through to the "no callback discoverable, no confirmed
+    // transition" throw instead of retrying indefinitely.
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      if (src.includes("Boolean(__findCaptchaCallback")) return false;
+      if (src.includes('return "absent"')) return "empty";
+      if (src.includes("dispatchEvent")) {
+        field.value = "solved-token";
+        field.dispatched.push("change");
+        return undefined;
+      }
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    // Force every poll deadline past immediately across all bounded attempts
+    // so the test doesn't pay the real widened (45s) captcha poll budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    nowSpy.mockImplementation(() => Number.POSITIVE_INFINITY);
+    const stagehand = {} as Stagehand;
+
+    await expect(
+      executeStepWithHealing(
+        baseParams(page, stagehand, {
+          captchaGated: true,
+          advanceTransitionBodyPattern: "type=next",
+        })
+      )
+    ).rejects.toThrow(CaptchaError);
+    nowSpy.mockRestore();
+
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(3);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 2; retrying"
+      )
+    );
+  });
+
+  it("credits the advance on an observed origin/path navigation when no requestPostData pattern confirms a match (full-page multipart submit, no matching XHR body)", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // No matching capture is ever written on disk, so the requestPostData
+    // poll never confirms; the fallback explicit submit navigates the page
+    // to a new origin/path, which the new navigation-credit poll must catch.
+    const { page, field, submitCount } = makeFakePage({
+      hasSitekey: true,
+      navigatesOnSubmit: true,
+    });
+    // The requestPostData pattern never matches (no capture is ever written),
+    // so both waitForTransitionBody polls would otherwise spend their full
+    // real widened (45s) budgets; force the deadline check past its limit
+    // immediately. This doesn't mask the navigation credit itself, since the
+    // navigation poll's own un-timed FIRST check runs before any deadline
+    // comparison, and by that point the explicit fallback submit (which
+    // navigates the fake page) has already run synchronously.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+    nowSpy.mockRestore();
+
+    expect(result).toBe("completed");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("navigation to a new origin/path confirmed the advance")
+    );
+  });
+
+  it("credits the advance on an observed navigation even with no advanceTransitionBodyPattern configured at all", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({
+      hasSitekey: true,
+      navigatesOnSubmit: true,
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
+    );
+
+    expect(result).toBe("completed");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("navigation to a new origin/path confirmed the advance")
+    );
   });
 
   it("resolves (never propagates) when the dispatch-only eval rejects with a navigation-shaped error", async () => {
@@ -352,7 +570,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // explicit submit is issued despite the dispatch-only eval's rejection.
     expect(submitCount.n).toBe(0);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
+      expect.stringContaining("attempt=1/3 token injected=true hasForm=true")
     );
   });
 
@@ -409,7 +627,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // explicit submit is issued despite the set-value-only eval's rejection.
     expect(submitCount.n).toBe(0);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
+      expect.stringContaining("attempt=1/3 token injected=true hasForm=true")
     );
   });
 
@@ -481,16 +699,16 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(result).not.toBe("completed");
     // The evals still all resolved cleanly (token injected, form present) —
     // proving this is gated on the observed transition, not on the evals
-    // returning without error.
+    // returning without error. No callback is discoverable, so registryState
+    // stays "absent" on every attempt, which the bounded registry-retry loop
+    // retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times before falling
+    // through — hence three dispatches/submits, not one.
     expect(field.value).toBe("solved-token");
-    expect(field.dispatched).toEqual(["change"]);
+    expect(field.dispatched).toEqual(["change", "change", "change"]);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("captchaGated step: post-submit transition poll confirmed=false")
     );
-    // No transition was confirmed, so the explicit-submit fallback fires
-    // exactly once (hasForm=true) — this test only asserts on the
-    // completion gate itself, not on submit-count behavior.
-    expect(submitCount.n).toBe(1);
+    expect(submitCount.n).toBe(3);
   });
 
   it("throws CaptchaError (never falls through to the cascade) when no callback is discoverable and neither the inject nor the explicit fallback submit produces a confirmed transition", async () => {
@@ -520,29 +738,46 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     nowSpy.mockRestore();
 
     expect(field.value).toBe("solved-token");
-    // The explicit fallback still fires exactly once (hasForm=true) before
-    // the failure is surfaced — the fix doesn't skip the fallback, it just
-    // stops trusting silence as success once the fallback also produces no
-    // confirmed transition.
-    expect(submitCount.n).toBe(1);
+    // The explicit fallback fires once per bounded retry attempt
+    // (hasForm=true, registryState stays "absent" every attempt) before the
+    // failure is finally surfaced — the fix doesn't skip the fallback, it
+    // just stops trusting silence as success once the retry budget
+    // (CAPTCHA_REGISTRY_RETRY_ATTEMPTS=3) is also exhausted.
+    expect(submitCount.n).toBe(3);
   });
 
   it("does not throw CaptchaError when no callback is discoverable but no advanceTransitionBodyPattern is configured (nothing to poll, cascade must still run)", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
     const stagehand = {} as Stagehand;
+    // The navigation-credit poll still runs even with no pattern configured
+    // (page.url() is static in this fake, so it never confirms); force it
+    // past its deadline on the first check rather than paying the real
+    // widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     const result = await executeStepWithHealing(
       baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
     ).catch(() => "cascade-fallthrough" as const);
+    nowSpy.mockRestore();
 
-    // With no pattern configured, no poll ever runs, so the new CaptchaError
-    // guard must stay dormant and this falls through to the normal cascade
-    // (which is expected to eventually fail on this bare fake page/stagehand,
-    // but NOT via a thrown CaptchaError about a missing callback).
+    // With no pattern configured, no network poll ever runs, and the
+    // navigation poll never confirms (static page.url()), so the new
+    // CaptchaError guard must stay dormant and this falls through to the
+    // normal cascade (which is expected to eventually fail on this bare
+    // fake page/stagehand, but NOT via a thrown CaptchaError about a
+    // missing callback).
     expect(result).toBe("cascade-fallthrough");
     expect(field.value).toBe("solved-token");
-    expect(submitCount.n).toBe(1);
+    // registryState stays "absent" on every attempt, so the bounded
+    // registry-retry loop retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times
+    // before falling through — one explicit submit per attempt.
+    expect(submitCount.n).toBe(3);
   });
 
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {

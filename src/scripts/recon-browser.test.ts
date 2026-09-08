@@ -130,6 +130,7 @@ import {
   formatValidationRejectedReason,
   type Html5DateFillResult,
   hasBillingErrorBeenLogged,
+  hasPageAlreadyAdvancedPastStep,
   type InvalidFormControl,
   isAdvanceStalled,
   isAdvanceStep,
@@ -1537,6 +1538,62 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
 
   it("does not fire on an empty bridge (handled separately earlier)", () => {
     expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
+  });
+});
+
+describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
+  it("returns false when the URL is unchanged", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2",
+        "https://apply.example.com/wizard/step-2"
+      )
+    ).toBe(false);
+  });
+
+  it("returns true for a same-origin path change (the page moved forward)", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2",
+        "https://apply.example.com/wizard/step-3"
+      )
+    ).toBe(true);
+  });
+
+  it("returns true for a cross-origin navigation", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://careers.example.com/apply",
+        "https://apply.example.com/wizard/step-1"
+      )
+    ).toBe(true);
+  });
+
+  it("returns false for a query-only difference on the same path (SPA-internal state)", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2?tab=details",
+        "https://apply.example.com/wizard/step-2?tab=review"
+      )
+    ).toBe(false);
+  });
+
+  it("returns false for a hash-only difference on the same path", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2#section-a",
+        "https://apply.example.com/wizard/step-2#section-b"
+      )
+    ).toBe(false);
+  });
+
+  it("fails closed (false) on an unparseable URL", () => {
+    expect(hasPageAlreadyAdvancedPastStep("not-a-url", "https://apply.example.com/step-2")).toBe(
+      false
+    );
+    expect(hasPageAlreadyAdvancedPastStep("https://apply.example.com/step-2", "not-a-url")).toBe(
+      false
+    );
   });
 });
 

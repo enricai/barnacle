@@ -1081,6 +1081,41 @@ export function isReplanReproposingFailedStep(
   return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
 }
 
+/**
+ * Normalize a URL to origin + pathname (query and hash stripped) for
+ * same-page-vs-navigated comparison. Returns null on unparseable input so
+ * callers can fail closed rather than false-positive on a malformed URL.
+ */
+function originAndPath(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect whether the live page has already navigated away from where a step
+ * started, mirroring {@link findRecentPageTransition} in flow-runner.ts:
+ * an observed URL transition is a legitimate completion signal, not
+ * ambiguous state that needs an LLM to interpret. Used as a deterministic,
+ * pre-replan short-circuit: when a step's verification fails but the page
+ * has moved to a new origin or path, the step's effect already landed and
+ * replanning would either re-author completed work or re-propose the same
+ * failed step against a page that no longer matches it. A same-path
+ * query/hash-only change (SPA-internal state, e.g. a modal toggling `?tab=`)
+ * is NOT treated as advancement — that is not a real navigation. Fails
+ * closed (returns false) on unparseable URLs so the existing replan path is
+ * unaffected when the signal is ambiguous.
+ */
+export function hasPageAlreadyAdvancedPastStep(stepStartUrl: string, currentUrl: string): boolean {
+  const start = originAndPath(stepStartUrl);
+  const current = originAndPath(currentUrl);
+  if (start === null || current === null) return false;
+  return start !== current;
+}
+
 /** Word-boundary phrase patterns identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PATTERNS}. */
 const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
 
@@ -2420,7 +2455,7 @@ async function main(): Promise<void> {
             );
           }
         };
-        readLiveUrl();
+        const urlAtStepStart = readLiveUrl();
         currentPhase =
           step.instruction
             .replace(/[^a-z0-9]+/gi, "-")
@@ -2642,6 +2677,26 @@ async function main(): Promise<void> {
             // the lost progress. Bypass the replan dispatcher and abort.
             logger.error(`wizard regression: ${err.message}; aborting run`);
             throw err;
+          }
+
+          // Deterministic pre-replan short-circuit: if the live page has
+          // already navigated away from where this step started, the step's
+          // effect landed even though verification failed to observe it —
+          // mirrors flow-runner.ts's findRecentPageTransition precedent.
+          // Replanning here would either re-author already-completed work or
+          // re-propose the identical failed step against a page it no longer
+          // matches, so skip the replan dispatcher entirely and resume with
+          // the remaining tail.
+          const urlAfterFailure = readLiveUrl();
+          if (hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
+            logger.info(
+              `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
+            );
+            consecutiveStaleSkips = 0;
+            lastSuccessNetworkCount = signalCounter.n;
+            lastSuccessUrl = urlAfterFailure;
+            completedSteps.push(step.instruction);
+            continue;
           }
 
           // Tier 1 — trailing-optional-step grace: when an OPTIONAL step at
