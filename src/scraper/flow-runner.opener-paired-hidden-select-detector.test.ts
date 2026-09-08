@@ -360,4 +360,64 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
       opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
     ).toBe(true);
   });
+
+  it("returns true for a select hidden via transform: scale(0), computed as a zero matrix()", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-zero-scale-panel"
+              tabindex="0"><span></span></span>
+        <select id="rcf-zero-scale" name="rcf-zero-scale" class="form-control"
+                style="transform: matrix(0, 0, 0, 0, 0, 0)">
+          <option value="">Select</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+        <ul id="bb-customSelect-zero-scale-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-zero-scale") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
+
+  it("returns true for a select whose own box looks ordinary but sits inside an overflow:hidden ancestor collapsed to a near-zero box", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="bb-custom-select-container bb-customSelect">
+        <span class="bb-custom-select-opener"
+              role="combobox" aria-autocomplete="list" aria-expanded="false"
+              aria-owns="bb-customSelect-ancestor-clip-panel"
+              tabindex="0"><span></span></span>
+        <div class="collapsed-wrapper" style="overflow: hidden">
+          <select id="rcf-ancestor-clip" name="rcf-ancestor-clip" class="form-control">
+            <option value="">Select</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <ul id="bb-customSelect-ancestor-clip-panel" role="listbox">
+          <li role="option">Yes</li>
+          <li role="option">No</li>
+        </ul>
+      </div>
+    `;
+    const select = document.getElementById("rcf-ancestor-clip") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    // The select's own box is stubbed to look ordinary (withNonZeroRect); happy-dom's
+    // layout-less default zero rect on the collapsed wrapper ancestor stands in for a
+    // real browser's collapsed-box ancestor, isolating the ancestor-clip signal.
+    expect(
+      opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
+    ).toBe(true);
+  });
 });
