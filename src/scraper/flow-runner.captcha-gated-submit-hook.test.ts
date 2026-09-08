@@ -332,6 +332,87 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(3);
   });
 
+  it("recovers from a transient registry-empty result within the bounded retry budget: registryState=empty on attempt 1, then populated with a confirming transition capture on attempt 2, resolves completed", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    // Simulates the intermittent attach-timing race the bounded retry loop
+    // exists for: the registry global reports "empty" on the first
+    // attempt (callback hasn't attached yet), then "populated" on the
+    // second attempt, at which point a confirming transition capture is
+    // also written — proving a retry-recovered completion, not just a
+    // final state that was already correct.
+    let registryCalls = 0;
+    (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      // The late-callback-discovery boolean re-check (injectCaptchaTokenAndSubmit's
+      // fallback path) also inlines `getAttribute` calls via `findCaptchaCallbackExprSrc`,
+      // so it must be matched here — before the generic "getAttribute" sitekey-probe
+      // branch below — with an explicit `false`, or its truthy-object interception
+      // would flip callbackDiscovered to true on a page with no discoverable callback.
+      if (src.includes("Boolean(__findCaptchaCallback")) return false;
+      if (src.includes('return "absent"')) {
+        registryCalls += 1;
+        if (registryCalls === 1) return "empty";
+        writeFileSync(
+          join(capturesDir, "001-submit-real.json"),
+          JSON.stringify({
+            requestPostData: "type=next&step=review",
+            variables: { input: { type: "next" } },
+          })
+        );
+        return "populated";
+      }
+      if (src.includes("dispatchEvent")) {
+        field.value = "solved-token";
+        field.dispatched.push("change");
+        return undefined;
+      }
+      if (src.includes("requestSubmit")) {
+        submitCount.n += 1;
+        return undefined;
+      }
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    // Attempt 1's polls never confirm (no capture on disk yet); force their
+    // deadlines past immediately so the test doesn't pay the real widened
+    // (45s) budget. Attempt 2's poll confirms on its un-timed first check
+    // (the capture is written before that poll runs), so it never touches
+    // performance.now() again.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+    nowSpy.mockRestore();
+
+    expect(result).toBe("completed");
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(2);
+    // One explicit fallback submit on attempt 1 (unconfirmed); attempt 2
+    // confirms via the transition poll before any fallback submit is
+    // needed, so the count stays at 1, not 2.
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+  });
+
   it("credits the advance on an observed origin/path navigation when no requestPostData pattern confirms a match (full-page multipart submit, no matching XHR body)", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     // No matching capture is ever written on disk, so the requestPostData
