@@ -13,23 +13,35 @@ import {
 /**
  * Offline acceptance regression pinning the reported already-advanced replan
  * spiral: a captcha-gated step's verification fails, but by the time the
- * replan dispatcher's raw output comes back the live page has already
+ * flow loop would otherwise dispatch a replan, the live page has already
  * navigated past the failed step onto the next section of a multi-step web
- * form. The replanner, working from a stale snapshot, re-authors the entire
- * already-completed entry form instead of recognizing the page moved on.
+ * form.
  *
- * **What this pins:** the same composed splice-time output-filtering path as
- * `recon-browser.destructive-replan-regression.test.ts`'s `applyReplanOutputFilters`
- * harness (`filterCompletedFromReplan` -> `isReplanReproposingFailedStep` ->
- * `isReplanRegressingAcrossAuthBoundary` -> `filterReplanDuplicatingNextAuthored`
- * -> splice), extended with the deterministic `hasPageAlreadyAdvancedPastStep`
- * predicate (`recon-browser.ts`) as a leading gate: when the failure-time and
- * post-replan URLs show the page already advanced past the failed step, the
- * pipeline must short-circuit to a single "page already advanced -- no action
- * needed" bridge step plus the untouched original remaining tail, discarding
- * the replanner's re-authored steps entirely — never accepting the
- * re-authored form fields and never throwing the re-proposed-just-failed-step
- * abort (both of which the pre-URL-check pipeline would otherwise produce).
+ * **What this pins:** per `recon-browser.ts`'s flow loop (around line 2691,
+ * immediately after the `wizard-regression`/`backend-error-unrecoverable`
+ * dispatchers and BEFORE `replanRemainingFlow` is ever invoked),
+ * `hasPageAlreadyAdvancedPastStep` is a deterministic pre-replan
+ * short-circuit: when it fires, the failed step is pushed onto
+ * `completedSteps` and the loop `continue`s WITHOUT calling the replan
+ * dispatcher and WITHOUT running any of the splice-time output-filtering
+ * pipeline (`filterCompletedFromReplan` -> `isReplanReproposingFailedStep`
+ * -> `isReplanRegressingAcrossAuthBoundary` -> `filterReplanDuplicatingNextAuthored`
+ * -> `plan.splice`) that `recon-browser.destructive-replan-regression.test.ts`
+ * exercises for the *other* replan-triggering branch. There is no
+ * synthesized "bridge" step and the original remaining tail is left
+ * completely untouched in `plan` — the short-circuit bypasses the pipeline
+ * entirely rather than feeding it a placeholder.
+ *
+ * This test therefore has two parts: (1) it pins the real, exported
+ * `hasPageAlreadyAdvancedPastStep` predicate against the report's URLs, and
+ * (2) it demonstrates why the bypass exists by showing that if the buggy
+ * re-authored raw replan output were instead fed through the real
+ * output-filtering pipeline (as it would be if the already-advanced check
+ * did NOT short-circuit first), the pipeline offers no protection against
+ * the destructive re-authoring — none of the existing guards fire on it, so
+ * it would splice the re-authored earlier-form steps directly ahead of the
+ * original remaining tail. That is the regression the pre-replan
+ * short-circuit exists to prevent.
  */
 
 const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
@@ -51,10 +63,10 @@ const FAILED_STEP = "Solve the captcha challenge to confirm the signup form";
 
 /** The step's URL at the moment the flow loop started it. */
 const STEP_START_URL = "https://forms.example.com/signup/step-2";
-/** The live URL by the time the replan dispatcher's raw output comes back — the page already moved on. */
-const POST_REPLAN_URL = "https://forms.example.com/signup/step-3";
+/** The live URL by the time verification fails — the page already moved on. */
+const POST_FAILURE_URL = "https://forms.example.com/signup/step-3";
 
-/** The report's originalRemaining tail — the authored sub-sequence the guard exists to protect. */
+/** The report's originalRemaining tail — the authored sub-sequence a replan bridge could otherwise strand. */
 const ORIGINAL_REMAINING: NormalizedStep[] = [
   "Select 'Weekly' in the 'Digest Frequency' dropdown",
   "Select 'Product Updates' and 'Community Events' in the 'Topics' checkboxes",
@@ -63,9 +75,14 @@ const ORIGINAL_REMAINING: NormalizedStep[] = [
 ].map((instruction) => mk(instruction, { origin: "original" }));
 
 /**
- * The buggy raw replanner output: re-authors the entire earlier form (email,
- * name, continue, captcha) instead of recognizing the page already advanced
- * past all of it.
+ * The buggy raw replanner output a stale-snapshot replan would produce:
+ * re-authors the entire earlier form (email, name, continue, captcha)
+ * instead of recognizing the page already advanced past all of it. Never
+ * actually reaches `replanRemainingFlow` in the real code, because the
+ * already-advanced short-circuit fires first and skips the replan
+ * dispatcher entirely — this fixture exists only to demonstrate what the
+ * existing filter/guard pipeline would (fail to) do with it if that
+ * short-circuit were absent.
  */
 const BUGGY_RAW_NEW_STEPS: NormalizedStep[] = [
   "Fill in the 'Email' field with the applicant's email address",
@@ -74,30 +91,20 @@ const BUGGY_RAW_NEW_STEPS: NormalizedStep[] = [
   "Solve the captcha challenge shown on the signup form",
 ].map((instruction) => mk(instruction));
 
-/** The bridge step the pipeline must emit in place of the replanner's raw output when the page already advanced. */
-const ALREADY_ADVANCED_BRIDGE = "page already advanced -- no action needed";
-
 /**
- * Reproduces the composed splice-time pipeline `main()` runs on
- * `replanRemainingFlow`'s raw output, extended with the already-advanced
- * predicate as a leading gate ahead of the existing filter/guard chain —
- * mirrors `recon-browser.destructive-replan-regression.test.ts`'s
- * `applyReplanOutputFilters` structure.
+ * Reproduces `recon-browser.destructive-replan-regression.test.ts`'s
+ * `applyReplanOutputFilters` harness: the real splice-time pipeline
+ * `main()` runs on `replanRemainingFlow`'s raw output for the OTHER
+ * replan-triggering branches, where the already-advanced short-circuit
+ * does not apply.
  */
 function applyReplanOutputFilters(params: {
   rawNewSteps: readonly NormalizedStep[];
   completedSteps: readonly string[];
   failedStep: string;
   originalRemaining: readonly NormalizedStep[];
-  stepStartUrl: string;
-  currentUrl: string;
 }): NormalizedStep[] {
-  const { rawNewSteps, completedSteps, failedStep, originalRemaining, stepStartUrl, currentUrl } =
-    params;
-
-  if (hasPageAlreadyAdvancedPastStep(stepStartUrl, currentUrl)) {
-    return [mk(ALREADY_ADVANCED_BRIDGE, { origin: "replan" }), ...originalRemaining];
-  }
+  const { rawNewSteps, completedSteps, failedStep, originalRemaining } = params;
 
   const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, failedStep);
   if (newSteps.length === 0) {
@@ -129,77 +136,38 @@ function applyReplanOutputFilters(params: {
 }
 
 describe("recon-browser already-advanced replan regression (offline fixture)", () => {
-  it("detects the page already advanced past the failed step by the time the raw replan output arrives", () => {
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, POST_REPLAN_URL)).toBe(true);
-
-    // Sanity: none of the buggy raw steps are already-completed or a
-    // re-emission of the failed step, so without the already-advanced gate
-    // they would sail through the existing filters unfiltered.
-    const survivingCompletedFilter = filterCompletedFromReplan(
-      BUGGY_RAW_NEW_STEPS,
-      COMPLETED_STEPS,
-      FAILED_STEP
-    );
-    expect(survivingCompletedFilter.length).toBeGreaterThan(0);
-    expect(isReplanReproposingFailedStep(survivingCompletedFilter, FAILED_STEP)).toBe(false);
+  it("detects the page already advanced past the failed step by the time verification fails", () => {
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, POST_FAILURE_URL)).toBe(true);
   });
 
-  it("short-circuits to a single already-advanced bridge step plus the untouched original tail, instead of splicing the re-authored form or aborting", () => {
+  it("does not treat a same-origin-and-path query/hash-only change as advancement (fails closed toward replanning)", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}?modal=open`)
+    ).toBe(false);
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}#section`)).toBe(
+      false
+    );
+  });
+
+  it("demonstrates the destructive outcome the pre-replan short-circuit exists to prevent: without it, none of the existing splice-time guards catch the re-authored earlier-form bridge", () => {
+    // None of the buggy raw steps are already-completed or a re-emission of
+    // the failed step, so — absent the already-advanced short-circuit —
+    // they would sail through the existing pipeline unfiltered and get
+    // spliced directly ahead of the original remaining tail.
     const spliced = applyReplanOutputFilters({
       rawNewSteps: BUGGY_RAW_NEW_STEPS,
       completedSteps: COMPLETED_STEPS,
       failedStep: FAILED_STEP,
       originalRemaining: ORIGINAL_REMAINING,
-      stepStartUrl: STEP_START_URL,
-      currentUrl: POST_REPLAN_URL,
     });
 
-    expect(spliced).toHaveLength(1 + ORIGINAL_REMAINING.length);
-    expect(spliced[0]!.instruction).toBe(ALREADY_ADVANCED_BRIDGE);
-
-    expect(spliced.slice(1).map((s) => s.instruction)).toEqual(
-      ORIGINAL_REMAINING.map((s) => s.instruction)
-    );
-    expect(spliced.slice(1).every((s) => s.origin === "original")).toBe(true);
-
-    // The re-authored earlier-form steps must never appear in the spliced output.
-    const instructions = spliced.map((s) => s.instruction);
+    expect(spliced).toHaveLength(BUGGY_RAW_NEW_STEPS.length + ORIGINAL_REMAINING.length);
     for (const reauthored of BUGGY_RAW_NEW_STEPS.map((s) => s.instruction)) {
-      expect(instructions).not.toContain(reauthored);
+      expect(spliced.map((s) => s.instruction)).toContain(reauthored);
     }
   });
 
-  it("does not throw the re-proposed-just-failed-step abort when the page already advanced", () => {
-    expect(() =>
-      applyReplanOutputFilters({
-        rawNewSteps: BUGGY_RAW_NEW_STEPS,
-        completedSteps: COMPLETED_STEPS,
-        failedStep: FAILED_STEP,
-        originalRemaining: ORIGINAL_REMAINING,
-        stepStartUrl: STEP_START_URL,
-        currentUrl: POST_REPLAN_URL,
-      })
-    ).not.toThrow();
-  });
-
-  it("regression guard: when the page did NOT advance, the pipeline falls through to the existing filter/guard chain unchanged", () => {
-    const safeBridge: NormalizedStep[] = [
-      mk("Solve the captcha challenge to confirm the signup form, retrying after a short wait"),
-    ];
-
-    const spliced = applyReplanOutputFilters({
-      rawNewSteps: safeBridge,
-      completedSteps: COMPLETED_STEPS,
-      failedStep: FAILED_STEP,
-      originalRemaining: ORIGINAL_REMAINING,
-      stepStartUrl: STEP_START_URL,
-      currentUrl: STEP_START_URL,
-    });
-
-    expect(spliced).toHaveLength(1 + ORIGINAL_REMAINING.length);
-    expect(spliced[0]!.instruction).toBe(safeBridge[0]!.instruction);
-    expect(spliced.slice(1).map((s) => s.instruction)).toEqual(
-      ORIGINAL_REMAINING.map((s) => s.instruction)
-    );
+  it("regression guard: hasPageAlreadyAdvancedPastStep returns false when the page has not moved, so the flow loop's existing replan path remains reachable", () => {
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, STEP_START_URL)).toBe(false);
   });
 });
