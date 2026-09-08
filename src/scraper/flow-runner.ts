@@ -5266,6 +5266,15 @@ function originAndPathOf(url: string): string {
 }
 
 /**
+ * Credits a captchaGated advance from an observed navigation: true only
+ * when origin or pathname actually changed, so a same-page query-string
+ * mutation (e.g. a step counter) never counts as an advance.
+ */
+export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean {
+  return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
+}
+
+/**
  * Polls the captcha target's URL for an origin/path change after a
  * multipart form submit, which navigates the page without producing any
  * matchable XHR body for {@link waitForTransitionBody} to catch — the
@@ -5280,10 +5289,9 @@ async function waitForCaptchaNavigation(params: {
   intervalMs: number;
 }): Promise<boolean> {
   const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
-  const baseline = originAndPathOf(baselineUrl);
   const check = async (): Promise<boolean> => {
     const currentUrl = await captchaTarget.url().catch(() => baselineUrl);
-    return originAndPathOf(currentUrl) !== baseline;
+    return hasOriginOrPathChanged(baselineUrl, currentUrl);
   };
   if (await check()) return true;
   const deadline = performance.now() + timeoutMs;
