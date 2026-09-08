@@ -42,9 +42,9 @@ function opensAsHiddenShadowSelect(el: HappyDomElement): boolean {
   // file's family that already exercise this expression against a real page.
   const elWindow = (el as unknown as { ownerDocument: { defaultView: Window } }).ownerDocument
     .defaultView;
-  const fn = new elWindow.Function(
-    `return (${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR});`
-  )() as (node: unknown) => boolean;
+  const fn = new elWindow.Function(`return (${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR});`)() as (
+    node: unknown
+  ) => boolean;
   return fn(el);
 }
 
@@ -190,5 +190,28 @@ describe("flow-runner/OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR", () => {
     expect(
       opensAsHiddenShadowSelect(withNonZeroRect(withOffsetParent(select, document.body)))
     ).toBe(false);
+  });
+
+  it("returns false for a hidden select whose climbed ancestor happens to contain an unrelated opener and an unrelated already-open widget's options (no actual pairing between them)", () => {
+    const window = new Window({ url: "https://careers.example.com/apply/job/1" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="page-ancestor">
+        <div class="field-a">
+          <select id="hidden-sel" class="dropdown-hide">
+            <option value="a">A</option>
+          </select>
+        </div>
+        <div class="field-b">
+          <span aria-haspopup="listbox" role="combobox">Unrelated opener for field B</span>
+        </div>
+        <div class="already-open-widget-c">
+          <ul role="listbox"><li role="option">unrelated option for widget C, already open</li></ul>
+        </div>
+      </div>
+    `;
+    const select = document.getElementById("hidden-sel") as unknown as HappyDomElement;
+    expect(select).toBeTruthy();
+    expect(opensAsHiddenShadowSelect(withOffsetParent(select, null))).toBe(false);
   });
 });
