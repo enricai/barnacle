@@ -4965,11 +4965,15 @@ export function emitMultiStepExecuteHttp(
         const ancestorObjByVar = new Map(
           ancestorVars.map((varName, idx) => [varName, firstItemAncestors[idx]!] as const)
         );
-        // Searched innermost-scope-first: the item's own field wins over an
-        // ancestor field of the same name.
+        // Searched ancestor-scope-first (outer to inner, then item last): a
+        // drill whose value is resolvable from an ancestor binding should
+        // bind there rather than to the item, so its parameterized request
+        // never references itemVar and the referencesItemVar hoist gate
+        // (below) can lift the fetch above the per-item loop instead of
+        // pinning it inside for byte-identical ancestor-scoped data.
         const threadingScopes = [
-          { varName: itemVar, obj: firstItem },
           ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
+          { varName: itemVar, obj: firstItem },
         ];
         // Each target's chain variables and merge result get their own
         // suffixed local names so multiple independent targets sharing the
@@ -6108,10 +6112,12 @@ interface ThreadedField {
   field: string;
 }
 
-/** Drops duplicate `(varName, field)` pairs, keeping the first (innermost-
- * scope-first, by {@link findThreadedJoinFields}'s scope ordering)
- * occurrence — the same field can otherwise appear twice when both
- * `target.joinFields` and the request-value scan resolve to it. */
+/** Drops duplicate `(varName, field)` pairs, keeping the first occurrence in
+ * `fields` — the same field can otherwise appear twice when both
+ * `target.joinFields` and the request-value scan resolve to it. Which
+ * occurrence wins is therefore whatever order the caller built `fields` in
+ * (see {@link findThreadedJoinFields}'s `scopes` parameter), not a property
+ * of this function. */
 function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[] {
   const seen = new Set<string>();
   return fields.filter(({ varName, field }) => {
@@ -6127,10 +6133,14 @@ function dedupeThreadedFields(fields: readonly ThreadedField[]): ThreadedField[]
  * request actually threads out of its per-item scope(s), used both to widen
  * URL/body parameterization beyond a fold target's own `joinFields` and (via
  * a single-scope call) to disambiguate which candidate array a chained step
- * depends on. `scopes` is searched in the given order (innermost fold item
- * first, then each ancestor binding a nested loop keeps addressable), since
- * an ancestor field with the same name as an item field must not shadow the
- * item's own value.
+ * depends on. `scopes` is searched in the caller-supplied order, and when a
+ * field of the same name resolves in more than one scope, the FIRST scope
+ * in that order wins (later scopes' matches for the same field are dropped
+ * by {@link dedupeThreadedFields}) — so which binding wins a same-name
+ * collision is a caller decision, not a property of this function. The
+ * drill-request threading caller orders ancestors before the item, so a
+ * value resolvable from an ancestor binds there and can be hoisted out of
+ * the per-item loop; single-scope callers are unaffected by ordering.
  *
  * `allCaptures`, when passed, is forwarded to {@link
  * collectRequestStringValues} to gate matching on cross-capture variance:
