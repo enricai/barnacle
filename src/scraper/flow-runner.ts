@@ -522,12 +522,16 @@ const PROMPT_OPTION_SELECTORS = [
  * `IS_VISIBLE_EXPR` and the local `visible` helper elsewhere in this file
  * already use, inverted here) whose nearby container also holds a
  * {@link PROMPT_TRIGGER_SELECTORS} opener element, other than itself, that is
- * actually paired to a rendered `role=listbox`-shaped panel — via
- * `aria-owns`/`aria-controls` resolving to a `role=listbox` (or one
- * containing a {@link PROMPT_OPTION_SELECTORS} match), or a
- * {@link PROMPT_OPTION_SELECTORS} match rendered in the same climbed
- * container. That panel check keeps the broadened hidden test from
- * misclassifying an incidental nearby combobox as a paired shadow select.
+ * ARIA-wired to a listbox panel — via `aria-owns`/`aria-controls`/
+ * `aria-haspopup="listbox"` declared on the opener (accepted unresolved only
+ * when the opener sits in the select's own immediate container, since many
+ * widgets mount their popup lazily on first open and haven't rendered it
+ * yet), or, once the referenced id does resolve (at any climbed depth), only
+ * when the target actually is `role=listbox` or contains a
+ * {@link PROMPT_OPTION_SELECTORS} match, or a {@link PROMPT_OPTION_SELECTORS}
+ * match rendered in the same climbed container. Requiring resolution past the
+ * immediate container keeps the broadened hidden test from misclassifying an
+ * unrelated widget elsewhere in a shared ancestor as a paired shadow select.
  * The bounded-ancestor-climb-then-subtree-search shape mirrors
  * {@link NEARBY_SELECTION_CONTAINER_FN_SRC}, but searches for
  * {@link PROMPT_TRIGGER_SELECTORS} instead of the selection-marker union —
@@ -547,15 +551,22 @@ export const OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR = `(el) => {
     if (!isHidden) return false;
     const triggerSel = ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)};
     const optionSel = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
-    const hasRenderedPanel = (opener) => {
+    const hasRenderedPanel = (opener, allowUnresolvedDeclaration) => {
       const ownsId = opener.getAttribute("aria-owns") || opener.getAttribute("aria-controls");
       const target = ownsId ? document.getElementById(ownsId) : null;
-      return !!target && (target.getAttribute("role") === "listbox" || target.querySelector(optionSel) !== null);
+      if (target) return target.getAttribute("role") === "listbox" || target.querySelector(optionSel) !== null;
+      if (!allowUnresolvedDeclaration) return false;
+      return !!ownsId || opener.getAttribute("aria-haspopup") === "listbox";
     };
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       const openers = node.querySelectorAll ? Array.from(node.querySelectorAll(triggerSel)) : [];
-      if (openers.some((opener) => opener !== el && (hasRenderedPanel(opener) || node.querySelector(optionSel) !== null))) return true;
+      // Only the select's own immediate container may pair on a merely-declared
+      // (not-yet-rendered) aria-owns/aria-controls/aria-haspopup target — an
+      // opener found only by climbing further up must have its panel actually
+      // resolve, or an unrelated sibling widget elsewhere in a shared ancestor
+      // (e.g. a distant visible field's own opener) would false-positive.
+      if (openers.some((opener) => opener !== el && (hasRenderedPanel(opener, depth === 0) || node.querySelector(optionSel) !== null))) return true;
       node = node.parentElement;
     }
     return false;

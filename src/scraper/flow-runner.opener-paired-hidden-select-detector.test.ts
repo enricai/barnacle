@@ -21,9 +21,15 @@ function withOffsetParent(el: HappyDomElement, offsetParent: unknown): HappyDomE
 }
 
 function opensAsHiddenShadowSelect(el: HappyDomElement): boolean {
-  const fn = new Function(`return (${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR});`)() as (
-    node: unknown
-  ) => boolean;
+  // Must build the predicate via the element's OWN window's `Function`
+  // constructor (not the Node-global one) so `getComputedStyle`/`document`
+  // resolve against happy-dom's window, mirroring the other tests in this
+  // file's family that already exercise this expression against a real page.
+  const elWindow = (el as unknown as { ownerDocument: { defaultView: Window } }).ownerDocument
+    .defaultView;
+  const fn = new elWindow.Function(
+    `return (${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR});`
+  )() as (node: unknown) => boolean;
   return fn(el);
 }
 
