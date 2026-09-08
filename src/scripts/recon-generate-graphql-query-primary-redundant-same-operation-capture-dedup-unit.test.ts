@@ -10,6 +10,7 @@ function buildCapture(overrides: {
   url: string;
   operationName: string | null;
   query: string | null;
+  responseBody?: unknown;
 }): Capture {
   return {
     timestamp: "2024-05-01T00:00:00Z",
@@ -20,7 +21,7 @@ function buildCapture(overrides: {
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: null,
     responseHeaders: { "content-type": "application/json" },
-    responseBody: {},
+    responseBody: overrides.responseBody ?? {},
     operationName: overrides.operationName,
     query: overrides.query,
     variables: null,
@@ -126,5 +127,59 @@ describe("dedupRedundantSameOperationCaptures", () => {
 
     expect(result).toBe(actions);
     expect(result).toHaveLength(2);
+  });
+
+  it("drops a same-endpoint alias whose response resolves to the same array shape as the primary", () => {
+    const primaryCapture = buildCapture({
+      url: "https://api.example.com/catalog/search/",
+      operationName: "catalogSearch",
+      query: null,
+      responseBody: { data: { search: { results: { items: [{ id: 1 }, { id: 2 }] } } } },
+    });
+    const alias = buildCapture({
+      url: "https://api.example.com/catalog/search/",
+      operationName: "catalogSearchAlias",
+      query: null,
+      responseBody: { data: { search: { results: { items: [{ id: 3 }] } } } },
+    });
+
+    const actions = [buildAction(primaryCapture, 0), buildAction(alias, 1)];
+    const primary: PrimaryGraphQLOperation = {
+      capture: primaryCapture,
+      endpointPath: "/catalog/search/",
+      unpopulatedDeclaredVariables: [],
+    };
+
+    const result = dedupRedundantSameOperationCaptures(actions, primary);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.capture).toBe(primaryCapture);
+  });
+
+  it("keeps a same-endpoint alias whose response resolves to a genuinely different array shape", () => {
+    const primaryCapture = buildCapture({
+      url: "https://api.example.com/catalog/search/",
+      operationName: "catalogSearch",
+      query: null,
+      responseBody: { data: { search: { results: { items: [{ id: 1 }, { id: 2 }] } } } },
+    });
+    const distractor = buildCapture({
+      url: "https://api.example.com/catalog/search/",
+      operationName: "catalogSearchFilters",
+      query: null,
+      responseBody: { data: { search: { filters: { options: [{ id: "color" }] } } } },
+    });
+
+    const actions = [buildAction(primaryCapture, 0), buildAction(distractor, 1)];
+    const primary: PrimaryGraphQLOperation = {
+      capture: primaryCapture,
+      endpointPath: "/catalog/search/",
+      unpopulatedDeclaredVariables: [],
+    };
+
+    const result = dedupRedundantSameOperationCaptures(actions, primary);
+
+    expect(result).toHaveLength(2);
+    expect(result.map((a) => a.capture)).toEqual([primaryCapture, distractor]);
   });
 });

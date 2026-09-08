@@ -1766,6 +1766,21 @@ export function extractGraphQLActionSequence(
 }
 
 /**
+ * Identity of a capture's response shape for dedup purposes: the endpoint it
+ * hit plus the array path {@link findObjectArrayField} finds in its response
+ * body. Two captures against the same endpoint that resolve to the same
+ * array path are the same logical read even when their parsed operation
+ * names differ, e.g. an aliased re-issue of the same query. Returns `null`
+ * when the response has no object-array field at all (a flat scalar/void
+ * response), since there is then no shape signal to key on.
+ */
+function responseShapeKey(capture: Capture): string | null {
+  const arrayField = findObjectArrayField(capture.responseBody);
+  if (!arrayField) return null;
+  return `${endpointKey(capture.url)} ${arrayField.path.join(".")}`;
+}
+
+/**
  * Drops redundant re-issues of the primary GraphQL read operation from a
  * `extractGraphQLActionSequence` result. A read flow can capture the same
  * query multiple times -- pagination, re-filtering across phases, an SPA
@@ -1774,9 +1789,14 @@ export function extractGraphQLActionSequence(
  * genuinely distinct step (the `foldReturn` drill, another endpoint) does.
  * Left undeduped, the read-flow fold-merge emission chains each redundant
  * occurrence in as its own `httpClient` call instead of fetching the primary
- * once (with paging) and folding only the real drill. Only applies when a
- * primary operation was actually selected -- mutation/submission flows keep
- * every step, since state-threading depends on each one.
+ * once (with paging) and folding only the real drill. A capture whose parsed
+ * operation name differs from the primary's is still dropped when it shares
+ * the primary's endpoint and resolves to the same {@link responseShapeKey} --
+ * an aliased re-issue of the same logical read -- while a same-endpoint
+ * capture with a genuinely different response shape is left untouched. Only
+ * applies when a primary operation was actually selected -- mutation/
+ * submission flows keep every step, since state-threading depends on each
+ * one.
  */
 export function dedupRedundantSameOperationCaptures(
   actions: ActionCapture[],
@@ -1784,9 +1804,14 @@ export function dedupRedundantSameOperationCaptures(
 ): ActionCapture[] {
   if (!primary) return actions;
   const primaryGroupKey = operationGroupKey(primary.capture);
-  return actions.filter(
-    (a) => a.capture === primary.capture || operationGroupKey(a.capture) !== primaryGroupKey
-  );
+  const primaryShapeKey = responseShapeKey(primary.capture);
+  return actions.filter((a) => {
+    if (a.capture === primary.capture) return true;
+    if (operationGroupKey(a.capture) !== primaryGroupKey) {
+      return !(primaryShapeKey !== null && responseShapeKey(a.capture) === primaryShapeKey);
+    }
+    return false;
+  });
 }
 
 /**
