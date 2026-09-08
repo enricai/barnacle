@@ -66,6 +66,47 @@ const VISIBILITY_HIDDEN_OPENER_PAIRED_HTML = `
   </div>
 `;
 
+// Mirrors the consent/State field's hiding technique, but via opacity:0
+// instead of visibility:hidden: `offsetParent` stays non-null and the box is
+// non-zero, so only the opacity check catches it.
+const OPACITY_HIDDEN_OPENER_PAIRED_HTML = `
+  <div class="bb-custom-select-container bb-customSelect">
+    <span class="bb-custom-select-opener"
+          role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-owns="bb-customSelect-Dt4T0-panel"
+          aria-activedescendant="bb-customSelect-Dt4T0-selectedOption"
+          aria-labelledby="bb-customSelect-Dt4T0-label"
+          tabindex="0"><span></span></span>
+    <select id="state-select" name="state-select"
+            class="form-control" style="opacity:0" aria-required="true">
+      <option value="">Select</option>
+      <option value="georgia">Georgia</option>
+      <option value="florida">Florida</option>
+    </select>
+  </div>
+`;
+
+// Mirrors the consent/State field's hiding technique, but via off-screen
+// positioning instead of visibility:hidden: `offsetParent` stays non-null
+// and the box is non-zero but shifted off the viewport, so only the
+// off-screen check catches it.
+const OFFSCREEN_HIDDEN_OPENER_PAIRED_HTML = `
+  <div class="bb-custom-select-container bb-customSelect">
+    <span class="bb-custom-select-opener"
+          role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-owns="bb-customSelect-Dt4T0-panel"
+          aria-activedescendant="bb-customSelect-Dt4T0-selectedOption"
+          aria-labelledby="bb-customSelect-Dt4T0-label"
+          tabindex="0"><span></span></span>
+    <select id="state-select" name="state-select"
+            class="form-control" style="position:absolute;left:-9999px" aria-required="true">
+      <option value="">Select</option>
+      <option value="georgia">Georgia</option>
+      <option value="florida">Florida</option>
+    </select>
+  </div>
+`;
+
 const testLogger = {
   info: () => undefined,
   warn: () => undefined,
@@ -73,7 +114,12 @@ const testLogger = {
   debug: () => undefined,
 } as unknown as Logger;
 
-function buildHarness(html: string): {
+type StateSelectRectMode = "zero" | "non-zero" | "off-screen";
+
+function buildHarness(
+  html: string,
+  stateSelectRectMode: StateSelectRectMode = "zero"
+): {
   page: unknown;
   target: FrameTarget;
   evaluate: (expr: unknown) => Promise<unknown>;
@@ -104,6 +150,21 @@ function buildHarness(html: string): {
       value: document.body,
       configurable: true,
     });
+    // The opacity/off-screen hiding techniques carry a real, non-zero box —
+    // stub a non-zero rect so the assertion actually exercises those checks
+    // instead of happy-dom's always-zero default rect.
+    if (stateSelectRectMode === "non-zero") {
+      Object.defineProperty(visibilityHiddenSelect, "getBoundingClientRect", {
+        value: () => ({ width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 }),
+        configurable: true,
+      });
+    }
+    if (stateSelectRectMode === "off-screen") {
+      Object.defineProperty(visibilityHiddenSelect, "getBoundingClientRect", {
+        value: () => ({ width: 100, height: 20, top: 0, left: -9999, right: -9899, bottom: 20 }),
+        configurable: true,
+      });
+    }
   }
 
   const runExpr = (expr: string): unknown => {
@@ -167,6 +228,43 @@ describe("flow-runner/tryFillRequiredSelectsPrimitive skips an opener-paired hid
 
   it("does not write a required opener-paired select hidden via visibility:hidden despite a non-null offsetParent", async () => {
     const { page, target, evaluate } = buildHarness(VISIBILITY_HIDDEN_OPENER_PAIRED_HTML);
+
+    const allCommitted = await tryFillRequiredSelectsPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: "fill any remaining required question",
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(allCommitted).toBe(false);
+
+    const hiddenValue = (await evaluate(`document.getElementById("state-select").value`)) as string;
+    expect(hiddenValue).toBe("");
+  });
+
+  it("does not write a required opener-paired select hidden via opacity:0 despite a non-null offsetParent and non-zero rect", async () => {
+    const { page, target, evaluate } = buildHarness(OPACITY_HIDDEN_OPENER_PAIRED_HTML, "non-zero");
+
+    const allCommitted = await tryFillRequiredSelectsPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: "fill any remaining required question",
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(allCommitted).toBe(false);
+
+    const hiddenValue = (await evaluate(`document.getElementById("state-select").value`)) as string;
+    expect(hiddenValue).toBe("");
+  });
+
+  it("does not write a required opener-paired select hidden via off-screen positioning despite a non-null offsetParent and non-zero rect", async () => {
+    const { page, target, evaluate } = buildHarness(
+      OFFSCREEN_HIDDEN_OPENER_PAIRED_HTML,
+      "off-screen"
+    );
 
     const allCommitted = await tryFillRequiredSelectsPrimitive({
       page: page as unknown as Page,

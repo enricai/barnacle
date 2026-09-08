@@ -36,6 +36,61 @@ const PAGE_HTML = `
   </div>
 `;
 
+// Mirrors the report's `state-select`-style opacity hiding: `offsetParent`
+// stays non-null and the box is non-zero, so only the opacity check catches
+// it.
+const OPACITY_PAGE_HTML = `
+  <div class="bb-custom-select-container bb-customSelect">
+    <span class="bb-custom-select-opener"
+          role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-owns="bb-customSelect-6X0Nr-panel"
+          aria-activedescendant="bb-customSelect-6X0Nr-selectedOption"
+          aria-labelledby="bb-customSelect-6X0Nr-label"
+          tabindex="0"><span></span></span>
+    <select id="rcf3553" name="rcf3553" class="form-control" style="opacity:0">
+      <option value="">Select</option>
+      <option value="georgia">Georgia</option>
+      <option value="florida">Florida</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="phone-type">Type</label>
+    <select id="phone-type" name="phone-type">
+      <option value="">Select</option>
+      <option value="mobile">Mobile</option>
+      <option value="home">Home</option>
+    </select>
+  </div>
+`;
+
+// Mirrors the report's off-screen-positioned hiding technique: `offsetParent`
+// stays non-null and the box is non-zero but shifted off the viewport, so
+// only the off-screen check catches it.
+const OFFSCREEN_PAGE_HTML = `
+  <div class="bb-custom-select-container bb-customSelect">
+    <span class="bb-custom-select-opener"
+          role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-owns="bb-customSelect-6X0Nr-panel"
+          aria-activedescendant="bb-customSelect-6X0Nr-selectedOption"
+          aria-labelledby="bb-customSelect-6X0Nr-label"
+          tabindex="0"><span></span></span>
+    <select id="rcf3553" name="rcf3553" class="form-control"
+            style="position:absolute;left:-9999px">
+      <option value="">Select</option>
+      <option value="georgia">Georgia</option>
+      <option value="florida">Florida</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="phone-type">Type</label>
+    <select id="phone-type" name="phone-type">
+      <option value="">Select</option>
+      <option value="mobile">Mobile</option>
+      <option value="home">Home</option>
+    </select>
+  </div>
+`;
+
 const testLogger = {
   info: () => undefined,
   warn: () => undefined,
@@ -43,10 +98,16 @@ const testLogger = {
   debug: () => undefined,
 } as unknown as Logger;
 
-function buildHarness(hiddenSelectHasOffsetParent = false): { page: unknown; target: FrameTarget } {
+type HiddenRectMode = "zero" | "non-zero" | "off-screen";
+
+function buildHarness(
+  hiddenSelectHasOffsetParent = false,
+  html = PAGE_HTML,
+  hiddenRectMode: HiddenRectMode = "zero"
+): { page: unknown; target: FrameTarget } {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
-  document.body.innerHTML = PAGE_HTML;
+  document.body.innerHTML = html;
   // happy-dom implements no layout engine, so `offsetParent` never reflects
   // `dropdown-hide`'s CSS — stand it in for the browser's own display:none
   // null, the same idiom the detector's own test uses. happy-dom also never
@@ -59,6 +120,21 @@ function buildHarness(hiddenSelectHasOffsetParent = false): { page: unknown; tar
     value: hiddenSelectHasOffsetParent ? document.body : null,
     configurable: true,
   });
+  // The opacity/off-screen hiding techniques carry a real, non-zero box —
+  // stub a non-zero rect so the assertion actually exercises those checks
+  // instead of happy-dom's always-zero default rect.
+  if (hiddenRectMode === "non-zero") {
+    Object.defineProperty(hiddenSelect, "getBoundingClientRect", {
+      value: () => ({ width: 100, height: 20, top: 0, left: 0, right: 100, bottom: 20 }),
+      configurable: true,
+    });
+  }
+  if (hiddenRectMode === "off-screen") {
+    Object.defineProperty(hiddenSelect, "getBoundingClientRect", {
+      value: () => ({ width: 100, height: 20, top: 0, left: -9999, right: -9899, bottom: 20 }),
+      configurable: true,
+    });
+  }
   const visibleSelect = document.getElementById("phone-type");
   Object.defineProperty(visibleSelect, "offsetParent", {
     value: document.body,
@@ -108,6 +184,44 @@ describe("flow-runner/trySelectPrimitive skips an opener-paired hidden select", 
 
   it("falls through (null) for the same opener-paired select when its offsetParent is non-null (zero-size box)", async () => {
     const { page, target } = buildHarness(true);
+
+    const targetId = await trySelectPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: `select 'Georgia'`,
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(targetId).toBeNull();
+
+    const hiddenValue = (await target.evaluate(
+      `document.getElementById("rcf3553").value`
+    )) as string;
+    expect(hiddenValue).toBe("");
+  });
+
+  it("falls through (null) for the same opener-paired select when hidden via opacity:0 (offsetParent non-null, non-zero rect)", async () => {
+    const { page, target } = buildHarness(true, OPACITY_PAGE_HTML, "non-zero");
+
+    const targetId = await trySelectPrimitive({
+      page: page as unknown as Page,
+      target,
+      instruction: `select 'Georgia'`,
+      logger: testLogger,
+      anthropic: null,
+    });
+
+    expect(targetId).toBeNull();
+
+    const hiddenValue = (await target.evaluate(
+      `document.getElementById("rcf3553").value`
+    )) as string;
+    expect(hiddenValue).toBe("");
+  });
+
+  it("falls through (null) for the same opener-paired select when hidden via off-screen positioning (offsetParent non-null, non-zero rect)", async () => {
+    const { page, target } = buildHarness(true, OFFSCREEN_PAGE_HTML, "off-screen");
 
     const targetId = await trySelectPrimitive({
       page: page as unknown as Page,
