@@ -867,6 +867,78 @@ export function buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionStep
   ];
 }
 
+/**
+ * A grouped, nested-primary drill-down where the drilled endpoint's literal
+ * query value is EQUAL, in every group, to both the group's own
+ * ancestor-level field (`masterCode`) and the matched (first) item's own
+ * field (`code`) — the exact ambiguity that lets a scope-defeating fold plan
+ * bind the drill to the item instead of hoisting it to the ancestor, since at
+ * generation time either binding satisfies the literal match. Every OTHER
+ * item in the same group carries a DISTINCT own `code`, so the two bindings
+ * are only told apart at runtime: an ancestor-bound fold issues one fetch per
+ * group and reuses it for every item (including the non-matching siblings),
+ * while an item-bound fold — if the bug were reintroduced — would issue one
+ * fetch per item and be unable to resolve a URL for any sibling whose own
+ * `code` differs from the group's `masterCode`.
+ *
+ * `r1` is the real drill (matches group `sec1` via its `masterCode`/`code`
+ * coincidence). `r2` is a decoy — same drilled pathname, but its `code` is
+ * foreign to the primary response — so {@link findFrozenVaryingDrillParams}'s
+ * same-endpoint variance check has a second, genuinely differing capture to
+ * compare `code` against, mirroring
+ * {@link buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps}'s
+ * own real/decoy split.
+ */
+export function buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "sec1",
+            entries: [
+              { entryId: "e1", code: "sec1", name: "Widget" },
+              { entryId: "e2", code: "e2-code", name: "Gadget" },
+              { entryId: "e3", code: "e3-code", name: "Doohickey" },
+            ],
+          },
+          {
+            masterCode: "sec2",
+            entries: [
+              { entryId: "e4", code: "sec2", name: "Thingamajig" },
+              { entryId: "e5", code: "e5-code", name: "Contraption" },
+              { entryId: "e6", code: "e6-code", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-02-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=sec1`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      timestamp: "2025-02-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated`,
+      requestPostData: null,
+      responseBody: {
+        details: [{ entryId: "zzz-unrelated", description: "An unrelated entry." }],
+      },
+      timestamp: "2025-02-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
