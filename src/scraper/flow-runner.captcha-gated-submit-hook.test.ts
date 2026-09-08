@@ -40,7 +40,11 @@ interface FakeField {
 }
 
 /** Minimal fake `<form>`/hCaptcha-widget DOM + Stagehand `Page`, driven entirely through `page.evaluate`. */
-function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
+function makeFakePage(opts: {
+  hasSitekey: boolean;
+  callbackName?: string;
+  navigatesOnSubmit?: boolean;
+}): {
   page: Page;
   field: FakeField;
   submitCount: { n: number };
@@ -99,7 +103,10 @@ function makeFakePage(opts: { hasSitekey: boolean; callbackName?: string }): {
 
   const page = {
     evaluate,
-    url: () => "https://apply.example.com/application/abc-123",
+    url: () =>
+      opts.navigatesOnSubmit && submitCount.n > 0
+        ? "https://apply.example.com/application/thank-you"
+        : "https://apply.example.com/application/abc-123",
     title: vi.fn().mockResolvedValue(""),
     locator: vi.fn().mockReturnValue({
       first: () => ({
@@ -203,6 +210,16 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page: absentPage } = makeFakePage({ hasSitekey: true });
     const stagehand = {} as Stagehand;
+    // No advanceTransitionBodyPattern is configured, so the navigation-credit
+    // poll (running regardless of pattern config) is the only poll left to
+    // exhaust; force it past its deadline on the first check instead of
+    // paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     await executeStepWithHealing(
       baseParams(absentPage, stagehand, {
@@ -245,6 +262,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     });
 
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=empty"));
+    nowSpy.mockRestore();
   });
 
   it("invokes a discoverable widget callback with the solved token instead of the set-value fallback, and never fires the explicit submit when the transition poll confirms via that path", async () => {
@@ -308,6 +326,63 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(result).not.toBe("completed");
     expect(field.value).toBe("solved-token");
     expect(submitCount.n).toBe(1);
+  });
+
+  it("credits the advance on an observed origin/path navigation when no requestPostData pattern confirms a match (full-page multipart submit, no matching XHR body)", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // No matching capture is ever written on disk, so the requestPostData
+    // poll never confirms; the fallback explicit submit navigates the page
+    // to a new origin/path, which the new navigation-credit poll must catch.
+    const { page, field, submitCount } = makeFakePage({
+      hasSitekey: true,
+      navigatesOnSubmit: true,
+    });
+    // The requestPostData pattern never matches (no capture is ever written),
+    // so both waitForTransitionBody polls would otherwise spend their full
+    // real widened (45s) budgets; force the deadline check past its limit
+    // immediately. This doesn't mask the navigation credit itself, since the
+    // navigation poll's own un-timed FIRST check runs before any deadline
+    // comparison, and by that point the explicit fallback submit (which
+    // navigates the fake page) has already run synchronously.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: "type=next" })
+    );
+    nowSpy.mockRestore();
+
+    expect(result).toBe("completed");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("navigation to a new origin/path confirmed the advance")
+    );
+  });
+
+  it("credits the advance on an observed navigation even with no advanceTransitionBodyPattern configured at all", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({
+      hasSitekey: true,
+      navigatesOnSubmit: true,
+    });
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(
+      baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
+    );
+
+    expect(result).toBe("completed");
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(1);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("navigation to a new origin/path confirmed the advance")
+    );
   });
 
   it("resolves (never propagates) when the dispatch-only eval rejects with a navigation-shaped error", async () => {
@@ -531,15 +606,28 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
     const stagehand = {} as Stagehand;
+    // The navigation-credit poll still runs even with no pattern configured
+    // (page.url() is static in this fake, so it never confirms); force it
+    // past its deadline on the first check rather than paying the real
+    // widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
 
     const result = await executeStepWithHealing(
       baseParams(page, stagehand, { captchaGated: true, advanceTransitionBodyPattern: null })
     ).catch(() => "cascade-fallthrough" as const);
+    nowSpy.mockRestore();
 
-    // With no pattern configured, no poll ever runs, so the new CaptchaError
-    // guard must stay dormant and this falls through to the normal cascade
-    // (which is expected to eventually fail on this bare fake page/stagehand,
-    // but NOT via a thrown CaptchaError about a missing callback).
+    // With no pattern configured, no network poll ever runs, and the
+    // navigation poll never confirms (static page.url()), so the new
+    // CaptchaError guard must stay dormant and this falls through to the
+    // normal cascade (which is expected to eventually fail on this bare
+    // fake page/stagehand, but NOT via a thrown CaptchaError about a
+    // missing callback).
     expect(result).toBe("cascade-fallthrough");
     expect(field.value).toBe("solved-token");
     expect(submitCount.n).toBe(1);

@@ -112,10 +112,22 @@ describe("flow-runner/executeStepWithHealing — captcha registry-presence diagn
     const page = makeFakePage(undefined);
     const stagehand = {} as Stagehand;
 
+    // No advanceTransitionBodyPattern is configured, so the navigation-
+    // credit poll (running regardless of pattern config) is the only poll
+    // left to exhaust; force it past its deadline on the first check
+    // instead of paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+
     await executeStepWithHealing(baseParams(page, stagehand)).catch(() => {
       // Only the registryState diagnostic (logged before the poll/cascade
       // runs) is under test here, not the step's eventual outcome.
     });
+    nowSpy.mockRestore();
 
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=absent"));
     expect(testLogger.info).not.toHaveBeenCalledWith(
@@ -127,10 +139,22 @@ describe("flow-runner/executeStepWithHealing — captcha registry-presence diagn
     const page = makeFakePage({});
     const stagehand = {} as Stagehand;
 
+    // No advanceTransitionBodyPattern is configured, so the navigation-
+    // credit poll (running regardless of pattern config) is the only poll
+    // left to exhaust; force it past its deadline on the first check
+    // instead of paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+
     await executeStepWithHealing(baseParams(page, stagehand)).catch(() => {
       // Only the registryState diagnostic (logged before the poll/cascade
       // runs) is under test here, not the step's eventual outcome.
     });
+    nowSpy.mockRestore();
 
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("registryState=empty"));
     expect(testLogger.info).not.toHaveBeenCalledWith(
@@ -142,10 +166,22 @@ describe("flow-runner/executeStepWithHealing — captcha registry-presence diagn
     const page = makeFakePage({ "sk-1": { sitekey: "sk-1", callback: () => undefined } });
     const stagehand = {} as Stagehand;
 
+    // No advanceTransitionBodyPattern is configured, so the navigation-
+    // credit poll (running regardless of pattern config) is the only poll
+    // left to exhaust; force it past its deadline on the first check
+    // instead of paying the real widened (45s) budget.
+    const nowSpy = vi.spyOn(performance, "now");
+    let calls = 0;
+    nowSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? 0 : Number.POSITIVE_INFINITY;
+    });
+
     await executeStepWithHealing(baseParams(page, stagehand)).catch(() => {
       // Only the registryState diagnostic (logged before the poll/cascade
       // runs) is under test here, not the step's eventual outcome.
     });
+    nowSpy.mockRestore();
 
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("registryState=populated")
