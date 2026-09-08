@@ -12,6 +12,7 @@ import {
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
   buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps,
+  buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
@@ -500,6 +501,83 @@ describe("buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamAc
     const decoyCode = new URL(decoy.capture.url).searchParams.get("code");
     expect(decoyCode).toBeTruthy();
     expect(decoyCode ? knownCodes.has(decoyCode) : true).toBe(false);
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps();
+
+  type Body = {
+    sections: {
+      masterCode: string;
+      flagshipEntry: { code: string };
+      entries: { entryId: string; code: string; flagCode: string }[];
+    }[];
+  };
+
+  it("the drill URL carries two params", () => {
+    const realDrill = steps[1];
+    expect(realDrill).toBeTruthy();
+    if (!realDrill) return;
+    const params = new URL(realDrill.capture.url).searchParams;
+    expect([...params.keys()]).toHaveLength(2);
+  });
+
+  it("each group's matched (first) item's own fields equal both the group's top-level masterCode and its distinct nested flagshipEntry.code", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    for (const section of body.sections) {
+      const [matched] = section.entries;
+      expect(matched?.code).toBe(section.masterCode);
+      expect(matched?.flagCode).toBe(section.flagshipEntry.code);
+    }
+  });
+
+  it("every sibling item's own fields diverge from at least one of the two ancestor values", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    for (const section of body.sections) {
+      const [, ...siblings] = section.entries;
+      for (const sibling of siblings) {
+        const matchesBoth =
+          sibling.code === section.masterCode && sibling.flagCode === section.flagshipEntry.code;
+        expect(matchesBoth).toBe(false);
+      }
+    }
+  });
+
+  it("the real drill capture's two literal query values match the matched item's own fields and its group's two ancestor values", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    const realDrill = steps[1];
+    expect(realDrill).toBeTruthy();
+    if (!realDrill) return;
+    const params = new URL(realDrill.capture.url).searchParams;
+    const code = params.get("code");
+    const flag = params.get("flag");
+    const matchingSection = body.sections.find(
+      (section) => section.masterCode === code && section.flagshipEntry.code === flag
+    );
+    expect(matchingSection).toBeTruthy();
+    expect(matchingSection?.entries[0]?.code).toBe(code);
+    expect(matchingSection?.entries[0]?.flagCode).toBe(flag);
+  });
+
+  it("the decoy capture hits the same endpoint but carries values foreign to the primary response", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    const realDrill = steps[1];
+    const decoy = steps[2];
+    expect(realDrill).toBeTruthy();
+    expect(decoy).toBeTruthy();
+    if (!realDrill || !decoy) return;
+    expect(endpointKey(decoy.capture.url)).toBe(endpointKey(realDrill.capture.url));
+
+    const knownCodes = new Set(body.sections.map((section) => section.masterCode));
+    const knownFlags = new Set(body.sections.map((section) => section.flagshipEntry.code));
+    const decoyParams = new URL(decoy.capture.url).searchParams;
+    const decoyCode = decoyParams.get("code");
+    const decoyFlag = decoyParams.get("flag");
+    expect(decoyCode).toBeTruthy();
+    expect(decoyFlag).toBeTruthy();
+    expect(decoyCode ? knownCodes.has(decoyCode) : true).toBe(false);
+    expect(decoyFlag ? knownFlags.has(decoyFlag) : true).toBe(false);
   });
 });
 

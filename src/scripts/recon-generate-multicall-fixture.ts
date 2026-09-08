@@ -1012,6 +1012,90 @@ export function buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedP
   ];
 }
 
+/**
+ * A grouped, nested-primary drill-down whose drilled endpoint's literal
+ * query threads TWO params, each coincidentally equal to both a value the
+ * matched (first) item owns AND a value reachable only via a DISTINCT
+ * nested sub-path on the ancestor group — `masterCode` (a top-level
+ * ancestor field) mirrors the item's own `code`, while `flagshipEntry.code`
+ * (nested one level deep) mirrors the item's own `flagCode`. Both params
+ * must independently resolve through {@link walkItemFieldPaths}'s recursion
+ * into the ancestor object for
+ * {@link buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps}'s
+ * single-param coincidence to generalize to a multi-param, multi-nested-
+ * subpath case — a scope-defeating fold plan that only hoists one of the two
+ * params to the ancestor (leaving the other item-bound) would still issue a
+ * fetch per item instead of per group.
+ *
+ * Every OTHER item in the same group carries an own `code` AND `flagCode`
+ * that each diverge from at least one of the two ancestor values, so an
+ * item-bound fold plan is runtime-distinguishable from an ancestor-bound one
+ * by fetch count: an ancestor-bound fold issues one fetch per group and
+ * reuses it for every item (including the non-matching siblings), while an
+ * item-bound fold can't resolve a URL for any sibling whose own fields don't
+ * match both ancestor values at once.
+ *
+ * `r1` is the real drill (matches group `sec1` via both the `masterCode`/
+ * `code` and `flagshipEntry.code`/`flagCode` coincidences). `r2` is a decoy —
+ * same drilled pathname, but both its query values are foreign to the
+ * primary response — so {@link findFrozenVaryingDrillParams}'s same-endpoint
+ * variance check has a second, genuinely differing capture to compare
+ * against, mirroring
+ * {@link buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps}'s
+ * own real/decoy split.
+ */
+export function buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "sec1",
+            flagshipEntry: { code: "flg1" },
+            entries: [
+              { entryId: "e1", code: "sec1", flagCode: "flg1", name: "Widget" },
+              { entryId: "e2", code: "e2-code", flagCode: "flg1", name: "Gadget" },
+              { entryId: "e3", code: "sec1", flagCode: "flg3-code", name: "Doohickey" },
+            ],
+          },
+          {
+            masterCode: "sec2",
+            flagshipEntry: { code: "flg2" },
+            entries: [
+              { entryId: "e4", code: "sec2", flagCode: "flg2", name: "Thingamajig" },
+              { entryId: "e5", code: "e5-code", flagCode: "flg2", name: "Contraption" },
+              { entryId: "e6", code: "sec2", flagCode: "flg6-code", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-03-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=sec1&flag=flg1`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      timestamp: "2025-03-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated&flag=zzz-unrelated-flag`,
+      requestPostData: null,
+      responseBody: {
+        details: [{ entryId: "zzz-unrelated", description: "An unrelated entry." }],
+      },
+      timestamp: "2025-03-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
