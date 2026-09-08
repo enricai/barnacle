@@ -756,6 +756,17 @@ const ADVANCE_TRANSITION_POLL_INTERVAL_MS = 350;
  * {@link ADVANCE_TRANSITION_POLL_MS} unchanged.
  */
 const CAPTCHA_TRANSITION_POLL_MS = 45_000;
+/**
+ * Bounded retry budget for the captchaGated solve+inject+registryState-check
+ * sequence. The registry-empty/absent condition (the hCaptcha render callback
+ * hasn't attached to `HCAPTCHA_CALLBACK_REGISTRY_GLOBAL` yet when the solve
+ * finishes) is an intermittent attach-timing race, not a deterministic
+ * failure, so a single attempt is too eager to give up. Mirrors the
+ * MAX_STEP_ATTEMPTS/PRIMITIVE_ENUMERATE_ATTEMPTS=5 naming precedent, but a
+ * captcha solve is expensive (10-30s+ round trip via a real solver service),
+ * so the budget is kept small.
+ */
+const CAPTCHA_REGISTRY_RETRY_ATTEMPTS = 3;
 
 /**
  * Attempts to decode opaque request parameters: tries JSON parse, then
@@ -9220,57 +9231,58 @@ export async function executeStepWithHealing(params: {
       const pageUrl = await captchaTarget.url();
       const uaRaw = await page.evaluate("navigator.userAgent").catch(() => null);
       const userAgent = typeof uaRaw === "string" ? uaRaw : undefined;
-      const solved = await solveCaptcha({
-        type: "hcaptcha",
-        siteKey,
-        pageUrl,
-        isInvisible,
-        userAgent,
-      }).catch((err: unknown) => {
-        logger.error(
-          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
-        );
-        throw err;
-      });
-      const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
-      const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
-      const registryState = await captchaTarget.evaluate<"absent" | "empty" | "populated">(
-        `(() => {
+      // Bounded retry around the solve+inject+registryState-check+poll unit:
+      // the registry-empty/absent condition is an intermittent attach-timing
+      // race (the render callback hasn't registered by the time the solve
+      // finishes), not a deterministic failure, so a single attempt is too
+      // eager to give up and route straight to a global replan. Also retries
+      // when the widget's own callback fired (callbackDiscovered) but neither
+      // transition poll below confirmed an advance — the callback-fired-but-
+      // no-nav case is the same underlying race from the other side.
+      for (
+        let captchaAttempt = 1;
+        captchaAttempt <= CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
+        captchaAttempt++
+      ) {
+        if (captchaAttempt > 1) {
+          // Re-assert the capture install in the target frame before
+          // retrying: a late-attaching registry may not exist yet on the
+          // first attempt, and re-running this idempotent install gives a
+          // widget that renders on demand another chance to be caught.
+          await captchaTarget.evaluate(buildHcaptchaCallbackCaptureScript()).catch(() => undefined);
+        }
+        const solved = await solveCaptcha({
+          type: "hcaptcha",
+          siteKey,
+          pageUrl,
+          isInvisible,
+          userAgent,
+        }).catch((err: unknown) => {
+          logger.error(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
+          );
+          throw err;
+        });
+        const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
+        const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+        const registryState = await captchaTarget.evaluate<"absent" | "empty" | "populated">(
+          `(() => {
           const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
           if (!registry) return "absent";
           return Object.keys(registry).length === 0 ? "empty" : "populated";
         })()`
-      );
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
-      );
-      // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
-      // poll loop), just with a widened budget so the solve+submit round trip
-      // doesn't eat into the plain ADVANCE_TRANSITION_POLL_MS window. A
-      // pattern-confirmed transition here is treated as verified the same way
-      // the probe-absent branch below treats a detected transition — the
-      // normal cascade/verifier still runs when the pattern doesn't confirm
-      // (or none is configured), so this never replaces that verifier.
-      let confirmed = false;
-      if (advanceTransitionBodyPattern) {
-        confirmed = await waitForTransitionBody({
-          page,
-          preIdx: preCaptchaCaptureIdx,
-          advanceTransitionBodyPattern,
-          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
-          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
-        });
-        logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit transition poll confirmed=${confirmed}`
         );
-      }
-      // Some widgets' own render callback already submitted the form as a
-      // side effect of the inject (the poll above would have confirmed it);
-      // only issue an explicit submit when no transition was observed AND a
-      // form is known to exist to submit — otherwise this would double-submit
-      // a form the widget's own callback already advanced.
-      if (!confirmed && injectResult.hasForm) {
-        await submitCaptchaGatedForm(captchaTarget);
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: attempt=${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
+        );
+        // Reuse the EXISTING waitForTransitionBody poll (no new captcha-specific
+        // poll loop), just with a widened budget so the solve+submit round trip
+        // doesn't eat into the plain ADVANCE_TRANSITION_POLL_MS window. A
+        // pattern-confirmed transition here is treated as verified the same way
+        // the probe-absent branch below treats a detected transition — the
+        // normal cascade/verifier still runs when the pattern doesn't confirm
+        // (or none is configured), so this never replaces that verifier.
+        let confirmed = false;
         if (advanceTransitionBodyPattern) {
           confirmed = await waitForTransitionBody({
             page,
@@ -9280,48 +9292,85 @@ export async function executeStepWithHealing(params: {
             intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
           });
           logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-fallback-submit transition poll confirmed=${confirmed}`
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit transition poll confirmed=${confirmed}`
           );
         }
-      }
-      if (confirmed) {
-        trajectory?.push({ stepIndex, verifiedBy: "network" });
-        return "completed";
-      }
-      // A full-page multipart form submit (no matching XHR body, or no
-      // pattern configured at all) still navigates the page — that's a
-      // real advance the requestPostData-based poll above can never see.
-      // This poll runs regardless of whether advanceTransitionBodyPattern
-      // is set: it's an additional signal, not a replacement for the
-      // pattern-based one.
-      const navigationConfirmed = await waitForCaptchaNavigation({
-        page,
-        captchaTarget,
-        baselineUrl: pageUrl,
-        timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
-        intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
-      });
-      if (navigationConfirmed) {
-        logger.info(
-          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit navigation to a new origin/path confirmed the advance`
-        );
-        trajectory?.push({ stepIndex, verifiedBy: "url" });
-        return "completed";
-      }
-      // No render-config callback was discoverable AND neither the inject's
-      // own submit path nor the explicit fallback submit produced a
-      // confirmed transition, network or navigation: the token was never
-      // actually delivered through the site's own submit machinery. Fail
-      // loudly instead of falling through to the normal cascade as if the
-      // solve had worked — that's exactly the misleading "token
-      // injected=true" silent no-op this hook must not produce. Only
-      // applies when a pattern is actually configured to poll for — with
-      // none configured, no network poll ever ran, so there's nothing here
-      // to contradict the normal cascade/verifier.
-      if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
-        throw new CaptchaError(
-          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
-        );
+        // Some widgets' own render callback already submitted the form as a
+        // side effect of the inject (the poll above would have confirmed it);
+        // only issue an explicit submit when no transition was observed AND a
+        // form is known to exist to submit — otherwise this would double-submit
+        // a form the widget's own callback already advanced.
+        if (!confirmed && injectResult.hasForm) {
+          await submitCaptchaGatedForm(captchaTarget);
+          if (advanceTransitionBodyPattern) {
+            confirmed = await waitForTransitionBody({
+              page,
+              preIdx: preCaptchaCaptureIdx,
+              advanceTransitionBodyPattern,
+              timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+              intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+            });
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-fallback-submit transition poll confirmed=${confirmed}`
+            );
+          }
+        }
+        if (confirmed) {
+          trajectory?.push({ stepIndex, verifiedBy: "network" });
+          return "completed";
+        }
+        // A full-page multipart form submit (no matching XHR body, or no
+        // pattern configured at all) still navigates the page — that's a
+        // real advance the requestPostData-based poll above can never see.
+        // This poll runs regardless of whether advanceTransitionBodyPattern
+        // is set: it's an additional signal, not a replacement for the
+        // pattern-based one.
+        const navigationConfirmed = await waitForCaptchaNavigation({
+          page,
+          captchaTarget,
+          baselineUrl: pageUrl,
+          timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
+          intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
+        });
+        if (navigationConfirmed) {
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit navigation to a new origin/path confirmed the advance`
+          );
+          trajectory?.push({ stepIndex, verifiedBy: "url" });
+          return "completed";
+        }
+        // The intermittent race this loop exists for: a still-empty/absent
+        // registry means the callback attach hadn't landed when this attempt
+        // solved+injected, and a discovered-but-unconfirmed callback means it
+        // fired without a poll seeing the resulting transition. Both are
+        // worth another attempt within budget rather than an immediate throw.
+        const registryRace = registryState === "empty" || registryState === "absent";
+        const callbackFiredButNoNav = injectResult.callbackDiscovered && !confirmed;
+        if (
+          (registryRace || callbackFiredButNoNav) &&
+          captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS
+        ) {
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} with no confirmed transition on attempt ${captchaAttempt}; retrying`
+          );
+          continue;
+        }
+        // No render-config callback was discoverable AND neither the inject's
+        // own submit path nor the explicit fallback submit produced a
+        // confirmed transition, network or navigation: the token was never
+        // actually delivered through the site's own submit machinery. Fail
+        // loudly instead of falling through to the normal cascade as if the
+        // solve had worked — that's exactly the misleading "token
+        // injected=true" silent no-op this hook must not produce. Only
+        // applies when a pattern is actually configured to poll for — with
+        // none configured, no network poll ever ran, so there's nothing here
+        // to contradict the normal cascade/verifier.
+        if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
+          throw new CaptchaError(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
+          );
+        }
+        break;
       }
     }
   }

@@ -298,14 +298,18 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(0);
   });
 
-  it("issues exactly one explicit submit when the transition poll finds no matching capture", async () => {
+  it("issues one explicit submit per bounded retry attempt when the transition poll finds no matching capture (registryState=absent races the bounded retry budget)", async () => {
     solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
     const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
     // No capture is written, so waitForTransitionBody's initial check never
     // matches: the widget's own callback evidently didn't submit for us, so
-    // the hook must issue exactly one explicit tolerant submit itself. Force
-    // the poll's deadline to already be past on its first loop check so the
-    // test doesn't pay the real widened (45s) captcha poll budget.
+    // the hook must issue an explicit tolerant submit itself. No callback is
+    // discoverable here, so registryState stays "absent" on every attempt,
+    // which the bounded registry-retry loop treats as the intermittent
+    // attach race and retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times
+    // before falling through. Force the poll's deadline to already be past
+    // on its first loop check so the test doesn't pay the real widened (45s)
+    // captcha poll budget across all three attempts.
     const nowSpy = vi.spyOn(performance, "now");
     let calls = 0;
     nowSpy.mockImplementation(() => {
@@ -325,7 +329,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
 
     expect(result).not.toBe("completed");
     expect(field.value).toBe("solved-token");
-    expect(submitCount.n).toBe(1);
+    expect(submitCount.n).toBe(3);
   });
 
   it("credits the advance on an observed origin/path navigation when no requestPostData pattern confirms a match (full-page multipart submit, no matching XHR body)", async () => {
@@ -427,7 +431,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // explicit submit is issued despite the dispatch-only eval's rejection.
     expect(submitCount.n).toBe(0);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
+      expect.stringContaining("attempt=1/3 token injected=true hasForm=true")
     );
   });
 
@@ -484,7 +488,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // explicit submit is issued despite the set-value-only eval's rejection.
     expect(submitCount.n).toBe(0);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captchaGated step: token injected=true hasForm=true")
+      expect.stringContaining("attempt=1/3 token injected=true hasForm=true")
     );
   });
 
@@ -556,16 +560,16 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(result).not.toBe("completed");
     // The evals still all resolved cleanly (token injected, form present) —
     // proving this is gated on the observed transition, not on the evals
-    // returning without error.
+    // returning without error. No callback is discoverable, so registryState
+    // stays "absent" on every attempt, which the bounded registry-retry loop
+    // retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times before falling
+    // through — hence three dispatches/submits, not one.
     expect(field.value).toBe("solved-token");
-    expect(field.dispatched).toEqual(["change"]);
+    expect(field.dispatched).toEqual(["change", "change", "change"]);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("captchaGated step: post-submit transition poll confirmed=false")
     );
-    // No transition was confirmed, so the explicit-submit fallback fires
-    // exactly once (hasForm=true) — this test only asserts on the
-    // completion gate itself, not on submit-count behavior.
-    expect(submitCount.n).toBe(1);
+    expect(submitCount.n).toBe(3);
   });
 
   it("throws CaptchaError (never falls through to the cascade) when no callback is discoverable and neither the inject nor the explicit fallback submit produces a confirmed transition", async () => {
@@ -595,11 +599,12 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     nowSpy.mockRestore();
 
     expect(field.value).toBe("solved-token");
-    // The explicit fallback still fires exactly once (hasForm=true) before
-    // the failure is surfaced — the fix doesn't skip the fallback, it just
-    // stops trusting silence as success once the fallback also produces no
-    // confirmed transition.
-    expect(submitCount.n).toBe(1);
+    // The explicit fallback fires once per bounded retry attempt
+    // (hasForm=true, registryState stays "absent" every attempt) before the
+    // failure is finally surfaced — the fix doesn't skip the fallback, it
+    // just stops trusting silence as success once the retry budget
+    // (CAPTCHA_REGISTRY_RETRY_ATTEMPTS=3) is also exhausted.
+    expect(submitCount.n).toBe(3);
   });
 
   it("does not throw CaptchaError when no callback is discoverable but no advanceTransitionBodyPattern is configured (nothing to poll, cascade must still run)", async () => {
@@ -630,7 +635,10 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     // missing callback).
     expect(result).toBe("cascade-fallthrough");
     expect(field.value).toBe("solved-token");
-    expect(submitCount.n).toBe(1);
+    // registryState stays "absent" on every attempt, so the bounded
+    // registry-retry loop retries CAPTCHA_REGISTRY_RETRY_ATTEMPTS (3) times
+    // before falling through — one explicit submit per attempt.
+    expect(submitCount.n).toBe(3);
   });
 
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {
