@@ -6263,7 +6263,13 @@ function isFoldTargetAncestorScoped(
  * value equality, is the right test here: the drill is already proven to
  * key off the ancestor as a whole, so the ancestor's own analogous field is
  * what a per-ancestor (rather than per-item) fetch must vary on. Searches
- * `ancestorScopes` outer-to-inner and returns the first structural match. */
+ * `ancestorScopes` outer-to-inner and returns the first structural match.
+ * Falls back to the ancestor's own first-child-array element (e.g.
+ * `entries[0].code`) when no top-level nested-object field shares the
+ * trailing segment — covering an ancestor whose only representative row is
+ * itself one of the array items the fold iterates, rather than a distinct
+ * scalar/nested ancestor field (e.g. a `masterCode` that names the group but
+ * never literally shares the item's `code` field name). */
 function findStructurallyCorrespondingAncestorField(
   ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[],
   field: string
@@ -6272,6 +6278,47 @@ function findStructurallyCorrespondingAncestorField(
   for (const { varName, obj } of ancestorScopes) {
     for (const { path } of walkItemFieldPaths(obj)) {
       if (path[path.length - 1] === lastSegment) return { varName, field: path.join(".") };
+    }
+    const arrayPath = findFieldInFirstArrayElement(obj, lastSegment);
+    if (arrayPath) return { varName, field: arrayPath.join(".") };
+  }
+  return null;
+}
+
+/** Recursively searches `obj` for the first array-valued property whose
+ * first element (itself a plain object) contains `lastSegment` as one of
+ * its own field paths' trailing segments, returning the full dot-path from
+ * `obj`'s root through the array's `0` index down to that field (e.g.
+ * `["entries", "0", "code"]`) — an accessor {@link pathToAccessor} renders
+ * as `.entries["0"].code`, valid whether the numeric segment is treated as
+ * a bracketed literal key or an array index. */
+function findFieldInFirstArrayElement(
+  obj: Record<string, unknown>,
+  lastSegment: string,
+  path: string[] = []
+): string[] | null {
+  for (const [key, value] of Object.entries(obj)) {
+    const childPath = [...path, key];
+    if (Array.isArray(value)) {
+      const first = value[0];
+      if (first === null || typeof first !== "object" || Array.isArray(first)) continue;
+      const firstObj = first as Record<string, unknown>;
+      for (const { path: subPath } of walkItemFieldPaths(firstObj)) {
+        if (subPath[subPath.length - 1] === lastSegment) {
+          return [...childPath, "0", ...subPath];
+        }
+      }
+      const nested = findFieldInFirstArrayElement(firstObj, lastSegment, [...childPath, "0"]);
+      if (nested) return nested;
+      continue;
+    }
+    if (value !== null && typeof value === "object") {
+      const nested = findFieldInFirstArrayElement(
+        value as Record<string, unknown>,
+        lastSegment,
+        childPath
+      );
+      if (nested) return nested;
     }
   }
   return null;
