@@ -13,9 +13,9 @@ import {
 const BASE = "https://api.example.com";
 
 /**
- * Regression e2e for
- * docs/recon-generate-dedup-keys-on-operationname-so-an-endpoint-queried-under-an-alias-survives.md,
- * exercised across the FULL extraction-through-emission chain (unlike
+ * Regression e2e for the shape-aware GraphQL capture dedup key introduced in
+ * `dedupRedundantSameOperationCaptures`, exercised across the FULL
+ * extraction-through-emission chain (unlike
  * recon-generate-graphql-query-primary-redundant-same-operation-capture-dedup-unit.test.ts,
  * which pins `dedupRedundantSameOperationCaptures` in isolation on
  * hand-built `ActionCapture[]`). The primary read here is re-issued a
