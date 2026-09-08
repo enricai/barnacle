@@ -769,6 +769,26 @@ const CAPTCHA_TRANSITION_POLL_MS = 45_000;
 const CAPTCHA_REGISTRY_RETRY_ATTEMPTS = 3;
 
 /**
+ * Pure decision gate for the captchaGated registry-retry loop: isolates the
+ * retry-vs-give-up call from the solve+inject+poll I/O so the attach-timing
+ * race (registry empty/absent, or a callback that fired without a confirmed
+ * transition) can be pinned with a unit test independent of any browser
+ * evaluate() call.
+ */
+export function shouldRetryCaptchaRegistry(
+  attemptNumber: number,
+  maxAttempts: number,
+  registryState: "absent" | "empty" | "populated",
+  callbackDiscovered: boolean,
+  confirmed: boolean
+): boolean {
+  if (confirmed) return false;
+  const registryRace = registryState === "empty" || registryState === "absent";
+  const callbackFiredButNoNav = callbackDiscovered && !confirmed;
+  return (registryRace || callbackFiredButNoNav) && attemptNumber < maxAttempts;
+}
+
+/**
  * Attempts to decode opaque request parameters: tries JSON parse, then
  * URL-decode, then base64. Returns the decoded value or null if none worked.
  */
@@ -9352,11 +9372,14 @@ export async function executeStepWithHealing(params: {
         // solved+injected, and a discovered-but-unconfirmed callback means it
         // fired without a poll seeing the resulting transition. Both are
         // worth another attempt within budget rather than an immediate throw.
-        const registryRace = registryState === "empty" || registryState === "absent";
-        const callbackFiredButNoNav = injectResult.callbackDiscovered && !confirmed;
         if (
-          (registryRace || callbackFiredButNoNav) &&
-          captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS
+          shouldRetryCaptchaRegistry(
+            captchaAttempt,
+            CAPTCHA_REGISTRY_RETRY_ATTEMPTS,
+            registryState,
+            injectResult.callbackDiscovered,
+            confirmed
+          )
         ) {
           logger.info(
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} with no confirmed transition on attempt ${captchaAttempt}; retrying`

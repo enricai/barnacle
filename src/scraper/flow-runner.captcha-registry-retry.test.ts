@@ -11,7 +11,7 @@ process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "recon-captcha-registry-r
 const { solveCaptchaMock } = vi.hoisted(() => ({ solveCaptchaMock: vi.fn() }));
 vi.mock("@/scraper/captcha-solver", () => ({ solveCaptcha: solveCaptchaMock }));
 
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { executeStepWithHealing, shouldRetryCaptchaRegistry } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
@@ -66,6 +66,32 @@ function baseParams(
     wizardExitButtonLabels: [] as string[],
   };
 }
+
+describe("shouldRetryCaptchaRegistry — pure retry-gate decision", () => {
+  it("retries when registryState is empty and attempts remain under the bound", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "empty", false, false)).toBe(true);
+  });
+
+  it("retries when registryState is absent and attempts remain under the bound", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "absent", false, false)).toBe(true);
+  });
+
+  it("retries when the callback fired but no confirmed transition followed", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "populated", true, false)).toBe(true);
+  });
+
+  it("gives up once the attempt bound is reached, even mid-race", () => {
+    expect(shouldRetryCaptchaRegistry(3, 3, "empty", false, false)).toBe(false);
+  });
+
+  it("gives up once confirmed, regardless of registryState/callbackDiscovered", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "empty", true, true)).toBe(false);
+  });
+
+  it("gives up when the registry is populated, no callback fired, and unconfirmed but not within a race", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "populated", false, false)).toBe(false);
+  });
+});
 
 describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bounded retry", () => {
   let capturesDir: string;
