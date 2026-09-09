@@ -351,6 +351,33 @@ describe("buildConfigPlugin", () => {
     expect(deps.steps[1]?.emailStepConfig).toEqual({ extract: "code", action: "fill" });
   });
 
+  it("forwards context.config.scraper.sessionProxy into the runHealingFlow deps when set", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const sessionProxy = {
+      protocol: "http" as const,
+      host: "proxy.example.com",
+      port: 8080,
+      username: "u",
+      password: "p",
+    };
+    const { session, context } = mockExecuteDeps({ sessionProxy });
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { sessionProxy?: unknown };
+    expect(deps.sessionProxy).toEqual(sessionProxy);
+  });
+
+  it("passes a null sessionProxy when context.config.scraper.sessionProxy is unset", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    const { session, context } = mockExecuteDeps();
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { sessionProxy?: unknown };
+    expect(deps.sessionProxy).toBeNull();
+  });
+
   it("rejects a manifest declaring emailStep with no Email field in request.properties", async () => {
     const manifest = baseManifest();
     (manifest.spec as { flow: { steps: unknown[] } }).flow.steps[1] = {
