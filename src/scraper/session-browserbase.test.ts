@@ -44,6 +44,15 @@ const { configRef } = vi.hoisted(() => ({
         sessionCreateMaxConcurrent: 2,
         sessionCreateMinIntervalMs: 250,
         sessionCreateMaxRetries: 3,
+        sessionProxy: undefined as
+          | {
+              protocol: "http" | "socks5";
+              host: string;
+              port: number;
+              username?: string;
+              password?: string;
+            }
+          | undefined,
       },
       bedrock: {
         region: "us-east-1",
@@ -630,5 +639,52 @@ describe("createBrowserSession session-create-limiter wiring around the real Sta
 
     await expect(createBrowserSession()).rejects.toThrow("ECONNRESET: connection reset");
     expect(vi.mocked(Stagehand)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createBrowserbaseBrowserSession session-proxy binding", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    configRef.value.scraper.proxyType = "residential";
+    configRef.value.scraper.sessionProxy = undefined;
+    vi.clearAllMocks();
+  });
+
+  it("passes an ExternalProxyConfig array and exposes the tuple on the session when a proxy is configured", async () => {
+    configRef.value.scraper.sessionProxy = {
+      protocol: "http",
+      host: "proxy.example.com",
+      port: 8080,
+      username: "user",
+      password: "pass",
+    };
+
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { proxies?: unknown };
+    };
+    expect(stagehandArg.browserbaseSessionCreateParams?.proxies).toEqual([
+      {
+        type: "external",
+        server: "http://proxy.example.com:8080",
+        username: "user",
+        password: "pass",
+      },
+    ]);
+    expect(session.sessionProxy).toEqual(configRef.value.scraper.sessionProxy);
+  });
+
+  it("falls back to the useResidentialProxy boolean and leaves sessionProxy undefined when unconfigured", async () => {
+    const session = await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { proxies?: unknown };
+    };
+    expect(stagehandArg.browserbaseSessionCreateParams?.proxies).toBe(true);
+    expect(session.sessionProxy).toBeUndefined();
   });
 });

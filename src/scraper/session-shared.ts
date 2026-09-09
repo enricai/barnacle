@@ -3,6 +3,7 @@ import type Bottleneck from "bottleneck";
 
 import { pickRandom } from "@/lib/random";
 import type { CdpTransportClosedError } from "@/scraper/errors";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 /** Allowed provider names. */
 export type ProviderName = "browserbase" | "steel";
@@ -88,6 +89,15 @@ export interface BrowserSession {
    * Only present on Browserbase sessions.
    */
   recordStepCompleted?: () => void;
+  /**
+   * The resolved explicit proxy this session's Browserbase request was bound
+   * to, so a later caller (e.g. captcha solving) can bind to the same egress
+   * IP instead of the opaque managed residential pool. Only present when a
+   * session proxy was configured and the session was created through it
+   * (currently Browserbase); undefined on Steel and when no proxy tuple was
+   * configured.
+   */
+  sessionProxy?: SessionProxyTuple;
 }
 
 /**
