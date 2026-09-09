@@ -10,6 +10,7 @@
  * DataDome tokens for subsequent Node HTTP requests.
  */
 
+import { config } from "@/config";
 import {
   recordTrackingClickAttempt,
   recordTrackingClickDuration,
@@ -25,7 +26,6 @@ const logger = getLogger({ name: "tracking-click" });
 
 const NAVIGATE_TIMEOUT_MS = 30_000;
 const SETTLE_WAIT_MS = 5_000;
-const BROWSERBASE_SESSION_TIMEOUT_SECONDS = 300;
 
 const inFlightClicks = new Set<Promise<void>>();
 
@@ -92,7 +92,7 @@ async function executeTrackingClick(
     session = await createBrowserSession({
       provider: "browserbase",
       advancedStealth: true,
-      browserbaseSessionCreateParams: { timeout: BROWSERBASE_SESSION_TIMEOUT_SECONDS },
+      browserbaseSessionCreateParams: { timeout: config.scraper.browserbaseSessionTimeoutSeconds },
     });
     const page = await session.stagehand.context.awaitActivePage();
     await page.goto(trackingUrl, { waitUntil: "domcontentloaded", timeoutMs: NAVIGATE_TIMEOUT_MS });

@@ -38,6 +38,7 @@ vi.mock("@/lib/telemetry/beacon-capture", () => ({
   captureBeaconEvent: mockCaptureBeaconEvent,
 }));
 
+import { config } from "@/config";
 import {
   recordTrackingClickAttempt,
   recordTrackingClickFailure,
@@ -71,7 +72,7 @@ describe("fireTrackingClick", () => {
     expect(mockCreateSession).toHaveBeenCalledWith({
       provider: "browserbase",
       advancedStealth: true,
-      browserbaseSessionCreateParams: { timeout: 300 },
+      browserbaseSessionCreateParams: { timeout: config.scraper.browserbaseSessionTimeoutSeconds },
     });
     expect(mockPage.goto).toHaveBeenCalledWith("https://click.acme.example/t/abc?clickId=123", {
       waitUntil: "domcontentloaded",
