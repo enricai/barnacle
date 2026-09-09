@@ -11,11 +11,11 @@ import type { Capture } from "@/scripts/recon-shared";
  * Regression pin for the same under-match shape as
  * recon-generate-multiendpoint-e2e.test.ts's fixture, but checked at the
  * process boundary only — the explicit matched-vs-total mismatch wording,
- * distinct from that test's contract.ts content assertions. For this
- * fixture the narrow pattern is recoverable (the unfiltered heuristic
- * sequence still finds every section), so recon-generate self-heals to the
- * full sequence instead of hard-failing — but it must still name the
- * capture-count gap out loud rather than silently discarding the pattern.
+ * distinct from that test's contract.ts content assertions. The declared
+ * submitEndpointPattern is authoritative even though it under-covers the
+ * unfiltered heuristic sequence, so generation must still exit 0 and name
+ * the capture-count gap out loud rather than silently discarding the
+ * pattern or falling back to the unfiltered sequence.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
