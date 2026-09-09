@@ -298,9 +298,8 @@ export async function createBrowserbaseBrowserSession(
     (customSessionParams.timeout as number | undefined) ??
     config.scraper.browserbaseSessionTimeoutSeconds;
   let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
-  // Not yet wired to the flow runner's step loop, so this always logs 0
-  // completed steps; `recordStepCompleted` is exposed on the returned
-  // session for a future caller to advance it as steps finish.
+  // Advanced by the flow runner's step loop via `recordStepCompleted` as
+  // each step finishes.
   let completedStepCount = 0;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;

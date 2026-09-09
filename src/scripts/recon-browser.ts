@@ -2664,6 +2664,7 @@ async function main(): Promise<void> {
           }
 
           completedSteps.push(step.instruction);
+          session.recordStepCompleted?.();
         } catch (err) {
           if (!(err instanceof StepVerificationError)) throw err;
 
@@ -2702,6 +2703,7 @@ async function main(): Promise<void> {
             lastSuccessNetworkCount = signalCounter.n;
             lastSuccessUrl = urlAfterFailure;
             completedSteps.push(step.instruction);
+            session.recordStepCompleted?.();
             continue;
           }
 
