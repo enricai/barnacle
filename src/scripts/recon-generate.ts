@@ -9986,6 +9986,7 @@ async function main(): Promise<void> {
     frameSelector,
     submitEndpointPattern,
     submitBodyPattern,
+    requireSubmitEndpointMatch,
     displayName,
     foldReturnSpec,
   } = (() => {
@@ -10008,6 +10009,7 @@ async function main(): Promise<void> {
           frameSelector: undefined,
           submitEndpointPattern: null,
           submitBodyPattern: null,
+          requireSubmitEndpointMatch: false,
           displayName: undefined,
           foldReturnSpec,
         };
@@ -10022,6 +10024,7 @@ async function main(): Promise<void> {
           frameSelector?: string;
           submitEndpointPattern?: string;
           submitBodyPattern?: string;
+          requireSubmitEndpointMatch?: boolean;
           displayName?: string;
         };
         return {
@@ -10029,6 +10032,7 @@ async function main(): Promise<void> {
           frameSelector: obj.frameSelector,
           submitEndpointPattern: obj.submitEndpointPattern ?? null,
           submitBodyPattern: obj.submitBodyPattern ?? null,
+          requireSubmitEndpointMatch: obj.requireSubmitEndpointMatch ?? false,
           displayName: obj.displayName,
           foldReturnSpec,
         };
@@ -10038,6 +10042,7 @@ async function main(): Promise<void> {
         frameSelector: undefined,
         submitEndpointPattern: null,
         submitBodyPattern: null,
+        requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
       };
@@ -10047,6 +10052,7 @@ async function main(): Promise<void> {
         frameSelector: undefined,
         submitEndpointPattern: null,
         submitBodyPattern: null,
+        requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
       };
@@ -10257,7 +10263,16 @@ async function main(): Promise<void> {
           );
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
-  if (patternUndercounts) {
+  if (patternUndercounts && requireSubmitEndpointMatch) {
+    // Distinct wording from the non-required case below: this pattern is never
+    // discarded, so a message that says "ignoring"/"undercount" would misstate
+    // what happened. The disagreement is still worth a warn-level surface —
+    // the flow author should know the declared pattern covers fewer captures
+    // than the unfiltered heuristic sequence finds.
+    logger.warn(
+      `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+    );
+  } else if (patternUndercounts) {
     logger.info(
       `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
     );
