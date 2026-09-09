@@ -108,7 +108,10 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
     // unfiltered 8-capture wizard sequence it under-covers.
     expect(contract).toContain("/address");
     expect(contract).toContain("/contact");
-    expect(contract).not.toContain("/applications");
+    // "/applicant" alone false-positives against the unrelated
+    // "applicant-payload" schema import present in every generated
+    // contract, so match the call-site shape instead.
+    expect(contract).not.toContain("BaseUrl}/applicant");
     expect(contract).not.toContain("/employment");
     expect(contract).not.toContain("/attachments");
     expect(contract).not.toContain("/validate");
