@@ -63,10 +63,10 @@ describe("recon-generate — browser-flow entry URL", () => {
     const source = emitContractTs(contractOpts);
 
     expect(source).toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, payload.ClickUrl, payload)"
+      "await runReconSite9BrowserFlow(session.stagehand, payload.ClickUrl, payload, session.sessionProxy ?? null)"
     );
     expect(source).not.toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload)"
+      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)"
     );
   });
 
@@ -75,7 +75,7 @@ describe("recon-generate — browser-flow entry URL", () => {
     const source = emitContractTs(queryOpts);
 
     expect(source).toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload)"
+      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)"
     );
   });
 

@@ -187,7 +187,8 @@ describe("paginated GraphQL fold onto a primaryArrayPath deeper than the paginat
 export async function run${pascal}BrowserFlow(
   _stagehand: Stagehand,
   _baseUrl: string,
-  _payload: unknown
+  _payload: unknown,
+  _sessionProxy: unknown
 ): Promise<unknown> {
   return {};
 }
