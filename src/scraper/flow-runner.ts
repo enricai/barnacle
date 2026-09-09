@@ -8939,7 +8939,7 @@ export async function executeStepWithHealing(params: {
 
     if ((cfg.extract ?? "link") === "link") {
       const emailStepTarget = frameTarget ?? mainFrameTarget(page);
-      const currentPageUrl = await emailStepTarget.url();
+      const currentPageUrl = await readCurrentFrameUrl(page, emailStepTarget);
       const url = extractLinkFromMessage(msg, cfg.linkPattern, currentPageUrl);
       if (!url) {
         throw new EmailStepExtractError("no link matched in the verification email");
@@ -9256,7 +9256,7 @@ export async function executeStepWithHealing(params: {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: sitekey found, requesting solve`
       );
-      const pageUrl = await captchaTarget.url();
+      const pageUrl = await readCurrentFrameUrl(page, captchaTarget);
       const uaRaw = await page.evaluate("navigator.userAgent").catch(() => null);
       const userAgent = typeof uaRaw === "string" ? uaRaw : undefined;
       // Bounded retry around the solve+inject+registryState-check+poll unit:
