@@ -47,6 +47,47 @@ export function createSessionTeardownDetector(): {
 }
 
 /**
+ * Browserbase overshoots its own configured session timeout by 1-14s in
+ * practice, never undershoots, so a lower-bound-only comparison against the
+ * configured lifetime is the correct direction for classifying a teardown
+ * as timeout-driven rather than an early crash or provider incident.
+ */
+const DEFAULT_TIMEOUT_TOLERANCE_SECONDS = 15;
+
+/** Result of classifying a session teardown against its configured lifetime. */
+export interface SessionTeardownClassification {
+  /** True when the teardown landed within tolerance of the configured timeout. */
+  isTimeoutHit: boolean;
+  /** Log-ready message text — distinct wording for the timeout-hit case. */
+  message: string;
+}
+
+/**
+ * Classifies a session teardown as either a provider-driven timeout expiry
+ * or a generic mid-flow teardown, and formats the corresponding log message.
+ * Kept pure (no I/O, no clock reads) so callers can drive it with fake
+ * elapsed-time and step-count inputs instead of a real Stagehand session.
+ */
+export function classifySessionTeardown(params: {
+  configuredTimeoutSeconds: number;
+  elapsedSeconds: number;
+  completedStepCount: number;
+  toleranceSeconds?: number;
+}): SessionTeardownClassification {
+  const {
+    configuredTimeoutSeconds,
+    elapsedSeconds,
+    completedStepCount,
+    toleranceSeconds = DEFAULT_TIMEOUT_TOLERANCE_SECONDS,
+  } = params;
+  const isTimeoutHit = elapsedSeconds >= configuredTimeoutSeconds - toleranceSeconds;
+  const message = isTimeoutHit
+    ? `Browserbase session hit its timeout after ${elapsedSeconds.toFixed(1)}s (configured ${configuredTimeoutSeconds}s); ${completedStepCount} step(s) completed before teardown`
+    : `stagehand-initiated teardown mid-flow after ${elapsedSeconds.toFixed(1)}s; ${completedStepCount} step(s) completed before teardown`;
+  return { isTimeoutHit, message };
+}
+
+/**
  * Races a step's own promise against a teardown death signal so a
  * Stagehand-initiated mid-flow teardown surfaces as `CdpTransportClosedError`
  * instead of the step promise hanging forever once the connection that

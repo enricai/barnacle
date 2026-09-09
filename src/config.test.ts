@@ -30,6 +30,7 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.anthropicTimeoutMs).toBe(120_000);
     expect(cfg.scraper.connectTimeoutMs).toBe(120_000);
     expect(cfg.scraper.steelSessionTimeoutMs).toBe(3_600_000);
+    expect(cfg.scraper.browserbaseSessionTimeoutSeconds).toBe(1_800);
     expect(cfg.scraper.frameReadyTimeoutMs).toBe(20_000);
     expect(cfg.scraper.frameDocumentReadyTimeoutMs).toBe(5_000);
     expect(cfg.scraper.frameEvaluateTimeoutMs).toBe(30_000);
@@ -58,6 +59,12 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.poolSize).toBe(10);
     expect(cfg.rateLimit.max).toBe(500);
     expect(cfg.scraper.anthropicTimeoutMs).toBe(30000);
+  });
+
+  it("overrides browserbaseSessionTimeoutSeconds via BROWSERBASE_SESSION_TIMEOUT_SECONDS", () => {
+    process.env.BROWSERBASE_SESSION_TIMEOUT_SECONDS = "900";
+    const cfg = loadConfig();
+    expect(cfg.scraper.browserbaseSessionTimeoutSeconds).toBe(900);
   });
 
   it("overrides maxTransportRetries via RECON_MAX_TRANSPORT_RETRIES", () => {

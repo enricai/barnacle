@@ -106,6 +106,15 @@ export interface AppConfig {
     /** Steel session wall-clock timeout in ms. Default is 1 hour; lower via STEEL_SESSION_TIMEOUT_MS on plans with shorter limits. */
     steelSessionTimeoutMs: number;
     /**
+     * Default Browserbase session wall-clock timeout in seconds, forwarded as
+     * `SessionCreateParams.timeout` (Browserbase's API takes seconds, not ms,
+     * unlike steelSessionTimeoutMs above). Default is 30 min, comfortably
+     * above multi-step recon flows while staying under Browserbase's
+     * documented 60s min / 21600s (6h) max bounds. Override via
+     * BROWSERBASE_SESSION_TIMEOUT_SECONDS.
+     */
+    browserbaseSessionTimeoutSeconds: number;
+    /**
      * Minimum DOM-growth byte delta (`outerHTML.length`) for
      * `isClickViewSwapVerified` to credit a network-free click as a verified
      * client-side view swap. Default of 5000 sits 10× above the trivial-delta
@@ -491,6 +500,7 @@ export function loadConfig(): AppConfig {
       anthropicTimeoutMs: getNumericEnv("STAGEHAND_API_TIMEOUT_MS", 120_000),
       connectTimeoutMs: getNumericEnv("STAGEHAND_CONNECT_TIMEOUT_MS", 120_000),
       steelSessionTimeoutMs: getNumericEnv("STEEL_SESSION_TIMEOUT_MS", 3_600_000),
+      browserbaseSessionTimeoutSeconds: getNumericEnv("BROWSERBASE_SESSION_TIMEOUT_SECONDS", 1_800),
       viewSwapMinBytesThreshold: getNumericEnv("VIEW_SWAP_MIN_BYTES", 5000),
       viewSwapRevealMinBytesThreshold: getNumericEnv("VIEW_SWAP_REVEAL_MIN_BYTES", 500),
       uploadWidgetRenderAttempts: getNumericEnv("UPLOAD_WIDGET_RENDER_ATTEMPTS", 17),

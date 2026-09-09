@@ -36,6 +36,7 @@ const { configRef } = vi.hoisted(() => ({
         proxyType: "residential",
         solveCaptcha: true,
         anthropicTimeoutMs: 120000,
+        browserbaseSessionTimeoutSeconds: 1800,
         captureSessionIp: true,
         sessionIpEchoUrl: "https://api.ipify.org?format=json",
         sessionIpTimeoutMs: 10000,
@@ -373,6 +374,28 @@ describe("createBrowserbaseBrowserSession keepAlive", () => {
 
     expect(stagehandArg.keepAlive).toBe(true);
   });
+
+  it("defaults the Browserbase session timeout to config.scraper.browserbaseSessionTimeoutSeconds", async () => {
+    await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { timeout?: number };
+    };
+
+    expect(stagehandArg.browserbaseSessionCreateParams?.timeout).toBe(1800);
+  });
+
+  it("lets a caller-supplied browserbaseSessionCreateParams.timeout override the config default", async () => {
+    await createBrowserbaseBrowserSession({
+      browserbaseSessionCreateParams: { timeout: 300 },
+    });
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { timeout?: number };
+    };
+
+    expect(stagehandArg.browserbaseSessionCreateParams?.timeout).toBe(300);
+  });
 });
 
 describe("createBrowserbaseBrowserSession teardown-detector composition", () => {
@@ -513,6 +536,55 @@ describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () 
     });
 
     expect(session.getCdpTransportClosedError?.()).toBeUndefined();
+  });
+
+  it("classifies a transport close observed near the configured session timeout as a timeout hit", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = await createBrowserbaseBrowserSession({
+        browserbaseSessionCreateParams: { timeout: 300 },
+      });
+      const fakeStagehand = session.stagehand as unknown as {
+        context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+      };
+      const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+        why: string
+      ) => void;
+
+      // 300s configured timeout, 15s tolerance: closing at 290s elapsed is
+      // within tolerance of the configured lifetime.
+      vi.advanceTimersByTime(290_000);
+      handler("socket-close code=1006 reason=");
+
+      const timeoutHit = session.getSessionTimeoutHit?.();
+      expect(timeoutHit).toBeDefined();
+      expect(timeoutHit?.configuredTimeoutSeconds).toBe(300);
+      expect(timeoutHit?.elapsedSeconds).toBeCloseTo(290, 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not classify an early transport close (real crash/incident) as a timeout hit", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = await createBrowserbaseBrowserSession({
+        browserbaseSessionCreateParams: { timeout: 300 },
+      });
+      const fakeStagehand = session.stagehand as unknown as {
+        context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+      };
+      const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+        why: string
+      ) => void;
+
+      vi.advanceTimersByTime(30_000);
+      handler("socket-close code=1006 reason=");
+
+      expect(session.getSessionTimeoutHit?.()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

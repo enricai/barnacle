@@ -70,6 +70,24 @@ export interface BrowserSession {
    * only transport close observed was our own end-of-run teardown.
    */
   getCdpTransportClosedError?: () => CdpTransportClosedError | undefined;
+  /**
+   * Returns a timeout-hit classification when the observed transport close
+   * happened at ~this session's configured Browserbase lifetime — i.e. a
+   * provider-initiated expiry rather than a crash, network blip, or provider
+   * incident. Only present on Browserbase sessions (Steel has no configured
+   * session lifetime to compare against). Returns undefined both when no
+   * transport close has happened yet and when the observed close landed well
+   * before the configured lifetime.
+   */
+  getSessionTimeoutHit?: () =>
+    | { configuredTimeoutSeconds: number; elapsedSeconds: number }
+    | undefined;
+  /**
+   * Advances this session's completed-step counter, so a timeout-hit
+   * teardown log can report how much of the flow finished before it fired.
+   * Only present on Browserbase sessions.
+   */
+  recordStepCompleted?: () => void;
 }
 
 /**

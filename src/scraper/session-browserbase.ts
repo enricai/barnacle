@@ -13,11 +13,20 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
-import { createSessionTeardownDetector } from "@/scraper/session-teardown";
+import { classifySessionTeardown, createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 
 const logger = getLogger({ name: "scraper/session-browserbase" });
+
+/**
+ * Browserbase overshoots its own configured session timeout by 1-14s in
+ * practice, never undershoots — so a lower-bound-only check against the
+ * configured value (no upper bound, since keepAlive/slow teardown can
+ * extend it further) is the correct direction for classifying a transport
+ * close as timeout-driven.
+ */
+const TOLERANCE_SECONDS = 15;
 
 /**
  * Shape of the LogLine objects Stagehand passes to its `logger` callback.
@@ -180,6 +189,7 @@ export async function createBrowserbaseBrowserSession(
     throw new Error("ANTHROPIC_API_KEY is required for the Stagehand LLM client");
   }
 
+  const sessionStartedAt = Date.now();
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
   const advancedStealth = opts?.advancedStealth === true;
@@ -231,6 +241,7 @@ export async function createBrowserbaseBrowserSession(
       apiKey: config.scraper.browserbaseApiKey,
       projectId: config.scraper.browserbaseProjectId,
       browserbaseSessionCreateParams: {
+        timeout: config.scraper.browserbaseSessionTimeoutSeconds,
         ...customSessionParams,
         projectId: config.scraper.browserbaseProjectId,
         proxies: useResidentialProxy,
@@ -283,11 +294,29 @@ export async function createBrowserbaseBrowserSession(
   // initiated teardown mid-operation, not a consequence of our own close.
   let weInitiatedClose = false;
   let cdpTransportClosedError: CdpTransportClosedError | undefined;
+  const configuredTimeoutSeconds =
+    (customSessionParams.timeout as number | undefined) ??
+    config.scraper.browserbaseSessionTimeoutSeconds;
+  let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+  // Advanced by the flow runner's step loop via `recordStepCompleted` as
+  // each step finishes.
+  let completedStepCount = 0;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;
     cdpTransportClosedError = new CdpTransportClosedError(
       `scraper session's CDP transport was closed by the SDK: ${why}`
     );
+    const elapsedSeconds = (Date.now() - sessionStartedAt) / 1000;
+    const classification = classifySessionTeardown({
+      configuredTimeoutSeconds,
+      elapsedSeconds,
+      completedStepCount,
+      toleranceSeconds: TOLERANCE_SECONDS,
+    });
+    if (classification.isTimeoutHit) {
+      sessionTimeoutHit = { configuredTimeoutSeconds, elapsedSeconds };
+    }
+    logger.warn(classification.message);
   });
 
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
@@ -322,15 +351,25 @@ export async function createBrowserbaseBrowserSession(
   const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
     cdpTransportClosedError;
 
+  const getSessionTimeoutHit = ():
+    | { configuredTimeoutSeconds: number; elapsedSeconds: number }
+    | undefined => sessionTimeoutHit;
+
+  const recordStepCompleted = (): void => {
+    completedStepCount += 1;
+  };
+
   return {
     stagehand,
     limiter,
     sessionId,
     provider: "browserbase",
+    recordStepCompleted,
     close,
     getSuppressedAisdkElementIdErrorCount,
     getOutboundIp,
     deathSignal,
     getCdpTransportClosedError,
+    getSessionTimeoutHit,
   };
 }

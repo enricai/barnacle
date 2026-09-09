@@ -318,4 +318,47 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
       TRANSPORT_CLOSES_AFTER_STEP + TOTAL_STEPS
     );
   });
+
+  it("fails fast with the timeout-hit message and exactly one attempt when the session died at its configured timeout", async () => {
+    const { stagehand } = makeFakePage();
+    let stepCountInAttempt = 0;
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+      getCdpTransportClosedError: () => undefined,
+      getSessionTimeoutHit: () =>
+        stepCountInAttempt >= TRANSPORT_CLOSES_AFTER_STEP
+          ? { configuredTimeoutSeconds: 1800, elapsedSeconds: 1801 }
+          : undefined,
+    } as never);
+
+    executeStepWithHealingStub.mockImplementation(async () => {
+      stepCountInAttempt += 1;
+      return "ok";
+    });
+
+    process.argv = flowArgv(TOTAL_STEPS);
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as never);
+
+    await expect(main()).rejects.toThrow("process.exit");
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Exactly one whole-flow attempt — a timeout hit can never fit on a
+    // fresh session with the same configured lifetime, so withScraperRetry's
+    // retry path must never be entered.
+    expect(createBrowserSession).toHaveBeenCalledTimes(1);
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(TOTAL_STEPS);
+    expect(loggerStub.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Browserbase session hit its timeout (1800s) after 10 steps — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS"
+      )
+    );
+
+    exitSpy.mockRestore();
+  });
 });
