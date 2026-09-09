@@ -21,9 +21,11 @@ import {
   extractActionSequence,
   extractGraphQLActionSequence,
   type FoldReturnSpec,
+  firstEndpointCapture,
   gatherResponseBodySamples,
   indexStateValues,
   inferZodSchemaFromSamples,
+  resolveFoldPlan,
   resolveManifestActionSequence,
   resolveStepPayloadField,
   sanitizeFixtureIdentifier,
@@ -31,6 +33,7 @@ import {
   selectPayloadAction,
   selectPrimaryGraphQLOperation,
   selectReturnAction,
+  truncateActionSequenceAtSubmitPattern,
 } from "@/scripts/recon-generate";
 import {
   buildMulticallDependentDrillDownActionSteps,
@@ -747,6 +750,151 @@ describe("extractActionSequence — submit patterns isolate the submission from 
 
   it("throws on a malformed pattern rather than silently reverting to unfiltered", () => {
     expect(() => extractActionSequence([realSubmit], { endpoint: "(", body: null })).toThrow();
+  });
+});
+
+describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the LAST match (#bugfix-003)", () => {
+  const capture = (url: string, timestamp: string) => ({
+    timestamp,
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const BASE = "https://www.example-ats.org";
+  const authMint = capture(`${BASE}/auth/mint`, "2024-01-01T00:00:00Z");
+  const pagedListing = capture(`${BASE}/listing?page=1`, "2024-01-01T00:00:01Z");
+  const firstSubmitMatch = capture(`${BASE}/apply/submit`, "2024-01-01T00:00:02Z");
+  const trailingChrome = capture(`${BASE}/apply/receipt`, "2024-01-01T00:00:03Z");
+  const secondSubmitMatch = capture(`${BASE}/apply/submit`, "2024-01-01T00:00:04Z");
+
+  const sequence = [
+    authMint,
+    pagedListing,
+    firstSubmitMatch,
+    trailingChrome,
+    secondSubmitMatch,
+  ].map((capture, index) => ({ capture, index }));
+
+  it("keeps every capture up to and including the LAST submit-pattern match, dropping nothing before it", () => {
+    const kept = truncateActionSequenceAtSubmitPattern(sequence, {
+      endpoint: "/apply/submit$",
+      body: null,
+    }).map((a) => a.capture.url);
+
+    expect(kept).toEqual([
+      authMint.url,
+      pagedListing.url,
+      firstSubmitMatch.url,
+      trailingChrome.url,
+      secondSubmitMatch.url,
+    ]);
+  });
+
+  it("drops everything after the last match", () => {
+    const kept = truncateActionSequenceAtSubmitPattern(sequence, {
+      endpoint: "/apply/submit$",
+      body: null,
+    });
+    expect(kept).toHaveLength(5);
+    expect(kept[kept.length - 1]?.capture.url).toBe(secondSubmitMatch.url);
+  });
+
+  it("returns empty when nothing matches, matching what a hard filter would have produced", () => {
+    const kept = truncateActionSequenceAtSubmitPattern(sequence, {
+      endpoint: "/no-such-endpoint$",
+      body: null,
+    });
+    expect(kept).toEqual([]);
+  });
+
+  it("with no declared pattern, returns the whole sequence unchanged", () => {
+    const kept = truncateActionSequenceAtSubmitPattern(sequence, null);
+    expect(kept).toEqual(sequence);
+  });
+});
+
+describe("resolveFoldPlan — needs the un-collapsed actionSteps shape (#bugfix-003)", () => {
+  it("resolves a fold plan when fed the corrected, non-collapsed actionSteps array", () => {
+    const actionSteps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+
+    const plans = resolveFoldPlan(actionSteps);
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0]?.primaryArrayPath).toEqual(["products"]);
+    expect(plans[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+  });
+
+  it("resolves none when fed the old collapsed-to-one-capture shape, tracing the addendum's foldReturn failure to sequence collapse rather than to resolveFoldPlan itself", () => {
+    const actionSteps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+    const collapsedToOne = [actionSteps[actionSteps.length - 1]!];
+
+    expect(resolveFoldPlan(collapsedToOne)).toEqual([]);
+  });
+});
+
+describe("firstEndpointCapture — honors a declared submitEndpointPattern over an earlier/larger decoy (#bugfix-003)", () => {
+  const capture = (url: string, timestamp: string, responseBody: unknown) => ({
+    timestamp,
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody,
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const chronologicallyEarlierDecoy = capture(
+    "https://www.example.com/api/toggle",
+    "2024-01-01T00:00:00Z",
+    { toggled: true }
+  );
+  const largerResponseDecoy = capture(
+    "https://www.example.com/api/page-load",
+    "2024-01-01T00:00:01Z",
+    { padding: "x".repeat(500) }
+  );
+  const patternMatchedCapture = capture(
+    "https://www.example.com/api/search-final",
+    "2024-01-01T00:00:02Z",
+    { results: [] }
+  );
+
+  it("picks the pattern-matching capture over a chronologically-earlier or larger-response decoy", () => {
+    const picked = firstEndpointCapture(
+      [chronologicallyEarlierDecoy, largerResponseDecoy, patternMatchedCapture],
+      [],
+      null,
+      { endpoint: "/api/search-final$", body: null }
+    );
+
+    expect(picked).toBe(patternMatchedCapture);
+  });
+
+  it("falls back to the unfiltered pool's chronological-first result when the pattern matches nothing", () => {
+    const picked = firstEndpointCapture(
+      [chronologicallyEarlierDecoy, largerResponseDecoy, patternMatchedCapture],
+      [],
+      null,
+      { endpoint: "/no-such-endpoint$", body: null }
+    );
+
+    expect(picked).toBe(chronologicallyEarlierDecoy);
   });
 });
 
