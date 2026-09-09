@@ -22,7 +22,8 @@ const logger = getLogger({ name: "scraper/session-steel" });
 
 /** Formats a session proxy tuple as Steel's documented `proxyUrl`: `protocol://[user:pass@]host:port`. */
 function formatSteelProxyUrl(proxy: SessionProxyTuple): string {
-  const credentials = proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
+  const credentials =
+    proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
   return `${proxy.protocol}://${credentials}${proxy.host}:${proxy.port}`;
 }
 
