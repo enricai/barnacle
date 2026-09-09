@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,12 +10,11 @@ import type { Capture } from "@/scripts/recon-shared";
 /**
  * Regression pin for the same under-match shape as
  * recon-generate-multiendpoint-e2e.test.ts's fixture, but checked at the
- * process boundary only — the explicit matched-vs-total mismatch wording,
- * distinct from that test's contract.ts content assertions. The declared
+ * process boundary and the emitted contract.ts. A declared
  * submitEndpointPattern is authoritative even though it under-covers the
- * unfiltered heuristic sequence, so generation must still exit 0 and name
- * the capture-count gap out loud rather than silently discarding the
- * pattern or falling back to the unfiltered sequence.
+ * unfiltered heuristic sequence: the pattern's own narrower match wins,
+ * generation still exits 0, the gap is only named in a log line, and there
+ * is no self-heal back to the full 8-capture wizard sequence.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -73,8 +72,8 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
     const siteId = `recon-narrow-pattern-warning-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
 
-    // Declared pattern matches only the /address section, under-covering the
-    // fixture's other 6 genuine same-host action captures.
+    // Declared pattern matches only the address and contact sections,
+    // under-covering the fixture's other 6 genuine same-host action captures.
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -83,7 +82,7 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
           { step: "fill out applicant, address, contact, employment, and attachment sections" },
           { step: "submit address section", submitStep: true },
         ],
-        submitEndpointPattern: "/address$",
+        submitEndpointPattern: "/address$|/contact$",
       })
     );
 
@@ -95,10 +94,23 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toMatch(/submitEndpointPattern/);
-    // Names the exact matched-vs-total capture counts, not a vague warning.
+    // The gap is still named for visibility, but it is only a log line now —
+    // the declared pattern is never overridden by the richer unfiltered
+    // sequence, so this must not read as the terminal outcome.
     expect(output).toMatch(
-      /ignoring submitEndpointPattern.*\(1 capture\(s\)\).*undercount.*\(8 capture\(s\)\)/
+      /submitEndpointPattern.*\(2 capture\(s\)\).*undercount.*\(8 capture\(s\)\)/
     );
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // The declared pattern's own narrower match wins: only the address and
+    // contact captures the pattern matched are emitted, never the
+    // unfiltered 8-capture wizard sequence it under-covers.
+    expect(contract).toContain("/address");
+    expect(contract).toContain("/contact");
+    expect(contract).not.toContain("/applications");
+    expect(contract).not.toContain("/employment");
+    expect(contract).not.toContain("/attachments");
+    expect(contract).not.toContain("/validate");
   }, 30_000);
 });
