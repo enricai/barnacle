@@ -170,7 +170,8 @@ interface TwoCaptchaSolveOptions {
 
 /** Formats a session proxy tuple as 2Captcha's documented `proxy` field: `[user:pass@]host:port`. */
 function formatTwoCaptchaProxy(proxy: SessionProxyTuple): string {
-  const credentials = proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
+  const credentials =
+    proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
   return `${credentials}${proxy.host}:${proxy.port}`;
 }
 
