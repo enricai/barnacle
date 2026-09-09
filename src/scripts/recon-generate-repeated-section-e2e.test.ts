@@ -186,8 +186,15 @@ describe("recon-generate CLI: unsynthesizable repeated-section variant falls bac
     expect(contract).not.toContain("async executeHttp(");
     expect(contract).not.toContain("query: payload.query");
     expect(contract).not.toContain("query: z.string().min(1)");
-    expect(contract).toContain(
+    // The fixture's terminal validate call carries only { revision, checksum
+    // } — none of ApplicantContactSchema's own evidence fields — so it gets
+    // the plain empty base, not the job-application template.
+    expect(contract).not.toContain(
       "ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n})"
     );
+    expect(contract).not.toContain("import { ApplicantContactSchema }");
+    expect(contract).not.toContain("Email: z.email()");
+    expect(contract).not.toContain("ClickUrl: z.string().min(1)");
+    expect(contract).not.toContain("Answers: multipartJsonObject");
   }, 30_000);
 });
