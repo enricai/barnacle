@@ -18,6 +18,7 @@ import {
   parseWidgetOptionClickStep,
   pollEnumerate,
   prepareFailureDumpBody,
+  resolveDumpPageIdentity,
   runHealingFlow,
   selectionCountFromSignature,
   shouldCaptureSelectionState,
@@ -1422,6 +1423,52 @@ describe("flow-runner/extractLivePageFormEvidence", () => {
       String(expr).includes("questionTitleOf")
     );
     expect(interactiveProbeCalls.length).toBe(1);
+  });
+});
+
+describe("resolveDumpPageIdentity", () => {
+  const IFRAME_SELECTOR = "iframe#apply_frame";
+  const STALE_URL = "https://apply.example.com/login";
+  const NEW_URL = "https://apply.example.com/candidate";
+
+  it("reflects the re-resolved frame's new url when the resolved frameTarget's url() rejects, instead of falling back to the stale top-level page url", async () => {
+    const page = {
+      url: () => STALE_URL,
+      title: async () => "unused",
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
+        const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
+        if (selector !== IFRAME_SELECTOR) return { matched: false, src: null };
+        return { matched: true, src: NEW_URL };
+      }),
+      frames: () => [
+        {
+          frameId: "fresh-child-frame",
+          evaluate: async (expr: unknown) => {
+            if (expr === "location.href") return NEW_URL;
+            if (/document\.body/.test(String(expr))) return true;
+            return null;
+          },
+          locator: (selector: string) => ({ scope: "frame" as const, selector }),
+        },
+      ],
+      mainFrameId: () => "fake-main-frame",
+    } as unknown as Page;
+
+    const staleFrameTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: IFRAME_SELECTOR,
+      declaredFrameSelector: IFRAME_SELECTOR,
+      evaluate: async <R = unknown>() => "unused" as R,
+      locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
+      url: () => Promise.reject(new Error("execution context was destroyed")),
+      title: async () => "Candidate",
+    };
+
+    const { pageUrl } = await resolveDumpPageIdentity(page, staleFrameTarget);
+
+    expect(pageUrl).toBe(NEW_URL);
+    expect(pageUrl).not.toBe(STALE_URL);
   });
 });
 

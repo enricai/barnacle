@@ -1216,14 +1216,12 @@ export async function snapshotPage(
  * when no `frameTarget` is resolved so this CDP read is watchdog-bounded the
  * same way a resolved `FrameTarget`'s `title()` already is.
  */
-async function resolveDumpPageIdentity(
+export async function resolveDumpPageIdentity(
   page: Page,
   frameTarget: FrameTarget | undefined
 ): Promise<{ pageTitle: string; pageUrl: string }> {
   const pageTitle = await (frameTarget ?? mainFrameTarget(page)).title().catch(() => "");
-  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
-    page.url()
-  );
+  const pageUrl = frameTarget ? await readCurrentFrameUrl(page, frameTarget) : page.url();
   return { pageTitle, pageUrl };
 }
 
