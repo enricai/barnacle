@@ -5312,7 +5312,7 @@ async function waitForCaptchaNavigation(params: {
 }): Promise<boolean> {
   const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
   const check = async (): Promise<boolean> => {
-    const currentUrl = await captchaTarget.url().catch(() => baselineUrl);
+    const currentUrl = await readCurrentFrameUrl(page, captchaTarget);
     return hasOriginOrPathChanged(baselineUrl, currentUrl);
   };
   if (await check()) return true;
