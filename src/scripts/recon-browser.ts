@@ -109,6 +109,7 @@ import {
 } from "@/scraper/flow-runner";
 import {
   mainFrameTarget,
+  readCurrentFrameUrl,
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
@@ -2455,7 +2456,6 @@ async function main(): Promise<void> {
             );
           }
         };
-        const urlAtStepStart = readLiveUrl();
         currentPhase =
           step.instruction
             .replace(/[^a-z0-9]+/gi, "-")
@@ -2521,6 +2521,12 @@ async function main(): Promise<void> {
         // to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
         const frameTarget = await resolveFrameTarget(page, frameSelector);
+        // Captured against the step's resolved frameTarget (not raw page.url())
+        // so hasPageAlreadyAdvancedPastStep's before/after comparison below
+        // reflects the frame the step actually ran against — a same-origin
+        // in-frame navigation would otherwise be invisible to the top-level
+        // page.url() this used to read.
+        const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
         // A child frame CDP has just attached to may still be sitting on
         // about:blank (the moment right after Target.setAutoAttach fires and
         // before the OOPIF's own navigation lands). waitForSpaReady above only
@@ -2687,7 +2693,7 @@ async function main(): Promise<void> {
           // re-propose the identical failed step against a page it no longer
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
-          const urlAfterFailure = readLiveUrl();
+          const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
           if (hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`

@@ -35,7 +35,9 @@ vi.mock("@/lib/logging", () => ({
 
 import {
   buildHopSelector,
+  mainFrameTarget,
   probeAttachedFrameTarget,
+  readCurrentFrameUrl,
   resolveFrameTarget,
   sleep as sleepMs,
   waitForChildFrameReady,
@@ -1093,5 +1095,75 @@ describe("waitForChildFrameReady: bounded against a never-settling evaluate", ()
       waitForChildFrameReady(target, { timeoutMs: 30, pollMs: 10, evaluateTimeoutMs: 8 })
     ).resolves.toBeUndefined();
     expect(Date.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe("readCurrentFrameUrl", () => {
+  const IFRAME_SELECTOR = "iframe#apply_frame";
+  const IFRAME_SRC = "https://apply.example.com/application/abc-123";
+
+  it("returns target.url() unchanged for a main-frame target", async () => {
+    const page = makeFakePage({ mainUrl: "https://careers.example.org/jobs/123" });
+    const target = mainFrameTarget(page as never);
+
+    await expect(readCurrentFrameUrl(page as never, target)).resolves.toBe(
+      "https://careers.example.org/jobs/123"
+    );
+  });
+
+  it("returns the child frame's own url when target.url() succeeds", async () => {
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { [IFRAME_SELECTOR]: IFRAME_SRC },
+      frames: [makeFakeFrame(IFRAME_SRC)],
+    });
+    const target = await resolveFrameTarget(page as never, IFRAME_SELECTOR, {
+      timeoutMs: 10,
+      evaluateTimeoutMs: 50,
+    });
+    expect(target.frame).not.toBeNull();
+
+    await expect(readCurrentFrameUrl(page as never, target)).resolves.toBe(IFRAME_SRC);
+  });
+
+  it("re-resolves via probeAttachedFrameTarget and returns the fresh frame's NEW url when the original target's url() throws (stale/detached frame)", async () => {
+    const NEW_URL = "https://apply.example.com/application/abc-123/step-2";
+    const staleTarget: FrameTarget = {
+      frame: makeFakeFrame(IFRAME_SRC) as never,
+      frameSelector: IFRAME_SELECTOR,
+      declaredFrameSelector: IFRAME_SELECTOR,
+      evaluate: async <R = unknown>() => "unused" as R,
+      locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
+      url: () => Promise.reject(new Error("execution context was destroyed")),
+      title: async () => "unused",
+    };
+    const page = makeFakePage({
+      mainUrl: "https://careers.example.org/jobs/123",
+      iframes: { [IFRAME_SELECTOR]: NEW_URL },
+      frames: [makeFakeFrame(NEW_URL)],
+    });
+
+    const url = await readCurrentFrameUrl(page as never, staleTarget);
+
+    expect(url).toBe(NEW_URL);
+    expect(url).not.toBe(IFRAME_SRC);
+    expect(url).not.toBe(page.url());
+  });
+
+  it("falls back to page.url() when the declared frame selector no longer resolves to anything attached", async () => {
+    const staleTarget: FrameTarget = {
+      frame: makeFakeFrame(IFRAME_SRC) as never,
+      frameSelector: IFRAME_SELECTOR,
+      declaredFrameSelector: IFRAME_SELECTOR,
+      evaluate: async <R = unknown>() => "unused" as R,
+      locator: (selector: string) => ({ scope: "frame" as const, selector }) as never,
+      url: () => Promise.reject(new Error("execution context was destroyed")),
+      title: async () => "unused",
+    };
+    const page = makeFakePage({ mainUrl: "https://careers.example.org/jobs/123", frames: [] });
+
+    await expect(readCurrentFrameUrl(page as never, staleTarget)).resolves.toBe(
+      "https://careers.example.org/jobs/123"
+    );
   });
 });

@@ -80,6 +80,7 @@ import {
   type FrameTarget,
   mainFrameTarget,
   probeAttachedFrameTarget,
+  readCurrentFrameUrl,
   resolveFrameTarget,
   sleep,
   waitForChildFrameReady,
@@ -1173,10 +1174,11 @@ export async function snapshotPage(
   // A resolved child FrameTarget's url() reads location.href off the CDP
   // frame session (frame-target.ts's childFrameTarget), which rejects (or
   // trips its watchdog) once the OOPIF detaches — most commonly right after
-  // a submit click tears down the wizard iframe. Falling back to page.url()
-  // lets the post-submit navigation still register as a urlChanged signal
-  // instead of throwing the whole step out of the cascade.
-  const url = page ? await target.url().catch(() => page.url()) : await target.url();
+  // a submit click tears down the wizard iframe. readCurrentFrameUrl
+  // re-resolves against the declared frame selector before ever falling
+  // back to page.url(), so a same-origin in-frame navigation still reports
+  // its own scope's URL instead of masquerading as the top wrapper page.
+  const url = page ? await readCurrentFrameUrl(page, target) : await target.url();
   return {
     networkCount: signalCounter.n,
     url,
@@ -1214,14 +1216,12 @@ export async function snapshotPage(
  * when no `frameTarget` is resolved so this CDP read is watchdog-bounded the
  * same way a resolved `FrameTarget`'s `title()` already is.
  */
-async function resolveDumpPageIdentity(
+export async function resolveDumpPageIdentity(
   page: Page,
   frameTarget: FrameTarget | undefined
 ): Promise<{ pageTitle: string; pageUrl: string }> {
   const pageTitle = await (frameTarget ?? mainFrameTarget(page)).title().catch(() => "");
-  const pageUrl = await (frameTarget ? frameTarget.url() : Promise.resolve(page.url())).catch(() =>
-    page.url()
-  );
+  const pageUrl = frameTarget ? await readCurrentFrameUrl(page, frameTarget) : page.url();
   return { pageTitle, pageUrl };
 }
 
@@ -5310,7 +5310,7 @@ async function waitForCaptchaNavigation(params: {
 }): Promise<boolean> {
   const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
   const check = async (): Promise<boolean> => {
-    const currentUrl = await captchaTarget.url().catch(() => baselineUrl);
+    const currentUrl = await readCurrentFrameUrl(page, captchaTarget);
     return hasOriginOrPathChanged(baselineUrl, currentUrl);
   };
   if (await check()) return true;
@@ -8939,7 +8939,7 @@ export async function executeStepWithHealing(params: {
 
     if ((cfg.extract ?? "link") === "link") {
       const emailStepTarget = frameTarget ?? mainFrameTarget(page);
-      const currentPageUrl = await emailStepTarget.url();
+      const currentPageUrl = await readCurrentFrameUrl(page, emailStepTarget);
       const url = extractLinkFromMessage(msg, cfg.linkPattern, currentPageUrl);
       if (!url) {
         throw new EmailStepExtractError("no link matched in the verification email");
@@ -9256,7 +9256,7 @@ export async function executeStepWithHealing(params: {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: sitekey found, requesting solve`
       );
-      const pageUrl = await captchaTarget.url();
+      const pageUrl = await readCurrentFrameUrl(page, captchaTarget);
       const uaRaw = await page.evaluate("navigator.userAgent").catch(() => null);
       const userAgent = typeof uaRaw === "string" ? uaRaw : undefined;
       // Bounded retry around the solve+inject+registryState-check+poll unit:
