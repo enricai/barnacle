@@ -103,7 +103,7 @@ describe("emitContractTs — multipart plugin", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
-    inputBody: { Name: "Alice", SmsOptIn: true, Score: 1 },
+    inputBody: { Name: "Alice", FirstName: "Alice", SmsOptIn: true, Score: 1 },
     discoveredAdditionalBodyKeys: new Map([["SmsOptIn", "boolean"]]),
     multiStepBody: `    return { data: {} as unknown };`,
   });
@@ -141,11 +141,15 @@ describe("emitContractTs — query-type plugin with a multipart step", () => {
   });
 });
 
-describe("emitContractTs — submission-flow default candidate-payload bodySchema", () => {
+describe("emitContractTs — submission-flow candidate-payload bodySchema with genuine applicant evidence", () => {
+  // Email is genuine ApplicantContactSchema field-name evidence in the
+  // captured inputBody, so this block still exercises the applicant-schema
+  // path — unlike a body with only site-specific keys (ddoKey/formData),
+  // which now gets a plain z.object({}) base instead.
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
-    inputBody: { ddoKey: "applySubmit", formData: {} },
+    inputBody: { ddoKey: "applySubmit", formData: {}, Email: "applicant@example.com" },
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
@@ -361,7 +365,7 @@ describe("emitContractTs — multipartCoerce boolean inside inputBody alone (no 
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
-    inputBody: { active: true },
+    inputBody: { active: true, Email: "applicant@example.com" },
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
@@ -3270,16 +3274,16 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     }
   });
 
-  it("emits the standard candidate-payload schema, not a search-string fallback, when a request body was captured", () => {
+  it("emits a plain base payload schema, not a search-string fallback nor ApplicantContactSchema, when a request body was captured with no applicant evidence", () => {
     // A captured request body means this isn't the query-string fallback case
-    // (see the "no inputBody" test above) — recon-generate-payload-schema-mismatch.md's
-    // fix option (a) makes the standard candidate payload the unconditional
-    // default here, regardless of what the captured body's own shape was.
+    // (see the "no inputBody" test above) — but with no ApplicantContactSchema
+    // field-name evidence in the captured body, the base must not be forced
+    // onto the job-application template either (recon-generate-payload-schema-mismatch.md).
     const contract = emitContractTs({
       ...BASE_OPTS,
       inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
     });
-    expect(contract).toContain("ApplicantContactSchema.extend({");
+    expect(contract).not.toContain("ApplicantContactSchema");
     expect(contract).not.toContain("query: z.string().min(1)");
   });
 
@@ -3291,9 +3295,7 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     const referenceConst = `${BASE_OPTS.pascal}InternalRequestReference`;
     expect(contract).toContain(`export const ${referenceConst} =`);
     expect(contract).toContain("region: z.");
-    expect(contract).toContain(
-      `const ${BASE_OPTS.pascal}PayloadSchema = ApplicantContactSchema.extend({`
-    );
+    expect(contract).toContain(`const ${BASE_OPTS.pascal}PayloadSchema = z.object({})`);
     // The reference const must carry TSDoc explaining it is builder input for
     // reconstructing the site's own request, not the public /run contract —
     // and must never itself become (or be assigned to) the exported bodySchema.
@@ -3684,14 +3686,15 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
     hasMultipartStep: true,
   });
 
-  it("emits the ApplicantContactSchema-based candidate payload as the public bodySchema", () => {
-    expect(contract).toContain("const ExamplesitePayloadSchema = ApplicantContactSchema.extend({");
-    expect(contract).toContain("Answers: multipartJsonObject(");
+  it("does not select ApplicantContactSchema — none of its own field names appear in the vendor dump", () => {
+    expect(contract).not.toContain("import { ApplicantContactSchema }");
+    expect(contract).toContain("const ExamplesitePayloadSchema = z.object({})");
+    expect(contract).toContain("Resume: z.instanceof(Buffer)");
   });
 
   it("does not leak the vendor site-dump field names into the public bodySchema", () => {
     const payloadSchemaMatch = contract.match(
-      /const ExamplesitePayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
     );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
@@ -3755,7 +3758,7 @@ describe("emitContractTs — single merged `.extend()` payload schema (bugfix-00
       ...BASE_OPTS,
       siteId: "shadow-site",
       pascal: "ShadowSite",
-      inputBody: { some: "data" },
+      inputBody: { some: "data", Email: "applicant@example.com" },
       discoveredFormFields: new Set(["City"]),
       payloadFieldNames: new Set(["FirstName"]),
     });

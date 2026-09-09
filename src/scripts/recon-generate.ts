@@ -8483,19 +8483,52 @@ export function emitContractTs(opts: {
   //
   // The captured request body (inputBody) is the SITE's internal request
   // shape (a vendor's ddoKey/formData, a GraphQL worklet's variables, …) — not
-  // what the real caller sends. The plugin's buildBarnacleFormData posts
-  // the standard candidate payload (ApplicantContactSchema's identity/
-  // address/resume fields + Email + job-targeting + a JSON Answers block) to
-  // every plugin's /run, so that — not a structural inference over
-  // inputBody — is the public contract every submission-flow plugin must
-  // declare, unconditionally (see recon-generate-payload-schema-mismatch.md
-  // fix option (a)). inputBody remains available to the plugin author as the
-  // internal request shape the site's own call needs to be built from; it no
-  // longer drives the public schema. A missing inputBody means this is a
-  // non-submission (query-type) flow, which keeps its own contract untouched.
-  const basePayloadSchemaExpr = inputBody
+  // necessarily the real caller's shape. ApplicantContactSchema (the job-
+  // application template: identity/address/resume fields + Email + a JSON
+  // Answers block) only belongs on flows that are actually job/benefits
+  // applications — selecting it purely because SOME body was captured picks
+  // it for unrelated submission flows too. usesApplicantContactSchema is the
+  // real-evidence gate: it requires the captured inputBody to itself carry
+  // one of ApplicantContactSchema's own field names (case-insensitively,
+  // checked at any depth via walkAllPrimitiveLeaves) before the template
+  // applies (see recon-generate-payload-schema-mismatch.md).
+  const applicantContactFieldNames = new Set([
+    "FirstName",
+    "LastName",
+    "Phone",
+    "AddressLine",
+    "City",
+    "State",
+    "PostalCode",
+    "Country",
+    "County",
+    "Resume",
+    "ResumeContentType",
+    "ResumeFilename",
+    "ResumeBase64",
+  ]);
+  const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
+  const applicantContactEvidenceFieldNamesLower = new Set(
+    [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
+  );
+  const usesApplicantContactSchema =
+    inputBody != null &&
+    [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
+      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+    );
+  const isReservedByApplicantContactSchema = (name: string): boolean =>
+    usesApplicantContactSchema && applicantContactFieldNames.has(name);
+  // A missing inputBody, or one with no ApplicantContactSchema evidence,
+  // means this is not a job-application submission flow. The former keeps
+  // its own read-flow `{ query }` contract untouched; the latter (a body WAS
+  // captured, it just isn't an application) gets a plain empty base instead
+  // — extend() below still layers on every genuinely-discovered field from
+  // the other sources unchanged.
+  const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : `z.object({\n  query: z.string().min(1),\n})`;
+    : inputBody
+      ? `z.object({})`
+      : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint GraphQL read path (a real primary operation, no
   // multi-step flow) is a candidate for a paging signal — multiStepBody
   // already owns its own per-call semantics.
@@ -8571,36 +8604,12 @@ export function emitContractTs(opts: {
     addExtendField("maxPages", "  maxPages: z.number().int().positive().optional(),");
   }
 
-  // The base extend's own keys — submission flows only.
-  if (inputBody) {
+  // The base extend's own keys — job-application submission flows only.
+  if (usesApplicantContactSchema) {
     addExtendField("Email", "  Email: z.email(),");
     addExtendField("ClickUrl", "  ClickUrl: z.string().min(1),");
     addExtendField("Answers", "  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),");
   }
-
-  // ApplicantContactSchema's own merged identity/address/resume field names
-  // (see src/lib/application-identity.ts, application-address.ts,
-  // application-resume.ts, applicant-payload.ts) — reserved so no discovered/
-  // spliced source can redeclare (and silently shadow) a field the base
-  // ApplicantContactSchema already supplies. Only relevant for submission
-  // flows, where basePayloadSchemaExpr actually is ApplicantContactSchema.
-  const applicantContactFieldNames = new Set([
-    "FirstName",
-    "LastName",
-    "Phone",
-    "AddressLine",
-    "City",
-    "State",
-    "PostalCode",
-    "Country",
-    "County",
-    "Resume",
-    "ResumeContentType",
-    "ResumeFilename",
-    "ResumeBase64",
-  ]);
-  const isReservedByApplicantContactSchema = (name: string): boolean =>
-    Boolean(inputBody) && applicantContactFieldNames.has(name);
 
   // A declared foldReturn.drillParamBindings names drill query params that
   // are caller-driven instead of frozen literals (see
@@ -8625,9 +8634,10 @@ export function emitContractTs(opts: {
   }
 
   // Multi-step flows that include a multipart upload need the binary asset
-  // on the payload. A query-type flow (no ApplicantContactSchema base) still
-  // needs these fields spelled out explicitly.
-  if (hasMultipartStep && !inputBody) {
+  // on the payload. A non-applicant flow (no ApplicantContactSchema base,
+  // whether or not a body was captured) still needs these fields spelled
+  // out explicitly.
+  if (hasMultipartStep && !usesApplicantContactSchema) {
     addExtendField("Resume", "  Resume: z.instanceof(Buffer),");
     addExtendField("ResumeContentType", "  ResumeContentType: z.string(),");
     addExtendField("ResumeFilename", "  ResumeFilename: z.string(),");
@@ -8781,9 +8791,8 @@ export function emitContractTs(opts: {
   // comment above) — a GraphQL mutation that happens to declare an
   // unpopulated variable with a matching name (e.g. `$email`) must not
   // downgrade that required base field.
-  const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
   for (const [fieldName, line] of extendFields) {
-    if (inputBody && baseContractFieldNames.has(fieldName)) continue;
+    if (usesApplicantContactSchema && baseContractFieldNames.has(fieldName)) continue;
     if (
       unpopulatedDeclaredVariables.some((name) => name.toLowerCase() === fieldName.toLowerCase())
     ) {
@@ -8794,14 +8803,15 @@ export function emitContractTs(opts: {
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
-  // multipartJsonObject() for submission flows (inputBody set);
-  // multipartBoolean() is only imported when a boolean field was actually
-  // wrapped in it above (an additional-body-key or an inputBody field under
-  // multipartCoerce) — payloadNeedsMultipart alone doesn't imply that.
+  // multipartJsonObject() for job-application submission flows
+  // (usesApplicantContactSchema); multipartBoolean() is only imported when a
+  // boolean field was actually wrapped in it above (an additional-body-key
+  // or an inputBody field under multipartCoerce) — payloadNeedsMultipart
+  // alone doesn't imply that.
   // Named imports from the same module are combined into one import statement.
   const zodMultipartNamedImports = [
     ...(usesMultipartBoolean ? ["multipartBoolean"] : []),
-    ...(inputBody || (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
+    ...(usesApplicantContactSchema || (payloadNeedsMultipart && sortedStructuredEntries.length > 0)
       ? ["multipartJsonObject"]
       : []),
   ];
@@ -8809,9 +8819,10 @@ export function emitContractTs(opts: {
     zodMultipartNamedImports.length > 0
       ? `import { ${zodMultipartNamedImports.join(", ")} } from "${ENGINE_PKG}/lib/zod-multipart";\n`
       : "";
-  // ApplicantContactSchema backs the default submission-flow payload schema
-  // (see basePayloadSchemaExpr above); only referenced when inputBody is set.
-  const applicantContactImport = inputBody
+  // ApplicantContactSchema backs the job-application submission-flow payload
+  // schema (see basePayloadSchemaExpr above); only referenced when
+  // usesApplicantContactSchema is true.
+  const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
   // Content-Type must be absent from multipart fetch calls so FormData can inject the boundary.
@@ -9300,18 +9311,18 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
     ${
-      payloadNeedsMultipart || inputBody
+      payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep
         ? `// multipart is required whenever the flow itself uploads a file
-    // (hasMultipartStep), OR this is a submission flow (inputBody set) since
-    // basePayloadSchemaExpr always requires a real Resume Buffer via
-    // ApplicantContactSchema regardless of whether the recorded browser flow
-    // contained an upload step, OR the payload has a non-scalar
-    // discoveredStructuredKeys field (payloadNeedsMultipart), since the
-    // multipart wire format is what makes that field's JSON-stringified
-    // encoding parseable.
+    // (hasMultipartStep), OR this is a job-application submission flow
+    // (usesApplicantContactSchema) since basePayloadSchemaExpr requires a
+    // real Resume Buffer via ApplicantContactSchema regardless of whether
+    // the recorded browser flow contained an upload step, OR the payload
+    // has a non-scalar discoveredStructuredKeys field (payloadNeedsMultipart),
+    // since the multipart wire format is what makes that field's
+    // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
@@ -9320,7 +9331,7 @@ ${executeHttpMethodBlock}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
   },
 };

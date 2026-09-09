@@ -31,10 +31,10 @@ describe("emitContractTs — multipart explainer comment gated on multipart: tru
     expect(contract).not.toContain("multipart: true");
   });
 
-  it("emits both the explainer comment and multipart: true when a submission flow's inputBody drives multipart", () => {
+  it("emits both the explainer comment and multipart: true when a job-application inputBody drives multipart", () => {
     const contract = emitContractTs({
       ...BASE_OPTS,
-      inputBody: {},
+      inputBody: { FirstName: "" },
       multiStepBody: "    return { data: {} as unknown };",
     });
 

@@ -136,6 +136,79 @@ export function buildMulticallHeterogeneousActionStepsWithDrillDown(): Multicall
   ];
 }
 
+const BOOK_AVAILABILITY_URL = "https://api.example.com/listings-avail-api/book-availability/";
+
+/**
+ * Same G1/G2 mint -> paged-search -> drill-down chain as
+ * {@link buildMulticallHeterogeneousActionStepsWithDrillDown}, but every
+ * captured body carries only facet/booking-style fields (`category`,
+ * `region`, `startDate`, `endDate`, `unitId`, `checkIn`, `checkOut`,
+ * `guests`) and NONE of ApplicantContactSchema's own field names — plus a
+ * terminal `book-availability` POST so the flow genuinely ends in a
+ * captured-body submission call, not merely a read-only drill. Site-agnostic
+ * regression fixture for the reported defect (an unrelated ATS's
+ * ApplicantContactSchema/Email/ClickUrl/Answers getting forced onto a
+ * same-host, multi-step, non-application REST submission flow's payload
+ * schema) with zero applicant semantics anywhere in the chain.
+ */
+export function buildMulticallHeterogeneousActionStepsWithBookingSubmit(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: TOGGLES_URL,
+      requestPostData: "[]",
+      responseBody: [{ name: "feature-a", enabled: true }],
+      timestamp: "2024-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: AUTHZ_URL,
+      requestPostData: "{}",
+      responseBody: { result: "anonymous", successful: true },
+      timestamp: "2024-06-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: AVAILABLE_PRODUCTS_URL,
+      requestPostData: JSON.stringify({ category: "lofts", region: "west", page: 1 }),
+      responseBody: {
+        totalPages: 2,
+        totalAvailableListings: 42,
+        products: [{ productId: "p1" }],
+      },
+      timestamp: "2024-06-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: AVAILABLE_PRODUCTS_URL,
+      requestPostData: JSON.stringify({ category: "lofts", region: "west", page: 2 }),
+      responseBody: {
+        totalPages: 2,
+        totalAvailableListings: 42,
+        products: [{ productId: "p2" }],
+      },
+      timestamp: "2024-06-01T00:00:03Z",
+    }),
+    buildStep("r4", {
+      url: AVAILABLE_UNITS_URL,
+      requestPostData: JSON.stringify({
+        productId: "p1",
+        startDate: "2024-07-01",
+        endDate: "2024-07-05",
+      }),
+      responseBody: { units: [{ unitId: "s1" }], exchangeRate: 1.0 },
+      timestamp: "2024-06-01T00:00:04Z",
+    }),
+    buildStep("r5", {
+      url: BOOK_AVAILABILITY_URL,
+      requestPostData: JSON.stringify({
+        unitId: "s1",
+        checkIn: "2024-07-01",
+        checkOut: "2024-07-05",
+        guests: 2,
+      }),
+      responseBody: { bookingId: "b1", status: "confirmed" },
+      timestamp: "2024-06-01T00:00:05Z",
+    }),
+  ];
+}
+
 const CATALOG_SEARCH_URL = "https://api.example.com/catalog/search/";
 const CATALOG_ITEM_DETAIL_URL = "https://api.example.com/catalog/item-detail/";
 
