@@ -478,6 +478,16 @@ Browserbase-only. Bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default);
 runs in a `finally` after `plugin.execute()` resolves, before `pool.ts` closes
 the session.
 
+**Session-proxy-bound captcha solving** (`SCRAPER_SESSION_PROXY_*`, see
+`docs/configuration.md`'s env-var table): for an IP-scored invisible
+challenge, the token must be minted through the same egress IP that
+ultimately submits it, or the score collapses and the submission is
+rejected. When `SCRAPER_SESSION_PROXY_HOST` is configured, the session
+provider's resolved proxy is threaded through as the captcha solver's
+`proxy`/`proxytype`, so the solve request and the page's own outbound
+traffic share one IP. When it is unset, `scraper.sessionProxy` stays
+undefined and solving falls back to proxyless exactly as before.
+
 ### 5E — Per-site base URL overrides
 
 Any env var matching `BARNACLE_SITE_<UPPERCASE_SITE_ID>_BASE_URL` is collected
