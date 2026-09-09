@@ -13,7 +13,7 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
-import { createSessionTeardownDetector } from "@/scraper/session-teardown";
+import { classifySessionTeardown, createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 
@@ -298,15 +298,26 @@ export async function createBrowserbaseBrowserSession(
     (customSessionParams.timeout as number | undefined) ??
     config.scraper.browserbaseSessionTimeoutSeconds;
   let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+  // Not yet wired to the flow runner's step loop, so this always logs 0
+  // completed steps; `recordStepCompleted` is exposed on the returned
+  // session for a future caller to advance it as steps finish.
+  let completedStepCount = 0;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;
     cdpTransportClosedError = new CdpTransportClosedError(
       `scraper session's CDP transport was closed by the SDK: ${why}`
     );
     const elapsedSeconds = (Date.now() - sessionStartedAt) / 1000;
-    if (elapsedSeconds >= configuredTimeoutSeconds - TOLERANCE_SECONDS) {
+    const classification = classifySessionTeardown({
+      configuredTimeoutSeconds,
+      elapsedSeconds,
+      completedStepCount,
+      toleranceSeconds: TOLERANCE_SECONDS,
+    });
+    if (classification.isTimeoutHit) {
       sessionTimeoutHit = { configuredTimeoutSeconds, elapsedSeconds };
     }
+    logger.warn(classification.message);
   });
 
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
@@ -345,11 +356,16 @@ export async function createBrowserbaseBrowserSession(
     | { configuredTimeoutSeconds: number; elapsedSeconds: number }
     | undefined => sessionTimeoutHit;
 
+  const recordStepCompleted = (): void => {
+    completedStepCount += 1;
+  };
+
   return {
     stagehand,
     limiter,
     sessionId,
     provider: "browserbase",
+    recordStepCompleted,
     close,
     getSuppressedAisdkElementIdErrorCount,
     getOutboundIp,

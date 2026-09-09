@@ -82,6 +82,12 @@ export interface BrowserSession {
   getSessionTimeoutHit?: () =>
     | { configuredTimeoutSeconds: number; elapsedSeconds: number }
     | undefined;
+  /**
+   * Advances this session's completed-step counter, so a timeout-hit
+   * teardown log can report how much of the flow finished before it fired.
+   * Only present on Browserbase sessions.
+   */
+  recordStepCompleted?: () => void;
 }
 
 /**

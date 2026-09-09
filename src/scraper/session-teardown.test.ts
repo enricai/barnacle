@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { CdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
-import { createSessionTeardownDetector, raceAgainstTeardown } from "@/scraper/session-teardown";
+import {
+  classifySessionTeardown,
+  createSessionTeardownDetector,
+  raceAgainstTeardown,
+} from "@/scraper/session-teardown";
 
 /** Flushes pending microtasks without relying on a timer. */
 const flushMicrotasks = (): Promise<void> => Promise.resolve().then(() => undefined);
@@ -82,6 +86,71 @@ describe("session-teardown/createSessionTeardownDetector", () => {
     await flushMicrotasks();
 
     expect(rejected).toBe(false);
+  });
+});
+
+describe("session-teardown/classifySessionTeardown", () => {
+  it("classifies a teardown near the configured timeout as a timeout hit, with seconds and step count in the message", () => {
+    const result = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 290,
+      completedStepCount: 7,
+    });
+
+    expect(result.isTimeoutHit).toBe(true);
+    expect(result.message).toContain("hit its timeout");
+    expect(result.message).toContain("300s");
+    expect(result.message).toContain("7 step(s)");
+  });
+
+  it("does not classify an early teardown as a timeout hit, and uses the generic mid-flow message instead", () => {
+    const result = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 30,
+      completedStepCount: 2,
+    });
+
+    expect(result.isTimeoutHit).toBe(false);
+    expect(result.message).not.toContain("hit its timeout");
+    expect(result.message).toContain("stagehand-initiated teardown mid-flow");
+    expect(result.message).toContain("2 step(s)");
+  });
+
+  it("produces text that is observably distinct between the two classifications for the same step count", () => {
+    const timeoutHit = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 295,
+      completedStepCount: 5,
+    });
+    const generic = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 10,
+      completedStepCount: 5,
+    });
+
+    expect(timeoutHit.message).not.toBe(generic.message);
+  });
+
+  it("treats an elapsed time exactly at the tolerance boundary as a timeout hit (inclusive lower bound)", () => {
+    const result = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 285,
+      completedStepCount: 0,
+      toleranceSeconds: 15,
+    });
+
+    expect(result.isTimeoutHit).toBe(true);
+  });
+
+  it("respects a custom tolerance instead of the default", () => {
+    const result = classifySessionTeardown({
+      configuredTimeoutSeconds: 300,
+      elapsedSeconds: 250,
+      completedStepCount: 0,
+      toleranceSeconds: 60,
+    });
+
+    expect(result.isTimeoutHit).toBe(true);
   });
 });
 
