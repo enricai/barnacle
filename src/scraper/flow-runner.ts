@@ -5371,6 +5371,30 @@ function findCaptchaCallbackExprSrc(): string {
 }
 
 /**
+ * Shared by both the immediate and late invoke exprs in
+ * `injectCaptchaTokenAndSubmit`: sets `responseField`'s value to `token` via
+ * the descriptor-set path (falling back to a plain assignment when no
+ * setter is found), then invokes the discovered callback `found` with that
+ * same token.
+ */
+function setResponseFieldAndInvokeCallbackExprSrc(responseField: string, token: string): string {
+  return `
+    const responseField = ${JSON.stringify(responseField)};
+    const token = ${JSON.stringify(token)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    const descriptor = field
+      ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
+      : null;
+    if (field && descriptor && descriptor.set) {
+      descriptor.set.call(field, token);
+    } else if (field) {
+      field.value = token;
+    }
+    found.invoke(token);
+  `;
+}
+
+/**
  * Site-agnostic captcha-solve hand-off: given an already-solved token,
  * discover the widget's registered callback — a `data-callback` attribute
  * naming a `window` global, or (absent that) a callback captured from a
@@ -5450,18 +5474,7 @@ export async function injectCaptchaTokenAndSubmit(
       const sitekeyEl = document.querySelector("[data-sitekey]");
       const found = __findCaptchaCallback(sitekeyEl);
       if (!found) return;
-      const responseField = ${JSON.stringify(responseField)};
-      const token = ${JSON.stringify(token)};
-      const field = document.querySelector('[name="' + responseField + '"]');
-      const descriptor = field
-        ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
-        : null;
-      if (field && descriptor && descriptor.set) {
-        descriptor.set.call(field, token);
-      } else if (field) {
-        field.value = token;
-      }
-      found.invoke(token);
+      ${setResponseFieldAndInvokeCallbackExprSrc(responseField, token)}
     })()`;
     // Deliver the already-solved token into the response field first, then
     // invoke the widget's own discovered callback with that same token so it
@@ -5504,18 +5517,7 @@ export async function injectCaptchaTokenAndSubmit(
       const sitekeyEl = document.querySelector("[data-sitekey]");
       const found = __findCaptchaCallback(sitekeyEl);
       if (!found) return;
-      const responseField = ${JSON.stringify(responseField)};
-      const token = ${JSON.stringify(token)};
-      const field = document.querySelector('[name="' + responseField + '"]');
-      const descriptor = field
-        ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
-        : null;
-      if (field && descriptor && descriptor.set) {
-        descriptor.set.call(field, token);
-      } else if (field) {
-        field.value = token;
-      }
-      found.invoke(token);
+      ${setResponseFieldAndInvokeCallbackExprSrc(responseField, token)}
     })()`;
     // Same token-then-invoke delivery and navigate-mid-evaluate tolerance as
     // the non-late invoke above: the callback is free to submit the form
