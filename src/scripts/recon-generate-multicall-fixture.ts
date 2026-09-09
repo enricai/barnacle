@@ -1096,6 +1096,88 @@ export function buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsAct
   ];
 }
 
+/**
+ * A grouped, nested-primary drill-down whose drilled endpoint's literal query
+ * threads TWO params, each equal ONLY to the matched (first) item's own
+ * field — never coincidentally equal to the ancestor's own top-level field,
+ * unlike {@link buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps}.
+ * Each param's ancestor-side counterpart instead lives under a DIFFERENT
+ * nested sub-object on the group (`primaryVariant.code` and
+ * `cheapestVariant.detail.code`), generalizing
+ * {@link buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps}'s
+ * single-param, non-coincidental case to two params bound to two distinct
+ * ancestor sub-paths at once.
+ *
+ * Both nested ancestor values must independently resolve through
+ * {@link walkItemFieldPaths}'s recursion for a fold plan to hoist per group; a
+ * plan that only hoists one of the two params would still issue a fetch per
+ * item for the other, unresolved one.
+ *
+ * Every OTHER item in the same group carries its own two fields diverging
+ * from both matched-item values, and every group's matched values diverge
+ * from every other group's, so an item-bound fold plan is
+ * runtime-distinguishable from an ancestor-bound one by fetch count.
+ *
+ * `r1` is the real drill (matches group `grp1` via both nested ancestor
+ * sub-paths). `r2` is a decoy — same drilled pathname, but both its query
+ * values are foreign to the primary response — so
+ * {@link findFrozenVaryingDrillParams}'s same-endpoint variance check has a
+ * second, genuinely differing capture to compare against.
+ */
+export function buildMulticallNestedGroupedDrillDownDualItemLiteralDistinctSubpathAncestorScopedParamsActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "grp1",
+            primaryVariant: { code: "pv1" },
+            cheapestVariant: { detail: { code: "cv1" } },
+            entries: [
+              { entryId: "e1", ownCode: "pv1", ownDetailCode: "cv1", name: "Widget" },
+              { entryId: "e2", ownCode: "pv1-alt", ownDetailCode: "cv1-alt", name: "Gadget" },
+              { entryId: "e3", ownCode: "pv1-alt2", ownDetailCode: "cv1-alt3", name: "Doohickey" },
+            ],
+          },
+          {
+            masterCode: "grp2",
+            primaryVariant: { code: "pv2" },
+            cheapestVariant: { detail: { code: "cv2" } },
+            entries: [
+              { entryId: "e4", ownCode: "pv2", ownDetailCode: "cv2", name: "Thingamajig" },
+              { entryId: "e5", ownCode: "pv2-alt", ownDetailCode: "cv2-alt", name: "Contraption" },
+              { entryId: "e6", ownCode: "pv2-alt2", ownDetailCode: "cv2-alt3", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-03-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=pv1&detail=cv1`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      timestamp: "2025-03-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated&detail=zzz-unrelated-detail`,
+      requestPostData: null,
+      responseBody: {
+        details: [{ entryId: "zzz-unrelated", description: "An unrelated entry." }],
+      },
+      timestamp: "2025-03-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
