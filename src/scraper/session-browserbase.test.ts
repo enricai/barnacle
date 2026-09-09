@@ -36,6 +36,7 @@ const { configRef } = vi.hoisted(() => ({
         proxyType: "residential",
         solveCaptcha: true,
         anthropicTimeoutMs: 120000,
+        browserbaseSessionTimeoutSeconds: 1800,
         captureSessionIp: true,
         sessionIpEchoUrl: "https://api.ipify.org?format=json",
         sessionIpTimeoutMs: 10000,
@@ -372,6 +373,28 @@ describe("createBrowserbaseBrowserSession keepAlive", () => {
     const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as { keepAlive?: boolean };
 
     expect(stagehandArg.keepAlive).toBe(true);
+  });
+
+  it("defaults the Browserbase session timeout to config.scraper.browserbaseSessionTimeoutSeconds", async () => {
+    await createBrowserbaseBrowserSession();
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { timeout?: number };
+    };
+
+    expect(stagehandArg.browserbaseSessionCreateParams?.timeout).toBe(1800);
+  });
+
+  it("lets a caller-supplied browserbaseSessionCreateParams.timeout override the config default", async () => {
+    await createBrowserbaseBrowserSession({
+      browserbaseSessionCreateParams: { timeout: 300 },
+    });
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      browserbaseSessionCreateParams?: { timeout?: number };
+    };
+
+    expect(stagehandArg.browserbaseSessionCreateParams?.timeout).toBe(300);
   });
 });
 
