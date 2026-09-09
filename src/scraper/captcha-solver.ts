@@ -15,6 +15,7 @@ import { getLogger } from "@/lib/logging";
 import { CaptchaError, CaptchaSolverUnavailableError } from "@/scraper/errors";
 import type { FetchImpl } from "@/scraper/raw-fetch";
 import { rawFetch } from "@/scraper/raw-fetch";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const logger = getLogger({ name: "scraper/captcha-solver" });
 
@@ -42,6 +43,12 @@ export interface SolveCaptchaRequest {
   userAgent?: string;
   /** Overrides the fetch implementation; defaults to undici's. See raw-fetch.ts's FetchImpl for why this seam exists. */
   fetchImpl?: FetchImpl;
+  /**
+   * The outbound proxy the browser session is bound to. When supplied, the
+   * solve is routed through it so the returned token is minted from the
+   * same IP the challenge is later submitted from. Omit to solve proxyless.
+   */
+  proxy?: SessionProxyTuple;
 }
 
 /** Result of a successful solve. */
@@ -122,6 +129,7 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
     isInvisible,
     userAgent,
     fetchImpl = undiciFetch as unknown as FetchImpl,
+    proxy,
   } = request;
 
   const startedAt = Date.now();
@@ -134,6 +142,7 @@ export async function solveCaptcha(request: SolveCaptchaRequest): Promise<SolveC
       isInvisible,
       userAgent,
       fetchImpl,
+      proxy,
     });
     const ms = Date.now() - startedAt;
     logger.info(`captcha-solve: provider=2captcha ms=${ms} ok=true`);
@@ -156,10 +165,17 @@ interface TwoCaptchaSolveOptions {
   isInvisible: boolean;
   userAgent?: string;
   fetchImpl: FetchImpl;
+  proxy?: SessionProxyTuple;
+}
+
+/** Formats a session proxy tuple as 2Captcha's documented `proxy` field: `[user:pass@]host:port`. */
+function formatTwoCaptchaProxy(proxy: SessionProxyTuple): string {
+  const credentials = proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
+  return `${credentials}${proxy.host}:${proxy.port}`;
 }
 
 async function solveViaTwoCaptcha(options: TwoCaptchaSolveOptions): Promise<string> {
-  const { apiKey, type, siteKey, pageUrl, isInvisible, userAgent, fetchImpl } = options;
+  const { apiKey, type, siteKey, pageUrl, isInvisible, userAgent, fetchImpl, proxy } = options;
 
   const createParams: Record<string, string> = {
     key: apiKey,
@@ -169,6 +185,9 @@ async function solveViaTwoCaptcha(options: TwoCaptchaSolveOptions): Promise<stri
     invisible: isInvisible ? "1" : "0",
     json: "1",
     ...(userAgent ? { userAgent } : {}),
+    ...(proxy
+      ? { proxy: formatTwoCaptchaProxy(proxy), proxytype: proxy.protocol.toUpperCase() }
+      : {}),
   };
 
   const createRaw = await postForm("/in.php", createParams, fetchImpl, "2captcha createTask");
