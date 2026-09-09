@@ -80,6 +80,7 @@ import {
   type FrameTarget,
   mainFrameTarget,
   probeAttachedFrameTarget,
+  readCurrentFrameUrl,
   resolveFrameTarget,
   sleep,
   waitForChildFrameReady,
@@ -1173,10 +1174,11 @@ export async function snapshotPage(
   // A resolved child FrameTarget's url() reads location.href off the CDP
   // frame session (frame-target.ts's childFrameTarget), which rejects (or
   // trips its watchdog) once the OOPIF detaches — most commonly right after
-  // a submit click tears down the wizard iframe. Falling back to page.url()
-  // lets the post-submit navigation still register as a urlChanged signal
-  // instead of throwing the whole step out of the cascade.
-  const url = page ? await target.url().catch(() => page.url()) : await target.url();
+  // a submit click tears down the wizard iframe. readCurrentFrameUrl
+  // re-resolves against the declared frame selector before ever falling
+  // back to page.url(), so a same-origin in-frame navigation still reports
+  // its own scope's URL instead of masquerading as the top wrapper page.
+  const url = page ? await readCurrentFrameUrl(page, target) : await target.url();
   return {
     networkCount: signalCounter.n,
     url,
