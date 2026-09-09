@@ -18,7 +18,9 @@ import type { Capture } from "@/scripts/recon-shared";
  * call as the submit target. A still-present host-provenance defect would
  * surface as "browser-flow-only"/a frozen-varying-param error; a
  * still-present pattern-override defect would surface as the paged-listing
- * endpoint (not the drill endpoint) winning the submit target.
+ * endpoint (not the drill endpoint) winning the submit target outright, or
+ * the paged-listing step it depends on being dropped from the chain instead
+ * of surviving as a step leading up to that submit target.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -180,8 +182,11 @@ describe("recon-generate CLI — paged-listing -> drill submission stays host-ga
     // The submit target traces to the declared pattern's drill endpoint...
     expect(contract).toContain("/listings-avail-api/available-units/");
 
-    // ...never to the paged-listing endpoint alone as the submit target.
-    expect(contract).not.toContain("/listings-avail-api/available-products/");
+    // ...and the paged-listing endpoint it depends on survives as a chain
+    // step leading up to that submit target — truncating at the last
+    // pattern match keeps the whole chain instead of collapsing to the
+    // bare matching capture(s).
+    expect(contract).toContain("/listings-avail-api/available-products/");
 
     // baseUrl is host-gated to the declared own-backend host.
     expect(contract).toContain(`https://${OWN_BACKEND_HOST}`);
