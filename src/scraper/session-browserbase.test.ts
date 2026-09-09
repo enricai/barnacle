@@ -537,6 +537,55 @@ describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () 
 
     expect(session.getCdpTransportClosedError?.()).toBeUndefined();
   });
+
+  it("classifies a transport close observed near the configured session timeout as a timeout hit", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = await createBrowserbaseBrowserSession({
+        browserbaseSessionCreateParams: { timeout: 300 },
+      });
+      const fakeStagehand = session.stagehand as unknown as {
+        context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+      };
+      const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+        why: string
+      ) => void;
+
+      // 300s configured timeout, 15s tolerance: closing at 290s elapsed is
+      // within tolerance of the configured lifetime.
+      vi.advanceTimersByTime(290_000);
+      handler("socket-close code=1006 reason=");
+
+      const timeoutHit = session.getSessionTimeoutHit?.();
+      expect(timeoutHit).toBeDefined();
+      expect(timeoutHit?.configuredTimeoutSeconds).toBe(300);
+      expect(timeoutHit?.elapsedSeconds).toBeCloseTo(290, 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not classify an early transport close (real crash/incident) as a timeout hit", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = await createBrowserbaseBrowserSession({
+        browserbaseSessionCreateParams: { timeout: 300 },
+      });
+      const fakeStagehand = session.stagehand as unknown as {
+        context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+      };
+      const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+        why: string
+      ) => void;
+
+      vi.advanceTimersByTime(30_000);
+      handler("socket-close code=1006 reason=");
+
+      expect(session.getSessionTimeoutHit?.()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("createBrowserSession session-create-limiter wiring around the real Stagehand.init call", () => {

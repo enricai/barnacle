@@ -20,6 +20,15 @@ import type { Logger } from "@/types/logging";
 const logger = getLogger({ name: "scraper/session-browserbase" });
 
 /**
+ * Browserbase overshoots its own configured session timeout by 1-14s in
+ * practice, never undershoots — so a lower-bound-only check against the
+ * configured value (no upper bound, since keepAlive/slow teardown can
+ * extend it further) is the correct direction for classifying a transport
+ * close as timeout-driven.
+ */
+const TOLERANCE_SECONDS = 15;
+
+/**
  * Shape of the LogLine objects Stagehand passes to its `logger` callback.
  * We declare a minimal local subset rather than importing from Stagehand
  * because the type isn't re-exported from the package's top-level entrypoint.
@@ -180,6 +189,7 @@ export async function createBrowserbaseBrowserSession(
     throw new Error("ANTHROPIC_API_KEY is required for the Stagehand LLM client");
   }
 
+  const sessionStartedAt = Date.now();
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
   const advancedStealth = opts?.advancedStealth === true;
@@ -284,11 +294,19 @@ export async function createBrowserbaseBrowserSession(
   // initiated teardown mid-operation, not a consequence of our own close.
   let weInitiatedClose = false;
   let cdpTransportClosedError: CdpTransportClosedError | undefined;
+  const configuredTimeoutSeconds =
+    (customSessionParams.timeout as number | undefined) ??
+    config.scraper.browserbaseSessionTimeoutSeconds;
+  let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;
     cdpTransportClosedError = new CdpTransportClosedError(
       `scraper session's CDP transport was closed by the SDK: ${why}`
     );
+    const elapsedSeconds = (Date.now() - sessionStartedAt) / 1000;
+    if (elapsedSeconds >= configuredTimeoutSeconds - TOLERANCE_SECONDS) {
+      sessionTimeoutHit = { configuredTimeoutSeconds, elapsedSeconds };
+    }
   });
 
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
@@ -323,6 +341,9 @@ export async function createBrowserbaseBrowserSession(
   const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
     cdpTransportClosedError;
 
+  const getSessionTimeoutHit = (): { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined =>
+    sessionTimeoutHit;
+
   return {
     stagehand,
     limiter,
@@ -333,5 +354,6 @@ export async function createBrowserbaseBrowserSession(
     getOutboundIp,
     deathSignal,
     getCdpTransportClosedError,
+    getSessionTimeoutHit,
   };
 }
