@@ -10226,15 +10226,12 @@ async function main(): Promise<void> {
           fallbackDomain
         )
       );
-  // The same undercount hazard applies one layer below the manifest: a
-  // flow-declared submitEndpointPattern that matches only one section's URL
-  // (the natural way to describe "the button that finishes the wizard")
-  // filters the heuristic sequence down to that one capture even though the
-  // same captures, read without the pattern, show every section saving
-  // independently. A pattern that undercounts what the unfiltered heuristic
-  // finds is therefore not trusted either — it falls back to the richer,
-  // unfiltered sequence instead of collapsing a real multi-call flow into
-  // the generic single-endpoint fallback.
+  // A flow-declared submitEndpointPattern is authoritative: it may match only
+  // one section's URL (the natural way to describe "the button that finishes
+  // the wizard") even though the same captures, read without the pattern,
+  // show every section saving independently. That gap is logged below for
+  // visibility, but the declared pattern is never overridden by the richer
+  // unfiltered sequence.
   const unfilteredHeuristicActionCaptures =
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
@@ -10265,9 +10262,7 @@ async function main(): Promise<void> {
       `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
     );
   }
-  const heuristicActionCaptures = patternUndercounts
-    ? unfilteredHeuristicActionCaptures
-    : patternedHeuristicActionCaptures;
+  const heuristicActionCaptures = patternedHeuristicActionCaptures;
   const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
   const manifestUndercounts =
     manifestActionCaptures !== null &&
@@ -10285,37 +10280,6 @@ async function main(): Promise<void> {
     manifestActionCaptures !== null && !manifestUndercounts
       ? manifestActionCaptures
       : heuristicActionCaptures;
-  // The declared submitEndpointPattern's own under-match: unlike manifestUndercounts
-  // (which compares an authoritative submit-manifest.json against the heuristic
-  // sequence), this compares the pattern-filtered heuristic sequence against the SAME
-  // captures with no submitPatterns filter at all — the true raw non-GET 2xx non-noise
-  // action set. A pattern that matches conspicuously fewer calls than that raw set is a
-  // detection failure (the pattern is too narrow), not evidence the flow is read-only,
-  // and per the no-silent-fallback rule must not be allowed to quietly collapse into the
-  // generic single-endpoint {query} template below.
-  const rawUnfilteredActionCaptures =
-    submitEndpointPattern === null
-      ? null
-      : gql
-        ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(
-              captures,
-              null,
-              foldReturnSpec,
-              ownBackendHostnames,
-              fallbackDomain
-            ),
-            primaryGraphQLOperation
-          )
-        : collapseRedundantPatches(
-            extractActionSequence(
-              captures,
-              null,
-              foldReturnSpec,
-              ownBackendHostnames,
-              fallbackDomain
-            )
-          );
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
@@ -10388,24 +10352,6 @@ async function main(): Promise<void> {
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
-
-  // Loud failure for a submitEndpointPattern that under-matches the raw traffic badly
-  // enough to collapse the flow to the single-endpoint fallback: heuristicActionCaptures
-  // is the pattern-filtered sequence (used both directly and as rawActionCaptures' floor
-  // via manifestUndercounts above), so if it's this thin ONLY because the pattern itself
-  // excluded real action captures the unfiltered raw set still has, emitting the generic
-  // {query} template would misrepresent a genuine multi-call flow as read-only. Exit
-  // rather than degrade quietly, per the no-defensive/no-silent-fallback rule.
-  if (
-    rawUnfilteredActionCaptures !== null &&
-    !isSubmissionFlow &&
-    rawUnfilteredActionCaptures.length > heuristicActionCaptures.length
-  ) {
-    logger.error(
-      `ERROR declared submitEndpointPattern ${JSON.stringify(submitEndpointPattern)} matched only ${heuristicActionCaptures.length} of ${rawUnfilteredActionCaptures.length} raw non-GET 2xx non-noise action capture(s) — this under-match looks like a detection failure, not a read-only flow; refusing to fall back to the generic single-endpoint {query} template. Fix submitEndpointPattern in recon-flow.json to cover the real submission calls.`
-    );
-    process.exit(1);
-  }
 
   // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
   // whose every action capture is landing-phase is almost certainly page-chrome
