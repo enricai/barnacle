@@ -234,7 +234,11 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     const submitSpy = vi.fn();
     form.submit = submitSpy;
 
+    let responseFieldValueAtCallbackTime: string | undefined;
     (window as unknown as Record<string, unknown>).onCaptchaSolved = (token: string) => {
+      responseFieldValueAtCallbackTime = (
+        document.querySelector('[name="h-captcha-response"]') as unknown as { value: string }
+      ).value;
       const extraField = document.createElement("input");
       extraField.type = "hidden";
       extraField.name = "extra-companion-field";
@@ -251,6 +255,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     };
     expect(extraField).not.toBeNull();
     expect(extraField.value).toBe("solved-token-callback");
+    expect(responseFieldValueAtCallbackTime).toBe("solved-token-callback");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
@@ -271,7 +276,11 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     const submitSpy = vi.fn();
     form.submit = submitSpy;
 
+    let responseFieldValueAtCallbackTime: string | undefined;
     const capturedCallback = (token: string): void => {
+      responseFieldValueAtCallbackTime = (
+        document.querySelector('[name="h-captcha-response"]') as unknown as { value: string }
+      ).value;
       const extraField = document.createElement("input");
       extraField.type = "hidden";
       extraField.name = "extra-companion-field";
@@ -291,6 +300,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     };
     expect(extraField).not.toBeNull();
     expect(extraField.value).toBe("solved-token-captured");
+    expect(responseFieldValueAtCallbackTime).toBe("solved-token-captured");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
