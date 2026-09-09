@@ -1652,6 +1652,27 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
 }
 
 /**
+ * Truncates a host-gated action sequence at the LAST capture matching the
+ * flow's declared submit pattern, keeping every capture up to and including
+ * it. A pattern that names only the wizard's final step must not collapse a
+ * multi-step chain (auth mint, paged listing, terminal submit) down to the
+ * bare matching capture(s) — a hard filter would drop the earlier steps the
+ * fold plan and state-threading depend on. When nothing matches, the result
+ * is empty, matching what a hard filter would have produced.
+ */
+export function truncateActionSequenceAtSubmitPattern(
+  sequence: ActionCapture[],
+  submitPatterns: SubmitPatterns | null
+): ActionCapture[] {
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  let lastMatchIndex = -1;
+  for (let i = 0; i < sequence.length; i++) {
+    if (matchesSubmit(sequence[i]!.capture)) lastMatchIndex = i;
+  }
+  return sequence.slice(0, lastMatchIndex + 1);
+}
+
+/**
  * Reads `submit-manifest.json` (written by recon-browser) and resolves it to the
  * authoritative submission action sequence. This is the deepest submit-selection
  * signal: recon-browser matched these captures against the flow's declared submit
@@ -10137,11 +10158,13 @@ async function main(): Promise<void> {
   const gql = isGraphQL(captures);
   // Hoisted so both the primary-operation gate below and rawActionCaptures
   // (further down) read the same computed sequence instead of calling the
-  // extractor twice.
+  // extractor twice. Computed unfiltered (submitPatterns: null) — a
+  // flow-declared submit pattern must truncate this sequence, not filter
+  // it, so every gate reading it sees the full host-gated chain.
   const graphqlActionSequence = gql
     ? extractGraphQLActionSequence(
         captures,
-        submitPatterns,
+        null,
         foldReturnSpec,
         ownBackendHostnames,
         fallbackDomain
@@ -10221,46 +10244,23 @@ async function main(): Promise<void> {
   // a wizard whose every section saves independently, so it is only trusted
   // when it isn't a strict undercount of what the same captures' own
   // heuristic extraction finds.
-  const patternedHeuristicActionCaptures = gql
+  const unfilteredHeuristicActionCaptures = gql
     ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
     : collapseRedundantPatches(
-        extractActionSequence(
-          captures,
-          submitPatterns,
-          foldReturnSpec,
-          ownBackendHostnames,
-          fallbackDomain
-        )
+        extractActionSequence(captures, null, foldReturnSpec, ownBackendHostnames, fallbackDomain)
       );
   // A flow-declared submitEndpointPattern is authoritative: it may match only
-  // one section's URL (the natural way to describe "the button that finishes
-  // the wizard") even though the same captures, read without the pattern,
-  // show every section saving independently. That gap is logged below for
-  // visibility, but the declared pattern is never overridden by the richer
-  // unfiltered sequence.
-  const unfilteredHeuristicActionCaptures =
+  // the final step's URL (the natural way to describe "the button that
+  // finishes the wizard") even though the earlier steps of the same chain
+  // (auth mint, paged listing, ...) are what state-threading depends on.
+  // Truncating at the last match — instead of filtering to matches only —
+  // keeps that whole chain; the gap between this and the unfiltered
+  // sequence is logged below for visibility, but the declared pattern is
+  // never overridden by the richer unfiltered sequence.
+  const patternedHeuristicActionCaptures =
     submitPatterns.endpoint === null && submitPatterns.body === null
-      ? patternedHeuristicActionCaptures
-      : gql
-        ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(
-              captures,
-              null,
-              foldReturnSpec,
-              ownBackendHostnames,
-              fallbackDomain
-            ),
-            primaryGraphQLOperation
-          )
-        : collapseRedundantPatches(
-            extractActionSequence(
-              captures,
-              null,
-              foldReturnSpec,
-              ownBackendHostnames,
-              fallbackDomain
-            )
-          );
+      ? unfilteredHeuristicActionCaptures
+      : truncateActionSequenceAtSubmitPattern(unfilteredHeuristicActionCaptures, submitPatterns);
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
   if (patternUndercounts && requireSubmitEndpointMatch) {
