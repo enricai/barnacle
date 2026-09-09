@@ -19,13 +19,17 @@ vi.mock("@/lib/bedrock", () => ({ createBedrockModel: mockCreateBedrockModel }))
 const FIXTURES_DIR = path.join(__dirname, "__fixtures__");
 
 /** Minimal mocked browser session + context so `execute` runs without a real Stagehand. */
-function mockExecuteDeps(scraperOverrides: Record<string, unknown> = {}): {
+function mockExecuteDeps(
+  scraperOverrides: Record<string, unknown> = {},
+  sessionOverrides: Record<string, unknown> = {}
+): {
   session: never;
   context: never;
 } {
   const page = { goto: async (): Promise<void> => undefined, url: (): string => "about:blank" };
   const session = {
     stagehand: { context: { awaitActivePage: async () => page } },
+    ...sessionOverrides,
   } as never;
   const context = {
     baseUrl: "https://apply.acme.example",
@@ -351,7 +355,7 @@ describe("buildConfigPlugin", () => {
     expect(deps.steps[1]?.emailStepConfig).toEqual({ extract: "code", action: "fill" });
   });
 
-  it("forwards context.config.scraper.sessionProxy into the runHealingFlow deps when set", async () => {
+  it("forwards session.sessionProxy into the runHealingFlow deps when set", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
     const sessionProxy = {
       protocol: "http" as const,
@@ -360,7 +364,7 @@ describe("buildConfigPlugin", () => {
       username: "u",
       password: "p",
     };
-    const { session, context } = mockExecuteDeps({ sessionProxy });
+    const { session, context } = mockExecuteDeps({}, { sessionProxy });
 
     await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
 
@@ -368,7 +372,7 @@ describe("buildConfigPlugin", () => {
     expect(deps.sessionProxy).toEqual(sessionProxy);
   });
 
-  it("passes a null sessionProxy when context.config.scraper.sessionProxy is unset", async () => {
+  it("passes a null sessionProxy when session.sessionProxy is unset", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
     const { session, context } = mockExecuteDeps();
 
@@ -376,6 +380,32 @@ describe("buildConfigPlugin", () => {
 
     const deps = mockRunHealingFlow.mock.calls[0]?.[0] as { sessionProxy?: unknown };
     expect(deps.sessionProxy).toBeNull();
+  });
+
+  it("threads session.sessionProxy through to a captchaGated step's deps", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as { flow: { steps: unknown[] } }).flow.steps.push({
+      step: "click submit",
+      captchaGated: true,
+    });
+    const plugin = await buildConfigPlugin(manifest);
+    const sessionProxy = {
+      protocol: "http" as const,
+      host: "proxy.example.com",
+      port: 8080,
+      username: "u",
+      password: "p",
+    };
+    const { session, context } = mockExecuteDeps({}, { sessionProxy });
+
+    await plugin.execute({ FirstName: "J", Email: "e" }, session, context);
+
+    const deps = mockRunHealingFlow.mock.calls[0]?.[0] as {
+      sessionProxy?: unknown;
+      steps: { captchaGated?: boolean }[];
+    };
+    expect(deps.sessionProxy).toEqual(sessionProxy);
+    expect(deps.steps.some((s) => s.captchaGated === true)).toBe(true);
   });
 
   it("rejects a manifest declaring emailStep with no Email field in request.properties", async () => {

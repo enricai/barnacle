@@ -289,7 +289,7 @@ export async function buildConfigPlugin(
         rephraseModel,
         deathSignal,
         allocatedInbox,
-        sessionProxy: context.config.scraper.sessionProxy ?? null,
+        sessionProxy: session.sessionProxy ?? null,
         uploadFixture: buildUploadFixture(payload, hasUploadStep, spec.multipart ?? false),
         frameSelector: spec.flow.frameSelector,
         submitEndpointPattern: spec.flow.submitEndpointPattern ?? null,
