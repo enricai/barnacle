@@ -147,4 +147,47 @@ describe("scraper/captcha-solver", () => {
     expect(loggedText).not.toContain("test-2captcha-key");
     expect(loggedText).not.toContain("solved-token");
   });
+
+  it("binds createTask to the supplied proxy, and omits proxy fields when none is supplied", async () => {
+    const calls: { url: string; body: string | undefined }[] = [];
+    const fetchImpl = vi.fn(async (url: string, init: { body?: Buffer | string }) => {
+      calls.push({ url, body: typeof init.body === "string" ? init.body : undefined });
+      if (url.endsWith("/in.php")) {
+        return jsonResponse({ status: 1, request: "task-123" });
+      }
+      return jsonResponse({ status: 1, request: "solved-token" });
+    });
+
+    await solveCaptcha({
+      type: "hcaptcha",
+      siteKey: "site-key",
+      pageUrl: "https://example.com",
+      isInvisible: true,
+      fetchImpl,
+      proxy: {
+        protocol: "socks5",
+        host: "proxy.example.com",
+        port: 1080,
+        username: "user",
+        password: "pass",
+      },
+    });
+
+    const createBody = new URLSearchParams(calls[0]?.body);
+    expect(createBody.get("proxy")).toBe("user:pass@proxy.example.com:1080");
+    expect(createBody.get("proxytype")).toBe("SOCKS5");
+
+    calls.length = 0;
+    await solveCaptcha({
+      type: "hcaptcha",
+      siteKey: "site-key",
+      pageUrl: "https://example.com",
+      isInvisible: true,
+      fetchImpl,
+    });
+
+    const proxylessBody = new URLSearchParams(calls[0]?.body);
+    expect(proxylessBody.has("proxy")).toBe(false);
+    expect(proxylessBody.has("proxytype")).toBe(false);
+  });
 });

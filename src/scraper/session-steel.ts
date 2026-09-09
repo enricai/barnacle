@@ -16,8 +16,16 @@ import {
 import { createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const logger = getLogger({ name: "scraper/session-steel" });
+
+/** Formats a session proxy tuple as Steel's documented `proxyUrl`: `protocol://[user:pass@]host:port`. */
+function formatSteelProxyUrl(proxy: SessionProxyTuple): string {
+  const credentials =
+    proxy.username && proxy.password ? `${proxy.username}:${proxy.password}@` : "";
+  return `${proxy.protocol}://${credentials}${proxy.host}:${proxy.port}`;
+}
 
 /**
  * Forwards every Stagehand LogLine to pino unchanged. Steel has no
@@ -76,11 +84,16 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   const steel = new Steel({ steelAPIKey: config.scraper.steelApiKey });
 
   const viewport = pickRandomViewport();
+  const sessionProxy = config.scraper.sessionProxy;
   const session = await steel.sessions.create({
     timeout: config.scraper.steelSessionTimeoutMs,
     // Lowercase the env value so SCRAPER_PROXY_TYPE="Residential" /
     // "RESIDENTIAL" don't silently turn the proxy off.
     useProxy: config.scraper.proxyType.toLowerCase() === "residential",
+    // proxyUrl overrides useProxy when both are supplied (Steel's
+    // SessionCreateParams docs), so only set it when a concrete proxy is
+    // configured — leave useProxy driving today's behavior otherwise.
+    ...(sessionProxy ? { proxyUrl: formatSteelProxyUrl(sessionProxy) } : {}),
     solveCaptcha: config.scraper.solveCaptcha,
     dimensions: viewport,
   });
@@ -208,5 +221,6 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     close,
     deathSignal,
     getCdpTransportClosedError,
+    sessionProxy,
   };
 }

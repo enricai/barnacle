@@ -52,6 +52,11 @@ All variables are read once at process start; missing required ones exit the pro
 | `SCRAPER_CAPTURE_SESSION_IP` | `true` | No | Master switch for the outbound-IP echo navigation; `false` yields `session: null` / `sessionIp: null` everywhere without touching the rest of the submit/beacon record. |
 | `SCRAPER_SESSION_IP_ECHO_URL` | `https://api.ipify.org?format=json` | No | The IP-echo endpoint the session's own short-lived tab navigates to. Operators can point this at a self-hosted echo endpoint. |
 | `SCRAPER_SESSION_IP_TIMEOUT_MS` | `10000` | No | Watchdog bound on the echo navigation; a page that never resolves is cut off and yields `null` rather than blocking the submission. |
+| `SCRAPER_SESSION_PROXY_HOST` | unset | No | Externally-controlled outbound proxy host for session creation and captcha solving, so the same egress IP mints and submits an IP-scored token. Gates the whole group — unset leaves `scraper.sessionProxy` undefined, preserving the proxies:true / proxyless fallback exactly. |
+| `SCRAPER_SESSION_PROXY_PORT` | `8080` | No | Proxy port. Only read when `SCRAPER_SESSION_PROXY_HOST` is set. |
+| `SCRAPER_SESSION_PROXY_PROTOCOL` | `http` | No | Proxy protocol, `http` or `socks5`. Only read when `SCRAPER_SESSION_PROXY_HOST` is set; any other value fails config load. |
+| `SCRAPER_SESSION_PROXY_USERNAME` | unset | No | Proxy auth username, if the proxy requires credentials. |
+| `SCRAPER_SESSION_PROXY_PASSWORD` | unset | No | Proxy auth password, if the proxy requires credentials. |
 
 ### AWS Bedrock (alternative LLM provider)
 

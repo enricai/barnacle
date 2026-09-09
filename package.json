@@ -244,6 +244,10 @@
       "types": "./dist/types/logging.d.ts",
       "default": "./dist/types/logging.js"
     },
+    "./types/session-proxy": {
+      "types": "./dist/types/session-proxy.d.ts",
+      "default": "./dist/types/session-proxy.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

@@ -145,9 +145,12 @@ export function makeOutboundIpAccessor(
  * pinned to the chosen viewport. The min/max bracket forces Browserbase's
  * fingerprint generator to pick that exact size rather than negotiating it.
  *
- * Proxies: `proxies: true` enables Browserbase's residential proxy pool. The
- * boolean form takes Browserbase's default region; per-region routing is
- * available via the array form (not used here — out of scope until needed).
+ * Proxies: `proxies: true` enables Browserbase's residential proxy pool. When
+ * an operator has configured an explicit session proxy (`config.scraper.sessionProxy`),
+ * that tuple fully replaces the boolean form with Browserbase's `external`
+ * ExternalProxyConfig array so the session egresses through an addressable
+ * endpoint — the same tuple is then exposed on the returned `BrowserSession.sessionProxy`
+ * so callers (e.g. captcha solving) can bind to the same egress IP.
  *
  * Non-finding (recorded so it is not re-investigated): a Queue-it virtual-waiting-
  * room interstitial has never blocked a Browserbase run in practice. It gates the
@@ -192,6 +195,7 @@ export async function createBrowserbaseBrowserSession(
   const sessionStartedAt = Date.now();
   const viewport = pickRandomViewport();
   const useResidentialProxy = config.scraper.proxyType.toLowerCase() === "residential";
+  const sessionProxy = config.scraper.sessionProxy;
   const advancedStealth = opts?.advancedStealth === true;
   const { projectId: _callerProjectId, ...customSessionParams } =
     opts?.browserbaseSessionCreateParams ?? {};
@@ -244,7 +248,16 @@ export async function createBrowserbaseBrowserSession(
         timeout: config.scraper.browserbaseSessionTimeoutSeconds,
         ...customSessionParams,
         projectId: config.scraper.browserbaseProjectId,
-        proxies: useResidentialProxy,
+        proxies: sessionProxy
+          ? [
+              {
+                type: "external" as const,
+                server: `${sessionProxy.protocol}://${sessionProxy.host}:${sessionProxy.port}`,
+                username: sessionProxy.username,
+                password: sessionProxy.password,
+              },
+            ]
+          : useResidentialProxy,
         browserSettings: {
           ...customSessionParams.browserSettings,
           ...(advancedStealth ? { advancedStealth: true, solveCaptchas: true } : {}),
@@ -321,7 +334,7 @@ export async function createBrowserbaseBrowserSession(
 
   const sessionId = stagehand.browserbaseSessionID ?? "unknown";
   logger.info(
-    `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${useResidentialProxy} advancedStealth=${advancedStealth}`
+    `created browserbase session ${sessionId} viewport=${viewport.width}x${viewport.height} proxies=${sessionProxy ? "external" : useResidentialProxy} advancedStealth=${advancedStealth}`
   );
 
   const limiter = createSessionLimiter();
@@ -371,5 +384,6 @@ export async function createBrowserbaseBrowserSession(
     deathSignal,
     getCdpTransportClosedError,
     getSessionTimeoutHit,
+    sessionProxy,
   };
 }

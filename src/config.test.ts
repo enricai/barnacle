@@ -129,6 +129,45 @@ describe("config/loadConfig", () => {
     expect(cfg.scraper.sessionIpTimeoutMs).toBe(5000);
   });
 
+  it("leaves scraper.sessionProxy undefined when SCRAPER_SESSION_PROXY_HOST is unset", () => {
+    const cfg = loadConfig();
+    expect(cfg.scraper.sessionProxy).toBeUndefined();
+  });
+
+  it("parses scraper.sessionProxy from SCRAPER_SESSION_PROXY_* env vars", () => {
+    process.env.SCRAPER_SESSION_PROXY_HOST = "proxy.example.com";
+    process.env.SCRAPER_SESSION_PROXY_PORT = "1080";
+    process.env.SCRAPER_SESSION_PROXY_PROTOCOL = "socks5";
+    process.env.SCRAPER_SESSION_PROXY_USERNAME = "user";
+    process.env.SCRAPER_SESSION_PROXY_PASSWORD = "pass";
+    const cfg = loadConfig();
+    expect(cfg.scraper.sessionProxy).toEqual({
+      protocol: "socks5",
+      host: "proxy.example.com",
+      port: 1080,
+      username: "user",
+      password: "pass",
+    });
+  });
+
+  it("defaults scraper.sessionProxy port/protocol and omits creds when only host is set", () => {
+    process.env.SCRAPER_SESSION_PROXY_HOST = "proxy.example.com";
+    const cfg = loadConfig();
+    expect(cfg.scraper.sessionProxy).toEqual({
+      protocol: "http",
+      host: "proxy.example.com",
+      port: 8080,
+      username: undefined,
+      password: undefined,
+    });
+  });
+
+  it("rejects an invalid SCRAPER_SESSION_PROXY_PROTOCOL", () => {
+    process.env.SCRAPER_SESSION_PROXY_HOST = "proxy.example.com";
+    process.env.SCRAPER_SESSION_PROXY_PROTOCOL = "ftp";
+    expect(() => loadConfig()).toThrow(/SCRAPER_SESSION_PROXY_PROTOCOL/);
+  });
+
   it("splits comma-separated API_KEYS_HASHED", () => {
     process.env.API_KEYS_HASHED = "hashA,hashB, hashC ";
     const cfg = loadConfig();
