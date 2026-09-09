@@ -11,6 +11,8 @@ import {
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
   buildMulticallNestedGroupedDrillDownAncestorOnlyParamsActionSteps,
+  buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps,
+  buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps,
   buildMulticallNestedGroupedDrillDownMultiGroupActionSteps,
   buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps,
   buildMulticallNestedGroupedDrillDownTwoScopeParamsActionSteps,
@@ -421,6 +423,161 @@ describe("buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps", 
     const decoyCode = new URL(decoy.capture.url).searchParams.get("code");
     expect(decoyCode).toBeTruthy();
     expect(decoyCode ? knownCodes.has(decoyCode) : true).toBe(false);
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps();
+
+  it("the primary response carries >=2 groups, each with >=3 items", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { masterCode: string; entries: { entryId: string; code: string }[] }[];
+    };
+    expect(body.sections.length).toBeGreaterThanOrEqual(2);
+    for (const section of body.sections) {
+      expect(section.masterCode).toBeTruthy();
+      expect(section.entries.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("the group's ancestor masterCode differs from every item's own code in that group", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { masterCode: string; entries: { entryId: string; code: string }[] }[];
+    };
+    for (const section of body.sections) {
+      for (const entry of section.entries) {
+        expect(entry.code).not.toBe(section.masterCode);
+      }
+    }
+  });
+
+  it("the real drill capture's literal query value equals only the matched item's own code", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { masterCode: string; entries: { entryId: string; code: string }[] }[];
+    };
+    const realDrill = steps[1];
+    const code = realDrill ? new URL(realDrill.capture.url).searchParams.get("code") : null;
+    expect(code).toBeTruthy();
+
+    const matchingSection = body.sections.find((section) =>
+      section.entries.some((entry) => entry.code === code)
+    );
+    expect(matchingSection).toBeTruthy();
+    expect(matchingSection?.masterCode).not.toBe(code);
+    expect(matchingSection?.entries.filter((entry) => entry.code === code).length).toBe(1);
+  });
+
+  it("that single drill response's rows resolve to multiple sibling items under the same ancestor", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { masterCode: string; entries: { entryId: string; code: string }[] }[];
+    };
+    const realDrill = steps[1];
+    const drillBody = realDrill?.capture.responseBody as { details: { entryId: string }[] };
+    expect(drillBody.details.length).toBeGreaterThanOrEqual(3);
+
+    const code = realDrill ? new URL(realDrill.capture.url).searchParams.get("code") : null;
+    const matchingSection = body.sections.find((section) =>
+      section.entries.some((entry) => entry.code === code)
+    );
+    const sectionEntryIds = new Set(matchingSection?.entries.map((entry) => entry.entryId));
+    const drillEntryIds = new Set(drillBody.details.map((row) => row.entryId));
+    expect(drillEntryIds).toEqual(sectionEntryIds);
+  });
+
+  it("the decoy capture hits the same endpoint but carries a code foreign to the primary response", () => {
+    const body = steps[0]?.capture.responseBody as {
+      sections: { masterCode: string; entries: { entryId: string; code: string }[] }[];
+    };
+    const realDrill = steps[1];
+    const decoy = steps[2];
+    expect(realDrill).toBeTruthy();
+    expect(decoy).toBeTruthy();
+    if (!realDrill || !decoy) return;
+    expect(endpointKey(decoy.capture.url)).toBe(endpointKey(realDrill.capture.url));
+
+    const knownCodes = new Set(
+      body.sections.flatMap((section) => section.entries.map((entry) => entry.code))
+    );
+    const decoyCode = new URL(decoy.capture.url).searchParams.get("code");
+    expect(decoyCode).toBeTruthy();
+    expect(decoyCode ? knownCodes.has(decoyCode) : true).toBe(false);
+  });
+});
+
+describe("buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps", () => {
+  const steps = buildMulticallNestedGroupedDrillDownDualScopeCoincidentParamsActionSteps();
+
+  type Body = {
+    sections: {
+      masterCode: string;
+      flagshipEntry: { code: string };
+      entries: { entryId: string; code: string; flagCode: string }[];
+    }[];
+  };
+
+  it("the drill URL carries two params", () => {
+    const realDrill = steps[1];
+    expect(realDrill).toBeTruthy();
+    if (!realDrill) return;
+    const params = new URL(realDrill.capture.url).searchParams;
+    expect([...params.keys()]).toHaveLength(2);
+  });
+
+  it("each group's matched (first) item's own fields equal both the group's top-level masterCode and its distinct nested flagshipEntry.code", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    for (const section of body.sections) {
+      const [matched] = section.entries;
+      expect(matched?.code).toBe(section.masterCode);
+      expect(matched?.flagCode).toBe(section.flagshipEntry.code);
+    }
+  });
+
+  it("every sibling item's own fields diverge from at least one of the two ancestor values", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    for (const section of body.sections) {
+      const [, ...siblings] = section.entries;
+      for (const sibling of siblings) {
+        const matchesBoth =
+          sibling.code === section.masterCode && sibling.flagCode === section.flagshipEntry.code;
+        expect(matchesBoth).toBe(false);
+      }
+    }
+  });
+
+  it("the real drill capture's two literal query values match the matched item's own fields and its group's two ancestor values", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    const realDrill = steps[1];
+    expect(realDrill).toBeTruthy();
+    if (!realDrill) return;
+    const params = new URL(realDrill.capture.url).searchParams;
+    const code = params.get("code");
+    const flag = params.get("flag");
+    const matchingSection = body.sections.find(
+      (section) => section.masterCode === code && section.flagshipEntry.code === flag
+    );
+    expect(matchingSection).toBeTruthy();
+    expect(matchingSection?.entries[0]?.code).toBe(code);
+    expect(matchingSection?.entries[0]?.flagCode).toBe(flag);
+  });
+
+  it("the decoy capture hits the same endpoint but carries values foreign to the primary response", () => {
+    const body = steps[0]?.capture.responseBody as Body;
+    const realDrill = steps[1];
+    const decoy = steps[2];
+    expect(realDrill).toBeTruthy();
+    expect(decoy).toBeTruthy();
+    if (!realDrill || !decoy) return;
+    expect(endpointKey(decoy.capture.url)).toBe(endpointKey(realDrill.capture.url));
+
+    const knownCodes = new Set(body.sections.map((section) => section.masterCode));
+    const knownFlags = new Set(body.sections.map((section) => section.flagshipEntry.code));
+    const decoyParams = new URL(decoy.capture.url).searchParams;
+    const decoyCode = decoyParams.get("code");
+    const decoyFlag = decoyParams.get("flag");
+    expect(decoyCode).toBeTruthy();
+    expect(decoyFlag).toBeTruthy();
+    expect(decoyCode ? knownCodes.has(decoyCode) : true).toBe(false);
+    expect(decoyFlag ? knownFlags.has(decoyFlag) : true).toBe(false);
   });
 });
 

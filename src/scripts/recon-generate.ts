@@ -4975,6 +4975,18 @@ export function emitMultiStepExecuteHttp(
           ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
           { varName: itemVar, obj: firstItem },
         ];
+        const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
+        // Proven from the drill's OWN response, not a value-equality guess:
+        // when its rows resolve onto more than one sibling item under this
+        // same ancestor tuple, the drill's data is ancestor-scoped even if
+        // the captured literal that seeded threading happened to equal only
+        // the matched item's own field (see isFoldTargetAncestorScoped).
+        const isAncestorScoped = isFoldTargetAncestorScoped(
+          target,
+          actions,
+          primaryItemsWithAncestors,
+          firstItemAncestors
+        );
         // Each target's chain variables and merge result get their own
         // suffixed local names so multiple independent targets sharing the
         // same loop body can each declare their own locals without
@@ -5008,7 +5020,7 @@ export function emitMultiStepExecuteHttp(
           // searched across the item AND every ancestor binding) — a param
           // living only on a parent object is otherwise structurally
           // invisible and gets frozen as a literal.
-          const threadedFields = dedupeThreadedFields([
+          const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(
               threadingScopes,
@@ -5016,8 +5028,35 @@ export function emitMultiStepExecuteHttp(
               actions.map((a) => a.capture)
             ),
           ]);
-          const result = threadedFields.reduce((acc, { varName, field }) => {
-            const replacement = `\${${scopedAccessor(varName, field)}}`;
+          // A proven ancestor-scoped drill (see isAncestorScoped above) still
+          // rebinds fields findThreadedJoinFields left on itemVar purely
+          // because the matched item's own field was the only object in
+          // scope whose VALUE equalled the captured literal — the ancestor's
+          // structurally-analogous field (same trailing path segment) holds
+          // a genuinely different value, so exact-value matching can never
+          // find it. Rebinding by structure, not value, lets referencesItemVar
+          // (below) correctly stay false so the fetch hoists above the
+          // per-item loop instead of pinning to it.
+          // Pairs each raw threaded field (whose VALUE is what's actually
+          // present in the captured text — the only thing a literal-value
+          // search can ever find) with the accessor it should render as.
+          // For an ancestor-scoped rebind these deliberately diverge: the
+          // literal search must still key off the item's own field (that's
+          // the value textually present), while the emitted accessor points
+          // at the ancestor's structurally-corresponding field instead —
+          // searching for the ANCESTOR field's (different) value would never
+          // match anything in `text` and silently freeze the literal.
+          const threadedFieldPairs = isAncestorScoped
+            ? rawThreadedFields.map((tf) => ({
+                valueField: tf,
+                accessorField:
+                  tf.varName === itemVar
+                    ? (findStructurallyCorrespondingAncestorField(ancestorScopes, tf.field) ?? tf)
+                    : tf,
+              }))
+            : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
+            const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
             // accessor after the DRILL REQUEST's own top-level JSON key
             // (`${payload.sku}`), never after `field`'s dot path into the
@@ -5028,14 +5067,17 @@ export function emitMultiStepExecuteHttp(
             // silently no-ops and leaves an undefined `payload.sku`
             // reference behind once the literal value itself has already
             // been replaced by the payload-key-value pass.
-            const lastSegment = field.split(".").pop()!;
+            const lastSegment = valueField.field.split(".").pop()!;
             const withAccessorSwapped = acc
-              .split(`\${payload.${field}}`)
+              .split(`\${payload.${valueField.field}}`)
               .join(replacement)
               .split(`\${payload.${lastSegment}}`)
               .join(replacement);
-            const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
-            const value = readValueAtPath(scopeObj, field.split("."));
+            const scopeObj =
+              valueField.varName === itemVar
+                ? firstItem
+                : ancestorObjByVar.get(valueField.varName)!;
+            const value = readValueAtPath(scopeObj, valueField.field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -6168,6 +6210,120 @@ function findThreadedJoinFields(
       )
       .map(({ path }) => ({ varName, field: path.join(".") }))
   );
+}
+
+/** True when `target`'s own drill/chain-terminal response resolves onto MORE
+ * THAN ONE sibling primary item sharing `firstItemAncestors` — proof the
+ * drill's data is scoped to the ancestor tuple as a whole, not to the single
+ * matched item, so its outgoing request should thread off the ancestor
+ * binding even when only the matched item's own field happens to hold the
+ * literal that was captured. Reuses `target.joinFields` — the same field(s)
+ * {@link emitFoldMatchAndMergeLines} already keys the per-item merge on — and
+ * `primaryItemsWithAncestors`, both already computed by the caller; this
+ * derives the signal from that existing data rather than a new capture-time
+ * heuristic. */
+function isFoldTargetAncestorScoped(
+  target: FoldTarget,
+  actions: readonly { capture: Capture }[],
+  primaryItemsWithAncestors: readonly {
+    item: Record<string, unknown>;
+    ancestors: Record<string, unknown>[];
+  }[],
+  firstItemAncestors: readonly Record<string, unknown>[]
+): boolean {
+  if (firstItemAncestors.length === 0) return false;
+  const rows = objectItemsAtPath(
+    actions[target.chainTerminalIndex]!.capture.responseBody,
+    target.chainArrayPath
+  );
+  if (!rows || rows.length === 0) return false;
+  const rowMatchesItem = (row: Record<string, unknown>, item: Record<string, unknown>): boolean =>
+    target.joinFields.every((field) => {
+      const rowValue = readValueAtPath(row, field.split("."));
+      const itemValue = readValueAtPath(item, field.split("."));
+      return (
+        rowValue !== undefined && itemValue !== undefined && String(rowValue) === String(itemValue)
+      );
+    });
+  const matchedSiblingCount = primaryItemsWithAncestors.filter(
+    ({ item, ancestors }) =>
+      ancestors.length === firstItemAncestors.length &&
+      ancestors.every((a, idx) => a === firstItemAncestors[idx]) &&
+      rows.some((row) => rowMatchesItem(row, item))
+  ).length;
+  return matchedSiblingCount > 1;
+}
+
+/** Once a fold target is proven {@link isFoldTargetAncestorScoped}, a
+ * threaded field still bound to `itemVar` names a field that also lives on
+ * an ancestor object under the SAME trailing path segment (e.g.
+ * `itinerary.code` on both the item and, nested differently, on an
+ * ancestor's `masterSailing.itinerary.code`) — even though that ancestor
+ * field's own VALUE differs from what was captured, since the ancestor's
+ * representative sub-object (its master/lowest-price/etc. child) is not the
+ * same runtime object as the loop item. Structural correspondence, not
+ * value equality, is the right test here: the drill is already proven to
+ * key off the ancestor as a whole, so the ancestor's own analogous field is
+ * what a per-ancestor (rather than per-item) fetch must vary on. Searches
+ * `ancestorScopes` outer-to-inner and returns the first structural match.
+ * Falls back to the ancestor's own first-child-array element (e.g.
+ * `entries[0].code`) when no top-level nested-object field shares the
+ * trailing segment — covering an ancestor whose only representative row is
+ * itself one of the array items the fold iterates, rather than a distinct
+ * scalar/nested ancestor field (e.g. a `masterCode` that names the group but
+ * never literally shares the item's `code` field name). */
+function findStructurallyCorrespondingAncestorField(
+  ancestorScopes: readonly { varName: string; obj: Record<string, unknown> }[],
+  field: string
+): ThreadedField | null {
+  const lastSegment = field.split(".").pop()!;
+  for (const { varName, obj } of ancestorScopes) {
+    for (const { path } of walkItemFieldPaths(obj)) {
+      if (path[path.length - 1] === lastSegment) return { varName, field: path.join(".") };
+    }
+    const arrayPath = findFieldInFirstArrayElement(obj, lastSegment);
+    if (arrayPath) return { varName, field: arrayPath.join(".") };
+  }
+  return null;
+}
+
+/** Recursively searches `obj` for the first array-valued property whose
+ * first element (itself a plain object) contains `lastSegment` as one of
+ * its own field paths' trailing segments, returning the full dot-path from
+ * `obj`'s root through the array's `0` index down to that field (e.g.
+ * `["entries", "0", "code"]`) — an accessor {@link pathToAccessor} renders
+ * as `.entries["0"].code`, valid whether the numeric segment is treated as
+ * a bracketed literal key or an array index. */
+function findFieldInFirstArrayElement(
+  obj: Record<string, unknown>,
+  lastSegment: string,
+  path: string[] = []
+): string[] | null {
+  for (const [key, value] of Object.entries(obj)) {
+    const childPath = [...path, key];
+    if (Array.isArray(value)) {
+      const first = value[0];
+      if (first === null || typeof first !== "object" || Array.isArray(first)) continue;
+      const firstObj = first as Record<string, unknown>;
+      for (const { path: subPath } of walkItemFieldPaths(firstObj)) {
+        if (subPath[subPath.length - 1] === lastSegment) {
+          return [...childPath, "0", ...subPath];
+        }
+      }
+      const nested = findFieldInFirstArrayElement(firstObj, lastSegment, [...childPath, "0"]);
+      if (nested) return nested;
+      continue;
+    }
+    if (value !== null && typeof value === "object") {
+      const nested = findFieldInFirstArrayElement(
+        value as Record<string, unknown>,
+        lastSegment,
+        childPath
+      );
+      if (nested) return nested;
+    }
+  }
+  return null;
 }
 
 /** Every string, numeric, and boolean leaf value present anywhere in a response —
@@ -8732,6 +8888,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           ...ancestorVars.map((varName) => ({ varName, obj: ancestorObjByVar.get(varName)! })),
           { varName: itemVar, obj: firstItem },
         ];
+        const ancestorScopes = threadingScopes.slice(0, ancestorVars.length);
+        // Mirrors emitMultiStepExecuteHttp's identical rebind: a drill
+        // proven ancestor-scoped by its OWN response (see
+        // isFoldTargetAncestorScoped) still needs its item-bound threaded
+        // fields rebound to a structurally corresponding ancestor field, or
+        // referencesItemVar (below) never has a chance to hoist it.
+        const isAncestorScoped = isFoldTargetAncestorScoped(
+          target,
+          actionSteps.map((s) => ({ capture: s.capture })),
+          primaryItemsWithAncestors,
+          fullAncestors
+        );
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const scopedAccessor = (varName: string, field: string): string =>
           `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
@@ -8759,7 +8927,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
               ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
               : rawUrl;
-          const threadedFields = dedupeThreadedFields([
+          const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
             ...findThreadedJoinFields(
               threadingScopes,
@@ -8767,9 +8935,36 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               actionSteps.map((s) => s.capture)
             ),
           ]);
-          const result = threadedFields.reduce((acc, { varName, field }) => {
-            const scopeObj = varName === itemVar ? firstItem : ancestorObjByVar.get(varName)!;
-            const value = readValueAtPath(scopeObj, field.split("."));
+          // Mirrors emitMultiStepExecuteHttp's identical rebind (see
+          // isAncestorScoped above): a proven ancestor-scoped drill still
+          // rebinds fields findThreadedJoinFields left on itemVar purely
+          // because the matched item's own field was the only object in
+          // scope whose value equalled the captured literal.
+          // Pairs each raw threaded field (whose VALUE is what's actually
+          // present in `rawUrl` — the only thing a literal-value search can
+          // ever find) with the accessor it should render as. For an
+          // ancestor-scoped rebind these deliberately diverge: the literal
+          // search must still key off the item's own field (that's the
+          // value textually present in the URL), while the emitted accessor
+          // points at the ancestor's structurally-corresponding field
+          // instead — searching for the ANCESTOR field's (different) value
+          // would never match anything in the URL and silently freeze the
+          // literal.
+          const threadedFieldPairs = isAncestorScoped
+            ? rawThreadedFields.map((tf) => ({
+                valueField: tf,
+                accessorField:
+                  tf.varName === itemVar
+                    ? (findStructurallyCorrespondingAncestorField(ancestorScopes, tf.field) ?? tf)
+                    : tf,
+              }))
+            : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
+          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
+            const scopeObj =
+              valueField.varName === itemVar
+                ? firstItem
+                : ancestorObjByVar.get(valueField.varName)!;
+            const value = readValueAtPath(scopeObj, valueField.field.split("."));
             const stringValue =
               typeof value === "string" && value.length > 0
                 ? value
@@ -8779,7 +8974,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
             if (stringValue === null) return acc;
             return acc.replace(
               new RegExp(`\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
-              `\${${scopedAccessor(varName, field)}}`
+              `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`
             );
           }, withBase);
           const withDrillParamBindings = applyDrillParamBindings(

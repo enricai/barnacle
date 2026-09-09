@@ -4,18 +4,18 @@ import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitMultiStepExecuteHttp, type FoldReturnSpec } from "@/scripts/recon-generate";
 import { evalExecuteHttpBody } from "@/scripts/recon-generate-execute-http-harness.test-helper";
-import { buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps } from "@/scripts/recon-generate-multicall-fixture";
+import { buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
- * Regression coverage for the scope-coincidence bug: when a threaded drill
- * param's literal value happens to equal BOTH the ancestor's own field and
- * the matched (first) item's own field, the fold plan must still hoist the
- * drill to the ancestor binding, not the item — because only the ancestor
- * binding is well-defined for every sibling item, including ones whose own
- * field diverges from the group's value.
+ * Regression coverage for the item-literal hoist bug: when a threaded drill
+ * param's literal value equals ONLY the matched (first) item's own field —
+ * never the ancestor's own field — the fold plan must still hoist the drill
+ * to the ancestor binding, not the item, because only the ancestor binding
+ * is well-defined for every sibling item, including ones whose own field
+ * diverges from the matched item's literal.
  */
 
-const SCOPE_COINCIDENT_SPEC: FoldReturnSpec = {
+const DISTINCT_VALUE_SPEC: FoldReturnSpec = {
   endpointPattern: "catalog/entries/details",
   resultsPath: "sections.*.entries",
   drillResultsPath: "details",
@@ -23,7 +23,8 @@ const SCOPE_COINCIDENT_SPEC: FoldReturnSpec = {
 };
 
 function emitBody(): string {
-  const actionSteps = buildMulticallNestedGroupedDrillDownScopeCoincidentParamActionSteps();
+  const actionSteps =
+    buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps();
   return emitMultiStepExecuteHttp(
     actionSteps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
     null,
@@ -44,7 +45,7 @@ function emitBody(): string {
     [],
     new Map(),
     new Map(),
-    SCOPE_COINCIDENT_SPEC
+    DISTINCT_VALUE_SPEC
   );
 }
 
@@ -61,8 +62,8 @@ function stubSequentialFetch(bodies: unknown[]): void {
   vi.stubGlobal("fetch", fn);
 }
 
-describe("recon-generate drill-down fold — scope-coincident drill param still hoists to the ancestor binding", () => {
-  it("structurally emits the drill fetch call site before the item-loop open, bound to the ancestor field only", () => {
+describe("recon-generate drill-down fold — item-literal drill param still hoists to the ancestor binding", () => {
+  it("structurally emits the drill fetch call site before the item-loop open, bound to the ancestor group only", () => {
     const body = emitBody();
 
     const groupLoopIndex = body.indexOf("for (const g0 of");
@@ -74,12 +75,10 @@ describe("recon-generate drill-down fold — scope-coincident drill param still 
     expect(itemLoopIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(body).toContain("catalog/entries/details?code=${g0.masterCode}");
     expect(body).not.toContain("catalog/entries/details?code=${item");
   });
 
-  it("at runtime, calls the drill endpoint exactly once per group (not once per item) and correctly joins every item, including siblings whose own field diverges from the group's", async () => {
+  it("at runtime, calls the drill endpoint exactly once per group (not once per item) and correctly joins every item, including siblings whose own field diverges from the matched item's literal", async () => {
     const body = emitBody();
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
@@ -88,28 +87,28 @@ describe("recon-generate drill-down fold — scope-coincident drill param still 
       baseHeaders: { "Content-Type": "application/json" },
     });
 
-    // Each group's matched (first) item's own `code` coincidentally equals
-    // the group's `masterCode` — e1's `code` is `sec1`, e4's `code` is
-    // `sec2` — but the sibling items in each group (e2/e3, e5/e6) carry a
-    // DISTINCT own `code`. If the fold plan wrongly bound the drill to the
-    // item instead of the ancestor, it would only be able to resolve a URL
-    // for the matched item, and would fetch it once per item rather than
-    // once per group.
+    // Each group's drill literal (`e1` / `e4`) equals ONLY the matched
+    // (first) item's own `code` — never the group's own `masterCode`
+    // (`group-sec1` / `group-sec2`). The sibling items in each group (e2/e3,
+    // e5/e6) carry a DISTINCT own `code`. If the fold plan wrongly bound the
+    // drill to the item instead of the ancestor's captured request, it could
+    // only resolve a URL for the matched item, and would fetch it once per
+    // item rather than once per group.
     stubSequentialFetch([
       {
         sections: [
           {
-            masterCode: "sec1",
+            masterCode: "group-sec1",
             entries: [
-              { entryId: "e1", code: "sec1", name: "Widget" },
+              { entryId: "e1", code: "e1", name: "Widget" },
               { entryId: "e2", code: "e2-code", name: "Gadget" },
               { entryId: "e3", code: "e3-code", name: "Doohickey" },
             ],
           },
           {
-            masterCode: "sec2",
+            masterCode: "group-sec2",
             entries: [
-              { entryId: "e4", code: "sec2", name: "Thingamajig" },
+              { entryId: "e4", code: "e4", name: "Thingamajig" },
               { entryId: "e5", code: "e5-code", name: "Contraption" },
               { entryId: "e6", code: "e6-code", name: "Gizmo" },
             ],
@@ -141,17 +140,17 @@ describe("recon-generate drill-down fold — scope-coincident drill param still 
     expect(result.data).toEqual({
       sections: [
         {
-          masterCode: "sec1",
+          masterCode: "group-sec1",
           entries: [
-            { entryId: "e1", code: "sec1", name: "Widget", description: "A widget." },
+            { entryId: "e1", code: "e1", name: "Widget", description: "A widget." },
             { entryId: "e2", code: "e2-code", name: "Gadget", description: "A gadget." },
             { entryId: "e3", code: "e3-code", name: "Doohickey", description: "A doohickey." },
           ],
         },
         {
-          masterCode: "sec2",
+          masterCode: "group-sec2",
           entries: [
-            { entryId: "e4", code: "sec2", name: "Thingamajig", description: "A thingamajig." },
+            { entryId: "e4", code: "e4", name: "Thingamajig", description: "A thingamajig." },
             { entryId: "e5", code: "e5-code", name: "Contraption", description: "A contraption." },
             { entryId: "e6", code: "e6-code", name: "Gizmo", description: "A gizmo." },
           ],
@@ -165,8 +164,8 @@ describe("recon-generate drill-down fold — scope-coincident drill param still 
     // fixture's own trailing decoy call.
     const calls = vi.mocked(fetch).mock.calls;
     expect(calls).toHaveLength(4);
-    expect(String(calls[1]![0])).toContain("code=sec1");
-    expect(String(calls[2]![0])).toContain("code=sec2");
+    expect(String(calls[1]![0])).toContain("code=e1");
+    expect(String(calls[2]![0])).toContain("code=e4");
     expect(String(calls[3]![0])).toContain("code=zzz-unrelated");
   });
 });
