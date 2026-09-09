@@ -1,4 +1,5 @@
 import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 /**
  * Fully resolved, strongly typed application config derived from environment
@@ -207,6 +208,15 @@ export interface AppConfig {
      * cut off and yields `null` rather than blocking the submission.
      */
     sessionIpTimeoutMs: number;
+    /**
+     * Externally-controlled outbound proxy for both session creation and
+     * captcha solving, so the same egress IP mints and submits an
+     * IP-scored token. Populated from `SCRAPER_SESSION_PROXY_HOST` (which
+     * gates whether this resolves at all) plus `_PORT`/`_PROTOCOL`/
+     * `_USERNAME`/`_PASSWORD`. Undefined when the host var is unset,
+     * preserving today's proxies:true / proxyless fallback exactly.
+     */
+    sessionProxy: SessionProxyTuple | undefined;
   };
   bedrock: {
     region: string;
@@ -511,6 +521,23 @@ export function loadConfig(): AppConfig {
       captureSessionIp: getBoolEnv("SCRAPER_CAPTURE_SESSION_IP", true),
       sessionIpEchoUrl: getEnv("SCRAPER_SESSION_IP_ECHO_URL", "https://api.ipify.org?format=json"),
       sessionIpTimeoutMs: getNumericEnv("SCRAPER_SESSION_IP_TIMEOUT_MS", 10_000),
+      sessionProxy: (() => {
+        const host = process.env.SCRAPER_SESSION_PROXY_HOST || undefined;
+        if (!host) return undefined;
+        const rawProtocol = (getEnv("SCRAPER_SESSION_PROXY_PROTOCOL", "http") || "").toLowerCase();
+        if (rawProtocol !== "http" && rawProtocol !== "socks5") {
+          throw new Error(
+            `SCRAPER_SESSION_PROXY_PROTOCOL must be "http" or "socks5" (got ${JSON.stringify(rawProtocol)})`
+          );
+        }
+        return {
+          protocol: rawProtocol,
+          host,
+          port: getNumericEnv("SCRAPER_SESSION_PROXY_PORT", 8080),
+          username: process.env.SCRAPER_SESSION_PROXY_USERNAME || undefined,
+          password: process.env.SCRAPER_SESSION_PROXY_PASSWORD || undefined,
+        };
+      })(),
     },
     bedrock: {
       region: getEnv("AWS_REGION", "us-east-1"),
