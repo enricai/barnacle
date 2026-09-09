@@ -2965,6 +2965,19 @@ async function main(): Promise<void> {
       // isFlowTruncated's boolean. Traffic is active right up to the teardown
       // (not idle), so this is recoverable by retrying on a fresh session —
       // throw instead of exiting so the caller can retry it.
+      // A transport close at ~the session's configured Browserbase lifetime
+      // is a provider-initiated expiry, not a crash or network blip — a
+      // fresh session carries the same configured lifetime, so retrying can
+      // never make this flow fit. Fail fast instead of burning the whole
+      // maxTransportRetries budget re-running the same head of the flow.
+      const sessionTimeoutHit = session.getSessionTimeoutHit?.();
+      if (sessionTimeoutHit) {
+        logger.error(
+          `Browserbase session hit its timeout (${sessionTimeoutHit.configuredTimeoutSeconds}s) after ${completedSteps.length} steps — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS`
+        );
+        process.exit(1);
+      }
+
       const cdpTransportClosedError = session.getCdpTransportClosedError?.();
       if (cdpTransportClosedError) {
         throw new CdpTransportClosedError(
