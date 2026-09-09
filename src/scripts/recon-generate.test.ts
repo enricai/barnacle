@@ -3693,7 +3693,9 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
   });
 
   it("does not leak the vendor site-dump field names into the public bodySchema", () => {
-    const payloadSchemaMatch = contract.match(/const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/);
+    const payloadSchemaMatch = contract.match(
+      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+    );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
     expect(payloadSchemaSource).not.toContain("ddoKey:");
