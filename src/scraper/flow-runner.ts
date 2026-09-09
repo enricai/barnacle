@@ -5371,17 +5371,42 @@ function findCaptchaCallbackExprSrc(): string {
 }
 
 /**
+ * Shared by both the immediate and late invoke exprs in
+ * `injectCaptchaTokenAndSubmit`: sets `responseField`'s value to `token` via
+ * the descriptor-set path (falling back to a plain assignment when no
+ * setter is found), then invokes the discovered callback `found` with that
+ * same token.
+ */
+function setResponseFieldAndInvokeCallbackExprSrc(responseField: string, token: string): string {
+  return `
+    const responseField = ${JSON.stringify(responseField)};
+    const token = ${JSON.stringify(token)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    const descriptor = field
+      ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")
+      : null;
+    if (field && descriptor && descriptor.set) {
+      descriptor.set.call(field, token);
+    } else if (field) {
+      field.value = token;
+    }
+    found.invoke(token);
+  `;
+}
+
+/**
  * Site-agnostic captcha-solve hand-off: given an already-solved token,
  * discover the widget's registered callback — a `data-callback` attribute
  * naming a `window` global, or (absent that) a callback captured from a
  * programmatic `hcaptcha.render({ callback })` call — and deliver the token
  * so the site assembles its own submit (its own hidden fields, its own
- * submit path). When the captured render config's real `widgetId` is known
- * and `window.hcaptcha.execute` is available, the preferred delivery is
- * `hcaptcha.execute(widgetId)`, letting the callback fire as a natural
- * consequence of hCaptcha's own execute/verify cycle; only when no
- * widgetId/execute path is available does this fall back to invoking the
- * captured callback directly. When no callback is discoverable at precheck
+ * submit path). The token is written into the response field first (via the
+ * same property-descriptor `value` setter used by the no-callback fallback
+ * below), then the discovered callback is invoked with that same token so it
+ * drives its own submit off the value that's now present. `hcaptcha.execute`
+ * is never called here: it would discard the already-solved token and
+ * re-run hCaptcha's own challenge from scratch instead of consuming the paid
+ * solve. When no callback is discoverable at precheck
  * time, this re-installs the callback-capture script and retries the lookup
  * once — catching a widget whose `hcaptcha.render` call happens on demand
  * rather than on page load, after this frame missed both session.ts's
@@ -5449,24 +5474,15 @@ export async function injectCaptchaTokenAndSubmit(
       const sitekeyEl = document.querySelector("[data-sitekey]");
       const found = __findCaptchaCallback(sitekeyEl);
       if (!found) return;
-      const canExecute =
-        found.kind === "captured" &&
-        found.widgetId !== undefined &&
-        found.widgetId !== null &&
-        window.hcaptcha &&
-        typeof window.hcaptcha.execute === "function";
-      if (canExecute) {
-        window.hcaptcha.execute(found.widgetId);
-        return;
-      }
-      found.invoke(${JSON.stringify(token)});
+      ${setResponseFieldAndInvokeCallbackExprSrc(responseField, token)}
     })()`;
-    // Invoking the widget's own callback (or, when the widget's real
-    // `widgetId` is known from a captured `hcaptcha.render` call, triggering
-    // `hcaptcha.execute(widgetId)` so the callback fires as a consequence of
-    // hCaptcha's own execute/verify cycle rather than a bypassed direct call)
-    // can navigate the frame synchronously from within this call (the
-    // callback is free to build its own fields and submit), tearing down the
+    // Deliver the already-solved token into the response field first, then
+    // invoke the widget's own discovered callback with that same token so it
+    // drives its own submit off the value that's now present — never
+    // `hcaptcha.execute`, which would discard the paid solve and re-run
+    // hCaptcha's own challenge from scratch. Invoking the callback can
+    // navigate the frame synchronously from within this call (the callback
+    // is free to build its own fields and submit), tearing down the
     // execution context before a return value marshals — that rejection is
     // the expected outcome, not a real failure, so it's discarded here rather
     // than depended on. Re-resolving the callback here (rather than passing a
@@ -5501,22 +5517,12 @@ export async function injectCaptchaTokenAndSubmit(
       const sitekeyEl = document.querySelector("[data-sitekey]");
       const found = __findCaptchaCallback(sitekeyEl);
       if (!found) return;
-      const canExecute =
-        found.kind === "captured" &&
-        found.widgetId !== undefined &&
-        found.widgetId !== null &&
-        window.hcaptcha &&
-        typeof window.hcaptcha.execute === "function";
-      if (canExecute) {
-        window.hcaptcha.execute(found.widgetId);
-        return;
-      }
-      found.invoke(${JSON.stringify(token)});
+      ${setResponseFieldAndInvokeCallbackExprSrc(responseField, token)}
     })()`;
-    // Same navigate-mid-evaluate tolerance as the non-late invoke above:
-    // the callback (or execute's own verify cycle) is free to submit the
-    // form synchronously, tearing down the execution context before a
-    // return value marshals.
+    // Same token-then-invoke delivery and navigate-mid-evaluate tolerance as
+    // the non-late invoke above: the callback is free to submit the form
+    // synchronously off the field value that's now present, tearing down the
+    // execution context before a return value marshals.
     await target.evaluate(invokeLateCallbackExpr).catch(() => undefined);
     return { injected, hasForm, callbackDiscovered: true };
   }

@@ -228,7 +228,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
-  it("invokes the widget's registered data-callback with the token instead of the bare set-value path", async () => {
+  it("sets the response field to the token before invoking the widget's registered data-callback", async () => {
     const form = new FakeForm();
     const field = new FakeInput();
     field.name = "h-captcha-response";
@@ -252,7 +252,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-callback");
 
     expect(calls).toEqual(["solved-token-callback"]);
-    expect(field.value).toBe("");
+    expect(field.value).toBe("solved-token-callback");
     expect(field.dispatched).toEqual([]);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });

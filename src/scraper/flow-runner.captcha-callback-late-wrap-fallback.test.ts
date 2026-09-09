@@ -65,8 +65,11 @@ function makeFakePage(opts: { lateCallbackFound: boolean }): {
       return lateInstallRan && opts.lateCallbackFound;
     }
     // Shared by both the immediate and late invoke exprs — only reached
-    // once a callback (immediate or late) was actually discovered.
-    if (src.includes("canExecute")) {
+    // once a callback (immediate or late) was actually discovered. Sets the
+    // field to the token before invoking the callback with it, mirroring
+    // the real expr's token-then-invoke order.
+    if (src.includes("found.invoke(token)")) {
+      field.value = "solved-token";
       callbackInvokedWith.token = "solved-token";
       return undefined;
     }
@@ -167,9 +170,9 @@ describe("flow-runner/executeStepWithHealing — captcha late-wrap re-check upgr
     nowSpy.mockRestore();
 
     expect(callbackInvokedWith.token).toBe("solved-token");
-    // The raw field-set fallback never ran: no value was assigned to the
-    // response field via the descriptor-set path.
-    expect(field.value).toBe("");
+    // The token is delivered into the response field before the discovered
+    // callback is invoked with it.
+    expect(field.value).toBe("solved-token");
   });
 
   it("falls through to the raw field-set fallback when the late install also finds no callback", async () => {

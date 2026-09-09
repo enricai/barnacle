@@ -234,7 +234,11 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     const submitSpy = vi.fn();
     form.submit = submitSpy;
 
+    let responseFieldValueAtCallbackTime: string | undefined;
     (window as unknown as Record<string, unknown>).onCaptchaSolved = (token: string) => {
+      responseFieldValueAtCallbackTime = (
+        document.querySelector('[name="h-captcha-response"]') as unknown as { value: string }
+      ).value;
       const extraField = document.createElement("input");
       extraField.type = "hidden";
       extraField.name = "extra-companion-field";
@@ -251,6 +255,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     };
     expect(extraField).not.toBeNull();
     expect(extraField.value).toBe("solved-token-callback");
+    expect(responseFieldValueAtCallbackTime).toBe("solved-token-callback");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
@@ -271,7 +276,11 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     const submitSpy = vi.fn();
     form.submit = submitSpy;
 
+    let responseFieldValueAtCallbackTime: string | undefined;
     const capturedCallback = (token: string): void => {
+      responseFieldValueAtCallbackTime = (
+        document.querySelector('[name="h-captcha-response"]') as unknown as { value: string }
+      ).value;
       const extraField = document.createElement("input");
       extraField.type = "hidden";
       extraField.name = "extra-companion-field";
@@ -291,11 +300,12 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
     };
     expect(extraField).not.toBeNull();
     expect(extraField.value).toBe("solved-token-captured");
+    expect(responseFieldValueAtCallbackTime).toBe("solved-token-captured");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 
-  it("prefers hcaptcha.execute(widgetId) over the bare captured callback when the real widgetId and execute are both known", async () => {
+  it("delivers the solved token via the response field and the captured callback, never hcaptcha.execute, when the real widgetId and execute are both known", async () => {
     const window = new Window({ url: "https://apply.example.com/application/abc-123" });
     const document = window.document;
     document.body.innerHTML = `
@@ -324,25 +334,26 @@ describe("flow-runner/injectCaptchaTokenAndSubmit — real happy-dom DOM", () =>
       "fake-sitekey::7": { sitekey: "fake-sitekey", widgetId: 7, callback: capturedCallback },
     };
 
-    // Mirrors hCaptcha's own execute/verify cycle: execute() is what actually
-    // resolves and invokes the widget's registered callback, so a code path
-    // that bypasses execute() and calls the captured callback directly would
-    // never touch this mock at all.
-    const execute = vi.fn().mockImplementation((widgetId: number) => {
-      capturedCallback(`verified-via-execute-${widgetId}`);
-    });
+    // A code path that re-challenges via hcaptcha.execute() instead of
+    // consuming the already-solved token would touch this mock; the fixed
+    // behavior never calls it.
+    const execute = vi.fn();
     (window as unknown as Record<string, unknown>).hcaptcha = { execute };
 
     const target = makeRealDomTarget(window);
 
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-captured");
 
-    expect(execute).toHaveBeenCalledWith(7);
-    expect(directInvoke).toHaveBeenCalledWith("verified-via-execute-7");
+    expect(execute).not.toHaveBeenCalled();
+    expect(directInvoke).toHaveBeenCalledWith("solved-token-captured");
+    const field = document.querySelector('[name="h-captcha-response"]') as unknown as {
+      value: string;
+    };
+    expect(field.value).toBe("solved-token-captured");
     const extraField = document.querySelector('[name="extra-companion-field"]') as unknown as {
       value: string;
     };
-    expect(extraField.value).toBe("verified-via-execute-7");
+    expect(extraField.value).toBe("solved-token-captured");
     expect(submitSpy).not.toHaveBeenCalled();
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
