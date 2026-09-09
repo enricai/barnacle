@@ -79,7 +79,9 @@ export interface BrowserSession {
    * transport close has happened yet and when the observed close landed well
    * before the configured lifetime.
    */
-  getSessionTimeoutHit?: () => { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+  getSessionTimeoutHit?: () =>
+    | { configuredTimeoutSeconds: number; elapsedSeconds: number }
+    | undefined;
 }
 
 /**

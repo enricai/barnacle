@@ -341,8 +341,9 @@ export async function createBrowserbaseBrowserSession(
   const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
     cdpTransportClosedError;
 
-  const getSessionTimeoutHit = (): { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined =>
-    sessionTimeoutHit;
+  const getSessionTimeoutHit = ():
+    | { configuredTimeoutSeconds: number; elapsedSeconds: number }
+    | undefined => sessionTimeoutHit;
 
   return {
     stagehand,
