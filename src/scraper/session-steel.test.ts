@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isCdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import { createSteelBrowserSession } from "@/scraper/session-steel";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const { configRef } = vi.hoisted(() => ({
   configRef: {
@@ -31,6 +32,7 @@ const { configRef } = vi.hoisted(() => ({
         captureSessionIp: true,
         sessionIpEchoUrl: "https://api.ipify.org?format=json",
         sessionIpTimeoutMs: 10000,
+        sessionProxy: undefined as SessionProxyTuple | undefined,
       },
       bedrock: {
         region: "us-east-1",
@@ -214,5 +216,53 @@ describe("scraper/session-steel CDP-transport-teardown detection", () => {
     handler("socket-close code=1000 reason=normal-close");
 
     expect(session.getCdpTransportClosedError?.()).toBeUndefined();
+  });
+});
+
+describe("scraper/session-steel session-proxy binding", () => {
+  beforeEach(() => {
+    configRef.value.scraper.steelApiKey = "steel-key";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    configRef.value.scraper.sessionProxy = undefined;
+    vi.clearAllMocks();
+  });
+
+  it("sets proxyUrl from the resolved session proxy and returns it as sessionProxy", async () => {
+    const sessionProxy: SessionProxyTuple = {
+      protocol: "socks5",
+      host: "proxy.example.com",
+      port: 1080,
+      username: "user",
+      password: "pass",
+    };
+    configRef.value.scraper.sessionProxy = sessionProxy;
+
+    const session = await createSteelBrowserSession();
+
+    const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+      sessions: { create: ReturnType<typeof vi.fn> };
+    };
+    expect(steelInstance.sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ proxyUrl: "socks5://user:pass@proxy.example.com:1080" })
+    );
+    expect(session.sessionProxy).toEqual(sessionProxy);
+  });
+
+  it("leaves useProxy driving behavior and omits proxyUrl and sessionProxy when unset", async () => {
+    configRef.value.scraper.sessionProxy = undefined;
+
+    const session = await createSteelBrowserSession();
+
+    const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+      sessions: { create: ReturnType<typeof vi.fn> };
+    };
+    const createArgs = steelInstance.sessions.create.mock.calls.at(-1)?.[0] as {
+      useProxy: boolean;
+      proxyUrl?: string;
+    };
+    expect(createArgs.useProxy).toBe(true);
+    expect(createArgs.proxyUrl).toBeUndefined();
+    expect(session.sessionProxy).toBeUndefined();
   });
 });

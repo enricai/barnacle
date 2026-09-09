@@ -90,12 +90,12 @@ export interface BrowserSession {
    */
   recordStepCompleted?: () => void;
   /**
-   * The resolved explicit proxy this session's Browserbase request was bound
-   * to, so a later caller (e.g. captcha solving) can bind to the same egress
-   * IP instead of the opaque managed residential pool. Only present when a
-   * session proxy was configured and the session was created through it
-   * (currently Browserbase); undefined on Steel and when no proxy tuple was
-   * configured.
+   * The resolved explicit proxy this session's request was bound to, when
+   * `resolveSessionProxy()` returned one. Lets a later caller (e.g. captcha
+   * solving) reuse the exact proxy the session's IP is already bound to,
+   * instead of the opaque managed residential pool. Present on both
+   * Browserbase and Steel sessions when a session proxy was configured;
+   * undefined when no proxy tuple was configured.
    */
   sessionProxy?: SessionProxyTuple;
 }
