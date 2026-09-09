@@ -46,16 +46,23 @@ function restCapture(overrides: {
 }
 
 /**
- * A page-load-fired GET decoy on the same own-backend host, with no request
- * body — mirroring the report's toggles/product-avail shape — that fires
- * before the real submission and would win a chronological/scoring-only
- * heuristic if the declared pattern were ignored on this path.
+ * A page-load-fired decoy on the same own-backend host — mirroring the
+ * report's toggles/product-avail shape — that fires before the real
+ * submission. It must be POST: `firstEndpointCapture` restricts its first
+ * pass to non-GET captures before ever consulting `submitPatterns`, so a GET
+ * decoy would be filtered out by that pass regardless of the fix under test,
+ * silently passing either way. Its path segment (`/errors/`) is an
+ * error-reporting-sink path excluded from `extractActionSequence`'s noise
+ * filter, so the corrected action sequence resolves to the single real
+ * step below — but the decoy remains a visible, host-allowed candidate to
+ * the single-endpoint primary-capture selection functions, which apply no
+ * noise filter of their own.
  */
 function pageLoadDecoyCapture(): Capture {
   return restCapture({
-    method: "GET",
-    url: `https://${OWN_BACKEND_HOST}/api/product-avail`,
-    requestPostData: null,
+    method: "POST",
+    url: `https://${OWN_BACKEND_HOST}/api/errors/product-avail-toggle`,
+    requestPostData: JSON.stringify({ toggle: "avail" }),
     responseBody: { available: true, decoy: true },
   });
 }
@@ -129,7 +136,7 @@ describe("recon-generate CLI — single-endpoint primary selection honors requir
     expect(contract).toContain("/api/submit-final");
 
     // ...never to the earlier page-load decoy.
-    expect(contract).not.toContain("/api/product-avail");
+    expect(contract).not.toContain("/api/errors/product-avail-toggle");
     expect(contract).not.toContain("decoy");
   }, 30_000);
 });
