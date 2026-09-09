@@ -141,7 +141,11 @@ describe("emitContractTs — query-type plugin with a multipart step", () => {
   });
 });
 
-describe("emitContractTs — submission-flow default candidate-payload bodySchema", () => {
+describe("emitContractTs — submission-flow candidate-payload bodySchema with genuine applicant evidence", () => {
+  // Email is genuine ApplicantContactSchema field-name evidence in the
+  // captured inputBody, so this block still exercises the applicant-schema
+  // path — unlike a body with only site-specific keys (ddoKey/formData),
+  // which now gets a plain z.object({}) base instead.
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
