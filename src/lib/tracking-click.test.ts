@@ -38,6 +38,13 @@ vi.mock("@/lib/telemetry/beacon-capture", () => ({
   captureBeaconEvent: mockCaptureBeaconEvent,
 }));
 
+const mockConfig = vi.hoisted(() => ({
+  scraper: { browserbaseSessionTimeoutSeconds: 900 },
+}));
+vi.mock("@/config", () => ({
+  config: mockConfig,
+}));
+
 import { config } from "@/config";
 import {
   recordTrackingClickAttempt,
@@ -59,6 +66,7 @@ describe("fireTrackingClick", () => {
     mockClose.mockResolvedValue(undefined);
     mockGetOutboundIp.mockResolvedValue("203.0.113.42");
     mockStagehand.context.awaitActivePage.mockResolvedValue(mockPage);
+    mockConfig.scraper.browserbaseSessionTimeoutSeconds = 900;
   });
 
   afterEach(() => {
@@ -80,6 +88,19 @@ describe("fireTrackingClick", () => {
     });
     expect(mockPage.waitForTimeout).toHaveBeenCalledWith(5_000);
     expect(mockClose).toHaveBeenCalledOnce();
+  });
+
+  it("forwards a config override to the Browserbase session timeout", async () => {
+    mockConfig.scraper.browserbaseSessionTimeoutSeconds = 1_800;
+
+    fireTrackingClick("https://click.acme.example/t/abc?clickId=123", "ats-c");
+    await drainTrackingClicks();
+
+    expect(mockCreateSession).toHaveBeenCalledWith({
+      provider: "browserbase",
+      advancedStealth: true,
+      browserbaseSessionCreateParams: { timeout: 1_800 },
+    });
   });
 
   it("records attempt and success metrics on success", async () => {
