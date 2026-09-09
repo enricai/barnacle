@@ -231,6 +231,7 @@ export async function createBrowserbaseBrowserSession(
       apiKey: config.scraper.browserbaseApiKey,
       projectId: config.scraper.browserbaseProjectId,
       browserbaseSessionCreateParams: {
+        timeout: config.scraper.browserbaseSessionTimeoutSeconds,
         ...customSessionParams,
         projectId: config.scraper.browserbaseProjectId,
         proxies: useResidentialProxy,
