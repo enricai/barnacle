@@ -20,6 +20,7 @@ import {
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
+  type FoldReturnSpec,
   gatherResponseBodySamples,
   indexStateValues,
   inferZodSchemaFromSamples,
@@ -3702,5 +3703,110 @@ describe("emitContractTs — sanitizeFixtureIdentifier keeps loadFixture comment
       const match = line.match(/^\/\/ const ([^\s=]+)\s*=/);
       expect(match![1]).toMatch(VALID_IDENTIFIER);
     }
+  });
+});
+
+describe("extractGraphQLActionSequence — gated on ownBackendHostnames host provenance", () => {
+  const gqlCapture = (
+    url: string,
+    operationName: string,
+    kind: "query" | "mutation",
+    responseBody: unknown
+  ) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({ operationName }),
+    responseHeaders: {},
+    responseBody,
+    operationName,
+    query: `${kind} ${operationName}($input: Input) {\n  ${operationName}(input: $input) { id }\n}`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const OWN_BACKEND = "api.example.com";
+  const THIRD_PARTY = "telemetry.thirdparty.com";
+
+  it("drops a mutation-shaped 2xx POST capture on a third-party host once own-backend hosts are declared, keeping only the own-backend mutation", () => {
+    const ownCapture = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
+    const thirdPartyCapture = gqlCapture(
+      `https://${THIRD_PARTY}/graphql`,
+      "SubmitForm",
+      "mutation",
+      { submissionId: "sub-1" }
+    );
+
+    const kept = extractGraphQLActionSequence(
+      [ownCapture, thirdPartyCapture],
+      null,
+      null,
+      [OWN_BACKEND],
+      null
+    );
+
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
+  });
+
+  it("admits every mutation capture regardless of host when no ownBackendHostnames/fallbackDomain is supplied", () => {
+    const ownCapture = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
+    const thirdPartyCapture = gqlCapture(
+      `https://${THIRD_PARTY}/graphql`,
+      "SubmitForm",
+      "mutation",
+      { submissionId: "sub-1" }
+    );
+
+    const kept = extractGraphQLActionSequence([ownCapture, thirdPartyCapture]);
+
+    expect(kept.map((a) => a.capture.url)).toEqual([
+      `https://${OWN_BACKEND}/graphql`,
+      `https://${THIRD_PARTY}/graphql`,
+    ]);
+  });
+
+  it("drops a foldReturn-admitted non-mutation capture on a third-party host once own-backend hosts are declared", () => {
+    const FOLD_SPEC: FoldReturnSpec = {
+      endpointPattern: "/drilldown",
+      resultsPath: "search.items",
+      joinFields: ["id"],
+    };
+
+    const ownDrillDown = {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "GET",
+      url: `https://${OWN_BACKEND}/drilldown?id=entry-1`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: {},
+      responseBody: { detail: { id: "entry-1" } },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    };
+    const thirdPartyDrillDown = {
+      ...ownDrillDown,
+      url: `https://${THIRD_PARTY}/drilldown?id=entry-1`,
+    };
+
+    const kept = extractGraphQLActionSequence(
+      [ownDrillDown, thirdPartyDrillDown],
+      null,
+      FOLD_SPEC,
+      [OWN_BACKEND],
+      null
+    );
+
+    expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
   });
 });
