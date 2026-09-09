@@ -1,4 +1,5 @@
 import { getBoolEnv, getEnv, getFloatEnv, getNodeEnv, getNumericEnv } from "@/lib/env";
+import { resolveSessionProxy } from "@/scraper/session-proxy";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 /**
@@ -530,13 +531,13 @@ export function loadConfig(): AppConfig {
             `SCRAPER_SESSION_PROXY_PROTOCOL must be "http" or "socks5" (got ${JSON.stringify(rawProtocol)})`
           );
         }
-        return {
-          protocol: rawProtocol,
+        return resolveSessionProxy({
           host,
           port: getNumericEnv("SCRAPER_SESSION_PROXY_PORT", 8080),
+          protocol: rawProtocol,
           username: process.env.SCRAPER_SESSION_PROXY_USERNAME || undefined,
           password: process.env.SCRAPER_SESSION_PROXY_PASSWORD || undefined,
-        };
+        });
       })(),
     },
     bedrock: {
