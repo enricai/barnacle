@@ -14,6 +14,7 @@ vi.mock("@/scraper/captcha-solver", () => ({ solveCaptcha: solveCaptchaMock }));
 import { executeStepWithHealing, shouldRetryCaptchaRegistry } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 /**
  * Exercises the bounded registry-retry loop this subtask adds around the
@@ -191,5 +192,105 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
         "registryState=empty callbackDiscovered=true with no confirmed transition on attempt 1; retrying"
       )
     );
+  });
+});
+
+describe("flow-runner/executeStepWithHealing — captchaGated sessionProxy threading", () => {
+  let capturesDir: string;
+
+  beforeAll(() => {
+    capturesDir = resolveReconRunDir().graphqlDir;
+  });
+
+  beforeEach(() => {
+    solveCaptchaMock.mockReset();
+    rmSync(capturesDir, { recursive: true, force: true });
+    mkdirSync(capturesDir, { recursive: true });
+  });
+
+  function makeSimplePage(): Page {
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      if (src.includes('return "absent"')) return "absent";
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("dispatchEvent")) return undefined;
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+
+    return {
+      evaluate,
+      url: () => "https://apply.example.com/application/abc-123",
+      title: vi.fn().mockResolvedValue(""),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+  }
+
+  it("forwards the deps-level sessionProxy tuple into the solveCaptcha call", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const page = makeSimplePage();
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+    const sessionProxy: SessionProxyTuple = {
+      protocol: "http",
+      host: "proxy.example.com",
+      port: 8080,
+      username: "user",
+      password: "pass",
+    };
+
+    const result = await executeStepWithHealing({
+      ...baseParams(page, stagehand),
+      sessionProxy,
+    });
+
+    expect(result).toBe("completed");
+    expect(solveCaptchaMock).toHaveBeenCalledWith(
+      expect.objectContaining({ proxy: sessionProxy })
+    );
+  });
+
+  it("omits the proxy field from solveCaptcha when no sessionProxy is supplied, preserving today's behavior", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const page = makeSimplePage();
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing(baseParams(page, stagehand));
+
+    expect(result).toBe("completed");
+    expect(solveCaptchaMock).toHaveBeenCalledWith({
+      type: "hcaptcha",
+      siteKey: "10000000-ffff-ffff-ffff-000000000001",
+      pageUrl: "https://apply.example.com/application/abc-123",
+      isInvisible: true,
+      userAgent: "test-agent/1.0",
+    });
   });
 });

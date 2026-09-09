@@ -98,6 +98,7 @@ import { withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
+import type { SessionProxyTuple } from "@/types/session-proxy";
 
 export { waitForSpaReady } from "@/scraper/spa-readiness";
 
@@ -8710,6 +8711,13 @@ export async function executeStepWithHealing(params: {
    */
   allocatedInbox?: TestmailInbox | null;
   /**
+   * The session's outbound proxy tuple, forwarded to `solveCaptcha` for a
+   * `captchaGated:true` step so the challenge token is minted on the same
+   * IP that later submits it. Omitted (default) preserves today's behavior:
+   * the solve runs proxyless.
+   */
+  sessionProxy?: SessionProxyTuple | null;
+  /**
    * Whether the FLOW (not just this step) has any submit semantics at all —
    * some step flagged `submitStep: true`, a `submitEndpointPattern`, or
    * `requireSubmitEndpointMatch`. Lets the cascade's `isFinalStep ||
@@ -8866,6 +8874,7 @@ export async function executeStepWithHealing(params: {
     emailStep = false,
     emailStepConfig,
     allocatedInbox = null,
+    sessionProxy = null,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     stepIndex,
     totalSteps,
@@ -9291,6 +9300,7 @@ export async function executeStepWithHealing(params: {
           pageUrl,
           isInvisible,
           userAgent,
+          proxy: sessionProxy ?? undefined,
         }).catch((err: unknown) => {
           logger.error(
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
@@ -11952,6 +11962,13 @@ export interface RunHealingFlowDeps {
    * {@link EmailStepInboxUnavailableError} for such a step.
    */
   allocatedInbox?: TestmailInbox | null;
+  /**
+   * The session's outbound proxy tuple, forwarded to `solveCaptcha` for any
+   * `captchaGated:true` step so the challenge token is minted on the same
+   * IP that later submits it. Omitted (default) preserves today's behavior:
+   * the solve runs proxyless.
+   */
+  sessionProxy?: SessionProxyTuple | null;
 }
 
 /**
@@ -12072,6 +12089,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
           emailStep: s.emailStep === true,
           emailStepConfig: s.emailStepConfig,
           allocatedInbox: deps.allocatedInbox ?? null,
+          sessionProxy: deps.sessionProxy ?? null,
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
           stepIndex: i,
           totalSteps: () => steps.length,
