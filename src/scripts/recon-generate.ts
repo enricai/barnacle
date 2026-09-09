@@ -9320,7 +9320,7 @@ ${executeHttpMethodBlock}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
   },
 };
@@ -9818,6 +9818,7 @@ import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? 
 import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
 import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
+import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";
 import ${
     isSubmissionFlow
       ? `type { ${pascal}Payload, ${pascal}Response }`
@@ -9844,7 +9845,8 @@ const ${pascal}BrowserSchema = z.object({
 export async function run${pascal}BrowserFlow(
   stagehand: Stagehand,
   ${isSubmissionFlow ? "entryUrl" : "baseUrl"}: string,
-  payload: ${pascal}Payload
+  payload: ${pascal}Payload,
+  sessionProxy: SessionProxyTuple | null
 ): Promise<${pascal}Response> {
   const page = await stagehand.context.awaitActivePage();
 
@@ -9869,6 +9871,7 @@ ${flowStepsBlock}
     anthropic: buildAnthropicClient(),
     rephraseModel: buildRephraseModel(),
     uploadFixture: ${uploadFixtureExpr},${frameSelector !== undefined ? `\n    frameSelector: ${JSON.stringify(frameSelector)},` : ""}${usesEmailStep ? "\n    allocatedInbox: allocatedInbox," : ""}
+    sessionProxy,
   });
 
   // Schema-enforced extract via guardedExtract: Stagehand 3.4.0 accepts

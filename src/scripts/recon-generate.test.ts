@@ -2301,6 +2301,7 @@ describe("emitBrowserFlowTs — payload splicing", () => {
   it("calls runHealingFlow and emits a FLOW_STEPS array", () => {
     expect(code).toContain("runHealingFlow(");
     expect(code).toContain("const FLOW_STEPS: HealingFlowStep[] = [");
+    expect(code).toContain("sessionProxy");
   });
 
   it("waits for SPA hydration after navigating (so early steps don't skip a shell page)", () => {
