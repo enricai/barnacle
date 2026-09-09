@@ -20,6 +20,18 @@ import type { createHttpClient } from "@/scraper/http-client";
  * itself nest braces arbitrarily deep, so a single non-greedy `[^;]+?\}`
  * regex only matches up to the FIRST inner `}` and truncates the assertion.
  * This walks the string to find the matching close-brace by depth instead.
+ *
+ * Also strips the bracket-indexed type-path cast `pathAccessTypeExpr` builds
+ * for a paginated fold's `itemsOverride` accessor (recon-generate.ts, the
+ * `buildFoldMergeLines`/`itemsOverride` branch), e.g.
+ * `as FooResponse["data"]["items"][number][]` — an identifier followed by any
+ * number of `["key"]`/`[number]`/`[]` bracket segments, never braces.
+ *
+ * `buildPaginatedGqlExecuteHttpBody` (the bounded-paging loop) additionally
+ * emits two TS-only shapes that aren't `as` assertions at all: `new
+ * Map<string, ItemType>()`'s generic argument list, and `let lastPage:
+ * PascalResponse = page;`'s type annotation — both stripped here too so a
+ * paginated executeHttp body evals the same as any other.
  */
 export function stripEmitterTypeAssertions(body: string): string {
   let stripped = "";
@@ -29,6 +41,26 @@ export function stripEmitterTypeAssertions(body: string): string {
     recordMatch.lastIndex = cursor;
     if (recordMatch.test(body)) {
       cursor = recordMatch.lastIndex;
+      continue;
+    }
+    const bracketPathMatch = / as [A-Za-z_$][\w$]*(?:\[[^\]]*\])*/y;
+    bracketPathMatch.lastIndex = cursor;
+    if (bracketPathMatch.test(body)) {
+      cursor = bracketPathMatch.lastIndex;
+      continue;
+    }
+    const newMapGenericMatch = /new Map<[^>]*>/y;
+    newMapGenericMatch.lastIndex = cursor;
+    if (newMapGenericMatch.test(body)) {
+      stripped += "new Map";
+      cursor = newMapGenericMatch.lastIndex;
+      continue;
+    }
+    const lastPageAnnotationMatch = /let lastPage: [A-Za-z_$][\w$]* =/y;
+    lastPageAnnotationMatch.lastIndex = cursor;
+    if (lastPageAnnotationMatch.test(body)) {
+      stripped += "let lastPage =";
+      cursor = lastPageAnnotationMatch.lastIndex;
       continue;
     }
     if (body.startsWith(" as {", cursor)) {
