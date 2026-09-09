@@ -212,4 +212,85 @@ describe("recon-browser/main — replan already-advanced short-circuit (bugfix-0
       expect.stringContaining("verification failed but the page already advanced past this step")
     );
   });
+
+  it("frame-aware: fires the short-circuit when a same-origin iframe's location advances but the top page.url() never moves", async () => {
+    // The flow declares a frameSelector — the wizard lives entirely inside a
+    // same-origin iframe, so the top page.url() stays on the shell URL for
+    // the whole run. Only the child frame's location.href moves between the
+    // pre-step and post-failure reads; a top-page-only comparison (the bug
+    // this test pins) would never see that as advancement and would fall
+    // through to the replan dispatcher instead of short-circuiting.
+    const IFRAME_SRC = "https://apply.example.com/wizard/step-1";
+    const frameUrlSequence = [
+      "https://apply.example.com/wizard/step-1", // resolveFrameTarget's candidate-scoring probe
+      "https://apply.example.com/wizard/step-1", // pre-step read for step 0
+      "https://apply.example.com/wizard/step-2", // post-failure read for step 0 (advanced)
+    ];
+    let frameUrlIndex = 0;
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const childFrame = {
+      frameId: "child-1",
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("readyState")) return "complete";
+        if (typeof expr === "string" && expr.includes("document.body")) return true;
+        const url = frameUrlSequence[Math.min(frameUrlIndex, frameUrlSequence.length - 1)]!;
+        frameUrlIndex += 1;
+        return url;
+      }),
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      // The top-level page never navigates — the wizard lives inside the iframe.
+      url: (): string => "https://careers.example.org/apply",
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector")) {
+          return { matched: true, src: IFRAME_SRC };
+        }
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([childFrame]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    executeStepWithHealingStub.mockImplementation(async () => {
+      throw new StepVerificationError("step 0 failed verification", "cascade-exhausted");
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://careers.example.org/apply",
+      "--flow",
+      JSON.stringify({ steps: ["Fill in field 0"], frameSelector: "#apply_frame" }),
+    ];
+
+    await main();
+
+    // The replan dispatcher's LLM path must never have been entered — the
+    // frame-scoped short-circuit must fire even though the top page.url()
+    // never changed.
+    expect(guardedObserveStub).not.toHaveBeenCalled();
+    expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining("verification failed but the page already advanced past this step")
+    );
+  });
 });
