@@ -1276,21 +1276,40 @@ function isGraphQL(captures: Capture[]): boolean {
  * `selectPrimaryGraphQLOperation` winner) resolves its query, endpoint, and
  * operationName from — all three MUST trace back to this same capture, not
  * three independent array scans that could each land on a different one.
+ *
+ * `submitPatterns` (declared after this function so the types can appear
+ * before the interface they use) restricts the search to non-mutation
+ * (query) captures matching the pattern when the flow declares one AND at
+ * least one own-backend query capture matches it — mirroring
+ * {@link truncateActionSequenceAtSubmitPattern}'s never-hard-fail fallback
+ * to the unfiltered pool. The restriction only ever narrows within the
+ * query captures, never promotes a mutation over them: this fallback exists
+ * specifically for the read op a bypassed {@link selectPrimaryGraphQLOperation}
+ * would have picked, and a declared pattern that happens to match the
+ * flow's own mutation capture (its real submission step, resolved
+ * elsewhere) must not hijack this read-op resolution.
  */
 function firstGraphQLCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): Capture | null {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  return (
-    captures.find(
-      (c) =>
-        c.query &&
-        (!hasHostProvenance ||
-          isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
-    ) ?? null
+  const ownBackendCandidates = captures.filter(
+    (c) =>
+      c.query &&
+      (!hasHostProvenance ||
+        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
   );
+  if (submitPatterns === null || (submitPatterns.endpoint === null && submitPatterns.body === null)) {
+    return ownBackendCandidates[0] ?? null;
+  }
+  const nonMutationCandidates = ownBackendCandidates.filter(
+    (c) => !/^\s*mutation\b/.test(c.query ?? "")
+  );
+  const pool = nonMutationCandidates.length > 0 ? nonMutationCandidates : ownBackendCandidates;
+  return restrictToSubmitPattern(pool, submitPatterns)[0] ?? null;
 }
 
 export interface PrimaryGraphQLOperation {
@@ -1417,7 +1436,8 @@ export function selectPrimaryGraphQLOperation(
   vocabulary: ReconVocabulary,
   env: NodeJS.ProcessEnv = process.env,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): PrimaryGraphQLOperation | null {
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -1425,7 +1445,7 @@ export function selectPrimaryGraphQLOperation(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const candidates = captures.filter(
+  const ownBackendCandidates = captures.filter(
     (c) =>
       c.status >= 200 &&
       c.status < 300 &&
@@ -1434,6 +1454,11 @@ export function selectPrimaryGraphQLOperation(
       (!hasHostProvenance ||
         isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
   );
+  // A declared submitEndpointPattern is authoritative for single-endpoint
+  // primary selection too: it must not be silently ignored just because
+  // this scoring path (not the multi-step submission path) is the one that
+  // ends up resolving the flow's single action.
+  const candidates = restrictToSubmitPattern(ownBackendCandidates, submitPatterns);
   if (candidates.length === 0) return null;
 
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
@@ -1555,7 +1580,8 @@ export function selectPrimaryGraphQLOperation(
 export function firstEndpointCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): Capture | null {
   // Callers with no host-provenance data (unit tests exercising the
   // chronological-first fallback in isolation) pass neither argument -- in
@@ -1566,7 +1592,10 @@ export function firstEndpointCapture(
   const allowed = (c: Capture): boolean =>
     !hasHostProvenance ||
     isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain);
-  const nonGetCaptures = captures.filter((c) => c.method !== "GET" && allowed(c));
+  const nonGetCaptures = restrictToSubmitPattern(
+    captures.filter((c) => c.method !== "GET" && allowed(c)),
+    submitPatterns
+  );
   for (const c of nonGetCaptures) {
     try {
       new URL(c.url);
@@ -1575,7 +1604,7 @@ export function firstEndpointCapture(
       // skip
     }
   }
-  for (const c of captures.filter(allowed)) {
+  for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
     try {
       new URL(c.url);
       return c;
@@ -1597,10 +1626,16 @@ function safeUrlPathname(url: string): string {
 export function firstEndpointPath(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  submitPatterns: SubmitPatterns | null = null
 ): string {
   try {
-    const capture = firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain);
+    const capture = firstEndpointCapture(
+      captures,
+      ownBackendHostnames,
+      fallbackDomain,
+      submitPatterns
+    );
     return capture ? new URL(capture.url).pathname : "/api/search";
   } catch {
     return "/api/search";
@@ -1649,6 +1684,25 @@ function compileSubmitMatcher(patterns: SubmitPatterns | null): (capture: Captur
     if (bodyRx !== null && !bodyRx.test(capture.requestPostData ?? "")) return false;
     return true;
   };
+}
+
+/**
+ * Restricts a single-endpoint primary-capture candidate pool to captures
+ * matching the flow's declared submit pattern, when one is declared AND at
+ * least one candidate in the pool matches it. A pattern that matches nothing
+ * among the candidates falls back to the unfiltered pool — mirroring
+ * {@link truncateActionSequenceAtSubmitPattern}'s never-hard-fail philosophy
+ * — so `firstEndpointCapture`/`firstEndpointPath`/`firstGraphQLCapture`/
+ * `selectPrimaryGraphQLOperation` never lose a winner over a pattern that
+ * simply doesn't apply to this candidate pool.
+ */
+function restrictToSubmitPattern<T extends Capture>(
+  pool: T[],
+  submitPatterns: SubmitPatterns | null
+): T[] {
+  const matchesSubmit = compileSubmitMatcher(submitPatterns);
+  const matching = pool.filter((c) => matchesSubmit(c));
+  return matching.length > 0 ? matching : pool;
 }
 
 /**
@@ -10187,7 +10241,8 @@ async function main(): Promise<void> {
           vocabulary,
           process.env,
           ownBackendHostnames,
-          fallbackDomain
+          fallbackDomain,
+          submitPatterns
         )
       : null;
   if (primaryGraphQLOperation && primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0) {
@@ -10203,14 +10258,14 @@ async function main(): Promise<void> {
   // capture could otherwise win the endpoint/body fallback while an
   // unrelated capture supplies the query text.
   const fallbackGraphQLCapture = gql
-    ? firstGraphQLCapture(captures, ownBackendHostnames, fallbackDomain)
+    ? firstGraphQLCapture(captures, ownBackendHostnames, fallbackDomain, submitPatterns)
     : null;
   const gqlQuery = primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
   const endpointPath =
     primaryGraphQLOperation?.endpointPath ??
     (fallbackGraphQLCapture
       ? safeUrlPathname(fallbackGraphQLCapture.url)
-      : firstEndpointPath(captures, ownBackendHostnames, fallbackDomain));
+      : firstEndpointPath(captures, ownBackendHostnames, fallbackDomain, submitPatterns));
   // Derived from the primary operation's own Phase-1 capture, never from
   // replay array order -- a replay's body reflects whichever endpoint fired
   // first, not necessarily the primary operation, and only exists once
@@ -10218,7 +10273,7 @@ async function main(): Promise<void> {
   const winningCapture =
     primaryGraphQLOperation?.capture ??
     fallbackGraphQLCapture ??
-    firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain);
+    firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain, submitPatterns);
   const responseBody = winningCapture?.responseBody ?? null;
   // Every 2xx capture sharing the winning capture's operation identity, not
   // just the one that happened to win selection -- a paginated/re-filtered
