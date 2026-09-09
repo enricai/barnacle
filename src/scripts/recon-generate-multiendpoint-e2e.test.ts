@@ -13,12 +13,8 @@ import type { Capture } from "@/scripts/recon-shared";
  * authenticated submission into a fabricated single `{ query: payload.query }`
  * POST aimed at a GET-navigation landing-page URL. The run dir carries a real
  * landing-page GET capture plus the fixture's 8-call section-save sequence,
- * and the site's recon-flow.json declares a submitEndpointPattern scoped to
- * only one section — the same real-world shape that under-selects the
- * heuristic action sequence in recon-generate.ts's manifest-precedence path
- * (recon-generate-manifest-undercoverage.test.ts), reproduced here via the
- * flow-declared pattern instead of submit-manifest.json, end to end through
- * the real CLI.
+ * with no submitEndpointPattern declared, so the unfiltered heuristic action
+ * sequence must drive selection end to end through the real CLI.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -76,10 +72,6 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
     const siteId = `recon-multiendpoint-e2e-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
 
-    // A submitEndpointPattern scoped to a single section — the natural way to
-    // declare "the button that finishes the wizard" — the same real-world
-    // config shape the recon report's site uses, matching only one of the
-    // fixture's genuine section-save endpoints.
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -88,7 +80,6 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
           { step: "fill out applicant, address, contact, employment, and attachment sections" },
           { step: "submit address section", submitStep: true },
         ],
-        submitEndpointPattern: "/address$",
       })
     );
 
@@ -155,7 +146,6 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
           { step: "fill out applicant, address, contact, employment, and attachment sections" },
           { step: "submit address section", submitStep: true },
         ],
-        submitEndpointPattern: "/address$",
       })
     );
 
