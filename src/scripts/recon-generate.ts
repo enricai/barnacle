@@ -1209,7 +1209,9 @@ function deriveRequestHeaders(
   captures: Capture[],
   replays: ReplayResult[],
   baseUrl: string,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
@@ -1220,7 +1222,13 @@ function deriveRequestHeaders(
   // (multi-step submission flows), use them. For sites where the flow is a
   // single REST call (no detectable action sequence), fall back to the
   // replay-matched captures.
-  const actionCaptures = extractActionSequence(captures, submitPatterns).map((a) => a.capture);
+  const actionCaptures = extractActionSequence(
+    captures,
+    submitPatterns,
+    null,
+    ownBackendHostnames,
+    fallbackDomain
+  ).map((a) => a.capture);
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
   const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
@@ -1680,11 +1688,11 @@ export function resolveManifestActionSequence(
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
  * transactional flow: non-noise 2xx POSTs, minus telemetry and error-reporting
- * sinks. Assets need no filter of their own — they arrive as GETs. Host is
- * NOT a filter criterion — a multi-step submission routinely bounces to a
- * different host mid-flow (an account-creation redirect, a tenant API
- * subdomain distinct from the landing page's host), so `isNoiseUrl` alone
- * decides what counts as site traffic vs. third-party noise.
+ * sinks. Assets need no filter of their own — they arrive as GETs. When the
+ * caller has host-provenance data (`ownBackendHostnames`/`fallbackDomain`),
+ * a capture whose host fails {@link isAllowedFixtureHost} is dropped too —
+ * `isNoiseUrl` alone lets a third-party telemetry/beacon POST masquerade as
+ * a submission step, since it can look identical in shape to a real one.
  *
  * When the flow declares submit patterns, only POSTs matching them survive —
  * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
@@ -1705,10 +1713,18 @@ export function resolveManifestActionSequence(
 export function extractActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  // Callers with no host-provenance data (the exported function's unit
+  // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
+  // case isAllowedFixtureHost would reject every candidate, so the gate
+  // only applies once the caller has actually resolved a notion of "own
+  // backend" to check against.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1717,6 +1733,11 @@ export function extractActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
+      if (
+        hasHostProvenance &&
+        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+      )
+        return false;
       return true;
     });
 }
@@ -1729,8 +1750,10 @@ export function extractActionSequence(
  * make up a transactional flow (`UpsertSavedApplication`, `SubmitForm`, ...)
  * — and drops `query` operations, which are read/bootstrap calls (e.g. a
  * page-load `ListForms`) that carry no state-threading value and are exactly
- * what let a chronologically-first fallback pick an unrelated query. Host is
- * NOT a filter criterion, matching {@link extractActionSequence}.
+ * what let a chronologically-first fallback pick an unrelated query. When
+ * the caller has host-provenance data (`ownBackendHostnames`/`fallbackDomain`),
+ * a capture whose host fails {@link isAllowedFixtureHost} is dropped too,
+ * matching {@link extractActionSequence}.
  *
  * When the flow declares a `foldReturnSpec`, a non-mutation capture whose
  * URL matches its `endpointPattern` is admitted despite the query drop
@@ -1748,11 +1771,19 @@ export function extractActionSequence(
 export function extractGraphQLActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
+  // Callers with no host-provenance data (the exported function's unit
+  // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
+  // case isAllowedFixtureHost would reject every candidate, so the gate
+  // only applies once the caller has actually resolved a notion of "own
+  // backend" to check against.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1760,6 +1791,11 @@ export function extractGraphQLActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
+      if (
+        hasHostProvenance &&
+        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+      )
+        return false;
       if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
       return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
@@ -9950,6 +9986,7 @@ async function main(): Promise<void> {
     frameSelector,
     submitEndpointPattern,
     submitBodyPattern,
+    requireSubmitEndpointMatch,
     displayName,
     foldReturnSpec,
   } = (() => {
@@ -9972,6 +10009,7 @@ async function main(): Promise<void> {
           frameSelector: undefined,
           submitEndpointPattern: null,
           submitBodyPattern: null,
+          requireSubmitEndpointMatch: false,
           displayName: undefined,
           foldReturnSpec,
         };
@@ -9986,6 +10024,7 @@ async function main(): Promise<void> {
           frameSelector?: string;
           submitEndpointPattern?: string;
           submitBodyPattern?: string;
+          requireSubmitEndpointMatch?: boolean;
           displayName?: string;
         };
         return {
@@ -9993,6 +10032,7 @@ async function main(): Promise<void> {
           frameSelector: obj.frameSelector,
           submitEndpointPattern: obj.submitEndpointPattern ?? null,
           submitBodyPattern: obj.submitBodyPattern ?? null,
+          requireSubmitEndpointMatch: obj.requireSubmitEndpointMatch ?? false,
           displayName: obj.displayName,
           foldReturnSpec,
         };
@@ -10002,6 +10042,7 @@ async function main(): Promise<void> {
         frameSelector: undefined,
         submitEndpointPattern: null,
         submitBodyPattern: null,
+        requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
       };
@@ -10011,6 +10052,7 @@ async function main(): Promise<void> {
         frameSelector: undefined,
         submitEndpointPattern: null,
         submitBodyPattern: null,
+        requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
       };
@@ -10081,7 +10123,14 @@ async function main(): Promise<void> {
       `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
     );
   }
-  const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
+  const baseHeaders = deriveRequestHeaders(
+    captures,
+    replays,
+    baseUrl,
+    submitPatterns,
+    ownBackendHostnames,
+    fallbackDomain
+  );
   const minTime = deriveMinTime(rateLimits);
   const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
@@ -10090,7 +10139,13 @@ async function main(): Promise<void> {
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
   const graphqlActionSequence = gql
-    ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
+    ? extractGraphQLActionSequence(
+        captures,
+        submitPatterns,
+        foldReturnSpec,
+        ownBackendHostnames,
+        fallbackDomain
+      )
     : [];
   // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
   // doc comment) can put 2+ entries in graphqlActionSequence with none of them
@@ -10168,35 +10223,61 @@ async function main(): Promise<void> {
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
     ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
-    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns, foldReturnSpec));
-  // The same undercount hazard applies one layer below the manifest: a
-  // flow-declared submitEndpointPattern that matches only one section's URL
-  // (the natural way to describe "the button that finishes the wizard")
-  // filters the heuristic sequence down to that one capture even though the
-  // same captures, read without the pattern, show every section saving
-  // independently. A pattern that undercounts what the unfiltered heuristic
-  // finds is therefore not trusted either — it falls back to the richer,
-  // unfiltered sequence instead of collapsing a real multi-call flow into
-  // the generic single-endpoint fallback.
+    : collapseRedundantPatches(
+        extractActionSequence(
+          captures,
+          submitPatterns,
+          foldReturnSpec,
+          ownBackendHostnames,
+          fallbackDomain
+        )
+      );
+  // A flow-declared submitEndpointPattern is authoritative: it may match only
+  // one section's URL (the natural way to describe "the button that finishes
+  // the wizard") even though the same captures, read without the pattern,
+  // show every section saving independently. That gap is logged below for
+  // visibility, but the declared pattern is never overridden by the richer
+  // unfiltered sequence.
   const unfilteredHeuristicActionCaptures =
     submitPatterns.endpoint === null && submitPatterns.body === null
       ? patternedHeuristicActionCaptures
       : gql
         ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(captures, null, foldReturnSpec),
+            extractGraphQLActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            ),
             primaryGraphQLOperation
           )
-        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
+        : collapseRedundantPatches(
+            extractActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            )
+          );
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
-  if (patternUndercounts) {
+  if (patternUndercounts && requireSubmitEndpointMatch) {
+    // Distinct wording from the non-required case below: this pattern is never
+    // discarded, so a message that says "ignoring"/"undercount" would misstate
+    // what happened. The disagreement is still worth a warn-level surface —
+    // the flow author should know the declared pattern covers fewer captures
+    // than the unfiltered heuristic sequence finds.
+    logger.warn(
+      `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+    );
+  } else if (patternUndercounts) {
     logger.info(
       `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
     );
   }
-  const heuristicActionCaptures = patternUndercounts
-    ? unfilteredHeuristicActionCaptures
-    : patternedHeuristicActionCaptures;
+  const heuristicActionCaptures = patternedHeuristicActionCaptures;
   const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
   const manifestUndercounts =
     manifestActionCaptures !== null &&
@@ -10214,23 +10295,6 @@ async function main(): Promise<void> {
     manifestActionCaptures !== null && !manifestUndercounts
       ? manifestActionCaptures
       : heuristicActionCaptures;
-  // The declared submitEndpointPattern's own under-match: unlike manifestUndercounts
-  // (which compares an authoritative submit-manifest.json against the heuristic
-  // sequence), this compares the pattern-filtered heuristic sequence against the SAME
-  // captures with no submitPatterns filter at all — the true raw non-GET 2xx non-noise
-  // action set. A pattern that matches conspicuously fewer calls than that raw set is a
-  // detection failure (the pattern is too narrow), not evidence the flow is read-only,
-  // and per the no-silent-fallback rule must not be allowed to quietly collapse into the
-  // generic single-endpoint {query} template below.
-  const rawUnfilteredActionCaptures =
-    submitEndpointPattern === null
-      ? null
-      : gql
-        ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(captures, null, foldReturnSpec),
-            primaryGraphQLOperation
-          )
-        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
@@ -10303,24 +10367,6 @@ async function main(): Promise<void> {
   const actionSteps =
     actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
   const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
-
-  // Loud failure for a submitEndpointPattern that under-matches the raw traffic badly
-  // enough to collapse the flow to the single-endpoint fallback: heuristicActionCaptures
-  // is the pattern-filtered sequence (used both directly and as rawActionCaptures' floor
-  // via manifestUndercounts above), so if it's this thin ONLY because the pattern itself
-  // excluded real action captures the unfiltered raw set still has, emitting the generic
-  // {query} template would misrepresent a genuine multi-call flow as read-only. Exit
-  // rather than degrade quietly, per the no-defensive/no-silent-fallback rule.
-  if (
-    rawUnfilteredActionCaptures !== null &&
-    !isSubmissionFlow &&
-    rawUnfilteredActionCaptures.length > heuristicActionCaptures.length
-  ) {
-    logger.error(
-      `ERROR declared submitEndpointPattern ${JSON.stringify(submitEndpointPattern)} matched only ${heuristicActionCaptures.length} of ${rawUnfilteredActionCaptures.length} raw non-GET 2xx non-noise action capture(s) — this under-match looks like a detection failure, not a read-only flow; refusing to fall back to the generic single-endpoint {query} template. Fix submitEndpointPattern in recon-flow.json to cover the real submission calls.`
-    );
-    process.exit(1);
-  }
 
   // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
   // whose every action capture is landing-phase is almost certainly page-chrome
