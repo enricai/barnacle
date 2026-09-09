@@ -1209,7 +1209,9 @@ function deriveRequestHeaders(
   captures: Capture[],
   replays: ReplayResult[],
   baseUrl: string,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
@@ -1220,7 +1222,13 @@ function deriveRequestHeaders(
   // (multi-step submission flows), use them. For sites where the flow is a
   // single REST call (no detectable action sequence), fall back to the
   // replay-matched captures.
-  const actionCaptures = extractActionSequence(captures, submitPatterns).map((a) => a.capture);
+  const actionCaptures = extractActionSequence(
+    captures,
+    submitPatterns,
+    null,
+    ownBackendHostnames,
+    fallbackDomain
+  ).map((a) => a.capture);
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
   const relevantCaptures = actionCaptures.length > 0 ? actionCaptures : replayMatchedCaptures;
@@ -1680,11 +1688,11 @@ export function resolveManifestActionSequence(
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
  * transactional flow: non-noise 2xx POSTs, minus telemetry and error-reporting
- * sinks. Assets need no filter of their own — they arrive as GETs. Host is
- * NOT a filter criterion — a multi-step submission routinely bounces to a
- * different host mid-flow (an account-creation redirect, a tenant API
- * subdomain distinct from the landing page's host), so `isNoiseUrl` alone
- * decides what counts as site traffic vs. third-party noise.
+ * sinks. Assets need no filter of their own — they arrive as GETs. When the
+ * caller has host-provenance data (`ownBackendHostnames`/`fallbackDomain`),
+ * a capture whose host fails {@link isAllowedFixtureHost} is dropped too —
+ * `isNoiseUrl` alone lets a third-party telemetry/beacon POST masquerade as
+ * a submission step, since it can look identical in shape to a real one.
  *
  * When the flow declares submit patterns, only POSTs matching them survive —
  * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
@@ -1705,10 +1713,18 @@ export function resolveManifestActionSequence(
 export function extractActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  // Callers with no host-provenance data (the exported function's unit
+  // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
+  // case isAllowedFixtureHost would reject every candidate, so the gate
+  // only applies once the caller has actually resolved a notion of "own
+  // backend" to check against.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1717,6 +1733,11 @@ export function extractActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
+      if (
+        hasHostProvenance &&
+        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+      )
+        return false;
       return true;
     });
 }
@@ -1729,8 +1750,10 @@ export function extractActionSequence(
  * make up a transactional flow (`UpsertSavedApplication`, `SubmitForm`, ...)
  * — and drops `query` operations, which are read/bootstrap calls (e.g. a
  * page-load `ListForms`) that carry no state-threading value and are exactly
- * what let a chronologically-first fallback pick an unrelated query. Host is
- * NOT a filter criterion, matching {@link extractActionSequence}.
+ * what let a chronologically-first fallback pick an unrelated query. When
+ * the caller has host-provenance data (`ownBackendHostnames`/`fallbackDomain`),
+ * a capture whose host fails {@link isAllowedFixtureHost} is dropped too,
+ * matching {@link extractActionSequence}.
  *
  * When the flow declares a `foldReturnSpec`, a non-mutation capture whose
  * URL matches its `endpointPattern` is admitted despite the query drop
@@ -1748,11 +1771,19 @@ export function extractActionSequence(
 export function extractGraphQLActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   const matchesFoldReturnResults = compileFoldReturnResultsMatcher(foldReturnSpec);
+  // Callers with no host-provenance data (the exported function's unit
+  // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
+  // case isAllowedFixtureHost would reject every candidate, so the gate
+  // only applies once the caller has actually resolved a notion of "own
+  // backend" to check against.
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
 
   return captures
     .map((capture, index) => ({ capture, index }))
@@ -1760,6 +1791,11 @@ export function extractGraphQLActionSequence(
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (!matchesSubmit(capture)) return false;
+      if (
+        hasHostProvenance &&
+        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+      )
+        return false;
       if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
       return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
@@ -10081,7 +10117,14 @@ async function main(): Promise<void> {
       `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
     );
   }
-  const baseHeaders = deriveRequestHeaders(captures, replays, baseUrl, submitPatterns);
+  const baseHeaders = deriveRequestHeaders(
+    captures,
+    replays,
+    baseUrl,
+    submitPatterns,
+    ownBackendHostnames,
+    fallbackDomain
+  );
   const minTime = deriveMinTime(rateLimits);
   const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
   const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
@@ -10090,7 +10133,13 @@ async function main(): Promise<void> {
   // (further down) read the same computed sequence instead of calling the
   // extractor twice.
   const graphqlActionSequence = gql
-    ? extractGraphQLActionSequence(captures, submitPatterns, foldReturnSpec)
+    ? extractGraphQLActionSequence(
+        captures,
+        submitPatterns,
+        foldReturnSpec,
+        ownBackendHostnames,
+        fallbackDomain
+      )
     : [];
   // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
   // doc comment) can put 2+ entries in graphqlActionSequence with none of them
@@ -10168,7 +10217,15 @@ async function main(): Promise<void> {
   // heuristic extraction finds.
   const patternedHeuristicActionCaptures = gql
     ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
-    : collapseRedundantPatches(extractActionSequence(captures, submitPatterns, foldReturnSpec));
+    : collapseRedundantPatches(
+        extractActionSequence(
+          captures,
+          submitPatterns,
+          foldReturnSpec,
+          ownBackendHostnames,
+          fallbackDomain
+        )
+      );
   // The same undercount hazard applies one layer below the manifest: a
   // flow-declared submitEndpointPattern that matches only one section's URL
   // (the natural way to describe "the button that finishes the wizard")
@@ -10183,10 +10240,24 @@ async function main(): Promise<void> {
       ? patternedHeuristicActionCaptures
       : gql
         ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(captures, null, foldReturnSpec),
+            extractGraphQLActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            ),
             primaryGraphQLOperation
           )
-        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
+        : collapseRedundantPatches(
+            extractActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            )
+          );
   const patternUndercounts =
     patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
   if (patternUndercounts) {
@@ -10227,10 +10298,24 @@ async function main(): Promise<void> {
       ? null
       : gql
         ? dedupRedundantSameOperationCaptures(
-            extractGraphQLActionSequence(captures, null, foldReturnSpec),
+            extractGraphQLActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            ),
             primaryGraphQLOperation
           )
-        : collapseRedundantPatches(extractActionSequence(captures, null, foldReturnSpec));
+        : collapseRedundantPatches(
+            extractActionSequence(
+              captures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            )
+          );
   // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
   // UUIDs can be shielded from indexing — those UUIDs are stable schema
   // anchors that T2/T3 substitution depends on remaining literal in body
