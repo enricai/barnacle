@@ -265,9 +265,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated sessionProxy threa
     });
 
     expect(result).toBe("completed");
-    expect(solveCaptchaMock).toHaveBeenCalledWith(
-      expect.objectContaining({ proxy: sessionProxy })
-    );
+    expect(solveCaptchaMock).toHaveBeenCalledWith(expect.objectContaining({ proxy: sessionProxy }));
   });
 
   it("omits the proxy field from solveCaptcha when no sessionProxy is supplied, preserving today's behavior", async () => {
