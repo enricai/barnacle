@@ -9311,18 +9311,18 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     responseSchema: ${pascal}ResponseSchema,
     defaultBaseUrl: ${JSON.stringify(baseUrl)},
     ${
-      payloadNeedsMultipart || inputBody
+      payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep
         ? `// multipart is required whenever the flow itself uploads a file
-    // (hasMultipartStep), OR this is a submission flow (inputBody set) since
-    // basePayloadSchemaExpr always requires a real Resume Buffer via
-    // ApplicantContactSchema regardless of whether the recorded browser flow
-    // contained an upload step, OR the payload has a non-scalar
-    // discoveredStructuredKeys field (payloadNeedsMultipart), since the
-    // multipart wire format is what makes that field's JSON-stringified
-    // encoding parseable.
+    // (hasMultipartStep), OR this is a job-application submission flow
+    // (usesApplicantContactSchema) since basePayloadSchemaExpr requires a
+    // real Resume Buffer via ApplicantContactSchema regardless of whether
+    // the recorded browser flow contained an upload step, OR the payload
+    // has a non-scalar discoveredStructuredKeys field (payloadNeedsMultipart),
+    // since the multipart wire format is what makes that field's
+    // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || inputBody ? "\n    multipart: true," : ""}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
@@ -9331,7 +9331,7 @@ ${executeHttpMethodBlock}
     session: BrowserSession,
     context: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${inputBody ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
   },
 };
