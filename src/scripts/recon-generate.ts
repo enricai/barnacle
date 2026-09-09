@@ -1302,7 +1302,10 @@ function firstGraphQLCapture(
       (!hasHostProvenance ||
         isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
   );
-  if (submitPatterns === null || (submitPatterns.endpoint === null && submitPatterns.body === null)) {
+  if (
+    submitPatterns === null ||
+    (submitPatterns.endpoint === null && submitPatterns.body === null)
+  ) {
     return ownBackendCandidates[0] ?? null;
   }
   const nonMutationCandidates = ownBackendCandidates.filter(
