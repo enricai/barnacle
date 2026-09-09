@@ -82,6 +82,22 @@ function decoySectionCaptures(): Capture[] {
   );
 }
 
+/**
+ * A single own-backend POST captured AFTER the declared pattern's last match.
+ * Truncation keeps everything up to and including the last match, so this
+ * trailing capture is the only one the fixed implementation still excludes —
+ * it is what keeps the pattern-vs-unfiltered undercount (and its WARN) real
+ * once the preceding decoys are no longer filtered out.
+ */
+function trailingDecoyCapture(): Capture {
+  return restCapture({
+    phase: "home",
+    url: `https://${OWN_BACKEND_HOST}/api/wizard/post-submit-analytics-ping`,
+    requestPostData: JSON.stringify({ ping: true }),
+    responseBody: { saved: true },
+  });
+}
+
 function writeRunDir(root: string, captures: Capture[]): void {
   mkdirSync(join(root, "graphql"), { recursive: true });
   mkdirSync(join(root, "replays"), { recursive: true });
@@ -110,8 +126,14 @@ describe("recon-generate CLI — declared submitEndpointPattern with requireSubm
     workDir = mkdtempSync(join(tmpdir(), "barnacle-submit-endpoint-pattern-authoritative-e2e-"));
     const runRoot = join(workDir, "run");
     // Decoys written first so a chronological/first-capture fallback would
-    // pick a decoy, not the pattern match, if the pattern were discarded.
-    writeRunDir(runRoot, [...decoySectionCaptures(), ...patternMatchedCaptures()]);
+    // pick a decoy, not the pattern match, if the pattern were discarded. The
+    // trailing decoy comes after the pattern match so it is the one capture
+    // truncation still excludes.
+    writeRunDir(runRoot, [
+      ...decoySectionCaptures(),
+      ...patternMatchedCaptures(),
+      trailingDecoyCapture(),
+    ]);
 
     const siteId = `submit-endpoint-pattern-authoritative-e2e-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
@@ -153,9 +175,17 @@ describe("recon-generate CLI — declared submitEndpointPattern with requireSubm
     expect(contract).toContain("/api/wizard/save-final");
     expect(contract).toContain("/api/wizard/submit-final");
 
-    // ...never to the larger, decoy-inflated heuristic sequence.
+    // ...and the truncation-preserving fix keeps every decoy section that
+    // precedes the last pattern match, since they're steps the fold plan and
+    // state-threading may depend on — only a hard filter would have dropped
+    // them.
     for (let i = 0; i < DECOY_SECTION_COUNT; i++) {
-      expect(contract).not.toContain(`/api/wizard/section-${i}`);
+      expect(contract).toContain(`/api/wizard/section-${i}`);
     }
+
+    // ...but never the capture AFTER the last pattern match — truncation
+    // stops there, so this is the one decoy that keeps the declared pattern
+    // an undercount of the unfiltered sequence.
+    expect(contract).not.toContain("/api/wizard/post-submit-analytics-ping");
   }, 30_000);
 });
