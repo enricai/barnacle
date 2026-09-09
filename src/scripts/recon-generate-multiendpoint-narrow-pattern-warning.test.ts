@@ -96,22 +96,27 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
     const output = `${result.stdout}\n${result.stderr}`;
     // The gap is still named for visibility, but it is only a log line now —
     // the declared pattern is never overridden by the richer unfiltered
-    // sequence, so this must not read as the terminal outcome.
+    // sequence, so this must not read as the terminal outcome. Truncation
+    // (not filtering) keeps every step up to and including the last match
+    // (contact), so the declared pattern now resolves to 4 captures
+    // (applications, applicant, address, contact), not the bare 2 that
+    // matched.
     expect(output).toMatch(
-      /submitEndpointPattern.*\(2 capture\(s\)\).*undercount.*\(8 capture\(s\)\)/
+      /submitEndpointPattern.*\(4 capture\(s\)\).*undercount.*\(8 capture\(s\)\)/
     );
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
-    // The declared pattern's own narrower match wins: only the address and
-    // contact captures the pattern matched are emitted, never the
-    // unfiltered 8-capture wizard sequence it under-covers.
+    // The declared pattern's own narrower match wins: only the captures up
+    // to and including the last match (address, contact) are emitted, never
+    // the unfiltered 8-capture wizard sequence it under-covers.
     expect(contract).toContain("/address");
     expect(contract).toContain("/contact");
-    // "/applicant" alone false-positives against the unrelated
-    // "applicant-payload" schema import present in every generated
-    // contract, so match the call-site shape instead.
-    expect(contract).not.toContain("BaseUrl}/applicant");
+    // The truncation-preserving fix keeps the applicant step too, since it
+    // precedes the last pattern match (contact) in the chain.
+    expect(contract).toContain("BaseUrl}/applicant");
+    // employment, attachments, and validate all come AFTER the last pattern
+    // match, so truncation still excludes them.
     expect(contract).not.toContain("/employment");
     expect(contract).not.toContain("/attachments");
     expect(contract).not.toContain("/validate");
