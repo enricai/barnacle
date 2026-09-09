@@ -449,6 +449,29 @@ export async function resolveFrameTarget(
   return mainFrameTarget(page, { declaredFrameSelector: frameSelector, evaluateTimeoutMs });
 }
 
+/**
+ * Reads a `FrameTarget`'s live URL, re-resolving against the declared frame
+ * selector when the target's own `.url()` fails instead of silently
+ * substituting an unrelated URL scope. A same-origin in-frame navigation can
+ * detach the `Frame` `target` was bound to — `target.url()` then rejects even
+ * though a frame matching `declaredFrameSelector` is still (or again)
+ * attached under a new `Frame` handle. Composes {@link probeAttachedFrameTarget}
+ * (the existing non-polling "is it attached right now" probe) rather than
+ * inventing a second re-resolution path.
+ *
+ * Falls back to `page.url()` only when there is no `declaredFrameSelector`
+ * (the target is main-frame scoped, so `page.url()` is already the right
+ * scope) or when re-resolution finds nothing attached — never as a
+ * substitute for a live child-frame URL.
+ */
+export async function readCurrentFrameUrl(page: Page, target: FrameTarget): Promise<string> {
+  return target.url().catch(async () => {
+    if (!target.declaredFrameSelector) return page.url();
+    const reresolved = await probeAttachedFrameTarget(page, target.declaredFrameSelector);
+    return reresolved ? reresolved.url() : page.url();
+  });
+}
+
 const HOP_SEPARATOR = " >> ";
 
 /**
