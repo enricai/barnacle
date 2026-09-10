@@ -10124,7 +10124,19 @@ function healUnreferencedUrlFieldsOnce(
       `(${[...noiseCaptures].map((c) => c.url).join(", ")}) not referenced or threaded by the resolved action ` +
       `sequence — excluding them and re-generating once`
   );
-  const narrowedCaptures = allCaptures.filter((c) => !noiseCaptures.has(c));
+  // Excluded by INDEX into allCaptures, not by capture reference: a
+  // resolvedPool entry produced by the form-schema-fetch insertion (see
+  // generateFromCaptures' schemaFetchCleaned) wraps a shallow clone of its
+  // source capture (url stripped of cache-buster params), so that entry's
+  // `.capture` can never be `===` anything in allCaptures even though its
+  // `.index` still correctly names the source capture's position — every
+  // ActionCapture-producing extractor in this file threads `index` from the
+  // original captures array, so it survives the clone where the reference
+  // doesn't.
+  const noiseIndices = new Set(
+    firstAttempt.resolvedPool.filter((a) => noiseCaptures.has(a.capture)).map((a) => a.index)
+  );
+  const narrowedCaptures = allCaptures.filter((_, i) => !noiseIndices.has(i));
   const retried = regenerate(narrowedCaptures);
   if (retried === null) {
     throw new Error(
