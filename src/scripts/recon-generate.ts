@@ -10054,6 +10054,33 @@ function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]):
 }
 
 /**
+ * The narrowing pass's core relevance decision, isolated for direct
+ * testing: every capture in `resolvedPool` — other than `primaryCapture`,
+ * which must never be dropped — whose own top-level response JSON owns at
+ * least one of `offendingFields`. This is the actual "is this capture
+ * structurally part of the resolved chain or incidental noise" call;
+ * {@link healUnreferencedUrlFieldsOnce} only wires it into the regenerate
+ * retry loop.
+ *
+ * Exported for tests: this predicate decides which captures the required-
+ * URL-field guard's self-heal excludes before regenerating.
+ */
+export function identifyNoiseCapturesForFields(
+  offendingFields: readonly string[],
+  resolvedPool: readonly ActionCapture[],
+  primaryCapture: Capture | null
+): Set<Capture> {
+  const noiseCaptures = new Set<Capture>();
+  for (const fieldName of offendingFields) {
+    for (const { capture } of resolvedPool) {
+      if (capture === primaryCapture) continue;
+      if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
+    }
+  }
+  return noiseCaptures;
+}
+
+/**
  * When `assertRequiredUrlFieldsReferenced` would abort on the first pass,
  * this identifies the capture(s) in the resolved pool that are the SOLE
  * source of each offending field — excluding the resolved submit/primary
@@ -10077,13 +10104,11 @@ function healUnreferencedUrlFieldsOnce(
   if (offending.length === 0) return firstAttempt;
 
   const primaryCapture = resolvedPrimaryResponseCapture(firstAttempt);
-  const noiseCaptures = new Set<Capture>();
-  for (const fieldName of offending) {
-    for (const { capture } of firstAttempt.resolvedPool) {
-      if (capture === primaryCapture) continue;
-      if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
-    }
-  }
+  const noiseCaptures = identifyNoiseCapturesForFields(
+    offending,
+    firstAttempt.resolvedPool,
+    primaryCapture
+  );
 
   if (noiseCaptures.size === 0) {
     throw new Error(

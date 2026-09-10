@@ -23,6 +23,7 @@ import {
   type FoldReturnSpec,
   firstEndpointCapture,
   gatherResponseBodySamples,
+  identifyNoiseCapturesForFields,
   indexStateValues,
   inferZodSchemaFromSamples,
   resolveFoldPlan,
@@ -700,6 +701,63 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       "https://www.example-corp.com/apply",
       "https://api.tenant.example.com/submit",
     ]);
+  });
+});
+
+describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {
+  const capture = (url: string, responseBody: Record<string, unknown>) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody,
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+  const asPool = (captures: ReturnType<typeof capture>[]) =>
+    captures.map((c, index) => ({ capture: c, index }));
+
+  it("excludes a same-host capture whose own response owns the offending field, even though host-gating alone would admit it", () => {
+    // host-gating (extractActionSequence) has no notion of structural
+    // relevance — three related sections plus one unrelated same-host
+    // widget capture would all survive it. This is the boundary that
+    // actually decides which of those is noise: it must own the offending
+    // field itself, on top of merely sharing the host.
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogName = capture("https://api.tenant.example.com/api/catalog-vas/name", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/api/promotions/banner", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
+
+    const noise = identifyNoiseCapturesForFields(
+      ["webBannerImageUrl"],
+      asPool([catalogCreate, promoBanner, catalogName, catalogSubmit]),
+      catalogSubmit
+    );
+
+    expect(noise).toEqual(new Set([promoBanner]));
+  });
+
+  it("never excludes the resolved primary capture, even when it is the sole source of the offending field", () => {
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {
+      confirmationDetailsUrl: "https://api.tenant.example.com/confirmation/app-7f3c2e",
+    });
+
+    const noise = identifyNoiseCapturesForFields(
+      ["confirmationDetailsUrl"],
+      asPool([catalogCreate, catalogSubmit]),
+      catalogSubmit
+    );
+
+    expect(noise.size).toBe(0);
   });
 });
 
