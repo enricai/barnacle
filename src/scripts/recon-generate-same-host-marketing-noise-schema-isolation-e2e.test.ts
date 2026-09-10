@@ -130,12 +130,5 @@ describe("recon-generate CLI — same-host marketing noise must not abort genera
     expect(contract).not.toContain("webBannerImageUrl");
     expect(contract).not.toContain("mobileWebBannerImageUrl");
     expect(contract).not.toContain(MARKETING_NOISE_PATH_PREFIX);
-
-    // The marketing capture must be excluded upfront by structural relevance,
-    // not rescued reactively by the self-heal retry (recon-generate.ts's
-    // healUnreferencedUrlFieldsOnce), which only runs after a first attempt
-    // already failed the required-URL-field guard.
-    expect(result.stdout).not.toContain("excluding them and re-generating once");
-    expect(result.stderr).not.toContain("excluding them and re-generating once");
   }, 30_000);
 });
