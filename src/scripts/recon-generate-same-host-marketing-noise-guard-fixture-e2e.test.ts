@@ -11,7 +11,7 @@ import type { Capture } from "@/scripts/recon-shared";
  * Encodes the report's second explicit verification hook: a same-host,
  * unthreaded marketing/promotions-style capture placed BEFORE the real
  * chain's declared submit target (rather than interleaved, as covered by
- * recon-generate-noise-capture-url-field-guard-self-heal.test.ts) must not
+ * recon-generate-marketing-endpoint-noise-guard-e2e.test.ts) must not
  * abort generation. Proves the fix narrows by structural relevance, not by
  * capture ordering/position.
  */

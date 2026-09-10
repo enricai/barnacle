@@ -15,7 +15,7 @@ import type { Capture } from "@/scripts/recon-shared";
  * generation. truncateActionSequenceAtSubmitPattern keeps everything up to
  * and including the last pattern match, so a noise capture positioned there
  * stays in the truncated slice — distinct from
- * recon-generate-noise-capture-url-field-guard-self-heal.test.ts, whose flow
+ * recon-generate-marketing-endpoint-noise-guard-e2e.test.ts, whose flow
  * declares no submitEndpointPattern at all.
  */
 
