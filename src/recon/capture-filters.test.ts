@@ -80,9 +80,9 @@ describe("isStructurallyRelevantCapture", () => {
   });
 
   it("rejects a same-host capture that only shares a common plain-word segment, not a family identifier", () => {
-    expect(
-      isStructurallyRelevantCapture("/marketing/api/promotions/search", referencePaths)
-    ).toBe(false);
+    expect(isStructurallyRelevantCapture("/marketing/api/promotions/search", referencePaths)).toBe(
+      false
+    );
     expect(
       isStructurallyRelevantCapture("/dvic/api/promotions/dvic", [
         "/dcl-apps-productavail-vas/v1/detail",
