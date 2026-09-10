@@ -9,6 +9,7 @@ import type { ReconFormSchema } from "@/recon/form-schema";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import {
+  assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   collectHeaderBindings,
   compileActionSteps,
@@ -4018,5 +4019,16 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
     );
 
     expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
+  });
+});
+
+describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated violation still hard-fails", () => {
+  it("throws when a required *Url field from the submit capture itself is never referenced as payload.<Field>", () => {
+    const contractCode = "TrackingUrl: z.string(),";
+    const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "networkidle" });';
+
+    expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
+      /required URL field.*TrackingUrl/
+    );
   });
 });
