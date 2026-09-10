@@ -124,11 +124,27 @@ const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "co
  * separators (`/`, `-`, `_`, `.`) and camelCase boundaries, then drops tokens
  * that are too short (<3 chars) or too generic ({@link GENERIC_PATH_TOKENS})
  * to signal endpoint-family relatedness on their own.
+ *
+ * Only tokens from a *compound* path segment (one that itself splits into 2+
+ * words, e.g. `productavail-vas`) are kept. A whole segment that is a single
+ * plain word (e.g. `search`, `list`, `detail`, `widget`) is dropped entirely:
+ * such words recur across unrelated endpoint families on the same host, so
+ * treating them as a relatedness signal produces false positives (a marketing
+ * `/promotions/search` call "matching" a booking flow's `.../v1/search` just
+ * because both happen to end in the common word "search"). Compound segments
+ * are where a real endpoint-family identifier lives.
  */
 function pathStructuralTokens(path: string): Set<string> {
   const words = path
-    .split(/[^a-zA-Z0-9]+/)
-    .flatMap((segment) => segment.split(/(?<=[a-z0-9])(?=[A-Z])/))
+    .split("/")
+    .filter(Boolean)
+    .flatMap((segment) => {
+      const parts = segment
+        .split(/[^a-zA-Z0-9]+/)
+        .flatMap((part) => part.split(/(?<=[a-z0-9])(?=[A-Z])/))
+        .filter(Boolean);
+      return parts.length >= 2 ? parts : [];
+    })
     .map((word) => word.toLowerCase())
     .filter((word) => word.length >= 3 && !GENERIC_PATH_TOKENS.has(word));
   return new Set(words);
