@@ -116,6 +116,92 @@ export function registrableDomain(hostname: string): string {
   return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
 }
 
+/** Tokens too short or too generic to signal endpoint-family relatedness on their own. */
+const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "com", "get", "post"]);
+
+/**
+ * Splits a URL path into lowercase word tokens, breaking on non-alphanumeric
+ * separators (`/`, `-`, `_`, `.`) and camelCase boundaries, then drops tokens
+ * that are too short (<3 chars) or too generic ({@link GENERIC_PATH_TOKENS})
+ * to signal endpoint-family relatedness on their own.
+ *
+ * Only tokens from a *compound* path segment (one that itself splits into 2+
+ * words, e.g. `productavail-vas`) are kept. A whole segment that is a single
+ * plain word (e.g. `search`, `list`, `detail`, `widget`) is dropped entirely:
+ * such words recur across unrelated endpoint families on the same host, so
+ * treating them as a relatedness signal produces false positives (a marketing
+ * `/promotions/search` call "matching" a booking flow's `.../v1/search` just
+ * because both happen to end in the common word "search"). Compound segments
+ * are where a real endpoint-family identifier lives.
+ */
+function pathStructuralTokens(path: string): Set<string> {
+  const words = path
+    .split("/")
+    .filter(Boolean)
+    .flatMap((segment) => {
+      const parts = segment
+        .split(/[^a-zA-Z0-9]+/)
+        .flatMap((part) => part.split(/(?<=[a-z0-9])(?=[A-Z])/))
+        .filter(Boolean);
+      return parts.length >= 2 ? parts : [];
+    })
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 3 && !GENERIC_PATH_TOKENS.has(word));
+  return new Set(words);
+}
+
+/**
+ * True when `candidatePath` shares enough path-segment tokens with at least
+ * one path in `referencePaths` to be judged part of the same endpoint
+ * family, false when it is structurally unrelated to all of them.
+ *
+ * A literal prefix/substring check is too strict: real same-flow endpoint
+ * families (e.g. `.../productavail-vas/...` and `.../sailingavailability-vas/...`)
+ * do not share a string prefix segment-for-segment, but do share the
+ * `-vas` suffix and surrounding path structure once tokenized. Token overlap
+ * on segment words — ignoring short/generic tokens — catches that relation
+ * while still rejecting a same-host capture that shares nothing but the
+ * host (e.g. a marketing endpoint alongside a resolved booking flow).
+ */
+export function isStructurallyRelevantCapture(
+  candidatePath: string,
+  referencePaths: readonly string[]
+): boolean {
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (candidateTokens.size === 0) return false;
+  return referencePaths.some((referencePath) => {
+    const referenceTokens = pathStructuralTokens(referencePath);
+    for (const token of candidateTokens) {
+      if (referenceTokens.has(token)) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * True when `candidatePath` has a compound (multi-word) path segment whose
+ * tokens share nothing with ANY other path in `poolPaths` — a same-host
+ * capture whose own path structurally isolates it from every other member of
+ * the pool it was admitted into. A plain single-word path (empty token set,
+ * e.g. `/applicant`) is never flagged: most real endpoint chains are single-
+ * word paths that share no tokens with each other either, so treating an
+ * empty token set as isolation would flag the whole chain as noise.
+ *
+ * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
+ * so "isolated" is exactly "not relevant to anything else in the pool" —
+ * this is what lets a same-host marketing/promotions capture (compound path,
+ * shares nothing with the rest of a resolved chain) be recognized as noise
+ * even when the chain declares no `submitEndpointPattern` to anchor against,
+ * unlike {@link isStructurallyRelevantCapture} which requires one.
+ */
+export function isStructurallyIsolatedCapture(
+  candidatePath: string,
+  poolPaths: readonly string[]
+): boolean {
+  if (pathStructuralTokens(candidatePath).size === 0) return false;
+  return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+}
+
 /**
  * True when `hostname` is allowed as a fixture host: an exact match against
  * `ownBackendHostnames` when the flow declares any, otherwise a

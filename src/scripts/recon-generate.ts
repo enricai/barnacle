@@ -39,6 +39,8 @@ import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-
 import {
   isAllowedFixtureHost,
   isNoiseUrl,
+  isStructurallyIsolatedCapture,
+  isStructurallyRelevantCapture,
   registrableDomain,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -1124,6 +1126,19 @@ function captureHostname(url: string): string {
 }
 
 /**
+ * Same not-guaranteed-parseable caveat as {@link captureHostname}, for the
+ * path instead of the host — used to anchor {@link isStructurallyRelevantCapture}
+ * on a capture's URL structure.
+ */
+function capturePathname(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
  * derived FROM, so at this point in generation the registrable-domain gate
  * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
@@ -1795,7 +1810,6 @@ export function extractActionSequence(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null
 ): ActionCapture[] {
-  const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -1803,8 +1817,25 @@ export function extractActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  // With host-provenance data AND a declared submitEndpointPattern, the
+  // endpoint match's job of isolating the submission is taken over by the
+  // structural-relevance narrowing pass below (anchored on that SAME
+  // pattern) instead of the per-capture endpoint regex test: a literal
+  // per-capture match can't admit an EARLIER multi-step chain capture (auth
+  // mint, paged listing, ...) whose URL never matches the terminal submit
+  // endpoint, only a LATER structurally-related one. `submitBodyPattern`
+  // stays enforced either way — it isn't what structural relevance reasons
+  // about. Absent host provenance, or absent a declared endpoint pattern,
+  // the per-capture endpoint match below is the only submit-isolation
+  // mechanism and stays unconditional (matches the "submit patterns isolate
+  // the submission from same-URL chrome" behavior).
+  const hasSubmitEndpointAnchor =
+    hasHostProvenance && submitPatterns !== null && submitPatterns.endpoint !== null;
+  const matchesSubmit = compileSubmitMatcher(
+    hasSubmitEndpointAnchor ? { endpoint: null, body: submitPatterns!.body } : submitPatterns
+  );
 
-  return captures
+  const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
       if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
@@ -1818,6 +1849,52 @@ export function extractActionSequence(
         return false;
       return true;
     });
+
+  // Host-gating alone can't tell a genuinely related own-backend endpoint
+  // family apart from a same-host capture that shares nothing but the host
+  // (e.g. a marketing/promotions endpoint fired incidentally by a page load,
+  // admitted above because it too is a 2xx own-backend POST). Drop a
+  // structurally-isolated member of the pool first — a compound-path capture
+  // (e.g. `/site-banner`) sharing no token with anything else host-gated in,
+  // regardless of whether a submitEndpointPattern is declared. Guarded to
+  // pools of 3+: a real chain's own steps are usually plain single-word
+  // paths with no tokens of their own (never flagged, see
+  // isStructurallyIsolatedCapture), so this only ever removes a capture that
+  // is BOTH compound-path AND unrelated to every other admitted capture —
+  // but a 1-2 capture pool has no "everything else" to be isolated from, so
+  // skip it there rather than risk flagging a single-endpoint site's own
+  // hyphenated path.
+  const structurallyGated =
+    hasHostProvenance && hostGated.length > 2
+      ? hostGated.filter(({ capture }, i) => {
+          const path = safeUrlPathname(capture.url);
+          const otherPaths = hostGated
+            .filter((_, j) => j !== i)
+            .map((h) => safeUrlPathname(h.capture.url));
+          return !isStructurallyIsolatedCapture(path, otherPaths);
+        })
+      : hostGated;
+
+  // Narrow further using structural relevance, anchored on whichever
+  // captures the flow's own declared `submitEndpointPattern` matches — the
+  // report's own preferred anchor, and the only signal here with no false
+  // positives by construction. No declared endpoint pattern gives no
+  // authoritative reference, so this pass is a no-op — mirroring
+  // compileSubmitMatcher's own null-pattern passthrough — rather than
+  // guessing at a reference set.
+  if (!hasSubmitEndpointAnchor) return structurallyGated;
+
+  const endpointRx = new RegExp(submitPatterns!.endpoint!);
+  const referencePaths = structurallyGated
+    .filter(({ capture }) => endpointRx.test(capture.url))
+    .map(({ capture }) => safeUrlPathname(capture.url));
+  if (referencePaths.length === 0) return structurallyGated;
+
+  return structurallyGated.filter(
+    ({ capture }) =>
+      endpointRx.test(capture.url) ||
+      isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
+  );
 }
 
 /**
@@ -1843,6 +1920,18 @@ export function extractActionSequence(
  * `resolveFoldPlan` with no primary capture to resolve `resultsPath`
  * against. Every other non-mutation capture is still dropped.
  *
+ * The fold-return matchers above only look at a capture's URL/response
+ * shape, not at whether it belongs to this flow's own endpoint family — a
+ * same-host marketing query can pass them purely by shape coincidence, the
+ * same gap {@link extractActionSequence} closes with
+ * {@link isStructurallyRelevantCapture}. So once host-provenance data is
+ * available, a non-mutation capture admitted only via the fold-return
+ * matchers is kept only when its path shares structural tokens with at
+ * least one admitted mutation's path — mutations are always genuine flow
+ * steps, so they anchor what "this flow's family" means. When no mutation
+ * was admitted there is nothing to anchor against, so the fold-return
+ * admissions above stand unnarrowed.
+ *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
@@ -1862,8 +1951,10 @@ export function extractGraphQLActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const isMutation = (capture: Capture): boolean =>
+    capture.query !== null && /^\s*mutation\b/.test(capture.query);
 
-  return captures
+  const admitted = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
@@ -1874,9 +1965,22 @@ export function extractGraphQLActionSequence(
         !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
       )
         return false;
-      if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
+      if (isMutation(capture)) return true;
       return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
+
+  if (!hasHostProvenance) return admitted;
+
+  const mutationPaths = admitted
+    .filter(({ capture }) => isMutation(capture))
+    .map(({ capture }) => capturePathname(capture.url));
+  if (mutationPaths.length === 0) return admitted;
+
+  return admitted.filter(
+    ({ capture }) =>
+      isMutation(capture) ||
+      isStructurallyRelevantCapture(capturePathname(capture.url), mutationPaths)
+  );
 }
 
 /**

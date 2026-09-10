@@ -705,6 +705,89 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
   });
 });
 
+describe("extractActionSequence — structural relevance narrows the host-gated pool", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("excludes a same-host marketing capture structurally unrelated to the declared submitEndpointPattern match", () => {
+    // Mirrors the reported shape: two real endpoint families sharing a
+    // `-vas` token (only distinguishable structurally, not by literal
+    // prefix), plus a same-host marketing/promotions capture that shares
+    // nothing but the host — admitted by host-gating alone.
+    const productAvail = capture(
+      "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
+      "{}"
+    );
+    const sailingAvail = capture(
+      "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/search",
+      "{}"
+    );
+    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+
+    const kept = extractActionSequence(
+      [productAvail, sailingAvail, promoBanner],
+      { endpoint: "sailingavailability-vas", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([productAvail.url, sailingAvail.url]);
+  });
+
+  it("keeps the literal submitEndpointPattern match even when its path has no compound segment to tokenize", () => {
+    // A single-word path (e.g. "/apply") yields zero structural tokens, so
+    // isStructurallyRelevantCapture would reject it against itself as a
+    // reference — the endpoint-regex match must stay admitted regardless.
+    const authMint = capture(
+      "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/token",
+      "{}"
+    );
+    const submit = capture("https://api.tenant.example.com/apply", "{}");
+
+    const kept = extractActionSequence(
+      [authMint, submit],
+      { endpoint: "apply$", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([submit.url]);
+  });
+
+  it("is a no-op when no submitEndpointPattern is declared — no authoritative anchor to narrow against", () => {
+    const productAvail = capture(
+      "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
+      "{}"
+    );
+    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+
+    const kept = extractActionSequence(
+      [productAvail, promoBanner],
+      null,
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([productAvail.url, promoBanner.url]);
+  });
+});
+
 describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {
   const capture = (url: string, responseBody: Record<string, unknown>) => ({
     timestamp: "2024-01-01T00:00:00Z",
@@ -4019,6 +4102,47 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
     );
 
     expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
+  });
+
+  it("drops a same-host, non-mutation capture that passes isAllowedFixtureHost and the fold-return matcher but is structurally unrelated to the flow's mutation family", () => {
+    const mutationCapture = gqlCapture(
+      `https://${OWN_BACKEND}/graphql/bookingavail-vas`,
+      "SubmitBookingavailVas",
+      "mutation",
+      { submissionId: "sub-1" }
+    );
+
+    const FOLD_SPEC: FoldReturnSpec = {
+      endpointPattern: "/graphql/marketing-promotions",
+      resultsPath: "promotionsWidget.items",
+      joinFields: ["id"],
+    };
+    const marketingQuery = {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url: `https://${OWN_BACKEND}/graphql/marketing-promotions`,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData: JSON.stringify({ operationName: "PromotionsWidgetSearch" }),
+      responseHeaders: {},
+      responseBody: { promotionsWidget: { items: [{ id: "promo-1" }] } },
+      operationName: "PromotionsWidgetSearch",
+      query:
+        "query PromotionsWidgetSearch($input: Input) {\n  promotionsWidget(input: $input) { items { id } }\n}",
+      variables: null,
+      decodedParams: null,
+    };
+
+    const kept = extractGraphQLActionSequence(
+      [marketingQuery, mutationCapture],
+      null,
+      FOLD_SPEC,
+      [OWN_BACKEND],
+      null
+    );
+
+    expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
   });
 });
 

@@ -8,23 +8,21 @@ import { buildMultiEndpointSubmissionActionSteps } from "@/scripts/recon-generat
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
- * Directly encodes the report's primary verification hook: a same-host
- * marketing/promotions-style capture (distinct path prefix, response
- * carrying *Url-suffixed fields nothing downstream references) interleaved
- * with a real own-backend REST chain (create -> per-section POST -> PUT
- * validate, via {@link buildMultiEndpointSubmissionActionSteps}) must not
- * abort recon-generate and must not contaminate the emitted contract.
- * Mirrors the spawnSync/tmpdir/writeRunDir/writeSiteFlow harness of
- * recon-generate-thirdparty-telemetry-action-sequence-host-provenance-e2e.test.ts.
- * Unlike that sibling, the noise capture here is on the SAME host as the
- * real chain, so it passes isAllowedFixtureHost host-gating exactly as
- * reported (src/recon/capture-filters.ts:127) — the report's own repro
- * (docs/recon-generate-host-gated-action-sequence-admits-unrelated-marketing-
- * endpoint-tripping-required-url-field-guard.md) hit this specifically on a
- * multi-step submission flow whose payload schema folds every action
- * capture's fields together, which a simple two-endpoint action sequence
- * does not exercise — hence reusing the proven multi-endpoint fixture here
- * rather than a shorter ad hoc chain.
+ * Pins that structural relevance excludes a same-host noise capture's
+ * fields at admission time, not merely because those fields happen to be
+ * Url-suffixed. unreferencedRequiredUrlFields (src/scripts/recon-generate.ts)
+ * matches fields whose name contains "Url" only, so a required field with no
+ * "Url" substring never trips that guard and was never caught by the
+ * pre-existing self-heal (docs/recon-generate-host-gated-action-sequence-
+ * admits-unrelated-marketing-endpoint-tripping-required-url-field-guard.md).
+ * Mirrors the harness of
+ * recon-generate-same-host-marketing-noise-schema-isolation-e2e.test.ts, but
+ * swaps the noise capture's leaked field for a plain string field
+ * (bannerHeadline) so a passing result here is evidence the exclusion
+ * happens because `isStructurallyIsolatedCapture` (src/recon/capture-
+ * filters.ts) drops the noise capture from the host-gated pool BEFORE
+ * schema inference ever sees it — not because of the field-name-scoped
+ * *Url guard, and not gated on a declared submitEndpointPattern.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -32,19 +30,20 @@ const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "api.example.com";
-const MARKETING_NOISE_PATH_PREFIX = "/site-banner";
+const NOISE_PATH_PREFIX = "/site-banner";
 
 /**
- * A same-host marketing/promotions widget capture that fires on page load
- * and is never threaded into the resolved action sequence. Its response
- * carries required *Url-suffixed fields that nothing downstream reads.
+ * A same-host marketing widget capture that fires on page load and is never
+ * threaded into the resolved action sequence. Its response carries a
+ * required field with no "Url" substring, so it cannot trip
+ * unreferencedRequiredUrlFields regardless of structural relevance.
  */
-function marketingNoiseCapture(): Capture {
+function noiseCapture(): Capture {
   return {
     timestamp: "2024-01-01T00:00:00.500Z",
     phase: "home",
     method: "POST",
-    url: `https://${OWN_BACKEND_HOST}${MARKETING_NOISE_PATH_PREFIX}`,
+    url: `https://${OWN_BACKEND_HOST}${NOISE_PATH_PREFIX}`,
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: '{"pageId":"home"}',
@@ -54,8 +53,7 @@ function marketingNoiseCapture(): Capture {
     variables: null,
     decodedParams: null,
     responseBody: {
-      webBannerImageUrl: "https://cdn.example.com/banner.png",
-      mobileWebBannerImageUrl: "https://cdn.example.com/banner-mobile.png",
+      bannerHeadline: "Limited time offer",
     },
   };
 }
@@ -104,15 +102,15 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("recon-generate CLI — same-host marketing noise must not abort generation or contaminate the schema", () => {
-  it("exits 0, emits the real chain, and emits no fields traceable to the marketing capture", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-same-host-marketing-noise-e2e-"));
+describe("recon-generate CLI — non-Url same-host noise field must not contaminate the schema", () => {
+  it("exits 0, emits the real chain, and emits no fields traceable to the noise capture", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-structural-relevance-non-url-field-e2e-"));
     const runRoot = join(workDir, "run");
 
     const actionCaptures = buildMultiEndpointSubmissionActionSteps().map((s) => s.capture);
-    writeRunDir(runRoot, [actionCaptures[0]!, marketingNoiseCapture(), ...actionCaptures.slice(1)]);
+    writeRunDir(runRoot, [actionCaptures[0]!, noiseCapture(), ...actionCaptures.slice(1)]);
 
-    const siteId = `same-host-marketing-noise-schema-isolation-e2e-test-${process.pid}`;
+    const siteId = `structural-relevance-non-url-field-isolation-e2e-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     writeSiteFlow(siteOutDir);
 
@@ -126,16 +124,8 @@ describe("recon-generate CLI — same-host marketing noise must not abort genera
     expect(contract).toContain("/address");
     expect(contract).toContain("/validate");
 
-    // No trace of the marketing capture's fields or its distinct path prefix.
-    expect(contract).not.toContain("webBannerImageUrl");
-    expect(contract).not.toContain("mobileWebBannerImageUrl");
-    expect(contract).not.toContain(MARKETING_NOISE_PATH_PREFIX);
-
-    // The marketing capture must be excluded upfront by structural relevance,
-    // not rescued reactively by the self-heal retry (recon-generate.ts's
-    // healUnreferencedUrlFieldsOnce), which only runs after a first attempt
-    // already failed the required-URL-field guard.
-    expect(result.stdout).not.toContain("excluding them and re-generating once");
-    expect(result.stderr).not.toContain("excluding them and re-generating once");
+    // No trace of the noise capture's field or its distinct path prefix.
+    expect(contract).not.toContain("bannerHeadline");
+    expect(contract).not.toContain(NOISE_PATH_PREFIX);
   }, 30_000);
 });
