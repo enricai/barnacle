@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ERROR_SINK_PATH_SEGMENT,
   isNoiseUrl,
+  isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -88,6 +89,27 @@ describe("isStructurallyRelevantCapture", () => {
         "/dcl-apps-productavail-vas/v1/detail",
       ])
     ).toBe(false);
+  });
+});
+
+describe("isStructurallyIsolatedCapture", () => {
+  const poolPaths = [
+    "/booking-apps-productavail-vas/v1/search",
+    "/booking-apps-sailingavailability-vas/v1/search",
+  ];
+
+  it("flags a compound-path capture that shares no token with any pool member", () => {
+    expect(isStructurallyIsolatedCapture("/marketing-api/promotions-widget", poolPaths)).toBe(true);
+  });
+
+  it("does not flag a capture related to at least one pool member", () => {
+    expect(
+      isStructurallyIsolatedCapture("/booking-apps-productavail-vas/v1/detail", poolPaths)
+    ).toBe(false);
+  });
+
+  it("never flags a plain single-word path, even if it shares no token with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/applicant", poolPaths)).toBe(false);
   });
 });
 
