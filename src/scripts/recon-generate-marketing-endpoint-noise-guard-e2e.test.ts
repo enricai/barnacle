@@ -32,11 +32,11 @@ function noiseCapture(timestamp: string): Capture {
   return {
     timestamp,
     phase: "home",
-    method: "GET",
+    method: "POST",
     url: `https://${OWN_BACKEND_HOST}${NOISE_PATH}`,
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: null,
+    requestPostData: '{"pageId":"home"}',
     responseHeaders: { "content-type": "application/json" },
     responseBody: {
       promoImageUrl: "https://cdn.example.com/promo.png",
