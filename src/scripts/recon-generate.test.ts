@@ -735,7 +735,10 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/search",
       "{}"
     );
-    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+    const promoBanner = capture(
+      "https://api.tenant.example.com/site-banner/api/promotions/widget",
+      "{}"
+    );
 
     const kept = extractActionSequence(
       [productAvail, sailingAvail, promoBanner],
@@ -774,7 +777,10 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
       "{}"
     );
-    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+    const promoBanner = capture(
+      "https://api.tenant.example.com/site-banner/api/promotions/widget",
+      "{}"
+    );
 
     const kept = extractActionSequence(
       [productAvail, promoBanner],
