@@ -10034,6 +10034,26 @@ function captureOwnsTopLevelField(capture: Capture, fieldName: string): boolean 
 }
 
 /**
+ * Builds the "field(s) ... capture(s) ..." detail the intent requires a
+ * surviving hard-fail to name — {@link assertRequiredUrlFieldsReferenced}
+ * itself only knows field names (it never sees the resolved pool), so this
+ * is what turns that into an actionable "which capture" answer when the
+ * narrowing pass can't clear the violation.
+ */
+function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]): string {
+  return fields
+    .map((fieldName) => {
+      const sourceUrls = pool
+        .filter(({ capture }) => captureOwnsTopLevelField(capture, fieldName))
+        .map(({ capture }) => capture.url);
+      return sourceUrls.length > 0
+        ? `${fieldName} (from ${sourceUrls.join(", ")})`
+        : `${fieldName} (source capture not found in resolved pool)`;
+    })
+    .join(", ");
+}
+
+/**
  * When `assertRequiredUrlFieldsReferenced` would abort on the first pass,
  * this identifies the capture(s) in the resolved pool that are the SOLE
  * source of each offending field — excluding the resolved submit/primary
@@ -10066,9 +10086,11 @@ function healUnreferencedUrlFieldsOnce(
   }
 
   if (noiseCaptures.size === 0) {
-    assertRequiredUrlFieldsReferenced(firstAttempt.contractCode, firstAttempt.browserFlow.code);
     throw new Error(
-      "unreachable: assertRequiredUrlFieldsReferenced did not throw for empty noise set"
+      `recon-generate: required URL field(s) ${describeOffendingFieldSources(offending, firstAttempt.resolvedPool)} ` +
+        `declared on the payload schema but never referenced by the emitted contract or browser flow, and no ` +
+        `unrelated capture explains them — the field is genuinely required by the resolved submit/primary capture ` +
+        `itself; the flow would enter on the wrong page`
     );
   }
 
@@ -10084,7 +10106,18 @@ function healUnreferencedUrlFieldsOnce(
       "recon-generate: narrowed retry unexpectedly resolved to the config-manifest branch"
     );
   }
-  assertRequiredUrlFieldsReferenced(retried.contractCode, retried.browserFlow.code);
+  const stillOffending = unreferencedRequiredUrlFields(
+    retried.contractCode,
+    retried.browserFlow.code
+  );
+  if (stillOffending.length > 0) {
+    throw new Error(
+      `recon-generate: required URL field(s) ${describeOffendingFieldSources(stillOffending, retried.resolvedPool)} ` +
+        `declared on the payload schema but never referenced by the emitted contract or browser flow, even after ` +
+        `excluding unrelated capture(s) (${[...noiseCaptures].map((c) => c.url).join(", ")}) — the flow would ` +
+        `enter on the wrong page`
+    );
+  }
   return retried;
 }
 

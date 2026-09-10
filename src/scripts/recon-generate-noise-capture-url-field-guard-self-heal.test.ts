@@ -131,6 +131,8 @@ describe("recon-generate: required-URL-field guard self-heals on an unrelated no
 
     const result = runGenerate(siteId, runRoot);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("confirmationDetailsUrl");
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(output).toContain("confirmationDetailsUrl");
+    expect(output).toContain(last.url);
   }, 30_000);
 });
