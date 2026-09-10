@@ -85,8 +85,8 @@ describe("isStructurallyRelevantCapture", () => {
       false
     );
     expect(
-      isStructurallyRelevantCapture("/dvic/api/promotions/dvic", [
-        "/dcl-apps-productavail-vas/v1/detail",
+      isStructurallyRelevantCapture("/site-banner/api/promotions/widget", [
+        "/booking-apps-productavail-vas/v1/detail",
       ])
     ).toBe(false);
   });
