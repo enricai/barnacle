@@ -4103,6 +4103,47 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
 
     expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
   });
+
+  it("drops a same-host, non-mutation capture that passes isAllowedFixtureHost and the fold-return matcher but is structurally unrelated to the flow's mutation family", () => {
+    const mutationCapture = gqlCapture(
+      `https://${OWN_BACKEND}/graphql/bookingavail-vas`,
+      "SubmitBookingavailVas",
+      "mutation",
+      { submissionId: "sub-1" }
+    );
+
+    const FOLD_SPEC: FoldReturnSpec = {
+      endpointPattern: "/graphql/marketing-promotions",
+      resultsPath: "promotionsWidget.items",
+      joinFields: ["id"],
+    };
+    const marketingQuery = {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url: `https://${OWN_BACKEND}/graphql/marketing-promotions`,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData: JSON.stringify({ operationName: "PromotionsWidgetSearch" }),
+      responseHeaders: {},
+      responseBody: { promotionsWidget: { items: [{ id: "promo-1" }] } },
+      operationName: "PromotionsWidgetSearch",
+      query:
+        "query PromotionsWidgetSearch($input: Input) {\n  promotionsWidget(input: $input) { items { id } }\n}",
+      variables: null,
+      decodedParams: null,
+    };
+
+    const kept = extractGraphQLActionSequence(
+      [marketingQuery, mutationCapture],
+      null,
+      FOLD_SPEC,
+      [OWN_BACKEND],
+      null
+    );
+
+    expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
+  });
 });
 
 describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated violation still hard-fails", () => {

@@ -1125,6 +1125,19 @@ function captureHostname(url: string): string {
 }
 
 /**
+ * Same not-guaranteed-parseable caveat as {@link captureHostname}, for the
+ * path instead of the host — used to anchor {@link isStructurallyRelevantCapture}
+ * on a capture's URL structure.
+ */
+function capturePathname(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
  * derived FROM, so at this point in generation the registrable-domain gate
  * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
@@ -1884,6 +1897,18 @@ export function extractActionSequence(
  * `resolveFoldPlan` with no primary capture to resolve `resultsPath`
  * against. Every other non-mutation capture is still dropped.
  *
+ * The fold-return matchers above only look at a capture's URL/response
+ * shape, not at whether it belongs to this flow's own endpoint family — a
+ * same-host marketing query can pass them purely by shape coincidence, the
+ * same gap {@link extractActionSequence} closes with
+ * {@link isStructurallyRelevantCapture}. So once host-provenance data is
+ * available, a non-mutation capture admitted only via the fold-return
+ * matchers is kept only when its path shares structural tokens with at
+ * least one admitted mutation's path — mutations are always genuine flow
+ * steps, so they anchor what "this flow's family" means. When no mutation
+ * was admitted there is nothing to anchor against, so the fold-return
+ * admissions above stand unnarrowed.
+ *
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
@@ -1903,8 +1928,10 @@ export function extractGraphQLActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  const isMutation = (capture: Capture): boolean =>
+    capture.query !== null && /^\s*mutation\b/.test(capture.query);
 
-  return captures
+  const admitted = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
@@ -1915,9 +1942,22 @@ export function extractGraphQLActionSequence(
         !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
       )
         return false;
-      if (capture.query !== null && /^\s*mutation\b/.test(capture.query)) return true;
+      if (isMutation(capture)) return true;
       return matchesFoldReturn(capture) || matchesFoldReturnResults(capture);
     });
+
+  if (!hasHostProvenance) return admitted;
+
+  const mutationPaths = admitted
+    .filter(({ capture }) => isMutation(capture))
+    .map(({ capture }) => capturePathname(capture.url));
+  if (mutationPaths.length === 0) return admitted;
+
+  return admitted.filter(
+    ({ capture }) =>
+      isMutation(capture) ||
+      isStructurallyRelevantCapture(capturePathname(capture.url), mutationPaths)
+  );
 }
 
 /**
