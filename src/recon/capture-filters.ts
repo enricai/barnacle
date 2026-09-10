@@ -179,6 +179,30 @@ export function isStructurallyRelevantCapture(
 }
 
 /**
+ * True when `candidatePath` has a compound (multi-word) path segment whose
+ * tokens share nothing with ANY other path in `poolPaths` — a same-host
+ * capture whose own path structurally isolates it from every other member of
+ * the pool it was admitted into. A plain single-word path (empty token set,
+ * e.g. `/applicant`) is never flagged: most real endpoint chains are single-
+ * word paths that share no tokens with each other either, so treating an
+ * empty token set as isolation would flag the whole chain as noise.
+ *
+ * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
+ * so "isolated" is exactly "not relevant to anything else in the pool" —
+ * this is what lets a same-host marketing/promotions capture (compound path,
+ * shares nothing with the rest of a resolved chain) be recognized as noise
+ * even when the chain declares no `submitEndpointPattern` to anchor against,
+ * unlike {@link isStructurallyRelevantCapture} which requires one.
+ */
+export function isStructurallyIsolatedCapture(
+  candidatePath: string,
+  poolPaths: readonly string[]
+): boolean {
+  if (pathStructuralTokens(candidatePath).size === 0) return false;
+  return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+}
+
+/**
  * True when `hostname` is allowed as a fixture host: an exact match against
  * `ownBackendHostnames` when the flow declares any, otherwise a
  * same-registrable-domain match against `fallbackDomain`. Shared by

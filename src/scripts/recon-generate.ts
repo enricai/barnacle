@@ -39,6 +39,7 @@ import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-
 import {
   isAllowedFixtureHost,
   isNoiseUrl,
+  isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   registrableDomain,
   telemetryUrlPatterns,
@@ -1852,22 +1853,44 @@ export function extractActionSequence(
   // Host-gating alone can't tell a genuinely related own-backend endpoint
   // family apart from a same-host capture that shares nothing but the host
   // (e.g. a marketing/promotions endpoint fired incidentally by a page load,
-  // admitted above because it too is a 2xx own-backend POST). Narrow further
-  // using structural relevance, anchored on whichever captures the flow's
-  // own declared `submitEndpointPattern` matches — the report's own
-  // preferred anchor, and the only signal here with no false positives by
-  // construction. No declared endpoint pattern gives no authoritative
-  // reference, so this pass is a no-op — mirroring compileSubmitMatcher's
-  // own null-pattern passthrough — rather than guessing at a reference set.
-  if (!hasSubmitEndpointAnchor) return hostGated;
+  // admitted above because it too is a 2xx own-backend POST). Drop a
+  // structurally-isolated member of the pool first — a compound-path capture
+  // (e.g. `/site-banner`) sharing no token with anything else host-gated in,
+  // regardless of whether a submitEndpointPattern is declared. Guarded to
+  // pools of 3+: a real chain's own steps are usually plain single-word
+  // paths with no tokens of their own (never flagged, see
+  // isStructurallyIsolatedCapture), so this only ever removes a capture that
+  // is BOTH compound-path AND unrelated to every other admitted capture —
+  // but a 1-2 capture pool has no "everything else" to be isolated from, so
+  // skip it there rather than risk flagging a single-endpoint site's own
+  // hyphenated path.
+  const structurallyGated =
+    hasHostProvenance && hostGated.length > 2
+      ? hostGated.filter(({ capture }, i) => {
+          const path = safeUrlPathname(capture.url);
+          const otherPaths = hostGated
+            .filter((_, j) => j !== i)
+            .map((h) => safeUrlPathname(h.capture.url));
+          return !isStructurallyIsolatedCapture(path, otherPaths);
+        })
+      : hostGated;
+
+  // Narrow further using structural relevance, anchored on whichever
+  // captures the flow's own declared `submitEndpointPattern` matches — the
+  // report's own preferred anchor, and the only signal here with no false
+  // positives by construction. No declared endpoint pattern gives no
+  // authoritative reference, so this pass is a no-op — mirroring
+  // compileSubmitMatcher's own null-pattern passthrough — rather than
+  // guessing at a reference set.
+  if (!hasSubmitEndpointAnchor) return structurallyGated;
 
   const endpointRx = new RegExp(submitPatterns!.endpoint!);
-  const referencePaths = hostGated
+  const referencePaths = structurallyGated
     .filter(({ capture }) => endpointRx.test(capture.url))
     .map(({ capture }) => safeUrlPathname(capture.url));
-  if (referencePaths.length === 0) return hostGated;
+  if (referencePaths.length === 0) return structurallyGated;
 
-  return hostGated.filter(
+  return structurallyGated.filter(
     ({ capture }) =>
       endpointRx.test(capture.url) ||
       isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
