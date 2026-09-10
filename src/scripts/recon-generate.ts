@@ -10654,7 +10654,7 @@ async function main(): Promise<void> {
     // landing-phase) — we only surface the suspicious shape.
     if (isSubmissionFlow && actionCaptures.every((a) => a.capture.phase === "home")) {
       logger.warn(
-        `WARN all ${actionCaptures.length} action activeCaptures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
+        `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
       );
     }
 
