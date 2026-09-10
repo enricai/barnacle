@@ -39,6 +39,7 @@ import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-
 import {
   isAllowedFixtureHost,
   isNoiseUrl,
+  isStructurallyRelevantCapture,
   registrableDomain,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -1795,7 +1796,6 @@ export function extractActionSequence(
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null
 ): ActionCapture[] {
-  const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -1803,8 +1803,25 @@ export function extractActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
+  // With host-provenance data AND a declared submitEndpointPattern, the
+  // endpoint match's job of isolating the submission is taken over by the
+  // structural-relevance narrowing pass below (anchored on that SAME
+  // pattern) instead of the per-capture endpoint regex test: a literal
+  // per-capture match can't admit an EARLIER multi-step chain capture (auth
+  // mint, paged listing, ...) whose URL never matches the terminal submit
+  // endpoint, only a LATER structurally-related one. `submitBodyPattern`
+  // stays enforced either way — it isn't what structural relevance reasons
+  // about. Absent host provenance, or absent a declared endpoint pattern,
+  // the per-capture endpoint match below is the only submit-isolation
+  // mechanism and stays unconditional (matches the "submit patterns isolate
+  // the submission from same-URL chrome" behavior).
+  const hasSubmitEndpointAnchor =
+    hasHostProvenance && submitPatterns !== null && submitPatterns.endpoint !== null;
+  const matchesSubmit = compileSubmitMatcher(
+    hasSubmitEndpointAnchor ? { endpoint: null, body: submitPatterns!.body } : submitPatterns
+  );
 
-  return captures
+  const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
       if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
@@ -1818,6 +1835,28 @@ export function extractActionSequence(
         return false;
       return true;
     });
+
+  // Host-gating alone can't tell a genuinely related own-backend endpoint
+  // family apart from a same-host capture that shares nothing but the host
+  // (e.g. a marketing/promotions endpoint fired incidentally by a page load,
+  // admitted above because it too is a 2xx own-backend POST). Narrow further
+  // using structural relevance, anchored on whichever captures the flow's
+  // own declared `submitEndpointPattern` matches — the report's own
+  // preferred anchor, and the only signal here with no false positives by
+  // construction. No declared endpoint pattern gives no authoritative
+  // reference, so this pass is a no-op — mirroring compileSubmitMatcher's
+  // own null-pattern passthrough — rather than guessing at a reference set.
+  if (!hasSubmitEndpointAnchor) return hostGated;
+
+  const endpointRx = new RegExp(submitPatterns!.endpoint!);
+  const referencePaths = hostGated
+    .filter(({ capture }) => endpointRx.test(capture.url))
+    .map(({ capture }) => safeUrlPathname(capture.url));
+  if (referencePaths.length === 0) return hostGated;
+
+  return hostGated.filter(({ capture }) =>
+    isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
+  );
 }
 
 /**

@@ -705,6 +705,68 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
   });
 });
 
+describe("extractActionSequence — structural relevance narrows the host-gated pool", () => {
+  const capture = (url: string, body: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: body,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("excludes a same-host marketing capture structurally unrelated to the declared submitEndpointPattern match", () => {
+    // Mirrors the reported shape: two real endpoint families sharing a
+    // `-vas` token (only distinguishable structurally, not by literal
+    // prefix), plus a same-host marketing/promotions capture that shares
+    // nothing but the host — admitted by host-gating alone.
+    const productAvail = capture(
+      "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
+      "{}"
+    );
+    const sailingAvail = capture(
+      "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/search",
+      "{}"
+    );
+    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+
+    const kept = extractActionSequence(
+      [productAvail, sailingAvail, promoBanner],
+      { endpoint: "sailingavailability-vas", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([productAvail.url, sailingAvail.url]);
+  });
+
+  it("is a no-op when no submitEndpointPattern is declared — no authoritative anchor to narrow against", () => {
+    const productAvail = capture(
+      "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
+      "{}"
+    );
+    const promoBanner = capture("https://api.tenant.example.com/dvic/api/promotions/dvic", "{}");
+
+    const kept = extractActionSequence(
+      [productAvail, promoBanner],
+      null,
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([productAvail.url, promoBanner.url]);
+  });
+});
+
 describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {
   const capture = (url: string, responseBody: Record<string, unknown>) => ({
     timestamp: "2024-01-01T00:00:00Z",
