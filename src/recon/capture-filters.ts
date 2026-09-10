@@ -116,6 +116,52 @@ export function registrableDomain(hostname: string): string {
   return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
 }
 
+/** Tokens too short or too generic to signal endpoint-family relatedness on their own. */
+const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "com", "get", "post"]);
+
+/**
+ * Splits a URL path into lowercase word tokens, breaking on non-alphanumeric
+ * separators (`/`, `-`, `_`, `.`) and camelCase boundaries, then drops tokens
+ * that are too short (<3 chars) or too generic ({@link GENERIC_PATH_TOKENS})
+ * to signal endpoint-family relatedness on their own.
+ */
+function pathStructuralTokens(path: string): Set<string> {
+  const words = path
+    .split(/[^a-zA-Z0-9]+/)
+    .flatMap((segment) => segment.split(/(?<=[a-z0-9])(?=[A-Z])/))
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 3 && !GENERIC_PATH_TOKENS.has(word));
+  return new Set(words);
+}
+
+/**
+ * True when `candidatePath` shares enough path-segment tokens with at least
+ * one path in `referencePaths` to be judged part of the same endpoint
+ * family, false when it is structurally unrelated to all of them.
+ *
+ * A literal prefix/substring check is too strict: real same-flow endpoint
+ * families (e.g. `.../productavail-vas/...` and `.../sailingavailability-vas/...`)
+ * do not share a string prefix segment-for-segment, but do share the
+ * `-vas` suffix and surrounding path structure once tokenized. Token overlap
+ * on segment words — ignoring short/generic tokens — catches that relation
+ * while still rejecting a same-host capture that shares nothing but the
+ * host (e.g. a marketing endpoint alongside a resolved booking flow).
+ */
+export function isStructurallyRelevantCapture(
+  candidatePath: string,
+  referencePaths: readonly string[]
+): boolean {
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (candidateTokens.size === 0) return false;
+  return referencePaths.some((referencePath) => {
+    const referenceTokens = pathStructuralTokens(referencePath);
+    for (const token of candidateTokens) {
+      if (referenceTokens.has(token)) return true;
+    }
+    return false;
+  });
+}
+
 /**
  * True when `hostname` is allowed as a fixture host: an exact match against
  * `ownBackendHostnames` when the flow declares any, otherwise a

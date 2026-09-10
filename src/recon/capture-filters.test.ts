@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ERROR_SINK_PATH_SEGMENT, isNoiseUrl, telemetryUrlPatterns } from "@/recon/capture-filters";
+import {
+  ERROR_SINK_PATH_SEGMENT,
+  isNoiseUrl,
+  isStructurallyRelevantCapture,
+  telemetryUrlPatterns,
+} from "@/recon/capture-filters";
 
 const originalTelemetryEnv = process.env.RECON_TELEMETRY_URL_PATTERNS;
 
@@ -44,6 +49,34 @@ describe("telemetryUrlPatterns — env seam read at call time", () => {
     expect(patterns).toContain("parksmedia");
     expect(patterns).toContain("my-tracker.example");
     expect(isNoiseUrl("https://apply.acme.example/parksmedia/asset")).toBe(true);
+  });
+});
+
+describe("isStructurallyRelevantCapture", () => {
+  const referencePaths = ["/booking-apps-productavail-vas/v1/search"];
+
+  it("rejects a same-host capture that shares nothing but the host", () => {
+    expect(isStructurallyRelevantCapture("/marketing/api/promotions/widget", referencePaths)).toBe(
+      false
+    );
+  });
+
+  it("accepts a different-but-related endpoint family within the same flow", () => {
+    expect(
+      isStructurallyRelevantCapture(
+        "/booking-apps-sailingavailability-vas/v1/search",
+        referencePaths
+      )
+    ).toBe(true);
+  });
+
+  it("accepts a candidate that exactly matches a reference path prefix", () => {
+    expect(
+      isStructurallyRelevantCapture(
+        "/booking-apps-productavail-vas/v1/search/detail",
+        referencePaths
+      )
+    ).toBe(true);
   });
 });
 
