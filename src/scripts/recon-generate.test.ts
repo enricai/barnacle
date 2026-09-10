@@ -748,6 +748,27 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     expect(kept).toEqual([productAvail.url, sailingAvail.url]);
   });
 
+  it("keeps the literal submitEndpointPattern match even when its path has no compound segment to tokenize", () => {
+    // A single-word path (e.g. "/apply") yields zero structural tokens, so
+    // isStructurallyRelevantCapture would reject it against itself as a
+    // reference — the endpoint-regex match must stay admitted regardless.
+    const authMint = capture(
+      "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/token",
+      "{}"
+    );
+    const submit = capture("https://api.tenant.example.com/apply", "{}");
+
+    const kept = extractActionSequence(
+      [authMint, submit],
+      { endpoint: "apply$", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([submit.url]);
+  });
+
   it("is a no-op when no submitEndpointPattern is declared — no authoritative anchor to narrow against", () => {
     const productAvail = capture(
       "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",

@@ -1854,8 +1854,10 @@ export function extractActionSequence(
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return hostGated;
 
-  return hostGated.filter(({ capture }) =>
-    isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
+  return hostGated.filter(
+    ({ capture }) =>
+      endpointRx.test(capture.url) ||
+      isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
   );
 }
 
