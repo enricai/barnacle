@@ -9353,17 +9353,30 @@ export { ${camel}Plugin as plugin };
  * defect 1) — this generalizes the check past ClickUrl so any future
  * required URL field regresses loudly instead of silently.
  */
-export function assertRequiredUrlFieldsReferenced(
+/**
+ * The field-name computation {@link assertRequiredUrlFieldsReferenced} guards
+ * with. Exposed separately so a caller catching the guard's failure can
+ * re-derive the exact offending field names to drive a narrowed retry,
+ * instead of parsing them back out of the thrown error's message.
+ */
+export function unreferencedRequiredUrlFields(
   contractCode: string,
   browserFlowCode: string
-): void {
+): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  const unreferenced = [...contractCode.matchAll(urlFieldLinePattern)]
+  return [...contractCode.matchAll(urlFieldLinePattern)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
+}
+
+export function assertRequiredUrlFieldsReferenced(
+  contractCode: string,
+  browserFlowCode: string
+): void {
+  const unreferenced = unreferencedRequiredUrlFields(contractCode, browserFlowCode);
   if (unreferenced.length === 0) return;
   throw new Error(
     `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
@@ -9979,6 +9992,172 @@ async function resolveFormSchema(specifier: string): Promise<ReconFormSchema | n
   return formSchema;
 }
 
+/** Everything `main()`'s emit === "ts" branch needs to write its output,
+ * plus the bits {@link healUnreferencedUrlFieldsOnce} needs to identify which
+ * capture(s) to exclude on a narrowed retry. */
+interface TsGenerationResult {
+  contractCode: string;
+  contractOpts: Parameters<typeof emitContractTs>[0];
+  browserFlow: ReturnType<typeof emitBrowserFlowTs>;
+  auxFiles: string[];
+  /** The resolved action-sequence pool that drove schema/response/fold
+   * inference for this generation — the same pool a same-host, page-load-only
+   * capture with no other step referencing or threading it can slip into. */
+  resolvedPool: ActionCapture[];
+  isSubmissionFlow: boolean;
+  actionSteps: ActionStep[];
+  winningCapture: Capture | null;
+}
+
+/**
+ * The capture whose own response `assertRequiredUrlFieldsReferenced`'s
+ * scan actually describes: a submission flow returns
+ * {@link selectReturnAction}'s pick (the terminal/return call
+ * `executeHttp` hands back); a read flow returns `winningCapture`. This is
+ * the one capture the narrowing pass must never exclude — if an offending
+ * field's sole source turns out to be this capture, the field is genuinely
+ * required and the guard must still hard-fail.
+ */
+function resolvedPrimaryResponseCapture(result: TsGenerationResult): Capture | null {
+  if (!result.isSubmissionFlow) return result.winningCapture;
+  return selectReturnAction(result.actionSteps)?.capture ?? null;
+}
+
+/** True when `capture`'s own top-level response JSON is the field's source —
+ * the same "does this capture's response carry the field" signal
+ * {@link assertRequiredUrlFieldsReferenced} implicitly relies on, applied per
+ * capture instead of to the merged emitted code. */
+function captureOwnsTopLevelField(capture: Capture, fieldName: string): boolean {
+  const body = capture.responseBody;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  return Object.hasOwn(body as Record<string, unknown>, fieldName);
+}
+
+/**
+ * Builds the "field(s) ... capture(s) ..." detail the intent requires a
+ * surviving hard-fail to name — {@link assertRequiredUrlFieldsReferenced}
+ * itself only knows field names (it never sees the resolved pool), so this
+ * is what turns that into an actionable "which capture" answer when the
+ * narrowing pass can't clear the violation.
+ */
+function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]): string {
+  return fields
+    .map((fieldName) => {
+      const sourceUrls = pool
+        .filter(({ capture }) => captureOwnsTopLevelField(capture, fieldName))
+        .map(({ capture }) => capture.url);
+      return sourceUrls.length > 0
+        ? `${fieldName} (from ${sourceUrls.join(", ")})`
+        : `${fieldName} (source capture not found in resolved pool)`;
+    })
+    .join(", ");
+}
+
+/**
+ * The narrowing pass's core relevance decision, isolated for direct
+ * testing: every capture in `resolvedPool` — other than `primaryCapture`,
+ * which must never be dropped — whose own top-level response JSON owns at
+ * least one of `offendingFields`. This is the actual "is this capture
+ * structurally part of the resolved chain or incidental noise" call;
+ * {@link healUnreferencedUrlFieldsOnce} only wires it into the regenerate
+ * retry loop.
+ *
+ * Exported for tests: this predicate decides which captures the required-
+ * URL-field guard's self-heal excludes before regenerating.
+ */
+export function identifyNoiseCapturesForFields(
+  offendingFields: readonly string[],
+  resolvedPool: readonly ActionCapture[],
+  primaryCapture: Capture | null
+): Set<Capture> {
+  const noiseCaptures = new Set<Capture>();
+  for (const fieldName of offendingFields) {
+    for (const { capture } of resolvedPool) {
+      if (capture === primaryCapture) continue;
+      if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
+    }
+  }
+  return noiseCaptures;
+}
+
+/**
+ * When `assertRequiredUrlFieldsReferenced` would abort on the first pass,
+ * this identifies the capture(s) in the resolved pool that are the SOLE
+ * source of each offending field — excluding the resolved submit/primary
+ * capture, which must never be dropped — removes exactly those captures from
+ * the pool driving generation, and re-runs `generateFromCaptures` exactly
+ * once. Hard-fails (naming the field(s) and, when found, the offending
+ * capture URL(s)) if the violation survives the narrowed pool: either no
+ * noise capture explains it (so nothing was excluded and re-running would be
+ * a no-op), or the field's only source is the resolved primary capture
+ * itself, meaning the field is genuinely required.
+ */
+function healUnreferencedUrlFieldsOnce(
+  allCaptures: Capture[],
+  firstAttempt: TsGenerationResult,
+  regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
+): TsGenerationResult {
+  const offending = unreferencedRequiredUrlFields(
+    firstAttempt.contractCode,
+    firstAttempt.browserFlow.code
+  );
+  if (offending.length === 0) return firstAttempt;
+
+  const primaryCapture = resolvedPrimaryResponseCapture(firstAttempt);
+  const noiseCaptures = identifyNoiseCapturesForFields(
+    offending,
+    firstAttempt.resolvedPool,
+    primaryCapture
+  );
+
+  if (noiseCaptures.size === 0) {
+    throw new Error(
+      `recon-generate: required URL field(s) ${describeOffendingFieldSources(offending, firstAttempt.resolvedPool)} ` +
+        `declared on the payload schema but never referenced by the emitted contract or browser flow, and no ` +
+        `unrelated capture explains them — the field is genuinely required by the resolved submit/primary capture ` +
+        `itself; the flow would enter on the wrong page`
+    );
+  }
+
+  logger.warn(
+    `required URL field(s) ${offending.join(", ")} traced to ${noiseCaptures.size} unrelated capture(s) ` +
+      `(${[...noiseCaptures].map((c) => c.url).join(", ")}) not referenced or threaded by the resolved action ` +
+      `sequence — excluding them and re-generating once`
+  );
+  // Excluded by INDEX into allCaptures, not by capture reference: a
+  // resolvedPool entry produced by the form-schema-fetch insertion (see
+  // generateFromCaptures' schemaFetchCleaned) wraps a shallow clone of its
+  // source capture (url stripped of cache-buster params), so that entry's
+  // `.capture` can never be `===` anything in allCaptures even though its
+  // `.index` still correctly names the source capture's position — every
+  // ActionCapture-producing extractor in this file threads `index` from the
+  // original captures array, so it survives the clone where the reference
+  // doesn't.
+  const noiseIndices = new Set(
+    firstAttempt.resolvedPool.filter((a) => noiseCaptures.has(a.capture)).map((a) => a.index)
+  );
+  const narrowedCaptures = allCaptures.filter((_, i) => !noiseIndices.has(i));
+  const retried = regenerate(narrowedCaptures);
+  if (retried === null) {
+    throw new Error(
+      "recon-generate: narrowed retry unexpectedly resolved to the config-manifest branch"
+    );
+  }
+  const stillOffending = unreferencedRequiredUrlFields(
+    retried.contractCode,
+    retried.browserFlow.code
+  );
+  if (stillOffending.length > 0) {
+    throw new Error(
+      `recon-generate: required URL field(s) ${describeOffendingFieldSources(stillOffending, retried.resolvedPool)} ` +
+        `declared on the payload schema but never referenced by the emitted contract or browser flow, even after ` +
+        `excluding unrelated capture(s) (${[...noiseCaptures].map((c) => c.url).join(", ")}) — the flow would ` +
+        `enter on the wrong page`
+    );
+  }
+  return retried;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
@@ -10176,544 +10355,581 @@ async function main(): Promise<void> {
   // isn't available to deriveBaseUrl yet -- see deriveBaseUrl's own doc
   // comment for how it copes when ownBackendHostnames is empty.
   const ownBackendHostnames = readOwnBackendHostnames(flowFile);
-  const baseUrl = deriveBaseUrl(captures, ownBackendHostnames);
-  // Gate on the flow's declared own-backend hosts (or the registrable-domain
-  // fallback of baseUrl) via the same predicate recon-http.ts applies at
-  // write time, so a stale aux/ directory from before that filter existed
-  // — or one written by a filter someone bypassed — can never smuggle a
-  // third party's JSON into a generated plugin's fixtures/. A file with no
-  // manifest entry is unverifiable provenance, not proven safe, so it is
-  // excluded rather than assumed to have passed the write-time filter.
-  const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
-  const auxFiles = auxManifest
-    .filter((entry) => {
-      const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
-      if (!allowed) {
-        logger.warn(
-          `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
+  /**
+   * Runs the capture-to-contract pipeline once for a given capture pool.
+   * Nested (not top-level) so `assertRequiredUrlFieldsReferenced`'s
+   * self-healing retry can invoke it a second time against a narrowed
+   * `activeCaptures` without duplicating ~500 lines of deterministic
+   * derivation logic. Returns null once the config-manifest branch has
+   * already written its output and there is nothing left for main() to do.
+   */
+  function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
+    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames);
+    // Gate on the flow's declared own-backend hosts (or the registrable-domain
+    // fallback of baseUrl) via the same predicate recon-http.ts applies at
+    // write time, so a stale aux/ directory from before that filter existed
+    // — or one written by a filter someone bypassed — can never smuggle a
+    // third party's JSON into a generated plugin's fixtures/. A file with no
+    // manifest entry is unverifiable provenance, not proven safe, so it is
+    // excluded rather than assumed to have passed the write-time filter.
+    const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
+    const auxFiles = auxManifest
+      .filter((entry) => {
+        const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
+        if (!allowed) {
+          logger.warn(
+            `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
+          );
+        }
+        return allowed;
+      })
+      .map((entry) => entry.filename)
+      .sort();
+    // A file on disk with no manifest entry predates the write-time provenance
+    // record (bugfix-002) or otherwise landed outside probeAuxiliaryEndpoints —
+    // its source host is unverifiable, so it is excluded, not assumed safe.
+    const manifestedFilenames = new Set(auxManifest.map((entry) => entry.filename));
+    const unmanifestedFiles = (() => {
+      try {
+        return readdirSync(auxDir).filter(
+          (f) => f.endsWith(".json") && f !== "aux-manifest.json" && !manifestedFilenames.has(f)
         );
+      } catch {
+        return [] as string[];
       }
-      return allowed;
-    })
-    .map((entry) => entry.filename)
-    .sort();
-  // A file on disk with no manifest entry predates the write-time provenance
-  // record (bugfix-002) or otherwise landed outside probeAuxiliaryEndpoints —
-  // its source host is unverifiable, so it is excluded, not assumed safe.
-  const manifestedFilenames = new Set(auxManifest.map((entry) => entry.filename));
-  const unmanifestedFiles = (() => {
-    try {
-      return readdirSync(auxDir).filter(
-        (f) => f.endsWith(".json") && f !== "aux-manifest.json" && !manifestedFilenames.has(f)
+    })();
+    for (const f of unmanifestedFiles) {
+      logger.warn(
+        `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
       );
-    } catch {
-      return [] as string[];
     }
-  })();
-  for (const f of unmanifestedFiles) {
-    logger.warn(
-      `excluding aux fixture '${f}' — no aux-manifest.json entry, provenance unverifiable`
+    const baseHeaders = deriveRequestHeaders(
+      activeCaptures,
+      replays,
+      baseUrl,
+      submitPatterns,
+      ownBackendHostnames,
+      fallbackDomain
     );
-  }
-  const baseHeaders = deriveRequestHeaders(
-    captures,
-    replays,
-    baseUrl,
-    submitPatterns,
-    ownBackendHostnames,
-    fallbackDomain
-  );
-  const minTime = deriveMinTime(rateLimits);
-  const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
-  const safeRps = rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-  const gql = isGraphQL(captures);
-  // Hoisted so both the primary-operation gate below and rawActionCaptures
-  // (further down) read the same computed sequence instead of calling the
-  // extractor twice. Computed unfiltered (submitPatterns: null) — a
-  // flow-declared submit pattern must truncate this sequence, not filter
-  // it, so every gate reading it sees the full host-gated chain.
-  const graphqlActionSequence = gql
-    ? extractGraphQLActionSequence(
-        captures,
-        null,
-        foldReturnSpec,
-        ownBackendHostnames,
-        fallbackDomain
-      )
-    : [];
-  // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
-  // doc comment) can put 2+ entries in graphqlActionSequence with none of them
-  // an actual `mutation` — a GraphQL-primary query plus its drill-down, not a
-  // transactional multi-step submission. Only a real mutation makes this a
-  // submission flow; an admitted read/drill capture must not, on its own, null
-  // out primaryGraphQLOperation below or flip isSubmissionFlow further down.
-  const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
-    (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
-  );
-  const primaryGraphQLOperation =
-    gql && !graphqlActionSequenceHasMutation
-      ? selectPrimaryGraphQLOperation(
-          captures,
+    const minTime = deriveMinTime(rateLimits);
+    const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
+    const safeRps =
+      rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
+    const gql = isGraphQL(activeCaptures);
+    // Hoisted so both the primary-operation gate below and rawActionCaptures
+    // (further down) read the same computed sequence instead of calling the
+    // extractor twice. Computed unfiltered (submitPatterns: null) — a
+    // flow-declared submit pattern must truncate this sequence, not filter
+    // it, so every gate reading it sees the full host-gated chain.
+    const graphqlActionSequence = gql
+      ? extractGraphQLActionSequence(
+          activeCaptures,
+          null,
+          foldReturnSpec,
+          ownBackendHostnames,
+          fallbackDomain
+        )
+      : [];
+    // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
+    // doc comment) can put 2+ entries in graphqlActionSequence with none of them
+    // an actual `mutation` — a GraphQL-primary query plus its drill-down, not a
+    // transactional multi-step submission. Only a real mutation makes this a
+    // submission flow; an admitted read/drill capture must not, on its own, null
+    // out primaryGraphQLOperation below or flip isSubmissionFlow further down.
+    const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
+      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
+    );
+    const primaryGraphQLOperation =
+      gql && !graphqlActionSequenceHasMutation
+        ? selectPrimaryGraphQLOperation(
+            activeCaptures,
+            flowSteps,
+            vocabulary,
+            process.env,
+            ownBackendHostnames,
+            fallbackDomain,
+            submitPatterns
+          )
+        : null;
+    if (
+      primaryGraphQLOperation &&
+      primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0
+    ) {
+      const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
+      logger.warn(
+        `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
+      );
+    }
+    // When there's no primaryGraphQLOperation winner but the flow is still
+    // GraphQL, the query/endpointPath/responseBody/operationName fallbacks
+    // must all trace back to the SAME capture (firstGraphQLCapture) rather
+    // than resolving independently — a non-GraphQL-shaped own-backend
+    // capture could otherwise win the endpoint/body fallback while an
+    // unrelated capture supplies the query text.
+    const fallbackGraphQLCapture = gql
+      ? firstGraphQLCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns)
+      : null;
+    const gqlQuery =
+      primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
+    const endpointPath =
+      primaryGraphQLOperation?.endpointPath ??
+      (fallbackGraphQLCapture
+        ? safeUrlPathname(fallbackGraphQLCapture.url)
+        : firstEndpointPath(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns));
+    // Derived from the primary operation's own Phase-1 capture, never from
+    // replay array order -- a replay's body reflects whichever endpoint fired
+    // first, not necessarily the primary operation, and only exists once
+    // recon:http has run.
+    const winningCapture =
+      primaryGraphQLOperation?.capture ??
+      fallbackGraphQLCapture ??
+      firstEndpointCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns);
+    const responseBody = winningCapture?.responseBody ?? null;
+    // Every 2xx capture sharing the winning capture's operation identity, not
+    // just the one that happened to win selection -- a paginated/re-filtered
+    // re-fire of the same operation can omit a field the winning capture
+    // happened to have (or vice versa), and inferZodSchemaFromSamples needs
+    // that presence evidence across occurrences to mark the field .optional()
+    // instead of required from a single observation.
+    const responseBodySamples = gatherResponseBodySamples(
+      winningCapture,
+      primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+      activeCaptures
+    );
+
+    // Detect a multi-step submission flow (transactional sites like apply forms,
+    // checkout, etc.). When the action sequence has 2+ POSTs, switch the
+    // contract template to emit a state-threaded executeHttp.
+    //
+    // Selection precedence: (A) the authoritative submit-manifest recon-browser
+    // wrote from the verified submission; else (B/C) pattern/heuristic extraction.
+    // The manifest is the only signal that separates a submission POST from a
+    // page-chrome POST sharing its URL, so it normally wins when present — but
+    // a manifest built from a single flow-declared submit step cannot represent
+    // a wizard whose every section saves independently, so it is only trusted
+    // when it isn't a strict undercount of what the same activeCaptures' own
+    // heuristic extraction finds.
+    const unfilteredHeuristicActionCaptures = gql
+      ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
+      : collapseRedundantPatches(
+          extractActionSequence(
+            activeCaptures,
+            null,
+            foldReturnSpec,
+            ownBackendHostnames,
+            fallbackDomain
+          )
+        );
+    // A flow-declared submitEndpointPattern is authoritative: it may match only
+    // the final step's URL (the natural way to describe "the button that
+    // finishes the wizard") even though the earlier steps of the same chain
+    // (auth mint, paged listing, ...) are what state-threading depends on.
+    // Truncating at the last match — instead of filtering to matches only —
+    // keeps that whole chain; the gap between this and the unfiltered
+    // sequence is logged below for visibility, but the declared pattern is
+    // never overridden by the richer unfiltered sequence.
+    const patternedHeuristicActionCaptures =
+      submitPatterns.endpoint === null && submitPatterns.body === null
+        ? unfilteredHeuristicActionCaptures
+        : truncateActionSequenceAtSubmitPattern(unfilteredHeuristicActionCaptures, submitPatterns);
+    const patternUndercounts =
+      patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
+    if (patternUndercounts && requireSubmitEndpointMatch) {
+      // Distinct wording from the non-required case below: this pattern is never
+      // discarded, so a message that says "ignoring"/"undercount" would misstate
+      // what happened. The disagreement is still worth a warn-level surface —
+      // the flow author should know the declared pattern covers fewer activeCaptures
+      // than the unfiltered heuristic sequence finds.
+      logger.warn(
+        `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
+      );
+    } else if (patternUndercounts) {
+      logger.info(
+        `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
+      );
+    }
+    const heuristicActionCaptures = patternedHeuristicActionCaptures;
+    const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    const manifestUndercounts =
+      manifestActionCaptures !== null &&
+      manifestActionCaptures.length < heuristicActionCaptures.length;
+    if (manifestActionCaptures !== null && manifestUndercounts) {
+      logger.info(
+        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`
+      );
+    } else if (manifestActionCaptures !== null) {
+      logger.info(
+        `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`
+      );
+    }
+    const rawActionCaptures =
+      manifestActionCaptures !== null && !manifestUndercounts
+        ? manifestActionCaptures
+        : heuristicActionCaptures;
+    // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
+    // UUIDs can be shielded from indexing — those UUIDs are stable schema
+    // anchors that T2/T3 substitution depends on remaining literal in body
+    // templates.
+    const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(
+      activeCaptures,
+      formSchema
+    );
+    // Shield ALL field-id/option-id UUIDs that appear in any schema response, not
+    // just the ones that detectFormSchemaFieldNames emits a payload name for.
+    // Some fields have names too long for the naming heuristic (>80 chars) and
+    // would be skipped by fieldNameMap; their field-ids still need shielding
+    // because they appear as anchors in the T2-substituted body templates.
+    const shieldedUuids = new Set<string>(allSchemaUuids);
+    // Persona identity bindings + entry-URL job coordinates — the value→payload
+    // reconciliation the body emitter merges into its substitution map so nested
+    // applicant fields and job context reach the caller's data instead of the
+    // recon persona's. Both are site-agnostic: persona mapping comes from the
+    // consumer vocabulary, job coordinates from the entry URL's own query keys.
+    const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
+    const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
+    // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
+    // action sequence at the position observed during recon, so the existing
+    // state-threading machinery can produce its FormHistoryId / section UUIDs /
+    // etc. as state values for downstream POSTs. Strip cache-buster query
+    // params (recon timestamps) from the captured URL so the emitted runtime
+    // fetch uses a clean template. Sites without a schema-fetch capture
+    // (rawSchemaFetch === null) get unchanged behavior.
+    const rawSchemaFetch =
+      gql || formSchema === null
+        ? null
+        : detectFormSchemaFetchCapture(activeCaptures, baseUrl, formSchema);
+    const schemaFetchCleaned: Capture | null = rawSchemaFetch
+      ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
+      : null;
+    const actionCaptures: ActionCapture[] = (() => {
+      if (
+        rawActionCaptures.length === 0 ||
+        schemaFetchCleaned === null ||
+        rawSchemaFetch === null
+      ) {
+        return rawActionCaptures;
+      }
+      let insertAt = rawActionCaptures.length;
+      for (let i = 0; i < rawActionCaptures.length; i++) {
+        if (rawActionCaptures[i]!.index >= rawSchemaFetch.index) {
+          insertAt = i;
+          break;
+        }
+      }
+      return [
+        ...rawActionCaptures.slice(0, insertAt),
+        { capture: schemaFetchCleaned, index: rawSchemaFetch.index },
+        ...rawActionCaptures.slice(insertAt),
+      ];
+    })();
+    const actionCaptureIndices = new Set<number>(actionCaptures.map((a) => a.index));
+    // Resolved off raw actionCaptures — fold-plan DETECTION depends only on
+    // each action's capture, so this runs before compileActionSteps/
+    // indexStateValues even exist — so a short numeric join value threaded
+    // through a dependent-drill-down chain hop still gets indexed as
+    // producible state (see collectDependentDrillDownChainValues).
+    const dependentDrillDownChainValues =
+      actionCaptures.length > 1
+        ? collectDependentDrillDownChainValues(actionCaptures, foldReturnSpec)
+        : new Set<string>();
+    const stateIndex =
+      actionCaptures.length > 1
+        ? indexStateValues(
+            activeCaptures,
+            shieldedUuids,
+            actionCaptureIndices,
+            dependentDrillDownChainValues
+          )
+        : new Map<string, StateValue>();
+    const actionSteps =
+      actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
+    const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
+
+    // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
+    // whose every action capture is landing-phase is almost certainly page-chrome
+    // bootstrap (e.g. page-chrome `POST /widgets`) misread as an apply flow, not a walked
+    // wizard. Real wizard steps carry a step-slug phase; single-endpoint search runs
+    // are `length <= 1` and never reach here. We do not filter (that would delete the
+    // sole search POST of legitimate `--url`-only single-endpoint runs, which is also
+    // landing-phase) — we only surface the suspicious shape.
+    if (isSubmissionFlow && actionCaptures.every((a) => a.capture.phase === "home")) {
+      logger.warn(
+        `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
+      );
+    }
+
+    const inputBody = isSubmissionFlow
+      ? (() => {
+          try {
+            const payloadAction = selectPayloadAction(actionSteps);
+            return JSON.parse(payloadAction?.capture.requestPostData ?? "null") as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : undefined;
+    const errorSignals = detectErrorSignals(actionSteps);
+    const discoveredFormFields = new Set<string>();
+    const discoveredOptionFields = new Set<string>();
+    // Phase E: maps label-derived raw-option payload field name (e.g.
+    // "AreYouOverTheAgeOf18OptionId") → recon-observed option-id UUID. Used to
+    // emit `<Name>OptionId: z.string()` payload fields with TSDoc docs.
+    const discoveredRawOptionFields = new Map<string, string>();
+    // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
+    // that get parameterized. Recorded with their value type so the contract
+    // emitter can add them to the payload schema with appropriate Zod types.
+    const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
+    // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
+    // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the
+    // existing raw-option channel so their frozen code is still parameterized.
+    const { resolutions: selectResolutions, rawCodeFields } = buildSelectOptionResolutions(
+      flowSteps,
+      activeCaptures,
+      vocabulary,
+      process.env
+    );
+    for (const [semanticName, { code }] of rawCodeFields) {
+      const fieldName = `${semanticName}Code`;
+      if (!discoveredRawOptionFields.has(fieldName)) discoveredRawOptionFields.set(fieldName, code);
+    }
+    // Mechanism B: nested caller structures (experienceData/educationData
+    // history, opaque eventData) discovered during the body emit, surfaced to the
+    // contract's payload schema.
+    const discoveredStructuredKeys = new Map<string, string>();
+    // G1+G2: partition baseHeaders into three buckets:
+    //   - static: values that don't reference baseUrl or tenant subdomain
+    //   - baseUrl-derived: values containing the recon's baseUrl as substring
+    //     (e.g. Origin, Referer) — emit per-call from payload.BaseUrl
+    //   - tenant-subdomain: values that EXACTLY equal the first subdomain
+    //     (e.g. API-ShortName: "addus") — emit per-call from a payload field
+    const staticBaseHeaders: Record<string, string> = {};
+    const baseUrlDerivedHeaders = new Map<string, string>();
+    const tenantSubdomainHeaders = new Map<string, string>();
+    const firstSubdomain = (() => {
+      try {
+        const host = new URL(baseUrl).hostname;
+        const firstDot = host.indexOf(".");
+        return firstDot === -1 ? host : host.slice(0, firstDot);
+      } catch {
+        return "";
+      }
+    })();
+    for (const [k, v] of Object.entries(baseHeaders)) {
+      if (firstSubdomain.length > 0 && v === firstSubdomain) {
+        tenantSubdomainHeaders.set(k, v);
+      } else if (baseUrl.length > 0 && v.includes(baseUrl)) {
+        baseUrlDerivedHeaders.set(k, v);
+      } else {
+        staticBaseHeaders[k] = v;
+      }
+    }
+    // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
+    // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
+    // captured redirect off the original domain, e.g. an auth bounce or a
+    // vendor-hosted submission step). A bare `fetch`-based executeHttp can't
+    // reliably replay that: cookies/CSRF/session state minted for one origin
+    // don't automatically carry to the next the way a real browser's redirect
+    // handling does, so synthesizing a same-shape HTTP sequence would silently
+    // drop the session boundary the recon actually walked. Per-step, this
+    // already surfaces as the "cross-domain redirect detected ... likely needs
+    // browser fallback for this step" TODO (see emitMultiStepExecuteHttp); at
+    // the whole-flow level the honest emit is no executeHttp at all — never a
+    // same-host multi-step body that quietly drops the hop, and never a
+    // downgrade to the single-endpoint `{query}` branch either, since that's a
+    // fabrication of its own kind for a flow that isn't a single-action
+    // query/search to begin with.
+    const browserFlowOnly = isSubmissionFlow && actionSteps.some((s) => s.isCrossDomain);
+    const multiStepBody = browserFlowOnly
+      ? undefined
+      : isSubmissionFlow
+        ? emitMultiStepExecuteHttp(
+            actionSteps,
+            inputBody,
+            errorSignals,
+            fieldNameMap,
+            discoveredFormFields,
+            fieldOptionsMap,
+            discoveredOptionFields,
+            discoveredRawOptionFields,
+            discoveredAdditionalBodyKeys,
+            baseUrl,
+            baseUrlDerivedHeaders,
+            tenantSubdomainHeaders,
+            formSchema,
+            personaBindings,
+            entryUrlParams,
+            shieldedUuids,
+            selectResolutions,
+            discoveredStructuredKeys,
+            rawCodeFields,
+            foldReturnSpec
+          )
+        : undefined;
+
+    const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
+    const headerBindings = collectHeaderBindings(actionSteps);
+    // Shape inference targets the SAME call executeHttp returns — see
+    // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
+    const effectiveResponseBody = selectEffectiveResponseBody(
+      isSubmissionFlow,
+      actionSteps,
+      responseBody,
+      foldReturnSpec
+    );
+
+    // A declared foldReturn that resolves to no plan is a silent no-op otherwise
+    // — the flow author gets the discarding selectReturnAction path with nothing
+    // in the output saying their declaration never applied. A multi-step
+    // (submission) flow applies its fold via emitMultiStepExecuteHttp's own
+    // resolveFoldPlan call, entirely independent of resolveApplicableFoldPlans
+    // (which exists only to gate emitContractTs's single-primary hot path, and
+    // unconditionally reports zero plans once multiStepBody is set) — so this
+    // diagnostic must consult the SAME resolution each path actually applies,
+    // or it falsely reports "no fold plan resolved" for every multi-step flow
+    // with a working foldReturn.
+    const effectiveFoldPlanCount = multiStepBody
+      ? resolveFoldPlan(actionSteps, foldReturnSpec).length
+      : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length;
+    if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
+      logger.warn(
+        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
+      );
+    }
+
+    logger.info(
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+    );
+
+    if (emit === "config") {
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(
+        manifestPath,
+        emitConfigManifest({
+          siteId,
+          displayName,
+          baseUrl,
           flowSteps,
           vocabulary,
-          process.env,
-          ownBackendHostnames,
-          fallbackDomain,
-          submitPatterns
-        )
-      : null;
-  if (primaryGraphQLOperation && primaryGraphQLOperation.unpopulatedDeclaredVariables.length > 0) {
-    const operationLabel = primaryGraphQLOperation.capture.operationName ?? "(anonymous)";
-    logger.warn(
-      `WARN primary GraphQL operation '${operationLabel}' declares filter variable(s) ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} that are never populated in any capture — the generated executeHttp's payload field(s) for ${primaryGraphQLOperation.unpopulatedDeclaredVariables.join(", ")} have no wiring target and will replay the captured frozen value instead of the caller's input`
-    );
-  }
-  // When there's no primaryGraphQLOperation winner but the flow is still
-  // GraphQL, the query/endpointPath/responseBody/operationName fallbacks
-  // must all trace back to the SAME capture (firstGraphQLCapture) rather
-  // than resolving independently — a non-GraphQL-shaped own-backend
-  // capture could otherwise win the endpoint/body fallback while an
-  // unrelated capture supplies the query text.
-  const fallbackGraphQLCapture = gql
-    ? firstGraphQLCapture(captures, ownBackendHostnames, fallbackDomain, submitPatterns)
-    : null;
-  const gqlQuery = primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
-  const endpointPath =
-    primaryGraphQLOperation?.endpointPath ??
-    (fallbackGraphQLCapture
-      ? safeUrlPathname(fallbackGraphQLCapture.url)
-      : firstEndpointPath(captures, ownBackendHostnames, fallbackDomain, submitPatterns));
-  // Derived from the primary operation's own Phase-1 capture, never from
-  // replay array order -- a replay's body reflects whichever endpoint fired
-  // first, not necessarily the primary operation, and only exists once
-  // recon:http has run.
-  const winningCapture =
-    primaryGraphQLOperation?.capture ??
-    fallbackGraphQLCapture ??
-    firstEndpointCapture(captures, ownBackendHostnames, fallbackDomain, submitPatterns);
-  const responseBody = winningCapture?.responseBody ?? null;
-  // Every 2xx capture sharing the winning capture's operation identity, not
-  // just the one that happened to win selection -- a paginated/re-filtered
-  // re-fire of the same operation can omit a field the winning capture
-  // happened to have (or vice versa), and inferZodSchemaFromSamples needs
-  // that presence evidence across occurrences to mark the field .optional()
-  // instead of required from a single observation.
-  const responseBodySamples = gatherResponseBodySamples(
-    winningCapture,
-    primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
-    captures
-  );
-
-  // Detect a multi-step submission flow (transactional sites like apply forms,
-  // checkout, etc.). When the action sequence has 2+ POSTs, switch the
-  // contract template to emit a state-threaded executeHttp.
-  //
-  // Selection precedence: (A) the authoritative submit-manifest recon-browser
-  // wrote from the verified submission; else (B/C) pattern/heuristic extraction.
-  // The manifest is the only signal that separates a submission POST from a
-  // page-chrome POST sharing its URL, so it normally wins when present — but
-  // a manifest built from a single flow-declared submit step cannot represent
-  // a wizard whose every section saves independently, so it is only trusted
-  // when it isn't a strict undercount of what the same captures' own
-  // heuristic extraction finds.
-  const unfilteredHeuristicActionCaptures = gql
-    ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
-    : collapseRedundantPatches(
-        extractActionSequence(captures, null, foldReturnSpec, ownBackendHostnames, fallbackDomain)
-      );
-  // A flow-declared submitEndpointPattern is authoritative: it may match only
-  // the final step's URL (the natural way to describe "the button that
-  // finishes the wizard") even though the earlier steps of the same chain
-  // (auth mint, paged listing, ...) are what state-threading depends on.
-  // Truncating at the last match — instead of filtering to matches only —
-  // keeps that whole chain; the gap between this and the unfiltered
-  // sequence is logged below for visibility, but the declared pattern is
-  // never overridden by the richer unfiltered sequence.
-  const patternedHeuristicActionCaptures =
-    submitPatterns.endpoint === null && submitPatterns.body === null
-      ? unfilteredHeuristicActionCaptures
-      : truncateActionSequenceAtSubmitPattern(unfilteredHeuristicActionCaptures, submitPatterns);
-  const patternUndercounts =
-    patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
-  if (patternUndercounts && requireSubmitEndpointMatch) {
-    // Distinct wording from the non-required case below: this pattern is never
-    // discarded, so a message that says "ignoring"/"undercount" would misstate
-    // what happened. The disagreement is still worth a warn-level surface —
-    // the flow author should know the declared pattern covers fewer captures
-    // than the unfiltered heuristic sequence finds.
-    logger.warn(
-      `submission selection: declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) disagrees with the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s)); using the declared pattern because requireSubmitEndpointMatch is set`
-    );
-  } else if (patternUndercounts) {
-    logger.info(
-      `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
-    );
-  }
-  const heuristicActionCaptures = patternedHeuristicActionCaptures;
-  const manifestActionCaptures = resolveManifestActionSequence(runRoot, captures);
-  const manifestUndercounts =
-    manifestActionCaptures !== null &&
-    manifestActionCaptures.length < heuristicActionCaptures.length;
-  if (manifestActionCaptures !== null && manifestUndercounts) {
-    logger.info(
-      `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`
-    );
-  } else if (manifestActionCaptures !== null) {
-    logger.info(
-      `submission selection: using submit-manifest.json (${manifestActionCaptures.length} authoritative capture(s))`
-    );
-  }
-  const rawActionCaptures =
-    manifestActionCaptures !== null && !manifestUndercounts
-      ? manifestActionCaptures
-      : heuristicActionCaptures;
-  // Form-schema detection runs BEFORE state-indexing so the field-id/option-id
-  // UUIDs can be shielded from indexing — those UUIDs are stable schema
-  // anchors that T2/T3 substitution depends on remaining literal in body
-  // templates.
-  const { fieldNameMap, fieldOptionsMap, allSchemaUuids } = detectFormSchemaFieldNames(
-    captures,
-    formSchema
-  );
-  // Shield ALL field-id/option-id UUIDs that appear in any schema response, not
-  // just the ones that detectFormSchemaFieldNames emits a payload name for.
-  // Some fields have names too long for the naming heuristic (>80 chars) and
-  // would be skipped by fieldNameMap; their field-ids still need shielding
-  // because they appear as anchors in the T2-substituted body templates.
-  const shieldedUuids = new Set<string>(allSchemaUuids);
-  // Persona identity bindings + entry-URL job coordinates — the value→payload
-  // reconciliation the body emitter merges into its substitution map so nested
-  // applicant fields and job context reach the caller's data instead of the
-  // recon persona's. Both are site-agnostic: persona mapping comes from the
-  // consumer vocabulary, job coordinates from the entry URL's own query keys.
-  const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
-  const entryUrlParams = extractEntryUrlParams(captures[0]?.url ?? "");
-  // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
-  // action sequence at the position observed during recon, so the existing
-  // state-threading machinery can produce its FormHistoryId / section UUIDs /
-  // etc. as state values for downstream POSTs. Strip cache-buster query
-  // params (recon timestamps) from the captured URL so the emitted runtime
-  // fetch uses a clean template. Sites without a schema-fetch capture
-  // (rawSchemaFetch === null) get unchanged behavior.
-  const rawSchemaFetch =
-    gql || formSchema === null ? null : detectFormSchemaFetchCapture(captures, baseUrl, formSchema);
-  const schemaFetchCleaned: Capture | null = rawSchemaFetch
-    ? { ...rawSchemaFetch.capture, url: stripCacheBusterParams(rawSchemaFetch.capture.url) }
-    : null;
-  const actionCaptures: ActionCapture[] = (() => {
-    if (rawActionCaptures.length === 0 || schemaFetchCleaned === null || rawSchemaFetch === null) {
-      return rawActionCaptures;
-    }
-    let insertAt = rawActionCaptures.length;
-    for (let i = 0; i < rawActionCaptures.length; i++) {
-      if (rawActionCaptures[i]!.index >= rawSchemaFetch.index) {
-        insertAt = i;
-        break;
-      }
-    }
-    return [
-      ...rawActionCaptures.slice(0, insertAt),
-      { capture: schemaFetchCleaned, index: rawSchemaFetch.index },
-      ...rawActionCaptures.slice(insertAt),
-    ];
-  })();
-  const actionCaptureIndices = new Set<number>(actionCaptures.map((a) => a.index));
-  // Resolved off raw actionCaptures — fold-plan DETECTION depends only on
-  // each action's capture, so this runs before compileActionSteps/
-  // indexStateValues even exist — so a short numeric join value threaded
-  // through a dependent-drill-down chain hop still gets indexed as
-  // producible state (see collectDependentDrillDownChainValues).
-  const dependentDrillDownChainValues =
-    actionCaptures.length > 1
-      ? collectDependentDrillDownChainValues(actionCaptures, foldReturnSpec)
-      : new Set<string>();
-  const stateIndex =
-    actionCaptures.length > 1
-      ? indexStateValues(
-          captures,
-          shieldedUuids,
-          actionCaptureIndices,
-          dependentDrillDownChainValues
-        )
-      : new Map<string, StateValue>();
-  const actionSteps =
-    actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
-  const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
-
-  // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
-  // whose every action capture is landing-phase is almost certainly page-chrome
-  // bootstrap (e.g. page-chrome `POST /widgets`) misread as an apply flow, not a walked
-  // wizard. Real wizard steps carry a step-slug phase; single-endpoint search runs
-  // are `length <= 1` and never reach here. We do not filter (that would delete the
-  // sole search POST of legitimate `--url`-only single-endpoint runs, which is also
-  // landing-phase) — we only surface the suspicious shape.
-  if (isSubmissionFlow && actionCaptures.every((a) => a.capture.phase === "home")) {
-    logger.warn(
-      `WARN all ${actionCaptures.length} action captures are landing-phase (phase="home") — this may be page-chrome bootstrap misread as a submission flow, not a walked apply wizard; verify the recon --flow actually advanced the form`
-    );
-  }
-
-  const inputBody = isSubmissionFlow
-    ? (() => {
-        try {
-          const payloadAction = selectPayloadAction(actionSteps);
-          return JSON.parse(payloadAction?.capture.requestPostData ?? "null") as unknown;
-        } catch {
-          return null;
-        }
-      })()
-    : undefined;
-  const errorSignals = detectErrorSignals(actionSteps);
-  const discoveredFormFields = new Set<string>();
-  const discoveredOptionFields = new Set<string>();
-  // Phase E: maps label-derived raw-option payload field name (e.g.
-  // "AreYouOverTheAgeOf18OptionId") → recon-observed option-id UUID. Used to
-  // emit `<Name>OptionId: z.string()` payload fields with TSDoc docs.
-  const discoveredRawOptionFields = new Map<string, string>();
-  // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
-  // that get parameterized. Recorded with their value type so the contract
-  // emitter can add them to the payload schema with appropriate Zod types.
-  const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
-  // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
-  // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
-  // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the
-  // existing raw-option channel so their frozen code is still parameterized.
-  const { resolutions: selectResolutions, rawCodeFields } = buildSelectOptionResolutions(
-    flowSteps,
-    captures,
-    vocabulary,
-    process.env
-  );
-  for (const [semanticName, { code }] of rawCodeFields) {
-    const fieldName = `${semanticName}Code`;
-    if (!discoveredRawOptionFields.has(fieldName)) discoveredRawOptionFields.set(fieldName, code);
-  }
-  // Mechanism B: nested caller structures (experienceData/educationData
-  // history, opaque eventData) discovered during the body emit, surfaced to the
-  // contract's payload schema.
-  const discoveredStructuredKeys = new Map<string, string>();
-  // G1+G2: partition baseHeaders into three buckets:
-  //   - static: values that don't reference baseUrl or tenant subdomain
-  //   - baseUrl-derived: values containing the recon's baseUrl as substring
-  //     (e.g. Origin, Referer) — emit per-call from payload.BaseUrl
-  //   - tenant-subdomain: values that EXACTLY equal the first subdomain
-  //     (e.g. API-ShortName: "addus") — emit per-call from a payload field
-  const staticBaseHeaders: Record<string, string> = {};
-  const baseUrlDerivedHeaders = new Map<string, string>();
-  const tenantSubdomainHeaders = new Map<string, string>();
-  const firstSubdomain = (() => {
-    try {
-      const host = new URL(baseUrl).hostname;
-      const firstDot = host.indexOf(".");
-      return firstDot === -1 ? host : host.slice(0, firstDot);
-    } catch {
-      return "";
-    }
-  })();
-  for (const [k, v] of Object.entries(baseHeaders)) {
-    if (firstSubdomain.length > 0 && v === firstSubdomain) {
-      tenantSubdomainHeaders.set(k, v);
-    } else if (baseUrl.length > 0 && v.includes(baseUrl)) {
-      baseUrlDerivedHeaders.set(k, v);
-    } else {
-      staticBaseHeaders[k] = v;
-    }
-  }
-  // Third branch (browser-flow-only): a multi-action flow (isSubmissionFlow)
-  // that crosses hosts mid-sequence (compileActionSteps' isCrossDomain — a
-  // captured redirect off the original domain, e.g. an auth bounce or a
-  // vendor-hosted submission step). A bare `fetch`-based executeHttp can't
-  // reliably replay that: cookies/CSRF/session state minted for one origin
-  // don't automatically carry to the next the way a real browser's redirect
-  // handling does, so synthesizing a same-shape HTTP sequence would silently
-  // drop the session boundary the recon actually walked. Per-step, this
-  // already surfaces as the "cross-domain redirect detected ... likely needs
-  // browser fallback for this step" TODO (see emitMultiStepExecuteHttp); at
-  // the whole-flow level the honest emit is no executeHttp at all — never a
-  // same-host multi-step body that quietly drops the hop, and never a
-  // downgrade to the single-endpoint `{query}` branch either, since that's a
-  // fabrication of its own kind for a flow that isn't a single-action
-  // query/search to begin with.
-  const browserFlowOnly = isSubmissionFlow && actionSteps.some((s) => s.isCrossDomain);
-  const multiStepBody = browserFlowOnly
-    ? undefined
-    : isSubmissionFlow
-      ? emitMultiStepExecuteHttp(
-          actionSteps,
           inputBody,
-          errorSignals,
-          fieldNameMap,
-          discoveredFormFields,
-          fieldOptionsMap,
-          discoveredOptionFields,
-          discoveredRawOptionFields,
-          discoveredAdditionalBodyKeys,
-          baseUrl,
-          baseUrlDerivedHeaders,
-          tenantSubdomainHeaders,
-          formSchema,
-          personaBindings,
-          entryUrlParams,
-          shieldedUuids,
-          selectResolutions,
-          discoveredStructuredKeys,
-          rawCodeFields,
-          foldReturnSpec
-        )
-      : undefined;
+          recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
+          isSubmissionFlow,
+          // A submission flow is the case where the `.ts` emit carries an
+          // executeHttp hot path; point the manifest at where the operator drops
+          // the compiled module rather than silently dropping the direct path.
+          // Not set for the browser-flow-only branch — there is no hot path to
+          // compile a module for.
+          httpModulePath: isSubmissionFlow && !browserFlowOnly ? `./${siteId}.http.js` : undefined,
+        })
+      );
+      logger.info(`wrote ${manifestPath}`);
+      logger.info(
+        `done — review ${manifestPath}, fill in response/extract schemas, then load via BARNACLE_PLUGINS or BARNACLE_PLUGINS_CONFIG_DIR (no compile step)`
+      );
+      return null;
+    }
 
-  const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
-  const headerBindings = collectHeaderBindings(actionSteps);
-  // Shape inference targets the SAME call executeHttp returns — see
-  // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
-  const effectiveResponseBody = selectEffectiveResponseBody(
-    isSubmissionFlow,
-    actionSteps,
-    responseBody,
-    foldReturnSpec
-  );
+    mkdirSync(`${outDir}/flows`, { recursive: true });
 
-  // A declared foldReturn that resolves to no plan is a silent no-op otherwise
-  // — the flow author gets the discarding selectReturnAction path with nothing
-  // in the output saying their declaration never applied. A multi-step
-  // (submission) flow applies its fold via emitMultiStepExecuteHttp's own
-  // resolveFoldPlan call, entirely independent of resolveApplicableFoldPlans
-  // (which exists only to gate emitContractTs's single-primary hot path, and
-  // unconditionally reports zero plans once multiStepBody is set) — so this
-  // diagnostic must consult the SAME resolution each path actually applies,
-  // or it falsely reports "no fold plan resolved" for every multi-step flow
-  // with a working foldReturn.
-  const effectiveFoldPlanCount = multiStepBody
-    ? resolveFoldPlan(actionSteps, foldReturnSpec).length
-    : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length;
-  if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
-    logger.warn(
-      `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
-    );
+    // Emit the browser flow first so the SAME payloadFieldNames set that drives
+    // its `payload.<field>` splices also extends the contract's payload schema —
+    // the two artifacts can't drift because one accumulator feeds both.
+    const browserFlow = emitBrowserFlowTs({
+      siteId,
+      pascal,
+      baseUrl,
+      flowSteps,
+      isSubmissionFlow,
+      hasMultipartStep,
+      vocabulary,
+      frameSelector,
+    });
+
+    const contractOpts = {
+      siteId,
+      displayName,
+      pascal,
+      baseUrl,
+      // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
+      // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
+      baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
+      minTime,
+      safeRps,
+      hasRateLimitProbeData,
+      responseBody: effectiveResponseBody,
+      // selectEffectiveResponseBody already resolves a submission flow's own
+      // single terminal capture -- the multi-sample evidence gathered above
+      // describes the (possibly different) read-flow winning capture and
+      // doesn't apply once a submission flow has picked its own return call.
+      responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      gql,
+      gqlQuery,
+      endpointPath,
+      gqlOperationName: primaryGraphQLOperation
+        ? (primaryGraphQLOperation.capture.operationName ??
+          parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
+        : (fallbackGraphQLCapture?.operationName ??
+          parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
+      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
+      allCaptures: activeCaptures,
+      auxFiles,
+      multiStepBody,
+      omitExecuteHttp: browserFlowOnly,
+      isSubmissionFlow,
+      inputBody,
+      hasMultipartStep,
+      actionSteps,
+      foldReturnSpec,
+      discoveredFormFields,
+      fieldOptionsMap,
+      discoveredOptionFields,
+      discoveredRawOptionFields,
+      discoveredAdditionalBodyKeys,
+      discoveredStructuredKeys,
+      payloadFieldNames: browserFlow.payloadFieldNames,
+      optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
+      headerBindings,
+      unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
+    };
+
+    const contractCode = emitContractTs(contractOpts);
+    return {
+      contractCode,
+      contractOpts,
+      browserFlow,
+      auxFiles,
+      resolvedPool: actionCaptures,
+      isSubmissionFlow,
+      actionSteps,
+      winningCapture,
+    };
   }
 
-  logger.info(
-    `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
-  );
+  const result = generateFromCaptures(captures);
+  if (result === null) return; // emit === "config": already written above.
+  const final = healUnreferencedUrlFieldsOnce(captures, result, generateFromCaptures);
 
-  if (emit === "config") {
-    mkdirSync(outDir, { recursive: true });
-    writeFileSync(
-      manifestPath,
-      emitConfigManifest({
-        siteId,
-        displayName,
-        baseUrl,
-        flowSteps,
-        vocabulary,
-        inputBody,
-        recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
-        isSubmissionFlow,
-        // A submission flow is the case where the `.ts` emit carries an
-        // executeHttp hot path; point the manifest at where the operator drops
-        // the compiled module rather than silently dropping the direct path.
-        // Not set for the browser-flow-only branch — there is no hot path to
-        // compile a module for.
-        httpModulePath: isSubmissionFlow && !browserFlowOnly ? `./${siteId}.http.js` : undefined,
-      })
-    );
-    logger.info(`wrote ${manifestPath}`);
-    logger.info(
-      `done — review ${manifestPath}, fill in response/extract schemas, then load via BARNACLE_PLUGINS or BARNACLE_PLUGINS_CONFIG_DIR (no compile step)`
-    );
-    return;
-  }
-
-  mkdirSync(`${outDir}/flows`, { recursive: true });
-
-  // Emit the browser flow first so the SAME payloadFieldNames set that drives
-  // its `payload.<field>` splices also extends the contract's payload schema —
-  // the two artifacts can't drift because one accumulator feeds both.
-  const browserFlow = emitBrowserFlowTs({
-    siteId,
-    pascal,
-    baseUrl,
-    flowSteps,
-    isSubmissionFlow,
-    hasMultipartStep,
-    vocabulary,
-    frameSelector,
-  });
-
-  const contractOpts = {
-    siteId,
-    displayName,
-    pascal,
-    baseUrl,
-    // G1+G2: only the static headers (no baseUrl/tenant-subdomain references)
-    // get baked into BASE_HEADERS. The rest are emitted per-call from payload.
-    baseHeaders: isSubmissionFlow ? staticBaseHeaders : baseHeaders,
-    minTime,
-    safeRps,
-    hasRateLimitProbeData,
-    responseBody: effectiveResponseBody,
-    // selectEffectiveResponseBody already resolves a submission flow's own
-    // single terminal capture -- the multi-sample evidence gathered above
-    // describes the (possibly different) read-flow winning capture and
-    // doesn't apply once a submission flow has picked its own return call.
-    responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
-    gql,
-    gqlQuery,
-    endpointPath,
-    gqlOperationName: primaryGraphQLOperation
-      ? (primaryGraphQLOperation.capture.operationName ??
-        parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
-      : (fallbackGraphQLCapture?.operationName ??
-        parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
-    gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
-    allCaptures: captures,
-    auxFiles,
-    multiStepBody,
-    omitExecuteHttp: browserFlowOnly,
-    isSubmissionFlow,
-    inputBody,
-    hasMultipartStep,
-    actionSteps,
-    foldReturnSpec,
-    discoveredFormFields,
-    fieldOptionsMap,
-    discoveredOptionFields,
-    discoveredRawOptionFields,
-    discoveredAdditionalBodyKeys,
-    discoveredStructuredKeys,
-    payloadFieldNames: browserFlow.payloadFieldNames,
-    optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
-    headerBindings,
-    unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
-  };
-
-  const contractCode = emitContractTs(contractOpts);
-
-  // Fails loudly rather than shipping a flow that requires a URL field it
-  // never reads (see assertRequiredUrlFieldsReferenced doc comment).
-  assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code);
-
-  writeFileSync(`${outDir}/contract.ts`, contractCode);
+  writeFileSync(`${outDir}/contract.ts`, final.contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
   // Same opts fed to emitContractTs above, so this can never drift from what
   // the header used to embed.
-  const checklist = buildContractChecklist(contractOpts);
+  const checklist = buildContractChecklist(final.contractOpts);
   logger.info(
     `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
   );
 
-  writeFileSync(`${outDir}/flows/browser-flow.ts`, browserFlow.code);
+  writeFileSync(`${outDir}/flows/browser-flow.ts`, final.browserFlow.code);
   logger.info(`wrote ${outDir}/flows/browser-flow.ts`);
 
   writeFileSync(`${outDir}/index.ts`, emitIndexTs({ siteId, pascal }));
   logger.info(`wrote ${outDir}/index.ts`);
 
-  if (auxFiles.length > 0) {
+  if (final.auxFiles.length > 0) {
     mkdirSync(`${outDir}/fixtures`, { recursive: true });
-    for (const f of auxFiles) {
+    for (const f of final.auxFiles) {
       copyFileSync(join(auxDir, f), `${outDir}/fixtures/${f}`);
     }
-    logger.info(`copied ${auxFiles.length} fixture(s) to ${outDir}/fixtures/`);
+    logger.info(`copied ${final.auxFiles.length} fixture(s) to ${outDir}/fixtures/`);
   }
 
   logger.info(
