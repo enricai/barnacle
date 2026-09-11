@@ -9,7 +9,7 @@ import type { Logger } from "@/types/logging";
  * Acceptance test for the recon report's exact COMBINED failure shape, all
  * three fixes at once, in one realistic DOM: a `bb-customSelect`-shaped
  * opener whose `role=option` elements render with EMPTY own textContent/
- * data-value (label painted on a child node only) paired with a sibling
+ * data-value (label resolvable only via `aria-labelledby`) paired with a sibling
  * hidden `dropdown-hide` `<select>` whose every `<option>` also carries an
  * EMPTY value, alongside a second, independent `bb-customSelect`-shaped
  * field for a different question on the same page. `flow-runner.
@@ -115,15 +115,15 @@ describe("flow-runner acceptance: combined empty-labelled options + empty-valued
       popupByWidgetId: {
         "consent-opener": {
           options: [
-            { label: "Yes", labelVia: "child-node" },
-            { label: "No", labelVia: "child-node" },
+            { label: "Yes", labelVia: "aria-labelledby" },
+            { label: "No", labelVia: "aria-labelledby" },
           ],
           syncsHiddenSelectId: "consent-hidden",
         },
         "preference-opener": {
           options: [
-            { label: "Email", labelVia: "child-node" },
-            { label: "Phone", labelVia: "child-node" },
+            { label: "Email", labelVia: "aria-labelledby" },
+            { label: "Phone", labelVia: "aria-labelledby" },
           ],
           syncsHiddenSelectId: "preference-hidden",
         },
