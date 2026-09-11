@@ -384,6 +384,35 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
     expect(childFrameEvaluate).toHaveBeenCalledTimes(1);
   });
 
+  it("exhausts the retry budget and logs a warning when every attempt rejects with 'main world not ready'", async () => {
+    loggerStub.warn.mockClear();
+    const { session, handlers } = makeFakeSession();
+    const childFrameEvaluate = vi
+      .fn()
+      .mockRejectedValue(new Error("main world not ready for frame child-frame"));
+    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
+      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
+      "child-frame": { evaluate: childFrameEvaluate },
+    };
+    const page = {
+      getSessionForFrame: vi.fn().mockReturnValue(session),
+      mainFrameId: vi.fn().mockReturnValue("main-frame"),
+      frameForId: vi.fn((frameId: string) => frames[frameId]),
+    } as unknown as Page;
+
+    installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
+
+    await vi.waitFor(() => {
+      expect(childFrameEvaluate).toHaveBeenCalledTimes(6);
+    });
+    await vi.waitFor(() => {
+      expect(loggerStub.warn).toHaveBeenCalledWith(
+        expect.stringContaining("main world not ready")
+      );
+    });
+  });
+
   it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
     const source = fs.readFileSync(path.join(__dirname, "captcha-callback-capture.ts"), "utf8");
     expect(source).not.toMatch(/siteId|pluginName|plugin\.meta/i);
