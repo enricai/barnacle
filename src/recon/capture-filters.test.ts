@@ -133,6 +133,14 @@ describe("isStructurallyIsolatedCapture", () => {
       ])
     ).toBe(true);
   });
+
+  it("never flags a deeper all-single-word chain step with no repeated segment, even if it shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/user/profile/edit", ["/checkout/confirm"])).toBe(false);
+  });
+
+  it("flags a same-host all-single-word path with a repeated segment even at only 3 segments deep", () => {
+    expect(isStructurallyIsolatedCapture("/dvic/promotions/dvic", poolPaths)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {

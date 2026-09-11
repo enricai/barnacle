@@ -166,6 +166,20 @@ function meaningfulPathSegments(path: string): string[] {
 }
 
 /**
+ * True when some meaningful segment of `path` recurs elsewhere in the same
+ * path (e.g. `dvic` in `/dvic/api/promotions/dvic/default`). Real action
+ * chains name each step for what it does (`/user/profile/edit`) and so
+ * rarely repeat a segment; a same-host marketing/promotions endpoint is
+ * commonly self-referential — its resource identifier shows up twice in its
+ * own path — which is what marks it as a templated/generated noise path
+ * rather than a genuine, if short, chain step.
+ */
+function hasRepeatedMeaningfulSegment(path: string): boolean {
+  const segments = meaningfulPathSegments(path);
+  return new Set(segments).size < segments.length;
+}
+
+/**
  * True when `candidatePath` shares enough path-segment tokens with at least
  * one path in `referencePaths` to be judged part of the same endpoint
  * family, false when it is structurally unrelated to all of them.
@@ -200,25 +214,27 @@ export function isStructurallyRelevantCapture(
  * the pool it was admitted into.
  *
  * A path with no compound segment (empty token set) falls back to a raw
- * segment-overlap check instead of an automatic pass, but only once the path
- * has 3+ segments: a chain's own steps are routinely 1-2 bare segments
- * (`/applicant`, `/sections/name`) that share no tokens — or even raw
- * segments — with sibling steps either, so applying the overlap check there
- * would flag genuine chain members as noise (e.g. a real `create` ->
- * `sections/name` -> `submit` action sequence, none of whose plain-word
- * steps share a segment with either of the others). A *deeper*, all-single-
- * word path (e.g. a same-host marketing/promotions capture like
- * `/catalog/api/deals/catalog/default`) shares no segment at all, not even a
- * plain word, with any pool member — that depth is what marks it as a
- * different endpoint family that happened to dodge the token check by having
- * no compound segment, rather than just another short chain step. Requiring
- * it to share at least one raw path segment with the pool closes that gap
- * without penalizing genuine short single-word chain steps. The overlap
- * check drops the same short/generic segments {@link pathStructuralTokens}
- * already excludes ({@link GENERIC_PATH_TOKENS}, <3 chars): otherwise two
- * completely unrelated endpoint families sharing only a boilerplate `/api/`
- * segment would be judged "related" and the isolated capture would dodge
- * exclusion the same way the empty-token-set exemption originally let it.
+ * segment-overlap check instead of an automatic pass, but only when the path
+ * has a {@link hasRepeatedMeaningfulSegment repeated segment} of its own
+ * (e.g. `dvic` recurring in `/dvic/api/promotions/dvic/default`): a chain's
+ * own steps are plain-word paths that name a distinct action per step
+ * (`/applicant`, `/sections/name`, or a 3-segment `/user/profile/edit`) and
+ * so essentially never repeat a segment against themselves, even when they
+ * share no tokens — or even raw segments — with sibling steps (e.g. a real
+ * `create` -> `sections/name` -> `submit` sequence, none of whose plain-word
+ * steps share a segment with either of the others). A same-host
+ * marketing/promotions capture is commonly self-referential — its own
+ * resource identifier shows up twice in its own path — which is the signal
+ * that marks it as a templated/generated noise path rather than a genuine
+ * short (or not-so-short) single-word chain step, independent of segment
+ * count. Requiring it to also share no raw path segment with the pool closes
+ * the gap without penalizing genuine single-word chain steps of any depth.
+ * The overlap check drops the same short/generic segments
+ * {@link pathStructuralTokens} already excludes ({@link GENERIC_PATH_TOKENS},
+ * <3 chars): otherwise two completely unrelated endpoint families sharing
+ * only a boilerplate `/api/` segment would be judged "related" and the
+ * isolated capture would dodge exclusion the same way the empty-token-set
+ * exemption originally let it.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -233,8 +249,7 @@ export function isStructurallyIsolatedCapture(
 ): boolean {
   const candidateTokens = pathStructuralTokens(candidatePath);
   if (candidateTokens.size > 0) return !isStructurallyRelevantCapture(candidatePath, poolPaths);
-  const rawSegmentCount = candidatePath.split("/").filter(Boolean).length;
-  if (rawSegmentCount < 3) return false;
+  if (!hasRepeatedMeaningfulSegment(candidatePath)) return false;
   const candidateSegments = meaningfulPathSegments(candidatePath);
   const poolSegments = new Set(poolPaths.flatMap((poolPath) => meaningfulPathSegments(poolPath)));
   return !candidateSegments.some((segment) => poolSegments.has(segment));
