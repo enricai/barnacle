@@ -10139,7 +10139,9 @@ function hasOwnFieldAtAnyDepth(value: unknown, fieldName: string, maxDepth: numb
   }
   const record = value as Record<string, unknown>;
   if (Object.hasOwn(record, fieldName)) return true;
-  return Object.values(record).some((child) => hasOwnFieldAtAnyDepth(child, fieldName, maxDepth - 1));
+  return Object.values(record).some((child) =>
+    hasOwnFieldAtAnyDepth(child, fieldName, maxDepth - 1)
+  );
 }
 
 /** True when `capture`'s response JSON carries the field's source anywhere in
