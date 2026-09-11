@@ -39,6 +39,7 @@ import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-
 import {
   isAllowedFixtureHost,
   isNoiseUrl,
+  isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   registrableDomain,
@@ -10280,10 +10281,22 @@ function describeOffendingFieldSources(fields: string[], pool: ActionCapture[]):
  * The narrowing pass's core relevance decision, isolated for direct
  * testing: every capture in `resolvedPool` — other than `primaryCapture`,
  * which must never be dropped — whose own top-level response JSON owns at
- * least one of `offendingFields`. This is the actual "is this capture
+ * least one of `offendingFields`, PLUS any other same-host capture whose
+ * path is in the same structural family ({@link isSamePathFamily}) as one
+ * of those field-owning captures. This is the actual "is this capture
  * structurally part of the resolved chain or incidental noise" call;
  * {@link healUnreferencedUrlFieldsOnce} only wires it into the regenerate
  * retry loop.
+ *
+ * The family-broadening step exists because a noise endpoint's alternate
+ * path/query-string variant (e.g. a `/default` GET variant of a POST the
+ * field check already caught) commonly carries none of the fields that
+ * flagged its sibling — it is caught by structural isolation alone, the
+ * same signal {@link isStructurallyIsolatedCapture} uses for pool-relative
+ * isolation, generalized here to "related to an already-known noise path"
+ * rather than "isolated from the whole pool". Without it, that variant
+ * survives to the emitted contract as its own hard-coded call, requiring a
+ * required-URL-field trigger of its own it may never have.
  *
  * Exported for tests: this predicate decides which captures the required-
  * URL-field guard's self-heal excludes before regenerating.
@@ -10299,6 +10312,19 @@ export function identifyNoiseCapturesForFields(
       if (capture === primaryCapture) continue;
       if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
     }
+  }
+  const noiseUrls = [...noiseCaptures].map((capture) => ({
+    path: safeUrlPathname(capture.url),
+    hostname: captureHostname(capture.url),
+  }));
+  for (const { capture } of resolvedPool) {
+    if (capture === primaryCapture || noiseCaptures.has(capture)) continue;
+    const path = safeUrlPathname(capture.url);
+    const hostname = captureHostname(capture.url);
+    const isSameHostFamilyMatch = noiseUrls.some(
+      (noise) => noise.hostname === hostname && isSamePathFamily(path, noise.path)
+    );
+    if (isSameHostFamilyMatch) noiseCaptures.add(capture);
   }
   return noiseCaptures;
 }
