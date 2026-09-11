@@ -103,7 +103,11 @@ describe("flow-runner regression: empty-valued shadow select never corroborates 
     // (and its own readback already satisfied) BEFORE any write to the select
     // landed, i.e. the select was never the deciding signal.
     let hiddenSelectValue = "";
-    const hiddenSelectWrites: { value: string; clicksAtWrite: number; openerAlreadyCorrect: boolean }[] = [];
+    const hiddenSelectWrites: {
+      value: string;
+      clicksAtWrite: number;
+      openerAlreadyCorrect: boolean;
+    }[] = [];
     Object.defineProperty(hiddenSelectEl, "value", {
       get: () => hiddenSelectValue,
       set: (v: string) => {
