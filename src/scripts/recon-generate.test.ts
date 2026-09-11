@@ -849,6 +849,25 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
 
     expect(noise.size).toBe(0);
   });
+
+  it("excludes a same-host capture whose offending field is nested one level deep, not just top-level", () => {
+    // the field-discovery schema walk recurses into nested response shapes,
+    // so a capture that owns the field only under a parent key must still
+    // be attributable as its source — not silently missed by a depth-0 check.
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/api/promotions/banner", {
+      data: { webBannerImageUrl: "https://cdn.example.com/banner.png" },
+    });
+
+    const noise = identifyNoiseCapturesForFields(
+      ["webBannerImageUrl"],
+      asPool([catalogCreate, promoBanner, catalogSubmit]),
+      catalogSubmit
+    );
+
+    expect(noise).toEqual(new Set([promoBanner]));
+  });
 });
 
 describe("extractActionSequence — submit patterns isolate the submission from same-URL chrome", () => {

@@ -10127,14 +10127,30 @@ function resolvedPrimaryResponseCapture(result: TsGenerationResult): Capture | n
   return selectReturnAction(result.actionSteps)?.capture ?? null;
 }
 
-/** True when `capture`'s own top-level response JSON is the field's source —
- * the same "does this capture's response carry the field" signal
- * {@link assertRequiredUrlFieldsReferenced} implicitly relies on, applied per
- * capture instead of to the merged emitted code. */
+/** True when `fieldName` is an own key of `value` at any nesting depth up to
+ * `maxDepth`, walking plain objects and arrays — the same recursion the
+ * schema-inference walk ({@link inferZodSchema}, bounded by
+ * {@link DEFAULT_MAX_INFER_DEPTH}) uses to discover fields in the first
+ * place, so attribution can't miss a field the inference walk found. */
+function hasOwnFieldAtAnyDepth(value: unknown, fieldName: string, maxDepth: number): boolean {
+  if (maxDepth < 0 || typeof value !== "object" || value === null) return false;
+  if (Array.isArray(value)) {
+    return value.some((item) => hasOwnFieldAtAnyDepth(item, fieldName, maxDepth - 1));
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.hasOwn(record, fieldName)) return true;
+  return Object.values(record).some((child) =>
+    hasOwnFieldAtAnyDepth(child, fieldName, maxDepth - 1)
+  );
+}
+
+/** True when `capture`'s response JSON carries the field's source anywhere in
+ * its nested shape — the same "does this capture's response carry the field"
+ * signal {@link assertRequiredUrlFieldsReferenced} implicitly relies on,
+ * applied per capture instead of to the merged emitted code, walked to the
+ * same depth the schema-inference walk supports. */
 function captureOwnsTopLevelField(capture: Capture, fieldName: string): boolean {
-  const body = capture.responseBody;
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
-  return Object.hasOwn(body as Record<string, unknown>, fieldName);
+  return hasOwnFieldAtAnyDepth(capture.responseBody, fieldName, DEFAULT_MAX_INFER_DEPTH);
 }
 
 /**
