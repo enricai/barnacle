@@ -32,8 +32,18 @@ const PROMPT_WIDGET_MARK_ATTR = "data-bcl-prompt-idx";
  * popup with the child `PopupSpec`'s options instead of committing — models
  * the doc's two-level cascading multiselect (category click swaps to a
  * DIFFERENT leaf list, still uncommitted).
+ *
+ * `labelVia` models a widget variant whose `role="option"` element carries
+ * NO readable own text and NO `data-value` (real-world custom-select
+ * components render the option shell empty and paint the visible label
+ * elsewhere) — the accessible name instead lives on `aria-label`, an
+ * `aria-labelledby`-referenced node, a `title` attribute, or a child/
+ * descendant node rather than the option's own direct text.
  */
-export type PopupOption = string | { label: string; drillTo?: PopupSpec };
+export type PopupOption =
+  | string
+  | { label: string; drillTo?: PopupSpec }
+  | { label: string; labelVia: "aria-label" | "aria-labelledby" | "title" | "child-node" };
 
 /** A popup this harness knows how to open, and the options it then renders. */
 export interface PopupSpec {
@@ -122,7 +132,11 @@ export function buildPromptWidgetHarness(params: {
 
   const optionLabel = (o: PopupOption): string => (typeof o === "string" ? o : o.label);
   const optionDrillTo = (o: PopupOption): PopupSpec | undefined =>
-    typeof o === "string" ? undefined : o.drillTo;
+    typeof o === "string" || "labelVia" in o ? undefined : o.drillTo;
+  const optionLabelVia = (
+    o: PopupOption
+  ): "aria-label" | "aria-labelledby" | "title" | "child-node" | undefined =>
+    typeof o === "string" || !("labelVia" in o) ? undefined : o.labelVia;
 
   // Per-widget popup runtime state, keyed by the widget element the marker
   // attribute resolves to.
@@ -172,9 +186,28 @@ export function buildPromptWidgetHarness(params: {
     }
     const searchHtml = "";
     const optsHtml = shown
-      .map((o) => {
+      .map((o, i) => {
         const label = optionLabel(o);
-        return `<li role="option" data-automation-id="promptOption" data-automation-label="${label}">${label}</li>`;
+        const labelVia = optionLabelVia(o);
+        if (!labelVia) {
+          return `<li role="option" data-automation-id="promptOption" data-automation-label="${label}">${label}</li>`;
+        }
+        // Mirrors a real custom-select variant whose option shell renders
+        // completely empty — no own text, no `data-value` — with the
+        // accessible name painted elsewhere, per `labelVia`.
+        const labelledById = `${widgetEl.id}-option-label-${i}`;
+        switch (labelVia) {
+          case "aria-label":
+            return `<div class="prompt-option" data-value="" role="option" aria-label="${label}"></div>`;
+          case "aria-labelledby":
+            return `<span id="${labelledById}" hidden>${label}</span><div class="prompt-option" data-value="" role="option" aria-labelledby="${labelledById}"></div>`;
+          case "title":
+            return `<div class="prompt-option" data-value="" role="option" title="${label}"></div>`;
+          case "child-node":
+            return `<div class="prompt-option" data-value="" role="option"><span class="prompt-option-label">${label}</span></div>`;
+          default:
+            return labelVia satisfies never;
+        }
       })
       .join("");
     wrap.innerHTML = `${searchHtml}<ul role="listbox">${optsHtml}</ul>`;
@@ -259,7 +292,22 @@ export function buildPromptWidgetHarness(params: {
           const popup = el.closest("[data-test-popup-for]");
           const owningId = popup?.getAttribute("data-test-popup-for") || "";
           const owner = owningId ? document.getElementById(owningId) : null;
-          const label = el.getAttribute("data-automation-label") || el.textContent?.trim() || "";
+          // Accessible-name order: an explicit automation label, then
+          // aria-labelledby, then aria-label, then own/descendant text, then
+          // title — mirrors real accessible-name computation so an option
+          // rendered via `labelVia` (empty own text/data-value) still
+          // resolves to its real label for the commit match below.
+          const labelledBy = el.getAttribute("aria-labelledby");
+          const labelledByText = labelledBy
+            ? document.getElementById(labelledBy)?.textContent
+            : null;
+          const label =
+            el.getAttribute("data-automation-label") ||
+            labelledByText?.trim() ||
+            el.getAttribute("aria-label") ||
+            el.textContent?.trim() ||
+            el.getAttribute("title") ||
+            "";
           const state = owningId ? openState.get(owningId) : undefined;
           const matched = state?.spec.options.find((o) => optionLabel(o) === label);
           const drillTo = matched ? optionDrillTo(matched) : undefined;
