@@ -7,6 +7,7 @@ import {
 } from "@/scripts/recon-generate";
 import {
   buildFoldReturnScalableActionSequence,
+  buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps,
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
   buildMulticallHeterogeneousActionStepsWithDrillDown,
@@ -795,5 +796,42 @@ describe("buildFoldReturnScalableActionSequence", () => {
     expect(plan?.targets).toHaveLength(1);
     expect(plan?.targets[0]?.drillStepIndex).toBe(19);
     expect(plan?.targets[0]?.joinFields).toEqual(["sku"]);
+  });
+});
+
+describe("buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps", () => {
+  it("returns pageCount + drillCount + 1 steps", () => {
+    const steps = buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(5, 3);
+    expect(steps).toHaveLength(9);
+  });
+
+  it("rejects pageCount < 1 and drillCount < 1", () => {
+    expect(() => buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(0, 3)).toThrow();
+    expect(() => buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(3, 0)).toThrow();
+  });
+
+  it("emits pageCount captures against the paged-listing endpoint, each with a distinct body", () => {
+    const steps = buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(4, 2);
+    const pagedSteps = steps.filter((s) => s.capture.url.includes("available-products/"));
+    expect(pagedSteps).toHaveLength(4);
+    const bodies = new Set(pagedSteps.map((s) => s.capture.requestPostData));
+    expect(bodies.size).toBe(4);
+  });
+
+  it("emits drillCount captures against the per-item drill endpoint", () => {
+    const steps = buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(4, 6);
+    const drillSteps = steps.filter((s) => s.capture.url.includes("available-units/"));
+    expect(drillSteps).toHaveLength(6);
+  });
+
+  it("emits exactly one noise capture on the same path family as an already-excludable *Url-bearing capture, with a distinct query and no *Url field", () => {
+    const steps = buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(3, 3);
+    const noiseSteps = steps.filter((s) => s.capture.url.includes("promotions-spa/banner"));
+    expect(noiseSteps).toHaveLength(1);
+
+    const noiseStep = noiseSteps[0]!;
+    expect(new URL(noiseStep.capture.url).search).not.toBe("");
+    const body = noiseStep.capture.responseBody as Record<string, unknown>;
+    expect(Object.keys(body).some((key) => key.endsWith("Url"))).toBe(false);
   });
 });

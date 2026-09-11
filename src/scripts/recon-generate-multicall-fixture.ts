@@ -2839,3 +2839,76 @@ export function buildMulticallSingleShotSearchDrillDownBoundConstantParamCoincid
     }),
   ];
 }
+
+const PROMOTIONS_BANNER_URL = "https://api.example.com/promotions-spa/banner";
+
+const MANY_REPEAT_PAGED_LISTING_DRILL_NOISE_BASE_TIMESTAMP = new Date("2025-09-01T00:00:00.000Z");
+
+/**
+ * Generates a {@link MulticallFixtureStep} array reproducing a paged-listing
+ * + per-item-drill submission at real-world scale — `pageCount` re-queries of
+ * the same listing endpoint (distinct page numbers, so each carries a
+ * distinct `requestPostData` and satisfies `selectPayloadAction`'s re-query
+ * signature) followed by `drillCount` per-item drill calls against the same
+ * drill endpoint — plus exactly one same-host noise capture. The noise
+ * capture sits on the same path family as an already-excludable marketing
+ * capture (`PROMOTIONS_BANNER_URL`, which itself carries a `*Url`-suffixed
+ * field and is excluded by the existing required-URL-field guard) but uses a
+ * distinct query string and a response body with no `*Url`-suffixed field,
+ * so it is a NEW same-path-family shape the guard has not already proven
+ * itself against. Downstream tests drive `recon-generate` against this
+ * fixture's shape to assert repeated same-endpoint captures collapse instead
+ * of unrolling one candidate per repeat.
+ */
+export function buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(
+  pageCount: number,
+  drillCount: number
+): MulticallFixtureStep[] {
+  if (pageCount < 1) {
+    throw new Error(
+      `buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps requires pageCount >= 1, got ${pageCount}`
+    );
+  }
+  if (drillCount < 1) {
+    throw new Error(
+      `buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps requires drillCount >= 1, got ${drillCount}`
+    );
+  }
+
+  const timestampAt = (index: number): string =>
+    addSeconds(MANY_REPEAT_PAGED_LISTING_DRILL_NOISE_BASE_TIMESTAMP, index).toISOString();
+
+  const pagedListingSteps: MulticallFixtureStep[] = Array.from({ length: pageCount }, (_, i) =>
+    buildStep(`page-${i}`, {
+      url: AVAILABLE_PRODUCTS_URL,
+      requestPostData: JSON.stringify({ page: i + 1 }),
+      responseBody: {
+        totalPages: pageCount,
+        totalAvailableListings: pageCount * 2,
+        products: [{ productId: `p${i}` }],
+      },
+      timestamp: timestampAt(i),
+    })
+  );
+
+  const drillSteps: MulticallFixtureStep[] = Array.from({ length: drillCount }, (_, i) =>
+    buildStep(`drill-${i}`, {
+      url: AVAILABLE_UNITS_URL,
+      requestPostData: JSON.stringify({ productId: `p${i % pageCount}` }),
+      responseBody: { units: [{ unitId: `u${i}` }], exchangeRate: 1.0 },
+      timestamp: timestampAt(pageCount + i),
+    })
+  );
+
+  const noiseStep = buildStep("noise-promotions-banner", {
+    url: `${PROMOTIONS_BANNER_URL}?slot=footer`,
+    requestPostData: '{"pageId":"listings"}',
+    responseBody: {
+      headline: "Limited-time offer",
+      impressionCount: 1,
+    },
+    timestamp: timestampAt(pageCount + drillCount),
+  });
+
+  return [...pagedListingSteps, ...drillSteps, noiseStep];
+}
