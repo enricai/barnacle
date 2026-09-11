@@ -318,6 +318,31 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
     expect(childFrameEvaluate).toHaveBeenNthCalledWith(2, buildHcaptchaCallbackCaptureScript());
   });
 
+  it("retries a frame's evaluate() when a frameNavigated event's first attempt rejects with 'main world not ready', and still confirms the install", async () => {
+    const { session, handlers } = makeFakeSession();
+    const navigatedFrameEvaluate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("main world not ready for frame navigated-frame"))
+      .mockResolvedValueOnce(undefined);
+    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
+      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
+      "navigated-frame": { evaluate: navigatedFrameEvaluate },
+    };
+    const page = {
+      getSessionForFrame: vi.fn().mockReturnValue(session),
+      mainFrameId: vi.fn().mockReturnValue("main-frame"),
+      frameForId: vi.fn((frameId: string) => frames[frameId]),
+    } as unknown as Page;
+
+    installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Page.frameNavigated"]?.({ frame: { id: "navigated-frame" } });
+
+    await vi.waitFor(() => {
+      expect(navigatedFrameEvaluate).toHaveBeenCalledTimes(2);
+    });
+    expect(navigatedFrameEvaluate).toHaveBeenNthCalledWith(2, buildHcaptchaCallbackCaptureScript());
+  });
+
   it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
     const source = fs.readFileSync(path.join(__dirname, "captcha-callback-capture.ts"), "utf8");
     expect(source).not.toMatch(/siteId|pluginName|plugin\.meta/i);
