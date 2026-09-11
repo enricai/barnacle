@@ -266,6 +266,35 @@ export function isStructurallyIsolatedCapture(
 }
 
 /**
+ * True when `pathA` and `pathB` belong to the same structural path family:
+ * either they share a compound-segment token ({@link pathStructuralTokens}),
+ * or both are self-referential ({@link hasRepeatedMeaningfulSegment}) and
+ * share a raw meaningful segment (e.g. `dvic` in both `/dvic/api/promotions/dvic`
+ * and `/dvic/api/promotions/dvic/default`).
+ *
+ * Generalizes {@link isStructurallyRelevantCapture}'s token-overlap rule to
+ * also cover the all-single-word-segment, self-referential shape that rule
+ * alone can't see (its token set is empty for a path with no compound
+ * segment) — the same shape {@link isStructurallyIsolatedCapture} already
+ * recognizes for pool-isolation. Exported so a caller reasoning about
+ * "is this OTHER capture part of the SAME noise family as an already-known
+ * noise capture" (rather than "is this capture isolated from a whole pool")
+ * can reuse the identical relatedness rule instead of re-deriving it.
+ */
+export function isSamePathFamily(pathA: string, pathB: string): boolean {
+  const tokensA = pathStructuralTokens(pathA);
+  const tokensB = pathStructuralTokens(pathB);
+  if (tokensA.size > 0 && tokensB.size > 0) {
+    for (const token of tokensA) {
+      if (tokensB.has(token)) return true;
+    }
+  }
+  if (!hasRepeatedMeaningfulSegment(pathA) || !hasRepeatedMeaningfulSegment(pathB)) return false;
+  const segmentsA = new Set(meaningfulPathSegments(pathA));
+  return meaningfulPathSegments(pathB).some((segment) => segmentsA.has(segment));
+}
+
+/**
  * True when `hostname` is allowed as a fixture host: an exact match against
  * `ownBackendHostnames` when the flow declares any, otherwise a
  * same-registrable-domain match against `fallbackDomain`. Shared by

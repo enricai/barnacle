@@ -868,6 +868,31 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
 
     expect(noise).toEqual(new Set([promoBanner]));
   });
+
+  it("also excludes a query-string variant of an already-excluded noise path, with no required field of its own (bugfix-002)", () => {
+    // Mirrors the reported shape: a same-host marketing/promotions capture
+    // that owns the offending field (caught normally), plus a differently-
+    // parameterized `/default` variant of the SAME repeated-segment path
+    // family that carries no offending field of its own — it must still be
+    // recognized as noise, purely by path-family relatedness to its sibling.
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/promo/api/deals/promo", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
+    const promoBannerVariant = capture(
+      "https://api.tenant.example.com/promo/api/deals/promo/default?siteId=x&pageId=home",
+      {}
+    );
+
+    const noise = identifyNoiseCapturesForFields(
+      ["webBannerImageUrl"],
+      asPool([catalogCreate, promoBanner, promoBannerVariant, catalogSubmit]),
+      catalogSubmit
+    );
+
+    expect(noise).toEqual(new Set([promoBanner, promoBannerVariant]));
+  });
 });
 
 describe("extractActionSequence — submit patterns isolate the submission from same-URL chrome", () => {
