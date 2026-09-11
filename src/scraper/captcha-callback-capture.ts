@@ -1,6 +1,10 @@
 import type { Page } from "@browserbasehq/stagehand";
+import pRetry, { AbortError } from "p-retry";
 
 import { getLogger } from "@/lib/logging";
+
+/** Matches stagehand's `ExecutionContextRegistry.waitForMainWorld` rejection message. */
+const MAIN_WORLD_NOT_READY_PATTERN = /main world not ready for frame/i;
 
 /**
  * Site-agnostic capture of hCaptcha's programmatic render config. When a
@@ -112,18 +116,34 @@ export function buildHcaptchaCallbackCaptureScript(): string {
  * on the main frame's CDP session and evaluates the (idempotent) capture
  * script into whichever frame each event names, regardless of which site or
  * plugin owns that frame.
+ *
+ * `Page.frameAttached`/`Page.frameNavigated` can fire before that frame's
+ * main-world execution context exists, so the first `evaluate()` rejects
+ * with "main world not ready for frame ...". Each fresh `evaluate()` call
+ * re-arms stagehand's own wait for that context, so retrying the call
+ * (rather than adding a bespoke listener) is what closes the race.
  */
 export function installHcaptchaCallbackCaptureOnAllFrames(page: Page): void {
   const session = page.getSessionForFrame(page.mainFrameId());
   const script = buildHcaptchaCallbackCaptureScript();
 
   const evaluateIntoFrame = (frameId: string): void => {
-    page
-      .frameForId(frameId)
-      .evaluate(script)
-      .catch((err: unknown) => {
-        logger.warn(`hcaptcha callback capture: per-frame re-assert failed: ${String(err)}`);
-      });
+    pRetry(
+      () =>
+        page
+          .frameForId(frameId)
+          .evaluate(script)
+          .catch((err: unknown) => {
+            const error = err instanceof Error ? err : new Error(String(err));
+            if (!MAIN_WORLD_NOT_READY_PATTERN.test(error.message)) {
+              throw new AbortError(error);
+            }
+            throw error;
+          }),
+      { retries: 5, factor: 1, minTimeout: 100, maxTimeout: 100 }
+    ).catch((err: unknown) => {
+      logger.warn(`hcaptcha callback capture: per-frame re-assert failed: ${String(err)}`);
+    });
   };
 
   session.send("Page.enable").catch((err: unknown) => {
