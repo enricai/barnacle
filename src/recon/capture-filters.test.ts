@@ -112,6 +112,10 @@ describe("isStructurallyIsolatedCapture", () => {
     expect(isStructurallyIsolatedCapture("/applicant", poolPaths)).toBe(false);
   });
 
+  it("never flags a short two-segment all-single-word path, even if it shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/sections/name", poolPaths)).toBe(false);
+  });
+
   it("flags a same-host all-single-word-segment path that shares no segment with the pool", () => {
     expect(isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", poolPaths)).toBe(
       true

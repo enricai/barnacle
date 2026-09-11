@@ -185,16 +185,20 @@ export function isStructurallyRelevantCapture(
  * the pool it was admitted into.
  *
  * A path with no compound segment (empty token set) falls back to a raw
- * segment-overlap check instead of an automatic pass: a single lone segment
- * (e.g. `/applicant`) is still never flagged, since a chain's own steps are
- * routinely single bare segments that share no tokens with each other. But a
- * *multi*-segment all-single-word path (e.g. a same-host marketing/promotions
- * capture like `/catalog/api/deals/catalog/default`) shares no segment at all,
- * not even a plain word, with any pool member — that is not "just another
- * single-word chain step", it is a different endpoint family that happened to
- * dodge the token check by having no compound segment. Requiring it to share
- * at least one raw path segment with the pool closes that gap without
- * penalizing genuine single-segment chain steps.
+ * segment-overlap check instead of an automatic pass, but only once the path
+ * has 3+ segments: a chain's own steps are routinely 1-2 bare segments
+ * (`/applicant`, `/sections/name`) that share no tokens — or even raw
+ * segments — with sibling steps either, so applying the overlap check there
+ * would flag genuine chain members as noise (e.g. a real `create` ->
+ * `sections/name` -> `submit` action sequence, none of whose plain-word
+ * steps share a segment with either of the others). A *deeper*, all-single-
+ * word path (e.g. a same-host marketing/promotions capture like
+ * `/catalog/api/deals/catalog/default`) shares no segment at all, not even a
+ * plain word, with any pool member — that depth is what marks it as a
+ * different endpoint family that happened to dodge the token check by having
+ * no compound segment, rather than just another short chain step. Requiring
+ * it to share at least one raw path segment with the pool closes that gap
+ * without penalizing genuine short single-word chain steps.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -213,7 +217,7 @@ export function isStructurallyIsolatedCapture(
     .split("/")
     .filter(Boolean)
     .map((segment) => segment.toLowerCase());
-  if (candidateSegments.length < 2) return false;
+  if (candidateSegments.length < 3) return false;
   const poolSegments = new Set(
     poolPaths.flatMap((poolPath) =>
       poolPath
