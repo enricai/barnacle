@@ -111,6 +111,16 @@ describe("isStructurallyIsolatedCapture", () => {
   it("never flags a plain single-word path, even if it shares no token with the pool", () => {
     expect(isStructurallyIsolatedCapture("/applicant", poolPaths)).toBe(false);
   });
+
+  it("flags a same-host all-single-word-segment path that shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", poolPaths)).toBe(
+      true
+    );
+  });
+
+  it("does not flag an all-single-word-segment path that shares a raw segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/v1/other", poolPaths)).toBe(false);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {

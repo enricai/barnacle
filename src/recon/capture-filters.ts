@@ -182,10 +182,19 @@ export function isStructurallyRelevantCapture(
  * True when `candidatePath` has a compound (multi-word) path segment whose
  * tokens share nothing with ANY other path in `poolPaths` — a same-host
  * capture whose own path structurally isolates it from every other member of
- * the pool it was admitted into. A plain single-word path (empty token set,
- * e.g. `/applicant`) is never flagged: most real endpoint chains are single-
- * word paths that share no tokens with each other either, so treating an
- * empty token set as isolation would flag the whole chain as noise.
+ * the pool it was admitted into.
+ *
+ * A path with no compound segment (empty token set) falls back to a raw
+ * segment-overlap check instead of an automatic pass: a single lone segment
+ * (e.g. `/applicant`) is still never flagged, since a chain's own steps are
+ * routinely single bare segments that share no tokens with each other. But a
+ * *multi*-segment all-single-word path (e.g. a same-host marketing/promotions
+ * capture like `/catalog/api/deals/catalog/default`) shares no segment at all,
+ * not even a plain word, with any pool member — that is not "just another
+ * single-word chain step", it is a different endpoint family that happened to
+ * dodge the token check by having no compound segment. Requiring it to share
+ * at least one raw path segment with the pool closes that gap without
+ * penalizing genuine single-segment chain steps.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -198,8 +207,22 @@ export function isStructurallyIsolatedCapture(
   candidatePath: string,
   poolPaths: readonly string[]
 ): boolean {
-  if (pathStructuralTokens(candidatePath).size === 0) return false;
-  return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (candidateTokens.size > 0) return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+  const candidateSegments = candidatePath
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+  if (candidateSegments.length < 2) return false;
+  const poolSegments = new Set(
+    poolPaths.flatMap((poolPath) =>
+      poolPath
+        .split("/")
+        .filter(Boolean)
+        .map((segment) => segment.toLowerCase())
+    )
+  );
+  return !candidateSegments.some((segment) => poolSegments.has(segment));
 }
 
 /**
