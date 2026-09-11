@@ -5,6 +5,20 @@ import vm from "node:vm";
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
+// Hoist-safe mock so captcha-callback-capture.ts's own module-level
+// getLogger call receives our stub — required because vitest mocks need to
+// be registered before the module under test imports logging.ts.
+const { loggerStub } = vi.hoisted(() => ({
+  loggerStub: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    errorWithStack: vi.fn(),
+  },
+}));
+vi.mock("@/lib/logging", () => ({ getLogger: () => loggerStub }));
+
 import {
   buildHcaptchaCallbackCaptureScript,
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
@@ -341,6 +355,33 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
       expect(navigatedFrameEvaluate).toHaveBeenCalledTimes(2);
     });
     expect(navigatedFrameEvaluate).toHaveBeenNthCalledWith(2, buildHcaptchaCallbackCaptureScript());
+  });
+
+  it("does not retry an unrelated evaluate() rejection and still logs a warning", async () => {
+    loggerStub.warn.mockClear();
+    const { session, handlers } = makeFakeSession();
+    const childFrameEvaluate = vi
+      .fn()
+      .mockRejectedValue(new Error("Cannot find context with specified id"));
+    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
+      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
+      "child-frame": { evaluate: childFrameEvaluate },
+    };
+    const page = {
+      getSessionForFrame: vi.fn().mockReturnValue(session),
+      mainFrameId: vi.fn().mockReturnValue("main-frame"),
+      frameForId: vi.fn((frameId: string) => frames[frameId]),
+    } as unknown as Page;
+
+    installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
+
+    await vi.waitFor(() => {
+      expect(loggerStub.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Cannot find context with specified id")
+      );
+    });
+    expect(childFrameEvaluate).toHaveBeenCalledTimes(1);
   });
 
   it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
