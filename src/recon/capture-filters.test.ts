@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ERROR_SINK_PATH_SEGMENT,
   isNoiseUrl,
+  isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   telemetryUrlPatterns,
@@ -158,6 +159,31 @@ describe("isStructurallyIsolatedCapture", () => {
     expect(
       isStructurallyIsolatedCapture("/catalog/api/deals/catalog", poolWithBothNoiseVariants)
     ).toBe(true);
+  });
+});
+
+describe("isSamePathFamily", () => {
+  it("matches two self-referential paths sharing a repeated segment, with no compound token overlap", () => {
+    expect(
+      isSamePathFamily("/catalog/api/deals/catalog", "/catalog/api/deals/catalog/default")
+    ).toBe(true);
+  });
+
+  it("matches on compound-segment token overlap when both paths have one", () => {
+    expect(
+      isSamePathFamily(
+        "/booking-apps-productavail-vas/v1/search",
+        "/booking-apps-sailingavailability-vas/v1/detail"
+      )
+    ).toBe(true);
+  });
+
+  it("rejects two unrelated plain-word paths with no repeated segment and no compound token", () => {
+    expect(isSamePathFamily("/applicant", "/sections/name")).toBe(false);
+  });
+
+  it("rejects a self-referential path against a plain chain step it shares no segment with", () => {
+    expect(isSamePathFamily("/catalog/api/deals/catalog", "/checkout/confirm")).toBe(false);
   });
 });
 
