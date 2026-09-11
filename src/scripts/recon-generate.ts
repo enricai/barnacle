@@ -7103,7 +7103,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       // A re-queried primary (same endpoint hit more than once, per
       // findRequeriedActions) can have MULTIPLE occurrences that each
       // independently thread a join key into the SAME later drill-down —
-      // e.g. two "available-products" calls that both happen to contain the
+      // e.g. two "list-items" calls that both happen to contain the
       // item the drill-down looks up. selectReturnAction/selectPayloadAction
       // already establish freshest-wins for this exact re-queried-primary
       // case, so the plan must anchor on the LAST such occurrence, not the
