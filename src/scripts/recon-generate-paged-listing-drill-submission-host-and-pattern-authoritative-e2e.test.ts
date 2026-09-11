@@ -190,13 +190,16 @@ describe("recon-generate CLI — paged-listing -> drill submission stays host-ga
     expect(contract).toContain("/listings-avail-api/available-products/");
 
     // The full chain shape survives, not just the selected submit endpoint:
-    // one `httpClient` call per surviving capture (toggles, authz, two
-    // paged-listing calls, two per-item drill calls) — six total. A
-    // collapse back to the single matching-pattern capture(s) would shrink
-    // this count, which `toContain` checks on individual endpoint strings
-    // can't detect.
+    // one `httpClient` call per surviving capture — toggles, authz, the two
+    // paged-listing calls collapsed to one (same endpoint, same response
+    // shape, varying only by the pagination-shaped `page` body field), and
+    // two per-item drill calls left uncollapsed (same endpoint and response
+    // shape, but varying by a non-pagination `productId` field, so each
+    // carries distinct per-item state) — five total. A collapse back to the
+    // single matching-pattern capture(s) would shrink this count further,
+    // which `toContain` checks on individual endpoint strings can't detect.
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
-    expect(httpClientCallCount).toBe(6);
+    expect(httpClientCallCount).toBe(5);
 
     // baseUrl is host-gated to the declared own-backend host.
     expect(contract).toContain(`https://${OWN_BACKEND_HOST}`);
