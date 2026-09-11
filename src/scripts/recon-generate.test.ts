@@ -893,6 +893,31 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
 
     expect(noise).toEqual(new Set([promoBanner, promoBannerVariant]));
   });
+
+  it("does not exclude a cross-host capture that merely shares a path family with a same-host noise capture", () => {
+    // A third-party host (e.g. a CDN or auth provider) can legitimately share
+    // a structural path token with an unrelated same-host noise endpoint by
+    // coincidence — path-family broadening must be scoped to the SAME host
+    // as the noise capture it is extending, or it would wrongly drop a
+    // legitimate cross-host chain step from the resolved pool.
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/promo/api/deals/promo", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
+    const crossHostVariant = capture(
+      "https://auth.example.com/promo/api/deals/promo/default",
+      {}
+    );
+
+    const noise = identifyNoiseCapturesForFields(
+      ["webBannerImageUrl"],
+      asPool([catalogCreate, promoBanner, crossHostVariant, catalogSubmit]),
+      catalogSubmit
+    );
+
+    expect(noise).toEqual(new Set([promoBanner]));
+  });
 });
 
 describe("extractActionSequence — submit patterns isolate the submission from same-URL chrome", () => {

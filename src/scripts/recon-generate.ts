@@ -10313,13 +10313,18 @@ export function identifyNoiseCapturesForFields(
       if (captureOwnsTopLevelField(capture, fieldName)) noiseCaptures.add(capture);
     }
   }
-  const noisePaths = [...noiseCaptures].map((capture) => safeUrlPathname(capture.url));
+  const noiseUrls = [...noiseCaptures].map((capture) => ({
+    path: safeUrlPathname(capture.url),
+    hostname: captureHostname(capture.url),
+  }));
   for (const { capture } of resolvedPool) {
     if (capture === primaryCapture || noiseCaptures.has(capture)) continue;
     const path = safeUrlPathname(capture.url);
-    if (noisePaths.some((noisePath) => isSamePathFamily(path, noisePath))) {
-      noiseCaptures.add(capture);
-    }
+    const hostname = captureHostname(capture.url);
+    const isSameHostFamilyMatch = noiseUrls.some(
+      (noise) => noise.hostname === hostname && isSamePathFamily(path, noise.path)
+    );
+    if (isSameHostFamilyMatch) noiseCaptures.add(capture);
   }
   return noiseCaptures;
 }
