@@ -122,8 +122,16 @@ describe("isStructurallyIsolatedCapture", () => {
     );
   });
 
-  it("does not flag an all-single-word-segment path that shares a raw segment with the pool", () => {
-    expect(isStructurallyIsolatedCapture("/v1/other", poolPaths)).toBe(false);
+  it("does not flag an all-single-word-segment path that shares a meaningful raw segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/v1/search/other", poolPaths)).toBe(false);
+  });
+
+  it("still flags an isolated all-single-word-segment path that only shares a generic segment like 'api'", () => {
+    expect(
+      isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", [
+        "/site/api/booking/search",
+      ])
+    ).toBe(true);
   });
 });
 

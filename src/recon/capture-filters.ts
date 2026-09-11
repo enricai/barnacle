@@ -151,6 +151,21 @@ function pathStructuralTokens(path: string): Set<string> {
 }
 
 /**
+ * Lowercased raw path segments, dropping the same short (<3 chars) and
+ * generic ({@link GENERIC_PATH_TOKENS}) ones {@link pathStructuralTokens}
+ * excludes from compound-segment tokens — so a raw-segment overlap check
+ * can't be satisfied by two paths sharing nothing but a boilerplate `/api/`
+ * or `/v1/` segment.
+ */
+function meaningfulPathSegments(path: string): string[] {
+  return path
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase())
+    .filter((segment) => segment.length >= 3 && !GENERIC_PATH_TOKENS.has(segment));
+}
+
+/**
  * True when `candidatePath` shares enough path-segment tokens with at least
  * one path in `referencePaths` to be judged part of the same endpoint
  * family, false when it is structurally unrelated to all of them.
@@ -198,7 +213,12 @@ export function isStructurallyRelevantCapture(
  * different endpoint family that happened to dodge the token check by having
  * no compound segment, rather than just another short chain step. Requiring
  * it to share at least one raw path segment with the pool closes that gap
- * without penalizing genuine short single-word chain steps.
+ * without penalizing genuine short single-word chain steps. The overlap
+ * check drops the same short/generic segments {@link pathStructuralTokens}
+ * already excludes ({@link GENERIC_PATH_TOKENS}, <3 chars): otherwise two
+ * completely unrelated endpoint families sharing only a boilerplate `/api/`
+ * segment would be judged "related" and the isolated capture would dodge
+ * exclusion the same way the empty-token-set exemption originally let it.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -213,19 +233,10 @@ export function isStructurallyIsolatedCapture(
 ): boolean {
   const candidateTokens = pathStructuralTokens(candidatePath);
   if (candidateTokens.size > 0) return !isStructurallyRelevantCapture(candidatePath, poolPaths);
-  const candidateSegments = candidatePath
-    .split("/")
-    .filter(Boolean)
-    .map((segment) => segment.toLowerCase());
-  if (candidateSegments.length < 3) return false;
-  const poolSegments = new Set(
-    poolPaths.flatMap((poolPath) =>
-      poolPath
-        .split("/")
-        .filter(Boolean)
-        .map((segment) => segment.toLowerCase())
-    )
-  );
+  const rawSegmentCount = candidatePath.split("/").filter(Boolean).length;
+  if (rawSegmentCount < 3) return false;
+  const candidateSegments = meaningfulPathSegments(candidatePath);
+  const poolSegments = new Set(poolPaths.flatMap((poolPath) => meaningfulPathSegments(poolPath)));
   return !candidateSegments.some((segment) => poolSegments.has(segment));
 }
 
