@@ -676,6 +676,39 @@ const PROMPT_EMPTY_VALUE_RX_FLAGS = PROMPT_EMPTY_VALUE_RX.flags;
 const BUTTON_VALUE_EXPR =
   "((el) => { const c = el.cloneNode(true); for (const n of c.querySelectorAll(\"[role='option'],[role='listbox'],[aria-hidden='true'],abbr,svg\")) n.remove(); return c.textContent || \"\"; })";
 /**
+ * Browser-side expression resolving a `role='option'` element's accessible
+ * label when its own `textContent`/`data-value` is empty — a widget-kit may
+ * carry the visible text on `aria-label`, `aria-labelledby` (standards-first,
+ * mirroring {@link labelFor}/`widgetLabel`'s id-resolution), `title`, or a
+ * descendant node instead of the option's own text node. Shared by option
+ * enumeration and by {@link PROMPT_CURRENT_TEXT_EXPR}'s
+ * `aria-activedescendant` readback so a widget can be driven and confirmed
+ * committed via the same resolved label regardless of which node carries it.
+ */
+const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const auto = el.getAttribute && el.getAttribute("data-automation-label");
+  if (auto && auto.trim()) return norm(auto);
+  const alb = el.getAttribute && el.getAttribute("aria-labelledby");
+  if (alb) {
+    const parts = [];
+    for (const id of alb.split(/\\s+/)) { const ref = document.getElementById(id); if (ref && ref.textContent) parts.push(ref.textContent); }
+    if (parts.length) return norm(parts.join(" "));
+  }
+  const al = el.getAttribute && el.getAttribute("aria-label");
+  if (al && al.trim()) return norm(al);
+  const own = el.textContent || "";
+  if (own.trim()) return norm(own);
+  const title = el.getAttribute && el.getAttribute("title");
+  if (title && title.trim()) return norm(title);
+  const desc = el.querySelector && el.querySelector("[aria-label],[title]");
+  if (desc) {
+    const dal = desc.getAttribute("aria-label") || desc.getAttribute("title");
+    if (dal && dal.trim()) return norm(dal);
+  }
+  return "";
+})`;
+/**
  * Browser-side expression reading a prompt-selector widget's OWN committed-value
  * text — the single source of truth for "is this widget filled?", shared by the
  * widget-enumeration phase ({@link tryPromptSelectorPrimitive}'s
@@ -690,8 +723,9 @@ const BUTTON_VALUE_EXPR =
 const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const buttonValue = ${BUTTON_VALUE_EXPR};
+  const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
   const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-  if (adid) { const opt = document.getElementById(adid); if (opt && opt.textContent.trim()) return norm(opt.textContent); }
+  if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
   if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
@@ -6960,6 +6994,7 @@ async function tryPromptSelectorPrimitive(params: {
     }
 
     const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
+      const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
       if (!w) return { optionsPresent: false };
       // Clear stale option + filter marks from a PRIOR prompt-selector call on
@@ -6994,8 +7029,8 @@ async function tryPromptSelectorPrimitive(params: {
       const options = [];
       for (let i = 0; i < opts.length; i++) {
         opts[i].setAttribute(markAttr, String(i));
-        const label = opts[i].getAttribute("data-automation-label") || opts[i].getAttribute("aria-label") || opts[i].textContent || "";
-        options.push({ oIdx: i, text: label.replace(/\\s+/g, " ").trim() });
+        const label = optionLabel(opts[i]);
+        options.push({ oIdx: i, text: label });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
       // popup from the document-wide last-resort fallback in
@@ -7257,6 +7292,7 @@ async function commitPromptOption(params: {
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const buttonValue = ${BUTTON_VALUE_EXPR};
+      const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "" };
@@ -7264,7 +7300,7 @@ async function commitPromptOption(params: {
       // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
       // selection-label node (empty-state phrase treated as no value).
       const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-      const adText = adid && document.getElementById(adid) ? norm(document.getElementById(adid).textContent) : "";
+      const adText = adid && document.getElementById(adid) ? norm(optionLabel(document.getElementById(adid))) : "";
       const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
       const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
       const lblRaw = lbl ? (lbl.textContent || "") : "";
