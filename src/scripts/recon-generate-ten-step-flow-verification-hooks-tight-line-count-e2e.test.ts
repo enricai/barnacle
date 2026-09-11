@@ -38,9 +38,7 @@ const DRILL_ITEM_COUNT = 3;
 // surface up to a realistic size — the exact count/names are load-bearing
 // for the line-count bound below, not for the collapsing behavior itself.
 function extraResponseFields(prefix: string): Record<string, string> {
-  return Object.fromEntries(
-    Array.from({ length: 70 }, (_, i) => [`${prefix}Field${i}`, "x"])
-  );
+  return Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`${prefix}Field${i}`, "x"]));
 }
 
 function tenStepFixtureCaptures(): Capture[] {
