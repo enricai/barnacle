@@ -132,4 +132,62 @@ describe("recon-generate CLI — REST same-endpoint repeats collapse instead of 
     expect(contract.match(/toggles\/product-avail/g)?.length).toBe(1);
     expect(contract.match(/available-products\//g)?.length).toBe(1);
   }, 30_000);
+
+  it("still collapses a paged listing that also carries an incidental cache-buster query param alongside its pagination cursor", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-rest-repeated-endpoint-collapse-noise-e2e-"));
+    const runRoot = join(workDir, "run");
+    const listing = Array.from({ length: LISTING_PAGE_COUNT }, (_, i) =>
+      buildCapture({
+        url: `${LISTING_URL}?_=${1700000000 + i}`,
+        requestPostData: JSON.stringify({ page: i + 1 }),
+        responseBody: {
+          totalPages: LISTING_PAGE_COUNT,
+          products: [{ productId: `p${i + 1}` }],
+        },
+        timestamp: `2024-01-01T00:01:${String(i).padStart(2, "0")}Z`,
+      })
+    );
+    const drills = Array.from({ length: DRILL_ITEM_COUNT }, (_, i) =>
+      buildCapture({
+        url: DRILL_URL,
+        requestPostData: JSON.stringify({ productId: `p${i + 1}` }),
+        responseBody: { units: [{ unitId: `s${i + 1}` }], exchangeRate: 1.0 },
+        timestamp: `2024-01-01T00:02:${String(i).padStart(2, "0")}Z`,
+      })
+    );
+    writeRunDir(runRoot, [...listing, ...drills]);
+
+    const siteId = `rest-repeated-endpoint-collapse-noise-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "browse paged product listing" },
+          { step: "drill into sailing availability", submitStep: true },
+        ],
+        submitEndpointPattern: "available-sailings",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
+
+    // Without the cache-buster query key excluded from the varying-key
+    // check, this listing group would vary in two fields (page + `_`) and
+    // fail to collapse, leaving all 8 pages unrolled as individual calls.
+    expect(httpClientCallCount).toBeLessThan(10);
+    expect(contract.match(/available-products\//g)?.length).toBe(1);
+  }, 30_000);
 });
