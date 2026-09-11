@@ -126,7 +126,7 @@ const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "co
  * to signal endpoint-family relatedness on their own.
  *
  * Only tokens from a *compound* path segment (one that itself splits into 2+
- * words, e.g. `productavail-vas`) are kept. A whole segment that is a single
+ * words, e.g. `listing-avail-vas`) are kept. A whole segment that is a single
  * plain word (e.g. `search`, `list`, `detail`, `widget`) is dropped entirely:
  * such words recur across unrelated endpoint families on the same host, so
  * treating them as a relatedness signal produces false positives (a marketing
@@ -167,7 +167,7 @@ function meaningfulPathSegments(path: string): string[] {
 
 /**
  * True when some meaningful segment of `path` recurs elsewhere in the same
- * path (e.g. `dvic` in `/dvic/api/promotions/dvic/default`). Real action
+ * path (e.g. `widget` in `/widget/api/promotions/widget/default`). Real action
  * chains name each step for what it does (`/user/profile/edit`) and so
  * rarely repeat a segment; a same-host marketing/promotions endpoint is
  * commonly self-referential — its resource identifier shows up twice in its
@@ -185,7 +185,7 @@ function hasRepeatedMeaningfulSegment(path: string): boolean {
  * family, false when it is structurally unrelated to all of them.
  *
  * A literal prefix/substring check is too strict: real same-flow endpoint
- * families (e.g. `.../productavail-vas/...` and `.../sailingavailability-vas/...`)
+ * families (e.g. `.../listing-avail-vas/...` and `.../item-detail-vas/...`)
  * do not share a string prefix segment-for-segment, but do share the
  * `-vas` suffix and surrounding path structure once tokenized. Token overlap
  * on segment words — ignoring short/generic tokens — catches that relation
@@ -216,7 +216,7 @@ export function isStructurallyRelevantCapture(
  * A path with no compound segment (empty token set) falls back to a raw
  * segment-overlap check instead of an automatic pass, but only when the path
  * has a {@link hasRepeatedMeaningfulSegment repeated segment} of its own
- * (e.g. `dvic` recurring in `/dvic/api/promotions/dvic/default`): a chain's
+ * (e.g. `widget` recurring in `/widget/api/promotions/widget/default`): a chain's
  * own steps are plain-word paths that name a distinct action per step
  * (`/applicant`, `/sections/name`, or a 3-segment `/user/profile/edit`) and
  * so essentially never repeat a segment against themselves, even when they
@@ -269,8 +269,8 @@ export function isStructurallyIsolatedCapture(
  * True when `pathA` and `pathB` belong to the same structural path family:
  * either they share a compound-segment token ({@link pathStructuralTokens}),
  * or both are self-referential ({@link hasRepeatedMeaningfulSegment}) and
- * share a raw meaningful segment (e.g. `dvic` in both `/dvic/api/promotions/dvic`
- * and `/dvic/api/promotions/dvic/default`).
+ * share a raw meaningful segment (e.g. `widget` in both `/widget/api/promotions/widget`
+ * and `/widget/api/promotions/widget/default`).
  *
  * Generalizes {@link isStructurallyRelevantCapture}'s token-overlap rule to
  * also cover the all-single-word-segment, self-referential shape that rule

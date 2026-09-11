@@ -905,10 +905,7 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
     const promoBanner = capture("https://api.tenant.example.com/promo/api/deals/promo", {
       webBannerImageUrl: "https://cdn.example.com/banner.png",
     });
-    const crossHostVariant = capture(
-      "https://auth.example.com/promo/api/deals/promo/default",
-      {}
-    );
+    const crossHostVariant = capture("https://auth.example.com/promo/api/deals/promo/default", {});
 
     const noise = identifyNoiseCapturesForFields(
       ["webBannerImageUrl"],
