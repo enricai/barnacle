@@ -2092,9 +2092,11 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * resolves to the same {@link responseShapeKey} (ruling out a mutation POST,
  * whose response is a single mutated object rather than an array, and any
  * group whose members diverge in response shape) AND its request fields vary
- * in at most one field, and that field is pagination-shaped -- a paged
- * listing/facet re-query -- or vary in no field at all -- a polled
- * toggles/feature-flag endpoint re-fired with an identical request. A group
+ * in at most one field once known non-semantic noise keys ({@link
+ * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
+ * remaining field is pagination-shaped -- a paged listing/facet re-query --
+ * or vary in no field at all -- a polled toggles/feature-flag endpoint
+ * re-fired with an identical request. A group
  * whose members vary in a non-pagination field (e.g. a per-item drill's
  * item-id body field) is left untouched: that variance carries the distinct
  * per-item state the existing fold-chain mechanism (`target.chain` in
@@ -2113,6 +2115,7 @@ function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
   }
 
   const varyingKeys = [...allKeys].filter((key) => {
+    if (CACHE_BUSTER_QUERY_KEYS.has(key)) return false;
     const values = new Set(fieldSets.map((fields) => JSON.stringify(fields[key])));
     return values.size > 1;
   });

@@ -30,15 +30,15 @@ const OWN_BACKEND_HOST = "www.own-backend-marketing-noise-foldreturn-chain-fixtu
 
 // Two structurally-distinct endpoint families: both compound path segments
 // share the `vas` token, but neither is a literal prefix of the other.
-const AUTHZ_URL = `https://${OWN_BACKEND_HOST}/dcl-apps-productavail-vas/authz/private`;
-const LISTING_URL = `https://${OWN_BACKEND_HOST}/dcl-apps-productavail-vas/available-products/`;
-const DRILL_URL = `https://${OWN_BACKEND_HOST}/dcl-apps-sailingavailability-vas/available-sailings/`;
+const AUTHZ_URL = `https://${OWN_BACKEND_HOST}/booking-apps-productavail-vas/authz/private`;
+const LISTING_URL = `https://${OWN_BACKEND_HOST}/booking-apps-productavail-vas/available-products/`;
+const DRILL_URL = `https://${OWN_BACKEND_HOST}/booking-apps-sailingavailability-vas/available-sailings/`;
 
 // A same-host marketing/promotions capture whose compound path shares no
 // token with either endpoint family and whose response carries a required
 // *Url-family field nothing downstream references — the report's
 // `webBannerImageUrl` shape.
-const NOISE_URL = `https://${OWN_BACKEND_HOST}/dvic-promotions-widget/home-banner`;
+const NOISE_URL = `https://${OWN_BACKEND_HOST}/site-banner`;
 
 function buildCapture(overrides: {
   url: string;
@@ -170,9 +170,9 @@ describe("recon-generate CLI — multi-family foldReturn chain survives an inter
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     // Both structurally-distinct endpoint families survive as chain steps.
-    expect(contract).toContain("/dcl-apps-productavail-vas/authz/private");
-    expect(contract).toContain("/dcl-apps-productavail-vas/available-products/");
-    expect(contract).toContain("/dcl-apps-sailingavailability-vas/available-sailings/");
+    expect(contract).toContain("/booking-apps-productavail-vas/authz/private");
+    expect(contract).toContain("/booking-apps-productavail-vas/available-products/");
+    expect(contract).toContain("/booking-apps-sailingavailability-vas/available-sailings/");
 
     // The fold/join field between the two families is present.
     expect(contract).toContain("productId");
@@ -180,6 +180,6 @@ describe("recon-generate CLI — multi-family foldReturn chain survives an inter
     // The interleaved same-host noise capture never leaks into the contract:
     // neither its required *Url-family fields nor its own path.
     expect(contract).not.toContain("webBannerImageUrl");
-    expect(contract).not.toContain("/dvic-promotions-widget/home-banner");
+    expect(contract).not.toContain("/site-banner");
   }, 30_000);
 });

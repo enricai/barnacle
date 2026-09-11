@@ -139,11 +139,25 @@ describe("isStructurallyIsolatedCapture", () => {
   });
 
   it("flags a same-host all-single-word path with a repeated segment even at only 3 segments deep", () => {
-    expect(isStructurallyIsolatedCapture("/dvic/promotions/dvic", poolPaths)).toBe(true);
+    expect(isStructurallyIsolatedCapture("/catalog/promotions/catalog", poolPaths)).toBe(true);
   });
 
   it("flags a same-host all-single-word-segment path with a repeated segment against an unrelated pool", () => {
     expect(isStructurallyIsolatedCapture("/widgets/offers/widgets", poolPaths)).toBe(true);
+  });
+
+  it("still flags both same-family noise variants when two co-occur in the same pool, instead of mutually vouching for each other", () => {
+    const poolWithBothNoiseVariants = [
+      ...poolPaths,
+      "/catalog/api/deals/catalog/default",
+      "/catalog/api/deals/catalog",
+    ];
+    expect(
+      isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", poolWithBothNoiseVariants)
+    ).toBe(true);
+    expect(
+      isStructurallyIsolatedCapture("/catalog/api/deals/catalog", poolWithBothNoiseVariants)
+    ).toBe(true);
   });
 });
 

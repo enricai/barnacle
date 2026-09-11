@@ -234,7 +234,13 @@ export function isStructurallyRelevantCapture(
  * <3 chars): otherwise two completely unrelated endpoint families sharing
  * only a boilerplate `/api/` segment would be judged "related" and the
  * isolated capture would dodge exclusion the same way the empty-token-set
- * exemption originally let it.
+ * exemption originally let it. Pool paths that are themselves self-referential
+ * ({@link hasRepeatedMeaningfulSegment}) are excluded from contributing to
+ * this overlap set: otherwise two co-occurring same-noise-family path
+ * variants (e.g. a POST and a GET/default variant of the same templated
+ * marketing endpoint) would mutually "vouch" for each other's segments and
+ * neither would be recognized as isolated — only a genuinely non-self-
+ * referential path can vouch for a candidate's relatedness.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -251,7 +257,11 @@ export function isStructurallyIsolatedCapture(
   if (candidateTokens.size > 0) return !isStructurallyRelevantCapture(candidatePath, poolPaths);
   if (!hasRepeatedMeaningfulSegment(candidatePath)) return false;
   const candidateSegments = meaningfulPathSegments(candidatePath);
-  const poolSegments = new Set(poolPaths.flatMap((poolPath) => meaningfulPathSegments(poolPath)));
+  const poolSegments = new Set(
+    poolPaths
+      .filter((poolPath) => !hasRepeatedMeaningfulSegment(poolPath))
+      .flatMap((poolPath) => meaningfulPathSegments(poolPath))
+  );
   return !candidateSegments.some((segment) => poolSegments.has(segment));
 }
 
