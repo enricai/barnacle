@@ -41,6 +41,27 @@ function noiseCapture(): Capture {
   };
 }
 
+function noiseCaptureQueryVariant(): Capture {
+  return {
+    timestamp: "2023-12-31T23:59:59.700Z",
+    phase: "home",
+    method: "POST",
+    url: "https://api.example.com/site-banner?campaign=summer",
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: '{"pageId":"home","campaign":"summer"}',
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: {
+      webBannerImageUrl: "https://cdn.example.com/banner-summer.png",
+      mobileWebBannerImageUrl: "https://cdn.example.com/banner-summer-mobile.png",
+    },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+}
+
 function writeRunDir(runRoot: string, captures: Capture[]): void {
   const capturesDir = join(runRoot, "graphql");
   mkdirSync(capturesDir, { recursive: true });
@@ -78,7 +99,7 @@ describe("recon-generate: required-URL-field guard self-heals when the noise cap
     const actionCaptures = buildMultiEndpointSubmissionActionSteps().map((s) => s.capture);
     const submitCapture = actionCaptures[actionCaptures.length - 1]!;
     const submitPath = new URL(submitCapture.url).pathname;
-    const allCaptures = [noiseCapture(), ...actionCaptures];
+    const allCaptures = [noiseCapture(), noiseCaptureQueryVariant(), ...actionCaptures];
     writeRunDir(runRoot, allCaptures);
 
     const siteId = `recon-noise-url-guard-before-submit-test-${process.pid}`;
@@ -100,6 +121,7 @@ describe("recon-generate: required-URL-field guard self-heals when the noise cap
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).not.toContain("webBannerImageUrl");
     expect(contract).not.toContain("site-banner");
+    expect(contract).not.toContain("banner-summer");
     expect(contract).toContain(submitPath);
   }, 30_000);
 });

@@ -141,6 +141,10 @@ describe("isStructurallyIsolatedCapture", () => {
   it("flags a same-host all-single-word path with a repeated segment even at only 3 segments deep", () => {
     expect(isStructurallyIsolatedCapture("/dvic/promotions/dvic", poolPaths)).toBe(true);
   });
+
+  it("flags a same-host all-single-word-segment path with a repeated segment against an unrelated pool", () => {
+    expect(isStructurallyIsolatedCapture("/widgets/offers/widgets", poolPaths)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {
