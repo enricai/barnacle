@@ -407,9 +407,7 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
       expect(childFrameEvaluate).toHaveBeenCalledTimes(6);
     });
     await vi.waitFor(() => {
-      expect(loggerStub.warn).toHaveBeenCalledWith(
-        expect.stringContaining("main world not ready")
-      );
+      expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("main world not ready"));
     });
   });
 
