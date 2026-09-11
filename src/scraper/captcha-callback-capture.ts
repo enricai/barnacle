@@ -130,13 +130,16 @@ export function installHcaptchaCallbackCaptureOnAllFrames(page: Page): void {
   const evaluateIntoFrame = (frameId: string): void => {
     pRetry(
       () =>
-        page.frameForId(frameId).evaluate(script).catch((err: unknown) => {
-          const error = err instanceof Error ? err : new Error(String(err));
-          if (!MAIN_WORLD_NOT_READY_PATTERN.test(error.message)) {
-            throw new AbortError(error);
-          }
-          throw error;
-        }),
+        page
+          .frameForId(frameId)
+          .evaluate(script)
+          .catch((err: unknown) => {
+            const error = err instanceof Error ? err : new Error(String(err));
+            if (!MAIN_WORLD_NOT_READY_PATTERN.test(error.message)) {
+              throw new AbortError(error);
+            }
+            throw error;
+          }),
       { retries: 5, factor: 1, minTimeout: 100, maxTimeout: 100 }
     ).catch((err: unknown) => {
       logger.warn(`hcaptcha callback capture: per-frame re-assert failed: ${String(err)}`);
