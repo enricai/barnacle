@@ -8285,7 +8285,7 @@ async function resolveDeepLocatorCandidatesWithWidening(
   return { candidates: widened, innerSelector: "*" };
 }
 
-type FieldLabelActuationOutcome =
+export type FieldLabelActuationOutcome =
   | { kind: "actuated"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
   | { kind: "actuation-failed"; matched: DeepLocatorCandidate; fieldTarget: FieldLabelTarget }
   | { kind: "no-match"; fieldTarget: FieldLabelTarget }
@@ -8302,9 +8302,13 @@ type FieldLabelActuationOutcome =
  * `not-fill-or-select`, never the first attempt for a step that names a
  * field. `triedSelectors` (already-attempted selectors from prior
  * cascade attempts) is excluded so a step that already tried and failed on
- * this candidate doesn't just re-pick it.
+ * this candidate doesn't just re-pick it. A "select" match that resolves to
+ * an opener-paired-hidden `<select>` (see the loop below) is skipped rather
+ * than actuated — that element belongs to `tryPromptSelectorPrimitive`,
+ * which already had first refusal on it, and empty-valued `<option>`s can
+ * never corroborate a write landed on the right one.
  */
-async function tryDeterministicFieldLabelActuation(params: {
+export async function tryDeterministicFieldLabelActuation(params: {
   page: Page;
   frameTarget: FrameTarget;
   step: string;
@@ -8320,8 +8324,33 @@ async function tryDeterministicFieldLabelActuation(params: {
     step,
     timeoutOptions
   );
-  const unexcluded = candidates.filter((c) => !triedSelectors.includes(c.selector));
-  const matched = findDeepLocatorCandidateByFieldLabel(unexcluded, fieldTarget.fieldLabel);
+  let unexcluded = candidates.filter((c) => !triedSelectors.includes(c.selector));
+  let matched = findDeepLocatorCandidateByFieldLabel(unexcluded, fieldTarget.fieldLabel);
+  // A "select" field-label match can resolve to a design-system combobox
+  // opener's paired-but-hidden shadow <select> (Base Web etc.) — the same
+  // element `trySelectPrimitive`/`applySelectValue` already refuse to write
+  // via `OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR`, because `tryPromptSelectorPrimitive`
+  // is the primitive that owns that opener widget and already had first
+  // refusal on it. Writing here instead bypasses that ownership: the opener's
+  // widget never observes the write, and when every <option> carries an empty
+  // `value` attribute the write can't even corroborate against the select's
+  // OWN state (`sel.value` stays "" regardless of which option got picked).
+  // Skip a matched candidate that resolves to one, falling back to the next
+  // named candidate (or no-match) instead of ever attempting that write.
+  while (matched && fieldTarget.kind === "select") {
+    const matchedIsPairedHiddenSelect = await frameTarget
+      .evaluate<boolean>(
+        `((innerSelector, index) => {
+          const isOpenerPairedHidden = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
+          const el = Array.from(document.querySelectorAll(innerSelector))[index];
+          return !!el && isOpenerPairedHidden(el);
+        })(${JSON.stringify(innerSelector)}, ${JSON.stringify(matched.index)})`
+      )
+      .catch(() => false);
+    if (!matchedIsPairedHiddenSelect) break;
+    unexcluded = unexcluded.filter((c) => c.selector !== matched?.selector);
+    matched = findDeepLocatorCandidateByFieldLabel(unexcluded, fieldTarget.fieldLabel);
+  }
   if (!matched) return { kind: "no-match", fieldTarget };
   const actuated =
     fieldTarget.kind === "fill"
