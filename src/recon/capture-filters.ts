@@ -151,6 +151,35 @@ function pathStructuralTokens(path: string): Set<string> {
 }
 
 /**
+ * Lowercased raw path segments, dropping the same short (<3 chars) and
+ * generic ({@link GENERIC_PATH_TOKENS}) ones {@link pathStructuralTokens}
+ * excludes from compound-segment tokens — so a raw-segment overlap check
+ * can't be satisfied by two paths sharing nothing but a boilerplate `/api/`
+ * or `/v1/` segment.
+ */
+function meaningfulPathSegments(path: string): string[] {
+  return path
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase())
+    .filter((segment) => segment.length >= 3 && !GENERIC_PATH_TOKENS.has(segment));
+}
+
+/**
+ * True when some meaningful segment of `path` recurs elsewhere in the same
+ * path (e.g. `dvic` in `/dvic/api/promotions/dvic/default`). Real action
+ * chains name each step for what it does (`/user/profile/edit`) and so
+ * rarely repeat a segment; a same-host marketing/promotions endpoint is
+ * commonly self-referential — its resource identifier shows up twice in its
+ * own path — which is what marks it as a templated/generated noise path
+ * rather than a genuine, if short, chain step.
+ */
+function hasRepeatedMeaningfulSegment(path: string): boolean {
+  const segments = meaningfulPathSegments(path);
+  return new Set(segments).size < segments.length;
+}
+
+/**
  * True when `candidatePath` shares enough path-segment tokens with at least
  * one path in `referencePaths` to be judged part of the same endpoint
  * family, false when it is structurally unrelated to all of them.
@@ -182,10 +211,30 @@ export function isStructurallyRelevantCapture(
  * True when `candidatePath` has a compound (multi-word) path segment whose
  * tokens share nothing with ANY other path in `poolPaths` — a same-host
  * capture whose own path structurally isolates it from every other member of
- * the pool it was admitted into. A plain single-word path (empty token set,
- * e.g. `/applicant`) is never flagged: most real endpoint chains are single-
- * word paths that share no tokens with each other either, so treating an
- * empty token set as isolation would flag the whole chain as noise.
+ * the pool it was admitted into.
+ *
+ * A path with no compound segment (empty token set) falls back to a raw
+ * segment-overlap check instead of an automatic pass, but only when the path
+ * has a {@link hasRepeatedMeaningfulSegment repeated segment} of its own
+ * (e.g. `dvic` recurring in `/dvic/api/promotions/dvic/default`): a chain's
+ * own steps are plain-word paths that name a distinct action per step
+ * (`/applicant`, `/sections/name`, or a 3-segment `/user/profile/edit`) and
+ * so essentially never repeat a segment against themselves, even when they
+ * share no tokens — or even raw segments — with sibling steps (e.g. a real
+ * `create` -> `sections/name` -> `submit` sequence, none of whose plain-word
+ * steps share a segment with either of the others). A same-host
+ * marketing/promotions capture is commonly self-referential — its own
+ * resource identifier shows up twice in its own path — which is the signal
+ * that marks it as a templated/generated noise path rather than a genuine
+ * short (or not-so-short) single-word chain step, independent of segment
+ * count. Requiring it to also share no raw path segment with the pool closes
+ * the gap without penalizing genuine single-word chain steps of any depth.
+ * The overlap check drops the same short/generic segments
+ * {@link pathStructuralTokens} already excludes ({@link GENERIC_PATH_TOKENS},
+ * <3 chars): otherwise two completely unrelated endpoint families sharing
+ * only a boilerplate `/api/` segment would be judged "related" and the
+ * isolated capture would dodge exclusion the same way the empty-token-set
+ * exemption originally let it.
  *
  * Anchored on {@link isStructurallyRelevantCapture}'s own token overlap rule
  * so "isolated" is exactly "not relevant to anything else in the pool" —
@@ -198,8 +247,12 @@ export function isStructurallyIsolatedCapture(
   candidatePath: string,
   poolPaths: readonly string[]
 ): boolean {
-  if (pathStructuralTokens(candidatePath).size === 0) return false;
-  return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (candidateTokens.size > 0) return !isStructurallyRelevantCapture(candidatePath, poolPaths);
+  if (!hasRepeatedMeaningfulSegment(candidatePath)) return false;
+  const candidateSegments = meaningfulPathSegments(candidatePath);
+  const poolSegments = new Set(poolPaths.flatMap((poolPath) => meaningfulPathSegments(poolPath)));
+  return !candidateSegments.some((segment) => poolSegments.has(segment));
 }
 
 /**

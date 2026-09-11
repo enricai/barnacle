@@ -111,6 +111,40 @@ describe("isStructurallyIsolatedCapture", () => {
   it("never flags a plain single-word path, even if it shares no token with the pool", () => {
     expect(isStructurallyIsolatedCapture("/applicant", poolPaths)).toBe(false);
   });
+
+  it("never flags a short two-segment all-single-word path, even if it shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/sections/name", poolPaths)).toBe(false);
+  });
+
+  it("flags a same-host all-single-word-segment path that shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", poolPaths)).toBe(
+      true
+    );
+  });
+
+  it("does not flag an all-single-word-segment path that shares a meaningful raw segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/v1/search/other", poolPaths)).toBe(false);
+  });
+
+  it("still flags an isolated all-single-word-segment path that only shares a generic segment like 'api'", () => {
+    expect(
+      isStructurallyIsolatedCapture("/catalog/api/deals/catalog/default", [
+        "/site/api/booking/search",
+      ])
+    ).toBe(true);
+  });
+
+  it("never flags a deeper all-single-word chain step with no repeated segment, even if it shares no segment with the pool", () => {
+    expect(isStructurallyIsolatedCapture("/user/profile/edit", ["/checkout/confirm"])).toBe(false);
+  });
+
+  it("flags a same-host all-single-word path with a repeated segment even at only 3 segments deep", () => {
+    expect(isStructurallyIsolatedCapture("/dvic/promotions/dvic", poolPaths)).toBe(true);
+  });
+
+  it("flags a same-host all-single-word-segment path with a repeated segment against an unrelated pool", () => {
+    expect(isStructurallyIsolatedCapture("/widgets/offers/widgets", poolPaths)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {

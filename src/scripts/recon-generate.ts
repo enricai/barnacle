@@ -2055,6 +2055,106 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
   });
 }
 
+/** Request field name shapes that identify a paged/offset-style re-query --
+ * the REST analog of {@link PAGE_SIZE_KEY_PATTERN}/{@link SKIP_KEY_PATTERN},
+ * loosened to match a single paging cursor field on its own (a plain `page`
+ * counter, unpaired with an explicit page-size key) since that is the common
+ * REST shape, unlike GraphQL's paired variables convention. */
+const PAGINATION_FIELD_NAME_PATTERN =
+  /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
+
+/** Every query-string and (when JSON-object-shaped) request-body field on a
+ * capture, merged into one comparable map -- REST pagination/facet state can
+ * live in either depending on the endpoint's own convention. */
+function captureRequestFields(capture: Capture): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  try {
+    const url = new URL(capture.url);
+    for (const [key, value] of url.searchParams) fields[key] = value;
+  } catch {
+    // Relative/invalid URLs carry no query-string signal to merge in.
+  }
+  if (capture.requestPostData) {
+    try {
+      const parsed: unknown = JSON.parse(capture.requestPostData);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.assign(fields, parsed as Record<string, unknown>);
+      }
+    } catch {
+      // A non-JSON body carries no per-field signal to merge in.
+    }
+  }
+  return fields;
+}
+
+/**
+ * A same-endpoint capture group qualifies for collapsing when every capture
+ * resolves to the same {@link responseShapeKey} (ruling out a mutation POST,
+ * whose response is a single mutated object rather than an array, and any
+ * group whose members diverge in response shape) AND its request fields vary
+ * in at most one field, and that field is pagination-shaped -- a paged
+ * listing/facet re-query -- or vary in no field at all -- a polled
+ * toggles/feature-flag endpoint re-fired with an identical request. A group
+ * whose members vary in a non-pagination field (e.g. a per-item drill's
+ * item-id body field) is left untouched: that variance carries the distinct
+ * per-item state the existing fold-chain mechanism (`target.chain` in
+ * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
+ * collapsing it here would erase the very state that hoisting depends on.
+ */
+function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
+  const shapeKey = responseShapeKey(group[0]!.capture);
+  if (shapeKey === null) return false;
+  if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+
+  const fieldSets = group.map((a) => captureRequestFields(a.capture));
+  const allKeys = new Set<string>();
+  for (const fields of fieldSets) {
+    for (const key of Object.keys(fields)) allKeys.add(key);
+  }
+
+  const varyingKeys = [...allKeys].filter((key) => {
+    const values = new Set(fieldSets.map((fields) => JSON.stringify(fields[key])));
+    return values.size > 1;
+  });
+
+  if (varyingKeys.length === 0) return true;
+  return varyingKeys.length === 1 && PAGINATION_FIELD_NAME_PATTERN.test(varyingKeys[0]!);
+}
+
+/**
+ * REST counterpart of {@link dedupRedundantSameOperationCaptures}: collapses
+ * each same-endpoint (method + {@link endpointKey}) group that qualifies per
+ * {@link isRedundantSameEndpointGroup} down to its FIRST occurrence. A paged
+ * listing re-fired across pages/facets, or a polled toggles endpoint re-fired
+ * with an identical request, carries no distinct state for downstream steps
+ * to thread; every other same-endpoint group (including a per-item drill
+ * varying by item id) is left exactly as extracted. Kept representative is
+ * the first occurrence, not the last, because a later step's fold/join (see
+ * `buildFoldPlanFromSpec`) resolves its item-level join values against
+ * whichever page's response survives — page 1 is what a browsing/drill flow
+ * actually saw and drilled into first, so it is the occurrence downstream
+ * join values are captured against, not the endpoint's final paged state.
+ */
+function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
+  const positionsByGroup = new Map<string, number[]>();
+  actions.forEach((a, i) => {
+    const key = `${a.capture.method} ${endpointKey(a.capture.url)}`;
+    const positions = positionsByGroup.get(key) ?? [];
+    positions.push(i);
+    positionsByGroup.set(key, positions);
+  });
+
+  const drop = new Set<number>();
+  for (const positions of positionsByGroup.values()) {
+    if (positions.length < 2) continue;
+    const group = positions.map((i) => actions[i]!);
+    if (!isRedundantSameEndpointGroup(group)) continue;
+    for (const position of positions.slice(1)) drop.add(position);
+  }
+
+  return actions.filter((_, i) => !drop.has(i));
+}
+
 interface StateValue {
   /** The raw string that appears in some response and is reused downstream. */
   value: string;
@@ -10631,13 +10731,15 @@ async function main(): Promise<void> {
     // heuristic extraction finds.
     const unfilteredHeuristicActionCaptures = gql
       ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
-      : collapseRedundantPatches(
-          extractActionSequence(
-            activeCaptures,
-            null,
-            foldReturnSpec,
-            ownBackendHostnames,
-            fallbackDomain
+      : collapseRedundantSameEndpointCaptures(
+          collapseRedundantPatches(
+            extractActionSequence(
+              activeCaptures,
+              null,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain
+            )
           )
         );
     // A flow-declared submitEndpointPattern is authoritative: it may match only

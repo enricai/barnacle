@@ -4,62 +4,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 import { buildMultiEndpointSubmissionActionSteps } from "@/scripts/recon-generate-multiendpoint-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
- * Encodes the report's second explicit verification hook: a same-host,
- * unthreaded marketing/promotions-style capture placed BEFORE the real
- * chain's declared submit target (rather than interleaved, as covered by
- * recon-generate-marketing-endpoint-noise-guard-e2e.test.ts) must not
- * abort generation. Proves the fix narrows by structural relevance, not by
- * capture ordering/position.
+ * The report's second distinct problem, isolated from the collapse fix
+ * covered by recon-generate-rest-repeated-endpoint-collapse-e2e.test.ts:
+ * same-path-family structural-relevance exclusion must not require a
+ * `*Url`-suffixed field to trigger. Mirrors
+ * recon-generate-same-host-marketing-noise-guard-fixture-e2e.test.ts's
+ * shape, but swaps its `webBannerImageUrl`-bearing noiseCapture() for the
+ * no-*Url-field, alternate-query-string noise variant from
+ * buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps — the exact
+ * case the required-URL-field self-heal guard cannot see, since it never
+ * carries a `*Url` field to attribute in the first place. It must still be
+ * excluded, purely on same-host structural isolation.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-function noiseCapture(): Capture {
-  return {
-    timestamp: "2023-12-31T23:59:59.500Z",
-    phase: "home",
-    method: "POST",
-    url: "https://api.example.com/site-banner",
-    status: 200,
-    requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: '{"pageId":"home"}',
-    responseHeaders: { "content-type": "application/json" },
-    responseBody: {
-      webBannerImageUrl: "https://cdn.example.com/banner.png",
-      mobileWebBannerImageUrl: "https://cdn.example.com/banner-mobile.png",
-    },
-    operationName: null,
-    query: null,
-    variables: null,
-    decodedParams: null,
-  };
-}
-
-function noiseCaptureQueryVariant(): Capture {
-  return {
-    timestamp: "2023-12-31T23:59:59.700Z",
-    phase: "home",
-    method: "POST",
-    url: "https://api.example.com/site-banner?campaign=summer",
-    status: 200,
-    requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: '{"pageId":"home","campaign":"summer"}',
-    responseHeaders: { "content-type": "application/json" },
-    responseBody: {
-      webBannerImageUrl: "https://cdn.example.com/banner-summer.png",
-      mobileWebBannerImageUrl: "https://cdn.example.com/banner-summer-mobile.png",
-    },
-    operationName: null,
-    query: null,
-    variables: null,
-    decodedParams: null,
-  };
+function noiseVariantCapture(): Capture {
+  const [noiseStep] = buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(1, 1).slice(-1);
+  return noiseStep!.capture;
 }
 
 function writeRunDir(runRoot: string, captures: Capture[]): void {
@@ -92,17 +61,22 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("recon-generate: required-URL-field guard self-heals when the noise capture precedes the submit target", () => {
-  it("exits 0 and retains the real chain's submit target when the marketing capture is chronologically first", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-noise-url-guard-before-submit-"));
+describe("recon-generate: same-path-family noise exclusion does not require a *Url-suffixed field", () => {
+  it("excludes the query-string-variant noise capture in every form while keeping the real chain's calls", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-noise-path-family-query-variant-guard-"));
     const runRoot = join(workDir, "run");
+    const noiseCapture = noiseVariantCapture();
+    const noisePath = new URL(noiseCapture.url).pathname;
+    const body = noiseCapture.responseBody as Record<string, unknown>;
+    expect(Object.keys(body).some((key) => key.endsWith("Url"))).toBe(false);
+
     const actionCaptures = buildMultiEndpointSubmissionActionSteps().map((s) => s.capture);
     const submitCapture = actionCaptures[actionCaptures.length - 1]!;
     const submitPath = new URL(submitCapture.url).pathname;
-    const allCaptures = [noiseCapture(), noiseCaptureQueryVariant(), ...actionCaptures];
+    const allCaptures = [noiseCapture, ...actionCaptures];
     writeRunDir(runRoot, allCaptures);
 
-    const siteId = `recon-noise-url-guard-before-submit-test-${process.pid}`;
+    const siteId = `noise-path-family-query-variant-guard-e2e-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
@@ -119,9 +93,9 @@ describe("recon-generate: required-URL-field guard self-heals when the noise cap
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).not.toContain("webBannerImageUrl");
-    expect(contract).not.toContain("site-banner");
-    expect(contract).not.toContain("banner-summer");
+    expect(contract).not.toContain(noisePath);
+    expect(contract).not.toContain("promotions-spa/banner");
+    expect(contract).not.toContain("impressionCount");
     expect(contract).toContain(submitPath);
   }, 30_000);
 });
