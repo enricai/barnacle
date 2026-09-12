@@ -202,8 +202,7 @@ describe("scraper/session router", () => {
     const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
       on: ReturnType<typeof vi.fn>;
     };
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Target.attachedToTarget", expect.any(Function));
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
@@ -216,8 +215,67 @@ describe("scraper/session router", () => {
     const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
       on: ReturnType<typeof vi.fn>;
     };
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Target.attachedToTarget", expect.any(Function));
+  });
+
+  it("awaits the deterministic per-frame install before handing back a usable session, rather than firing it off and returning early", async () => {
+    configRef.value.scraper.provider = "browserbase";
+    const frameSession = fakePage.getSessionForFrame(fakePage.mainFrameId()) as {
+      send: ReturnType<typeof vi.fn>;
+    };
+    let releaseInstall: () => void = () => {};
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    let installResolved = false;
+    frameSession.send.mockImplementation((method: string) => {
+      if (method === "Page.addScriptToEvaluateOnNewDocument") {
+        return installGate.then(() => {
+          installResolved = true;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    vi.useFakeTimers();
+    try {
+      let sessionResolved = false;
+      const sessionPromise = createBrowserSession();
+      sessionPromise.then(() => {
+        sessionResolved = true;
+      });
+      // Bottleneck's session-create limiter paces the create call through a
+      // real setTimeout; fast-forward past that so the only thing still
+      // pending is the install gate itself.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(installResolved).toBe(false);
+      expect(sessionResolved).toBe(false);
+
+      releaseInstall();
+      await vi.advanceTimersByTimeAsync(0);
+      const session = await sessionPromise;
+
+      expect(installResolved).toBe(true);
+      expect(sessionResolved).toBe(true);
+      expect(session.provider).toBe("browserbase");
+      expect(frameSession.send).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
+        source: expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL),
+      });
+
+      const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
+      const awaitActivePage = session.stagehand.context.awaitActivePage as ReturnType<typeof vi.fn>;
+      expect(addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+        awaitActivePage.mock.invocationCallOrder[0] as number
+      );
+      expect(awaitActivePage.mock.invocationCallOrder[0]).toBeLessThan(
+        frameSession.send.mock.invocationCallOrder.find(
+          (_order, index) =>
+            frameSession.send.mock.calls[index]?.[0] === "Page.addScriptToEvaluateOnNewDocument"
+        ) as number
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

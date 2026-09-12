@@ -1,10 +1,6 @@
 import type { Page } from "@browserbasehq/stagehand";
-import pRetry, { AbortError } from "p-retry";
 
 import { getLogger } from "@/lib/logging";
-
-/** Matches stagehand's `ExecutionContextRegistry.waitForMainWorld` rejection message. */
-const MAIN_WORLD_NOT_READY_PATTERN = /main world not ready for frame/i;
 
 /**
  * Site-agnostic capture of hCaptcha's programmatic render config. When a
@@ -103,56 +99,82 @@ export function buildHcaptchaCallbackCaptureScript(): string {
   })();`;
 }
 
+/** `Target.attachedToTarget` event shape this module reads. */
+interface TargetAttachedToTargetParams {
+  sessionId: string;
+}
+
 /**
- * Re-asserts the capture script into every frame's own realm as it attaches
- * or navigates, closing the race where a same-origin iframe's own script
- * assigns `window.hcaptcha` and calls `render` before `context.addInitScript`'s
- * effect is observably in place in that frame's realm (a CDP round-trip race
- * under some session providers). Complements, rather than replaces, the
- * context-level install — that install remains the first line of defense for
- * the common case (fast frames, no race).
+ * Registers the capture script via CDP so it is guaranteed to run before any
+ * of a frame's own scripts, in every frame the page ever owns — deterministic
+ * install rather than a race against that frame's own render() call.
  *
- * Frame-agnostic: this listens for `Page.frameAttached`/`Page.frameNavigated`
- * on the main frame's CDP session and evaluates the (idempotent) capture
- * script into whichever frame each event names, regardless of which site or
- * plugin owns that frame.
+ * `Page.addScriptToEvaluateOnNewDocument` is a Page-domain (not frame-scoped)
+ * command: per the CDP contract it installs before any script in ANY frame
+ * of the target it's sent to — including same-origin child iframes that
+ * share the main frame's target — and needs no execution context to already
+ * exist, unlike `Runtime.evaluate`. That covers same-target frames.
  *
- * `Page.frameAttached`/`Page.frameNavigated` can fire before that frame's
- * main-world execution context exists, so the first `evaluate()` rejects
- * with "main world not ready for frame ...". Each fresh `evaluate()` call
- * re-arms stagehand's own wait for that context, so retrying the call
- * (rather than adding a bespoke listener) is what closes the race.
+ * Cross-origin child frames get their own CDP target, so they need their own
+ * registration: `Target.setAutoAttach({ autoAttach: true,
+ * waitForDebuggerOnStart: true, flatten: true })` pauses each newly attached
+ * target at the debugger statement before any of its scripts run; on
+ * `Target.attachedToTarget` this re-sends `Page.addScriptToEvaluateOnNewDocument`
+ * into that target's own session and only then resumes it via
+ * `Runtime.runIfWaitingForDebugger` — so the script is installed before the
+ * paused target is ever allowed to execute anything.
+ *
+ * Frame-agnostic: driven entirely by CDP target/frame lifecycle events,
+ * regardless of which site or plugin owns any given frame. Recurses onto
+ * every attached target's own session so a cross-origin frame nested inside
+ * another cross-origin frame (a grandchild target) is armed too — auto-attach
+ * is per-session, so a target attached under a child session never inherits
+ * the main session's `Target.setAutoAttach` call.
  */
-export function installHcaptchaCallbackCaptureOnAllFrames(page: Page): void {
-  const session = page.getSessionForFrame(page.mainFrameId());
+export async function installHcaptchaCallbackCaptureOnAllFrames(page: Page): Promise<void> {
   const script = buildHcaptchaCallbackCaptureScript();
 
-  const evaluateIntoFrame = (frameId: string): void => {
-    pRetry(
-      () =>
-        page
-          .frameForId(frameId)
-          .evaluate(script)
-          .catch((err: unknown) => {
-            const error = err instanceof Error ? err : new Error(String(err));
-            if (!MAIN_WORLD_NOT_READY_PATTERN.test(error.message)) {
-              throw new AbortError(error);
-            }
-            throw error;
-          }),
-      { retries: 5, factor: 1, minTimeout: 100, maxTimeout: 100 }
-    ).catch((err: unknown) => {
-      logger.warn(`hcaptcha callback capture: per-frame re-assert failed: ${String(err)}`);
+  const installInto = (target: {
+    send<R = unknown>(method: string, params?: object): Promise<R>;
+  }): Promise<void> =>
+    target
+      .send("Page.addScriptToEvaluateOnNewDocument", { source: script })
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        logger.warn(`hcaptcha callback capture: script registration failed: ${String(err)}`);
+      });
+
+  const armSession = (target: {
+    send<R = unknown>(method: string, params?: object): Promise<R>;
+    on<P>(event: string, handler: (params: P) => void): void;
+  }): Promise<void> => {
+    target.on<TargetAttachedToTargetParams>("Target.attachedToTarget", (params) => {
+      const childSession = page.getSessionById(params.sessionId);
+      if (!childSession) {
+        logger.warn(
+          `hcaptcha callback capture: no session found for attached target ${params.sessionId}`
+        );
+        return;
+      }
+      Promise.all([installInto(childSession), armSession(childSession)])
+        .then(() => childSession.send("Runtime.runIfWaitingForDebugger"))
+        .catch((err: unknown) => {
+          logger.warn(`hcaptcha callback capture: child target resume failed: ${String(err)}`);
+        });
     });
+
+    return target
+      .send("Target.setAutoAttach", {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      })
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        logger.warn(`hcaptcha callback capture: Target.setAutoAttach failed: ${String(err)}`);
+      });
   };
 
-  session.send("Page.enable").catch((err: unknown) => {
-    logger.warn(`hcaptcha callback capture: Page.enable failed: ${String(err)}`);
-  });
-  session.on<{ frameId: string }>("Page.frameAttached", (params) => {
-    evaluateIntoFrame(params.frameId);
-  });
-  session.on<{ frame: { id: string } }>("Page.frameNavigated", (params) => {
-    evaluateIntoFrame(params.frame.id);
-  });
+  const session = page.getSessionForFrame(page.mainFrameId());
+  await Promise.all([installInto(session), armSession(session)]);
 }

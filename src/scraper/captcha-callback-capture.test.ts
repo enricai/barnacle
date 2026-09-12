@@ -238,7 +238,7 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
 describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
   /**
    * Fakes the CDP `session.on`/`send` surface {@link CDPSessionLike} exposes,
-   * capturing registered handlers so the test can fire a `Page.frameAttached`
+   * capturing registered handlers so the test can fire a `Target.attachedToTarget`
    * event the way the real CDP session would.
    */
   function makeFakeSession(): {
@@ -260,154 +260,188 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
     return { session, handlers };
   }
 
-  it("evaluates the capture script into a newly attached child frame specifically, not the main frame", () => {
-    const { session, handlers } = makeFakeSession();
-    const mainFrameEvaluate = vi.fn().mockResolvedValue(undefined);
-    const childFrameEvaluate = vi.fn().mockResolvedValue(undefined);
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: mainFrameEvaluate },
-      "child-frame": { evaluate: childFrameEvaluate },
-    };
+  function makePage(session: ReturnType<typeof makeFakeSession>["session"]): {
+    page: Page;
+    childSessions: Record<string, ReturnType<typeof makeFakeSession>["session"]>;
+  } {
+    const childSessions: Record<string, ReturnType<typeof makeFakeSession>["session"]> = {};
     const page = {
       getSessionForFrame: vi.fn().mockReturnValue(session),
       mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
+      getSessionById: vi.fn((id: string) => childSessions[id]),
     } as unknown as Page;
+    return { page, childSessions };
+  }
 
-    installHcaptchaCallbackCaptureOnAllFrames(page);
+  it("registers the capture script on the main session via Page.addScriptToEvaluateOnNewDocument and enables target auto-attach", async () => {
+    const { session } = makeFakeSession();
+    const { page } = makePage(session);
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
 
     expect(page.getSessionForFrame).toHaveBeenCalledWith("main-frame");
-    expect(session.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
-    expect(session.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
-
-    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
-
-    expect(page.frameForId).toHaveBeenCalledWith("child-frame");
-    expect(childFrameEvaluate).toHaveBeenCalledWith(buildHcaptchaCallbackCaptureScript());
-    expect(mainFrameEvaluate).not.toHaveBeenCalled();
-  });
-
-  it("evaluates the capture script into the frame named by a frameNavigated event", () => {
-    const { session, handlers } = makeFakeSession();
-    const navigatedFrameEvaluate = vi.fn().mockResolvedValue(undefined);
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
-      "navigated-frame": { evaluate: navigatedFrameEvaluate },
-    };
-    const page = {
-      getSessionForFrame: vi.fn().mockReturnValue(session),
-      mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
-    } as unknown as Page;
-
-    installHcaptchaCallbackCaptureOnAllFrames(page);
-    handlers["Page.frameNavigated"]?.({ frame: { id: "navigated-frame" } });
-
-    expect(page.frameForId).toHaveBeenCalledWith("navigated-frame");
-    expect(navigatedFrameEvaluate).toHaveBeenCalledWith(buildHcaptchaCallbackCaptureScript());
-  });
-
-  it("retries a frame's evaluate() when its first attempt rejects with 'main world not ready', and still confirms the install", async () => {
-    const { session, handlers } = makeFakeSession();
-    const childFrameEvaluate = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("main world not ready for frame child-frame"))
-      .mockResolvedValueOnce(undefined);
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
-      "child-frame": { evaluate: childFrameEvaluate },
-    };
-    const page = {
-      getSessionForFrame: vi.fn().mockReturnValue(session),
-      mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
-    } as unknown as Page;
-
-    installHcaptchaCallbackCaptureOnAllFrames(page);
-    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
-
-    await vi.waitFor(() => {
-      expect(childFrameEvaluate).toHaveBeenCalledTimes(2);
+    expect(session.send).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
+      source: buildHcaptchaCallbackCaptureScript(),
     });
-    expect(childFrameEvaluate).toHaveBeenNthCalledWith(2, buildHcaptchaCallbackCaptureScript());
-  });
-
-  it("retries a frame's evaluate() when a frameNavigated event's first attempt rejects with 'main world not ready', and still confirms the install", async () => {
-    const { session, handlers } = makeFakeSession();
-    const navigatedFrameEvaluate = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("main world not ready for frame navigated-frame"))
-      .mockResolvedValueOnce(undefined);
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
-      "navigated-frame": { evaluate: navigatedFrameEvaluate },
-    };
-    const page = {
-      getSessionForFrame: vi.fn().mockReturnValue(session),
-      mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
-    } as unknown as Page;
-
-    installHcaptchaCallbackCaptureOnAllFrames(page);
-    handlers["Page.frameNavigated"]?.({ frame: { id: "navigated-frame" } });
-
-    await vi.waitFor(() => {
-      expect(navigatedFrameEvaluate).toHaveBeenCalledTimes(2);
+    expect(session.send).toHaveBeenCalledWith("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
     });
-    expect(navigatedFrameEvaluate).toHaveBeenNthCalledWith(2, buildHcaptchaCallbackCaptureScript());
+    expect(session.on).toHaveBeenCalledWith("Target.attachedToTarget", expect.any(Function));
   });
 
-  it("does not retry an unrelated evaluate() rejection and still logs a warning", async () => {
-    loggerStub.warn.mockClear();
+  it("registers the script on a newly attached child target before resuming it", async () => {
     const { session, handlers } = makeFakeSession();
-    const childFrameEvaluate = vi
-      .fn()
-      .mockRejectedValue(new Error("Cannot find context with specified id"));
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
-      "child-frame": { evaluate: childFrameEvaluate },
-    };
-    const page = {
-      getSessionForFrame: vi.fn().mockReturnValue(session),
-      mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
-    } as unknown as Page;
+    const { page, childSessions } = makePage(session);
+    const childSessionFake = makeFakeSession();
+    childSessions["child-session-1"] = childSessionFake.session;
+    const childSend = childSessionFake.session.send;
 
-    installHcaptchaCallbackCaptureOnAllFrames(page);
-    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-1" });
 
     await vi.waitFor(() => {
-      expect(loggerStub.warn).toHaveBeenCalledWith(
-        expect.stringContaining("Cannot find context with specified id")
+      expect(childSend).toHaveBeenCalledWith("Runtime.runIfWaitingForDebugger");
+    });
+    expect(page.getSessionById).toHaveBeenCalledWith("child-session-1");
+    expect(childSend).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
+      source: buildHcaptchaCallbackCaptureScript(),
+    });
+    expect(childSend).toHaveBeenCalledWith("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+    const runIfWaitingOrder = childSend.mock.calls.findIndex(
+      (call) => call[0] === "Runtime.runIfWaitingForDebugger"
+    );
+    const addScriptOrder = childSend.mock.calls.findIndex(
+      (call) => call[0] === "Page.addScriptToEvaluateOnNewDocument"
+    );
+    expect(addScriptOrder).toBeLessThan(runIfWaitingOrder);
+    expect(childSessionFake.session.on).toHaveBeenCalledWith(
+      "Target.attachedToTarget",
+      expect.any(Function)
+    );
+  });
+
+  it("arms a grandchild target attached under a child session (nested cross-origin frame)", async () => {
+    const { session, handlers } = makeFakeSession();
+    const { page, childSessions } = makePage(session);
+    const childSessionFake = makeFakeSession();
+    childSessions["child-session-1"] = childSessionFake.session;
+    const grandchildSessionFake = makeFakeSession();
+    childSessions["grandchild-session-1"] = grandchildSessionFake.session;
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-1" });
+
+    await vi.waitFor(() => {
+      expect(childSessionFake.session.on).toHaveBeenCalledWith(
+        "Target.attachedToTarget",
+        expect.any(Function)
       );
     });
-    expect(childFrameEvaluate).toHaveBeenCalledTimes(1);
+    childSessionFake.handlers["Target.attachedToTarget"]?.({
+      sessionId: "grandchild-session-1",
+    });
+
+    await vi.waitFor(() => {
+      expect(grandchildSessionFake.session.send).toHaveBeenCalledWith(
+        "Runtime.runIfWaitingForDebugger"
+      );
+    });
+    expect(grandchildSessionFake.session.send).toHaveBeenCalledWith(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: buildHcaptchaCallbackCaptureScript() }
+    );
   });
 
-  it("exhausts the retry budget and logs a warning when every attempt rejects with 'main world not ready'", async () => {
+  it("logs a warning and does not throw when Target.setAutoAttach rejects", async () => {
     loggerStub.warn.mockClear();
+    const { session } = makeFakeSession();
+    session.send.mockImplementation((method: string) =>
+      method === "Target.setAutoAttach"
+        ? Promise.reject(new Error("auto-attach unsupported"))
+        : Promise.resolve(undefined)
+    );
+    const { page } = makePage(session);
+
+    await expect(installHcaptchaCallbackCaptureOnAllFrames(page)).resolves.toBeUndefined();
+
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Target.setAutoAttach failed")
+    );
+  });
+
+  it("logs a warning and still resolves when the main-session script registration rejects", async () => {
+    loggerStub.warn.mockClear();
+    const { session } = makeFakeSession();
+    session.send.mockImplementation((method: string) =>
+      method === "Page.addScriptToEvaluateOnNewDocument"
+        ? Promise.reject(new Error("target closed"))
+        : Promise.resolve(undefined)
+    );
+    const { page } = makePage(session);
+
+    await expect(installHcaptchaCallbackCaptureOnAllFrames(page)).resolves.toBeUndefined();
+
+    expect(loggerStub.warn).toHaveBeenCalledWith(
+      expect.stringContaining("script registration failed")
+    );
+  });
+
+  it("does nothing when a child target's session cannot be resolved", async () => {
     const { session, handlers } = makeFakeSession();
-    const childFrameEvaluate = vi
-      .fn()
-      .mockRejectedValue(new Error("main world not ready for frame child-frame"));
-    const frames: Record<string, { evaluate: ReturnType<typeof vi.fn> }> = {
-      "main-frame": { evaluate: vi.fn().mockResolvedValue(undefined) },
-      "child-frame": { evaluate: childFrameEvaluate },
+    const { page } = makePage(session);
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+
+    expect(() =>
+      handlers["Target.attachedToTarget"]?.({ sessionId: "unknown-session" })
+    ).not.toThrow();
+  });
+
+  it("captures a render call that fires the instant the target attaches, before any post-attach evaluate could ever run", async () => {
+    const { session, handlers } = makeFakeSession();
+    const { page } = makePage(session);
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+
+    const registeredScript = session.send.mock.calls.find(
+      (call) => call[0] === "Page.addScriptToEvaluateOnNewDocument"
+    )?.[1].source as string;
+
+    // Simulates a frame whose document (and its onload-driven render() call)
+    // executes synchronously in the same tick the target attaches — no
+    // macrotask gap exists for a reactive post-attach evaluate to win. The
+    // capture script installs via Page.addScriptToEvaluateOnNewDocument,
+    // which CDP guarantees runs before this frame's own scripts, so the
+    // sandbox is set up exactly as it would be at that instant: the capture
+    // script already applied, then the frame's own render call firing.
+    const sandbox = makeFakeWindow();
+    vm.createContext(sandbox);
+    vm.runInContext(registeredScript, sandbox);
+
+    const callback = (): void => undefined;
+    (sandbox.window as Record<string, unknown>).hcaptcha = {
+      render: () => "widget-race",
     };
-    const page = {
-      getSessionForFrame: vi.fn().mockReturnValue(session),
-      mainFrameId: vi.fn().mockReturnValue("main-frame"),
-      frameForId: vi.fn((frameId: string) => frames[frameId]),
-    } as unknown as Page;
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: (container: string, config: Record<string, unknown>) => string;
+    };
+    hcaptcha.render("h-captcha", { sitekey: "site-race", callback });
 
-    installHcaptchaCallbackCaptureOnAllFrames(page);
-    handlers["Page.frameAttached"]?.({ frameId: "child-frame" });
+    handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-race" });
 
-    await vi.waitFor(() => {
-      expect(childFrameEvaluate).toHaveBeenCalledTimes(6);
-    });
-    await vi.waitFor(() => {
-      expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("main world not ready"));
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-race::widget-race"]).toEqual({
+      sitekey: "site-race",
+      widgetId: "widget-race",
+      callback,
     });
   });
 
