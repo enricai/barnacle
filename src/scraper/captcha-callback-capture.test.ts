@@ -350,7 +350,9 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
 
     await installHcaptchaCallbackCaptureOnAllFrames(page);
 
-    expect(() => handlers["Target.attachedToTarget"]?.({ sessionId: "unknown-session" })).not.toThrow();
+    expect(() =>
+      handlers["Target.attachedToTarget"]?.({ sessionId: "unknown-session" })
+    ).not.toThrow();
   });
 
   it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {

@@ -202,8 +202,7 @@ describe("scraper/session router", () => {
     const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
       on: ReturnType<typeof vi.fn>;
     };
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Target.attachedToTarget", expect.any(Function));
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
@@ -216,8 +215,7 @@ describe("scraper/session router", () => {
     const frameSession = fakePage.getSessionForFrame.mock.results.at(-1)?.value as {
       on: ReturnType<typeof vi.fn>;
     };
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameAttached", expect.any(Function));
-    expect(frameSession.on).toHaveBeenCalledWith("Page.frameNavigated", expect.any(Function));
+    expect(frameSession.on).toHaveBeenCalledWith("Target.attachedToTarget", expect.any(Function));
   });
 });
 
