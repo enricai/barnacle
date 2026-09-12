@@ -2154,20 +2154,30 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * elsewhere (a 1-8 valued `page` counter colliding with some other
  * capture's unrelated numeric leaf) -- a coincidence a bare value-equality
  * scan can't distinguish from genuine threading in a large capture corpus.
- * URL path segments carry no field name of their own, so they're omitted
- * here (query-string keys and JSON leaf keys are). */
-function requestAndResponseValuesByKey(capture: Capture): Map<string, Set<string>> {
-  const valuesByKey = new Map<string, Set<string>>();
+ * URL path segments carry no field name of their own, so they're kept in a
+ * separate {@link RequestAndResponseValues.pathSegments} bucket matched by
+ * bare value instead -- a REST-style detail fetch threads an id through its
+ * URL PATH (`/items/${itemId}`), not a named query/body field, so dropping
+ * path segments entirely would blind {@link isFieldValueThreadedElsewhere}
+ * to exactly that shape of genuine cross-step threading. */
+interface RequestAndResponseValues {
+  byKey: Map<string, Set<string>>;
+  pathSegments: Set<string>;
+}
+function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValues {
+  const byKey = new Map<string, Set<string>>();
+  const pathSegments = new Set<string>();
   const add = (key: string, value: string): void => {
-    const values = valuesByKey.get(key) ?? new Set<string>();
+    const values = byKey.get(key) ?? new Set<string>();
     values.add(value);
-    valuesByKey.set(key, values);
+    byKey.set(key, values);
   };
   try {
     const url = new URL(capture.url);
+    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
     for (const [key, value] of url.searchParams) add(key, value);
   } catch {
-    // Relative/invalid URLs carry no query-string signal to contribute.
+    // Relative/invalid URLs carry no path/query signal to contribute.
   }
   if (capture.requestPostData) {
     try {
@@ -2182,7 +2192,7 @@ function requestAndResponseValuesByKey(capture: Capture): Map<string, Set<string
   for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
   }
-  return valuesByKey;
+  return { byKey, pathSegments };
 }
 
 /** True when `value` -- one member's own value for `fieldKey`, the sole
@@ -2219,7 +2229,8 @@ function isFieldValueThreadedElsewhere(
   if (stringValue.length === 0) return true;
   return allActions.some(({ capture }) => {
     if (groupCaptures.has(capture)) return false;
-    return requestAndResponseValuesByKey(capture).get(fieldKey)?.has(stringValue) ?? false;
+    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
+    return (byKey.get(fieldKey)?.has(stringValue) ?? false) || pathSegments.has(stringValue);
   });
 }
 
