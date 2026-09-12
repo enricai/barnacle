@@ -53,17 +53,8 @@ vi.mock("@/config", () => ({
   },
 }));
 
-const { fakeConn, fakePage } = vi.hoisted(() => ({
+const { fakeConn } = vi.hoisted(() => ({
   fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
-  fakePage: {
-    getSessionForFrame: vi.fn().mockReturnValue({
-      send: vi.fn().mockResolvedValue(undefined),
-      on: vi.fn(),
-      off: vi.fn(),
-    }),
-    mainFrameId: vi.fn().mockReturnValue("main-frame"),
-    frameForId: vi.fn().mockReturnValue({ evaluate: vi.fn().mockResolvedValue(undefined) }),
-  },
 }));
 
 vi.mock("@browserbasehq/stagehand", () => ({
@@ -75,7 +66,6 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.context = {
       conn: fakeConn,
       addInitScript: vi.fn().mockResolvedValue(undefined),
-      awaitActivePage: vi.fn().mockResolvedValue(fakePage),
     };
   }),
 }));
@@ -206,6 +196,26 @@ describe("scraper/session router", () => {
     const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
     expect(addInitScript).toHaveBeenCalledTimes(1);
     expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+  });
+
+  it("awaits the addInitScript call before createBrowserSession resolves", async () => {
+    configRef.value.scraper.provider = "browserbase";
+    let resolved = false;
+    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.init = vi.fn().mockResolvedValue(undefined);
+      this.close = vi.fn().mockResolvedValue(undefined);
+      this.browserbaseSessionID = "bb-session-id";
+      this.context = {
+        conn: fakeConn,
+        addInitScript: vi.fn().mockImplementation(async () => {
+          await Promise.resolve();
+          resolved = true;
+        }),
+      };
+    } as unknown as (opts: ConstructorParameters<typeof Stagehand>[0]) => Stagehand);
+
+    await createBrowserSession();
+    expect(resolved).toBe(true);
   });
 });
 
