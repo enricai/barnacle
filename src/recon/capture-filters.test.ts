@@ -6,6 +6,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  isZeroVarianceRepeatCapture,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 
@@ -184,6 +185,76 @@ describe("isSamePathFamily", () => {
 
   it("rejects a self-referential path against a plain chain step it shares no segment with", () => {
     expect(isSamePathFamily("/catalog/api/deals/catalog", "/checkout/confirm")).toBe(false);
+  });
+});
+
+describe("isZeroVarianceRepeatCapture", () => {
+  const beaconUrl = "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD";
+
+  it("flags a same-host, fixed-query beacon with a byte-identical body across occurrences", () => {
+    const first = { method: "GET", url: beaconUrl, requestPostData: null };
+    const occurrences = [first, { method: "GET", url: beaconUrl, requestPostData: null }];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
+
+  it("flags a same-host, fixed-query beacon whose body varies per call but whose response carries no business state", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "text/html" },
+      responseBody: "<html></html>",
+    };
+    const occurrences = [
+      first,
+      {
+        method: "GET",
+        url: beaconUrl,
+        requestPostData: "fingerprint=def456",
+        responseHeaders: { "content-type": "text/html" },
+        responseBody: "<html></html>",
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
+
+  it("does not flag a legitimately-polled own endpoint whose response carries real JSON business state", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true, variant: "control" },
+    };
+    const occurrences = [
+      first,
+      {
+        method: "GET",
+        url: beaconUrl,
+        requestPostData: "fingerprint=def456",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { enabled: true, variant: "control" },
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
+  it("does not flag a candidate with no fixed query string", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/health",
+      requestPostData: null,
+    };
+    const occurrences = [
+      first,
+      { method: "GET", url: "https://apply.acme.example/health", requestPostData: null },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
+  it("does not flag a fixed-query capture that never recurs", () => {
+    const first = { method: "GET", url: beaconUrl, requestPostData: null };
+    expect(isZeroVarianceRepeatCapture(first, [first])).toBe(false);
   });
 });
 

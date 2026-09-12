@@ -295,12 +295,45 @@ export function isSamePathFamily(pathA: string, pathB: string): boolean {
 }
 
 /**
+ * True when `capture`'s response carries no business-relevant state: a
+ * non-JSON (or absent) content-type, a null/undefined body, or a JSON body
+ * with no keys. A page-load sensor/analytics beacon (an Akamai-style
+ * session-authenticator pixel, a polled non-JSON status ping) answers every
+ * call with exactly this shape — unlike a real API response, which carries
+ * data a caller could not have already known before firing the request.
+ *
+ * Missing response metadata (unit-test callers that construct a capture
+ * without `responseHeaders`/`responseBody`) reads as "no business-relevant
+ * state" too: this predicate only ever narrows an already-fixed-query,
+ * already-recurring candidate ({@link isZeroVarianceRepeatCapture}), so
+ * defaulting to the noise reading there costs nothing except in the caller
+ * that deliberately supplies a JSON response to prove the opposite.
+ */
+function hasNoBusinessRelevantResponseState(capture: {
+  responseHeaders?: Record<string, string>;
+  responseBody?: unknown;
+}): boolean {
+  const headers = capture.responseHeaders ?? {};
+  const contentType = (
+    Object.entries(headers).find(([key]) => key.toLowerCase() === "content-type")?.[1] ?? ""
+  ).toLowerCase();
+  if (!contentType.includes("json")) return true;
+  const body = capture.responseBody;
+  if (body === null || body === undefined) return true;
+  if (typeof body === "object" && Object.keys(body as Record<string, unknown>).length === 0) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * True when `candidate` carries a non-empty, fixed query string and recurs
- * at least once elsewhere in `allCaptures` with a byte-identical method,
- * full URL (so the same query string), and request body — proof the
- * endpoint carries no per-call state and is page-load chrome (a session/
- * analytics beacon fired with a constant `clientId`/`environment`-style
- * query) rather than a semantic step in the flow.
+ * at least once elsewhere in `allCaptures` at the same method and full URL
+ * (so the same query string) — proof the endpoint's identifying signal is
+ * entirely in its fixed query, not in anything that varies per call — AND
+ * either the request body is also byte-identical across every occurrence,
+ * or the response carries no business-relevant state
+ * ({@link hasNoBusinessRelevantResponseState}).
  *
  * The non-empty-query requirement is deliberate, not an extension/host
  * special-case: it is what separates this from a genuinely no-argument own
@@ -314,9 +347,22 @@ export function isSamePathFamily(pathA: string, pathB: string): boolean {
  * that check's reference pool is every OTHER admitted capture, so N copies
  * of the same fixed-query request "vouch" for each other's path tokens and
  * none of them reads as isolated.
+ *
+ * The response-state fallback exists because a byte-identical-body
+ * requirement alone misses a beacon whose body embeds a fingerprint,
+ * timestamp, or session nonce that differs on every fire even though the
+ * fixed query is the only signal that actually identifies the endpoint —
+ * the body varies, but the response never carries anything the flow could
+ * not already derive from the request itself.
  */
 export function isZeroVarianceRepeatCapture(
-  candidate: { method: string; url: string; requestPostData: string | null },
+  candidate: {
+    method: string;
+    url: string;
+    requestPostData: string | null;
+    responseHeaders?: Record<string, string>;
+    responseBody?: unknown;
+  },
   allCaptures: readonly { method: string; url: string; requestPostData: string | null }[]
 ): boolean {
   let hasFixedQuery: boolean;
@@ -326,13 +372,12 @@ export function isZeroVarianceRepeatCapture(
     return false;
   }
   if (!hasFixedQuery) return false;
-  const matches = allCaptures.filter(
-    (c) =>
-      c.method === candidate.method &&
-      c.url === candidate.url &&
-      c.requestPostData === candidate.requestPostData
+  const sameEndpoint = allCaptures.filter(
+    (c) => c.method === candidate.method && c.url === candidate.url
   );
-  return matches.length >= 2;
+  if (sameEndpoint.length < 2) return false;
+  const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
+  return bodyIdentical || hasNoBusinessRelevantResponseState(candidate);
 }
 
 /**
