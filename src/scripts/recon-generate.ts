@@ -4059,10 +4059,18 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * interpolations. Returns a JS template-literal string fragment (no backticks).
  *
  * Algorithm: walk the producing steps' response bodies in order, harvest each
- * produced value's concrete string, and map it to the produces[].name. Then
- * scan the template for those strings and replace with ${varName}. Length-
- * descending order avoids prefix conflicts (e.g. an 8-char prefix of a
- * 36-char UUID).
+ * produced value's concrete string, and map it to the produces[].name, then
+ * merge in the payload accessors (state wins on collision — e.g. when an
+ * Auth.UserName response value equals the user's submitted email). A single
+ * word-boundary-anchored regex alternation (longest value first, so an 8-char
+ * prefix never shadows the 36-char UUID it's a prefix of) is matched over the
+ * ORIGINAL template text exactly once: `String.prototype.replace` scans the
+ * subject left-to-right without ever re-visiting text a prior match in the
+ * same pass already consumed, so one substitution's freshly-emitted
+ * `${varName}` text can never itself be re-matched by a later, shorter value —
+ * and `\b` anchoring (matching {@link replaceWholeValue} above) keeps an
+ * unrelated literal segment that merely CONTAINS a shorter known value (e.g. a
+ * page-count belonging to a different field) from being spliced into.
  */
 function interpolateStateValues(
   template: string,
@@ -4071,30 +4079,22 @@ function interpolateStateValues(
 ): string {
   const varNameByValue = deriveStateVarByValue(priorSteps);
 
-  let result = template;
-
-  // Pass 1: substitute state values (length-descending to avoid prefix
-  // conflicts). `\$` is a literal dollar sign (NOT an interpolation);
-  // `${varName}` interpolates the binding name at code-generation time so
-  // the resulting string contains a template-literal placeholder like
-  // `${candidateId}`.
-  const sortedState = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
-  for (const [value, varName] of sortedState) {
-    result = result.split(value).join(`\${${varName}}`);
+  const bindingByValue = new Map<string, string>();
+  for (const [value, accessor] of payloadAccessorByValue) {
+    bindingByValue.set(value, `\${${accessor}}`);
   }
+  for (const [value, varName] of varNameByValue) {
+    bindingByValue.set(value, `\${${varName}}`);
+  }
+  if (bindingByValue.size === 0) return template;
 
-  // Pass 2: substitute payload values that survived the state pass. Same
-  // length-descending order. The payload pass only fires on remaining
-  // literal occurrences, so state substitutions win on collisions
-  // (e.g., when an Auth.UserName response value contains the user's email).
-  const sortedPayload = [...payloadAccessorByValue.entries()].sort(
-    (a, b) => b[0].length - a[0].length
+  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(
+    `\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+    "g"
   );
-  for (const [value, accessor] of sortedPayload) {
-    result = result.split(value).join(`\${${accessor}}`);
-  }
 
-  return result;
+  return template.replace(pattern, (match) => bindingByValue.get(match) ?? match);
 }
 
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
