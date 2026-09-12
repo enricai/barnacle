@@ -5355,9 +5355,20 @@ export function emitMultiStepExecuteHttp(
         // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
         // "p10" sibling id), corrupting parts of the request the join field
         // never touched.
+        // `\b` alone still matches a value flanked by `-`/`.` against an
+        // adjacent alphanumeric char — `-`/`.` are non-word chars, so `\b`
+        // reads e.g. the "12" inside a hyphen-joined opaque segment like
+        // "wJbfQL-12-K0X" as a standalone word, splicing an unrelated field's
+        // value into what is semantically one opaque token. The lookaround
+        // guards reject any match immediately adjacent (on either side) to a
+        // `-`/`.` that itself sits against another alphanumeric char, while a
+        // genuinely standalone occurrence (e.g. "/items/12/") still matches.
         const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
           haystack.replace(
-            new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+            new RegExp(
+              `(?<![A-Za-z0-9][-.])\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
+              "g"
+            ),
             replacement
           );
         const parameterize = (text: string, chainCapture: Capture): string => {
@@ -9337,8 +9348,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   ? String(value)
                   : null;
             if (stringValue === null) return acc;
+            // See replaceWholeValue's identical guard: `\b` alone still
+            // matches a value flanked by `-`/`.` against an adjacent
+            // alphanumeric char, splicing into a hyphen-joined opaque
+            // segment that merely contains the value as a digit run.
             return acc.replace(
-              new RegExp(`\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+              new RegExp(
+                `(?<![A-Za-z0-9][-.])\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
+                "g"
+              ),
               `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`
             );
           }, withBase);
