@@ -237,31 +237,45 @@ describe("scraper/session router", () => {
       return Promise.resolve(undefined);
     });
 
-    const sessionPromise = createBrowserSession();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(installResolved).toBe(false);
+    vi.useFakeTimers();
+    try {
+      let sessionResolved = false;
+      const sessionPromise = createBrowserSession();
+      sessionPromise.then(() => {
+        sessionResolved = true;
+      });
+      // Bottleneck's session-create limiter paces the create call through a
+      // real setTimeout; fast-forward past that so the only thing still
+      // pending is the install gate itself.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(installResolved).toBe(false);
+      expect(sessionResolved).toBe(false);
 
-    releaseInstall();
-    const session = await sessionPromise;
+      releaseInstall();
+      await vi.advanceTimersByTimeAsync(0);
+      const session = await sessionPromise;
 
-    expect(installResolved).toBe(true);
-    expect(session.provider).toBe("browserbase");
-    expect(frameSession.send).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
-      source: expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL),
-    });
+      expect(installResolved).toBe(true);
+      expect(sessionResolved).toBe(true);
+      expect(session.provider).toBe("browserbase");
+      expect(frameSession.send).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
+        source: expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL),
+      });
 
-    const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
-    const awaitActivePage = session.stagehand.context.awaitActivePage as ReturnType<typeof vi.fn>;
-    expect(addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
-      awaitActivePage.mock.invocationCallOrder[0] as number
-    );
-    expect(awaitActivePage.mock.invocationCallOrder[0]).toBeLessThan(
-      frameSession.send.mock.invocationCallOrder.find(
-        (_order, index) =>
-          frameSession.send.mock.calls[index]?.[0] === "Page.addScriptToEvaluateOnNewDocument"
-      ) as number
-    );
+      const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
+      const awaitActivePage = session.stagehand.context.awaitActivePage as ReturnType<typeof vi.fn>;
+      expect(addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+        awaitActivePage.mock.invocationCallOrder[0] as number
+      );
+      expect(awaitActivePage.mock.invocationCallOrder[0]).toBeLessThan(
+        frameSession.send.mock.invocationCallOrder.find(
+          (_order, index) =>
+            frameSession.send.mock.calls[index]?.[0] === "Page.addScriptToEvaluateOnNewDocument"
+        ) as number
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
