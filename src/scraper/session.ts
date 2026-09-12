@@ -44,6 +44,6 @@ export async function createBrowserSession(opts?: BrowserSessionOptions): Promis
   );
   await session.stagehand.context.addInitScript(buildHcaptchaCallbackCaptureScript());
   const page = await session.stagehand.context.awaitActivePage();
-  installHcaptchaCallbackCaptureOnAllFrames(page);
+  await installHcaptchaCallbackCaptureOnAllFrames(page);
   return session;
 }

@@ -26,7 +26,7 @@ function sliceFrom(source: string, startMarker: string): string {
 
 const installOnAllFramesBlock = sliceFrom(
   captureSource,
-  "export function installHcaptchaCallbackCaptureOnAllFrames("
+  "export async function installHcaptchaCallbackCaptureOnAllFrames("
 );
 
 // Per-site/plugin branch shapes CLAUDE.md forbids in site-agnostic core code.
