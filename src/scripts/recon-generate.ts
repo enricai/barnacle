@@ -2109,6 +2109,64 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
   return fields;
 }
 
+/** Every literal request-path segment, request-query/body leaf, and
+ * response-body leaf a capture carries, flattened to strings -- the universe
+ * of values a LATER capture's own request could plausibly have copied if it
+ * threaded this capture's data forward. Used by {@link
+ * isFieldValueThreadedElsewhere} to tell a value some downstream step
+ * actually reads (a resource id echoed back and later passed to a detail
+ * fetch) apart from one nothing ever consumes (a monotonically-incrementing
+ * request nonce). */
+function requestAndResponseValues(capture: Capture): Set<string> {
+  const values = new Set<string>();
+  try {
+    const url = new URL(capture.url);
+    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
+    for (const [, value] of url.searchParams) values.add(value);
+  } catch {
+    // Relative/invalid URLs carry no path/query values to contribute.
+  }
+  if (capture.requestPostData) {
+    try {
+      const parsed: unknown = JSON.parse(capture.requestPostData);
+      for (const { value } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null) values.add(String(value));
+      }
+    } catch {
+      // A non-JSON body carries no leaf values to contribute.
+    }
+  }
+  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null) values.add(String(value));
+  }
+  return values;
+}
+
+/** True when `value` -- one member's own value for the sole varying request
+ * field of a same-endpoint group -- shows up anywhere else in the flow (any
+ * OTHER capture's path/query/body/response), proving some later step reads
+ * or threads it. False means the value is scaffolding the client generated
+ * and nothing downstream ever consumes: the structural signal {@link
+ * isRedundantSameEndpointGroup} uses to widen collapsing past the literal
+ * {@link CACHE_BUSTER_QUERY_KEYS}/{@link PAGINATION_FIELD_NAME_PATTERN}
+ * allowlists without hand-enumerating more key-name shapes. A non-primitive
+ * or empty value can't be structurally proven dead, so it's treated as
+ * load-bearing by default. */
+function isFieldValueThreadedElsewhere(
+  value: unknown,
+  ownCapture: Capture,
+  allActions: readonly ActionCapture[]
+): boolean {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    return true;
+  }
+  const stringValue = String(value);
+  if (stringValue.length === 0) return true;
+  return allActions.some(
+    ({ capture }) => capture !== ownCapture && requestAndResponseValues(capture).has(stringValue)
+  );
+}
+
 /**
  * A same-endpoint capture group qualifies for collapsing when every capture
  * resolves to the same {@link responseShapeKey}, OR (when the response has no
@@ -2120,16 +2178,27 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * re-poll -- AND its request fields vary
  * in at most one field once known non-semantic noise keys ({@link
  * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
- * remaining field is pagination-shaped -- a paged listing/facet re-query --
- * or vary in no field at all -- a polled toggles/feature-flag endpoint
- * re-fired with an identical request. A group
- * whose members vary in a non-pagination field (e.g. a per-item drill's
- * item-id body field) is left untouched: that variance carries the distinct
- * per-item state the existing fold-chain mechanism (`target.chain` in
- * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
- * collapsing it here would erase the very state that hoisting depends on.
+ * remaining field is EITHER pagination-shaped -- a paged listing/facet
+ * re-query -- OR (when `allActions`, the full capture sequence, is supplied)
+ * proven via {@link isFieldValueThreadedElsewhere} to never be read by any
+ * other step in the flow -- a cache-buster/nonce/request-id shape the literal
+ * allowlists don't happen to name -- or vary in no field at all -- a polled
+ * toggles/feature-flag endpoint re-fired with an identical request. Without
+ * `allActions` (unit tests exercising this predicate in isolation, with no
+ * flow context to check against) a lone non-pagination varying field can't be
+ * structurally proven dead, so the group is left untouched -- the same
+ * conservative outcome as before this widening. A group whose sole varying
+ * field IS proven read elsewhere (e.g. a per-item drill's item-id, later
+ * echoed into that item's detail request) is likewise left untouched: that
+ * variance carries the distinct per-item state the existing fold-chain
+ * mechanism (`target.chain` in `emitMultiStepExecuteHttp`) already hoists
+ * correctly once resolved, and collapsing it here would erase the very state
+ * that hoisting depends on.
  */
-export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
+export function isRedundantSameEndpointGroup(
+  group: ActionCapture[],
+  allActions?: readonly ActionCapture[]
+): boolean {
   const shapeKey = responseShapeKey(group[0]!.capture);
   if (shapeKey !== null) {
     if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
@@ -2159,7 +2228,13 @@ export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
   });
 
   if (varyingKeys.length === 0) return true;
-  return varyingKeys.length === 1 && PAGINATION_FIELD_NAME_PATTERN.test(varyingKeys[0]!);
+  if (varyingKeys.length !== 1) return false;
+  const soleKey = varyingKeys[0]!;
+  if (PAGINATION_FIELD_NAME_PATTERN.test(soleKey)) return true;
+  if (!allActions) return false;
+  return fieldSets.every(
+    (fields, i) => !isFieldValueThreadedElsewhere(fields[soleKey], group[i]!.capture, allActions)
+  );
 }
 
 /**
@@ -2189,7 +2264,7 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
-    if (!isRedundantSameEndpointGroup(group)) continue;
+    if (!isRedundantSameEndpointGroup(group, actions)) continue;
     for (const position of positions.slice(1)) drop.add(position);
   }
 
