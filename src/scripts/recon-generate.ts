@@ -1867,10 +1867,10 @@ export function extractActionSequence(
   // hyphenated path.
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
-      ? hostGated.filter(({ capture }, i) => {
+      ? hostGated.filter(({ capture }) => {
           const path = safeUrlPathname(capture.url);
           const otherPaths = hostGated
-            .filter((_, j) => j !== i)
+            .filter((h) => safeUrlPathname(h.capture.url) !== path)
             .map((h) => safeUrlPathname(h.capture.url));
           return !isStructurallyIsolatedCapture(path, otherPaths);
         })

@@ -792,6 +792,39 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
 
     expect(kept).toEqual([productAvail.url, promoBanner.url]);
   });
+
+  it("excludes every repeat of a same-URL noise endpoint instead of letting them mutually vouch for each other (#bugfix-003)", () => {
+    // A page-load beacon fired on every navigation: same compound-token
+    // path, several times, sharing no token with anything else in the pool.
+    // Before the fix, otherPaths excluded only the candidate's own array
+    // index, so each repeat's siblings (identical path, hence identical
+    // tokens) satisfied its own token-overlap check and none was ever
+    // recognized as isolated/noise.
+    const beacon1 = capture(
+      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=1",
+      "{}"
+    );
+    const beacon2 = capture(
+      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=2",
+      "{}"
+    );
+    const beacon3 = capture(
+      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=3",
+      "{}"
+    );
+    const chainStepOne = capture("https://api.tenant.example.com/applicant", "{}");
+    const chainStepTwo = capture("https://api.tenant.example.com/sections/name", "{}");
+
+    const kept = extractActionSequence(
+      [beacon1, beacon2, beacon3, chainStepOne, chainStepTwo],
+      null,
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([chainStepOne.url, chainStepTwo.url]);
+  });
 });
 
 describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {
