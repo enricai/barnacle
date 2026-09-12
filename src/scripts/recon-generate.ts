@@ -4206,6 +4206,37 @@ function interpolateStateValues(
   return template.replace(pattern, (match) => bindingByValue.get(match) ?? match);
 }
 
+/**
+ * Rewrites every occurrence of a set of literal values to their accessor
+ * expressions in ONE pass over `text`, matching {@link interpolateStateValues}'s
+ * guarded shape: a single regex alternation, longest value first (so a shorter
+ * value can never win a match at a position a longer one also matches), anchored
+ * so a value flanked by alphanumerics — or by a `-`/`.` itself flanked by an
+ * alphanumeric — never matches inside an unrelated opaque token (e.g. splicing a
+ * "12" into a hyphen-joined "wJbfQL-12-K0X" segment). A per-value sequential
+ * `.replace()` loop would re-scan the PROGRESSIVELY MUTATED result on every
+ * iteration, letting one field's inserted `${...}` replacement text land inside
+ * a position a later field's regex still matches — producing a nested `${...
+ * ${...}}` placeholder. Doing it once over the original text closes that class
+ * of bug for every caller, not just this one.
+ */
+function substituteThreadedValues(
+  text: string,
+  bindings: ReadonlyArray<{ value: string; replacement: string }>
+): string {
+  if (bindings.length === 0) return text;
+  const bindingByValue = new Map<string, string>();
+  for (const { value, replacement } of bindings) {
+    if (!bindingByValue.has(value)) bindingByValue.set(value, replacement);
+  }
+  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
+    "g"
+  );
+  return text.replace(pattern, (match) => bindingByValue.get(match) ?? match);
+}
+
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
  * accessor, the bare field name to declare in the emitted schema, and the index
  * of the step that produces it (the only step whose body is bound whole — later
@@ -5459,27 +5490,11 @@ export function emitMultiStepExecuteHttp(
         const scopedAccessor = (varName: string, field: string): string =>
           `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
-        // Word-boundary anchored: a plain `.split(value).join(...)` would also
-        // rewrite unrelated substrings that happen to contain the join value
-        // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
-        // "p10" sibling id), corrupting parts of the request the join field
-        // never touched.
-        // `\b` alone still matches a value flanked by `-`/`.` against an
-        // adjacent alphanumeric char — `-`/`.` are non-word chars, so `\b`
-        // reads e.g. the "12" inside a hyphen-joined opaque segment like
-        // "wJbfQL-12-K0X" as a standalone word, splicing an unrelated field's
-        // value into what is semantically one opaque token. The lookaround
-        // guards reject any match immediately adjacent (on either side) to a
-        // `-`/`.` that itself sits against another alphanumeric char, while a
-        // genuinely standalone occurrence (e.g. "/items/12/") still matches.
-        const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
-          haystack.replace(
-            new RegExp(
-              `(?<![A-Za-z0-9][-.])\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
-              "g"
-            ),
-            replacement
-          );
+        // Whole-value substitution runs via substituteThreadedValues: a single
+        // guarded regex-alternation pass over the original text, not a
+        // per-field sequential `.replace()` loop — see that function's doc for
+        // why the sequential shape corrupts opaque path segments and can nest
+        // `${...}` placeholders.
         const parameterize = (text: string, chainCapture: Capture): string => {
           // A join field can reach the render either as the raw captured
           // literal (URL query params) or as an already-generic
@@ -5529,7 +5544,14 @@ export function emitMultiStepExecuteHttp(
                     : tf,
               }))
             : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
-          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
+          // Accessor swap first: rewrites an already-templated `${payload.X}`
+          // reference (from applyPayloadKeyValueSubstitutions) to this field's
+          // real accessor. Each target (`${payload.X}`) is a unique, fully
+          // delimited string that the swap's own output (`${accessorField...}`,
+          // never re-shaped into `${payload.X}` form) can't re-match, so a
+          // sequential pass here carries none of the reentrancy risk the
+          // literal-value pass below has.
+          const swapped = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
             const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
             // accessor after the DRILL REQUEST's own top-level JSON key
@@ -5542,26 +5564,38 @@ export function emitMultiStepExecuteHttp(
             // reference behind once the literal value itself has already
             // been replaced by the payload-key-value pass.
             const lastSegment = valueField.field.split(".").pop()!;
-            const withAccessorSwapped = acc
+            return acc
               .split(`\${payload.${valueField.field}}`)
               .join(replacement)
               .split(`\${payload.${lastSegment}}`)
               .join(replacement);
-            const scopeObj =
-              valueField.varName === itemVar
-                ? firstItem
-                : ancestorObjByVar.get(valueField.varName)!;
-            const value = readValueAtPath(scopeObj, valueField.field.split("."));
-            const stringValue =
-              typeof value === "string" && value.length > 0
-                ? value
-                : typeof value === "number" || typeof value === "boolean"
-                  ? String(value)
-                  : null;
-            return stringValue !== null
-              ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
-              : withAccessorSwapped;
           }, text);
+          // Literal-value substitution: ONE guarded regex-alternation pass over
+          // `swapped` for every threaded field's value, longest first — see
+          // substituteThreadedValues's doc for why a per-field sequential pass
+          // here (the bug this replaces) can nest `${...}` placeholders.
+          const valueBindings = threadedFieldPairs
+            .map(({ valueField, accessorField }) => {
+              const scopeObj =
+                valueField.varName === itemVar
+                  ? firstItem
+                  : ancestorObjByVar.get(valueField.varName)!;
+              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const stringValue =
+                typeof value === "string" && value.length > 0
+                  ? value
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? String(value)
+                    : null;
+              return stringValue === null
+                ? null
+                : {
+                    value: stringValue,
+                    replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                  };
+            })
+            .filter((b): b is { value: string; replacement: string } => b !== null);
+          const result = substituteThreadedValues(swapped, valueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
@@ -9557,31 +9591,33 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                     : tf,
               }))
             : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
-          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
-            const scopeObj =
-              valueField.varName === itemVar
-                ? firstItem
-                : ancestorObjByVar.get(valueField.varName)!;
-            const value = readValueAtPath(scopeObj, valueField.field.split("."));
-            const stringValue =
-              typeof value === "string" && value.length > 0
-                ? value
-                : typeof value === "number" || typeof value === "boolean"
-                  ? String(value)
-                  : null;
-            if (stringValue === null) return acc;
-            // See replaceWholeValue's identical guard: `\b` alone still
-            // matches a value flanked by `-`/`.` against an adjacent
-            // alphanumeric char, splicing into a hyphen-joined opaque
-            // segment that merely contains the value as a digit run.
-            return acc.replace(
-              new RegExp(
-                `(?<![A-Za-z0-9][-.])\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
-                "g"
-              ),
-              `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`
-            );
-          }, withBase);
+          // ONE guarded regex-alternation pass over `withBase` for every
+          // threaded field's value, longest first — see substituteThreadedValues's
+          // doc for why a per-field sequential `.replace()` loop here (the bug
+          // this replaces) can splice an unrelated value into an opaque URL
+          // segment or nest a `${...}` placeholder.
+          const valueBindings = threadedFieldPairs
+            .map(({ valueField, accessorField }) => {
+              const scopeObj =
+                valueField.varName === itemVar
+                  ? firstItem
+                  : ancestorObjByVar.get(valueField.varName)!;
+              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const stringValue =
+                typeof value === "string" && value.length > 0
+                  ? value
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? String(value)
+                    : null;
+              return stringValue === null
+                ? null
+                : {
+                    value: stringValue,
+                    replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                  };
+            })
+            .filter((b): b is { value: string; replacement: string } => b !== null);
+          const result = substituteThreadedValues(withBase, valueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
