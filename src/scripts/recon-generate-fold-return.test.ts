@@ -539,6 +539,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -574,6 +575,7 @@ describe("resolveFoldPlan", () => {
     // heuristic alone resolves the real array — no foldReturn needed.
     expect(resolveFoldPlan(steps)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -650,6 +652,7 @@ describe("resolveFoldPlan", () => {
     expect(merged).toHaveLength(2);
     expect(merged[0]).toEqual(heuristicOnly[0]);
     expect(merged[1]).toEqual({
+      absorbedIndices: [],
       primaryStepIndex: 2,
       primaryArrayPath: ["vendors"],
       targets: [
@@ -945,6 +948,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, COMPOSITE_SPEC)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -971,6 +975,7 @@ describe("resolveFoldPlan", () => {
     // the real array on both sides — no foldReturn needed.
     expect(resolveFoldPlan(steps)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1033,6 +1038,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, spec)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1081,6 +1087,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, spec)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1116,6 +1123,7 @@ describe("resolveFoldPlan", () => {
     // to resolve this.
     expect(resolveFoldPlan(steps, spec)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1141,6 +1149,7 @@ describe("resolveFoldPlan", () => {
     // primaryMatchedItemIndex to 1, not guess 0.
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1207,6 +1216,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, SINGLE_SHOT_SPEC)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [
@@ -1271,6 +1281,7 @@ describe("resolveFoldPlan", () => {
 
     expect(resolveFoldPlan(steps, spec)).toEqual([
       {
+        absorbedIndices: [],
         primaryStepIndex: 0,
         primaryArrayPath: ["results"],
         targets: [

@@ -56,7 +56,10 @@ describe("resolveFoldPlan — descendant spec array survives a no-drill-overlap 
     // Without a declaration, the structural heuristic resolves the outer
     // `groups` array on its own decoy `active` field, with one drill
     // target's chain extending into the later `confirm` step — proving
-    // both the collision and the shallow decoy-keyed plan are real.
+    // both the collision and the shallow decoy-keyed plan are real. r1 and
+    // r2 hit the SAME `/directory/detail/` endpoint (a genuinely
+    // per-item-varying repeated endpoint), so r2 is absorbed into r1's
+    // single representative target rather than becoming its own target.
     const heuristicOnly = resolveFoldPlan(steps);
     expect(heuristicOnly).toHaveLength(1);
     expect(heuristicOnly[0]?.primaryArrayPath).toEqual(["groups"]);
@@ -65,7 +68,8 @@ describe("resolveFoldPlan — descendant spec array survives a no-drill-overlap 
     );
     const entry1Target = heuristicOnly[0]?.targets.find((target) => target.drillStepIndex === 1);
     expect(entry1Target?.chain).toContain(3);
-    expect(heuristicOnly[0]?.targets.map((target) => target.drillStepIndex).sort()).toEqual([1, 2]);
+    expect(heuristicOnly[0]?.targets.map((target) => target.drillStepIndex).sort()).toEqual([1]);
+    expect(heuristicOnly[0]?.absorbedIndices).toEqual([2]);
 
     const spec: FoldReturnSpec = {
       endpointPattern: "/directory/confirm/",

@@ -306,22 +306,22 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).toContain("const r1 = (await httpClient(");
   });
 
-  it("resolves both drill steps by join key rather than call order, as two independent fold targets sharing one loop", () => {
+  it("resolves both drill steps by join key rather than call order, collapsing the repeated per-item endpoint into one loop call", () => {
     // The primary page's items are [i-b, i-a] (index 0 is i-b); i-a's
-    // drill-down (r2) fires BEFORE i-b's (r3). Both r2 and r3 independently
-    // thread a primary item's itemId, so detectDrillDownFoldPlan now
-    // resolves TWO targets — one per drill-down — both emitted inside the
-    // SAME per-item loop over the primary array, so a single item ends up
-    // with fields folded in from both drill-downs. Every loop iteration
-    // re-derives the join value from the shared loop item rather than the
-    // single sampled item each target was detected from.
+    // drill-down (r2) fires BEFORE i-b's (r3). Both r2 and r3 hit the SAME
+    // item-detail endpoint, each threading a DIFFERENT primary item's own
+    // itemId — the genuinely per-item-varying repeated-endpoint case — so
+    // detectDrillDownFoldPlan now collapses them into ONE representative
+    // target (r3's raw capture is absorbed) emitted once inside the shared
+    // per-item loop, re-deriving the join value from the shared loop item
+    // rather than emitting a second hardcoded call for r3.
     const body = emit(buildMulticallDependentDrillDownActionSteps());
 
     expect(body).toContain("for (const item of foldItems) {");
     expect(body).toContain(
       `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
-    expect(body).toContain(
+    expect(body).not.toContain(
       `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
     expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
