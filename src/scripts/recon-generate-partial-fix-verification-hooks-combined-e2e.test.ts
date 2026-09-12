@@ -88,9 +88,13 @@ function combinedFixtureCaptures(): Capture[] {
   // with base64-like path segments and near-identical numeric substrings
   // across calls) that must never get a payload field name spliced into
   // its path, whether it's excluded as noise or emitted as a literal.
+  // The URL is not byte-identical across fires — it carries one incidental
+  // varying `nonce` query key on top of the fixed clientId/environment
+  // pair, matching bugfix-002's per-key query comparison (not byte-identical
+  // URL) grouping.
   const beacon = Array.from({ length: BEACON_FIRE_COUNT }, (_, i) =>
     buildCapture({
-      url: BEACON_URL,
+      url: `${BEACON_URL}&nonce=${(1000000 + i).toString(16)}`,
       requestPostData: null,
       method: "GET",
       responseBody: {},
@@ -114,7 +118,37 @@ function combinedFixtureCaptures(): Capture[] {
     timestamp: "2024-01-01T00:04:01Z",
   });
 
-  return [...toggles, ...listing, ...drills, ...beacon, noiseVariantOne, noiseVariantTwo];
+  // Coincidence-proofing at realistic scale: an unrelated own-endpoint
+  // family, each capture carrying a large field vocabulary (70 filler
+  // values, none matching anything) plus exactly one value that
+  // independently, coincidentally substring-matches a different slice of
+  // the beacon's opaque path segment (`K0XSPLICEME00Rd6QI`). A naive
+  // coincidence-based check that scores a match by "does this value appear
+  // as a substring anywhere" would false-positive on all four and thread
+  // every one of them into the beacon call; bugfix-001's fix must reject
+  // all four on the same opaque, non-semantic path segment.
+  const COLLIDING_SUBSTRINGS = ["K0XSPLI", "SPLICEME", "ICEME00R", "ME00Rd6QI"];
+  const collisionNoise = COLLIDING_SUBSTRINGS.map((value, i) =>
+    buildCapture({
+      url: `https://${OWN_BACKEND_HOST}/account-preferences/summary`,
+      requestPostData: JSON.stringify({ view: "summary" }),
+      responseBody: {
+        coincidentalMatch: value,
+        ...extraResponseFields(`accountPref${i}`),
+      },
+      timestamp: `2024-01-01T00:05:${String(i).padStart(2, "0")}Z`,
+    })
+  );
+
+  return [
+    ...toggles,
+    ...listing,
+    ...drills,
+    ...beacon,
+    noiseVariantOne,
+    noiseVariantTwo,
+    ...collisionNoise,
+  ];
 }
 
 function writeRunDir(root: string, captures: Capture[]): void {
