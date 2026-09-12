@@ -143,7 +143,12 @@ export async function installHcaptchaCallbackCaptureOnAllFrames(page: Page): Pro
 
   session.on<TargetAttachedToTargetParams>("Target.attachedToTarget", (params) => {
     const childSession = page.getSessionById(params.sessionId);
-    if (!childSession) return;
+    if (!childSession) {
+      logger.warn(
+        `hcaptcha callback capture: no session found for attached target ${params.sessionId}`
+      );
+      return;
+    }
     installInto(childSession)
       .then(() => childSession.send("Runtime.runIfWaitingForDebugger"))
       .catch((err: unknown) => {
