@@ -1,7 +1,3 @@
-import type { Page } from "@browserbasehq/stagehand";
-
-import { getLogger } from "@/lib/logging";
-
 /**
  * Site-agnostic capture of hCaptcha's programmatic render config. When a
  * site calls `hcaptcha.render(container, { sitekey, callback })` rather than
@@ -13,8 +9,6 @@ import { getLogger } from "@/lib/logging";
  * registry a flow hook can query later, regardless of which plugin or site
  * triggered the render.
  */
-
-const logger = getLogger({ name: "scraper/captcha-callback-capture" });
 
 /** Page-global property name the capture script stores its registry under. */
 export const HCAPTCHA_CALLBACK_REGISTRY_GLOBAL = "__barnacleHcaptchaCallbacks";
@@ -97,84 +91,4 @@ export function buildHcaptchaCallbackCaptureScript(): string {
       // property is already non-configurable on some builds; nothing to wrap
     }
   })();`;
-}
-
-/** `Target.attachedToTarget` event shape this module reads. */
-interface TargetAttachedToTargetParams {
-  sessionId: string;
-}
-
-/**
- * Registers the capture script via CDP so it is guaranteed to run before any
- * of a frame's own scripts, in every frame the page ever owns — deterministic
- * install rather than a race against that frame's own render() call.
- *
- * `Page.addScriptToEvaluateOnNewDocument` is a Page-domain (not frame-scoped)
- * command: per the CDP contract it installs before any script in ANY frame
- * of the target it's sent to — including same-origin child iframes that
- * share the main frame's target — and needs no execution context to already
- * exist, unlike `Runtime.evaluate`. That covers same-target frames.
- *
- * Cross-origin child frames get their own CDP target, so they need their own
- * registration: `Target.setAutoAttach({ autoAttach: true,
- * waitForDebuggerOnStart: true, flatten: true })` pauses each newly attached
- * target at the debugger statement before any of its scripts run; on
- * `Target.attachedToTarget` this re-sends `Page.addScriptToEvaluateOnNewDocument`
- * into that target's own session and only then resumes it via
- * `Runtime.runIfWaitingForDebugger` — so the script is installed before the
- * paused target is ever allowed to execute anything.
- *
- * Frame-agnostic: driven entirely by CDP target/frame lifecycle events,
- * regardless of which site or plugin owns any given frame. Recurses onto
- * every attached target's own session so a cross-origin frame nested inside
- * another cross-origin frame (a grandchild target) is armed too — auto-attach
- * is per-session, so a target attached under a child session never inherits
- * the main session's `Target.setAutoAttach` call.
- */
-export async function installHcaptchaCallbackCaptureOnAllFrames(page: Page): Promise<void> {
-  const script = buildHcaptchaCallbackCaptureScript();
-
-  const installInto = (target: {
-    send<R = unknown>(method: string, params?: object): Promise<R>;
-  }): Promise<void> =>
-    target
-      .send("Page.addScriptToEvaluateOnNewDocument", { source: script })
-      .then(() => undefined)
-      .catch((err: unknown) => {
-        logger.warn(`hcaptcha callback capture: script registration failed: ${String(err)}`);
-      });
-
-  const armSession = (target: {
-    send<R = unknown>(method: string, params?: object): Promise<R>;
-    on<P>(event: string, handler: (params: P) => void): void;
-  }): Promise<void> => {
-    target.on<TargetAttachedToTargetParams>("Target.attachedToTarget", (params) => {
-      const childSession = page.getSessionById(params.sessionId);
-      if (!childSession) {
-        logger.warn(
-          `hcaptcha callback capture: no session found for attached target ${params.sessionId}`
-        );
-        return;
-      }
-      Promise.all([installInto(childSession), armSession(childSession)])
-        .then(() => childSession.send("Runtime.runIfWaitingForDebugger"))
-        .catch((err: unknown) => {
-          logger.warn(`hcaptcha callback capture: child target resume failed: ${String(err)}`);
-        });
-    });
-
-    return target
-      .send("Target.setAutoAttach", {
-        autoAttach: true,
-        waitForDebuggerOnStart: true,
-        flatten: true,
-      })
-      .then(() => undefined)
-      .catch((err: unknown) => {
-        logger.warn(`hcaptcha callback capture: Target.setAutoAttach failed: ${String(err)}`);
-      });
-  };
-
-  const session = page.getSessionForFrame(page.mainFrameId());
-  await Promise.all([installInto(session), armSession(session)]);
 }
