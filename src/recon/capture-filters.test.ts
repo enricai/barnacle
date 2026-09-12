@@ -277,6 +277,23 @@ describe("isZeroVarianceRepeatCapture", () => {
     const first = { method: "GET", url: beaconUrl, requestPostData: null };
     expect(isZeroVarianceRepeatCapture(first, [first])).toBe(false);
   });
+
+  it("flags a same-host beacon whose fixed clientId/environment recur alongside one incidental varying query key", () => {
+    const first = {
+      method: "GET",
+      url: `${beaconUrl}&nonce=aaa111`,
+      requestPostData: null,
+    };
+    const occurrences = [
+      first,
+      {
+        method: "GET",
+        url: `${beaconUrl}&nonce=bbb222`,
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {

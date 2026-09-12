@@ -379,25 +379,56 @@ function hasNoBusinessRelevantResponseState(capture: {
 }
 
 /**
- * True when `candidate` carries a non-empty, fixed query string and recurs
- * at least once elsewhere in `allCaptures` at the same method and full URL
- * (so the same query string) — proof the endpoint's identifying signal is
- * entirely in its fixed query, not in anything that varies per call — AND
- * either the request body is also byte-identical across every occurrence,
- * or the response carries no business-relevant state
- * ({@link hasNoBusinessRelevantResponseState}).
+ * Identity of the endpoint a URL addresses, ignoring its query string, so
+ * recurrences of the same endpoint with a differently-ordered or
+ * incidentally-varying query string still group as "the same endpoint"
+ * instead of requiring the whole URL to be byte-identical. Mirrors
+ * `recon-generate.ts`'s own `endpointKey` (origin + pathname) — the same
+ * definition of "same endpoint" this codebase already uses for collapse and
+ * variance reasoning elsewhere.
+ */
+function endpointOrigin(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `candidate` carries at least one query key whose value stays
+ * identical across every occurrence of the same endpoint in `allCaptures`,
+ * and recurs at least once elsewhere at the same method and endpoint
+ * (origin + pathname) — proof the endpoint's identifying signal is a fixed
+ * query key, not the full query string. Any OTHER key that differs between
+ * occurrences (a cache-buster, a session nonce) is incidental and does not
+ * prevent the match, AND either the request body is also byte-identical
+ * across every occurrence, or the response carries no business-relevant
+ * state ({@link hasNoBusinessRelevantResponseState}).
  *
- * The non-empty-query requirement is deliberate, not an extension/host
- * special-case: it is what separates this from a genuinely no-argument own
- * endpoint that a flow legitimately polls with an identical body every time
- * (a feature-toggle feed, an availability heartbeat) — those endpoints carry
- * real business meaning and folding their repeats into a single call is the
- * collapse mechanism's job, not this predicate's. A marketing/analytics
- * beacon's own fixed identifying query (`clientId`, `environment`, `siteId`)
- * is the tell a plain body-repetition check can't see on its own, and is
- * exactly the shape {@link isStructurallyIsolatedCapture} can be fooled by —
- * that check's reference pool is every OTHER admitted capture, so N copies
- * of the same fixed-query request "vouch" for each other's path tokens and
+ * Grouping by the full URL string (byte-identical query) is too strict: a
+ * real beacon can carry one incidental varying query key (a cache-buster or
+ * session nonce that is never literally equal across calls) alongside its
+ * genuinely fixed identifying keys (`clientId`, `environment`, `siteId`),
+ * and requiring the entire string to match lets it escape exclusion
+ * entirely. Per-key comparison against the candidate's own keys — rather
+ * than requiring the whole set of keys or values to agree — is what
+ * recovers the beacon: the fixed keys still prove the endpoint's identity,
+ * the varying key is simply ignored because it never advances past
+ * "matches on at least one key."
+ *
+ * The requirement that at least one key be fixed is deliberate, not an
+ * extension/host special-case: it is what separates this from a genuinely
+ * no-argument own endpoint that a flow legitimately polls with an identical
+ * body every time (a feature-toggle feed, an availability heartbeat) —
+ * those endpoints carry real business meaning and folding their repeats
+ * into a single call is the collapse mechanism's job, not this predicate's.
+ * A marketing/analytics beacon's own fixed identifying query is the tell a
+ * plain body-repetition check can't see on its own, and is exactly the
+ * shape {@link isStructurallyIsolatedCapture} can be fooled by — that
+ * check's reference pool is every OTHER admitted capture, so N copies of
+ * the same fixed-query request "vouch" for each other's path tokens and
  * none of them reads as isolated.
  *
  * The response-state fallback exists because a byte-identical-body
@@ -417,17 +448,33 @@ export function isZeroVarianceRepeatCapture(
   },
   allCaptures: readonly { method: string; url: string; requestPostData: string | null }[]
 ): boolean {
-  let hasFixedQuery: boolean;
+  let candidateUrl: URL;
   try {
-    hasFixedQuery = new URL(candidate.url).search.length > 1;
+    candidateUrl = new URL(candidate.url);
   } catch {
     return false;
   }
-  if (!hasFixedQuery) return false;
+  const candidateEndpoint = endpointOrigin(candidate.url);
+  if (candidateEndpoint === null) return false;
+  const candidateKeys = [...candidateUrl.searchParams.keys()];
+  if (candidateKeys.length === 0) return false;
   const sameEndpoint = allCaptures.filter(
-    (c) => c.method === candidate.method && c.url === candidate.url
+    (c) => c.method === candidate.method && endpointOrigin(c.url) === candidateEndpoint
   );
   if (sameEndpoint.length < 2) return false;
+  const sameEndpointUrls = sameEndpoint
+    .map((c) => {
+      try {
+        return new URL(c.url);
+      } catch {
+        return null;
+      }
+    })
+    .filter((u): u is URL => u !== null);
+  const hasFixedKey = candidateKeys.some((key) =>
+    sameEndpointUrls.every((u) => u.searchParams.get(key) === candidateUrl.searchParams.get(key))
+  );
+  if (!hasFixedKey) return false;
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
   return bodyIdentical || hasNoBusinessRelevantResponseState(candidate);
 }
