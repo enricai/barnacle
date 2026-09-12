@@ -102,6 +102,22 @@ across four realistic desktop viewports (`1280×720`, `1366×768`, `1440×900`,
 `1920×1080`) makes session fingerprints harder to cluster by browser
 detection systems.
 
+### Why a per-target CDP init-script install, not context.addInitScript
+
+Playwright/Stagehand's context-level `addInitScript` re-sends its script into
+sessions the context already knows about, but that's a CDP round trip — and a
+newly-attached child frame can start running its own inline scripts before
+that round trip lands. A third-party widget library that runs its own
+onload-driven initialization the instant its script tag parses, in a
+cross-origin iframe, can beat a context-level init script to the punch and
+leave a monkeypatch installed a beat too late to matter.
+`src/scraper/cdp-frame-init-script.ts` closes the race at the protocol level:
+`Target.setAutoAttach({ autoAttach: true, waitForDebuggerOnStart: true })`
+pauses every newly-attached target before any of its scripts execute,
+`Page.addScriptToEvaluateOnNewDocument` installs into that target's own CDP
+session while it's still paused, and only then does `Runtime.runIfWaitingForDebugger`
+let the frame's scripts run — so the install always precedes the render.
+
 ### Why per-plugin Bottleneck, not global rate limiting
 
 Different target sites have different rate-limit ceilings. A global limiter
@@ -433,6 +449,7 @@ src/
 │   ├── fixtures.ts            # static JSON fixture loader
 │   ├── navigate.ts            # shared awaitActivePage + goto(networkidle) helper
 │   ├── behavioral-signals.ts  # CDP synthetic mouse-move + scroll dispatcher for bot-detection warmup
+│   ├── cdp-frame-init-script.ts # per-target Target.setAutoAttach + Page.addScriptToEvaluateOnNewDocument installer, closes the context.addInitScript child-frame race
 │   ├── session-warmup.ts      # generic pRetry browser-session runner: acquire → callback → close, with caller-supplied exhaustion mapping
 │   ├── session-ip.ts          # resolves a session's outbound IP via a throwaway tab + IP-echo navigation
 │   └── require-response-field.ts # shared helpers for extracting required fields from HTTP response objects (HttpSchemaError on missing/null)
