@@ -30,7 +30,7 @@ const TOGGLES_URL = `https://${OWN_BACKEND_HOST}/toggles/product-avail`;
 const LISTING_URL = `https://${OWN_BACKEND_HOST}/available-products/`;
 const DRILL_URL = `https://${OWN_BACKEND_HOST}/available-sailings/`;
 const PROMOTIONS_URL = `https://${OWN_BACKEND_HOST}/promotions-spa/banner`;
-const BEACON_URL = `https://${OWN_BACKEND_HOST}/authenticator/responder.html?clientId=TPR-EXAMPLE.WEB&environment=PROD`;
+const BEACON_URL = `https://${OWN_BACKEND_HOST}/authenticator/wJbfQL-K0XSPLICEME00Rd6QI/responder.html?clientId=TPR-EXAMPLE.WEB&environment=PROD`;
 
 // The report's own reference multiplicities (8/6/6), not the loose
 // scaled-down 6/8/3 the existing tight-line-count fixture uses.
@@ -51,7 +51,7 @@ function combinedFixtureCaptures(): Capture[] {
     buildCapture({
       url: TOGGLES_URL,
       requestPostData: "[]",
-      responseBody: [{ name: "feature-a", enabled: true, ...extraResponseFields("toggle") }],
+      responseBody: { enabled: true, ...extraResponseFields("toggle") },
       timestamp: `2024-01-01T00:00:${String(i).padStart(2, "0")}Z`,
     })
   );
@@ -71,7 +71,10 @@ function combinedFixtureCaptures(): Capture[] {
   const drills = Array.from({ length: DRILL_ITEM_COUNT }, (_, i) =>
     buildCapture({
       url: DRILL_URL,
-      requestPostData: JSON.stringify({ productId: `p${i + 1}` }),
+      // `displayOrder`'s value coincidentally matches a substring of the
+      // beacon's opaque path below — the report's own "value-coincidence-
+      // threading" trigger condition for the splice defect.
+      requestPostData: JSON.stringify({ productId: `p${i + 1}`, displayOrder: "SPLICEME00" }),
       responseBody: {
         units: [{ unitId: `s${i + 1}`, ...extraResponseFields("drill") }],
         exchangeRate: 1.0,
