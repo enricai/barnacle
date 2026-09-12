@@ -1936,6 +1936,15 @@ export function extractActionSequence(
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
+
+/** A GraphQL mutation capture, identified by its parsed operation query
+ * string starting with `mutation` — its response is a single mutated
+ * object rather than a re-readable list/flag, so it must never be folded
+ * in with genuinely idempotent reads by {@link isRedundantSameEndpointGroup}. */
+function isMutationCapture(capture: Capture): boolean {
+  return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+}
+
 export function extractGraphQLActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
@@ -1952,8 +1961,7 @@ export function extractGraphQLActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const isMutation = (capture: Capture): boolean =>
-    capture.query !== null && /^\s*mutation\b/.test(capture.query);
+  const isMutation = isMutationCapture;
 
   const admitted = captures
     .map((capture, index) => ({ capture, index }))
@@ -2090,9 +2098,13 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
 
 /**
  * A same-endpoint capture group qualifies for collapsing when every capture
- * resolves to the same {@link responseShapeKey} (ruling out a mutation POST,
- * whose response is a single mutated object rather than an array, and any
- * group whose members diverge in response shape) AND its request fields vary
+ * resolves to the same {@link responseShapeKey}, OR (when the response has no
+ * array field anywhere, e.g. a flat poll/flag-style object) every capture is
+ * a non-mutation whose response independently resolves via {@link
+ * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
+ * out a mutation POST, whose flat response is a single mutated object rather
+ * than a re-readable poll result, while still admitting a flat zero-variance
+ * re-poll -- AND its request fields vary
  * in at most one field once known non-semantic noise keys ({@link
  * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
  * remaining field is pagination-shaped -- a paged listing/facet re-query --
@@ -2104,10 +2116,22 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
  * collapsing it here would erase the very state that hoisting depends on.
  */
-function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
+export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
   const shapeKey = responseShapeKey(group[0]!.capture);
-  if (shapeKey === null) return false;
-  if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+  if (shapeKey !== null) {
+    if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+  } else {
+    // A flat (non-array) response never resolves a `responseShapeKey`, but a
+    // zero-variance re-poll of a flag/toggle endpoint still needs a shape to
+    // key on -- fall back to the whole-object candidate every group member
+    // must independently resolve to, and exclude a mutation, whose flat
+    // response is a mutated object rather than a re-readable poll result.
+    const isFlatObject = (capture: Capture): boolean =>
+      !isMutationCapture(capture) &&
+      responseShapeKey(capture) === null &&
+      findObjectArrayFieldOrWholeObject(capture.responseBody) !== null;
+    if (!group.every((a) => isFlatObject(a.capture))) return false;
+  }
 
   const fieldSets = group.map((a) => captureRequestFields(a.capture));
   const allKeys = new Set<string>();
