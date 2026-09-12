@@ -2189,7 +2189,10 @@ function mergePaginatedGroupItems(group: ActionCapture[]): Capture {
   }
   if (mergedItems.length <= arrayField.items.length) return kept;
 
-  return { ...kept, responseBody: withArrayAtPath(kept.responseBody, arrayField.path, mergedItems) };
+  return {
+    ...kept,
+    responseBody: withArrayAtPath(kept.responseBody, arrayField.path, mergedItems),
+  };
 }
 
 function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
