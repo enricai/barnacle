@@ -53,7 +53,7 @@ describe("per-frame hCaptcha callback-capture re-assert stays site-agnostic (cap
     }
   });
 
-  it("only listens for generic Page.frameAttached/Page.frameNavigated CDP events, not a site identifier", () => {
+  it("only listens for generic Target/Page CDP events, not a site identifier", () => {
     expect(installOnAllFramesBlock).not.toMatch(/\bsiteId\b/);
     expect(installOnAllFramesBlock).not.toMatch(/\bplugin\./);
   });
