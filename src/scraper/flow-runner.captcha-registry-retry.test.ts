@@ -199,6 +199,84 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
   });
 });
 
+describe("flow-runner/executeStepWithHealing — captchaGated renderedUnmatched give-up", () => {
+  let capturesDir: string;
+
+  beforeAll(() => {
+    capturesDir = resolveReconRunDir().graphqlDir;
+  });
+
+  beforeEach(() => {
+    solveCaptchaMock.mockReset();
+    (testLogger.info as ReturnType<typeof vi.fn>).mockClear();
+    rmSync(capturesDir, { recursive: true, force: true });
+    mkdirSync(capturesDir, { recursive: true });
+  });
+
+  it("reacts to renderedUnmatched on attempt 1 instead of exhausting CAPTCHA_REGISTRY_RETRY_ATTEMPTS reinstalling a wrap after the render already fired", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // window.hcaptcha is loaded and the widget for the probed sitekey has
+    // already rendered (an iframe exists), but no registry entry names it —
+    // the render fired before the wrap installed, so re-asserting the wrap
+    // and retrying can never recapture it.
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: false, callbackDiscovered: false };
+      }
+      if (src.includes('return "absent"')) return "renderedUnmatched";
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("dispatchEvent")) return undefined;
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+
+    const page = {
+      evaluate,
+      url: () => "https://apply.example.com/application/abc-123",
+      title: vi.fn().mockResolvedValue(""),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi
+        .fn()
+        .mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
+    } as unknown as Page;
+    const stagehand = {} as Stagehand;
+
+    vi.useFakeTimers();
+    const resultPromise = executeStepWithHealing(baseParams(page, stagehand)).catch(
+      (err: unknown) => err
+    );
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    // A pattern is configured (advanceTransitionBodyPattern in baseParams)
+    // and no render-config callback was ever discovered, so the loop's
+    // give-up path throws rather than falling through to the normal
+    // cascade — but it does so on attempt 1, not after burning the full
+    // retry budget re-installing a wrap that already missed the render.
+    expect(result).toBeInstanceOf(Error);
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(1);
+    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("attempt=1/3"));
+    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("attempt=2/3"));
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining(
+        "registryState=renderedUnmatched callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+      )
+    );
+  });
+});
+
 describe("flow-runner/executeStepWithHealing — captchaGated sessionProxy threading", () => {
   let capturesDir: string;
 
