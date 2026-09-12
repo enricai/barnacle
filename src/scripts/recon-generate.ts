@@ -42,6 +42,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  isZeroVarianceRepeatCapture,
   pathStructuralTokens,
   registrableDomain,
   telemetryUrlPatterns,
@@ -1788,6 +1789,13 @@ export function resolveManifestActionSequence(
  * a capture whose host fails {@link isAllowedFixtureHost} is dropped too —
  * `isNoiseUrl` alone lets a third-party telemetry/beacon POST masquerade as
  * a submission step, since it can look identical in shape to a real one.
+ * A capture that recurs elsewhere with a byte-identical method/URL/body is
+ * dropped too ({@link isZeroVarianceRepeatCapture}) — a same-host beacon
+ * whose extension and host both look legitimate (e.g. a `.html` sensor
+ * endpoint) still gives itself away by never varying across calls, which
+ * `isNoiseUrl`'s substring/extension checks can't see and which the
+ * structural-isolation pass below can even be fooled by (N identical copies
+ * of the same path "vouch" for each other's tokens).
  *
  * When the flow declares submit patterns, only POSTs matching them survive —
  * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
@@ -1843,6 +1851,7 @@ export function extractActionSequence(
       if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
@@ -1981,6 +1990,7 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
@@ -2109,6 +2119,64 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
   return fields;
 }
 
+/** Every literal request-path segment, request-query/body leaf, and
+ * response-body leaf a capture carries, flattened to strings -- the universe
+ * of values a LATER capture's own request could plausibly have copied if it
+ * threaded this capture's data forward. Used by {@link
+ * isFieldValueThreadedElsewhere} to tell a value some downstream step
+ * actually reads (a resource id echoed back and later passed to a detail
+ * fetch) apart from one nothing ever consumes (a monotonically-incrementing
+ * request nonce). */
+function requestAndResponseValues(capture: Capture): Set<string> {
+  const values = new Set<string>();
+  try {
+    const url = new URL(capture.url);
+    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
+    for (const [, value] of url.searchParams) values.add(value);
+  } catch {
+    // Relative/invalid URLs carry no path/query values to contribute.
+  }
+  if (capture.requestPostData) {
+    try {
+      const parsed: unknown = JSON.parse(capture.requestPostData);
+      for (const { value } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null) values.add(String(value));
+      }
+    } catch {
+      // A non-JSON body carries no leaf values to contribute.
+    }
+  }
+  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null) values.add(String(value));
+  }
+  return values;
+}
+
+/** True when `value` -- one member's own value for the sole varying request
+ * field of a same-endpoint group -- shows up anywhere else in the flow (any
+ * OTHER capture's path/query/body/response), proving some later step reads
+ * or threads it. False means the value is scaffolding the client generated
+ * and nothing downstream ever consumes: the structural signal {@link
+ * isRedundantSameEndpointGroup} uses to widen collapsing past the literal
+ * {@link CACHE_BUSTER_QUERY_KEYS}/{@link PAGINATION_FIELD_NAME_PATTERN}
+ * allowlists without hand-enumerating more key-name shapes. A non-primitive
+ * or empty value can't be structurally proven dead, so it's treated as
+ * load-bearing by default. */
+function isFieldValueThreadedElsewhere(
+  value: unknown,
+  ownCapture: Capture,
+  allActions: readonly ActionCapture[]
+): boolean {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
+    return true;
+  }
+  const stringValue = String(value);
+  if (stringValue.length === 0) return true;
+  return allActions.some(
+    ({ capture }) => capture !== ownCapture && requestAndResponseValues(capture).has(stringValue)
+  );
+}
+
 /**
  * A same-endpoint capture group qualifies for collapsing when every capture
  * resolves to the same {@link responseShapeKey}, OR (when the response has no
@@ -2120,16 +2188,27 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * re-poll -- AND its request fields vary
  * in at most one field once known non-semantic noise keys ({@link
  * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
- * remaining field is pagination-shaped -- a paged listing/facet re-query --
- * or vary in no field at all -- a polled toggles/feature-flag endpoint
- * re-fired with an identical request. A group
- * whose members vary in a non-pagination field (e.g. a per-item drill's
- * item-id body field) is left untouched: that variance carries the distinct
- * per-item state the existing fold-chain mechanism (`target.chain` in
- * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
- * collapsing it here would erase the very state that hoisting depends on.
+ * remaining field is EITHER pagination-shaped -- a paged listing/facet
+ * re-query -- OR (when `allActions`, the full capture sequence, is supplied)
+ * proven via {@link isFieldValueThreadedElsewhere} to never be read by any
+ * other step in the flow -- a cache-buster/nonce/request-id shape the literal
+ * allowlists don't happen to name -- or vary in no field at all -- a polled
+ * toggles/feature-flag endpoint re-fired with an identical request. Without
+ * `allActions` (unit tests exercising this predicate in isolation, with no
+ * flow context to check against) a lone non-pagination varying field can't be
+ * structurally proven dead, so the group is left untouched -- the same
+ * conservative outcome as before this widening. A group whose sole varying
+ * field IS proven read elsewhere (e.g. a per-item drill's item-id, later
+ * echoed into that item's detail request) is likewise left untouched: that
+ * variance carries the distinct per-item state the existing fold-chain
+ * mechanism (`target.chain` in `emitMultiStepExecuteHttp`) already hoists
+ * correctly once resolved, and collapsing it here would erase the very state
+ * that hoisting depends on.
  */
-export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
+export function isRedundantSameEndpointGroup(
+  group: ActionCapture[],
+  allActions?: readonly ActionCapture[]
+): boolean {
   const shapeKey = responseShapeKey(group[0]!.capture);
   if (shapeKey !== null) {
     if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
@@ -2159,7 +2238,13 @@ export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
   });
 
   if (varyingKeys.length === 0) return true;
-  return varyingKeys.length === 1 && PAGINATION_FIELD_NAME_PATTERN.test(varyingKeys[0]!);
+  if (varyingKeys.length !== 1) return false;
+  const soleKey = varyingKeys[0]!;
+  if (PAGINATION_FIELD_NAME_PATTERN.test(soleKey)) return true;
+  if (!allActions) return false;
+  return fieldSets.every(
+    (fields, i) => !isFieldValueThreadedElsewhere(fields[soleKey], group[i]!.capture, allActions)
+  );
 }
 
 /**
@@ -2189,7 +2274,7 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
-    if (!isRedundantSameEndpointGroup(group)) continue;
+    if (!isRedundantSameEndpointGroup(group, actions)) continue;
     for (const position of positions.slice(1)) drop.add(position);
   }
 
@@ -4121,6 +4206,37 @@ function interpolateStateValues(
   return template.replace(pattern, (match) => bindingByValue.get(match) ?? match);
 }
 
+/**
+ * Rewrites every occurrence of a set of literal values to their accessor
+ * expressions in ONE pass over `text`, matching {@link interpolateStateValues}'s
+ * guarded shape: a single regex alternation, longest value first (so a shorter
+ * value can never win a match at a position a longer one also matches), anchored
+ * so a value flanked by alphanumerics — or by a `-`/`.` itself flanked by an
+ * alphanumeric — never matches inside an unrelated opaque token (e.g. splicing a
+ * "12" into a hyphen-joined "wJbfQL-12-K0X" segment). A per-value sequential
+ * `.replace()` loop would re-scan the PROGRESSIVELY MUTATED result on every
+ * iteration, letting one field's inserted `${...}` replacement text land inside
+ * a position a later field's regex still matches — producing a nested `${...
+ * ${...}}` placeholder. Doing it once over the original text closes that class
+ * of bug for every caller, not just this one.
+ */
+function substituteThreadedValues(
+  text: string,
+  bindings: ReadonlyArray<{ value: string; replacement: string }>
+): string {
+  if (bindings.length === 0) return text;
+  const bindingByValue = new Map<string, string>();
+  for (const { value, replacement } of bindings) {
+    if (!bindingByValue.has(value)) bindingByValue.set(value, replacement);
+  }
+  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
+    "g"
+  );
+  return text.replace(pattern, (match) => bindingByValue.get(match) ?? match);
+}
+
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
  * accessor, the bare field name to declare in the emitted schema, and the index
  * of the step that produces it (the only step whose body is bound whole — later
@@ -5244,8 +5360,16 @@ export function emitMultiStepExecuteHttp(
   // block-scoped to that loop and never escape to the rest of the function,
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
+  // Absorbed indices (see FoldPlan.absorbedIndices) are repeat raw captures
+  // of a target's own endpoint, threaded from a DIFFERENT primary item — the
+  // single representative target already re-issues that endpoint once per
+  // fold-loop iteration, so these must be dropped from normal per-step
+  // emission too, exactly like the chain indices they're folded in with.
   const foldChainIndices = new Set(
-    foldPlans.flatMap((plan) => plan.targets.flatMap((target) => target.chain))
+    foldPlans.flatMap((plan) => [
+      ...plan.targets.flatMap((target) => target.chain),
+      ...plan.absorbedIndices,
+    ])
   );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
@@ -5366,27 +5490,11 @@ export function emitMultiStepExecuteHttp(
         const scopedAccessor = (varName: string, field: string): string =>
           `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
-        // Word-boundary anchored: a plain `.split(value).join(...)` would also
-        // rewrite unrelated substrings that happen to contain the join value
-        // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
-        // "p10" sibling id), corrupting parts of the request the join field
-        // never touched.
-        // `\b` alone still matches a value flanked by `-`/`.` against an
-        // adjacent alphanumeric char — `-`/`.` are non-word chars, so `\b`
-        // reads e.g. the "12" inside a hyphen-joined opaque segment like
-        // "wJbfQL-12-K0X" as a standalone word, splicing an unrelated field's
-        // value into what is semantically one opaque token. The lookaround
-        // guards reject any match immediately adjacent (on either side) to a
-        // `-`/`.` that itself sits against another alphanumeric char, while a
-        // genuinely standalone occurrence (e.g. "/items/12/") still matches.
-        const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
-          haystack.replace(
-            new RegExp(
-              `(?<![A-Za-z0-9][-.])\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
-              "g"
-            ),
-            replacement
-          );
+        // Whole-value substitution runs via substituteThreadedValues: a single
+        // guarded regex-alternation pass over the original text, not a
+        // per-field sequential `.replace()` loop — see that function's doc for
+        // why the sequential shape corrupts opaque path segments and can nest
+        // `${...}` placeholders.
         const parameterize = (text: string, chainCapture: Capture): string => {
           // A join field can reach the render either as the raw captured
           // literal (URL query params) or as an already-generic
@@ -5436,7 +5544,14 @@ export function emitMultiStepExecuteHttp(
                     : tf,
               }))
             : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
-          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
+          // Accessor swap first: rewrites an already-templated `${payload.X}`
+          // reference (from applyPayloadKeyValueSubstitutions) to this field's
+          // real accessor. Each target (`${payload.X}`) is a unique, fully
+          // delimited string that the swap's own output (`${accessorField...}`,
+          // never re-shaped into `${payload.X}` form) can't re-match, so a
+          // sequential pass here carries none of the reentrancy risk the
+          // literal-value pass below has.
+          const swapped = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
             const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
             // accessor after the DRILL REQUEST's own top-level JSON key
@@ -5449,26 +5564,38 @@ export function emitMultiStepExecuteHttp(
             // reference behind once the literal value itself has already
             // been replaced by the payload-key-value pass.
             const lastSegment = valueField.field.split(".").pop()!;
-            const withAccessorSwapped = acc
+            return acc
               .split(`\${payload.${valueField.field}}`)
               .join(replacement)
               .split(`\${payload.${lastSegment}}`)
               .join(replacement);
-            const scopeObj =
-              valueField.varName === itemVar
-                ? firstItem
-                : ancestorObjByVar.get(valueField.varName)!;
-            const value = readValueAtPath(scopeObj, valueField.field.split("."));
-            const stringValue =
-              typeof value === "string" && value.length > 0
-                ? value
-                : typeof value === "number" || typeof value === "boolean"
-                  ? String(value)
-                  : null;
-            return stringValue !== null
-              ? replaceWholeValue(withAccessorSwapped, stringValue, replacement)
-              : withAccessorSwapped;
           }, text);
+          // Literal-value substitution: ONE guarded regex-alternation pass over
+          // `swapped` for every threaded field's value, longest first — see
+          // substituteThreadedValues's doc for why a per-field sequential pass
+          // here (the bug this replaces) can nest `${...}` placeholders.
+          const valueBindings = threadedFieldPairs
+            .map(({ valueField, accessorField }) => {
+              const scopeObj =
+                valueField.varName === itemVar
+                  ? firstItem
+                  : ancestorObjByVar.get(valueField.varName)!;
+              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const stringValue =
+                typeof value === "string" && value.length > 0
+                  ? value
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? String(value)
+                    : null;
+              return stringValue === null
+                ? null
+                : {
+                    value: stringValue,
+                    replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                  };
+            })
+            .filter((b): b is { value: string; replacement: string } => b !== null);
+          const result = substituteThreadedValues(swapped, valueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
@@ -6126,6 +6253,14 @@ export interface FoldPlan {
   primaryStepIndex: number;
   primaryArrayPath: string[];
   targets: FoldTarget[];
+  /** Action indices representing the SAME logical per-item drill as one of
+   * `targets` — repeat raw captures of the identical endpoint, each threaded
+   * from a DIFFERENT primary item (see {@link scanPrimaryCandidateGroups}'s
+   * per-endpoint dedup) — that must be dropped from emission entirely rather
+   * than becoming their own target or a leftover single call, since the
+   * single representative target already re-issues that same endpoint once
+   * per fold-loop iteration. */
+  absorbedIndices: number[];
 }
 
 /** One independent per-item drill-down folding onto {@link FoldPlan}'s
@@ -6940,6 +7075,10 @@ function directPrimitiveChildCountExcludingEchoed(
 interface PrimaryScanGroup {
   primaryArrayPath: string[];
   targets: FoldTarget[];
+  /** See {@link FoldPlan.absorbedIndices} — repeat occurrences of a target
+   * endpoint already represented in `targets`, collected here so the caller
+   * can fold them into the eventual plan's own `absorbedIndices`. */
+  absorbedIndices: number[];
 }
 
 /**
@@ -6991,6 +7130,11 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
 
   for (const primaryArray of primaryCandidates) {
     const targets: FoldTarget[] = [];
+    // See FoldPlan.absorbedIndices — a candidate hitting the SAME endpoint
+    // as a target already resolved for this array is a repeat raw capture
+    // of that one per-item drill (threaded from a DIFFERENT primary item),
+    // not an independent target, so it lands here instead of `targets`.
+    const absorbedIndices: number[] = [];
     // Pruned to the (typically tiny) set of later action indices whose
     // request could possibly thread one of this array's own item values —
     // see buildRequestStringValueIndex's docstring — instead of every
@@ -7018,6 +7162,27 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
         [{ varName: "item", obj: primaryArray.items[primaryMatchedItemIndex]! }],
         drill.capture
       ).map((f) => f.field);
+
+      // A genuinely per-item-varying repeated endpoint (the SAME drill
+      // called once per primary item, each occurrence threading a
+      // DIFFERENT item's own join value) is one logical target, not N — the
+      // fold loop already re-issues the representative target's request
+      // once per item via its own `item.<field>` accessor. Recognizing a
+      // later candidate as a repeat of an ALREADY-RESOLVED target's
+      // endpoint (rather than letting it become its own independent
+      // target) is exactly the widening this structural heuristic needed:
+      // previously every threading candidate became its own FoldTarget,
+      // so N per-item captures of one endpoint fanned out into N separate
+      // httpClient calls inside the loop instead of collapsing to one.
+      const drillEndpointKey = endpointKey(drill.capture.url);
+      const alreadyTargetedSameEndpoint = targets.some(
+        (t) => endpointKey(actions[t.drillStepIndex]!.capture.url) === drillEndpointKey
+      );
+      if (alreadyTargetedSameEndpoint) {
+        absorbedIndices.push(drillIndex);
+        consumedIndices.add(drillIndex);
+        continue;
+      }
 
       // Widened to a flat (non-array) object response when the drill step has
       // no object-array field of its own — see
@@ -7095,7 +7260,9 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       for (const chainIndex of chain) consumedIndices.add(chainIndex);
     }
 
-    if (targets.length > 0) groups.push({ primaryArrayPath: primaryArray.path, targets });
+    if (targets.length > 0) {
+      groups.push({ primaryArrayPath: primaryArray.path, targets, absorbedIndices });
+    }
   }
 
   return groups;
@@ -7210,6 +7377,7 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
         primaryStepIndex: freshestIndex,
         primaryArrayPath: freshestGroup.primaryArrayPath,
         targets: freshestGroup.targets,
+        absorbedIndices: freshestGroup.absorbedIndices,
       });
       // A step already folded into this plan's chains — the drill step(s)
       // and everything threaded onward from them — was already merged
@@ -7223,6 +7391,11 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
       for (const target of freshestGroup.targets) {
         for (const chainIndex of target.chain) addConsumed(chainIndex);
       }
+      // Absorbed repeat occurrences (see FoldPlan.absorbedIndices) were never
+      // part of any target's chain, so they must be consumed here too, or
+      // they would surface as leftover raw indices and get emitted a second
+      // time as their own single hardcoded calls.
+      for (const absorbedIndex of freshestGroup.absorbedIndices) addConsumed(absorbedIndex);
     }
   }
   return plans;
@@ -7887,6 +8060,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
             chainTerminalIndex,
           },
         ],
+        absorbedIndices: [],
       };
       break;
     }
@@ -8262,6 +8436,39 @@ function replaceByReference(value: unknown, target: object, replacement: unknown
  * `throw` at the analogous point, minus the throw, since shape inference
  * degrading gracefully is preferable to failing a generate run over it.
  */
+/** Folds one drill-down response's matching item onto `body`'s primary
+ * array — the single-occurrence step {@link foldResponseBodyForShapeInference}
+ * runs once for a target's own representative drill and again for each of
+ * its {@link FoldPlan.absorbedIndices} siblings, so both call sites resolve
+ * the merge identically. `matchedItem` must already be resolved by the
+ * caller: the representative occurrence knows it via `primaryMatchedItemIndex`,
+ * while an absorbed occurrence resolves it by re-threading its OWN request
+ * against every primary item (see the call site) — a drill-down's RESPONSE
+ * commonly never echoes the join field it was looked up by, so matching by
+ * response content alone (as the representative branch's own `drillMatch`
+ * fallback does when the response doesn't echo it) can't identify WHICH item
+ * an absorbed occurrence belongs to in the first place. */
+function foldOneDrillOccurrence(
+  body: unknown,
+  primaryArrayPath: readonly string[],
+  joinFields: readonly string[],
+  drillItems: readonly Record<string, unknown>[],
+  matchedItem: Record<string, unknown>
+): unknown {
+  const primaryItems = objectItemsAtPath(body, primaryArrayPath);
+  if (!primaryItems) return body;
+  const drillMatch =
+    drillItems.find((d) =>
+      joinFields.every(
+        (f) =>
+          String(readValueAtPath(d, f.split("."))) ===
+          String(readValueAtPath(matchedItem, f.split(".")))
+      )
+    ) ?? drillItems[0];
+  if (!drillMatch) return body;
+  return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
+}
+
 function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
   actionSteps: readonly T[],
   foldPlan: FoldPlan,
@@ -8272,16 +8479,49 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
     const primaryItems = objectItemsAtPath(body, foldPlan.primaryArrayPath);
     const drillItems = objectItemsAtPath(drillBody, target.chainArrayPath);
     const matchedItem = primaryItems?.[target.primaryMatchedItemIndex];
-    const drillMatch =
-      drillItems?.find((d) =>
-        target.joinFields.every(
-          (f) =>
-            String(readValueAtPath(d, f.split("."))) ===
-            String(readValueAtPath(matchedItem, f.split(".")))
-        )
-      ) ?? drillItems?.[0];
-    if (!primaryItems || !matchedItem || !drillMatch) return body;
-    return replaceByReference(body, matchedItem, { ...drillMatch, ...matchedItem });
+    const bodyAfterOwnDrill =
+      !drillItems || !matchedItem
+        ? body
+        : foldOneDrillOccurrence(
+            body,
+            foldPlan.primaryArrayPath,
+            target.joinFields,
+            drillItems,
+            matchedItem
+          );
+    // Every absorbed occurrence of this SAME endpoint (a repeat raw capture
+    // threaded from a DIFFERENT primary item — see FoldPlan.absorbedIndices)
+    // is folded in too, so schema inference sees every sampled per-item
+    // field, not just the single representative occurrence's — see the
+    // `"merges by join key, not position"` regression this restores. Which
+    // primary item an absorbed occurrence belongs to is re-derived from its
+    // own REQUEST (mirroring the original structural scan's own matching),
+    // not its response, since a drill response commonly never echoes the
+    // join field back.
+    const targetEndpointKey = endpointKey(actionSteps[target.drillStepIndex]!.capture.url);
+    return foldPlan.absorbedIndices.reduce<unknown>((innerBody, absorbedIndex) => {
+      const absorbedCapture = actionSteps[absorbedIndex]?.capture;
+      if (!absorbedCapture || endpointKey(absorbedCapture.url) !== targetEndpointKey) {
+        return innerBody;
+      }
+      const absorbedDrillItems = objectItemsAtPath(
+        absorbedCapture.responseBody,
+        target.chainArrayPath
+      );
+      const innerPrimaryItems = objectItemsAtPath(innerBody, foldPlan.primaryArrayPath);
+      const absorbedMatchedItem = innerPrimaryItems?.find(
+        (item) =>
+          findThreadedJoinFields([{ varName: "item", obj: item }], absorbedCapture).length > 0
+      );
+      if (!absorbedDrillItems || !absorbedMatchedItem) return innerBody;
+      return foldOneDrillOccurrence(
+        innerBody,
+        foldPlan.primaryArrayPath,
+        target.joinFields,
+        absorbedDrillItems,
+        absorbedMatchedItem
+      );
+    }, bodyAfterOwnDrill);
   }, initialBody);
 }
 
@@ -9351,31 +9591,33 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                     : tf,
               }))
             : rawThreadedFields.map((tf) => ({ valueField: tf, accessorField: tf }));
-          const result = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
-            const scopeObj =
-              valueField.varName === itemVar
-                ? firstItem
-                : ancestorObjByVar.get(valueField.varName)!;
-            const value = readValueAtPath(scopeObj, valueField.field.split("."));
-            const stringValue =
-              typeof value === "string" && value.length > 0
-                ? value
-                : typeof value === "number" || typeof value === "boolean"
-                  ? String(value)
-                  : null;
-            if (stringValue === null) return acc;
-            // See replaceWholeValue's identical guard: `\b` alone still
-            // matches a value flanked by `-`/`.` against an adjacent
-            // alphanumeric char, splicing into a hyphen-joined opaque
-            // segment that merely contains the value as a digit run.
-            return acc.replace(
-              new RegExp(
-                `(?<![A-Za-z0-9][-.])\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
-                "g"
-              ),
-              `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`
-            );
-          }, withBase);
+          // ONE guarded regex-alternation pass over `withBase` for every
+          // threaded field's value, longest first — see substituteThreadedValues's
+          // doc for why a per-field sequential `.replace()` loop here (the bug
+          // this replaces) can splice an unrelated value into an opaque URL
+          // segment or nest a `${...}` placeholder.
+          const valueBindings = threadedFieldPairs
+            .map(({ valueField, accessorField }) => {
+              const scopeObj =
+                valueField.varName === itemVar
+                  ? firstItem
+                  : ancestorObjByVar.get(valueField.varName)!;
+              const value = readValueAtPath(scopeObj, valueField.field.split("."));
+              const stringValue =
+                typeof value === "string" && value.length > 0
+                  ? value
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? String(value)
+                    : null;
+              return stringValue === null
+                ? null
+                : {
+                    value: stringValue,
+                    replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                  };
+            })
+            .filter((b): b is { value: string; replacement: string } => b !== null);
+          const result = substituteThreadedValues(withBase, valueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,

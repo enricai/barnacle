@@ -1331,8 +1331,16 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
       },
     ];
 
+    // The structural detector collapses both drills to ONE target — they hit
+    // the SAME endpoint, each threaded from a DIFFERENT primary item, which
+    // is the genuinely-per-item-varying repeated-endpoint shape a single
+    // fold-loop iteration already re-issues per item (see
+    // FoldPlan.absorbedIndices) — so r2 (the multipart occurrence) is
+    // recorded as absorbed rather than becoming its own target.
     const structuralPlan = detectDrillDownFoldPlan(steps)[0] ?? null;
-    expect(structuralPlan?.targets).toHaveLength(2);
+    expect(structuralPlan?.targets).toHaveLength(1);
+    expect(structuralPlan?.targets[0]?.drillStepIndex).toBe(1);
+    expect(structuralPlan?.absorbedIndices).toEqual([2]);
 
     const resolved = resolveFoldPlan(steps);
     expect(resolved).toHaveLength(1);
@@ -1413,7 +1421,11 @@ describe("resolveFoldPlan — multipart chain-step disqualification", () => {
       },
     ];
 
-    expect(detectDrillDownFoldPlan(steps)[0]?.targets).toHaveLength(2);
+    // Both drills hit the SAME endpoint (each threaded from a different
+    // account), so the structural detector collapses them to ONE target
+    // (r1, absorbing r2) — that lone target is still multipart (r1 itself
+    // is multipart here), so it's disqualified and the plan drops entirely.
+    expect(detectDrillDownFoldPlan(steps)[0]?.targets).toHaveLength(1);
     expect(resolveFoldPlan(steps)).toEqual([]);
   });
 });
@@ -1443,6 +1455,7 @@ describe("resolveFoldPlan — header-threaded join boundary", () => {
             chainTerminalIndex: 1,
           },
         ],
+        absorbedIndices: [],
       },
     ]);
   });
@@ -1567,10 +1580,19 @@ describe("resolveFoldPlan — large capture set performance regression", () => {
     const plan = resolveFoldPlan(steps, spec);
     const elapsedMs = Date.now() - started;
 
+    // The structural detector now collapses every drill of this SAME
+    // endpoint (each threaded from a different widget) into ONE target
+    // (see FoldPlan.absorbedIndices) instead of one target per raw capture
+    // — mergeSpecPlanOntoSamePrimary additionally keeps the declared spec's
+    // own freshest-occurrence target (drillStepIndex itemCount), so this
+    // resolves to 2 targets total, not one per item, with every other
+    // occurrence recorded as absorbed.
     expect(plan).toHaveLength(1);
     expect(plan[0]?.primaryStepIndex).toBe(0);
-    expect(plan[0]?.targets).toHaveLength(itemCount);
-    expect(plan[0]?.targets[itemCount - 1]?.drillStepIndex).toBe(itemCount);
+    expect(plan[0]?.targets).toHaveLength(2);
+    expect(plan[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(plan[0]?.targets[1]?.drillStepIndex).toBe(itemCount);
+    expect(plan[0]?.absorbedIndices).toHaveLength(itemCount - 1);
     expect(elapsedMs).toBeLessThan(5000);
   });
 
@@ -1624,6 +1646,7 @@ describe("resolveFoldPlan — large capture set performance regression", () => {
             chainTerminalIndex: itemCount,
           },
         ],
+        absorbedIndices: [],
       },
     ]);
     expect(elapsedMs).toBeLessThan(2000);

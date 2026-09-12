@@ -59,3 +59,72 @@ describe("isRedundantSameEndpointGroup — flat (non-array) responses", () => {
     expect(isRedundantSameEndpointGroup(group)).toBe(false);
   });
 });
+
+describe("isRedundantSameEndpointGroup — structural non-semantic-key widening", () => {
+  it("collapses a flat toggle re-poll whose sole varying key is a monotonic request id nothing downstream reads", () => {
+    const group = toGroup(
+      Array.from({ length: 6 }, (_, i) =>
+        buildCapture({
+          url: FLAG_URL,
+          requestPostData: JSON.stringify({ reqSeq: i + 1 }),
+          responseBody: { enabled: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+    expect(isRedundantSameEndpointGroup(group, group)).toBe(true);
+  });
+
+  it("collapses a listing re-fire whose sole varying key is an unread nonce, across the full flow", () => {
+    const LISTING_URL = "https://api.example.com/catalog/listing";
+    const group = toGroup(
+      Array.from({ length: 8 }, (_, i) =>
+        buildCapture({
+          url: LISTING_URL,
+          requestPostData: JSON.stringify({ traceId: `trace-${i}` }),
+          responseBody: { items: [{ id: "a" }, { id: "b" }] },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+    const unrelatedStep = toGroup([
+      buildCapture({
+        url: "https://api.example.com/catalog/item/a",
+        requestPostData: null,
+        responseBody: { id: "a", detail: "x" },
+        timestamp: "2024-01-01T00:01:00Z",
+      }),
+    ])[0]!;
+    const allActions = [...group, unrelatedStep];
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+    expect(isRedundantSameEndpointGroup(group, allActions)).toBe(true);
+  });
+
+  it("still refuses to collapse when the sole varying value IS read by a later step (per-item join key)", () => {
+    const DETAIL_LOOKUP_URL = "https://api.example.com/catalog/lookup";
+    const group = toGroup(
+      Array.from({ length: 2 }, (_, i) =>
+        buildCapture({
+          url: DETAIL_LOOKUP_URL,
+          requestPostData: JSON.stringify({ itemId: `item-${i}` }),
+          responseBody: { enabled: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+    const drillStep = toGroup([
+      buildCapture({
+        url: "https://api.example.com/catalog/detail",
+        requestPostData: JSON.stringify({ itemId: "item-0" }),
+        responseBody: { itemId: "item-0", name: "widget" },
+        timestamp: "2024-01-01T00:01:00Z",
+      }),
+    ])[0]!;
+    const allActions = [...group, drillStep];
+
+    expect(isRedundantSameEndpointGroup(group, allActions)).toBe(false);
+  });
+});
