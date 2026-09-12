@@ -42,6 +42,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  isZeroVarianceRepeatCapture,
   pathStructuralTokens,
   registrableDomain,
   telemetryUrlPatterns,
@@ -1788,6 +1789,13 @@ export function resolveManifestActionSequence(
  * a capture whose host fails {@link isAllowedFixtureHost} is dropped too —
  * `isNoiseUrl` alone lets a third-party telemetry/beacon POST masquerade as
  * a submission step, since it can look identical in shape to a real one.
+ * A capture that recurs elsewhere with a byte-identical method/URL/body is
+ * dropped too ({@link isZeroVarianceRepeatCapture}) — a same-host beacon
+ * whose extension and host both look legitimate (e.g. a `.html` sensor
+ * endpoint) still gives itself away by never varying across calls, which
+ * `isNoiseUrl`'s substring/extension checks can't see and which the
+ * structural-isolation pass below can even be fooled by (N identical copies
+ * of the same path "vouch" for each other's tokens).
  *
  * When the flow declares submit patterns, only POSTs matching them survive —
  * this isolates the submission from same-origin page chrome (bootstrap, chatbot,
@@ -1843,6 +1851,7 @@ export function extractActionSequence(
       if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
@@ -1981,6 +1990,7 @@ export function extractGraphQLActionSequence(
     .filter(({ capture }) => {
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
+      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&

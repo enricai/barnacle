@@ -295,6 +295,47 @@ export function isSamePathFamily(pathA: string, pathB: string): boolean {
 }
 
 /**
+ * True when `candidate` carries a non-empty, fixed query string and recurs
+ * at least once elsewhere in `allCaptures` with a byte-identical method,
+ * full URL (so the same query string), and request body — proof the
+ * endpoint carries no per-call state and is page-load chrome (a session/
+ * analytics beacon fired with a constant `clientId`/`environment`-style
+ * query) rather than a semantic step in the flow.
+ *
+ * The non-empty-query requirement is deliberate, not an extension/host
+ * special-case: it is what separates this from a genuinely no-argument own
+ * endpoint that a flow legitimately polls with an identical body every time
+ * (a feature-toggle feed, an availability heartbeat) — those endpoints carry
+ * real business meaning and folding their repeats into a single call is the
+ * collapse mechanism's job, not this predicate's. A marketing/analytics
+ * beacon's own fixed identifying query (`clientId`, `environment`, `siteId`)
+ * is the tell a plain body-repetition check can't see on its own, and is
+ * exactly the shape {@link isStructurallyIsolatedCapture} can be fooled by —
+ * that check's reference pool is every OTHER admitted capture, so N copies
+ * of the same fixed-query request "vouch" for each other's path tokens and
+ * none of them reads as isolated.
+ */
+export function isZeroVarianceRepeatCapture(
+  candidate: { method: string; url: string; requestPostData: string | null },
+  allCaptures: readonly { method: string; url: string; requestPostData: string | null }[]
+): boolean {
+  let hasFixedQuery: boolean;
+  try {
+    hasFixedQuery = new URL(candidate.url).search.length > 1;
+  } catch {
+    return false;
+  }
+  if (!hasFixedQuery) return false;
+  const matches = allCaptures.filter(
+    (c) =>
+      c.method === candidate.method &&
+      c.url === candidate.url &&
+      c.requestPostData === candidate.requestPostData
+  );
+  return matches.length >= 2;
+}
+
+/**
  * True when `hostname` is allowed as a fixture host: an exact match against
  * `ownBackendHostnames` when the flow declares any, otherwise a
  * same-registrable-domain match against `fallbackDomain`. Shared by
