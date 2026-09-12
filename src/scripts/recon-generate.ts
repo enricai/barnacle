@@ -2185,25 +2185,27 @@ function isFieldValueThreadedElsewhere(
  * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
  * out a mutation POST, whose flat response is a single mutated object rather
  * than a re-readable poll result, while still admitting a flat zero-variance
- * re-poll -- AND its request fields vary
- * in at most one field once known non-semantic noise keys ({@link
- * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
- * remaining field is EITHER pagination-shaped -- a paged listing/facet
- * re-query -- OR (when `allActions`, the full capture sequence, is supplied)
- * proven via {@link isFieldValueThreadedElsewhere} to never be read by any
- * other step in the flow -- a cache-buster/nonce/request-id shape the literal
- * allowlists don't happen to name -- or vary in no field at all -- a polled
- * toggles/feature-flag endpoint re-fired with an identical request. Without
- * `allActions` (unit tests exercising this predicate in isolation, with no
- * flow context to check against) a lone non-pagination varying field can't be
- * structurally proven dead, so the group is left untouched -- the same
- * conservative outcome as before this widening. A group whose sole varying
- * field IS proven read elsewhere (e.g. a per-item drill's item-id, later
- * echoed into that item's detail request) is likewise left untouched: that
- * variance carries the distinct per-item state the existing fold-chain
- * mechanism (`target.chain` in `emitMultiStepExecuteHttp`) already hoists
- * correctly once resolved, and collapsing it here would erase the very state
- * that hoisting depends on.
+ * re-poll -- AND EVERY request field that varies once known non-semantic
+ * noise keys ({@link CACHE_BUSTER_QUERY_KEYS}) are excluded from
+ * consideration is EITHER pagination-shaped -- a paged listing/facet re-query
+ * -- OR (when `allActions`, the full capture sequence, is supplied)
+ * independently proven via {@link isFieldValueThreadedElsewhere} to never be
+ * read by any other step in the flow -- a cache-buster/nonce/request-id shape
+ * the literal allowlists don't happen to name -- or the group varies in no
+ * field at all -- a polled toggles/feature-flag endpoint re-fired with an
+ * identical request. A group can have any number of varying keys; each one
+ * must clear its own pagination-or-dead check independently, so a page
+ * cursor alongside an unrelated dead cache-buster key still collapses.
+ * Without `allActions` (unit tests exercising this predicate in isolation,
+ * with no flow context to check against) a non-pagination varying key can't
+ * be structurally proven dead, so the group is left untouched -- the same
+ * conservative outcome as before this widening. A group with any varying
+ * field proven read elsewhere (e.g. a per-item drill's item-id, later echoed
+ * into that item's detail request) is likewise left untouched: that variance
+ * carries the distinct per-item state the existing fold-chain mechanism
+ * (`target.chain` in `emitMultiStepExecuteHttp`) already hoists correctly
+ * once resolved, and collapsing it here would erase the very state that
+ * hoisting depends on.
  */
 export function isRedundantSameEndpointGroup(
   group: ActionCapture[],
@@ -2238,13 +2240,13 @@ export function isRedundantSameEndpointGroup(
   });
 
   if (varyingKeys.length === 0) return true;
-  if (varyingKeys.length !== 1) return false;
-  const soleKey = varyingKeys[0]!;
-  if (PAGINATION_FIELD_NAME_PATTERN.test(soleKey)) return true;
-  if (!allActions) return false;
-  return fieldSets.every(
-    (fields, i) => !isFieldValueThreadedElsewhere(fields[soleKey], group[i]!.capture, allActions)
-  );
+  return varyingKeys.every((key) => {
+    if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
+    if (!allActions) return false;
+    return fieldSets.every(
+      (fields, i) => !isFieldValueThreadedElsewhere(fields[key], group[i]!.capture, allActions)
+    );
+  });
 }
 
 /**

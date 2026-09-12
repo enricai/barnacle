@@ -103,6 +103,57 @@ describe("isRedundantSameEndpointGroup — structural non-semantic-key widening"
     expect(isRedundantSameEndpointGroup(group, allActions)).toBe(true);
   });
 
+  it("collapses a listing re-fire with TWO varying keys, each independently proven dead", () => {
+    const LISTING_URL = "https://api.example.com/catalog/listing";
+    const group = toGroup(
+      Array.from({ length: 8 }, (_, i) =>
+        buildCapture({
+          url: LISTING_URL,
+          requestPostData: JSON.stringify({ traceId: `trace-${i}`, cacheBust: `bust-${i}` }),
+          responseBody: { items: [{ id: "a" }, { id: "b" }] },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+    const unrelatedStep = toGroup([
+      buildCapture({
+        url: "https://api.example.com/catalog/item/a",
+        requestPostData: null,
+        responseBody: { id: "a", detail: "x" },
+        timestamp: "2024-01-01T00:01:00Z",
+      }),
+    ])[0]!;
+    const allActions = [...group, unrelatedStep];
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+    expect(isRedundantSameEndpointGroup(group, allActions)).toBe(true);
+  });
+
+  it("still refuses to collapse when ONE of two varying keys IS read by a later step", () => {
+    const LISTING_URL = "https://api.example.com/catalog/listing";
+    const group = toGroup(
+      Array.from({ length: 2 }, (_, i) =>
+        buildCapture({
+          url: LISTING_URL,
+          requestPostData: JSON.stringify({ traceId: `trace-${i}`, itemId: `item-${i}` }),
+          responseBody: { items: [{ id: "a" }, { id: "b" }] },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+    const drillStep = toGroup([
+      buildCapture({
+        url: "https://api.example.com/catalog/detail",
+        requestPostData: JSON.stringify({ itemId: "item-0" }),
+        responseBody: { itemId: "item-0", name: "widget" },
+        timestamp: "2024-01-01T00:01:00Z",
+      }),
+    ])[0]!;
+    const allActions = [...group, drillStep];
+
+    expect(isRedundantSameEndpointGroup(group, allActions)).toBe(false);
+  });
+
   it("still refuses to collapse when the sole varying value IS read by a later step (per-item join key)", () => {
     const DETAIL_LOOKUP_URL = "https://api.example.com/catalog/lookup";
     const group = toGroup(

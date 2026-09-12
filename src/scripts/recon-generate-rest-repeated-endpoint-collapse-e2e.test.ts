@@ -190,4 +190,64 @@ describe("recon-generate CLI — REST same-endpoint repeats collapse instead of 
     expect(httpClientCallCount).toBeLessThan(10);
     expect(contract.match(/available-products\//g)?.length).toBe(1);
   }, 30_000);
+
+  it("collapses a paged listing whose page cursor is joined by a second, non-allowlisted dead field (a request trace id no downstream step reads)", () => {
+    workDir = mkdtempSync(
+      join(tmpdir(), "barnacle-rest-repeated-endpoint-collapse-multi-key-e2e-")
+    );
+    const runRoot = join(workDir, "run");
+    const listing = Array.from({ length: LISTING_PAGE_COUNT }, (_, i) =>
+      buildCapture({
+        url: LISTING_URL,
+        requestPostData: JSON.stringify({ page: i + 1, traceId: `trace-${1700000000 + i}` }),
+        responseBody: {
+          totalPages: LISTING_PAGE_COUNT,
+          products: [{ productId: `p${i + 1}` }],
+        },
+        timestamp: `2024-01-01T00:01:${String(i).padStart(2, "0")}Z`,
+      })
+    );
+    const drills = Array.from({ length: DRILL_ITEM_COUNT }, (_, i) =>
+      buildCapture({
+        url: DRILL_URL,
+        requestPostData: JSON.stringify({ productId: `p${i + 1}` }),
+        responseBody: { units: [{ unitId: `s${i + 1}` }], exchangeRate: 1.0 },
+        timestamp: `2024-01-01T00:02:${String(i).padStart(2, "0")}Z`,
+      })
+    );
+    writeRunDir(runRoot, [...listing, ...drills]);
+
+    const siteId = `rest-repeated-endpoint-collapse-multi-key-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "browse paged product listing" },
+          { step: "drill into sailing availability", submitStep: true },
+        ],
+        submitEndpointPattern: "available-sailings",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
+
+    // `traceId` isn't in the cache-buster allowlist and isn't
+    // pagination-shaped, so it only collapses if it's independently proven
+    // structurally dead (never read by any later step) alongside `page`.
+    expect(httpClientCallCount).toBeLessThan(10);
+    expect(contract.match(/available-products\//g)?.length).toBe(1);
+  }, 30_000);
 });
