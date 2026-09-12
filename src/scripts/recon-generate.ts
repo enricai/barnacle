@@ -1959,12 +1959,23 @@ export function extractActionSequence(
  * will send at a live site.
  */
 
-/** A GraphQL mutation capture, identified by its parsed operation query
- * string starting with `mutation` — its response is a single mutated
- * object rather than a re-readable list/flag, so it must never be folded
- * in with genuinely idempotent reads by {@link isRedundantSameEndpointGroup}. */
+/** REST HTTP methods that write/mutate server state rather than merely
+ * reading it — a capture using one of these is never a re-readable
+ * poll/listing, regardless of how flat its response body looks. */
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** A mutation capture: either GraphQL (identified by its parsed operation
+ * query string starting with `mutation`) or REST (identified by a
+ * non-idempotent HTTP method). Its response is a single mutated object
+ * rather than a re-readable list/flag, so it must never be folded in with
+ * genuinely idempotent reads by {@link isRedundantSameEndpointGroup} — a
+ * flat-response REST POST (e.g. a wizard section save) is exactly as
+ * non-poll-able as a GraphQL mutation, but `capture.query` is always null
+ * for REST, so the GraphQL-only check alone would misclassify it as a
+ * collapsible poll. */
 function isMutationCapture(capture: Capture): boolean {
-  return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+  if (capture.query !== null) return /^\s*mutation\b/.test(capture.query);
+  return MUTATING_HTTP_METHODS.has(capture.method.toUpperCase());
 }
 
 export function extractGraphQLActionSequence(
@@ -2185,25 +2196,27 @@ function isFieldValueThreadedElsewhere(
  * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
  * out a mutation POST, whose flat response is a single mutated object rather
  * than a re-readable poll result, while still admitting a flat zero-variance
- * re-poll -- AND its request fields vary
- * in at most one field once known non-semantic noise keys ({@link
- * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
- * remaining field is EITHER pagination-shaped -- a paged listing/facet
- * re-query -- OR (when `allActions`, the full capture sequence, is supplied)
- * proven via {@link isFieldValueThreadedElsewhere} to never be read by any
- * other step in the flow -- a cache-buster/nonce/request-id shape the literal
- * allowlists don't happen to name -- or vary in no field at all -- a polled
- * toggles/feature-flag endpoint re-fired with an identical request. Without
- * `allActions` (unit tests exercising this predicate in isolation, with no
- * flow context to check against) a lone non-pagination varying field can't be
- * structurally proven dead, so the group is left untouched -- the same
- * conservative outcome as before this widening. A group whose sole varying
- * field IS proven read elsewhere (e.g. a per-item drill's item-id, later
- * echoed into that item's detail request) is likewise left untouched: that
- * variance carries the distinct per-item state the existing fold-chain
- * mechanism (`target.chain` in `emitMultiStepExecuteHttp`) already hoists
- * correctly once resolved, and collapsing it here would erase the very state
- * that hoisting depends on.
+ * re-poll -- AND EVERY request field that varies once known non-semantic
+ * noise keys ({@link CACHE_BUSTER_QUERY_KEYS}) are excluded from
+ * consideration is EITHER pagination-shaped -- a paged listing/facet re-query
+ * -- OR (when `allActions`, the full capture sequence, is supplied)
+ * independently proven via {@link isFieldValueThreadedElsewhere} to never be
+ * read by any other step in the flow -- a cache-buster/nonce/request-id shape
+ * the literal allowlists don't happen to name -- or the group varies in no
+ * field at all -- a polled toggles/feature-flag endpoint re-fired with an
+ * identical request. A group can have any number of varying keys; each one
+ * must clear its own pagination-or-dead check independently, so a page
+ * cursor alongside an unrelated dead cache-buster key still collapses.
+ * Without `allActions` (unit tests exercising this predicate in isolation,
+ * with no flow context to check against) a non-pagination varying key can't
+ * be structurally proven dead, so the group is left untouched -- the same
+ * conservative outcome as before this widening. A group with any varying
+ * field proven read elsewhere (e.g. a per-item drill's item-id, later echoed
+ * into that item's detail request) is likewise left untouched: that variance
+ * carries the distinct per-item state the existing fold-chain mechanism
+ * (`target.chain` in `emitMultiStepExecuteHttp`) already hoists correctly
+ * once resolved, and collapsing it here would erase the very state that
+ * hoisting depends on.
  */
 export function isRedundantSameEndpointGroup(
   group: ActionCapture[],
@@ -2238,13 +2251,13 @@ export function isRedundantSameEndpointGroup(
   });
 
   if (varyingKeys.length === 0) return true;
-  if (varyingKeys.length !== 1) return false;
-  const soleKey = varyingKeys[0]!;
-  if (PAGINATION_FIELD_NAME_PATTERN.test(soleKey)) return true;
-  if (!allActions) return false;
-  return fieldSets.every(
-    (fields, i) => !isFieldValueThreadedElsewhere(fields[soleKey], group[i]!.capture, allActions)
-  );
+  return varyingKeys.every((key) => {
+    if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
+    if (!allActions) return false;
+    return fieldSets.every(
+      (fields, i) => !isFieldValueThreadedElsewhere(fields[key], group[i]!.capture, allActions)
+    );
+  });
 }
 
 /**
@@ -4152,6 +4165,62 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
     : null;
 }
 
+/** Builds the shared word-boundary-guarded, longest-value-first alternation
+ * pattern used by both {@link interpolateStateValues} and
+ * {@link substituteThreadedValues}: a value can never win a match at a position
+ * a longer value also matches, and a value flanked by an alphanumeric — or by a
+ * `-`/`.` itself flanked by an alphanumeric — never matches inside an unrelated
+ * opaque token (e.g. splicing a "12" into a hyphen-joined "wJbfQL-12-K0X"
+ * segment) while a standalone occurrence (e.g. "/items/42/") still matches. */
+function buildValueAlternationPattern(sortedValues: string[]): RegExp {
+  return new RegExp(
+    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
+    "g"
+  );
+}
+
+/**
+ * Runs `pattern` over `text`, replacing each match via `bindingByValue`,
+ * EXCEPT a match that overlaps a `${...}` placeholder already present in
+ * `text`. A single call's own matches never overlap each other (`replace`/
+ * `matchAll` scan left-to-right without revisiting consumed text), so within
+ * one call this only matters when `text` is the OUTPUT of an earlier call on
+ * this same mechanism — e.g. a fold's per-item pass re-running over Pass 1's
+ * already-interpolated URL/header/body text with a different (per-item)
+ * binding table. Without this guard, that second pass's value-equality match
+ * has no way to know a span it's about to touch is actually the FIRST pass's
+ * `${varName}` placeholder for an entirely different producer/consumer
+ * relationship — it just sees literal characters that happen to equal one of
+ * its own bound values (e.g. the digits inside `${displayOrder212}`,
+ * coincidentally also this fold item's own field value) and splices its
+ * replacement in anyway, producing an invalidly-nested `${a${b}c}` literal
+ * that resolves to neither value at runtime. Skipping any match that overlaps
+ * an existing placeholder keeps every substitution scoped to the pass that
+ * actually owns that span, which is the producer/consumer relationship this
+ * mechanism is supposed to encode — and guarantees the output can never open
+ * a `${` before a prior `${...}` closes.
+ */
+function replaceGuardedAgainstExistingPlaceholders(
+  text: string,
+  pattern: RegExp,
+  bindingByValue: Map<string, string>
+): string {
+  const protectedSpans: Array<[number, number]> = [...text.matchAll(/\$\{[^{}]*\}/g)].map((m) => [
+    m.index,
+    m.index + m[0].length,
+  ]);
+  let result = "";
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (protectedSpans.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart)) continue;
+    result += text.slice(cursor, start) + (bindingByValue.get(match[0]) ?? match[0]);
+    cursor = end;
+  }
+  return result + text.slice(cursor);
+}
+
 /**
  * Replaces occurrences of state values in `template` with `${varName}`
  * interpolations. Returns a JS template-literal string fragment (no backticks).
@@ -4162,24 +4231,10 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * Auth.UserName response value equals the user's submitted email). A single
  * word-boundary-anchored regex alternation (longest value first, so an 8-char
  * prefix never shadows the 36-char UUID it's a prefix of) is matched over the
- * ORIGINAL template text exactly once: `String.prototype.replace` scans the
- * subject left-to-right without ever re-visiting text a prior match in the
- * same pass already consumed, so one substitution's freshly-emitted
- * `${varName}` text can never itself be re-matched by a later, shorter value —
- * and `\b` anchoring (matching {@link replaceWholeValue} below) keeps an
- * unrelated literal segment that merely CONTAINS a shorter known value (e.g. a
- * page-count belonging to a different field) from being spliced into.
- *
- * `\b` alone is not enough: it only guards word-char/non-word-char adjacency,
- * so a value flanked by a `.` or `-` that itself sits against an alphanumeric
- * char — e.g. the "12" inside a hyphen-joined opaque segment like
- * "wJbfQL-12-K0X", or the "42" inside the decimal-joined version segment
- * "v3.42" — still reads as a word boundary even though each is one semantic
- * token. The pattern additionally forbids a match whose flanking side is
- * `<alnum>-`/`-<alnum>` or `<alnum>.`/`.<alnum>` (matching {@link
- * replaceWholeValue}'s identical guard), so a hyphen- or decimal-joined
- * literal is never split apart while a standalone occurrence (e.g.
- * "/items/42/") still matches normally.
+ * ORIGINAL template text exactly once — see {@link buildValueAlternationPattern}
+ * for the anchoring guarantee and {@link replaceGuardedAgainstExistingPlaceholders}
+ * for why a match overlapping an already-emitted `${...}` is skipped rather
+ * than spliced into.
  */
 function interpolateStateValues(
   template: string,
@@ -4198,27 +4253,25 @@ function interpolateStateValues(
   if (bindingByValue.size === 0) return template;
 
   const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(
-    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
-    "g"
-  );
+  const pattern = buildValueAlternationPattern(sortedValues);
 
-  return template.replace(pattern, (match) => bindingByValue.get(match) ?? match);
+  return replaceGuardedAgainstExistingPlaceholders(template, pattern, bindingByValue);
 }
 
 /**
  * Rewrites every occurrence of a set of literal values to their accessor
  * expressions in ONE pass over `text`, matching {@link interpolateStateValues}'s
- * guarded shape: a single regex alternation, longest value first (so a shorter
- * value can never win a match at a position a longer one also matches), anchored
- * so a value flanked by alphanumerics — or by a `-`/`.` itself flanked by an
- * alphanumeric — never matches inside an unrelated opaque token (e.g. splicing a
- * "12" into a hyphen-joined "wJbfQL-12-K0X" segment). A per-value sequential
- * `.replace()` loop would re-scan the PROGRESSIVELY MUTATED result on every
- * iteration, letting one field's inserted `${...}` replacement text land inside
- * a position a later field's regex still matches — producing a nested `${...
- * ${...}}` placeholder. Doing it once over the original text closes that class
- * of bug for every caller, not just this one.
+ * guarded shape — see {@link buildValueAlternationPattern} for the anchoring
+ * guarantee. A per-value sequential `.replace()` loop would re-scan the
+ * PROGRESSIVELY MUTATED result on every iteration, letting one field's inserted
+ * `${...}` replacement text land inside a position a later field's regex still
+ * matches — producing a nested `${...${...}}` placeholder. Doing it once over
+ * the original text closes that class of bug within this call; when `text` is
+ * itself the already-interpolated output of an EARLIER call on this mechanism
+ * (a fold's per-item pass over Pass 1's rendered URL/header/body), {@link
+ * replaceGuardedAgainstExistingPlaceholders} closes the same class of bug
+ * across calls by refusing to match inside a placeholder that call already
+ * emitted.
  */
 function substituteThreadedValues(
   text: string,
@@ -4230,11 +4283,8 @@ function substituteThreadedValues(
     if (!bindingByValue.has(value)) bindingByValue.set(value, replacement);
   }
   const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(
-    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
-    "g"
-  );
-  return text.replace(pattern, (match) => bindingByValue.get(match) ?? match);
+  const pattern = buildValueAlternationPattern(sortedValues);
+  return replaceGuardedAgainstExistingPlaceholders(text, pattern, bindingByValue);
 }
 
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
