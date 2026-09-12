@@ -262,9 +262,9 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
 
   function makePage(session: ReturnType<typeof makeFakeSession>["session"]): {
     page: Page;
-    childSessions: Record<string, { send: ReturnType<typeof vi.fn> }>;
+    childSessions: Record<string, ReturnType<typeof makeFakeSession>["session"]>;
   } {
-    const childSessions: Record<string, { send: ReturnType<typeof vi.fn> }> = {};
+    const childSessions: Record<string, ReturnType<typeof makeFakeSession>["session"]> = {};
     const page = {
       getSessionForFrame: vi.fn().mockReturnValue(session),
       mainFrameId: vi.fn().mockReturnValue("main-frame"),
@@ -294,8 +294,9 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
   it("registers the script on a newly attached child target before resuming it", async () => {
     const { session, handlers } = makeFakeSession();
     const { page, childSessions } = makePage(session);
-    const childSend = vi.fn().mockResolvedValue(undefined);
-    childSessions["child-session-1"] = { send: childSend };
+    const childSessionFake = makeFakeSession();
+    childSessions["child-session-1"] = childSessionFake.session;
+    const childSend = childSessionFake.session.send;
 
     await installHcaptchaCallbackCaptureOnAllFrames(page);
     handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-1" });
@@ -304,10 +305,57 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
       expect(childSend).toHaveBeenCalledWith("Runtime.runIfWaitingForDebugger");
     });
     expect(page.getSessionById).toHaveBeenCalledWith("child-session-1");
-    expect(childSend).toHaveBeenNthCalledWith(1, "Page.addScriptToEvaluateOnNewDocument", {
+    expect(childSend).toHaveBeenCalledWith("Page.addScriptToEvaluateOnNewDocument", {
       source: buildHcaptchaCallbackCaptureScript(),
     });
-    expect(childSend).toHaveBeenNthCalledWith(2, "Runtime.runIfWaitingForDebugger");
+    expect(childSend).toHaveBeenCalledWith("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+    const runIfWaitingOrder = childSend.mock.calls.findIndex(
+      (call) => call[0] === "Runtime.runIfWaitingForDebugger"
+    );
+    const addScriptOrder = childSend.mock.calls.findIndex(
+      (call) => call[0] === "Page.addScriptToEvaluateOnNewDocument"
+    );
+    expect(addScriptOrder).toBeLessThan(runIfWaitingOrder);
+    expect(childSessionFake.session.on).toHaveBeenCalledWith(
+      "Target.attachedToTarget",
+      expect.any(Function)
+    );
+  });
+
+  it("arms a grandchild target attached under a child session (nested cross-origin frame)", async () => {
+    const { session, handlers } = makeFakeSession();
+    const { page, childSessions } = makePage(session);
+    const childSessionFake = makeFakeSession();
+    childSessions["child-session-1"] = childSessionFake.session;
+    const grandchildSessionFake = makeFakeSession();
+    childSessions["grandchild-session-1"] = grandchildSessionFake.session;
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+    handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-1" });
+
+    await vi.waitFor(() => {
+      expect(childSessionFake.session.on).toHaveBeenCalledWith(
+        "Target.attachedToTarget",
+        expect.any(Function)
+      );
+    });
+    childSessionFake.handlers["Target.attachedToTarget"]?.({
+      sessionId: "grandchild-session-1",
+    });
+
+    await vi.waitFor(() => {
+      expect(grandchildSessionFake.session.send).toHaveBeenCalledWith(
+        "Runtime.runIfWaitingForDebugger"
+      );
+    });
+    expect(grandchildSessionFake.session.send).toHaveBeenCalledWith(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: buildHcaptchaCallbackCaptureScript() }
+    );
   });
 
   it("logs a warning and does not throw when Target.setAutoAttach rejects", async () => {
