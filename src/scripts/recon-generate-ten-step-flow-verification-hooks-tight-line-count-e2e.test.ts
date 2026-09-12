@@ -15,6 +15,16 @@ import type { Capture } from "@/scripts/recon-shared";
  * 10 steps (matching the report's own reference flow's step count) and
  * combines all three of the report's verification hooks — call count, noise
  * absence, and the tight line-count bound — against one fixture.
+ *
+ * The paged-listing and drill groups each vary in TWO request fields (a real
+ * cursor/item-id plus an unrelated dead nonce field), mirroring the report's
+ * own repro shape where the real archive's captures vary in more than one
+ * key at once. `isRedundantSameEndpointGroup` must independently clear every
+ * varying key, not just a single one, before a group collapses — and the
+ * report's own re-test shows `available-sailings` (the drill endpoint) is
+ * still emitted as one hardcoded `httpClient` call per item instead of being
+ * hoisted into a single per-item drill, so the bound below is set tight
+ * enough that this fixture's current un-hoisted output fails it.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -54,7 +64,10 @@ function tenStepFixtureCaptures(): Capture[] {
   const listing = Array.from({ length: LISTING_PAGE_COUNT }, (_, i) =>
     buildCapture({
       url: `${LISTING_URL}?_=${1700000000 + i}`,
-      requestPostData: JSON.stringify({ page: i + 1 }),
+      // Varies in TWO fields: `page`, the real pagination cursor, and
+      // `nonce`, an unrelated dead scaffolding value never read anywhere
+      // else in the flow.
+      requestPostData: JSON.stringify({ page: i + 1, nonce: `listing-nonce-${i}` }),
       responseBody: {
         totalPages: LISTING_PAGE_COUNT,
         products: [{ productId: `p${i + 1}`, ...extraResponseFields("listing") }],
@@ -66,7 +79,10 @@ function tenStepFixtureCaptures(): Capture[] {
   const drills = Array.from({ length: DRILL_ITEM_COUNT }, (_, i) =>
     buildCapture({
       url: DRILL_URL,
-      requestPostData: JSON.stringify({ productId: `p${i + 1}` }),
+      // Varies in TWO fields: `productId`, the real per-item drill key
+      // (threaded from the listing group's response), and `nonce`, an
+      // unrelated dead scaffolding value never read anywhere else.
+      requestPostData: JSON.stringify({ productId: `p${i + 1}`, nonce: `drill-nonce-${i}` }),
       responseBody: {
         units: [{ unitId: `s${i + 1}`, ...extraResponseFields("drill") }],
         exchangeRate: 1.0,
@@ -165,9 +181,12 @@ describe("recon-generate CLI — 10-step flow verification hooks (call count, no
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
 
     // Raw capture count is 19 (6 toggles + 8 listing pages + 3 drills + 2
-    // noise variants). The report's own verification hook: order of
-    // magnitude 4-ish, not one hard-coded call per raw capture.
-    expect(httpClientCallCount).toBeLessThanOrEqual(10);
+    // noise variants). The report's own reference target is 4 calls; a
+    // fully-collapsed toggles-poll + paginated-listing-loop + per-item
+    // drill-loop should land at 3. An un-hoisted drill (one hardcoded
+    // `httpClient` call per item, the report's still-open defect) inflates
+    // this to 5, which this bound must reject.
+    expect(httpClientCallCount).toBeLessThanOrEqual(4);
 
     // Neither noise-family path/query variant survives into the emitted
     // contract, in any form.
@@ -175,11 +194,11 @@ describe("recon-generate CLI — 10-step flow verification hooks (call count, no
     expect(contract).not.toContain("impressionCount");
 
     // The report's own line-count verification hook, at its stated
-    // tightness: ~500-900 lines for the 10-step flow (as `main` already
-    // proves), not the loose 50-2000 bound the existing regression accepts,
-    // and nowhere near the ~9700-line un-collapsed regression.
+    // tightness: within an order of magnitude of the reference contract's
+    // 569-700 lines, not the loose 450-950 window that also tolerates
+    // today's un-hoisted-drill output.
     const lineCount = contract.split("\n").length;
-    expect(lineCount).toBeGreaterThanOrEqual(450);
-    expect(lineCount).toBeLessThanOrEqual(950);
+    expect(lineCount).toBeGreaterThanOrEqual(400);
+    expect(lineCount).toBeLessThanOrEqual(620);
   }, 30_000);
 });
