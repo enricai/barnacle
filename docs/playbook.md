@@ -215,11 +215,15 @@ Each attempt classifies a `registryState` diagnostic:
   rendered (`window.hcaptcha` is loaded and an iframe exists inside its
   `[data-sitekey]` anchor), but no registry entry names it. This means the
   render call the wrap needed to observe already ran and returned before the
-  wrap re-attached — reinstalling the wrap and retrying the same
-  install-then-poll strategy can never catch it, so `shouldRetryCaptchaRegistry`
-  treats this as a genuine, non-retriable install failure and gives up
-  immediately rather than spending the remaining attempt budget on a captcha
-  solve that can't succeed.
+  wrap re-attached, so `shouldRetryCaptchaRegistry` does not treat it as a
+  registry race by itself — reinstalling the wrap and retrying the same
+  install-then-poll strategy can never recapture that render. This state is
+  not, on its own, a genuine give-up signal though: `registryState` and
+  `callbackDiscovered` are independent diagnostics, so a `renderedUnmatched`
+  attempt with `callbackDiscovered=true` still retries via the same
+  callback-fired-without-confirmation path as `populated` above. Only
+  `renderedUnmatched` combined with `callbackDiscovered=false` is a genuine,
+  non-retriable install failure.
 
 ### 1d — Step failure dump
 
