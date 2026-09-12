@@ -32,7 +32,7 @@ function emitConsumerUrl(): string {
   };
   const consumer = {
     capture: buildCapture({
-      url: "https://api.example.com/report/LONGVALUEID12/entity/Id/warehouse42/items/42/summary",
+      url: "https://api.example.com/report/LONGVALUEID12/version/v3.42/entity/Id/warehouse42/items/42/summary",
       requestPostData: null,
       responseBody: {},
       timestamp: "2026-01-01T00:00:01Z",
@@ -69,6 +69,13 @@ describe("interpolateStateValues — anchored, single-pass substitution", () => 
 
     expect(url).toContain("warehouse42");
     expect(url).not.toMatch(/warehouse\$\{pageSize\}/);
+  });
+
+  it("never splices a value into a decimal-joined literal it merely appears at the tail of (e.g. a version string)", () => {
+    const url = emitConsumerUrl();
+
+    expect(url).toContain("v3.42");
+    expect(url).not.toMatch(/v3\.\$\{pageSize\}/);
   });
 
   it("never produces a nested placeholder from a later shorter value matching inside an earlier substitution", () => {

@@ -4071,6 +4071,14 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * and `\b` anchoring (matching {@link replaceWholeValue} below) keeps an
  * unrelated literal segment that merely CONTAINS a shorter known value (e.g. a
  * page-count belonging to a different field) from being spliced into.
+ *
+ * `\b` alone is not enough: it only guards word-char/non-word-char adjacency,
+ * so a value flanked by a `.` (or `-`/`_`) that itself sits against a digit —
+ * e.g. the "42" inside the version segment "v3.42" — still reads as a word
+ * boundary even though "3.42" is one semantic token. The pattern additionally
+ * forbids a match whose flanking side is `<digit>.` or `.<digit>`, so a
+ * decimal-joined literal is never split apart while a standalone occurrence
+ * (e.g. "/items/42/") still matches normally.
  */
 function interpolateStateValues(
   template: string,
@@ -4090,7 +4098,7 @@ function interpolateStateValues(
 
   const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
   const pattern = new RegExp(
-    `\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+    `(?<!\\d\\.)\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?!\\.\\d)`,
     "g"
   );
 
