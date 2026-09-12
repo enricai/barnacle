@@ -92,6 +92,10 @@ describe("shouldRetryCaptchaRegistry — pure retry-gate decision", () => {
   it("gives up when the registry is populated, no callback fired, and unconfirmed but not within a race", () => {
     expect(shouldRetryCaptchaRegistry(1, 3, "populated", false, false)).toBe(false);
   });
+
+  it("gives up on renderedUnmatched: the render already fired before the wrap landed, so reinstalling it can't recapture it", () => {
+    expect(shouldRetryCaptchaRegistry(1, 3, "renderedUnmatched", false, false)).toBe(false);
+  });
 });
 
 describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bounded retry", () => {
