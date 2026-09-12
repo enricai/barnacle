@@ -206,7 +206,7 @@ A `captchaGated` step (solve+inject+submit via `executeStepWithHealing` in
 solve+inject+registry-check sequence, separate from the 1c cascade above,
 because the render callback that populates
 `HCAPTCHA_CALLBACK_REGISTRY_GLOBAL` can attach after the solve has already
-finished. `shouldRetryCaptchaRegistry` (`src/scraper/flow-runner.ts:794-825`)
+finished. `shouldRetryCaptchaRegistry` (`src/scraper/flow-runner.ts:828-839`)
 is the pure decision gate, bounded by `CAPTCHA_REGISTRY_RETRY_ATTEMPTS` (3).
 
 Each attempt classifies a `registryState` diagnostic:
