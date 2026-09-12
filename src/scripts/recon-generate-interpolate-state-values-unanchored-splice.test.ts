@@ -80,8 +80,8 @@ describe("interpolateStateValues — anchored, single-pass substitution", () => 
   it("still correctly interpolates a legitimate, boundary-safe standalone occurrence", () => {
     const url = emitConsumerUrl();
 
-    expect(url).toContain("${record.Id}");
-    expect(url).toContain("${shortIdVar}");
-    expect(url).toContain("${pageSize}");
+    expect(url).toContain(`$${"{record.Id}"}`);
+    expect(url).toContain(`$${"{shortIdVar}"}`);
+    expect(url).toContain(`$${"{pageSize}"}`);
   });
 });
