@@ -121,12 +121,20 @@ endpoint, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default), gated by
 `SCRAPER_CAPTURE_SESSION_IP` (default `true`). Recon-browser never calls it —
 it exists for the dispatch path's per-submission telemetry (5D).
 
-`createBrowserSession()` also installs the hCaptcha render-config
-callback-capture init script (`src/scraper/captcha-callback-capture.ts`) via
-`context.addInitScript` immediately after the session is created, for both
-providers — no siteId/plugin conditional. This monkeypatches
-`hcaptcha.render` before any site script runs, so a flow hook can later read
-back a programmatically-registered `callback` that never appears in the DOM.
+`createBrowserSession()` also installs the render-config callback-capture
+init script (`src/scraper/captcha-callback-capture.ts`) immediately after the
+session is created, for both providers — no siteId/plugin conditional. The
+install goes through `installInitScriptOnAllFrames()`
+(`src/scraper/cdp-frame-init-script.ts`), which arms `Target.setAutoAttach`
+(`waitForDebuggerOnStart: true`) on every session and sends
+`Page.addScriptToEvaluateOnNewDocument` per target, recursing onto each
+newly-attached child session before resuming it via
+`Runtime.runIfWaitingForDebugger`. This closes the install-vs-render race a
+single context-level `addInitScript` call leaves open for a newly-attached
+same-origin child frame realm, whose scripts can start running before that
+call's round trip lands. This monkeypatches the widget's `render` function
+before any site script runs, so a flow hook can later read back a
+programmatically-registered `callback` that never appears in the DOM.
 
 ### 1b — CDP session-level network capture
 
