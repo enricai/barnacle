@@ -355,6 +355,48 @@ describe("installHcaptchaCallbackCaptureOnAllFrames", () => {
     ).not.toThrow();
   });
 
+  it("captures a render call that fires the instant the target attaches, before any post-attach evaluate could ever run", async () => {
+    const { session, handlers } = makeFakeSession();
+    const { page } = makePage(session);
+
+    await installHcaptchaCallbackCaptureOnAllFrames(page);
+
+    const registeredScript = session.send.mock.calls.find(
+      (call) => call[0] === "Page.addScriptToEvaluateOnNewDocument"
+    )?.[1].source as string;
+
+    // Simulates a frame whose document (and its onload-driven render() call)
+    // executes synchronously in the same tick the target attaches — no
+    // macrotask gap exists for a reactive post-attach evaluate to win. The
+    // capture script installs via Page.addScriptToEvaluateOnNewDocument,
+    // which CDP guarantees runs before this frame's own scripts, so the
+    // sandbox is set up exactly as it would be at that instant: the capture
+    // script already applied, then the frame's own render call firing.
+    const sandbox = makeFakeWindow();
+    vm.createContext(sandbox);
+    vm.runInContext(registeredScript, sandbox);
+
+    const callback = (): void => undefined;
+    (sandbox.window as Record<string, unknown>).hcaptcha = {
+      render: () => "widget-race",
+    };
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: (container: string, config: Record<string, unknown>) => string;
+    };
+    hcaptcha.render("h-captcha", { sitekey: "site-race", callback });
+
+    handlers["Target.attachedToTarget"]?.({ sessionId: "child-session-race" });
+
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-race::widget-race"]).toEqual({
+      sitekey: "site-race",
+      widgetId: "widget-race",
+      callback,
+    });
+  });
+
   it("never branches on siteId/plugin identity — the source is frame-agnostic", () => {
     const source = fs.readFileSync(path.join(__dirname, "captcha-callback-capture.ts"), "utf8");
     expect(source).not.toMatch(/siteId|pluginName|plugin\.meta/i);
