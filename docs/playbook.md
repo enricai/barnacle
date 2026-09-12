@@ -131,7 +131,7 @@ install goes through `installInitScriptOnAllFrames()`
 newly-attached child session before resuming it via
 `Runtime.runIfWaitingForDebugger`. This closes the install-vs-render race a
 single context-level `addInitScript` call leaves open for a newly-attached
-same-origin child frame realm, whose scripts can start running before that
+cross-origin child frame realm, whose scripts can start running before that
 call's round trip lands. This monkeypatches the widget's `render` function
 before any site script runs, so a flow hook can later read back a
 programmatically-registered `callback` that never appears in the DOM.
