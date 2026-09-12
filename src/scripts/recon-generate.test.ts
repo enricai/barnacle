@@ -792,6 +792,19 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
 
     expect(kept).toEqual([productAvail.url, promoBanner.url]);
   });
+
+  // (#bugfix-003 attempted to exclude every same-pathname repeat from a
+  // candidate's own structural-isolation evidence set, so N identical
+  // repeats of a same-host endpoint could no longer trivially "vouch" for
+  // each other. Reverted: it can't distinguish that shape from a
+  // legitimately repeated own-backend polling endpoint (e.g. a toggles/
+  // feature-flag poll re-fired 6+ times) whose path just doesn't happen to
+  // share a token with any other endpoint in a small flow — see
+  // recon-generate-rest-repeated-endpoint-collapse-e2e.test.ts and
+  // recon-generate-repeated-endpoint-noise-family-combined-e2e.test.ts,
+  // which need the pre-bugfix-003 self-vouching behavior to keep such an
+  // endpoint from being dropped outright before it ever reaches the
+  // same-endpoint collapse step.)
 });
 
 describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {

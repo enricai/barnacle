@@ -134,7 +134,7 @@ const GENERIC_PATH_TOKENS = new Set(["api", "app", "apps", "v1", "v2", "v3", "co
  * because both happen to end in the common word "search"). Compound segments
  * are where a real endpoint-family identifier lives.
  */
-function pathStructuralTokens(path: string): Set<string> {
+export function pathStructuralTokens(path: string): Set<string> {
   const words = path
     .split("/")
     .filter(Boolean)

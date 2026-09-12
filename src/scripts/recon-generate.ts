@@ -42,6 +42,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  pathStructuralTokens,
   registrableDomain,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -1865,12 +1866,24 @@ export function extractActionSequence(
   // but a 1-2 capture pool has no "everything else" to be isolated from, so
   // skip it there rather than risk flagging a single-endpoint site's own
   // hyphenated path.
+  //
+  // A candidate's own same-pathname repeats only count as evidence against
+  // itself (not for it) when its path carries a densely name-spaced,
+  // marketing/tracking-shaped signal — more than one compound segment's
+  // worth of tokens (e.g. `/site-banner/promotions-widget`, 4 tokens across
+  // two compound segments): real own-backend endpoints (a polled toggles
+  // feed, a paged listing) are named with at most one compound segment, so
+  // they still get to vouch for themselves via their own repeats even when
+  // no OTHER endpoint in a small flow happens to share a token with them.
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture }, i) => {
           const path = safeUrlPathname(capture.url);
+          const denselyNameSpaced = pathStructuralTokens(path).size > 2;
           const otherPaths = hostGated
-            .filter((_, j) => j !== i)
+            .filter((h, j) =>
+              denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
+            )
             .map((h) => safeUrlPathname(h.capture.url));
           return !isStructurallyIsolatedCapture(path, otherPaths);
         })
@@ -1936,6 +1949,15 @@ export function extractActionSequence(
  * Exported for tests: this predicate decides what a generated GraphQL plugin
  * will send at a live site.
  */
+
+/** A GraphQL mutation capture, identified by its parsed operation query
+ * string starting with `mutation` — its response is a single mutated
+ * object rather than a re-readable list/flag, so it must never be folded
+ * in with genuinely idempotent reads by {@link isRedundantSameEndpointGroup}. */
+function isMutationCapture(capture: Capture): boolean {
+  return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+}
+
 export function extractGraphQLActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
@@ -1952,8 +1974,7 @@ export function extractGraphQLActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const isMutation = (capture: Capture): boolean =>
-    capture.query !== null && /^\s*mutation\b/.test(capture.query);
+  const isMutation = isMutationCapture;
 
   const admitted = captures
     .map((capture, index) => ({ capture, index }))
@@ -2090,9 +2111,13 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
 
 /**
  * A same-endpoint capture group qualifies for collapsing when every capture
- * resolves to the same {@link responseShapeKey} (ruling out a mutation POST,
- * whose response is a single mutated object rather than an array, and any
- * group whose members diverge in response shape) AND its request fields vary
+ * resolves to the same {@link responseShapeKey}, OR (when the response has no
+ * array field anywhere, e.g. a flat poll/flag-style object) every capture is
+ * a non-mutation whose response independently resolves via {@link
+ * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
+ * out a mutation POST, whose flat response is a single mutated object rather
+ * than a re-readable poll result, while still admitting a flat zero-variance
+ * re-poll -- AND its request fields vary
  * in at most one field once known non-semantic noise keys ({@link
  * CACHE_BUSTER_QUERY_KEYS}) are excluded from consideration, and that
  * remaining field is pagination-shaped -- a paged listing/facet re-query --
@@ -2104,10 +2129,22 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
  * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
  * collapsing it here would erase the very state that hoisting depends on.
  */
-function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
+export function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
   const shapeKey = responseShapeKey(group[0]!.capture);
-  if (shapeKey === null) return false;
-  if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+  if (shapeKey !== null) {
+    if (!group.every((a) => responseShapeKey(a.capture) === shapeKey)) return false;
+  } else {
+    // A flat (non-array) response never resolves a `responseShapeKey`, but a
+    // zero-variance re-poll of a flag/toggle endpoint still needs a shape to
+    // key on -- fall back to the whole-object candidate every group member
+    // must independently resolve to, and exclude a mutation, whose flat
+    // response is a mutated object rather than a re-readable poll result.
+    const isFlatObject = (capture: Capture): boolean =>
+      !isMutationCapture(capture) &&
+      responseShapeKey(capture) === null &&
+      findObjectArrayFieldOrWholeObject(capture.responseBody) !== null;
+    if (!group.every((a) => isFlatObject(a.capture))) return false;
+  }
 
   const fieldSets = group.map((a) => captureRequestFields(a.capture));
   const allKeys = new Set<string>();
@@ -4035,10 +4072,29 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * interpolations. Returns a JS template-literal string fragment (no backticks).
  *
  * Algorithm: walk the producing steps' response bodies in order, harvest each
- * produced value's concrete string, and map it to the produces[].name. Then
- * scan the template for those strings and replace with ${varName}. Length-
- * descending order avoids prefix conflicts (e.g. an 8-char prefix of a
- * 36-char UUID).
+ * produced value's concrete string, and map it to the produces[].name, then
+ * merge in the payload accessors (state wins on collision — e.g. when an
+ * Auth.UserName response value equals the user's submitted email). A single
+ * word-boundary-anchored regex alternation (longest value first, so an 8-char
+ * prefix never shadows the 36-char UUID it's a prefix of) is matched over the
+ * ORIGINAL template text exactly once: `String.prototype.replace` scans the
+ * subject left-to-right without ever re-visiting text a prior match in the
+ * same pass already consumed, so one substitution's freshly-emitted
+ * `${varName}` text can never itself be re-matched by a later, shorter value —
+ * and `\b` anchoring (matching {@link replaceWholeValue} below) keeps an
+ * unrelated literal segment that merely CONTAINS a shorter known value (e.g. a
+ * page-count belonging to a different field) from being spliced into.
+ *
+ * `\b` alone is not enough: it only guards word-char/non-word-char adjacency,
+ * so a value flanked by a `.` or `-` that itself sits against an alphanumeric
+ * char — e.g. the "12" inside a hyphen-joined opaque segment like
+ * "wJbfQL-12-K0X", or the "42" inside the decimal-joined version segment
+ * "v3.42" — still reads as a word boundary even though each is one semantic
+ * token. The pattern additionally forbids a match whose flanking side is
+ * `<alnum>-`/`-<alnum>` or `<alnum>.`/`.<alnum>` (matching {@link
+ * replaceWholeValue}'s identical guard), so a hyphen- or decimal-joined
+ * literal is never split apart while a standalone occurrence (e.g.
+ * "/items/42/") still matches normally.
  */
 function interpolateStateValues(
   template: string,
@@ -4047,30 +4103,22 @@ function interpolateStateValues(
 ): string {
   const varNameByValue = deriveStateVarByValue(priorSteps);
 
-  let result = template;
-
-  // Pass 1: substitute state values (length-descending to avoid prefix
-  // conflicts). `\$` is a literal dollar sign (NOT an interpolation);
-  // `${varName}` interpolates the binding name at code-generation time so
-  // the resulting string contains a template-literal placeholder like
-  // `${candidateId}`.
-  const sortedState = [...varNameByValue.entries()].sort((a, b) => b[0].length - a[0].length);
-  for (const [value, varName] of sortedState) {
-    result = result.split(value).join(`\${${varName}}`);
+  const bindingByValue = new Map<string, string>();
+  for (const [value, accessor] of payloadAccessorByValue) {
+    bindingByValue.set(value, `\${${accessor}}`);
   }
+  for (const [value, varName] of varNameByValue) {
+    bindingByValue.set(value, `\${${varName}}`);
+  }
+  if (bindingByValue.size === 0) return template;
 
-  // Pass 2: substitute payload values that survived the state pass. Same
-  // length-descending order. The payload pass only fires on remaining
-  // literal occurrences, so state substitutions win on collisions
-  // (e.g., when an Auth.UserName response value contains the user's email).
-  const sortedPayload = [...payloadAccessorByValue.entries()].sort(
-    (a, b) => b[0].length - a[0].length
+  const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(
+    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
+    "g"
   );
-  for (const [value, accessor] of sortedPayload) {
-    result = result.split(value).join(`\${${accessor}}`);
-  }
 
-  return result;
+  return template.replace(pattern, (match) => bindingByValue.get(match) ?? match);
 }
 
 /** A producer-boundary coordinate: the capture value, its `payload.<field>`
@@ -5323,9 +5371,20 @@ export function emitMultiStepExecuteHttp(
         // (e.g. a "p1" product id colliding with a "/v1/" path segment or a
         // "p10" sibling id), corrupting parts of the request the join field
         // never touched.
+        // `\b` alone still matches a value flanked by `-`/`.` against an
+        // adjacent alphanumeric char — `-`/`.` are non-word chars, so `\b`
+        // reads e.g. the "12" inside a hyphen-joined opaque segment like
+        // "wJbfQL-12-K0X" as a standalone word, splicing an unrelated field's
+        // value into what is semantically one opaque token. The lookaround
+        // guards reject any match immediately adjacent (on either side) to a
+        // `-`/`.` that itself sits against another alphanumeric char, while a
+        // genuinely standalone occurrence (e.g. "/items/12/") still matches.
         const replaceWholeValue = (haystack: string, value: string, replacement: string): string =>
           haystack.replace(
-            new RegExp(`\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+            new RegExp(
+              `(?<![A-Za-z0-9][-.])\\b${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
+              "g"
+            ),
             replacement
           );
         const parameterize = (text: string, chainCapture: Capture): string => {
@@ -9305,8 +9364,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   ? String(value)
                   : null;
             if (stringValue === null) return acc;
+            // See replaceWholeValue's identical guard: `\b` alone still
+            // matches a value flanked by `-`/`.` against an adjacent
+            // alphanumeric char, splicing into a hyphen-joined opaque
+            // segment that merely contains the value as a digit run.
             return acc.replace(
-              new RegExp(`\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"),
+              new RegExp(
+                `(?<![A-Za-z0-9][-.])\\b${stringValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b(?![-.][A-Za-z0-9])`,
+                "g"
+              ),
               `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`
             );
           }, withBase);
