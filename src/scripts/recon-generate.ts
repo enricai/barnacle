@@ -1959,12 +1959,23 @@ export function extractActionSequence(
  * will send at a live site.
  */
 
-/** A GraphQL mutation capture, identified by its parsed operation query
- * string starting with `mutation` — its response is a single mutated
- * object rather than a re-readable list/flag, so it must never be folded
- * in with genuinely idempotent reads by {@link isRedundantSameEndpointGroup}. */
+/** REST HTTP methods that write/mutate server state rather than merely
+ * reading it — a capture using one of these is never a re-readable
+ * poll/listing, regardless of how flat its response body looks. */
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** A mutation capture: either GraphQL (identified by its parsed operation
+ * query string starting with `mutation`) or REST (identified by a
+ * non-idempotent HTTP method). Its response is a single mutated object
+ * rather than a re-readable list/flag, so it must never be folded in with
+ * genuinely idempotent reads by {@link isRedundantSameEndpointGroup} — a
+ * flat-response REST POST (e.g. a wizard section save) is exactly as
+ * non-poll-able as a GraphQL mutation, but `capture.query` is always null
+ * for REST, so the GraphQL-only check alone would misclassify it as a
+ * collapsible poll. */
 function isMutationCapture(capture: Capture): boolean {
-  return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+  if (capture.query !== null) return /^\s*mutation\b/.test(capture.query);
+  return MUTATING_HTTP_METHODS.has(capture.method.toUpperCase());
 }
 
 export function extractGraphQLActionSequence(
