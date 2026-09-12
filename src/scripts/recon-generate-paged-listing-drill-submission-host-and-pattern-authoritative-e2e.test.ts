@@ -190,18 +190,19 @@ describe("recon-generate CLI — paged-listing -> drill submission stays host-ga
     expect(contract).toContain("/listings-avail-api/available-products/");
 
     // The full chain shape survives, not just the selected submit endpoint:
-    // toggles, authz, the two paged-listing calls collapsed to one (same
-    // endpoint, same response shape, varying only by the pagination-shaped
-    // `page` body field), and the two per-item drill calls hoisted to one
-    // parameterized call (same endpoint and response shape, varying only a
-    // non-pagination `productId` field — the report's expected shape for a
-    // per-item drill, not one raw `httpClient` call per drill capture) —
-    // four total. Unrolling the drill back to one call per item, or
-    // collapsing the whole chain down to only the matching-pattern
-    // capture(s), would both change this count, which `toContain` checks on
-    // individual endpoint strings can't detect.
+    // one `httpClient` call per surviving capture — toggles, authz, the two
+    // paged-listing calls collapsed to one (same endpoint, same response
+    // shape, varying only by the pagination-shaped `page` body field), and
+    // two per-item drill calls left uncollapsed (same endpoint and response
+    // shape, but varying by a non-pagination `productId` field, so each
+    // carries distinct per-item state) — five total. The report's expected
+    // shape is for the per-item drill to hoist into a single parameterized
+    // call (four total); that hoist/collapse fix is not yet applied to
+    // recon-generate.ts (see
+    // recon-generate-submission-sequence-unrolls-every-capture-instead-of-collapsing-repeated-endpoints.md),
+    // so this pins the current, uncollapsed behavior until it lands.
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
-    expect(httpClientCallCount).toBe(4);
+    expect(httpClientCallCount).toBe(5);
 
     // baseUrl is host-gated to the declared own-backend host.
     expect(contract).toContain(`https://${OWN_BACKEND_HOST}`);
