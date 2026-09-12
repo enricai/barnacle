@@ -2142,55 +2142,72 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
   return fields;
 }
 
-/** Every literal request-path segment, request-query/body leaf, and
- * response-body leaf a capture carries, flattened to strings -- the universe
- * of values a LATER capture's own request could plausibly have copied if it
- * threaded this capture's data forward. Used by {@link
- * isFieldValueThreadedElsewhere} to tell a value some downstream step
- * actually reads (a resource id echoed back and later passed to a detail
- * fetch) apart from one nothing ever consumes (a monotonically-incrementing
- * request nonce). */
-function requestAndResponseValues(capture: Capture): Set<string> {
-  const values = new Set<string>();
+/** Every literal request-query/body leaf and response-body leaf a capture
+ * carries, flattened to strings and grouped by the field/segment NAME that
+ * carries each value -- the universe of (name, value) pairs a LATER
+ * capture's own request could plausibly have copied if it threaded this
+ * capture's data forward. Keying by name (not just value) is what lets
+ * {@link isFieldValueThreadedElsewhere} tell a value some downstream step
+ * actually reads under the SAME field name (a resource id echoed back as
+ * `itemId` and later passed to a detail fetch's own `itemId`) apart from a
+ * short scalar that merely happens to string-equal an unrelated field
+ * elsewhere (a 1-8 valued `page` counter colliding with some other
+ * capture's unrelated numeric leaf) -- a coincidence a bare value-equality
+ * scan can't distinguish from genuine threading in a large capture corpus.
+ * URL path segments carry no field name of their own, so they're omitted
+ * here (query-string keys and JSON leaf keys are). */
+function requestAndResponseValuesByKey(capture: Capture): Map<string, Set<string>> {
+  const valuesByKey = new Map<string, Set<string>>();
+  const add = (key: string, value: string): void => {
+    const values = valuesByKey.get(key) ?? new Set<string>();
+    values.add(value);
+    valuesByKey.set(key, values);
+  };
   try {
     const url = new URL(capture.url);
-    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
-    for (const [, value] of url.searchParams) values.add(value);
+    for (const [key, value] of url.searchParams) add(key, value);
   } catch {
-    // Relative/invalid URLs carry no path/query values to contribute.
+    // Relative/invalid URLs carry no query-string signal to contribute.
   }
   if (capture.requestPostData) {
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
-      for (const { value } of walkAllPrimitiveLeaves(parsed)) {
-        if (value !== null) values.add(String(value));
+      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
       }
     } catch {
       // A non-JSON body carries no leaf values to contribute.
     }
   }
-  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
-    if (value !== null) values.add(String(value));
+  for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
   }
-  return values;
+  return valuesByKey;
 }
 
-/** True when `value` -- one member's own value for the sole varying request
- * field of a same-endpoint group -- shows up in some capture OUTSIDE the
- * group itself (any OTHER, DIFFERENT-endpoint capture's path/query/body/
- * response), proving some later step reads or threads it. False means the
- * value is either scaffolding the client generated and nothing downstream
- * ever consumes, OR a cursor the group's OWN members hand to each other --
- * e.g. page 1's response minting the exact cursor value page 2's request
- * carries -- which is chained pagination state, not distinct data a
- * different step depends on, so an echo confined to sibling occurrences of
- * this SAME same-endpoint group must not block collapsing it. This is the
- * structural signal {@link isRedundantSameEndpointGroup} uses to widen
- * collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
+/** True when `value` -- one member's own value for `fieldKey`, the sole
+ * varying request field of a same-endpoint group -- shows up under that
+ * SAME field/leaf name in some capture OUTSIDE the group itself (any OTHER,
+ * DIFFERENT-endpoint capture's query/body/response), proving some later
+ * step reads or threads it. False means the value is either scaffolding the
+ * client generated and nothing downstream ever consumes, OR a cursor the
+ * group's OWN members hand to each other -- e.g. page 1's response minting
+ * the exact cursor value page 2's request carries -- which is chained
+ * pagination state, not distinct data a different step depends on, so an
+ * echo confined to sibling occurrences of this SAME same-endpoint group
+ * must not block collapsing it, OR a short scalar (a low-cardinality page
+ * counter) that merely string-equals some unrelated field elsewhere by
+ * coincidence -- requiring the match to occur under the SAME field name is
+ * what tells genuine cross-step threading (an id echoed back under its own
+ * name) apart from that coincidence, since an unrelated field publishing
+ * the same short digit string under a DIFFERENT name proves nothing. This
+ * is the structural signal {@link isRedundantSameEndpointGroup} uses to
+ * widen collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
  * PAGINATION_FIELD_NAME_PATTERN} allowlists without hand-enumerating more
  * key-name shapes. A non-primitive or empty value can't be structurally
  * proven dead, so it's treated as load-bearing by default. */
 function isFieldValueThreadedElsewhere(
+  fieldKey: string,
   value: unknown,
   groupCaptures: ReadonlySet<Capture>,
   allActions: readonly ActionCapture[]
@@ -2200,10 +2217,10 @@ function isFieldValueThreadedElsewhere(
   }
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
-  return allActions.some(
-    ({ capture }) =>
-      !groupCaptures.has(capture) && requestAndResponseValues(capture).has(stringValue)
-  );
+  return allActions.some(({ capture }) => {
+    if (groupCaptures.has(capture)) return false;
+    return requestAndResponseValuesByKey(capture).get(fieldKey)?.has(stringValue) ?? false;
+  });
 }
 
 /**
@@ -2301,7 +2318,7 @@ export function isRedundantSameEndpointGroup(
     if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
     if (!allActions) return false;
     return fieldSets.every(
-      (fields) => !isFieldValueThreadedElsewhere(fields[key], groupCaptures, allActions)
+      (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
     );
   });
 }
