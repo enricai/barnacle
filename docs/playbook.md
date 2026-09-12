@@ -191,6 +191,36 @@ question.
 
 Backoff between attempts: linear `attempt * 1000ms`.
 
+### 1c-1 — captchaGated registry-retry
+
+A `captchaGated` step (solve+inject+submit via `executeStepWithHealing` in
+`src/scraper/flow-runner.ts`) runs its own bounded retry loop around the
+solve+inject+registry-check sequence, separate from the 1c cascade above,
+because the render callback that populates
+`HCAPTCHA_CALLBACK_REGISTRY_GLOBAL` can attach after the solve has already
+finished. `shouldRetryCaptchaRegistry` (`src/scraper/flow-runner.ts:794-825`)
+is the pure decision gate, bounded by `CAPTCHA_REGISTRY_RETRY_ATTEMPTS` (3).
+
+Each attempt classifies a `registryState` diagnostic:
+
+- **`absent`** — the registry global doesn't exist yet. Retriable: the wrap
+  hasn't had a chance to attach.
+- **`empty`** — the registry exists but has no entry for this sitekey.
+  Retriable for the same reason.
+- **`populated`** — an entry for this sitekey was captured. Not itself a
+  retry trigger, but combined with `callbackDiscovered=true` and no confirmed
+  transition, the step retries on the theory the callback fired without the
+  navigation completing yet.
+- **`renderedUnmatched`** — a widget matching this sitekey has already
+  rendered (`window.hcaptcha` is loaded and an iframe exists inside its
+  `[data-sitekey]` anchor), but no registry entry names it. This means the
+  render call the wrap needed to observe already ran and returned before the
+  wrap re-attached — reinstalling the wrap and retrying the same
+  install-then-poll strategy can never catch it, so `shouldRetryCaptchaRegistry`
+  treats this as a genuine, non-retriable install failure and gives up
+  immediately rather than spending the remaining attempt budget on a captcha
+  solve that can't succeed.
+
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to
