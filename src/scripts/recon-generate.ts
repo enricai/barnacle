@@ -2139,62 +2139,6 @@ function isRedundantSameEndpointGroup(group: ActionCapture[]): boolean {
  * actually saw and drilled into first, so it is the occurrence downstream
  * join values are captured against, not the endpoint's final paged state.
  */
-/**
- * Rebuilds `value` with the object-array (or nested field) found at `path`
- * replaced by `items` — a fresh object at every level `path` touches, so the
- * original capture body (relied on elsewhere as never-mutated, see {@link
- * objectArrayFieldsCache}) is left untouched. Only supports a plain,
- * non-wildcard path (checked by the caller): every collapsed pagination
- * group's items array lives at one fixed key chain, never inside a
- * per-group repeated array.
- */
-function withArrayAtPath(
-  value: unknown,
-  path: string[],
-  items: Record<string, unknown>[]
-): unknown {
-  if (path.length === 0) return items;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-  const [key, ...rest] = path;
-  const obj = value as Record<string, unknown>;
-  return { ...obj, [key!]: withArrayAtPath(obj[key!], rest, items) };
-}
-
-/**
- * A paged/filtered listing collapsed down to its first occurrence (see
- * {@link collapseRedundantSameEndpointCaptures}) keeps only page 1's own
- * items — losing every OTHER page's items from the pool a later per-item
- * drill-down's join is matched against. A drill capture threading page 2's
- * item id then matches nothing in the kept representative's response, so
- * `detectDrillDownFoldPlan` can't fold it and it survives as its own,
- * literal, unhoisted step instead of collapsing into the per-item loop the
- * FIRST page's drill already resolves (see
- * recon-generate-submission-sequence-unrolls-every-capture-instead-of-collapsing-repeated-endpoints.md).
- * Folding every page's items into the kept representative's own
- * object-array field — the same field a later drill-down's join is matched
- * against — closes that gap without changing which occurrence survives or
- * what downstream steps thread values from.
- */
-function mergePaginatedGroupItems(group: ActionCapture[]): Capture {
-  const kept = group[0]!.capture;
-  const arrayField = findAllObjectArrayFields(kept.responseBody).find(
-    (field) => !field.path.includes(ARRAY_WILDCARD_SEGMENT)
-  );
-  if (!arrayField) return kept;
-
-  const mergedItems: Record<string, unknown>[] = [];
-  for (const action of group) {
-    const items = objectItemsAtPath(action.capture.responseBody, arrayField.path);
-    if (items) mergedItems.push(...items);
-  }
-  if (mergedItems.length <= arrayField.items.length) return kept;
-
-  return {
-    ...kept,
-    responseBody: withArrayAtPath(kept.responseBody, arrayField.path, mergedItems),
-  };
-}
-
 function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
   actions.forEach((a, i) => {
@@ -2205,36 +2149,14 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
   });
 
   const drop = new Set<number>();
-  const mergedCaptureByPosition = new Map<number, Capture>();
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
     if (!isRedundantSameEndpointGroup(group)) continue;
     for (const position of positions.slice(1)) drop.add(position);
-
-    // A polled toggles/feature-flag re-fire (0 varying keys) repeats the
-    // SAME request/response, so there is nothing to merge — only a real
-    // pagination re-query (1 varying, pagination-shaped key) can hold
-    // DIFFERENT items per occurrence.
-    const fieldSets = group.map((a) => captureRequestFields(a.capture));
-    const allKeys = new Set<string>();
-    for (const fields of fieldSets) for (const key of Object.keys(fields)) allKeys.add(key);
-    const varies = [...allKeys].some((key) => {
-      if (CACHE_BUSTER_QUERY_KEYS.has(key)) return false;
-      return new Set(fieldSets.map((fields) => JSON.stringify(fields[key]))).size > 1;
-    });
-    if (!varies) continue;
-
-    mergedCaptureByPosition.set(positions[0]!, mergePaginatedGroupItems(group));
   }
 
-  const kept: ActionCapture[] = [];
-  actions.forEach((action, i) => {
-    if (drop.has(i)) return;
-    const merged = mergedCaptureByPosition.get(i);
-    kept.push(merged ? { ...action, capture: merged } : action);
-  });
-  return kept;
+  return actions.filter((_, i) => !drop.has(i));
 }
 
 interface StateValue {
@@ -5275,9 +5197,7 @@ export function emitMultiStepExecuteHttp(
   // so none of them may run through the outer `declaredNames`/produceLines
   // bookkeeping below (that bookkeeping assumes function-scope declarations).
   const foldChainIndices = new Set(
-    foldPlans.flatMap((plan) =>
-      plan.targets.flatMap((target) => [...target.chain, ...target.redundantIndices])
-    )
+    foldPlans.flatMap((plan) => plan.targets.flatMap((target) => target.chain))
   );
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
@@ -6182,18 +6102,6 @@ export interface FoldTarget {
   chain: number[];
   chainArrayPath: string[];
   chainTerminalIndex: number;
-  /** Indices of OTHER raw captures of this same target's drill endpoint,
-   * each threading a DIFFERENT primary item than the one this target's own
-   * `drillStepIndex` resolved against — the same conceptual per-item drill,
-   * re-fired once per item during recon. The per-item loop already replays
-   * this target's own request once per runtime item, so these must be
-   * skipped from literal single-call emission (see the emission loop's
-   * `foldChainIndices`) WITHOUT being folded into `chain` itself: unlike a
-   * true dependency hop, each one's own captured request body is frozen
-   * against a DIFFERENT item than `firstItem`, so parameterizing it against
-   * `firstItem` would falsely report an unresolvable frozen literal (see
-   * recon-generate-submission-sequence-unrolls-every-capture-instead-of-collapsing-repeated-endpoints.md). */
-  redundantIndices: number[];
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -7024,15 +6932,6 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
 
   for (const primaryArray of primaryCandidates) {
     const targets: FoldTarget[] = [];
-    // A per-item drill re-fires the SAME endpoint once per primary item, so
-    // this array's candidateDrillIndices scan resolves one target per item
-    // sharing one endpoint — every occurrence past the first is the SAME
-    // conceptual per-item call the loop already replays at runtime, not an
-    // independent target. Keyed by method+endpointKey so a target is
-    // absorbed here only when its drill re-fires the exact same endpoint an
-    // already-resolved target of THIS array already covers (see
-    // recon-generate-submission-sequence-unrolls-every-capture-instead-of-collapsing-repeated-endpoints.md).
-    const targetIndexByDrillEndpointKey = new Map<string, number>();
     // Pruned to the (typically tiny) set of later action indices whose
     // request could possibly thread one of this array's own item values —
     // see buildRequestStringValueIndex's docstring — instead of every
@@ -7102,14 +7001,6 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
       );
       if (!chainTerminalItems || chainTerminalItems.length === 0) continue;
 
-      const drillEndpointKey = `${drill.capture.method} ${endpointKey(drill.capture.url)}`;
-      const existingTargetIndex = targetIndexByDrillEndpointKey.get(drillEndpointKey);
-      if (existingTargetIndex !== undefined) {
-        targets[existingTargetIndex]!.redundantIndices.push(...chain);
-        for (const chainIndex of chain) consumedIndices.add(chainIndex);
-        continue;
-      }
-
       // `primaryArray.path` can carry an ARRAY_WILDCARD_SEGMENT (a matched
       // item nested inside a multi-element outer array — e.g. a
       // paginated/grouped response wrapping several sub-collections), in
@@ -7136,9 +7027,7 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
         chain,
         chainArrayPath,
         chainTerminalIndex,
-        redundantIndices: [],
       });
-      targetIndexByDrillEndpointKey.set(drillEndpointKey, targets.length - 1);
       // Everything past drillIndex already folded into this target's own
       // chain is per-item dependent on THIS drill-down, not independently
       // threaded off the primary array, so it must be skipped rather than
@@ -7937,7 +7826,6 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
             chain,
             chainArrayPath,
             chainTerminalIndex,
-            redundantIndices: [],
           },
         ],
       };
