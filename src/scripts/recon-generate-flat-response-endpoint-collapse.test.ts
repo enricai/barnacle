@@ -44,6 +44,38 @@ describe("isRedundantSameEndpointGroup — flat (non-array) responses", () => {
     expect(isRedundantSameEndpointGroup(group)).toBe(false);
   });
 
+  it("collapses a REST mutation-method (POST) group whose response body is byte-identical across every occurrence", () => {
+    const group = toGroup(
+      Array.from({ length: 3 }, (_, i) =>
+        buildCapture({
+          url: FLAG_URL,
+          method: "POST",
+          requestPostData: "[]",
+          responseBody: { enabled: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(true);
+  });
+
+  it("still refuses to collapse a REST mutation-method (POST) group with a genuinely varying response", () => {
+    const group = toGroup(
+      Array.from({ length: 2 }, (_, i) =>
+        buildCapture({
+          url: "https://api.example.com/wizard/section",
+          method: "POST",
+          requestPostData: JSON.stringify({ section: i }),
+          responseBody: { id: `section-${i}`, saved: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+  });
+
   it("still refuses to collapse a group whose flat responses vary in a non-pagination field", () => {
     const group = toGroup(
       Array.from({ length: 2 }, (_, i) =>

@@ -2204,11 +2204,15 @@ function isFieldValueThreadedElsewhere(
  * A same-endpoint capture group qualifies for collapsing when every capture
  * resolves to the same {@link responseShapeKey}, OR (when the response has no
  * array field anywhere, e.g. a flat poll/flag-style object) every capture is
- * a non-mutation whose response independently resolves via {@link
- * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
- * out a mutation POST, whose flat response is a single mutated object rather
- * than a re-readable poll result, while still admitting a flat zero-variance
- * re-poll -- AND EVERY request field that varies once known non-semantic
+ * either a non-mutation, or a mutation whose response body is byte-identical
+ * across every occurrence in the group, whose response independently
+ * resolves via {@link findObjectArrayFieldOrWholeObject}'s whole-object
+ * fallback -- this rules out a mutation POST with a genuinely varying
+ * response (e.g. a wizard section save), whose flat response is a single
+ * mutated object rather than a re-readable poll result, while still
+ * admitting a flat zero-variance re-poll fired via a mutating method (e.g. a
+ * feature-flag/heartbeat check fired via POST) -- AND EVERY request field
+ * that varies once known non-semantic
  * noise keys ({@link CACHE_BUSTER_QUERY_KEYS}) are excluded from
  * consideration is EITHER pagination-shaped -- a paged listing/facet re-query
  * -- OR (when `allActions`, the full capture sequence, is supplied)
@@ -2241,10 +2245,24 @@ export function isRedundantSameEndpointGroup(
     // A flat (non-array) response never resolves a `responseShapeKey`, but a
     // zero-variance re-poll of a flag/toggle endpoint still needs a shape to
     // key on -- fall back to the whole-object candidate every group member
-    // must independently resolve to, and exclude a mutation, whose flat
-    // response is a mutated object rather than a re-readable poll result.
+    // must independently resolve to. A GraphQL mutation (detected via the
+    // parsed operation query) is always excluded, since its response is by
+    // definition the result of a state change. A REST capture excluded only
+    // because of its HTTP method (POST/PUT/PATCH/DELETE) is admitted anyway
+    // when every occurrence's response body is byte-identical -- that is
+    // proof the call carries no distinct mutated state at all (a
+    // feature-flag/heartbeat check fired via POST), the same zero-variance
+    // signal {@link isZeroVarianceRepeatCapture} already uses for noise
+    // exclusion, generalized here for the collapse decision.
+    const isGraphQLMutation = (capture: Capture): boolean =>
+      capture.query !== null && /^\s*mutation\b/.test(capture.query);
+    const responsesByteIdentical = group.every(
+      (a) =>
+        JSON.stringify(a.capture.responseBody) === JSON.stringify(group[0]!.capture.responseBody)
+    );
     const isFlatObject = (capture: Capture): boolean =>
-      !isMutationCapture(capture) &&
+      !isGraphQLMutation(capture) &&
+      (!isMutationCapture(capture) || responsesByteIdentical) &&
       responseShapeKey(capture) === null &&
       findObjectArrayFieldOrWholeObject(capture.responseBody) !== null;
     if (!group.every((a) => isFlatObject(a.capture))) return false;
