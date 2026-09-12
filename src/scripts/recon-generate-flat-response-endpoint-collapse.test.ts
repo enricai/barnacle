@@ -44,6 +44,38 @@ describe("isRedundantSameEndpointGroup — flat (non-array) responses", () => {
     expect(isRedundantSameEndpointGroup(group)).toBe(false);
   });
 
+  it("collapses a REST mutation-method (POST) group whose response body is byte-identical across every occurrence", () => {
+    const group = toGroup(
+      Array.from({ length: 3 }, (_, i) =>
+        buildCapture({
+          url: FLAG_URL,
+          method: "POST",
+          requestPostData: "[]",
+          responseBody: { enabled: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(true);
+  });
+
+  it("still refuses to collapse a REST mutation-method (POST) group with a genuinely varying response", () => {
+    const group = toGroup(
+      Array.from({ length: 2 }, (_, i) =>
+        buildCapture({
+          url: "https://api.example.com/wizard/section",
+          method: "POST",
+          requestPostData: JSON.stringify({ section: i }),
+          responseBody: { id: `section-${i}`, saved: true },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+  });
+
   it("still refuses to collapse a group whose flat responses vary in a non-pagination field", () => {
     const group = toGroup(
       Array.from({ length: 2 }, (_, i) =>
@@ -152,6 +184,27 @@ describe("isRedundantSameEndpointGroup — structural non-semantic-key widening"
     const allActions = [...group, drillStep];
 
     expect(isRedundantSameEndpointGroup(group, allActions)).toBe(false);
+  });
+
+  it("collapses a paged listing whose page cursor is a non-allowlisted key name that the endpoint's own chained responses hand forward to each other", () => {
+    const LISTING_URL = "https://api.example.com/catalog/listing";
+    const cursors = ["seg-aaa", "seg-bbb", "seg-ccc", "seg-ddd"];
+    const group = toGroup(
+      cursors.map((cursor, i) =>
+        buildCapture({
+          url: LISTING_URL,
+          requestPostData: JSON.stringify({ facetCursor: cursor }),
+          responseBody: {
+            items: [{ id: `item-${i}-a` }, { id: `item-${i}-b` }],
+            nextFacetCursor: cursors[i + 1] ?? null,
+          },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+    expect(isRedundantSameEndpointGroup(group, group)).toBe(true);
   });
 
   it("still refuses to collapse when the sole varying value IS read by a later step (per-item join key)", () => {

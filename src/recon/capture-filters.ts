@@ -295,12 +295,60 @@ export function isSamePathFamily(pathA: string, pathB: string): boolean {
 }
 
 /**
+ * Every string/number/boolean leaf reachable from `value`, stringified, with
+ * `null`/`undefined` leaves skipped (they carry no derivable identifier to
+ * compare against the request).
+ */
+function collectLeafValues(value: unknown, out: string[]): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === "object") {
+    for (const child of Array.isArray(value)
+      ? value
+      : Object.values(value as Record<string, unknown>)) {
+      collectLeafValues(child, out);
+    }
+    return;
+  }
+  out.push(String(value));
+}
+
+/**
+ * The set of raw values a request's own URL already exposes to the caller:
+ * every query-parameter value and every non-empty path segment. A response
+ * leaf that only ever echoes one of these tells the caller nothing it could
+ * not already derive from the request it just sent.
+ */
+function urlOwnValues(url: string): Set<string> {
+  const values = new Set<string>();
+  try {
+    const parsed = new URL(url);
+    for (const value of parsed.searchParams.values()) values.add(value);
+    for (const segment of parsed.pathname.split("/")) {
+      if (segment.length > 0) values.add(decodeURIComponent(segment));
+    }
+  } catch {
+    // unparsable URL contributes no derivable values
+  }
+  return values;
+}
+
+/**
  * True when `capture`'s response carries no business-relevant state: a
- * non-JSON (or absent) content-type, a null/undefined body, or a JSON body
- * with no keys. A page-load sensor/analytics beacon (an Akamai-style
- * session-authenticator pixel, a polled non-JSON status ping) answers every
- * call with exactly this shape — unlike a real API response, which carries
- * data a caller could not have already known before firing the request.
+ * non-JSON (or absent) content-type, a null/undefined body, a JSON body
+ * with no keys, or a JSON body whose every leaf value is already present in
+ * the request's own URL (query string or path). A page-load sensor/
+ * analytics beacon (an Akamai-style session-authenticator pixel, a polled
+ * non-JSON status ping, or one that echoes back the `clientId`/`siteId` the
+ * caller just sent it) answers every call with exactly this shape — unlike a
+ * real API response, which carries data a caller could not have already
+ * known before firing the request.
+ *
+ * The "echoes its own request" branch is what closes the gap a bare
+ * empty-body check misses: a response is technically non-empty JSON but
+ * every leaf is one of the fixed query's own values (or a path segment),
+ * so nothing in it is new information relative to what the caller already
+ * sent — it is not business-relevant just because it happens to be
+ * non-empty.
  *
  * Missing response metadata (unit-test callers that construct a capture
  * without `responseHeaders`/`responseBody`) reads as "no business-relevant
@@ -310,6 +358,7 @@ export function isSamePathFamily(pathA: string, pathB: string): boolean {
  * that deliberately supplies a JSON response to prove the opposite.
  */
 function hasNoBusinessRelevantResponseState(capture: {
+  url: string;
   responseHeaders?: Record<string, string>;
   responseBody?: unknown;
 }): boolean {
@@ -320,10 +369,13 @@ function hasNoBusinessRelevantResponseState(capture: {
   if (!contentType.includes("json")) return true;
   const body = capture.responseBody;
   if (body === null || body === undefined) return true;
-  if (typeof body === "object" && Object.keys(body as Record<string, unknown>).length === 0) {
-    return true;
-  }
-  return false;
+  if (typeof body !== "object") return false;
+  if (Object.keys(body as Record<string, unknown>).length === 0) return true;
+  const leaves: string[] = [];
+  collectLeafValues(body, leaves);
+  if (leaves.length === 0) return true;
+  const ownValues = urlOwnValues(capture.url);
+  return leaves.every((leaf) => ownValues.has(leaf));
 }
 
 /**

@@ -239,6 +239,27 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 
+  it("flags a same-host, fixed-query beacon whose body varies per call and whose JSON response only echoes its own fixed query", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { clientId: "X", environment: "PROD" },
+    };
+    const occurrences = [
+      first,
+      {
+        method: "GET",
+        url: beaconUrl,
+        requestPostData: "fingerprint=def456",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { clientId: "X", environment: "PROD" },
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
+
   it("does not flag a candidate with no fixed query string", () => {
     const first = {
       method: "GET",

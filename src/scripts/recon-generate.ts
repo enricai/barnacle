@@ -2176,18 +2176,23 @@ function requestAndResponseValues(capture: Capture): Set<string> {
 }
 
 /** True when `value` -- one member's own value for the sole varying request
- * field of a same-endpoint group -- shows up anywhere else in the flow (any
- * OTHER capture's path/query/body/response), proving some later step reads
- * or threads it. False means the value is scaffolding the client generated
- * and nothing downstream ever consumes: the structural signal {@link
- * isRedundantSameEndpointGroup} uses to widen collapsing past the literal
- * {@link CACHE_BUSTER_QUERY_KEYS}/{@link PAGINATION_FIELD_NAME_PATTERN}
- * allowlists without hand-enumerating more key-name shapes. A non-primitive
- * or empty value can't be structurally proven dead, so it's treated as
- * load-bearing by default. */
+ * field of a same-endpoint group -- shows up in some capture OUTSIDE the
+ * group itself (any OTHER, DIFFERENT-endpoint capture's path/query/body/
+ * response), proving some later step reads or threads it. False means the
+ * value is either scaffolding the client generated and nothing downstream
+ * ever consumes, OR a cursor the group's OWN members hand to each other --
+ * e.g. page 1's response minting the exact cursor value page 2's request
+ * carries -- which is chained pagination state, not distinct data a
+ * different step depends on, so an echo confined to sibling occurrences of
+ * this SAME same-endpoint group must not block collapsing it. This is the
+ * structural signal {@link isRedundantSameEndpointGroup} uses to widen
+ * collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
+ * PAGINATION_FIELD_NAME_PATTERN} allowlists without hand-enumerating more
+ * key-name shapes. A non-primitive or empty value can't be structurally
+ * proven dead, so it's treated as load-bearing by default. */
 function isFieldValueThreadedElsewhere(
   value: unknown,
-  ownCapture: Capture,
+  groupCaptures: ReadonlySet<Capture>,
   allActions: readonly ActionCapture[]
 ): boolean {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
@@ -2196,7 +2201,8 @@ function isFieldValueThreadedElsewhere(
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
   return allActions.some(
-    ({ capture }) => capture !== ownCapture && requestAndResponseValues(capture).has(stringValue)
+    ({ capture }) =>
+      !groupCaptures.has(capture) && requestAndResponseValues(capture).has(stringValue)
   );
 }
 
@@ -2204,31 +2210,37 @@ function isFieldValueThreadedElsewhere(
  * A same-endpoint capture group qualifies for collapsing when every capture
  * resolves to the same {@link responseShapeKey}, OR (when the response has no
  * array field anywhere, e.g. a flat poll/flag-style object) every capture is
- * a non-mutation whose response independently resolves via {@link
- * findObjectArrayFieldOrWholeObject}'s whole-object fallback -- this rules
- * out a mutation POST, whose flat response is a single mutated object rather
- * than a re-readable poll result, while still admitting a flat zero-variance
- * re-poll -- AND EVERY request field that varies once known non-semantic
+ * either a non-mutation, or a mutation whose response body is byte-identical
+ * across every occurrence in the group, whose response independently
+ * resolves via {@link findObjectArrayFieldOrWholeObject}'s whole-object
+ * fallback -- this rules out a mutation POST with a genuinely varying
+ * response (e.g. a wizard section save), whose flat response is a single
+ * mutated object rather than a re-readable poll result, while still
+ * admitting a flat zero-variance re-poll fired via a mutating method (e.g. a
+ * feature-flag/heartbeat check fired via POST) -- AND EVERY request field
+ * that varies once known non-semantic
  * noise keys ({@link CACHE_BUSTER_QUERY_KEYS}) are excluded from
  * consideration is EITHER pagination-shaped -- a paged listing/facet re-query
  * -- OR (when `allActions`, the full capture sequence, is supplied)
  * independently proven via {@link isFieldValueThreadedElsewhere} to never be
- * read by any other step in the flow -- a cache-buster/nonce/request-id shape
- * the literal allowlists don't happen to name -- or the group varies in no
- * field at all -- a polled toggles/feature-flag endpoint re-fired with an
- * identical request. A group can have any number of varying keys; each one
- * must clear its own pagination-or-dead check independently, so a page
+ * read by any capture OUTSIDE this same-endpoint group -- a cache-buster/
+ * nonce/request-id shape the literal allowlists don't happen to name, OR a
+ * cursor the group's own members hand to each other (page 1's response
+ * minting the exact value page 2's request carries) -- or the group varies
+ * in no field at all -- a polled toggles/feature-flag endpoint re-fired with
+ * an identical request. A group can have any number of varying keys; each
+ * one must clear its own pagination-or-dead check independently, so a page
  * cursor alongside an unrelated dead cache-buster key still collapses.
  * Without `allActions` (unit tests exercising this predicate in isolation,
  * with no flow context to check against) a non-pagination varying key can't
  * be structurally proven dead, so the group is left untouched -- the same
  * conservative outcome as before this widening. A group with any varying
- * field proven read elsewhere (e.g. a per-item drill's item-id, later echoed
- * into that item's detail request) is likewise left untouched: that variance
- * carries the distinct per-item state the existing fold-chain mechanism
- * (`target.chain` in `emitMultiStepExecuteHttp`) already hoists correctly
- * once resolved, and collapsing it here would erase the very state that
- * hoisting depends on.
+ * field proven read by a DIFFERENT step outside the group (e.g. a per-item
+ * drill's item-id, later echoed into that item's detail request) is
+ * likewise left untouched: that variance carries the distinct per-item
+ * state the existing fold-chain mechanism (`target.chain` in
+ * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
+ * collapsing it here would erase the very state that hoisting depends on.
  */
 export function isRedundantSameEndpointGroup(
   group: ActionCapture[],
@@ -2241,10 +2253,24 @@ export function isRedundantSameEndpointGroup(
     // A flat (non-array) response never resolves a `responseShapeKey`, but a
     // zero-variance re-poll of a flag/toggle endpoint still needs a shape to
     // key on -- fall back to the whole-object candidate every group member
-    // must independently resolve to, and exclude a mutation, whose flat
-    // response is a mutated object rather than a re-readable poll result.
+    // must independently resolve to. A GraphQL mutation (detected via the
+    // parsed operation query) is always excluded, since its response is by
+    // definition the result of a state change. A REST capture excluded only
+    // because of its HTTP method (POST/PUT/PATCH/DELETE) is admitted anyway
+    // when every occurrence's response body is byte-identical -- that is
+    // proof the call carries no distinct mutated state at all (a
+    // feature-flag/heartbeat check fired via POST), the same zero-variance
+    // signal {@link isZeroVarianceRepeatCapture} already uses for noise
+    // exclusion, generalized here for the collapse decision.
+    const isGraphQLMutation = (capture: Capture): boolean =>
+      capture.query !== null && /^\s*mutation\b/.test(capture.query);
+    const responsesByteIdentical = group.every(
+      (a) =>
+        JSON.stringify(a.capture.responseBody) === JSON.stringify(group[0]!.capture.responseBody)
+    );
     const isFlatObject = (capture: Capture): boolean =>
-      !isMutationCapture(capture) &&
+      !isGraphQLMutation(capture) &&
+      (!isMutationCapture(capture) || responsesByteIdentical) &&
       responseShapeKey(capture) === null &&
       findObjectArrayFieldOrWholeObject(capture.responseBody) !== null;
     if (!group.every((a) => isFlatObject(a.capture))) return false;
@@ -2263,6 +2289,7 @@ export function isRedundantSameEndpointGroup(
   });
 
   if (varyingKeys.length === 0) return true;
+  const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
     // A flat (non-array) response carries no re-pollable listing/facet shape
@@ -2274,7 +2301,7 @@ export function isRedundantSameEndpointGroup(
     if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
     if (!allActions) return false;
     return fieldSets.every(
-      (fields, i) => !isFieldValueThreadedElsewhere(fields[key], group[i]!.capture, allActions)
+      (fields) => !isFieldValueThreadedElsewhere(fields[key], groupCaptures, allActions)
     );
   });
 }
@@ -2325,6 +2352,23 @@ interface StateValue {
    * body JSON leaf (e.g. listings-fixture's `Set-Cookie: __pa=<jwt>` token mint).
    * `path` is empty in this case since there is no body accessor. */
   headerOrigin?: { sourceHeader: string; cookieName?: string };
+  /**
+   * Set ONLY when `value` is short enough (< MIN_STATE_VALUE_LENGTH) that it
+   * was indexed exclusively via the chain/force-include exemption — i.e. the
+   * value's own length never earned it a place in the index; a specific
+   * dependent-drill-down chain hop is what did. In that case, the value is a
+   * legitimate cross-step dependency ONLY between the chain hops
+   * {@link collectDependentDrillDownChainValues} actually proved it threads
+   * through, not wherever it happens to appear elsewhere: a short value's
+   * length floor exists precisely to stop coincidental substring matches
+   * (an enum code, a page number, a digit inside an unrelated opaque path)
+   * from being mistaken for reused state, and that protection must survive
+   * the chain exemption for every OTHER capture the chain didn't prove a
+   * relationship with. `undefined` means unrestricted — either the value's
+   * own length cleared the floor on its own merits, or it is a UUID/cookie
+   * origin that needs no such scoping.
+   */
+  eligibleConsumers?: ReadonlySet<Capture>;
 }
 
 /**
@@ -3595,7 +3639,7 @@ export function indexStateValues(
   captures: Capture[],
   shieldedUuids: Set<string> = new Set(),
   actionCaptureIndices: Set<number> = new Set(),
-  forceIncludeValues: ReadonlySet<string> = new Set()
+  forceIncludeValues: ReadonlyMap<string, ReadonlySet<Capture>> = new Map()
 ): Map<string, StateValue> {
   const index = new Map<string, StateValue>();
   // Computed structurally off the SAME captures being indexed (no
@@ -3608,6 +3652,17 @@ export function indexStateValues(
     captures.map((capture) => ({ capture })),
     null
   );
+  // The set of captures a short/force-included value is actually eligible to
+  // be spliced into — the union of whatever `chainForceIncludeValues` and the
+  // caller-supplied `forceIncludeValues` proved for that value. `undefined`
+  // when the value isn't exemption-derived, meaning the eligibility
+  // restriction doesn't apply (see `StateValue.eligibleConsumers`).
+  const eligibleConsumersFor = (value: string): ReadonlySet<Capture> | undefined => {
+    const chainConsumers = chainForceIncludeValues.get(value);
+    const forceConsumers = forceIncludeValues.get(value);
+    if (!chainConsumers && !forceConsumers) return undefined;
+    return new Set([...(chainConsumers ?? []), ...(forceConsumers ?? [])]);
+  };
   // First pass: identify the earliest origin among ACTION captures for each
   // value. Action-only earliest-origin tracking is what compileActionSteps'
   // produces[] check needs — it ignores non-action captures (telemetry GETs,
@@ -3631,11 +3686,8 @@ export function indexStateValues(
         // floor below: a cookie-sourced value the fold-chain detector already
         // confirmed is threaded into a later hop's request is exactly as
         // legitimate as a long one, so it must not be dropped for being short.
-        if (
-          value.length < MIN_STATE_VALUE_LENGTH &&
-          !chainForceIncludeValues.has(value) &&
-          !forceIncludeValues.has(value)
-        )
+        const isShort = value.length < MIN_STATE_VALUE_LENGTH;
+        if (isShort && !chainForceIncludeValues.has(value) && !forceIncludeValues.has(value))
           continue;
         if (value.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
         if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
@@ -3645,6 +3697,7 @@ export function indexStateValues(
             originIndex: i,
             path: [],
             headerOrigin: { sourceHeader: "set-cookie", cookieName: name },
+            eligibleConsumers: isShort ? eligibleConsumersFor(value) : undefined,
           });
         }
       }
@@ -3667,6 +3720,10 @@ export function indexStateValues(
           originIndex: i,
           path: [],
           headerOrigin: { sourceHeader: headerName },
+          eligibleConsumers:
+            headerValue.length < MIN_STATE_VALUE_LENGTH
+              ? eligibleConsumersFor(headerValue)
+              : undefined,
         });
       }
     }
@@ -3682,11 +3739,8 @@ export function indexStateValues(
     for (const { value: rawValue, path } of walkAllPrimitiveLeaves(c.responseBody)) {
       if (rawValue === null) continue;
       const value = String(rawValue);
-      if (
-        value.length < MIN_STATE_VALUE_LENGTH &&
-        !chainForceIncludeValues.has(value) &&
-        !forceIncludeValues.has(value)
-      )
+      const isShort = value.length < MIN_STATE_VALUE_LENGTH;
+      if (isShort && !chainForceIncludeValues.has(value) && !forceIncludeValues.has(value))
         continue;
       if (value.length > MAX_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(value)) continue;
@@ -3710,7 +3764,12 @@ export function indexStateValues(
       )
         continue;
       if (!index.has(value)) {
-        index.set(value, { value, originIndex: i, path });
+        index.set(value, {
+          value,
+          originIndex: i,
+          path,
+          eligibleConsumers: isShort ? eligibleConsumersFor(value) : undefined,
+        });
       }
     }
   }
@@ -3723,6 +3782,13 @@ interface BodyProduce {
   kind: "body";
   name: string;
   path: string[];
+  /** Mirrors {@link StateValue.eligibleConsumers} — set only when the produced
+   * value was indexed exclusively via the chain/force-include exemption
+   * (short value, no length-floor entry on its own merits). `undefined` means
+   * every downstream step may thread it; otherwise only the listed captures
+   * may, so `deriveStateVarByValue` can refuse to bind it for an unrelated
+   * consumer that coincidentally contains the same short value. */
+  eligibleConsumers?: ReadonlySet<Capture>;
 }
 
 /** A state value produced by a step's response header/cookie (e.g. a
@@ -3984,6 +4050,12 @@ export function compileActionSteps(
   for (const { capture } of actions) {
     const bodyLeafValues = jsonBodyLeafValues(capture.requestPostData);
     for (const sv of stateIndex.values()) {
+      // A short value indexed only via the chain/force-include exemption
+      // (see `StateValue.eligibleConsumers`) is a real dependency ONLY for
+      // the specific capture(s) the chain detector proved it threads into —
+      // everywhere else, a coincidental substring match (a digit inside an
+      // unrelated opaque path segment) is not reuse and must not splice.
+      if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
       if (capture.url.includes(sv.value)) {
         usedValues.add(sv.value);
         continue;
@@ -4008,6 +4080,7 @@ export function compileActionSteps(
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
       for (const sv of stateIndex.values()) {
+        if (sv.eligibleConsumers && !sv.eligibleConsumers.has(capture)) continue;
         if (!headerValue.includes(sv.value)) continue;
         usedValues.add(sv.value);
         if (!usedValueTargetHeader.has(sv.value)) {
@@ -4102,7 +4175,7 @@ export function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ kind: "body", name, path });
+        produces.push({ kind: "body", name, path, eligibleConsumers: sv.eligibleConsumers });
       }
     }
 
@@ -4258,9 +4331,10 @@ function replaceGuardedAgainstExistingPlaceholders(
 function interpolateStateValues(
   template: string,
   priorSteps: ActionStep[],
+  targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map()
 ): string {
-  const varNameByValue = deriveStateVarByValue(priorSteps);
+  const varNameByValue = deriveStateVarByValue(priorSteps, targetCapture);
 
   const bindingByValue = new Map<string, string>();
   for (const [value, accessor] of payloadAccessorByValue) {
@@ -4492,12 +4566,23 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * Header/cookie-origin produces are skipped: they have no body path and their
  * value never appears as a literal in a URL/body template (http-client's `bind`
  * forwards it directly as a request header), so there is nothing to interpolate.
+ *
+ * `targetCapture` is the capture the returned bindings are about to be spliced
+ * INTO. A produce whose value is chain/force-include-exempt (see
+ * `BodyProduce.eligibleConsumers`) is a real dependency only for the specific
+ * capture(s) the chain detector proved it threads into — everywhere else, a
+ * coincidental substring match must not bind, or `interpolateStateValues`
+ * splices it into an unrelated capture's URL/body/headers.
  */
-function deriveStateVarByValue(priorSteps: ActionStep[]): Map<string, string> {
+function deriveStateVarByValue(
+  priorSteps: ActionStep[],
+  targetCapture: Capture
+): Map<string, string> {
   const varNameByValue = new Map<string, string>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
       if (p.kind === "header") continue;
+      if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture)) continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
       if (value !== null) varNameByValue.set(value, p.name);
     }
@@ -5173,7 +5258,20 @@ export function emitMultiStepExecuteHttp(
     const step = actions[i]!;
     const cap = step.capture;
     const prior = actions.slice(0, i);
-    const url = interpolateStateValues(cap.url, prior, payloadAccessorByValue);
+    // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
+    // must never be treated as an interpolation target at all: its URL is
+    // provably fixed across every occurrence, so any state-value splice into
+    // it can only be a coincidental match, never a real dependency — the same
+    // failure shape already fixed for GET responses (see `indexStateValues`'s
+    // isGet UUID-only floor) and for the fold/drill per-item pass. Rendering
+    // its exact literal URL makes this hold even when a value's own
+    // length/chain-eligibility scoping doesn't happen to catch the coincidence.
+    const url = isZeroVarianceRepeatCapture(
+      cap,
+      actions.map((a) => a.capture)
+    )
+      ? cap.url
+      : interpolateStateValues(cap.url, prior, cap, payloadAccessorByValue);
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
     // payload key-value passes then run on top. Option-id substitution runs
@@ -5229,7 +5327,7 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             outStructuredKeys,
             new Set([
-              ...deriveStateVarByValue(prior).keys(),
+              ...deriveStateVarByValue(prior, cap).keys(),
               ...(joinFieldValuesByStep.get(i) ?? []),
             ])
           )
@@ -5262,7 +5360,7 @@ export function emitMultiStepExecuteHttp(
     for (const [value, binding] of producerBoundaryBindings) {
       if (binding.producerIndex === i) urlParamBindings.set(value, binding.accessor);
     }
-    for (const [value, varName] of deriveStateVarByValue(prior)) {
+    for (const [value, varName] of deriveStateVarByValue(prior, cap)) {
       urlParamBindings.set(value, varName);
     }
     const rawBodyWithUrlParams =
@@ -5275,7 +5373,7 @@ export function emitMultiStepExecuteHttp(
         : rawBodyWithProducerBoundary;
     const bodyAfterStateAndKv = rawBodyWithUrlParams
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithUrlParams, prior, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithUrlParams, prior, cap, payloadAccessorByValue),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
@@ -5322,7 +5420,7 @@ export function emitMultiStepExecuteHttp(
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
       if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
-        perCallHeaders[k] = interpolateStateValues(v, prior, payloadAccessorByValue);
+        perCallHeaders[k] = interpolateStateValues(v, prior, cap, payloadAccessorByValue);
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -5815,7 +5913,7 @@ export function emitMultiStepExecuteHttp(
         const lower = k.toLowerCase();
         if (lower === "api-token" || lower === "authorization") {
           perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), payloadAccessorByValue)}\``
+            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), cap, payloadAccessorByValue)}\``
           );
         }
       }
@@ -8372,15 +8470,24 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * Runs directly off raw actions (not `resolveFoldPlan`, which needs
  * `isMultipart` — unavailable before `compileActionSteps` has run) since
  * fold-plan DETECTION depends only on each action's `capture`.
+ *
+ * Returns a value -> proven-consumer-captures map rather than a flat set: a
+ * value's chain-proven threading relationship holds ONLY between the
+ * specific chain hops that produced and consumed it, never globally across
+ * every capture in the flow. Callers that bypass `MIN_STATE_VALUE_LENGTH`
+ * for one of these values (see `indexStateValues`) must scope that bypass to
+ * the returned consumer set, or a short value legitimately threaded between
+ * two unrelated steps can coincidentally match inside a totally unrelated
+ * capture's own URL/body and get spliced into it.
  */
 function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
-): Set<string> {
+): Map<string, Set<Capture>> {
   const structuralPlans = detectDrillDownFoldPlan(actions);
   const specPlan = foldReturnSpec === null ? null : buildFoldPlanFromSpec(actions, foldReturnSpec);
   const plans = structuralPlans.length > 0 ? structuralPlans : specPlan === null ? [] : [specPlan];
-  const values = new Set<string>();
+  const consumersByValue = new Map<string, Set<Capture>>();
   for (const plan of plans) {
     for (const target of plan.targets) {
       for (let j = 0; j < target.chain.length; j++) {
@@ -8394,13 +8501,16 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
           if (!laterCapture) continue;
           const laterRequestValues = collectRequestValuesIncludingHeaders(laterCapture);
           for (const v of responseValues) {
-            if (!echoedValues.has(v) && laterRequestValues.has(v)) values.add(v);
+            if (echoedValues.has(v) || !laterRequestValues.has(v)) continue;
+            const consumers = consumersByValue.get(v) ?? new Set<Capture>();
+            consumers.add(laterCapture);
+            consumersByValue.set(v, consumers);
           }
         }
       }
     }
   }
-  return values;
+  return consumersByValue;
 }
 
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
@@ -11259,7 +11369,7 @@ async function main(): Promise<void> {
     const dependentDrillDownChainValues =
       actionCaptures.length > 1
         ? collectDependentDrillDownChainValues(actionCaptures, foldReturnSpec)
-        : new Set<string>();
+        : new Map<string, Set<Capture>>();
     const stateIndex =
       actionCaptures.length > 1
         ? indexStateValues(
