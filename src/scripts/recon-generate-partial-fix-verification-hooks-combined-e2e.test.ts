@@ -215,8 +215,9 @@ describe("recon-generate CLI — combined verification hooks (report multiplicit
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
 
-    // Raw capture count is 36 (6 toggles + 8 listing pages + 6 drills + 14
-    // beacon fires + 2 noise variants). The report's own required_item 1:
+    // Raw capture count is 40 (6 toggles + 8 listing pages + 6 drills + 14
+    // beacon fires + 2 noise variants + 4 collision-noise captures). The
+    // report's own required_item 1:
     // order of magnitude ~4, not one hardcoded call per raw capture (the
     // reported regression emitted 38).
     expect(httpClientCallCount).toBeLessThanOrEqual(10);
