@@ -57,6 +57,27 @@ const { fakeConn } = vi.hoisted(() => ({
   fakeConn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
 }));
 
+const { buildFakeSession } = vi.hoisted(() => ({
+  buildFakeSession: () => {
+    const fakeCdpSession = {
+      send: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+    };
+    const fakePage = {
+      getSessionForFrame: vi.fn().mockReturnValue(fakeCdpSession),
+      getSessionById: vi.fn().mockReturnValue(fakeCdpSession),
+      mainFrameId: vi.fn().mockReturnValue("main-frame-id"),
+    };
+    return {
+      fakeCdpSession,
+      fakePage,
+      awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+    };
+  },
+}));
+
+const { fakeSession } = vi.hoisted(() => ({ fakeSession: buildFakeSession() }));
+
 vi.mock("@browserbasehq/stagehand", () => ({
   AISdkClient: vi.fn(),
   Stagehand: vi.fn(function (this: Record<string, unknown>) {
@@ -65,7 +86,7 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.browserbaseSessionID = "bb-session-id";
     this.context = {
       conn: fakeConn,
-      addInitScript: vi.fn().mockResolvedValue(undefined),
+      awaitActivePage: fakeSession.awaitActivePage,
     };
   }),
 }));
@@ -158,6 +179,12 @@ const defaultConfig = (): typeof configRef.value => ({
 describe("scraper/session router", () => {
   beforeEach(() => {
     configRef.value = defaultConfig();
+    fakeSession.fakeCdpSession.send.mockClear();
+    fakeSession.fakeCdpSession.on.mockClear();
+    fakeSession.fakePage.getSessionForFrame.mockClear();
+    fakeSession.awaitActivePage.mockClear();
+    fakeSession.awaitActivePage.mockResolvedValue(fakeSession.fakePage);
+    fakeSession.fakeCdpSession.send.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -184,35 +211,36 @@ describe("scraper/session router", () => {
 
   it("installs the hCaptcha callback-capture init script on the browserbase provider", async () => {
     configRef.value.scraper.provider = "browserbase";
-    const session = await createBrowserSession();
-    const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
-    expect(addInitScript).toHaveBeenCalledTimes(1);
-    expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+    await createBrowserSession();
+    const install = fakeSession.fakeCdpSession.send.mock.calls.find(
+      ([method]) => method === "Page.addScriptToEvaluateOnNewDocument"
+    );
+    expect(install).toBeDefined();
+    const [, params] = install as [string, { source: string }];
+    expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
     configRef.value.scraper.provider = "steel";
-    const session = await createBrowserSession();
-    const addInitScript = session.stagehand.context.addInitScript as ReturnType<typeof vi.fn>;
-    expect(addInitScript).toHaveBeenCalledTimes(1);
-    expect(addInitScript.mock.calls[0]?.[0]).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+    await createBrowserSession();
+    const install = fakeSession.fakeCdpSession.send.mock.calls.find(
+      ([method]) => method === "Page.addScriptToEvaluateOnNewDocument"
+    );
+    expect(install).toBeDefined();
+    const [, params] = install as [string, { source: string }];
+    expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
   });
 
-  it("awaits the addInitScript call before createBrowserSession resolves", async () => {
+  it("awaits the deterministic per-target install before createBrowserSession resolves", async () => {
     configRef.value.scraper.provider = "browserbase";
     let resolved = false;
-    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
-      this.init = vi.fn().mockResolvedValue(undefined);
-      this.close = vi.fn().mockResolvedValue(undefined);
-      this.browserbaseSessionID = "bb-session-id";
-      this.context = {
-        conn: fakeConn,
-        addInitScript: vi.fn().mockImplementation(async () => {
-          await Promise.resolve();
-          resolved = true;
-        }),
-      };
-    } as unknown as (opts: ConstructorParameters<typeof Stagehand>[0]) => Stagehand);
+    fakeSession.fakeCdpSession.send.mockImplementation(async (method: string) => {
+      if (method === "Page.addScriptToEvaluateOnNewDocument") {
+        await Promise.resolve();
+        resolved = true;
+      }
+      return undefined;
+    });
 
     await createBrowserSession();
     expect(resolved).toBe(true);

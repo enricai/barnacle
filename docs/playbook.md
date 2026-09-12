@@ -121,12 +121,20 @@ endpoint, bounded by `SCRAPER_SESSION_IP_TIMEOUT_MS` (~10s default), gated by
 `SCRAPER_CAPTURE_SESSION_IP` (default `true`). Recon-browser never calls it —
 it exists for the dispatch path's per-submission telemetry (5D).
 
-`createBrowserSession()` also installs the hCaptcha render-config
-callback-capture init script (`src/scraper/captcha-callback-capture.ts`) via
-`context.addInitScript` immediately after the session is created, for both
-providers — no siteId/plugin conditional. This monkeypatches
-`hcaptcha.render` before any site script runs, so a flow hook can later read
-back a programmatically-registered `callback` that never appears in the DOM.
+`createBrowserSession()` also installs the render-config callback-capture
+init script (`src/scraper/captcha-callback-capture.ts`) immediately after the
+session is created, for both providers — no siteId/plugin conditional. The
+install goes through `installInitScriptOnAllFrames()`
+(`src/scraper/cdp-frame-init-script.ts`), which arms `Target.setAutoAttach`
+(`waitForDebuggerOnStart: true`) on every session and sends
+`Page.addScriptToEvaluateOnNewDocument` per target, recursing onto each
+newly-attached child session before resuming it via
+`Runtime.runIfWaitingForDebugger`. This closes the install-vs-render race a
+single context-level `addInitScript` call leaves open for a newly-attached
+cross-origin child frame realm, whose scripts can start running before that
+call's round trip lands. This monkeypatches the widget's `render` function
+before any site script runs, so a flow hook can later read back a
+programmatically-registered `callback` that never appears in the DOM.
 
 ### 1b — CDP session-level network capture
 
@@ -190,6 +198,40 @@ label refuses outright on a tie rather than guessing the wrong screening
 question.
 
 Backoff between attempts: linear `attempt * 1000ms`.
+
+### 1c-1 — captchaGated registry-retry
+
+A `captchaGated` step (solve+inject+submit via `executeStepWithHealing` in
+`src/scraper/flow-runner.ts`) runs its own bounded retry loop around the
+solve+inject+registry-check sequence, separate from the 1c cascade above,
+because the render callback that populates
+`HCAPTCHA_CALLBACK_REGISTRY_GLOBAL` can attach after the solve has already
+finished. `shouldRetryCaptchaRegistry` (`src/scraper/flow-runner.ts:828-839`)
+is the pure decision gate, bounded by `CAPTCHA_REGISTRY_RETRY_ATTEMPTS` (3).
+
+Each attempt classifies a `registryState` diagnostic:
+
+- **`absent`** — the registry global doesn't exist yet. Retriable: the wrap
+  hasn't had a chance to attach.
+- **`empty`** — the registry exists but has no entry for this sitekey.
+  Retriable for the same reason.
+- **`populated`** — an entry for this sitekey was captured. Not itself a
+  retry trigger, but combined with `callbackDiscovered=true` and no confirmed
+  transition, the step retries on the theory the callback fired without the
+  navigation completing yet.
+- **`renderedUnmatched`** — a widget matching this sitekey has already
+  rendered (`window.hcaptcha` is loaded and an iframe exists inside its
+  `[data-sitekey]` anchor), but no registry entry names it. This means the
+  render call the wrap needed to observe already ran and returned before the
+  wrap re-attached, so `shouldRetryCaptchaRegistry` does not treat it as a
+  registry race by itself — reinstalling the wrap and retrying the same
+  install-then-poll strategy can never recapture that render. This state is
+  not, on its own, a genuine give-up signal though: `registryState` and
+  `callbackDiscovered` are independent diagnostics, so a `renderedUnmatched`
+  attempt with `callbackDiscovered=true` still retries via the same
+  callback-fired-without-confirmation path as `populated` above. Only
+  `renderedUnmatched` combined with `callbackDiscovered=false` is a genuine,
+  non-retriable install failure.
 
 ### 1d — Step failure dump
 

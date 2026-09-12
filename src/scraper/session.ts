@@ -1,5 +1,6 @@
 import { config } from "@/config";
 import { buildHcaptchaCallbackCaptureScript } from "@/scraper/captcha-callback-capture";
+import { installInitScriptOnAllFrames } from "@/scraper/cdp-frame-init-script";
 import { createBrowserbaseBrowserSession } from "@/scraper/session-browserbase";
 import { scheduleSessionCreate } from "@/scraper/session-create-limiter";
 import type { BrowserSession, BrowserSessionOptions } from "@/scraper/session-shared";
@@ -39,6 +40,7 @@ export async function createBrowserSession(opts?: BrowserSessionOptions): Promis
         })
       : createSteelBrowserSession()
   );
-  await session.stagehand.context.addInitScript(buildHcaptchaCallbackCaptureScript());
+  const activePage = await session.stagehand.context.awaitActivePage();
+  await installInitScriptOnAllFrames(activePage, buildHcaptchaCallbackCaptureScript());
   return session;
 }
