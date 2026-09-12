@@ -9391,9 +9391,15 @@ export async function executeStepWithHealing(params: {
         const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
           `(() => {
           const sitekey = ${JSON.stringify(siteKey)};
+          const findSitekeyEl = function () {
+            return Array.prototype.find.call(
+              document.querySelectorAll("[data-sitekey]"),
+              function (el) { return el.getAttribute("data-sitekey") === sitekey; }
+            ) || null;
+          };
           const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
           if (!registry) {
-            const sitekeyElAbsent = document.querySelector('[data-sitekey="' + sitekey + '"]');
+            const sitekeyElAbsent = findSitekeyEl();
             const widgetRenderedAbsent = Boolean(sitekeyElAbsent && sitekeyElAbsent.querySelector("iframe"));
             const hcaptchaLoadedAbsent = typeof window.hcaptcha !== "undefined" && window.hcaptcha !== null;
             if (hcaptchaLoadedAbsent && widgetRenderedAbsent) return "renderedUnmatched";
@@ -9403,7 +9409,7 @@ export async function executeStepWithHealing(params: {
             .map(function (key) { return registry[key]; })
             .filter(function (entry) { return entry.sitekey === sitekey; });
           if (entries.length > 0) return "populated";
-          const sitekeyEl = document.querySelector('[data-sitekey="' + sitekey + '"]');
+          const sitekeyEl = findSitekeyEl();
           const widgetRendered = Boolean(sitekeyEl && sitekeyEl.querySelector("iframe"));
           const hcaptchaLoaded = typeof window.hcaptcha !== "undefined" && window.hcaptcha !== null;
           if (hcaptchaLoaded && widgetRendered) return "renderedUnmatched";
