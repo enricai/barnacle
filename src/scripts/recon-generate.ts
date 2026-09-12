@@ -4068,7 +4068,7 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * subject left-to-right without ever re-visiting text a prior match in the
  * same pass already consumed, so one substitution's freshly-emitted
  * `${varName}` text can never itself be re-matched by a later, shorter value —
- * and `\b` anchoring (matching {@link replaceWholeValue} above) keeps an
+ * and `\b` anchoring (matching {@link replaceWholeValue} below) keeps an
  * unrelated literal segment that merely CONTAINS a shorter known value (e.g. a
  * page-count belonging to a different field) from being spliced into.
  */
