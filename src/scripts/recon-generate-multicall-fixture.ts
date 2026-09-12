@@ -2912,3 +2912,28 @@ export function buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps(
 
   return [...pagedListingSteps, ...drillSteps, noiseStep];
 }
+
+const SESSION_HEARTBEAT_URL = "https://api.example.com/heartbeat";
+
+/**
+ * A single same-host, fixed-query, zero-request-variance GET capture with
+ * neither a compound/repeated path segment (so
+ * {@link isStructurallyIsolatedCapture}'s token-overlap heuristic in
+ * `src/recon/capture-filters.ts` cannot already flag it as isolated via
+ * family-broadening) nor a `*Url`-suffixed response field (so the
+ * required-URL-field self-heal retry in `recon-generate.ts` never triggers
+ * on it) — the exact page-load-chrome shape (a browser's own periodic
+ * session-keepalive ping) that must still be excluded via
+ * `extractActionSequence`'s unconditional GET drop (a capture whose method
+ * is `GET` and whose flow declares no `foldReturnSpec` is dropped before
+ * any structural check ever runs), not a hardcoded per-endpoint exclusion.
+ */
+export function buildSessionHeartbeatNoiseStep(timestamp: string): MulticallFixtureStep {
+  return buildStep("noise-session-heartbeat", {
+    method: "GET",
+    url: `${SESSION_HEARTBEAT_URL}?clientId=fixed-client`,
+    requestPostData: null,
+    responseBody: { alive: true, intervalMs: 30000 },
+    timestamp,
+  });
+}
