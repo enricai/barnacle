@@ -2106,6 +2106,18 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
 const PAGINATION_FIELD_NAME_PATTERN =
   /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
 
+/** Request-field key names that name known client-generated scaffolding
+ * (a monotonic sequence counter, a correlation/trace id, an idempotency
+ * nonce) rather than genuine payload data. Gates {@link
+ * isFieldValueThreadedElsewhere} on a FLAT (non-array) response -- unlike an
+ * array-shaped listing/facet re-query, a flat response's varying field could
+ * just as easily be real user-entered payload (an address line, a card's
+ * last4) that happens never to be echoed back downstream, so that branch
+ * additionally requires the key name itself to look like scaffolding before
+ * trusting the "never echoed" proof. */
+const SCAFFOLDING_FIELD_NAME_PATTERN =
+  /^(req|request|correlation|trace|session|idempotency)?[-_]?(seq|id|key|nonce)$/i;
+
 /** Every query-string and (when JSON-object-shaped) request-body field on a
  * capture, merged into one comparable map -- REST pagination/facet state can
  * live in either depending on the endpoint's own convention. */
@@ -2253,6 +2265,13 @@ export function isRedundantSameEndpointGroup(
   if (varyingKeys.length === 0) return true;
   return varyingKeys.every((key) => {
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
+    // A flat (non-array) response carries no re-pollable listing/facet shape
+    // to key the pagination-pattern shortcut against, and a varying field
+    // there is just as likely to be genuine distinct payload data (an
+    // address line, a card's last4) that happens never to be echoed back as
+    // it is to be scaffolding -- so the "never echoed elsewhere" proof alone
+    // isn't trusted; the key name itself must also look like scaffolding.
+    if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
     if (!allActions) return false;
     return fieldSets.every(
       (fields, i) => !isFieldValueThreadedElsewhere(fields[key], group[i]!.capture, allActions)
