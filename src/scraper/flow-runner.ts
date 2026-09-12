@@ -805,6 +805,20 @@ const CAPTCHA_TRANSITION_POLL_MS = 45_000;
 const CAPTCHA_REGISTRY_RETRY_ATTEMPTS = 3;
 
 /**
+ * States of the sitekey/widgetId-scoped registry lookup used by the
+ * captchaGated retry decision. `absent`/`empty` mean the callback-capture
+ * wrap has had no chance yet to observe this widget's render call, which is
+ * the attach-timing race a retry can still fix by re-installing the wrap
+ * before the render fires. `renderedUnmatched` means the wrap landed too
+ * late: `window.hcaptcha` is loaded and a widget matching this sitekey has
+ * already rendered (an iframe exists inside its anchor), yet no registry
+ * entry names this sitekey/widgetId — the render call that would have been
+ * captured already ran and returned, so reinstalling the wrap and retrying
+ * the same install-then-poll strategy can never catch it.
+ */
+export type CaptchaRegistryState = "absent" | "empty" | "populated" | "renderedUnmatched";
+
+/**
  * Pure decision gate for the captchaGated registry-retry loop: isolates the
  * retry-vs-give-up call from the solve+inject+poll I/O so the attach-timing
  * race (registry empty/absent, or a callback that fired without a confirmed
@@ -814,7 +828,7 @@ const CAPTCHA_REGISTRY_RETRY_ATTEMPTS = 3;
 export function shouldRetryCaptchaRegistry(
   attemptNumber: number,
   maxAttempts: number,
-  registryState: "absent" | "empty" | "populated",
+  registryState: CaptchaRegistryState,
   callbackDiscovered: boolean,
   confirmed: boolean
 ): boolean {
@@ -9374,11 +9388,26 @@ export async function executeStepWithHealing(params: {
         });
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
         const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
-        const registryState = await captchaTarget.evaluate<"absent" | "empty" | "populated">(
+        const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
           `(() => {
+          const sitekey = ${JSON.stringify(siteKey)};
           const registry = window[${JSON.stringify(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)}];
-          if (!registry) return "absent";
-          return Object.keys(registry).length === 0 ? "empty" : "populated";
+          if (!registry) {
+            const sitekeyElAbsent = document.querySelector('[data-sitekey="' + sitekey + '"]');
+            const widgetRenderedAbsent = Boolean(sitekeyElAbsent && sitekeyElAbsent.querySelector("iframe"));
+            const hcaptchaLoadedAbsent = typeof window.hcaptcha !== "undefined" && window.hcaptcha !== null;
+            if (hcaptchaLoadedAbsent && widgetRenderedAbsent) return "renderedUnmatched";
+            return "absent";
+          }
+          const entries = Object.keys(registry)
+            .map(function (key) { return registry[key]; })
+            .filter(function (entry) { return entry.sitekey === sitekey; });
+          if (entries.length > 0) return "populated";
+          const sitekeyEl = document.querySelector('[data-sitekey="' + sitekey + '"]');
+          const widgetRendered = Boolean(sitekeyEl && sitekeyEl.querySelector("iframe"));
+          const hcaptchaLoaded = typeof window.hcaptcha !== "undefined" && window.hcaptcha !== null;
+          if (hcaptchaLoaded && widgetRendered) return "renderedUnmatched";
+          return "empty";
         })()`
         );
         logger.info(
