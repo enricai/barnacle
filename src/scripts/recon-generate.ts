@@ -4086,12 +4086,15 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * page-count belonging to a different field) from being spliced into.
  *
  * `\b` alone is not enough: it only guards word-char/non-word-char adjacency,
- * so a value flanked by a `.` (or `-`/`_`) that itself sits against a digit —
- * e.g. the "42" inside the version segment "v3.42" — still reads as a word
- * boundary even though "3.42" is one semantic token. The pattern additionally
- * forbids a match whose flanking side is `<digit>.` or `.<digit>`, so a
- * decimal-joined literal is never split apart while a standalone occurrence
- * (e.g. "/items/42/") still matches normally.
+ * so a value flanked by a `.` or `-` that itself sits against an alphanumeric
+ * char — e.g. the "12" inside a hyphen-joined opaque segment like
+ * "wJbfQL-12-K0X", or the "42" inside the decimal-joined version segment
+ * "v3.42" — still reads as a word boundary even though each is one semantic
+ * token. The pattern additionally forbids a match whose flanking side is
+ * `<alnum>-`/`-<alnum>` or `<alnum>.`/`.<alnum>` (matching {@link
+ * replaceWholeValue}'s identical guard), so a hyphen- or decimal-joined
+ * literal is never split apart while a standalone occurrence (e.g.
+ * "/items/42/") still matches normally.
  */
 function interpolateStateValues(
   template: string,
@@ -4111,7 +4114,7 @@ function interpolateStateValues(
 
   const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
   const pattern = new RegExp(
-    `(?<!\\d\\.)\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?!\\.\\d)`,
+    `(?<![A-Za-z0-9][-.])\\b(?:${sortedValues.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b(?![-.][A-Za-z0-9])`,
     "g"
   );
 

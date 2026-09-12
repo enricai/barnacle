@@ -7,8 +7,9 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
  * `interpolateStateValues`: naive `result.split(value).join(replacement)`,
  * unanchored and re-scanning the progressively-mutated result, lets a
  * coincidentally-matching short state value get spliced into an unrelated
- * opaque path segment (e.g. `warehouse42` for a `pageSize` value of `42`),
- * and lets a later, shorter value's search text match inside an earlier
+ * opaque path segment (e.g. `warehouse42` or the hyphen-joined `wJbfQL-42-K0X`
+ * for a `pageSize` value of `42`), and lets a later, shorter value's search
+ * text match inside an earlier
  * substitution's own freshly-inserted `${...}` text (e.g. a `record.Id`
  * accessor containing `Id` gets its own `Id` suffix re-matched by a separate
  * `Id`-valued binding), producing an invalid nested placeholder.
@@ -32,7 +33,7 @@ function emitConsumerUrl(): string {
   };
   const consumer = {
     capture: buildCapture({
-      url: "https://api.example.com/report/LONGVALUEID12/version/v3.42/entity/Id/warehouse42/items/42/summary",
+      url: "https://api.example.com/report/LONGVALUEID12/version/v3.42/entity/Id/warehouse42/items/42/wJbfQL-42-K0X/summary",
       requestPostData: null,
       responseBody: {},
       timestamp: "2026-01-01T00:00:01Z",
@@ -76,6 +77,13 @@ describe("interpolateStateValues — anchored, single-pass substitution", () => 
 
     expect(url).toContain("v3.42");
     expect(url).not.toMatch(/v3\.\$\{pageSize\}/);
+  });
+
+  it("never splices a value into a hyphen-joined opaque segment it merely appears in the middle of", () => {
+    const url = emitConsumerUrl();
+
+    expect(url).toContain("wJbfQL-42-K0X");
+    expect(url).not.toMatch(/wJbfQL-\$\{pageSize\}-K0X/);
   });
 
   it("never produces a nested placeholder from a later shorter value matching inside an earlier substitution", () => {
