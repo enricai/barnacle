@@ -195,9 +195,12 @@ describe("recon-generate CLI — paged-listing -> drill submission stays host-ga
     // shape, varying only by the pagination-shaped `page` body field), and
     // two per-item drill calls left uncollapsed (same endpoint and response
     // shape, but varying by a non-pagination `productId` field, so each
-    // carries distinct per-item state) — five total. A collapse back to the
-    // single matching-pattern capture(s) would shrink this count further,
-    // which `toContain` checks on individual endpoint strings can't detect.
+    // carries distinct per-item state) — five total. The report's expected
+    // shape is for the per-item drill to hoist into a single parameterized
+    // call (four total); that hoist/collapse fix is not yet applied to
+    // recon-generate.ts (see
+    // recon-generate-submission-sequence-unrolls-every-capture-instead-of-collapsing-repeated-endpoints.md),
+    // so this pins the current, uncollapsed behavior until it lands.
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
     expect(httpClientCallCount).toBe(5);
 
