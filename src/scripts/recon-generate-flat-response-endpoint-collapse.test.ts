@@ -186,6 +186,27 @@ describe("isRedundantSameEndpointGroup — structural non-semantic-key widening"
     expect(isRedundantSameEndpointGroup(group, allActions)).toBe(false);
   });
 
+  it("collapses a paged listing whose page cursor is a non-allowlisted key name that the endpoint's own chained responses hand forward to each other", () => {
+    const LISTING_URL = "https://api.example.com/catalog/listing";
+    const cursors = ["seg-aaa", "seg-bbb", "seg-ccc", "seg-ddd"];
+    const group = toGroup(
+      cursors.map((cursor, i) =>
+        buildCapture({
+          url: LISTING_URL,
+          requestPostData: JSON.stringify({ facetCursor: cursor }),
+          responseBody: {
+            items: [{ id: `item-${i}-a` }, { id: `item-${i}-b` }],
+            nextFacetCursor: cursors[i + 1] ?? null,
+          },
+          timestamp: `2024-01-01T00:00:0${i}Z`,
+        })
+      )
+    );
+
+    expect(isRedundantSameEndpointGroup(group)).toBe(false);
+    expect(isRedundantSameEndpointGroup(group, group)).toBe(true);
+  });
+
   it("still refuses to collapse when the sole varying value IS read by a later step (per-item join key)", () => {
     const DETAIL_LOOKUP_URL = "https://api.example.com/catalog/lookup";
     const group = toGroup(

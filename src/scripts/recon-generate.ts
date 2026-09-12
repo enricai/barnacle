@@ -2176,18 +2176,23 @@ function requestAndResponseValues(capture: Capture): Set<string> {
 }
 
 /** True when `value` -- one member's own value for the sole varying request
- * field of a same-endpoint group -- shows up anywhere else in the flow (any
- * OTHER capture's path/query/body/response), proving some later step reads
- * or threads it. False means the value is scaffolding the client generated
- * and nothing downstream ever consumes: the structural signal {@link
- * isRedundantSameEndpointGroup} uses to widen collapsing past the literal
- * {@link CACHE_BUSTER_QUERY_KEYS}/{@link PAGINATION_FIELD_NAME_PATTERN}
- * allowlists without hand-enumerating more key-name shapes. A non-primitive
- * or empty value can't be structurally proven dead, so it's treated as
- * load-bearing by default. */
+ * field of a same-endpoint group -- shows up in some capture OUTSIDE the
+ * group itself (any OTHER, DIFFERENT-endpoint capture's path/query/body/
+ * response), proving some later step reads or threads it. False means the
+ * value is either scaffolding the client generated and nothing downstream
+ * ever consumes, OR a cursor the group's OWN members hand to each other --
+ * e.g. page 1's response minting the exact cursor value page 2's request
+ * carries -- which is chained pagination state, not distinct data a
+ * different step depends on, so an echo confined to sibling occurrences of
+ * this SAME same-endpoint group must not block collapsing it. This is the
+ * structural signal {@link isRedundantSameEndpointGroup} uses to widen
+ * collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
+ * PAGINATION_FIELD_NAME_PATTERN} allowlists without hand-enumerating more
+ * key-name shapes. A non-primitive or empty value can't be structurally
+ * proven dead, so it's treated as load-bearing by default. */
 function isFieldValueThreadedElsewhere(
   value: unknown,
-  ownCapture: Capture,
+  groupCaptures: ReadonlySet<Capture>,
   allActions: readonly ActionCapture[]
 ): boolean {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
@@ -2196,7 +2201,8 @@ function isFieldValueThreadedElsewhere(
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
   return allActions.some(
-    ({ capture }) => capture !== ownCapture && requestAndResponseValues(capture).has(stringValue)
+    ({ capture }) =>
+      !groupCaptures.has(capture) && requestAndResponseValues(capture).has(stringValue)
   );
 }
 
@@ -2217,22 +2223,24 @@ function isFieldValueThreadedElsewhere(
  * consideration is EITHER pagination-shaped -- a paged listing/facet re-query
  * -- OR (when `allActions`, the full capture sequence, is supplied)
  * independently proven via {@link isFieldValueThreadedElsewhere} to never be
- * read by any other step in the flow -- a cache-buster/nonce/request-id shape
- * the literal allowlists don't happen to name -- or the group varies in no
- * field at all -- a polled toggles/feature-flag endpoint re-fired with an
- * identical request. A group can have any number of varying keys; each one
- * must clear its own pagination-or-dead check independently, so a page
+ * read by any capture OUTSIDE this same-endpoint group -- a cache-buster/
+ * nonce/request-id shape the literal allowlists don't happen to name, OR a
+ * cursor the group's own members hand to each other (page 1's response
+ * minting the exact value page 2's request carries) -- or the group varies
+ * in no field at all -- a polled toggles/feature-flag endpoint re-fired with
+ * an identical request. A group can have any number of varying keys; each
+ * one must clear its own pagination-or-dead check independently, so a page
  * cursor alongside an unrelated dead cache-buster key still collapses.
  * Without `allActions` (unit tests exercising this predicate in isolation,
  * with no flow context to check against) a non-pagination varying key can't
  * be structurally proven dead, so the group is left untouched -- the same
  * conservative outcome as before this widening. A group with any varying
- * field proven read elsewhere (e.g. a per-item drill's item-id, later echoed
- * into that item's detail request) is likewise left untouched: that variance
- * carries the distinct per-item state the existing fold-chain mechanism
- * (`target.chain` in `emitMultiStepExecuteHttp`) already hoists correctly
- * once resolved, and collapsing it here would erase the very state that
- * hoisting depends on.
+ * field proven read by a DIFFERENT step outside the group (e.g. a per-item
+ * drill's item-id, later echoed into that item's detail request) is
+ * likewise left untouched: that variance carries the distinct per-item
+ * state the existing fold-chain mechanism (`target.chain` in
+ * `emitMultiStepExecuteHttp`) already hoists correctly once resolved, and
+ * collapsing it here would erase the very state that hoisting depends on.
  */
 export function isRedundantSameEndpointGroup(
   group: ActionCapture[],
@@ -2281,6 +2289,7 @@ export function isRedundantSameEndpointGroup(
   });
 
   if (varyingKeys.length === 0) return true;
+  const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
     // A flat (non-array) response carries no re-pollable listing/facet shape
@@ -2292,7 +2301,7 @@ export function isRedundantSameEndpointGroup(
     if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
     if (!allActions) return false;
     return fieldSets.every(
-      (fields, i) => !isFieldValueThreadedElsewhere(fields[key], group[i]!.capture, allActions)
+      (fields) => !isFieldValueThreadedElsewhere(fields[key], groupCaptures, allActions)
     );
   });
 }
