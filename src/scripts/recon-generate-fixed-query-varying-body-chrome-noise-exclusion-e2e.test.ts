@@ -19,13 +19,19 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-const BEACON_URL = "https://api.example.com/auth/responder.html?clientId=TPR-LBJS.WEB&environment=PROD";
+// A single plain-word path segment with no repeated segment of its own: the
+// structural-isolation pass ({@link isStructurallyIsolatedCapture} in
+// capture-filters.ts) deliberately never flags this shape, matching a real
+// chain step's own naming — so this fixture only excludes via the
+// zero-variance-repeat predicate this subtask widens, not as an accidental
+// side effect of the structural-relevance gate.
+const BEACON_URL = "https://api.example.com/beacon?clientId=TPR-LBJS.WEB&environment=PROD";
 
 function buildBeaconCapture(index: number, timestamp: string): Capture {
   return {
     timestamp,
     phase: "action",
-    method: "GET",
+    method: "POST",
     url: BEACON_URL,
     status: 200,
     requestHeaders: {},
@@ -103,7 +109,7 @@ describe("recon-generate: fixed-query chrome noise with a varying request body i
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).not.toContain("responder.html");
+    expect(contract).not.toContain("/beacon");
     expect(contract).not.toContain("clientId");
     expect(contract).toContain(submitPath);
   }, 30_000);
