@@ -793,38 +793,18 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     expect(kept).toEqual([productAvail.url, promoBanner.url]);
   });
 
-  it("excludes every repeat of a same-URL noise endpoint instead of letting them mutually vouch for each other (#bugfix-003)", () => {
-    // A page-load beacon fired on every navigation: same compound-token
-    // path, several times, sharing no token with anything else in the pool.
-    // Before the fix, otherPaths excluded only the candidate's own array
-    // index, so each repeat's siblings (identical path, hence identical
-    // tokens) satisfied its own token-overlap check and none was ever
-    // recognized as isolated/noise.
-    const beacon1 = capture(
-      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=1",
-      "{}"
-    );
-    const beacon2 = capture(
-      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=2",
-      "{}"
-    );
-    const beacon3 = capture(
-      "https://api.tenant.example.com/site-banner/api/promotions/widget?a=3",
-      "{}"
-    );
-    const chainStepOne = capture("https://api.tenant.example.com/applicant", "{}");
-    const chainStepTwo = capture("https://api.tenant.example.com/sections/name", "{}");
-
-    const kept = extractActionSequence(
-      [beacon1, beacon2, beacon3, chainStepOne, chainStepTwo],
-      null,
-      null,
-      ["api.tenant.example.com"],
-      null
-    ).map((a) => a.capture.url);
-
-    expect(kept).toEqual([chainStepOne.url, chainStepTwo.url]);
-  });
+  // (#bugfix-003 attempted to exclude every same-pathname repeat from a
+  // candidate's own structural-isolation evidence set, so N identical
+  // repeats of a same-host endpoint could no longer trivially "vouch" for
+  // each other. Reverted: it can't distinguish that shape from a
+  // legitimately repeated own-backend polling endpoint (e.g. a toggles/
+  // feature-flag poll re-fired 6+ times) whose path just doesn't happen to
+  // share a token with any other endpoint in a small flow — see
+  // recon-generate-rest-repeated-endpoint-collapse-e2e.test.ts and
+  // recon-generate-repeated-endpoint-noise-family-combined-e2e.test.ts,
+  // which need the pre-bugfix-003 self-vouching behavior to keep such an
+  // endpoint from being dropped outright before it ever reaches the
+  // same-endpoint collapse step.)
 });
 
 describe("identifyNoiseCapturesForFields — required-URL-field guard's self-heal relevance decision", () => {

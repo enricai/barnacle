@@ -42,6 +42,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  pathStructuralTokens,
   registrableDomain,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -1865,12 +1866,24 @@ export function extractActionSequence(
   // but a 1-2 capture pool has no "everything else" to be isolated from, so
   // skip it there rather than risk flagging a single-endpoint site's own
   // hyphenated path.
+  //
+  // A candidate's own same-pathname repeats only count as evidence against
+  // itself (not for it) when its path carries a densely name-spaced,
+  // marketing/tracking-shaped signal — more than one compound segment's
+  // worth of tokens (e.g. `/site-banner/promotions-widget`, 4 tokens across
+  // two compound segments): real own-backend endpoints (a polled toggles
+  // feed, a paged listing) are named with at most one compound segment, so
+  // they still get to vouch for themselves via their own repeats even when
+  // no OTHER endpoint in a small flow happens to share a token with them.
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
-      ? hostGated.filter(({ capture }) => {
+      ? hostGated.filter(({ capture }, i) => {
           const path = safeUrlPathname(capture.url);
+          const denselyNameSpaced = pathStructuralTokens(path).size > 2;
           const otherPaths = hostGated
-            .filter((h) => safeUrlPathname(h.capture.url) !== path)
+            .filter((h, j) =>
+              denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
+            )
             .map((h) => safeUrlPathname(h.capture.url));
           return !isStructurallyIsolatedCapture(path, otherPaths);
         })
