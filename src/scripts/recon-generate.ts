@@ -2106,6 +2106,21 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
 const PAGINATION_FIELD_NAME_PATTERN =
   /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
 
+/** Request-field key names that name known client-generated scaffolding
+ * (a monotonic sequence counter, a correlation/trace id, an idempotency
+ * nonce) rather than genuine payload data. Gates {@link
+ * isFieldValueThreadedElsewhere} on a FLAT (non-array) response's
+ * BODY-carried varying field -- unlike an array-shaped listing/facet
+ * re-query, a mutation's request-body field could just as easily be real
+ * user-entered payload (an address line, a card's last4) that happens
+ * never to be echoed back downstream, so that field additionally requires
+ * its key name to look like scaffolding before trusting the "never echoed"
+ * proof. A varying field that lives ONLY in the URL query string (never in
+ * the body) skips this name requirement instead -- see {@link
+ * isQueryStringOnlyKey}. */
+const SCAFFOLDING_FIELD_NAME_PATTERN =
+  /^(req|request|correlation|trace|session|idempotency)?[-_]?(seq|id|key|nonce)$/i;
+
 /** Every query-string and (when JSON-object-shaped) request-body field on a
  * capture, merged into one comparable map -- REST pagination/facet state can
  * live in either depending on the endpoint's own convention. */
@@ -2128,6 +2143,36 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
     }
   }
   return fields;
+}
+
+/** True when `key` is carried ONLY by the URL query string across every
+ * capture in `group` -- never by a JSON request body. Used to widen the
+ * flat-response scaffolding gate past its closed name allowlist for the
+ * common case of a REST poll's tracking param, without extending that same
+ * trust to a mutation's body-carried payload field (see the comment at its
+ * call site in {@link isRedundantSameEndpointGroup}). */
+function isQueryStringOnlyKey(key: string, group: readonly ActionCapture[]): boolean {
+  return group.every((a) => {
+    let inQuery = false;
+    try {
+      inQuery = new URL(a.capture.url).searchParams.has(key);
+    } catch {
+      return false;
+    }
+    if (!inQuery) return false;
+    if (!a.capture.requestPostData) return true;
+    try {
+      const parsed: unknown = JSON.parse(a.capture.requestPostData);
+      return (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        !(key in (parsed as Record<string, unknown>))
+      );
+    } catch {
+      return true;
+    }
+  });
 }
 
 /** Every literal request-query/body leaf and response-body leaf a capture
@@ -2307,15 +2352,24 @@ export function isRedundantSameEndpointGroup(
   if (varyingKeys.length === 0) return true;
   const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
-    // PAGINATION_FIELD_NAME_PATTERN is a fast path trusted outright, by name
-    // alone, with no structural proof required. Every other varying key --
-    // regardless of shape or name, including a flat response's session/
-    // correlation/cache-bust param whose name isn't in any closed set --
-    // falls through to the same structural "never echoed elsewhere" proof
-    // the array-shaped branch already relies on, so a genuinely
-    // zero-semantic-variance key isn't vetoed purely because its name
-    // happens not to be enumerated.
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
+    // A flat response's varying field name must still look like scaffolding
+    // UNLESS it lives only in the URL query string (never the JSON body) --
+    // a query-string param is the conventional home for ephemeral
+    // client-generated metadata (cache-busters, correlation ids, poll
+    // ticks) regardless of what the site happens to call it, whereas a
+    // JSON body field is where a mutation's genuine submitted payload (an
+    // address line, a card's last4) lives, and that ambiguity is exactly
+    // why the name-pattern requirement stays for body fields: an unnamed
+    // body field being "never echoed elsewhere" is no proof it's dead, only
+    // that nothing downstream happened to read it back.
+    if (
+      shapeKey === null &&
+      !SCAFFOLDING_FIELD_NAME_PATTERN.test(key) &&
+      !isQueryStringOnlyKey(key, group)
+    ) {
+      return false;
+    }
     if (!allActions) return false;
     return fieldSets.every(
       (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
