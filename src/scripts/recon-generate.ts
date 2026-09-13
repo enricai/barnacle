@@ -5955,7 +5955,17 @@ export function emitMultiStepExecuteHttp(
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
-          const paramUrl = parameterize(chainRendered.url, chainStep.capture);
+          // Same bypass as Pass 1 ({@link isZeroVarianceRepeatCapture}): a
+          // request-invariant capture's URL must never re-enter
+          // substitution here either, or a chain/fold value that
+          // coincidentally equals a byte of its opaque path splices into it
+          // just as it would have in the un-guarded Pass-1 render.
+          const paramUrl = isZeroVarianceRepeatCapture(
+            chainStep.capture,
+            actions.map((a) => a.capture)
+          )
+            ? chainStep.capture.url
+            : parameterize(chainRendered.url, chainStep.capture);
           const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
           const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
           if (
@@ -9978,7 +9988,17 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
-          const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
+          // Same bypass as Pass 1 ({@link isZeroVarianceRepeatCapture}) and
+          // emitMultiStepExecuteHttp's identical `paramUrl` guard: a
+          // request-invariant capture's URL must never re-enter
+          // substitution here, or a fold value that coincidentally equals a
+          // byte of its opaque path splices into it.
+          const url = isZeroVarianceRepeatCapture(
+            chainStep.capture,
+            actionSteps.map((s) => s.capture)
+          )
+            ? chainStep.capture.url
+            : parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
             looseServerResponse: true,
