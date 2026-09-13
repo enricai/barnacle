@@ -2319,14 +2319,15 @@ export function isRedundantSameEndpointGroup(
   if (varyingKeys.length === 0) return true;
   const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
+    // The name patterns are a fast path, not a hard prerequisite: a key
+    // matching either is trusted as pagination/scaffolding outright. A key
+    // matching neither -- an arbitrary session/correlation/cache-bust param
+    // whose name isn't in either closed set -- still falls through to the
+    // same structural "never echoed elsewhere" proof the array-shaped
+    // branch already relies on, so a genuinely zero-semantic-variance key
+    // isn't vetoed purely because its name happens not to be enumerated.
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
-    // A flat (non-array) response carries no re-pollable listing/facet shape
-    // to key the pagination-pattern shortcut against, and a varying field
-    // there is just as likely to be genuine distinct payload data (an
-    // address line, a card's last4) that happens never to be echoed back as
-    // it is to be scaffolding -- so the "never echoed elsewhere" proof alone
-    // isn't trusted; the key name itself must also look like scaffolding.
-    if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
+    if (shapeKey === null && SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return true;
     if (!allActions) return false;
     return fieldSets.every(
       (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)

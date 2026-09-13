@@ -28,9 +28,11 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const OWN_BACKEND_HOST = "www.own-backend-repeated-endpoint-realistic-variance.example.com";
 const POLL_URL = `https://${OWN_BACKEND_HOST}/feature-flags/catalog-availability`;
 const DRILL_URL = `https://${OWN_BACKEND_HOST}/catalog/item-availability`;
+const NAMED_KEY_TOGGLE_URL = `https://${OWN_BACKEND_HOST}/feature-flags/catalog-availability-cohort`;
 
 const POLL_REFIRE_COUNT = 6;
 const DRILL_RETRY_COUNT = 2;
+const NAMED_KEY_TOGGLE_REFIRE_COUNT = 8;
 
 function reportShapeCaptures(): Capture[] {
   const poll = Array.from({ length: POLL_REFIRE_COUNT }, (_, i) =>
@@ -55,6 +57,24 @@ function reportShapeCaptures(): Capture[] {
     })
   );
   return [...poll, ...drill];
+}
+
+function namedKeyToggleCaptures(): Capture[] {
+  // A flat toggle poll re-fired with a varying `idx` query param -- a name
+  // that matches neither PAGINATION_FIELD_NAME_PATTERN (page/offset/cursor/…)
+  // nor SCAFFOLDING_FIELD_NAME_PATTERN (req/session/…+seq/id/key/nonce). The
+  // response is byte-identical across every re-fire and `idx`'s value is
+  // never read by any other capture, so the group is structurally
+  // zero-semantic-variance despite its key name falling outside both closed
+  // sets.
+  return Array.from({ length: NAMED_KEY_TOGGLE_REFIRE_COUNT }, (_, i) =>
+    buildCapture({
+      url: `${NAMED_KEY_TOGGLE_URL}?idx=${i}`,
+      requestPostData: "[]",
+      responseBody: { enabled: true },
+      timestamp: `2024-01-01T00:03:${String(i).padStart(2, "0")}Z`,
+    })
+  );
 }
 
 function writeRunDir(root: string, captures: Capture[]): void {
@@ -126,5 +146,53 @@ describe("recon-generate CLI — repeated same-endpoint captures collapse for re
     // byte-identical raw captures — not two separate `httpClient` calls for
     // what is, at the request level, one occurrence retried.
     expect(contract.match(/catalog\/item-availability/g)?.length).toBe(1);
+  }, 30_000);
+});
+
+describe("recon-generate CLI — flat-shaped same-endpoint group collapses on a varying key absent from both name-pattern allowlists", () => {
+  it("collapses an 8x flat toggle re-poll varying only by a non-allowlisted `idx` key to a single httpClient call", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-repeated-endpoint-named-key-toggle-e2e-"));
+    const runRoot = join(workDir, "run");
+    const captures = [
+      ...namedKeyToggleCaptures(),
+      ...reportShapeCaptures().slice(POLL_REFIRE_COUNT),
+    ];
+    writeRunDir(runRoot, captures);
+
+    const siteId = `repeated-endpoint-named-key-toggle-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "poll feature flags" },
+          { step: "check catalog item availability", submitStep: true },
+        ],
+        submitEndpointPattern: "item-availability",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
+
+    // Two distinct real endpoint groups (toggle poll, drill) — not one
+    // hard-coded call per raw capture.
+    expect(httpClientCallCount).toBeLessThanOrEqual(2 + 2);
+
+    // The `idx`-varying toggle poll survives exactly once, collapsed from 8
+    // raw re-fires whose only varying request field's name matches neither
+    // PAGINATION_FIELD_NAME_PATTERN nor SCAFFOLDING_FIELD_NAME_PATTERN.
+    expect(contract.match(/feature-flags\/catalog-availability-cohort/g)?.length).toBe(1);
   }, 30_000);
 });
