@@ -352,12 +352,24 @@ function urlOwnValues(url: string): Set<string> {
  *
  * Missing response metadata (unit-test callers that construct a capture
  * without `responseHeaders`/`responseBody`) reads as "no business-relevant
- * state" too: this predicate only ever narrows an already-fixed-query,
- * already-recurring candidate ({@link isZeroVarianceRepeatCapture}), so
- * defaulting to the noise reading there costs nothing except in the caller
- * that deliberately supplies a JSON response to prove the opposite.
+ * state" too: this predicate only ever narrows an already-recurring
+ * candidate — {@link isZeroVarianceRepeatCapture} (already-fixed-query) and
+ * `recon-generate.ts`'s own-repeat structural-isolation pass (already
+ * repeats identically, regardless of query shape) — so defaulting to the
+ * noise reading there costs nothing except in the caller that deliberately
+ * supplies a JSON response to prove the opposite.
+ *
+ * Exported (not just used internally by {@link isZeroVarianceRepeatCapture})
+ * because a same-host, fixed-request endpoint with NO query string at all
+ * (e.g. a polled feature-toggle feed with a single-compound-segment path)
+ * can be genuinely zero-business-value too, and query-key matching alone —
+ * this file's `hasFixedKey` signal — has nothing to key off when there is no
+ * query. Response business-value is the general, path/query-shape-independent
+ * signal for "this repeat carries nothing a caller could not already know,"
+ * so `recon-generate.ts` reuses it directly instead of the query-shape logic
+ * that cannot apply to a query-less endpoint.
  */
-function hasNoBusinessRelevantResponseState(capture: {
+export function hasNoBusinessRelevantResponseState(capture: {
   url: string;
   responseHeaders?: Record<string, string>;
   responseBody?: unknown;

@@ -37,6 +37,7 @@ import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
+  hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
   isNoiseUrl,
   isSamePathFamily,
@@ -1880,15 +1881,23 @@ export function extractActionSequence(
   // itself (not for it) when its path carries a densely name-spaced,
   // marketing/tracking-shaped signal — more than one compound segment's
   // worth of tokens (e.g. `/site-banner/promotions-widget`, 4 tokens across
-  // two compound segments): real own-backend endpoints (a polled toggles
-  // feed, a paged listing) are named with at most one compound segment, so
-  // they still get to vouch for themselves via their own repeats even when
-  // no OTHER endpoint in a small flow happens to share a token with them.
+  // two compound segments) — OR when the repeats themselves carry no
+  // business-relevant response state ({@link hasNoBusinessRelevantResponseState}):
+  // a real own-backend endpoint (a polled toggles feed, a paged listing) is
+  // often named with at most one compound segment, so path shape alone can't
+  // tell it apart from a same-shaped, same-host, zero-business-value poll
+  // (an availability/feature-flag ping that answers every call with nothing
+  // a caller could not already know) — both are "one compound segment,
+  // repeats identically." Response content is what actually distinguishes
+  // them, so a candidate whose own repeats carry no business-relevant state
+  // loses the self-vouching exemption regardless of its token count, while a
+  // genuinely data-bearing single-compound-segment endpoint keeps it.
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture }, i) => {
           const path = safeUrlPathname(capture.url);
-          const denselyNameSpaced = pathStructuralTokens(path).size > 2;
+          const denselyNameSpaced =
+            pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
           const otherPaths = hostGated
             .filter((h, j) =>
               denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
@@ -2109,12 +2118,15 @@ const PAGINATION_FIELD_NAME_PATTERN =
 /** Request-field key names that name known client-generated scaffolding
  * (a monotonic sequence counter, a correlation/trace id, an idempotency
  * nonce) rather than genuine payload data. Gates {@link
- * isFieldValueThreadedElsewhere} on a FLAT (non-array) response -- unlike an
- * array-shaped listing/facet re-query, a flat response's varying field could
- * just as easily be real user-entered payload (an address line, a card's
- * last4) that happens never to be echoed back downstream, so that branch
- * additionally requires the key name itself to look like scaffolding before
- * trusting the "never echoed" proof. */
+ * isFieldValueThreadedElsewhere} on a FLAT (non-array) response's
+ * BODY-carried varying field -- unlike an array-shaped listing/facet
+ * re-query, a mutation's request-body field could just as easily be real
+ * user-entered payload (an address line, a card's last4) that happens
+ * never to be echoed back downstream, so that field additionally requires
+ * its key name to look like scaffolding before trusting the "never echoed"
+ * proof. A varying field that lives ONLY in the URL query string (never in
+ * the body) skips this name requirement instead -- see {@link
+ * isQueryStringOnlyKey}. */
 const SCAFFOLDING_FIELD_NAME_PATTERN =
   /^(req|request|correlation|trace|session|idempotency)?[-_]?(seq|id|key|nonce)$/i;
 
@@ -2140,6 +2152,36 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
     }
   }
   return fields;
+}
+
+/** True when `key` is carried ONLY by the URL query string across every
+ * capture in `group` -- never by a JSON request body. Used to widen the
+ * flat-response scaffolding gate past its closed name allowlist for the
+ * common case of a REST poll's tracking param, without extending that same
+ * trust to a mutation's body-carried payload field (see the comment at its
+ * call site in {@link isRedundantSameEndpointGroup}). */
+function isQueryStringOnlyKey(key: string, group: readonly ActionCapture[]): boolean {
+  return group.every((a) => {
+    let inQuery = false;
+    try {
+      inQuery = new URL(a.capture.url).searchParams.has(key);
+    } catch {
+      return false;
+    }
+    if (!inQuery) return false;
+    if (!a.capture.requestPostData) return true;
+    try {
+      const parsed: unknown = JSON.parse(a.capture.requestPostData);
+      return (
+        parsed === null ||
+        typeof parsed !== "object" ||
+        Array.isArray(parsed) ||
+        !(key in (parsed as Record<string, unknown>))
+      );
+    } catch {
+      return true;
+    }
+  });
 }
 
 /** Every literal request-query/body leaf and response-body leaf a capture
@@ -2320,13 +2362,23 @@ export function isRedundantSameEndpointGroup(
   const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
-    // A flat (non-array) response carries no re-pollable listing/facet shape
-    // to key the pagination-pattern shortcut against, and a varying field
-    // there is just as likely to be genuine distinct payload data (an
-    // address line, a card's last4) that happens never to be echoed back as
-    // it is to be scaffolding -- so the "never echoed elsewhere" proof alone
-    // isn't trusted; the key name itself must also look like scaffolding.
-    if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
+    // A flat response's varying field name must still look like scaffolding
+    // UNLESS it lives only in the URL query string (never the JSON body) --
+    // a query-string param is the conventional home for ephemeral
+    // client-generated metadata (cache-busters, correlation ids, poll
+    // ticks) regardless of what the site happens to call it, whereas a
+    // JSON body field is where a mutation's genuine submitted payload (an
+    // address line, a card's last4) lives, and that ambiguity is exactly
+    // why the name-pattern requirement stays for body fields: an unnamed
+    // body field being "never echoed elsewhere" is no proof it's dead, only
+    // that nothing downstream happened to read it back.
+    if (
+      shapeKey === null &&
+      !SCAFFOLDING_FIELD_NAME_PATTERN.test(key) &&
+      !isQueryStringOnlyKey(key, group)
+    ) {
+      return false;
+    }
     if (!allActions) return false;
     return fieldSets.every(
       (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
@@ -5865,18 +5917,46 @@ export function emitMultiStepExecuteHttp(
                   };
             })
             .filter((b): b is { value: string; replacement: string } => b !== null);
-          const result = substituteThreadedValues(swapped, valueBindings);
+          // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
+          // must never have a COINCIDENTAL threaded value spliced into it —
+          // but the invariance verdict is per-capture, not per-field: a
+          // capture can be fixed on one key (a repeated `qty`) while still
+          // genuinely varying on another (`itemId`), so only the fields that
+          // {@link isGenuineVaryingQueryValue} can't prove are real per-request
+          // dependencies get excluded, never the whole substitution pass.
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            actions.map((a) => a.capture)
+          );
+          const filteredValueBindings = isProvenInvariant
+            ? valueBindings.filter((b) =>
+                isGenuineVaryingQueryValue(
+                  b.value,
+                  chainCapture,
+                  actions.map((a) => a.capture)
+                )
+              )
+            : valueBindings;
+          const result = substituteThreadedValues(swapped, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
             result
           );
-          assertNoFrozenVaryingDrillParams(
-            "emitMultiStepExecuteHttp",
-            chainCapture,
-            withDrillParamBindings,
-            actions.map((a) => a.capture)
-          );
+          // The frozen-varying-param safety net exists to catch a
+          // misconfigured drill (a param that genuinely needs joinFields/an
+          // ancestor binding but has neither) — it does not apply once the
+          // capture is already proven request-invariant: freezing an
+          // undeclared, business-irrelevant varying key (a beacon nonce)
+          // there is the INTENDED behavior, not a misconfiguration.
+          if (!isProvenInvariant) {
+            assertNoFrozenVaryingDrillParams(
+              "emitMultiStepExecuteHttp",
+              chainCapture,
+              withDrillParamBindings,
+              actions.map((a) => a.capture)
+            );
+          }
           return withDrillParamBindings;
         };
 
@@ -5903,6 +5983,9 @@ export function emitMultiStepExecuteHttp(
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
+          // The zero-variance guard lives inside `parameterize` itself (see
+          // above) so it can skip only the threaded-value splice while still
+          // letting a spec-declared drillParamBindings substitution apply.
           const paramUrl = parameterize(chainRendered.url, chainStep.capture);
           const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
           const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
@@ -6810,6 +6893,41 @@ export function applyDrillParamBindings(
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
     return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
   }, text);
+}
+
+/** True when `value` is a QUERY PARAM value in `capture.url` whose key
+ * genuinely differs on at least one other same-endpoint occurrence in
+ * `allCaptures` — i.e. a real per-request dependency (an item id, a page
+ * cursor), not a coincidental byte match against an opaque path segment or a
+ * key that happens to hold the same value on every occurrence. Used to
+ * decide, field by field, whether a threaded-value splice into a capture
+ * proven request-invariant ({@link isZeroVarianceRepeatCapture}) is a
+ * legitimate substitution or the exact coincidence that guard exists to
+ * catch — a capture can be "invariant" on one key (a fixed `qty`) while
+ * still genuinely varying on another (`itemId`), so the invariance verdict
+ * alone can't gate substitution at the whole-capture level. */
+function isGenuineVaryingQueryValue(
+  value: string,
+  capture: Capture,
+  allCaptures: readonly Capture[]
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(capture.url);
+  } catch {
+    return false;
+  }
+  const key = [...url.searchParams.entries()].find(([, v]) => v === value)?.[0];
+  if (key === undefined) return false;
+  const endpoint = endpointKey(capture.url);
+  return allCaptures.some((c) => {
+    if (c === capture || endpointKey(c.url) !== endpoint) return false;
+    try {
+      return new URL(c.url).searchParams.get(key) !== value;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
@@ -9899,18 +10017,41 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   };
             })
             .filter((b): b is { value: string; replacement: string } => b !== null);
-          const result = substituteThreadedValues(withBase, valueBindings);
+          // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
+          // must never have a COINCIDENTAL threaded value spliced into it —
+          // see emitMultiStepExecuteHttp's identical `parameterize` guard
+          // ({@link isGenuineVaryingQueryValue}) for why this is decided
+          // field by field rather than for the whole capture at once.
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            actionSteps.map((s) => s.capture)
+          );
+          const filteredValueBindings = isProvenInvariant
+            ? valueBindings.filter((b) =>
+                isGenuineVaryingQueryValue(
+                  b.value,
+                  chainCapture,
+                  actionSteps.map((s) => s.capture)
+                )
+              )
+            : valueBindings;
+          const result = substituteThreadedValues(withBase, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
             result
           );
-          assertNoFrozenVaryingDrillParams(
-            "emitContractTs",
-            chainCapture,
-            withDrillParamBindings,
-            actionSteps.map((s) => s.capture)
-          );
+          // See emitMultiStepExecuteHttp's identical guard: the frozen-
+          // varying-param safety net does not apply once the capture is
+          // already proven request-invariant.
+          if (!isProvenInvariant) {
+            assertNoFrozenVaryingDrillParams(
+              "emitContractTs",
+              chainCapture,
+              withDrillParamBindings,
+              actionSteps.map((s) => s.capture)
+            );
+          }
           return withDrillParamBindings;
         };
         const chainLines: string[] = [];
@@ -9926,6 +10067,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
+          // The zero-variance guard lives inside `parameterizeUrl` itself
+          // (see above) so it can skip only the threaded-value splice while
+          // still letting a spec-declared drillParamBindings substitution
+          // apply.
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
