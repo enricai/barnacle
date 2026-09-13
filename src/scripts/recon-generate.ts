@@ -5917,18 +5917,46 @@ export function emitMultiStepExecuteHttp(
                   };
             })
             .filter((b): b is { value: string; replacement: string } => b !== null);
-          const result = substituteThreadedValues(swapped, valueBindings);
+          // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
+          // must never have a COINCIDENTAL threaded value spliced into it —
+          // but the invariance verdict is per-capture, not per-field: a
+          // capture can be fixed on one key (a repeated `qty`) while still
+          // genuinely varying on another (`itemId`), so only the fields that
+          // {@link isGenuineVaryingQueryValue} can't prove are real per-request
+          // dependencies get excluded, never the whole substitution pass.
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            actions.map((a) => a.capture)
+          );
+          const filteredValueBindings = isProvenInvariant
+            ? valueBindings.filter((b) =>
+                isGenuineVaryingQueryValue(
+                  b.value,
+                  chainCapture,
+                  actions.map((a) => a.capture)
+                )
+              )
+            : valueBindings;
+          const result = substituteThreadedValues(swapped, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
             result
           );
-          assertNoFrozenVaryingDrillParams(
-            "emitMultiStepExecuteHttp",
-            chainCapture,
-            withDrillParamBindings,
-            actions.map((a) => a.capture)
-          );
+          // The frozen-varying-param safety net exists to catch a
+          // misconfigured drill (a param that genuinely needs joinFields/an
+          // ancestor binding but has neither) — it does not apply once the
+          // capture is already proven request-invariant: freezing an
+          // undeclared, business-irrelevant varying key (a beacon nonce)
+          // there is the INTENDED behavior, not a misconfiguration.
+          if (!isProvenInvariant) {
+            assertNoFrozenVaryingDrillParams(
+              "emitMultiStepExecuteHttp",
+              chainCapture,
+              withDrillParamBindings,
+              actions.map((a) => a.capture)
+            );
+          }
           return withDrillParamBindings;
         };
 
@@ -5955,17 +5983,10 @@ export function emitMultiStepExecuteHttp(
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
-          // Same bypass as Pass 1 ({@link isZeroVarianceRepeatCapture}): a
-          // request-invariant capture's URL must never re-enter
-          // substitution here either, or a chain/fold value that
-          // coincidentally equals a byte of its opaque path splices into it
-          // just as it would have in the un-guarded Pass-1 render.
-          const paramUrl = isZeroVarianceRepeatCapture(
-            chainStep.capture,
-            actions.map((a) => a.capture)
-          )
-            ? chainStep.capture.url
-            : parameterize(chainRendered.url, chainStep.capture);
+          // The zero-variance guard lives inside `parameterize` itself (see
+          // above) so it can skip only the threaded-value splice while still
+          // letting a spec-declared drillParamBindings substitution apply.
+          const paramUrl = parameterize(chainRendered.url, chainStep.capture);
           const paramHeaders = parameterize(chainRendered.headersExpr, chainStep.capture);
           const paramBody = parameterize(chainRendered.bodyArg, chainStep.capture);
           if (
@@ -6872,6 +6893,41 @@ export function applyDrillParamBindings(
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
     return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
   }, text);
+}
+
+/** True when `value` is a QUERY PARAM value in `capture.url` whose key
+ * genuinely differs on at least one other same-endpoint occurrence in
+ * `allCaptures` — i.e. a real per-request dependency (an item id, a page
+ * cursor), not a coincidental byte match against an opaque path segment or a
+ * key that happens to hold the same value on every occurrence. Used to
+ * decide, field by field, whether a threaded-value splice into a capture
+ * proven request-invariant ({@link isZeroVarianceRepeatCapture}) is a
+ * legitimate substitution or the exact coincidence that guard exists to
+ * catch — a capture can be "invariant" on one key (a fixed `qty`) while
+ * still genuinely varying on another (`itemId`), so the invariance verdict
+ * alone can't gate substitution at the whole-capture level. */
+function isGenuineVaryingQueryValue(
+  value: string,
+  capture: Capture,
+  allCaptures: readonly Capture[]
+): boolean {
+  let url: URL;
+  try {
+    url = new URL(capture.url);
+  } catch {
+    return false;
+  }
+  const key = [...url.searchParams.entries()].find(([, v]) => v === value)?.[0];
+  if (key === undefined) return false;
+  const endpoint = endpointKey(capture.url);
+  return allCaptures.some((c) => {
+    if (c === capture || endpointKey(c.url) !== endpoint) return false;
+    try {
+      return new URL(c.url).searchParams.get(key) !== value;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Throws when {@link findFrozenVaryingDrillParams} finds any frozen-but-
@@ -9961,18 +10017,41 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                   };
             })
             .filter((b): b is { value: string; replacement: string } => b !== null);
-          const result = substituteThreadedValues(withBase, valueBindings);
+          // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
+          // must never have a COINCIDENTAL threaded value spliced into it —
+          // see emitMultiStepExecuteHttp's identical `parameterize` guard
+          // ({@link isGenuineVaryingQueryValue}) for why this is decided
+          // field by field rather than for the whole capture at once.
+          const isProvenInvariant = isZeroVarianceRepeatCapture(
+            chainCapture,
+            actionSteps.map((s) => s.capture)
+          );
+          const filteredValueBindings = isProvenInvariant
+            ? valueBindings.filter((b) =>
+                isGenuineVaryingQueryValue(
+                  b.value,
+                  chainCapture,
+                  actionSteps.map((s) => s.capture)
+                )
+              )
+            : valueBindings;
+          const result = substituteThreadedValues(withBase, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
             chainCapture,
             result
           );
-          assertNoFrozenVaryingDrillParams(
-            "emitContractTs",
-            chainCapture,
-            withDrillParamBindings,
-            actionSteps.map((s) => s.capture)
-          );
+          // See emitMultiStepExecuteHttp's identical guard: the frozen-
+          // varying-param safety net does not apply once the capture is
+          // already proven request-invariant.
+          if (!isProvenInvariant) {
+            assertNoFrozenVaryingDrillParams(
+              "emitContractTs",
+              chainCapture,
+              withDrillParamBindings,
+              actionSteps.map((s) => s.capture)
+            );
+          }
           return withDrillParamBindings;
         };
         const chainLines: string[] = [];
@@ -9988,17 +10067,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
-          // Same bypass as Pass 1 ({@link isZeroVarianceRepeatCapture}) and
-          // emitMultiStepExecuteHttp's identical `paramUrl` guard: a
-          // request-invariant capture's URL must never re-enter
-          // substitution here, or a fold value that coincidentally equals a
-          // byte of its opaque path splices into it.
-          const url = isZeroVarianceRepeatCapture(
-            chainStep.capture,
-            actionSteps.map((s) => s.capture)
-          )
-            ? chainStep.capture.url
-            : parameterizeUrl(chainStep.capture.url, chainStep.capture);
+          // The zero-variance guard lives inside `parameterizeUrl` itself
+          // (see above) so it can skip only the threaded-value splice while
+          // still letting a spec-declared drillParamBindings substitution
+          // apply.
+          const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
           const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
             looseServerResponse: true,
