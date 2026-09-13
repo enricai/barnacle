@@ -10,12 +10,10 @@ import type { Capture } from "@/scripts/recon-shared";
 /**
  * At realistic repeat-count scale (6 polled-toggle repeats, 8 paged-listing
  * repeats, 8 per-item drill repeats), the toggles and paged-listing endpoints
- * collapse to a single `httpClient(` call each, but the current collapse/hoist
- * logic does not fold the per-item drill: it hoists exactly one call inside
- * the fold loop and then unrolls one literal call per remaining item, so the
- * drill endpoint contributes DRILL_ITEM_COUNT (8) calls, not 1. This test
- * pins that verified behavior — collapsing the drill fully is a known gap in
- * the generator, not something this test asserts.
+ * collapse to a single `httpClient(` call each, and the per-item drill fully
+ * hoists into the fold loop as a single parameterized call keyed off each
+ * listing item — three `httpClient(` calls total, regardless of
+ * DRILL_ITEM_COUNT.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -122,18 +120,18 @@ describe("recon-generate CLI — repeated-endpoint collapse at realistic repeat-
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const httpClientCallCount = (contract.match(/await httpClient\(/g) ?? []).length;
 
-    // Raw capture count is 22 (6 toggles + 8 listing pages + 8 drills). The
-    // toggles and paged-listing endpoints collapse fully; the drill endpoint
-    // hoists one call inside the fold loop and unrolls the rest literally,
-    // so the total is 1 + 1 + DRILL_ITEM_COUNT, not the raw 22.
-    expect(httpClientCallCount).toBe(2 + DRILL_ITEM_COUNT);
+    // Raw capture count is 22 (6 toggles + 8 listing pages + 8 drills). All
+    // three endpoints collapse fully — toggles and paged-listing to their own
+    // single call each, and the per-item drill to one parameterized call
+    // inside the fold loop — for three total, independent of
+    // DRILL_ITEM_COUNT.
+    expect(httpClientCallCount).toBe(3);
 
-    // Each fully-collapsed endpoint survives exactly once.
+    // Each fully-collapsed endpoint survives exactly once, including the
+    // drill endpoint now that it hoists into the fold loop rather than
+    // unrolling one literal call per item.
     expect(contract.match(/toggles\/product-avail/g)?.length).toBe(1);
     expect(contract.match(/available-products\//g)?.length).toBe(1);
-
-    // Known gap: the drill endpoint does not collapse — it appears once per
-    // drill item rather than being hoisted to a single call.
-    expect(contract.match(/available-sailings\//g)?.length).toBe(DRILL_ITEM_COUNT);
+    expect(contract.match(/available-sailings\//g)?.length).toBe(1);
   }, 30_000);
 });

@@ -2038,7 +2038,7 @@ export function extractGraphQLActionSequence(
 function responseShapeKey(capture: Capture): string | null {
   const arrayField = findObjectArrayField(capture.responseBody);
   if (!arrayField) return null;
-  return `${endpointKey(capture.url)} ${arrayField.path.join(".")}`;
+  return `${endpointKey(capture.url)} ${arrayField.path.join(".")}`;
 }
 
 /**
@@ -2142,55 +2142,82 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
   return fields;
 }
 
-/** Every literal request-path segment, request-query/body leaf, and
- * response-body leaf a capture carries, flattened to strings -- the universe
- * of values a LATER capture's own request could plausibly have copied if it
- * threaded this capture's data forward. Used by {@link
- * isFieldValueThreadedElsewhere} to tell a value some downstream step
- * actually reads (a resource id echoed back and later passed to a detail
- * fetch) apart from one nothing ever consumes (a monotonically-incrementing
- * request nonce). */
-function requestAndResponseValues(capture: Capture): Set<string> {
-  const values = new Set<string>();
+/** Every literal request-query/body leaf and response-body leaf a capture
+ * carries, flattened to strings and grouped by the field/segment NAME that
+ * carries each value -- the universe of (name, value) pairs a LATER
+ * capture's own request could plausibly have copied if it threaded this
+ * capture's data forward. Keying by name (not just value) is what lets
+ * {@link isFieldValueThreadedElsewhere} tell a value some downstream step
+ * actually reads under the SAME field name (a resource id echoed back as
+ * `itemId` and later passed to a detail fetch's own `itemId`) apart from a
+ * short scalar that merely happens to string-equal an unrelated field
+ * elsewhere (a 1-8 valued `page` counter colliding with some other
+ * capture's unrelated numeric leaf) -- a coincidence a bare value-equality
+ * scan can't distinguish from genuine threading in a large capture corpus.
+ * URL path segments carry no field name of their own, so they're kept in a
+ * separate {@link RequestAndResponseValues.pathSegments} bucket matched by
+ * bare value instead -- a REST-style detail fetch threads an id through its
+ * URL PATH (`/items/${itemId}`), not a named query/body field, so dropping
+ * path segments entirely would blind {@link isFieldValueThreadedElsewhere}
+ * to exactly that shape of genuine cross-step threading. */
+interface RequestAndResponseValues {
+  byKey: Map<string, Set<string>>;
+  pathSegments: Set<string>;
+}
+function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValues {
+  const byKey = new Map<string, Set<string>>();
+  const pathSegments = new Set<string>();
+  const add = (key: string, value: string): void => {
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(value);
+    byKey.set(key, values);
+  };
   try {
     const url = new URL(capture.url);
-    for (const segment of url.pathname.split("/").filter(Boolean)) values.add(segment);
-    for (const [, value] of url.searchParams) values.add(value);
+    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
+    for (const [key, value] of url.searchParams) add(key, value);
   } catch {
-    // Relative/invalid URLs carry no path/query values to contribute.
+    // Relative/invalid URLs carry no path/query signal to contribute.
   }
   if (capture.requestPostData) {
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
-      for (const { value } of walkAllPrimitiveLeaves(parsed)) {
-        if (value !== null) values.add(String(value));
+      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
       }
     } catch {
       // A non-JSON body carries no leaf values to contribute.
     }
   }
-  for (const { value } of walkAllPrimitiveLeaves(capture.responseBody)) {
-    if (value !== null) values.add(String(value));
+  for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
   }
-  return values;
+  return { byKey, pathSegments };
 }
 
-/** True when `value` -- one member's own value for the sole varying request
- * field of a same-endpoint group -- shows up in some capture OUTSIDE the
- * group itself (any OTHER, DIFFERENT-endpoint capture's path/query/body/
- * response), proving some later step reads or threads it. False means the
- * value is either scaffolding the client generated and nothing downstream
- * ever consumes, OR a cursor the group's OWN members hand to each other --
- * e.g. page 1's response minting the exact cursor value page 2's request
- * carries -- which is chained pagination state, not distinct data a
- * different step depends on, so an echo confined to sibling occurrences of
- * this SAME same-endpoint group must not block collapsing it. This is the
- * structural signal {@link isRedundantSameEndpointGroup} uses to widen
- * collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
+/** True when `value` -- one member's own value for `fieldKey`, the sole
+ * varying request field of a same-endpoint group -- shows up under that
+ * SAME field/leaf name in some capture OUTSIDE the group itself (any OTHER,
+ * DIFFERENT-endpoint capture's query/body/response), proving some later
+ * step reads or threads it. False means the value is either scaffolding the
+ * client generated and nothing downstream ever consumes, OR a cursor the
+ * group's OWN members hand to each other -- e.g. page 1's response minting
+ * the exact cursor value page 2's request carries -- which is chained
+ * pagination state, not distinct data a different step depends on, so an
+ * echo confined to sibling occurrences of this SAME same-endpoint group
+ * must not block collapsing it, OR a short scalar (a low-cardinality page
+ * counter) that merely string-equals some unrelated field elsewhere by
+ * coincidence -- requiring the match to occur under the SAME field name is
+ * what tells genuine cross-step threading (an id echoed back under its own
+ * name) apart from that coincidence, since an unrelated field publishing
+ * the same short digit string under a DIFFERENT name proves nothing. This
+ * is the structural signal {@link isRedundantSameEndpointGroup} uses to
+ * widen collapsing past the literal {@link CACHE_BUSTER_QUERY_KEYS}/{@link
  * PAGINATION_FIELD_NAME_PATTERN} allowlists without hand-enumerating more
  * key-name shapes. A non-primitive or empty value can't be structurally
  * proven dead, so it's treated as load-bearing by default. */
 function isFieldValueThreadedElsewhere(
+  fieldKey: string,
   value: unknown,
   groupCaptures: ReadonlySet<Capture>,
   allActions: readonly ActionCapture[]
@@ -2200,10 +2227,11 @@ function isFieldValueThreadedElsewhere(
   }
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
-  return allActions.some(
-    ({ capture }) =>
-      !groupCaptures.has(capture) && requestAndResponseValues(capture).has(stringValue)
-  );
+  return allActions.some(({ capture }) => {
+    if (groupCaptures.has(capture)) return false;
+    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
+    return (byKey.get(fieldKey)?.has(stringValue) ?? false) || pathSegments.has(stringValue);
+  });
 }
 
 /**
@@ -2301,7 +2329,7 @@ export function isRedundantSameEndpointGroup(
     if (shapeKey === null && !SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return false;
     if (!allActions) return false;
     return fieldSets.every(
-      (fields) => !isFieldValueThreadedElsewhere(fields[key], groupCaptures, allActions)
+      (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
     );
   });
 }
@@ -2319,6 +2347,16 @@ export function isRedundantSameEndpointGroup(
  * whichever page's response survives — page 1 is what a browsing/drill flow
  * actually saw and drilled into first, so it is the occurrence downstream
  * join values are captured against, not the endpoint's final paged state.
+ *
+ * A real per-item drill can join against ANY page's item, though, not just
+ * page 1's — so before the rest of the group is dropped, every OTHER
+ * occurrence's own array-field items (at the same {@link responseShapeKey}
+ * path proven identical across the group) are concatenated onto the kept
+ * representative's response body. Without this, {@link
+ * detectDrillDownFoldPlan}'s structural scan only ever sees page 1's items
+ * (every later page having just been deleted), so a drill keyed off a
+ * later page's item can never resolve a join match and falls through to a
+ * hardcoded per-capture `httpClient` call instead of folding into the loop.
  */
 function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
@@ -2329,15 +2367,80 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
     positionsByGroup.set(key, positions);
   });
 
+  const mergedRepresentativeByPosition = new Map<number, ActionCapture>();
   const drop = new Set<number>();
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
     if (!isRedundantSameEndpointGroup(group, actions)) continue;
+    const merged = mergeCollapsedGroupItemsIntoRepresentative(group);
+    if (merged !== null) mergedRepresentativeByPosition.set(positions[0]!, merged);
     for (const position of positions.slice(1)) drop.add(position);
   }
 
-  return actions.filter((_, i) => !drop.has(i));
+  return actions
+    .map((a, i) => mergedRepresentativeByPosition.get(i) ?? a)
+    .filter((_, i) => !drop.has(i));
+}
+
+/**
+ * Builds a REPLACEMENT for the kept representative's (`group[0]`) own
+ * {@link ActionCapture} whose response body concatenates every OTHER group
+ * member's array-field items at their shared {@link responseShapeKey} path
+ * onto the representative's own items — see {@link
+ * collapseRedundantSameEndpointCaptures}'s docstring for why. Returns `null`
+ * (no replacement needed) when the group's shape key is `null` (the
+ * flat/zero-variance-poll branch of {@link isRedundantSameEndpointGroup}, with
+ * no array-field path to merge items at) or when no other member actually
+ * contributes an item at that path.
+ *
+ * A NEW response body/capture/action is built rather than mutating the
+ * representative's own objects in place, deliberately: {@link
+ * findAllObjectArrayFields}'s `objectArrayFieldsCache` is keyed on response-body
+ * object IDENTITY under the explicit invariant that a response body is never
+ * mutated after it's produced — mutating `representative.capture.responseBody`
+ * in place would poison that cache with whatever shape happened to be computed
+ * (and cached) from it before this runs, silently discarding the merge for
+ * every caller downstream that hits the stale cache entry instead of the
+ * mutated array.
+ */
+function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): ActionCapture | null {
+  const representative = group[0]!;
+  const arrayField = findObjectArrayField(representative.capture.responseBody);
+  if (!arrayField) return null;
+  const mergedItems = arrayField.items.slice();
+  let contributed = false;
+  for (const other of group.slice(1)) {
+    const otherArrayField = findObjectArrayField(other.capture.responseBody);
+    if (!otherArrayField || otherArrayField.path.join(".") !== arrayField.path.join(".")) continue;
+    mergedItems.push(...otherArrayField.items);
+    contributed = true;
+  }
+  if (!contributed) return null;
+  const mergedBody = setValueAtPath(
+    representative.capture.responseBody,
+    arrayField.path,
+    mergedItems
+  );
+  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+}
+
+/**
+ * Returns a shallow-cloned-along-the-path copy of `body` with the value at
+ * `path` replaced by `newValue` — the immutable counterpart to mutating a
+ * response body in place, used by {@link
+ * mergeCollapsedGroupItemsIntoRepresentative} so the object-identity-keyed
+ * {@link objectArrayFieldsCache} never sees the same object with two different
+ * shapes. Only plain-object segments are supported (every real caller's
+ * `arrayField.path` is a DFS-discovered chain of object keys, never an array
+ * index), so an unresolvable segment returns `body` unchanged.
+ */
+function setValueAtPath(body: unknown, path: readonly string[], newValue: unknown): unknown {
+  if (path.length === 0) return newValue;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+  const [head, ...rest] = path as [string, ...string[]];
+  const record = body as Record<string, unknown>;
+  return { ...record, [head]: setValueAtPath(record[head], rest, newValue) };
 }
 
 interface StateValue {
