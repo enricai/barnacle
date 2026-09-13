@@ -2106,18 +2106,6 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
 const PAGINATION_FIELD_NAME_PATTERN =
   /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
 
-/** Request-field key names that name known client-generated scaffolding
- * (a monotonic sequence counter, a correlation/trace id, an idempotency
- * nonce) rather than genuine payload data. Gates {@link
- * isFieldValueThreadedElsewhere} on a FLAT (non-array) response -- unlike an
- * array-shaped listing/facet re-query, a flat response's varying field could
- * just as easily be real user-entered payload (an address line, a card's
- * last4) that happens never to be echoed back downstream, so that branch
- * additionally requires the key name itself to look like scaffolding before
- * trusting the "never echoed" proof. */
-const SCAFFOLDING_FIELD_NAME_PATTERN =
-  /^(req|request|correlation|trace|session|idempotency)?[-_]?(seq|id|key|nonce)$/i;
-
 /** Every query-string and (when JSON-object-shaped) request-body field on a
  * capture, merged into one comparable map -- REST pagination/facet state can
  * live in either depending on the endpoint's own convention. */
@@ -2319,15 +2307,15 @@ export function isRedundantSameEndpointGroup(
   if (varyingKeys.length === 0) return true;
   const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
-    // The name patterns are a fast path, not a hard prerequisite: a key
-    // matching either is trusted as pagination/scaffolding outright. A key
-    // matching neither -- an arbitrary session/correlation/cache-bust param
-    // whose name isn't in either closed set -- still falls through to the
-    // same structural "never echoed elsewhere" proof the array-shaped
-    // branch already relies on, so a genuinely zero-semantic-variance key
-    // isn't vetoed purely because its name happens not to be enumerated.
+    // PAGINATION_FIELD_NAME_PATTERN is a fast path trusted outright, by name
+    // alone, with no structural proof required. Every other varying key --
+    // regardless of shape or name, including a flat response's session/
+    // correlation/cache-bust param whose name isn't in any closed set --
+    // falls through to the same structural "never echoed elsewhere" proof
+    // the array-shaped branch already relies on, so a genuinely
+    // zero-semantic-variance key isn't vetoed purely because its name
+    // happens not to be enumerated.
     if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
-    if (shapeKey === null && SCAFFOLDING_FIELD_NAME_PATTERN.test(key)) return true;
     if (!allActions) return false;
     return fieldSets.every(
       (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
