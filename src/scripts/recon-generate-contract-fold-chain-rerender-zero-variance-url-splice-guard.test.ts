@@ -107,9 +107,7 @@ describe("emitContractTs — fold chain re-render zero-variance-repeat URL splic
     // — that is not the splice under test. The rest of the path/query, the
     // part `isGenuineVaryingQueryValue` gates, must be the beacon's exact
     // literal bytes.
-    expect(url).toBe(
-      "${context.baseUrl}/beacon/item-a/verify?clientId=abc123&siteId=xyz&nonce=1"
-    );
+    expect(url).toBe("${context.baseUrl}/beacon/item-a/verify?clientId=abc123&siteId=xyz&nonce=1");
   });
 
   it("never opens an invalidly-nested placeholder beyond the single fixed baseUrl template", () => {

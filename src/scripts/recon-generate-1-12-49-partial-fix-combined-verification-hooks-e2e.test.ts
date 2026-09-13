@@ -200,9 +200,10 @@ describe("recon-generate CLI — 1.12.49 partial-fix combined verification hooks
 
     // Raw capture count is 36 (6 toggles + 8 listing pages + 6 drills + 14
     // beacon fires + 2 noise variants). The report's own verification hook:
-    // order of magnitude ~4, not one hardcoded call per raw capture (the
-    // reported regression emitted 38 for 7880 lines).
-    expect(httpClientCallCount).toBeLessThanOrEqual(10);
+    // exactly 4 (one collapsed call per distinct real endpoint group —
+    // toggles/listing/drill/beacon), not one hardcoded call per raw capture
+    // (the reported regression emitted 38 for 7880 lines).
+    expect(httpClientCallCount).toBeLessThanOrEqual(4);
 
     // Neither marketing noise-family path/query variant survives, in any
     // form.
@@ -228,9 +229,11 @@ describe("recon-generate CLI — 1.12.49 partial-fix combined verification hooks
       expect(beaconUrlTemplate).not.toContain("totalPages");
     }
 
-    // The report's own line-count verification hook, order-of-magnitude:
-    // at most ~1000 lines (baseline 569), nowhere near the reported 7880.
+    // The report's own line-count verification hook: a tight band around
+    // the report's stated ~569-line baseline, nowhere near the reported
+    // 7880.
     const lineCount = contract.split("\n").length;
-    expect(lineCount).toBeLessThanOrEqual(1000);
+    expect(lineCount).toBeGreaterThanOrEqual(400);
+    expect(lineCount).toBeLessThanOrEqual(750);
   }, 30_000);
 });
