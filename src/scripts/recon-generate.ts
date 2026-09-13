@@ -2038,7 +2038,7 @@ export function extractGraphQLActionSequence(
 function responseShapeKey(capture: Capture): string | null {
   const arrayField = findObjectArrayField(capture.responseBody);
   if (!arrayField) return null;
-  return `${endpointKey(capture.url)} ${arrayField.path.join(".")}`;
+  return `${endpointKey(capture.url)} ${arrayField.path.join(".")}`;
 }
 
 /**
@@ -2347,6 +2347,16 @@ export function isRedundantSameEndpointGroup(
  * whichever page's response survives — page 1 is what a browsing/drill flow
  * actually saw and drilled into first, so it is the occurrence downstream
  * join values are captured against, not the endpoint's final paged state.
+ *
+ * A real per-item drill can join against ANY page's item, though, not just
+ * page 1's — so before the rest of the group is dropped, every OTHER
+ * occurrence's own array-field items (at the same {@link responseShapeKey}
+ * path proven identical across the group) are concatenated onto the kept
+ * representative's response body. Without this, {@link
+ * detectDrillDownFoldPlan}'s structural scan only ever sees page 1's items
+ * (every later page having just been deleted), so a drill keyed off a
+ * later page's item can never resolve a join match and falls through to a
+ * hardcoded per-capture `httpClient` call instead of folding into the loop.
  */
 function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): ActionCapture[] {
   const positionsByGroup = new Map<string, number[]>();
@@ -2357,15 +2367,80 @@ function collapseRedundantSameEndpointCaptures(actions: ActionCapture[]): Action
     positionsByGroup.set(key, positions);
   });
 
+  const mergedRepresentativeByPosition = new Map<number, ActionCapture>();
   const drop = new Set<number>();
   for (const positions of positionsByGroup.values()) {
     if (positions.length < 2) continue;
     const group = positions.map((i) => actions[i]!);
     if (!isRedundantSameEndpointGroup(group, actions)) continue;
+    const merged = mergeCollapsedGroupItemsIntoRepresentative(group);
+    if (merged !== null) mergedRepresentativeByPosition.set(positions[0]!, merged);
     for (const position of positions.slice(1)) drop.add(position);
   }
 
-  return actions.filter((_, i) => !drop.has(i));
+  return actions
+    .map((a, i) => mergedRepresentativeByPosition.get(i) ?? a)
+    .filter((_, i) => !drop.has(i));
+}
+
+/**
+ * Builds a REPLACEMENT for the kept representative's (`group[0]`) own
+ * {@link ActionCapture} whose response body concatenates every OTHER group
+ * member's array-field items at their shared {@link responseShapeKey} path
+ * onto the representative's own items — see {@link
+ * collapseRedundantSameEndpointCaptures}'s docstring for why. Returns `null`
+ * (no replacement needed) when the group's shape key is `null` (the
+ * flat/zero-variance-poll branch of {@link isRedundantSameEndpointGroup}, with
+ * no array-field path to merge items at) or when no other member actually
+ * contributes an item at that path.
+ *
+ * A NEW response body/capture/action is built rather than mutating the
+ * representative's own objects in place, deliberately: {@link
+ * findAllObjectArrayFields}'s `objectArrayFieldsCache` is keyed on response-body
+ * object IDENTITY under the explicit invariant that a response body is never
+ * mutated after it's produced — mutating `representative.capture.responseBody`
+ * in place would poison that cache with whatever shape happened to be computed
+ * (and cached) from it before this runs, silently discarding the merge for
+ * every caller downstream that hits the stale cache entry instead of the
+ * mutated array.
+ */
+function mergeCollapsedGroupItemsIntoRepresentative(group: ActionCapture[]): ActionCapture | null {
+  const representative = group[0]!;
+  const arrayField = findObjectArrayField(representative.capture.responseBody);
+  if (!arrayField) return null;
+  const mergedItems = arrayField.items.slice();
+  let contributed = false;
+  for (const other of group.slice(1)) {
+    const otherArrayField = findObjectArrayField(other.capture.responseBody);
+    if (!otherArrayField || otherArrayField.path.join(".") !== arrayField.path.join(".")) continue;
+    mergedItems.push(...otherArrayField.items);
+    contributed = true;
+  }
+  if (!contributed) return null;
+  const mergedBody = setValueAtPath(
+    representative.capture.responseBody,
+    arrayField.path,
+    mergedItems
+  );
+  return { ...representative, capture: { ...representative.capture, responseBody: mergedBody } };
+}
+
+/**
+ * Returns a shallow-cloned-along-the-path copy of `body` with the value at
+ * `path` replaced by `newValue` — the immutable counterpart to mutating a
+ * response body in place, used by {@link
+ * mergeCollapsedGroupItemsIntoRepresentative} so the object-identity-keyed
+ * {@link objectArrayFieldsCache} never sees the same object with two different
+ * shapes. Only plain-object segments are supported (every real caller's
+ * `arrayField.path` is a DFS-discovered chain of object keys, never an array
+ * index), so an unresolvable segment returns `body` unchanged.
+ */
+function setValueAtPath(body: unknown, path: readonly string[], newValue: unknown): unknown {
+  if (path.length === 0) return newValue;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
+  const [head, ...rest] = path as [string, ...string[]];
+  const record = body as Record<string, unknown>;
+  return { ...record, [head]: setValueAtPath(record[head], rest, newValue) };
 }
 
 interface StateValue {
