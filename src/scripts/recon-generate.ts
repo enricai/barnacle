@@ -37,6 +37,7 @@ import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import {
+  hasNoBusinessRelevantResponseState,
   isAllowedFixtureHost,
   isNoiseUrl,
   isSamePathFamily,
@@ -1880,15 +1881,23 @@ export function extractActionSequence(
   // itself (not for it) when its path carries a densely name-spaced,
   // marketing/tracking-shaped signal — more than one compound segment's
   // worth of tokens (e.g. `/site-banner/promotions-widget`, 4 tokens across
-  // two compound segments): real own-backend endpoints (a polled toggles
-  // feed, a paged listing) are named with at most one compound segment, so
-  // they still get to vouch for themselves via their own repeats even when
-  // no OTHER endpoint in a small flow happens to share a token with them.
+  // two compound segments) — OR when the repeats themselves carry no
+  // business-relevant response state ({@link hasNoBusinessRelevantResponseState}):
+  // a real own-backend endpoint (a polled toggles feed, a paged listing) is
+  // often named with at most one compound segment, so path shape alone can't
+  // tell it apart from a same-shaped, same-host, zero-business-value poll
+  // (an availability/feature-flag ping that answers every call with nothing
+  // a caller could not already know) — both are "one compound segment,
+  // repeats identically." Response content is what actually distinguishes
+  // them, so a candidate whose own repeats carry no business-relevant state
+  // loses the self-vouching exemption regardless of its token count, while a
+  // genuinely data-bearing single-compound-segment endpoint keeps it.
   const structurallyGated =
     hasHostProvenance && hostGated.length > 2
       ? hostGated.filter(({ capture }, i) => {
           const path = safeUrlPathname(capture.url);
-          const denselyNameSpaced = pathStructuralTokens(path).size > 2;
+          const denselyNameSpaced =
+            pathStructuralTokens(path).size > 2 || hasNoBusinessRelevantResponseState(capture);
           const otherPaths = hostGated
             .filter((h, j) =>
               denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
