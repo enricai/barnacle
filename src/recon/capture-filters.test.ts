@@ -311,7 +311,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/auth/responder.html?clientId=Y&environment=DEV",
       requestPostData: null,
     };
-    const unrelatedFlowCaptures = Array.from({ length: 24 }, (_, i) => ({
+    const unrelatedFlowCaptures = Array.from({ length: 23 }, (_, i) => ({
       method: "POST",
       url: `https://apply.acme.example/api/step-${i}`,
       requestPostData: `{"step":${i}}`,
