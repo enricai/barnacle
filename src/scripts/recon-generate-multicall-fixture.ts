@@ -2242,12 +2242,15 @@ export function buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFi
  * {@link buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps}:
  * here `r1` mints the short chain-produced token (`tok1`, under
  * `MIN_STATE_VALUE_LENGTH`) via `Set-Cookie` rather than the response body,
- * AND echoes the same value in its response body (the "body-level echo" that
- * lets {@link collectDependentDrillDownChainValues} confirm the cookie value
- * is chain-produced, exactly as a body-sourced token would be). `r2` threads
- * `tok1` back via its request body. Exercises `indexStateValues`' Set-Cookie
- * branch's `chainForceIncludeValues`/`forceIncludeValues` exemption, mirroring
- * the body-value floor exemption.
+ * AND echoes the same value in its response body under the SAME field name
+ * (`token`) `r2`'s request later carries it under — the "body-level echo"
+ * that lets {@link collectDependentDrillDownChainValues} confirm the cookie
+ * value is chain-produced, exactly as a body-sourced token would be, now
+ * requires that same-name correlation just like every other body-sourced
+ * chain value (see the function's docstring). `r2` threads `tok1` back via
+ * its request body. Exercises `indexStateValues`' Set-Cookie branch's
+ * `chainForceIncludeValues`/`forceIncludeValues` exemption, mirroring the
+ * body-value floor exemption.
  */
 export function buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps(): MulticallFixtureStep[] {
   return [
@@ -2263,7 +2266,7 @@ export function buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFie
       url: CATALOG_ORDER_STATUS_URL,
       requestPostData: '{"orderId":"order-a"}',
       responseHeaders: { "set-cookie": "sess=tok1; Path=/; HttpOnly" },
-      responseBody: { echoedToken: "tok1" },
+      responseBody: { token: "tok1" },
       timestamp: "2024-10-05T00:00:01Z",
     }),
     buildStep("r2", {
@@ -2457,20 +2460,23 @@ const ORDER_EVENTS_URL = "https://api.example.com/orders/events";
 /**
  * A dependent (chained) drill-down whose ENTRY hop (`r1`) is a `GET`
  * request — not the `POST` every other chained-dependent fixture in this
- * file uses — and whose response produces the chain's join value
- * (`statusToken`) as a non-UUID string. `indexStateValues` indexes a `GET`
- * capture's response leaves ONLY when they are UUID-shaped
- * (`isGet && !UUID_REGEX.test(value)` skips everything else, a filter aimed
- * at excluding noisy short non-UUID strings a GET-only telemetry/schema
- * fetch surfaces); that filter runs unconditionally, with no exemption for a
- * value `collectDependentDrillDownChainValues` has already confirmed is
- * threaded from this exact hop into a later chain hop's own request — unlike
- * the `MIN_STATE_VALUE_LENGTH` floor a few lines above it, which DOES carry
- * that exemption. So a chain-produced token minted by a GET response is
- * never indexed as producible state at all, `compileActionSteps` never
- * emits a `produces[]` accessor for it, and `r2`'s templated body has
- * nothing to substitute — every iteration renders the literal string
- * `"undefined"` instead of threading each primary item's own token.
+ * file uses — and whose response produces the chain's join value (`token`,
+ * under the SAME name `r2`'s request later carries it, so
+ * {@link collectDependentDrillDownChainValues}'s name-correlation
+ * requirement recognizes the genuine threading) as a non-UUID string.
+ * `indexStateValues` indexes a `GET` capture's response leaves ONLY when
+ * they are UUID-shaped (`isGet && !UUID_REGEX.test(value)` skips everything
+ * else, a filter aimed at excluding noisy short non-UUID strings a GET-only
+ * telemetry/schema fetch surfaces); that filter runs unconditionally, with
+ * no exemption for a value `collectDependentDrillDownChainValues` has
+ * already confirmed is threaded from this exact hop into a later chain
+ * hop's own request — unlike the `MIN_STATE_VALUE_LENGTH` floor a few lines
+ * above it, which DOES carry that exemption. So a chain-produced token
+ * minted by a GET response is never indexed as producible state at all,
+ * `compileActionSteps` never emits a `produces[]` accessor for it, and
+ * `r2`'s templated body has nothing to substitute — every iteration renders
+ * the literal string `"undefined"` instead of threading each primary item's
+ * own token.
  */
 export function buildMulticallSingleShotSearchDrillDownGetEntryHopChainedDependentActionSteps(): MulticallFixtureStep[] {
   return [
@@ -2486,7 +2492,7 @@ export function buildMulticallSingleShotSearchDrillDownGetEntryHopChainedDepende
       method: "GET",
       url: `${ORDER_STATUS_LOOKUP_URL}?orderId=order-a`,
       requestPostData: null,
-      responseBody: { statusToken: "status-token-order-a" },
+      responseBody: { token: "status-token-order-a" },
       timestamp: "2024-10-05T00:00:01Z",
     }),
     buildStep("r2", {

@@ -27,7 +27,7 @@ function stubGetEntryHopDependentDrillDownOntoPrimaryFetch(): void {
       if (url.includes("/orders/status-lookup")) {
         const orderId = new URL(url).searchParams.get("orderId");
         if (orderId === null) throw new Error("missing orderId query param");
-        return { statusToken: statusTokenFor(orderId) };
+        return { token: statusTokenFor(orderId) };
       }
       if (requestBody === null || typeof requestBody.page === "number") return SEARCH_BODY;
       if (typeof requestBody.token === "string") {

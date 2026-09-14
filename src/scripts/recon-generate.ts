@@ -4104,6 +4104,27 @@ function pathToAccessor(
 }
 
 /**
+ * Builds a JS access expression reading `path` off `varName`, where `varName`
+ * is a runtime value typed `Record<string, unknown>` (an itemVar, ancestor
+ * loop var, or fold-match candidate) — NOT the real Zod-inferred payload type
+ * {@link pathToAccessor} targets. A single-segment path is a plain `.prop` /
+ * `["prop"]` access, typed `unknown` by the index signature, which compiles
+ * fine wherever the caller only interpolates or `String()`s it. But chaining
+ * a SECOND segment off that same access (`item.identifiers.sku`) fails to
+ * typecheck (TS18046 "is of type 'unknown'") because the index signature's
+ * `unknown` return doesn't itself support further property access — so every
+ * intermediate hop (all but the last segment) is re-asserted back to
+ * `Record<string, unknown>` before the next access.
+ */
+function unknownValueAccessor(varName: string, path: string[]): string {
+  return path.reduce((expr, segment, index) => {
+    const accessor = isValidJsIdentifier(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
+    const isLast = index === path.length - 1;
+    return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+  }, varName);
+}
+
+/**
  * Builds a nested TypeScript assertion type matching a JSON path. e.g.
  *   ["Auth","Token"] -> `{ Auth: { Token: string } }`
  *   ["Sections","SectionIds","0"] -> `{ Sections: { SectionIds: { "0": string } } }`
@@ -4995,14 +5016,15 @@ function applyPayloadKeyValueSubstitutions(
       seenKeys.add(key);
       if (value === null) continue;
       merged.push([key, value]);
-      // Record only the NEW keys (not in inputBody) so the contract emitter
-      // can add them to the payload schema — inputBody's own keys stay
-      // internal to the site request template (see basePayloadSchemaExpr).
-      if (!inputBodyKeys.has(key)) {
-        if (typeof value === "string") outAdditionalKeys.set(key, "string");
-        else if (typeof value === "number") outAdditionalKeys.set(key, "number");
-        else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
-      }
+      // Record every substituted key, including inputBody's own, so the
+      // contract emitter can add it to the payload schema. inputBody keys
+      // that ARE covered by basePayloadSchemaExpr (the ApplicantContactSchema
+      // case) are filtered back out at the emitContractTs merge point via
+      // isReservedByApplicantContactSchema — this function has no visibility
+      // into that flag, so it must not special-case inputBody's own keys.
+      if (typeof value === "string") outAdditionalKeys.set(key, "string");
+      else if (typeof value === "number") outAdditionalKeys.set(key, "number");
+      else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
     }
   }
   let result = template;
@@ -5226,11 +5248,17 @@ function emitFoldMatchAndMergeLines(
     const lastSegment = segments[segments.length - 1]!;
     const bracket = (segment: string): string =>
       optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`;
-    const optionalBracketAccessor = segments
-      .map((segment) => `?.[${JSON.stringify(segment)}]`)
-      .join("");
+    // Every intermediate hop off the (unknown-typed) candidate needs
+    // re-asserting back to `Record<string, unknown>` before the next bracket
+    // access — see {@link unknownValueAccessor}'s doc for why a bare chain of
+    // `?.[...]` accessors fails to typecheck past the first segment.
+    const nestedAccessor = segments.reduce((expr, segment, index) => {
+      const isLast = index === segments.length - 1;
+      const accessor = index === 0 ? bracket(segment) : `?.[${JSON.stringify(segment)}]`;
+      return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+    }, varName);
     return segments.length > 1
-      ? `(${varName}${optionalBracketAccessor} ?? ${varName}${bracket(lastSegment)})`
+      ? `(${nestedAccessor} ?? ${varName}${bracket(lastSegment)})`
       : `${varName}${bracket(lastSegment)}`;
   };
   const joinCondition = target.joinFields
@@ -5274,7 +5302,18 @@ export function emitMultiStepExecuteHttp(
   selectResolutions: SelectOptionResolution[] = [],
   outStructuredKeys: Map<string, string> = new Map(),
   rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map(),
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  /**
+   * PascalCase plugin name used to cast the final `return { data: ... }`
+   * back to `${pascalName}Response` — every intermediate `httpClient` call
+   * this function emits is bound `as Record<string, unknown>` so per-item
+   * fold/merge code can probe arbitrary fields, but that cast otherwise
+   * widens the returned primary var past the richer response type the
+   * caller's own schema inference already promised, which fails to
+   * typecheck. `null` (the test-facing default) skips the cast, preserving
+   * prior output for callers that don't exercise the full pipeline.
+   */
+  pascalName: string | null = null
 ): string {
   interface Rendered {
     url: string;
@@ -5302,6 +5341,12 @@ export function emitMultiStepExecuteHttp(
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       const accessor = `payload${pathToAccessor(path)}`;
       payloadAccessorByValue.set(value, accessor);
+      const accessorField = accessor.startsWith("payload.")
+        ? accessor.slice("payload.".length)
+        : null;
+      if (accessorField !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(accessorField)) {
+        outDiscoveredFields.add(accessorField);
+      }
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
       // lowercase even though r0's body had it uppercase) still get
@@ -5913,8 +5958,15 @@ export function emitMultiStepExecuteHttp(
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        // Only `itemVar` (and fold-match candidates) are `Record<string,
+        // unknown>`-typed — ancestor loop vars keep the real response-derived
+        // type, so re-asserting THEIR intermediate hops would be both
+        // unnecessary and, worse, would replace a real property access with
+        // an opaque cast in the emitted URL/body text.
         const scopedAccessor = (varName: string, field: string): string =>
-          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+          varName === itemVar
+            ? unknownValueAccessor(varName, field.split("."))
+            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterize`
         // call: `actions` never changes across the url/headers/body calls a
@@ -6312,15 +6364,25 @@ export function emitMultiStepExecuteHttp(
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
+  // Every intermediate `httpClient` call above is bound `as Record<string,
+  // unknown>` regardless of its own `schema:`, so per-item fold/merge code
+  // can probe arbitrary fields without a per-step assertion type. That
+  // widened intermediate type doesn't match `${pascalName}Response` — the
+  // richer type schema inference already promised for THIS returned value —
+  // so the return itself needs its own assertion back to that promised
+  // type; `Record<string, unknown>` and the real inferred object type share
+  // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
+  const castToResponseType = (expr: string): string =>
+    pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
   if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
     lines.push(
-      `    return { data: mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")}) };`
+      `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`
     );
   } else {
     const returnVar = lastFoldPlan
       ? actions[lastFoldPlan.primaryStepIndex]!.varName
       : (returnAction?.varName ?? "undefined");
-    lines.push(`    return { data: ${returnVar} };`);
+    lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
   return lines.join("\n");
@@ -8801,6 +8863,21 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * in one response — keeps this exact to the shape state-threading is
  * actually needed for.
  *
+ * A later hop's request is only counted as threading a prior hop's response
+ * value when the two agree on the field/header NAME that carries it (or the
+ * value shows up as a bare, name-free URL PATH segment on the later
+ * request) — the same discipline {@link requestAndResponseValuesByKey}/
+ * {@link isFieldValueThreadedElsewhere} already enforce for the identical
+ * hazard elsewhere in this file. Bare cross-capture value equality alone
+ * (what this used before) lets a deeply-nested, unrelated response scalar —
+ * a UI sort-order integer, an unrelated feature-flag boolean — that merely
+ * happens to numerically coincide with some later request field's true
+ * value get proven "threaded" and then, via `indexStateValues`'
+ * `MIN_STATE_VALUE_LENGTH` exemption below, spliced into that unrelated
+ * field. Requiring the SAME name on both sides is what tells a value a
+ * later step genuinely re-reads under its own name apart from that
+ * coincidence.
+ *
  * Runs directly off raw actions (not `resolveFoldPlan`, which needs
  * `isMultipart` — unavailable before `compileActionSteps` has run) since
  * fold-plan DETECTION depends only on each action's `capture`.
@@ -8814,6 +8891,93 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * two unrelated steps can coincidentally match inside a totally unrelated
  * capture's own URL/body and get spliced into it.
  */
+/** Per-capture memoized: every response BODY leaf, grouped by the field NAME
+ * that carries it — gives {@link collectDependentDrillDownChainValues} the
+ * same name-correlation signal {@link requestAndResponseValuesByKey} already
+ * provides elsewhere in this file, instead of the bare, name-blind value set
+ * {@link collectResponseLeafValues} supplies. Deliberately BODY-only, unlike
+ * {@link collectResponseLeafValues}: a response HEADER (and especially a
+ * `Set-Cookie` token mint) is already a strong structural signal on its own
+ * — issuing a header/cookie at all is a deliberate server action, unlike an
+ * arbitrary deeply-nested body scalar that merely happens to be present — so
+ * header-sourced values keep the pre-existing bare-value match further down
+ * in {@link collectDependentDrillDownChainValues} rather than being held to
+ * a body-field's name correlation. */
+const responseBodyValuesByKeyCache = new WeakMap<Capture, Map<string, Set<string>>>();
+function responseBodyValuesByKey(capture: Capture): Map<string, Set<string>> {
+  const cached = responseBodyValuesByKeyCache.get(capture);
+  if (cached) return cached;
+  const byKey = new Map<string, Set<string>>();
+  const add = (key: string, value: string): void => {
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(value);
+    byKey.set(key, values);
+  };
+  for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+  }
+  responseBodyValuesByKeyCache.set(capture, byKey);
+  return byKey;
+}
+
+/** Per-capture memoized request-side twin of {@link responseBodyValuesByKey}:
+ * every URL query param, JSON body leaf, and request header value, grouped
+ * by field/param/header NAME (header names lower-cased, since HTTP header
+ * names are case-insensitive and a capture's minted header casing need not
+ * match the later request's own casing of the same header), plus bare URL
+ * PATH segments kept name-free in {@link
+ * RequestAndResponseValues.pathSegments} — a REST-style detail fetch threads
+ * an id through its URL PATH, not a named field, so requiring a name match
+ * there too would blind chain-value correlation to that shape of genuine
+ * threading. Headers are included here (unlike {@link
+ * responseBodyValuesByKey}) so a body-sourced response value that a later
+ * hop re-sends as a request HEADER under the matching name still
+ * correlates. */
+const requestValuesByKeyCache = new WeakMap<Capture, RequestAndResponseValues>();
+function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndResponseValues {
+  const cached = requestValuesByKeyCache.get(capture);
+  if (cached) return cached;
+  const byKey = new Map<string, Set<string>>();
+  const pathSegments = new Set<string>();
+  const add = (key: string, value: string): void => {
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(value);
+    byKey.set(key, values);
+  };
+  try {
+    const url = new URL(capture.url);
+    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
+    for (const [key, value] of url.searchParams) add(key, value);
+  } catch {
+    // Relative/invalid URLs carry no path/query signal to contribute.
+  }
+  if (capture.requestPostData) {
+    try {
+      const parsed: unknown = JSON.parse(capture.requestPostData);
+      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+      }
+    } catch {
+      // A non-JSON body carries no leaf values to contribute.
+    }
+  }
+  for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+    add(headerName.toLowerCase(), headerValue);
+  }
+  const result = { byKey, pathSegments };
+  requestValuesByKeyCache.set(capture, result);
+  return result;
+}
+
+/** Matches a JSON path segment that's a bare array INDEX ("0", "12", ...)
+ * rather than an object field/header NAME. An array index carries no
+ * semantic meaning of its own — a top-level array response (`[42]`) or a
+ * value nested inside a request array (`{"tokens":[42]}`) has no field name
+ * to correlate on either side — so {@link collectDependentDrillDownChainValues}
+ * treats a leaf keyed by one as name-free, the same way it already treats a
+ * bare URL path segment, instead of requiring an impossible name match. */
+const ARRAY_INDEX_KEY_PATTERN = /^\d+$/;
+
 function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
@@ -8828,17 +8992,58 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
         const priorIndex = target.chain[j]!;
         const priorCapture = actions[priorIndex]?.capture;
         if (!priorCapture) continue;
-        const responseValues = collectResponseLeafValues(priorCapture);
+        const priorResponseBodyByKey = responseBodyValuesByKey(priorCapture);
+        // Header/cookie-origin response values are matched by bare value
+        // further down, not by name — see {@link responseBodyValuesByKey}'s
+        // docstring for why a header/cookie mint doesn't need that
+        // correlation to already be a trustworthy threading signal.
+        const priorHeaderValues = new Set(Object.values(priorCapture.responseHeaders));
         const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
         for (let k = j + 1; k < target.chain.length; k++) {
           const laterCapture = actions[target.chain[k]!]?.capture;
           if (!laterCapture) continue;
+          const { byKey: laterRequestByKey, pathSegments: laterPathSegments } =
+            requestValuesByKeyIncludingHeaders(laterCapture);
           const laterRequestValues = collectRequestValuesIncludingHeaders(laterCapture);
-          for (const v of responseValues) {
-            if (echoedValues.has(v) || !laterRequestValues.has(v)) continue;
+          // Reverse index (value -> every later-side key it appears under),
+          // built once per (priorCapture, laterCapture) pair rather than
+          // once per value, so the array-index name-free fallback below
+          // doesn't re-walk laterRequestByKey per value.
+          const laterKeysByValue = new Map<string, Set<string>>();
+          for (const [k2, vs] of laterRequestByKey) {
+            for (const v of vs) {
+              const keys = laterKeysByValue.get(v) ?? new Set<string>();
+              keys.add(k2);
+              laterKeysByValue.set(v, keys);
+            }
+          }
+          const addConsumer = (v: string): void => {
             const consumers = consumersByValue.get(v) ?? new Set<Capture>();
             consumers.add(laterCapture);
             consumersByValue.set(v, consumers);
+          };
+          for (const [key, values] of priorResponseBodyByKey) {
+            const priorKeyIsArrayIndex = ARRAY_INDEX_KEY_PATTERN.test(key);
+            for (const v of values) {
+              if (echoedValues.has(v)) continue;
+              const laterKeysForValue = laterKeysByValue.get(v);
+              const sameNameMatch = laterKeysForValue?.has(key) ?? false;
+              const pathSegmentMatch = laterPathSegments.has(v);
+              // Only the SOURCE side being name-free (an array element with
+              // no field name of its own) exempts this from name matching —
+              // a genuinely NAMED source field must still correlate by name
+              // even if it happens to land inside a later array element,
+              // otherwise a named `sortOrder` could dodge correlation just
+              // by coincidentally equaling a value inside an unrelated
+              // later-side array (`{"tokens":[7]}`).
+              const arrayIndexMatch = priorKeyIsArrayIndex && laterKeysForValue !== undefined;
+              if (!sameNameMatch && !pathSegmentMatch && !arrayIndexMatch) continue;
+              addConsumer(v);
+            }
+          }
+          for (const v of priorHeaderValues) {
+            if (echoedValues.has(v) || !laterRequestValues.has(v)) continue;
+            addConsumer(v);
           }
         }
       }
@@ -10046,8 +10251,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           fullAncestors
         );
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        // Only `itemVar` (and fold-match candidates) are `Record<string,
+        // unknown>`-typed — ancestor loop vars keep the real response-derived
+        // type, so re-asserting THEIR intermediate hops would be both
+        // unnecessary and, worse, would replace a real property access with
+        // an opaque cast in the emitted URL/body text.
         const scopedAccessor = (varName: string, field: string): string =>
-          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+          varName === itemVar
+            ? unknownValueAccessor(varName, field.split("."))
+            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterizeUrl`
         // call: `actionSteps` never changes across the calls this target's
@@ -11858,7 +12070,8 @@ async function main(): Promise<void> {
             selectResolutions,
             discoveredStructuredKeys,
             rawCodeFields,
-            foldReturnSpec
+            foldReturnSpec,
+            pascal
           )
         : undefined;
 
