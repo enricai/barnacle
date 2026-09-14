@@ -2712,6 +2712,28 @@ function keyNameWords(key: string): string[] {
     .filter((word) => word.length >= 3);
 }
 
+/** Words common enough as a naming SUFFIX/PREFIX that sharing one proves
+ * nothing on its own — `startDate`/`endDate` and `firstName`/`lastName` each
+ * share a word under this set's length-≥3 threshold while naming opposite
+ * concepts. Used by {@link keyNamesCorrelate} to require a more specific
+ * word overlap whenever both keys also carry a non-generic word to compare. */
+const GENERIC_KEY_WORDS = new Set([
+  "name",
+  "date",
+  "type",
+  "code",
+  "email",
+  "phone",
+  "address",
+  "flag",
+  "count",
+  "number",
+  "value",
+  "status",
+  "key",
+  "time",
+]);
+
 /**
  * True when a SOURCE field name and a TARGET field name plausibly name the
  * same concept — an exact match, or a shared word (one a substring of the
@@ -2722,12 +2744,25 @@ function keyNameWords(key: string): string[] {
  * stricter exact-key `sameNameMatch`, used by `compileActionSteps`' body-
  * value consumption gate where the source/target key casing and compounding
  * legitimately differ across endpoints.
+ *
+ * A shared {@link GENERIC_KEY_WORDS} word is insufficient PROOF when both
+ * keys also carry a more specific, non-generic word — `startDate` and
+ * `endDate` both reduce to `["start"]`/`["end"]` once `date` is set aside,
+ * and those don't overlap, so the pair must NOT correlate despite sharing
+ * `date`. A generic word is only trusted when one side has no non-generic
+ * word to fall back on (e.g. `statusToken` vs. the bare `tokens` key).
  */
 function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
   if (sourceKey === targetKey) return true;
   const sourceWords = keyNameWords(sourceKey);
   const targetWords = keyNameWords(targetKey);
-  return sourceWords.some((sw) => targetWords.some((tw) => sw.includes(tw) || tw.includes(sw)));
+  const wordsMatch = (a: string, b: string): boolean => a.includes(b) || b.includes(a);
+  const sourceSpecific = sourceWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
+  const targetSpecific = targetWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
+  if (sourceSpecific.length > 0 && targetSpecific.length > 0) {
+    return sourceSpecific.some((sw) => targetSpecific.some((tw) => wordsMatch(sw, tw)));
+  }
+  return sourceWords.some((sw) => targetWords.some((tw) => wordsMatch(sw, tw)));
 }
 
 /**
