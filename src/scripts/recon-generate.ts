@@ -4104,6 +4104,27 @@ function pathToAccessor(
 }
 
 /**
+ * Builds a JS access expression reading `path` off `varName`, where `varName`
+ * is a runtime value typed `Record<string, unknown>` (an itemVar, ancestor
+ * loop var, or fold-match candidate) — NOT the real Zod-inferred payload type
+ * {@link pathToAccessor} targets. A single-segment path is a plain `.prop` /
+ * `["prop"]` access, typed `unknown` by the index signature, which compiles
+ * fine wherever the caller only interpolates or `String()`s it. But chaining
+ * a SECOND segment off that same access (`item.identifiers.sku`) fails to
+ * typecheck (TS18046 "is of type 'unknown'") because the index signature's
+ * `unknown` return doesn't itself support further property access — so every
+ * intermediate hop (all but the last segment) is re-asserted back to
+ * `Record<string, unknown>` before the next access.
+ */
+function unknownValueAccessor(varName: string, path: string[]): string {
+  return path.reduce((expr, segment, index) => {
+    const accessor = isValidJsIdentifier(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`;
+    const isLast = index === path.length - 1;
+    return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+  }, varName);
+}
+
+/**
  * Builds a nested TypeScript assertion type matching a JSON path. e.g.
  *   ["Auth","Token"] -> `{ Auth: { Token: string } }`
  *   ["Sections","SectionIds","0"] -> `{ Sections: { SectionIds: { "0": string } } }`
@@ -5227,11 +5248,17 @@ function emitFoldMatchAndMergeLines(
     const lastSegment = segments[segments.length - 1]!;
     const bracket = (segment: string): string =>
       optionalRoot ? `?.[${JSON.stringify(segment)}]` : `[${JSON.stringify(segment)}]`;
-    const optionalBracketAccessor = segments
-      .map((segment) => `?.[${JSON.stringify(segment)}]`)
-      .join("");
+    // Every intermediate hop off the (unknown-typed) candidate needs
+    // re-asserting back to `Record<string, unknown>` before the next bracket
+    // access — see {@link unknownValueAccessor}'s doc for why a bare chain of
+    // `?.[...]` accessors fails to typecheck past the first segment.
+    const nestedAccessor = segments.reduce((expr, segment, index) => {
+      const isLast = index === segments.length - 1;
+      const accessor = index === 0 ? bracket(segment) : `?.[${JSON.stringify(segment)}]`;
+      return isLast ? `${expr}${accessor}` : `(${expr}${accessor} as Record<string, unknown>)`;
+    }, varName);
     return segments.length > 1
-      ? `(${varName}${optionalBracketAccessor} ?? ${varName}${bracket(lastSegment)})`
+      ? `(${nestedAccessor} ?? ${varName}${bracket(lastSegment)})`
       : `${varName}${bracket(lastSegment)}`;
   };
   const joinCondition = target.joinFields
@@ -5932,7 +5959,7 @@ export function emitMultiStepExecuteHttp(
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const scopedAccessor = (varName: string, field: string): string =>
-          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+          unknownValueAccessor(varName, field.split("."));
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterize`
         // call: `actions` never changes across the url/headers/body calls a
@@ -10218,7 +10245,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         );
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         const scopedAccessor = (varName: string, field: string): string =>
-          `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+          unknownValueAccessor(varName, field.split("."));
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterizeUrl`
         // call: `actionSteps` never changes across the calls this target's
