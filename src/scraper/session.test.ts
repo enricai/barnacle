@@ -220,7 +220,9 @@ describe("scraper/session router", () => {
     expect(install).toBeDefined();
     const [, params] = install as [string, { source: string }];
     expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
-    expect(fakeSession.addInitScript).toHaveBeenCalledWith(expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL));
+    expect(fakeSession.addInitScript).toHaveBeenCalledWith(
+      expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)
+    );
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
@@ -232,7 +234,33 @@ describe("scraper/session router", () => {
     expect(install).toBeDefined();
     const [, params] = install as [string, { source: string }];
     expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
-    expect(fakeSession.addInitScript).toHaveBeenCalledWith(expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL));
+    expect(fakeSession.addInitScript).toHaveBeenCalledWith(
+      expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)
+    );
+  });
+
+  it("still delivers the init script to a same-origin child frame that shares the main CDP session, via the additive context.addInitScript call rather than a per-target attach", async () => {
+    configRef.value.scraper.provider = "browserbase";
+
+    await createBrowserSession();
+
+    // A same-origin child frame shares its parent's target/session, so no
+    // Target.attachedToTarget ever fires for it — the CDP-only installer
+    // (cdp-frame-init-script.ts) has no per-frame hook to install against.
+    // fakeCdpSession.getSessionForFrame always resolves to the shared main
+    // session, so no separate child-target install ever ran.
+    const perTargetInstallCalls = fakeSession.fakeCdpSession.send.mock.calls.filter(
+      ([method]) => method === "Page.addScriptToEvaluateOnNewDocument"
+    );
+    // Only the single per-target install against the shared main session ran —
+    // there was never a second, per-child-target install to rely on.
+    expect(perTargetInstallCalls).toHaveLength(1);
+
+    // The same-origin realm is only reachable through the additive
+    // context-level path, which fires independently of any attach event.
+    expect(fakeSession.addInitScript).toHaveBeenCalledWith(
+      expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL)
+    );
   });
 
   it("awaits the deterministic per-target install before createBrowserSession resolves", async () => {
