@@ -179,4 +179,46 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
     expect(body).not.toMatch(/\$\{payload\.formData\.reference\}/);
     expect(outFields.has("formDataReference")).toBe(true);
   });
+
+  it("registers the same field name for EVERY step's own occurrence when two non-entry steps reuse a key with different literal values", () => {
+    // Two drill calls both send a top-level `region` body key, but with
+    // DIFFERENT literal values. A first-seen-value-wins registration table
+    // would only ever match (and thus only ever register) the ONE step
+    // whose literal happens to equal the first value scanned — leaving the
+    // other step's own `${payload.region}` occurrence backed by nothing.
+    // Both occurrences must resolve to a payload accessor, and the field
+    // must be declared regardless of which step's value was seen first.
+    const inputBody = { orderId: "ORDER-REFERENCE-99182736" };
+    const captures = [
+      capture({
+        url: ENTRY_URL,
+        requestPostData: JSON.stringify(inputBody),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      capture({
+        url: DRILL_URL,
+        requestPostData: JSON.stringify({ region: "east" }),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+      capture({
+        url: DRILL_URL,
+        requestPostData: JSON.stringify({ region: "west" }),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:02Z",
+      }),
+    ];
+    const outFields = new Set<string>();
+    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
+
+    const I = `$${"{"}`;
+    // Every emitted `${payload.region}` occurrence — regardless of which
+    // step's literal it came from — must be backed by a declared field.
+    const payloadReferenceCount = body.split(`${I}payload.region}`).length - 1;
+    expect(payloadReferenceCount).toBe(2);
+    expect(outAdditionalBodyKeys.has("region")).toBe(true);
+    expect(outAdditionalBodyKeys.get("region")).toBe("string");
+  });
 });
