@@ -220,6 +220,7 @@ describe("scraper/session router", () => {
     expect(install).toBeDefined();
     const [, params] = install as [string, { source: string }];
     expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+    expect(fakeSession.addInitScript).toHaveBeenCalledWith(expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL));
   });
 
   it("installs the hCaptcha callback-capture init script on the steel provider", async () => {
@@ -231,6 +232,7 @@ describe("scraper/session router", () => {
     expect(install).toBeDefined();
     const [, params] = install as [string, { source: string }];
     expect(params.source).toContain(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL);
+    expect(fakeSession.addInitScript).toHaveBeenCalledWith(expect.stringContaining(HCAPTCHA_CALLBACK_REGISTRY_GLOBAL));
   });
 
   it("awaits the deterministic per-target install before createBrowserSession resolves", async () => {
