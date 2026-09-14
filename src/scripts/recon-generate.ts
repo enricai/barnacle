@@ -5179,6 +5179,7 @@ function applyPayloadKeyValueSubstitutions(
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
+  const seenValueByKey = new Map<string, string | number | boolean>();
   const allBodies = [inputBody, ...additionalBodies];
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -5192,7 +5193,25 @@ function applyPayloadKeyValueSubstitutions(
       // Dedupe identical (key, value) pairs only — a repeated occurrence of
       // the SAME literal value for a key across bodies needs no second
       // substitution pass, but a DIFFERENT value under the same key is its
-      // own distinct step's own occurrence and must still get one.
+      // own distinct step's own occurrence and must still get one. EXCEPT a
+      // pagination-cursor-shaped key ({@link PAGINATION_FIELD_NAME_PATTERN},
+      // e.g. `page`/`offset`/`cursor`) whose value differs from the
+      // first-seen one: that shape is a same-endpoint re-query bump (see
+      // {@link isRedundantSameEndpointGroup}'s pagination-vs-payload
+      // distinction), not a genuinely different step's own caller data —
+      // aliasing both occurrences to the SAME `payload.<key>` accessor would
+      // make the generated re-query call replay the FIRST page's request
+      // instead of advancing to the next one, so the later occurrence stays
+      // an unsubstituted literal, matching this key's pre-fix behavior.
+      const priorValue = seenValueByKey.get(key);
+      if (
+        priorValue !== undefined &&
+        priorValue !== value &&
+        PAGINATION_FIELD_NAME_PATTERN.test(key)
+      ) {
+        continue;
+      }
+      seenValueByKey.set(key, value);
       const pairKey = `${key} ${typeof value} ${value}`;
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
