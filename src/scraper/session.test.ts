@@ -277,6 +277,18 @@ describe("scraper/session router", () => {
     await createBrowserSession();
     expect(resolved).toBe(true);
   });
+
+  it("awaits the context-level init script install before createBrowserSession resolves", async () => {
+    configRef.value.scraper.provider = "browserbase";
+    let resolved = false;
+    fakeSession.addInitScript.mockImplementation(async () => {
+      await Promise.resolve();
+      resolved = true;
+    });
+
+    await createBrowserSession();
+    expect(resolved).toBe(true);
+  });
 });
 
 describe("scraper/session-browserbase required-key validation", () => {
