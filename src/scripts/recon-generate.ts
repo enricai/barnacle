@@ -2683,12 +2683,51 @@ function jsonBodyLeafValuesByKey(
   const byKey = new Map<string, Set<string>>();
   for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
     if (value === null || path.length === 0) continue;
-    const key = path[path.length - 1]!;
+    // An array ELEMENT carries no field name of its own (its last path
+    // segment is a bare numeric index) — the array's own key, one or more
+    // segments up, is the nearest name to correlate against (e.g.
+    // `{"tokens":[12345678]}"` correlates on "tokens", not "0"). A leaf at
+    // the top of an unnamed array (no non-numeric ancestor at all) has
+    // truly no name; it keeps its numeric key so callers can still detect
+    // it as name-free via {@link ARRAY_INDEX_KEY_PATTERN}.
+    const namedSegment = [...path]
+      .reverse()
+      .find((segment) => !ARRAY_INDEX_KEY_PATTERN.test(segment));
+    const key = namedSegment ?? path[path.length - 1]!;
     const values = byKey.get(key) ?? new Set<string>();
     values.add(String(value));
     byKey.set(key, values);
   }
   return byKey;
+}
+
+/** Splits a `camelCase`/`snake_case`/`kebab-case` field name into its
+ * constituent lowercase words, dropping words shorter than 3 characters (an
+ * "id"/"no"/"ok"-shaped word is too generic on its own to prove two field
+ * names name the same concept). Used by {@link keyNamesCorrelate}. */
+function keyNameWords(key: string): string[] {
+  return key
+    .split(/(?=[A-Z])|[_\-\s]+/)
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 3);
+}
+
+/**
+ * True when a SOURCE field name and a TARGET field name plausibly name the
+ * same concept — an exact match, or a shared word (one a substring of the
+ * other, so a plural/prefix variant like `token`/`tokens` or a compound like
+ * `jobId`/`jobSeqNo` or `draftId`/`applicationDraftId` still correlates)
+ * once both are split into their constituent camelCase words. This is the
+ * general-purpose sibling of {@link collectDependentDrillDownChainValues}'s
+ * stricter exact-key `sameNameMatch`, used by `compileActionSteps`' body-
+ * value consumption gate where the source/target key casing and compounding
+ * legitimately differ across endpoints.
+ */
+function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
+  if (sourceKey === targetKey) return true;
+  const sourceWords = keyNameWords(sourceKey);
+  const targetWords = keyNameWords(targetKey);
+  return sourceWords.some((sw) => targetWords.some((tw) => sw.includes(tw) || tw.includes(sw)));
 }
 
 /**
@@ -4427,8 +4466,11 @@ export function compileActionSteps(
         ARRAY_INDEX_KEY_PATTERN.test(sourceKeyName);
       const matches = sourceIsNameFree
         ? bodyLeafValues.some((leaf) => leaf.includes(sv.value))
-        : (bodyLeafValuesByKey?.get(sourceKeyName)?.size ?? 0) > 0 &&
-          [...bodyLeafValuesByKey!.get(sourceKeyName)!].some((leaf) => leaf.includes(sv.value));
+        : [...(bodyLeafValuesByKey?.entries() ?? [])].some(
+            ([targetKey, leaves]) =>
+              keyNamesCorrelate(sourceKeyName, targetKey) &&
+              [...leaves].some((leaf) => leaf.includes(sv.value))
+          );
       if (matches) usedValues.add(sv.value);
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
