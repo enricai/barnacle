@@ -2658,6 +2658,114 @@ function jsonBodyLeafValues(requestPostData: string | null | undefined): string[
 }
 
 /**
+ * Same JSON body walk as {@link jsonBodyLeafValues}, but grouped by the JSON
+ * key/array-index that carries each leaf value — the by-name correlation
+ * `compileActionSteps`' consumption pre-scan needs so a produced value is
+ * only treated as reused when the SOURCE field's name correlates with the
+ * TARGET field it's found in (mirrors {@link
+ * collectDependentDrillDownChainValues}'s sameNameMatch/arrayIndexMatch,
+ * applied here as the general eligibility gate rather than only the
+ * short-value length-floor exemption). Returns null under the same
+ * conditions as `jsonBodyLeafValues`, for the same non-JSON fallback.
+ */
+function jsonBodyLeafValuesByKey(
+  requestPostData: string | null | undefined
+): Map<string, Set<string>> | null {
+  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+  const parsed = ((): unknown => {
+    try {
+      return JSON.parse(requestPostData);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsed === undefined) return null;
+  const byKey = new Map<string, Set<string>>();
+  for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+    if (value === null || path.length === 0) continue;
+    // An array ELEMENT carries no field name of its own (its last path
+    // segment is a bare numeric index) — the array's own key, one or more
+    // segments up, is the nearest name to correlate against (e.g.
+    // `{"tokens":[12345678]}"` correlates on "tokens", not "0"). A leaf at
+    // the top of an unnamed array (no non-numeric ancestor at all) has
+    // truly no name; it keeps its numeric key so callers can still detect
+    // it as name-free via {@link ARRAY_INDEX_KEY_PATTERN}.
+    const namedSegment = [...path]
+      .reverse()
+      .find((segment) => !ARRAY_INDEX_KEY_PATTERN.test(segment));
+    const key = namedSegment ?? path[path.length - 1]!;
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(String(value));
+    byKey.set(key, values);
+  }
+  return byKey;
+}
+
+/** Splits a `camelCase`/`snake_case`/`kebab-case` field name into its
+ * constituent lowercase words, dropping words shorter than 3 characters (an
+ * "id"/"no"/"ok"-shaped word is too generic on its own to prove two field
+ * names name the same concept). Used by {@link keyNamesCorrelate}. */
+function keyNameWords(key: string): string[] {
+  return key
+    .split(/(?=[A-Z])|[_\-\s]+/)
+    .map((word) => word.toLowerCase())
+    .filter((word) => word.length >= 3);
+}
+
+/** Words common enough as a naming SUFFIX/PREFIX that sharing one proves
+ * nothing on its own — `startDate`/`endDate` and `firstName`/`lastName` each
+ * share a word under this set's length-≥3 threshold while naming opposite
+ * concepts. Used by {@link keyNamesCorrelate} to require a more specific
+ * word overlap whenever both keys also carry a non-generic word to compare. */
+const GENERIC_KEY_WORDS = new Set([
+  "name",
+  "date",
+  "type",
+  "code",
+  "email",
+  "phone",
+  "address",
+  "flag",
+  "count",
+  "number",
+  "value",
+  "status",
+  "key",
+  "time",
+]);
+
+/**
+ * True when a SOURCE field name and a TARGET field name plausibly name the
+ * same concept — an exact match, or a shared word (one a substring of the
+ * other, so a plural/prefix variant like `token`/`tokens` or a compound like
+ * `jobId`/`jobSeqNo` or `draftId`/`applicationDraftId` still correlates)
+ * once both are split into their constituent camelCase words. This is the
+ * general-purpose sibling of {@link collectDependentDrillDownChainValues}'s
+ * stricter exact-key `sameNameMatch`, used by `compileActionSteps`' body-
+ * value consumption gate where the source/target key casing and compounding
+ * legitimately differ across endpoints.
+ *
+ * A shared {@link GENERIC_KEY_WORDS} word is insufficient PROOF when both
+ * keys also carry a more specific, non-generic word — `startDate` and
+ * `endDate` both reduce to `["start"]`/`["end"]` once `date` is set aside,
+ * and those don't overlap, so the pair must NOT correlate despite sharing
+ * `date`. A generic word is only trusted when one side has no non-generic
+ * word to fall back on (e.g. `statusToken` vs. the bare `tokens` key).
+ */
+function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
+  if (sourceKey === targetKey) return true;
+  const sourceWords = keyNameWords(sourceKey);
+  const targetWords = keyNameWords(targetKey);
+  const wordsMatch = (a: string, b: string): boolean => a.includes(b) || b.includes(a);
+  const sourceSpecific = sourceWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
+  const targetSpecific = targetWords.filter((w) => !GENERIC_KEY_WORDS.has(w));
+  if (sourceSpecific.length > 0 && targetSpecific.length > 0) {
+    return sourceSpecific.some((sw) => targetSpecific.some((tw) => wordsMatch(sw, tw)));
+  }
+  return sourceWords.some((sw) => targetWords.some((tw) => wordsMatch(sw, tw)));
+}
+
+/**
  * Yields every primitive leaf (string, number, boolean, null) in the JSON
  * value with its path. Used by the body-literal substitution pass to find
  * JSON-keyed values whose key matches a payload field name — for example,
@@ -4350,6 +4458,7 @@ export function compileActionSteps(
   // so we only "produce" the values that are actually consumed downstream.
   for (const { capture } of actions) {
     const bodyLeafValues = jsonBodyLeafValues(capture.requestPostData);
+    const bodyLeafValuesByKey = jsonBodyLeafValuesByKey(capture.requestPostData);
     for (const sv of stateIndex.values()) {
       // A short value indexed only via the chain/force-include exemption
       // (see `StateValue.eligibleConsumers`) is a real dependency ONLY for
@@ -4375,9 +4484,29 @@ export function compileActionSteps(
       // bytes) keep whole-body substring matching.
       if (bodyLeafValues === null) {
         if (capture.requestPostData?.includes(sv.value)) usedValues.add(sv.value);
-      } else if (bodyLeafValues.some((leaf) => leaf.includes(sv.value))) {
-        usedValues.add(sv.value);
+        continue;
       }
+      // A produced value's SOURCE key name (the last segment of its response
+      // JSON path) must correlate with the TARGET field it's found under —
+      // same discipline `collectDependentDrillDownChainValues` already
+      // applies to the short-value length-floor exemption (sameNameMatch),
+      // now the universal gate rather than only that narrower one. A
+      // name-free source (a bare array index, or a header/cookie origin with
+      // no body accessor at all) is exempted, exactly as arrayIndexMatch
+      // exempts a name-free source there — there's no name to correlate.
+      const sourceKeyName = sv.headerOrigin ? undefined : sv.path.at(-1);
+      const sourceIsNameFree =
+        sv.headerOrigin !== undefined ||
+        sourceKeyName === undefined ||
+        ARRAY_INDEX_KEY_PATTERN.test(sourceKeyName);
+      const matches = sourceIsNameFree
+        ? bodyLeafValues.some((leaf) => leaf.includes(sv.value))
+        : [...(bodyLeafValuesByKey?.entries() ?? [])].some(
+            ([targetKey, leaves]) =>
+              keyNamesCorrelate(sourceKeyName, targetKey) &&
+              [...leaves].some((leaf) => leaf.includes(sv.value))
+          );
+      if (matches) usedValues.add(sv.value);
     }
     for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
       for (const sv of stateIndex.values()) {
@@ -5159,6 +5288,17 @@ function applyUrlParamPayloadSubstitutions(
  * top-level keys also become caller-supplied payload fields. Used in Phase F
  * to parameterize fields like SourceCode that appear in r1's body but not
  * r0's (inputBody).
+ *
+ * Registration is keyed per (key, value) pair, not per key alone: a field
+ * name reused across two-plus steps with a DIFFERENT literal value on each
+ * occurrence must have EVERY one of its own occurrences registered and
+ * substituted, not just whichever occurrence this function's own body-array
+ * walk reaches first. A first-seen-value-wins table would only ever match
+ * (and thus only ever register) the ONE step whose literal happens to equal
+ * that first-seen value — every other step's own `"key":<its own value>`
+ * text would silently never become a `${payload.key}` reference at all here,
+ * even though the field genuinely IS one this step's own request sends as
+ * caller-supplied data.
  */
 function applyPayloadKeyValueSubstitutions(
   template: string,
@@ -5166,18 +5306,9 @@ function applyPayloadKeyValueSubstitutions(
   additionalBodies: unknown[] = [],
   outAdditionalKeys: Map<string, "string" | "number" | "boolean"> = new Map()
 ): string {
-  const merged: Array<[string, string | number | boolean | null]> = [];
-  const seenKeys = new Set<string>();
-  // Track keys from inputBody (r0) separately so we know which ones are NEW.
-  // Only NEW keys need to be added to discovered-form-fields — inputBody's
-  // own keys stay internal to the site request template, not the public
-  // payload schema (see basePayloadSchemaExpr in emitContractTs).
-  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
-    for (const { path } of walkAllPrimitiveLeaves(inputBody)) {
-      if (path.length === 1) seenKeys.add(path[0]!);
-    }
-  }
-  const inputBodyKeys = new Set(seenKeys);
+  const merged: Array<[string, string | number | boolean]> = [];
+  const seenPairs = new Set<string>();
+  const seenValueByKey = new Map<string, string | number | boolean>();
   const allBodies = [inputBody, ...additionalBodies];
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -5187,11 +5318,32 @@ function applyPayloadKeyValueSubstitutions(
       if (path.length !== 1) continue;
       const key = path[0]!;
       if (!isValidJsIdentifier(key)) continue;
-      if (seenKeys.has(key) && body !== inputBody) continue;
-      // For inputBody first pass: don't dedupe (we need all values).
-      if (body === inputBody && !inputBodyKeys.has(key)) continue;
-      seenKeys.add(key);
       if (value === null) continue;
+      // Dedupe identical (key, value) pairs only — a repeated occurrence of
+      // the SAME literal value for a key across bodies needs no second
+      // substitution pass, but a DIFFERENT value under the same key is its
+      // own distinct step's own occurrence and must still get one. EXCEPT a
+      // pagination-cursor-shaped key ({@link PAGINATION_FIELD_NAME_PATTERN},
+      // e.g. `page`/`offset`/`cursor`) whose value differs from the
+      // first-seen one: that shape is a same-endpoint re-query bump (see
+      // {@link isRedundantSameEndpointGroup}'s pagination-vs-payload
+      // distinction), not a genuinely different step's own caller data —
+      // aliasing both occurrences to the SAME `payload.<key>` accessor would
+      // make the generated re-query call replay the FIRST page's request
+      // instead of advancing to the next one, so the later occurrence stays
+      // an unsubstituted literal, matching this key's pre-fix behavior.
+      const priorValue = seenValueByKey.get(key);
+      if (
+        priorValue !== undefined &&
+        priorValue !== value &&
+        PAGINATION_FIELD_NAME_PATTERN.test(key)
+      ) {
+        continue;
+      }
+      seenValueByKey.set(key, value);
+      const pairKey = `${key} ${typeof value} ${value}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
       merged.push([key, value]);
       // Record every substituted key, including inputBody's own, so the
       // contract emitter can add it to the payload schema. inputBody keys
