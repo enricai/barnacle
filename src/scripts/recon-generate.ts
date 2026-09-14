@@ -4525,6 +4525,60 @@ function buildValueAlternationPattern(sortedValues: string[]): RegExp {
   );
 }
 
+/** Normalizes a JSON key or a produced var name to a bare comparable token —
+ * lowercased, non-alphanumeric stripped, trailing disambiguation digits
+ * (the `seenNames`-collision suffix `compileActionSteps` appends, e.g.
+ * `displayOrder2`) dropped — so `sortOrder` and `SortOrder`/`sort_order`/
+ * `sortOrder2` all normalize to the same token for {@link keysCorrelate}. */
+function normalizeCorrelationToken(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/\d+$/, "");
+}
+
+/**
+ * True when `sourceName` (a produced state var's own field name, e.g. the
+ * `p.name` a produce was declared under) plausibly names the same coordinate
+ * as `targetKey` (the JSON key a candidate splice would land under). Used to
+ * gate {@link interpolateStateValues}'s substitution of a value that was only
+ * indexed via the chain/force-include short-value exemption (see
+ * `StateValue.eligibleConsumers`) — such a value cleared the ELIGIBILITY gate
+ * via a name-free signal (a bare array index, a URL path segment), which says
+ * nothing about whether the specific body key it's about to be spliced into
+ * has anything to do with its own origin field. Requiring exact-token or
+ * meaningful-substring correlation here is the second, independent check the
+ * report calls for: an eligible value must still name/shape-correlate with
+ * its actual splice target, not just have cleared chain detection for SOME
+ * key in the target capture.
+ */
+function keysCorrelate(sourceName: string, targetKey: string): boolean {
+  const a = normalizeCorrelationToken(sourceName);
+  const b = normalizeCorrelationToken(targetKey);
+  if (a.length === 0 || b.length === 0) return false;
+  if (a === b) return true;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  return shorter.length >= 3 && longer.includes(shorter);
+}
+
+/** Finds the JSON key immediately governing the value at `matchStart` in a
+ * (possibly partially-rewritten) JSON body template — the nearest preceding
+ * `"key":` slot opener. Textual, not AST-based (matching this file's existing
+ * `.split(target).join(replacement)` discipline elsewhere), which is
+ * sufficient here: it only needs to identify the enclosing leaf's own key for
+ * {@link keysCorrelate}'s name check, not to fully parse the document. */
+function findEnclosingJsonKey(text: string, matchStart: number): string | null {
+  const keyPattern = /"([^"\\]+)"\s*:\s*"?/g;
+  let lastKey: string | null = null;
+  let lastValueStart = -1;
+  for (const m of text.matchAll(keyPattern)) {
+    if (m.index === undefined || m.index >= matchStart) break;
+    lastKey = m[1] ?? null;
+    lastValueStart = m.index + m[0].length;
+  }
+  return lastValueStart <= matchStart ? lastKey : null;
+}
+
 /**
  * Finds every `${...}` span in `text` by brace-depth counting rather than a
  * non-nesting regex, so an ALREADY-nested placeholder (e.g. one produced by an
@@ -4574,11 +4628,25 @@ function findBalancedPlaceholderSpans(text: string): Array<[number, number]> {
  * actually owns that span, which is the producer/consumer relationship this
  * mechanism is supposed to encode — and guarantees the output can never open
  * a `${` before a prior `${...}` closes.
+ *
+ * `keyCorrelationGuard`, when supplied, additionally requires a JSON-key
+ * name/shape correlation before splicing a value flagged `restrictedValues`
+ * — see {@link keysCorrelate}'s docstring for why: such a value cleared
+ * ELIGIBILITY via a name-free chain signal (a bare array index, a URL path
+ * segment) that says nothing about the specific key it's about to land
+ * under. A match on a value not in `restrictedValues` (an unrestricted
+ * payload accessor or a normally-length-qualified state value) is spliced
+ * exactly as before — this guard only closes the coincidence-threading gap
+ * for values that needed the short-value exemption to be indexed at all.
  */
 function replaceGuardedAgainstExistingPlaceholders(
   text: string,
   pattern: RegExp,
-  bindingByValue: Map<string, string>
+  bindingByValue: Map<string, string>,
+  keyCorrelationGuard?: {
+    restrictedValues: ReadonlySet<string>;
+    sourceNameByValue: ReadonlyMap<string, string>;
+  }
 ): string {
   const protectedSpans = findBalancedPlaceholderSpans(text);
   let result = "";
@@ -4587,7 +4655,17 @@ function replaceGuardedAgainstExistingPlaceholders(
     const start = match.index;
     const end = start + match[0].length;
     if (protectedSpans.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart)) continue;
-    result += text.slice(cursor, start) + (bindingByValue.get(match[0]) ?? match[0]);
+    const value = match[0];
+    if (keyCorrelationGuard?.restrictedValues.has(value)) {
+      const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
+      const targetKey = findEnclosingJsonKey(text, start);
+      if (sourceName === undefined || targetKey === null || !keysCorrelate(sourceName, targetKey)) {
+        result += text.slice(cursor, end);
+        cursor = end;
+        continue;
+      }
+    }
+    result += text.slice(cursor, start) + (bindingByValue.get(value) ?? value);
     cursor = end;
   }
   return result + text.slice(cursor);
@@ -4607,28 +4685,49 @@ function replaceGuardedAgainstExistingPlaceholders(
  * for the anchoring guarantee and {@link replaceGuardedAgainstExistingPlaceholders}
  * for why a match overlapping an already-emitted `${...}` is skipped rather
  * than spliced into.
+ *
+ * `isJsonBody` gates the additional {@link keysCorrelate} check
+ * `replaceGuardedAgainstExistingPlaceholders` applies to `restricted` state
+ * bindings (see {@link StateVarBinding}) — a value indexed only via the
+ * chain/force-include short-value exemption must also name/shape-correlate
+ * with the JSON key it's about to be spliced into, not merely have cleared
+ * eligibility for SOME key in this capture. Only a JSON request body has
+ * "keys" to correlate against; a URL or a raw header value has none, and a
+ * bare-value splice into either is exactly the name-free URL-path-segment
+ * threading the eligibility gate already intends to allow, so callers
+ * rendering those pass `false` (the default).
  */
 function interpolateStateValues(
   template: string,
   priorSteps: ActionStep[],
   targetCapture: Capture,
-  payloadAccessorByValue: Map<string, string> = new Map()
+  payloadAccessorByValue: Map<string, string> = new Map(),
+  isJsonBody = false
 ): string {
-  const varNameByValue = deriveStateVarByValue(priorSteps, targetCapture);
+  const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
   const bindingByValue = new Map<string, string>();
   for (const [value, accessor] of payloadAccessorByValue) {
     bindingByValue.set(value, `\${${accessor}}`);
   }
-  for (const [value, varName] of varNameByValue) {
-    bindingByValue.set(value, `\${${varName}}`);
+  const restrictedValues = new Set<string>();
+  const sourceNameByValue = new Map<string, string>();
+  for (const [value, binding] of stateBindings) {
+    bindingByValue.set(value, `\${${binding.varName}}`);
+    sourceNameByValue.set(value, binding.sourceName);
+    if (binding.restricted) restrictedValues.add(value);
   }
   if (bindingByValue.size === 0) return template;
 
   const sortedValues = [...bindingByValue.keys()].sort((a, b) => b.length - a.length);
   const pattern = buildValueAlternationPattern(sortedValues);
 
-  return replaceGuardedAgainstExistingPlaceholders(template, pattern, bindingByValue);
+  return replaceGuardedAgainstExistingPlaceholders(
+    template,
+    pattern,
+    bindingByValue,
+    isJsonBody && restrictedValues.size > 0 ? { restrictedValues, sourceNameByValue } : undefined
+  );
 }
 
 /**
@@ -4854,17 +4953,48 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * coincidental substring match must not bind, or `interpolateStateValues`
  * splices it into an unrelated capture's URL/body/headers.
  */
+/** A value → `${var}` binding {@link deriveStateVarByValue} hands to
+ * {@link interpolateStateValues}. `restricted` mirrors `p.eligibleConsumers`
+ * being set — the value only cleared the length floor via the chain/force-
+ * include short-value exemption, a name-free eligibility signal (a bare
+ * array index, a URL path segment) that proves nothing about which specific
+ * body key downstream it may correlate with. `sourceName` is the produce's
+ * own field name (`p.name`), the signal `keysCorrelate` checks a restricted
+ * binding's actual splice target against. */
+interface StateVarBinding {
+  varName: string;
+  sourceName: string;
+  restricted: boolean;
+}
+
 function deriveStateVarByValue(
   priorSteps: ActionStep[],
   targetCapture: Capture
-): Map<string, string> {
-  const varNameByValue = new Map<string, string>();
+): Map<string, StateVarBinding> {
+  const varNameByValue = new Map<string, StateVarBinding>();
   for (const step of priorSteps) {
     for (const p of step.produces) {
       if (p.kind === "header") continue;
       if (p.eligibleConsumers && !p.eligibleConsumers.has(targetCapture)) continue;
       const value = resolveResponsePathValue(step.capture.responseBody, p.path);
-      if (value !== null) varNameByValue.set(value, p.name);
+      if (value !== null) {
+        // A source path with NO identifier segment anywhere (every segment a
+        // bare array index — e.g. a top-level array response `[42]`, path
+        // `["0"]`) has no name of its own to correlate against at all; that's
+        // the genuinely name-free case `collectDependentDrillDownChainValues`'s
+        // arrayIndexMatch exists for (see its docstring), not a named field
+        // that merely sits inside an array. Only a source WITH a real
+        // ancestor name (e.g. `flags` in `["flags","0"]`) must correlate —
+        // its name existing at all is exactly the signal a target key
+        // coincidence has to match to be a genuine splice, not a bare
+        // array-index/path-segment eligibility coincidence.
+        const sourceHasName = p.path.some((segment) => isValidJsIdentifier(segment));
+        varNameByValue.set(value, {
+          varName: p.name,
+          sourceName: p.name,
+          restricted: p.eligibleConsumers !== undefined && sourceHasName,
+        });
+      }
     }
   }
   return varNameByValue;
@@ -5664,8 +5794,8 @@ export function emitMultiStepExecuteHttp(
     for (const [value, binding] of producerBoundaryBindings) {
       if (binding.producerIndex === i) urlParamBindings.set(value, binding.accessor);
     }
-    for (const [value, varName] of deriveStateVarByValue(prior, cap)) {
-      urlParamBindings.set(value, varName);
+    for (const [value, binding] of deriveStateVarByValue(prior, cap)) {
+      urlParamBindings.set(value, binding.varName);
     }
     const rawBodyWithUrlParams =
       parsedBody !== null
@@ -5677,7 +5807,7 @@ export function emitMultiStepExecuteHttp(
         : rawBodyWithProducerBoundary;
     const bodyAfterStateAndKv = rawBodyWithUrlParams
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithUrlParams, prior, cap, payloadAccessorByValue),
+          interpolateStateValues(rawBodyWithUrlParams, prior, cap, payloadAccessorByValue, true),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
