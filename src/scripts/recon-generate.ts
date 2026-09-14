@@ -2259,24 +2259,24 @@ function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValu
  * capture on every (group, varying-key, group-member) combination it's
  * asked about. */
 interface FieldValueIndex {
-  byKeyValue: Map<string, Set<Capture>>;
+  byKeyValue: Map<string, Map<string, Set<Capture>>>;
   byPathSegment: Map<string, Set<Capture>>;
 }
-const fieldValueIndexKey = (fieldKey: string, value: string): string => `${fieldKey}\u0000${value}`;
 const fieldValueIndexCache = new WeakMap<readonly ActionCapture[], FieldValueIndex>();
 function fieldValueIndex(allActions: readonly ActionCapture[]): FieldValueIndex {
   const cached = fieldValueIndexCache.get(allActions);
   if (cached) return cached;
-  const byKeyValue = new Map<string, Set<Capture>>();
+  const byKeyValue = new Map<string, Map<string, Set<Capture>>>();
   const byPathSegment = new Map<string, Set<Capture>>();
   for (const { capture } of allActions) {
     const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
     for (const [key, values] of byKey) {
+      const valueMap = byKeyValue.get(key) ?? new Map<string, Set<Capture>>();
+      byKeyValue.set(key, valueMap);
       for (const value of values) {
-        const mapKey = fieldValueIndexKey(key, value);
-        const captures = byKeyValue.get(mapKey) ?? new Set<Capture>();
+        const captures = valueMap.get(value) ?? new Set<Capture>();
         captures.add(capture);
-        byKeyValue.set(mapKey, captures);
+        valueMap.set(value, captures);
       }
     }
     for (const segment of pathSegments) {
@@ -2326,7 +2326,7 @@ function isFieldValueThreadedElsewhere(
   const isOutsideGroup = (captures: ReadonlySet<Capture> | undefined): boolean =>
     captures !== undefined && [...captures].some((capture) => !groupCaptures.has(capture));
   return (
-    isOutsideGroup(byKeyValue.get(fieldValueIndexKey(fieldKey, stringValue))) ||
+    isOutsideGroup(byKeyValue.get(fieldKey)?.get(stringValue)) ||
     isOutsideGroup(byPathSegment.get(stringValue))
   );
 }
