@@ -4495,7 +4495,7 @@ function resolveResponsePathValue(responseBody: unknown, path: string[]): string
  * {@link substituteThreadedValues}: a value can never win a match at a position
  * a longer value also matches, and a value flanked by an alphanumeric — or by a
  * `-`/`.` itself flanked by an alphanumeric — never matches inside an unrelated
- * opaque token (e.g. splicing a "12" into a hyphen-joined "wJbfQL-12-K0X"
+ * opaque token (e.g. splicing a "12" into a hyphen-joined "SKU-12-9F3Z"
  * segment) while a standalone occurrence (e.g. "/items/42/") still matches. */
 function buildValueAlternationPattern(sortedValues: string[]): RegExp {
   return new RegExp(
@@ -4545,7 +4545,7 @@ function findBalancedPlaceholderSpans(text: string): Array<[number, number]> {
  * has no way to know a span it's about to touch is actually the FIRST pass's
  * `${varName}` placeholder for an entirely different producer/consumer
  * relationship — it just sees literal characters that happen to equal one of
- * its own bound values (e.g. the digits inside `${displayOrder212}`,
+ * its own bound values (e.g. the digits inside `${warehouseSlot47}`,
  * coincidentally also this fold item's own field value) and splices its
  * replacement in anyway, producing an invalidly-nested `${a${b}c}` literal
  * that resolves to neither value at runtime. Skipping any match that overlaps
