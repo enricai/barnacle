@@ -77,4 +77,36 @@ describe("collectDependentDrillDownChainValues — coincidental value equality a
     );
     expect(spliceForSortOrder).toBeUndefined();
   });
+
+  it("does not exempt a NAMED source field from name-correlation just because it coincidentally lands inside a later-side array element", () => {
+    // The array-index exemption exists so a name-free source (an array
+    // element with no field name of its own) can still thread into a
+    // name-free destination. It must not let a genuinely NAMED source field
+    // (`sortOrder`) dodge correlation merely because the coincidentally-equal
+    // value happens to sit inside a later request's array (`tokens: [7]`).
+    const search = buildCapture({
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }] },
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+    const pricing = buildCapture({
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: {
+        priceToken: "tok-a1",
+        ship: { stateroomTypes: { inside: { displayOrder: { sortOrder: 7 } } } },
+      },
+      timestamp: "2026-01-01T00:00:01Z",
+    });
+    const history = buildCapture({
+      url: CATALOG_PRICE_HISTORY_URL,
+      requestPostData: '{"priceToken":"tok-a1","tokens":[7]}',
+      responseBody: { history: [{ sku: "sku-a", amount: 18.5 }] },
+      timestamp: "2026-01-01T00:00:02Z",
+    });
+    const stateIndex = indexStateValues([search, pricing, history]);
+
+    expect(stateIndex.has("7")).toBe(false);
+  });
 });

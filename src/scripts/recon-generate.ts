@@ -8967,10 +8967,14 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
               const laterKeysForValue = laterKeysByValue.get(v);
               const sameNameMatch = laterKeysForValue?.has(key) ?? false;
               const pathSegmentMatch = laterPathSegments.has(v);
-              const arrayIndexMatch =
-                laterKeysForValue !== undefined &&
-                (priorKeyIsArrayIndex ||
-                  [...laterKeysForValue].some((k2) => ARRAY_INDEX_KEY_PATTERN.test(k2)));
+              // Only the SOURCE side being name-free (an array element with
+              // no field name of its own) exempts this from name matching —
+              // a genuinely NAMED source field must still correlate by name
+              // even if it happens to land inside a later array element,
+              // otherwise a named `sortOrder` could dodge correlation just
+              // by coincidentally equaling a value inside an unrelated
+              // later-side array (`{"tokens":[7]}`).
+              const arrayIndexMatch = priorKeyIsArrayIndex && laterKeysForValue !== undefined;
               if (!sameNameMatch && !pathSegmentMatch && !arrayIndexMatch) continue;
               addConsumer(v);
             }
