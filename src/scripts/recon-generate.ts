@@ -4995,14 +4995,15 @@ function applyPayloadKeyValueSubstitutions(
       seenKeys.add(key);
       if (value === null) continue;
       merged.push([key, value]);
-      // Record only the NEW keys (not in inputBody) so the contract emitter
-      // can add them to the payload schema — inputBody's own keys stay
-      // internal to the site request template (see basePayloadSchemaExpr).
-      if (!inputBodyKeys.has(key)) {
-        if (typeof value === "string") outAdditionalKeys.set(key, "string");
-        else if (typeof value === "number") outAdditionalKeys.set(key, "number");
-        else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
-      }
+      // Record every substituted key, including inputBody's own, so the
+      // contract emitter can add it to the payload schema. inputBody keys
+      // that ARE covered by basePayloadSchemaExpr (the ApplicantContactSchema
+      // case) are filtered back out at the emitContractTs merge point via
+      // isReservedByApplicantContactSchema — this function has no visibility
+      // into that flag, so it must not special-case inputBody's own keys.
+      if (typeof value === "string") outAdditionalKeys.set(key, "string");
+      else if (typeof value === "number") outAdditionalKeys.set(key, "number");
+      else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
     }
   }
   let result = template;
@@ -5302,6 +5303,12 @@ export function emitMultiStepExecuteHttp(
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
       const accessor = `payload${pathToAccessor(path)}`;
       payloadAccessorByValue.set(value, accessor);
+      const accessorField = accessor.startsWith("payload.")
+        ? accessor.slice("payload.".length)
+        : null;
+      if (accessorField !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(accessorField)) {
+        outDiscoveredFields.add(accessorField);
+      }
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
       // lowercase even though r0's body had it uppercase) still get
