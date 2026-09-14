@@ -72,6 +72,7 @@ const { buildFakeSession } = vi.hoisted(() => ({
       fakeCdpSession,
       fakePage,
       awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+      addInitScript: vi.fn().mockResolvedValue(undefined),
     };
   },
 }));
@@ -87,6 +88,7 @@ vi.mock("@browserbasehq/stagehand", () => ({
     this.context = {
       conn: fakeConn,
       awaitActivePage: fakeSession.awaitActivePage,
+      addInitScript: fakeSession.addInitScript,
     };
   }),
 }));

@@ -41,6 +41,10 @@ export async function createBrowserSession(opts?: BrowserSessionOptions): Promis
       : createSteelBrowserSession()
   );
   const activePage = await session.stagehand.context.awaitActivePage();
-  await installInitScriptOnAllFrames(activePage, buildHcaptchaCallbackCaptureScript());
+  const callbackCaptureScript = buildHcaptchaCallbackCaptureScript();
+  await Promise.all([
+    session.stagehand.context.addInitScript(callbackCaptureScript),
+    installInitScriptOnAllFrames(activePage, callbackCaptureScript),
+  ]);
   return session;
 }

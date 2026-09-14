@@ -79,9 +79,14 @@ const arm = (session: CdpSessionLike, page: CdpFramePage, source: string): Promi
  * before any of its scripts run, installed into its own session, and only
  * then resumed via `Runtime.runIfWaitingForDebugger`).
  *
- * Must be wired as the sole per-target install path for a given script — the
- * race this closes only stays closed if nothing else independently resumes a
- * paused target before this module's install lands.
+ * Must be wired alongside (not instead of) the context-level
+ * `context.addInitScript` install path: this module only ever sees a target
+ * once it has attached, so a same-origin child iframe — which shares its
+ * parent's target and therefore never fires `Target.attachedToTarget` — is
+ * structurally invisible to it and depends on `context.addInitScript`'s own
+ * delivery to every session it already knows about. Each path resumes only
+ * the sessions it itself paused, so running both does not reintroduce a
+ * double-resume race on the same session.
  */
 export async function installInitScriptOnAllFrames(page: Page, source: string): Promise<void> {
   const framePage = page as unknown as CdpFramePage;
