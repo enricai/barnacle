@@ -2206,7 +2206,18 @@ interface RequestAndResponseValues {
   byKey: Map<string, Set<string>>;
   pathSegments: Set<string>;
 }
+
+/** Per-capture memoization cache for {@link requestAndResponseValuesByKey} --
+ * without it, {@link isFieldValueThreadedElsewhere} re-parses the same
+ * capture's JSON body and re-walks the same response-body leaves once per
+ * (group, varying-key, group-member) combination it's compared against,
+ * which is O(groups * keys * members * allActions) recomputations of
+ * identical work instead of O(allActions). */
+const requestAndResponseValuesCache = new WeakMap<Capture, RequestAndResponseValues>();
+
 function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValues {
+  const cached = requestAndResponseValuesCache.get(capture);
+  if (cached) return cached;
   const byKey = new Map<string, Set<string>>();
   const pathSegments = new Set<string>();
   const add = (key: string, value: string): void => {
@@ -2234,7 +2245,49 @@ function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValu
   for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
   }
-  return { byKey, pathSegments };
+  const result = { byKey, pathSegments };
+  requestAndResponseValuesCache.set(capture, result);
+  return result;
+}
+
+/** A single flattened `(fieldKey, value)` request/response leaf, mapped to
+ * every capture it was seen on, plus the equivalent map for bare URL path
+ * segments -- built once per `allActions` array (cached by array identity)
+ * so {@link isFieldValueThreadedElsewhere} can answer "does any OTHER
+ * capture carry this value under this name" with a single map lookup
+ * instead of re-deriving {@link requestAndResponseValuesByKey} for every
+ * capture on every (group, varying-key, group-member) combination it's
+ * asked about. */
+interface FieldValueIndex {
+  byKeyValue: Map<string, Map<string, Set<Capture>>>;
+  byPathSegment: Map<string, Set<Capture>>;
+}
+const fieldValueIndexCache = new WeakMap<readonly ActionCapture[], FieldValueIndex>();
+function fieldValueIndex(allActions: readonly ActionCapture[]): FieldValueIndex {
+  const cached = fieldValueIndexCache.get(allActions);
+  if (cached) return cached;
+  const byKeyValue = new Map<string, Map<string, Set<Capture>>>();
+  const byPathSegment = new Map<string, Set<Capture>>();
+  for (const { capture } of allActions) {
+    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
+    for (const [key, values] of byKey) {
+      const valueMap = byKeyValue.get(key) ?? new Map<string, Set<Capture>>();
+      byKeyValue.set(key, valueMap);
+      for (const value of values) {
+        const captures = valueMap.get(value) ?? new Set<Capture>();
+        captures.add(capture);
+        valueMap.set(value, captures);
+      }
+    }
+    for (const segment of pathSegments) {
+      const captures = byPathSegment.get(segment) ?? new Set<Capture>();
+      captures.add(capture);
+      byPathSegment.set(segment, captures);
+    }
+  }
+  const index = { byKeyValue, byPathSegment };
+  fieldValueIndexCache.set(allActions, index);
+  return index;
 }
 
 /** True when `value` -- one member's own value for `fieldKey`, the sole
@@ -2269,11 +2322,13 @@ function isFieldValueThreadedElsewhere(
   }
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
-  return allActions.some(({ capture }) => {
-    if (groupCaptures.has(capture)) return false;
-    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
-    return (byKey.get(fieldKey)?.has(stringValue) ?? false) || pathSegments.has(stringValue);
-  });
+  const { byKeyValue, byPathSegment } = fieldValueIndex(allActions);
+  const isOutsideGroup = (captures: ReadonlySet<Capture> | undefined): boolean =>
+    captures !== undefined && [...captures].some((capture) => !groupCaptures.has(capture));
+  return (
+    isOutsideGroup(byKeyValue.get(fieldKey)?.get(stringValue)) ||
+    isOutsideGroup(byPathSegment.get(stringValue))
+  );
 }
 
 /**
