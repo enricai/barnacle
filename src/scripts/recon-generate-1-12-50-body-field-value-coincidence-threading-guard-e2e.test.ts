@@ -313,3 +313,128 @@ describe("recon-generate CLI — array-index/path-segment chain eligibility neve
     expect(bodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
   }, 30_000);
 });
+
+/**
+ * Pins the generalized eligibility gate (bugfix-002): every value indexed
+ * above `MIN_STATE_VALUE_LENGTH` reaches `compileActionSteps` with
+ * `eligibleConsumers` left `undefined` (see `StateValue.eligibleConsumers`),
+ * so the two prior describe blocks' fixtures — all deliberately kept SHORT so
+ * the fold-chain/force-include exemption is the only path that can index them
+ * — never exercise `compileActionSteps`' general, non-exemption produces[]
+ * consumption pre-scan (recon-generate.ts's `bodyLeafValues.some(...)` gate).
+ * This corpus uses only long (>= 8 char) values so every leaf clears the
+ * length floor unconditionally, then plants several deeply-nested,
+ * differently-named leaves whose values coincidentally equal later,
+ * differently-named request fields' true long values, alongside one leaf
+ * genuinely reused under its own name — proving the name/shape correlation
+ * gate applies universally, not only to the short-value exemption.
+ */
+describe("recon-generate CLI — long (length-floor-clearing) response leaves still require name correlation before threading", () => {
+  it("sources each request field only from its own name-correlated accessor, never an unrelated deep leaf that merely coincides in value", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-long-value-coincidence-threading-guard-e2e-"));
+    const runRoot = join(workDir, "run");
+
+    const AUTH_TOKEN_VALUE = "auth-token-genuine-9f3c1a";
+    // Deliberately >= MIN_STATE_VALUE_LENGTH (8) so each clears the index on
+    // its own merits — no chain/force-include exemption is involved.
+    const REGION_LABEL_VALUE = "north-america-east-1";
+    const CATALOG_SLUG_VALUE = "vintage-clothing-archive";
+    const AUDIT_STAMP_VALUE = "build-2026-01-01-rc3";
+    const FEATURE_NOTE_VALUE = "experimental-ui-variant-b";
+
+    const list = buildCapture({
+      url: LIST_URL,
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ itemId: "item-a" }] },
+      timestamp: "2026-01-01T00:00:00Z",
+    });
+    const detail = buildCapture({
+      url: DETAIL_URL,
+      requestPostData: '{"itemId":"item-a"}',
+      responseBody: {
+        authToken: AUTH_TOKEN_VALUE,
+        infra: { deploy: { hosting: { regionLabel: REGION_LABEL_VALUE } } },
+        catalog: { browse: { section: { catalogSlug: CATALOG_SLUG_VALUE } } },
+        release: { pipeline: { info: { auditStamp: AUDIT_STAMP_VALUE } } },
+        ui: { experiments: { current: { featureNote: FEATURE_NOTE_VALUE } } },
+      },
+      timestamp: "2026-01-01T00:00:01Z",
+    });
+    // The submit body re-references `authToken` under its own genuine name,
+    // plus four differently-named fields whose values coincidentally equal
+    // the four unrelated deep leaves above.
+    const submit = buildCapture({
+      url: SUBMIT_URL,
+      requestPostData: JSON.stringify({
+        itemId: "item-a",
+        authToken: AUTH_TOKEN_VALUE,
+        shippingZone: REGION_LABEL_VALUE,
+        wishlistName: CATALOG_SLUG_VALUE,
+        confirmationCode: AUDIT_STAMP_VALUE,
+        giftMessage: FEATURE_NOTE_VALUE,
+      }),
+      responseBody: { ok: true },
+      timestamp: "2026-01-01T00:00:02Z",
+    });
+    writeRunDir(runRoot, [list, detail, submit]);
+
+    const siteId = `long-value-coincidence-threading-guard-e2e-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "browse catalog search" },
+          { step: "open item detail panel" },
+          { step: "submit item selection", submitStep: true },
+        ],
+        submitEndpointPattern: "catalog/submit",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    const bodyLineMatch = contract.match(/catalog\/submit\/[\s\S]*?body:\s*`([^`]*)`/);
+    expect(bodyLineMatch, contract).not.toBeNull();
+    const bodyTemplate = bodyLineMatch![1]!;
+
+    // The genuinely-threaded field must still resolve from its own
+    // name-correlated accessor/local.
+    const authTokenLine = bodyTemplate.match(/"authToken"\s*:\s*"?\$\{([^}]*)\}"?/);
+    expect(authTokenLine, bodyTemplate).not.toBeNull();
+    expect(authTokenLine![1]).toMatch(/authtoken/i);
+
+    // None of the four differently-named fields may be sourced from the
+    // unrelated deep leaf whose value they merely happen to equal.
+    const shippingZoneLine = bodyTemplate.match(/"shippingZone"\s*:\s*"?([^,\n}]*)"?/);
+    if (shippingZoneLine && shippingZoneLine[1]!.includes("${")) {
+      expect(shippingZoneLine[1]).not.toMatch(/region/i);
+    }
+    const wishlistNameLine = bodyTemplate.match(/"wishlistName"\s*:\s*"?([^,\n}]*)"?/);
+    if (wishlistNameLine && wishlistNameLine[1]!.includes("${")) {
+      expect(wishlistNameLine[1]).not.toMatch(/catalogslug|slug/i);
+    }
+    const confirmationCodeLine = bodyTemplate.match(/"confirmationCode"\s*:\s*"?([^,\n}]*)"?/);
+    if (confirmationCodeLine && confirmationCodeLine[1]!.includes("${")) {
+      expect(confirmationCodeLine[1]).not.toMatch(/auditstamp|stamp/i);
+    }
+    const giftMessageLine = bodyTemplate.match(/"giftMessage"\s*:\s*"?([^,\n}]*)"?/);
+    if (giftMessageLine && giftMessageLine[1]!.includes("${")) {
+      expect(giftMessageLine[1]).not.toMatch(/featurenote|note/i);
+    }
+
+    // No invalidly-nested placeholder anywhere in the emitted body.
+    expect(bodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
+  }, 30_000);
+});
