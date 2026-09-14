@@ -294,6 +294,37 @@ describe("isZeroVarianceRepeatCapture", () => {
     ];
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
   });
+
+  it("flags a fixed-query beacon fired 14 times against 38 total captures, even though one earlier same-endpoint occurrence carries a different value for every key", () => {
+    const candidate = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: null,
+    };
+    const genuineOccurrences = Array.from({ length: 13 }, () => ({
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: null,
+    }));
+    const preFlowOutlier = {
+      method: "GET",
+      url: "https://apply.acme.example/auth/responder.html?clientId=Y&environment=DEV",
+      requestPostData: null,
+    };
+    const unrelatedFlowCaptures = Array.from({ length: 23 }, (_, i) => ({
+      method: "POST",
+      url: `https://apply.acme.example/api/step-${i}`,
+      requestPostData: `{"step":${i}}`,
+    }));
+    const allCaptures = [
+      candidate,
+      ...genuineOccurrences,
+      preFlowOutlier,
+      ...unrelatedFlowCaptures,
+    ];
+    expect(allCaptures.length).toBe(38);
+    expect(isZeroVarianceRepeatCapture(candidate, allCaptures)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {
