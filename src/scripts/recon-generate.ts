@@ -2206,7 +2206,18 @@ interface RequestAndResponseValues {
   byKey: Map<string, Set<string>>;
   pathSegments: Set<string>;
 }
+
+/** Per-capture memoization cache for {@link requestAndResponseValuesByKey} --
+ * without it, {@link isFieldValueThreadedElsewhere} re-parses the same
+ * capture's JSON body and re-walks the same response-body leaves once per
+ * (group, varying-key, group-member) combination it's compared against,
+ * which is O(groups * keys * members * allActions) recomputations of
+ * identical work instead of O(allActions). */
+const requestAndResponseValuesCache = new WeakMap<Capture, RequestAndResponseValues>();
+
 function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValues {
+  const cached = requestAndResponseValuesCache.get(capture);
+  if (cached) return cached;
   const byKey = new Map<string, Set<string>>();
   const pathSegments = new Set<string>();
   const add = (key: string, value: string): void => {
@@ -2234,7 +2245,49 @@ function requestAndResponseValuesByKey(capture: Capture): RequestAndResponseValu
   for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
     if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
   }
-  return { byKey, pathSegments };
+  const result = { byKey, pathSegments };
+  requestAndResponseValuesCache.set(capture, result);
+  return result;
+}
+
+/** A single flattened `(fieldKey, value)` request/response leaf, mapped to
+ * every capture it was seen on, plus the equivalent map for bare URL path
+ * segments -- built once per `allActions` array (cached by array identity)
+ * so {@link isFieldValueThreadedElsewhere} can answer "does any OTHER
+ * capture carry this value under this name" with a single map lookup
+ * instead of re-deriving {@link requestAndResponseValuesByKey} for every
+ * capture on every (group, varying-key, group-member) combination it's
+ * asked about. */
+interface FieldValueIndex {
+  byKeyValue: Map<string, Map<string, Set<Capture>>>;
+  byPathSegment: Map<string, Set<Capture>>;
+}
+const fieldValueIndexCache = new WeakMap<readonly ActionCapture[], FieldValueIndex>();
+function fieldValueIndex(allActions: readonly ActionCapture[]): FieldValueIndex {
+  const cached = fieldValueIndexCache.get(allActions);
+  if (cached) return cached;
+  const byKeyValue = new Map<string, Map<string, Set<Capture>>>();
+  const byPathSegment = new Map<string, Set<Capture>>();
+  for (const { capture } of allActions) {
+    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
+    for (const [key, values] of byKey) {
+      const valueMap = byKeyValue.get(key) ?? new Map<string, Set<Capture>>();
+      byKeyValue.set(key, valueMap);
+      for (const value of values) {
+        const captures = valueMap.get(value) ?? new Set<Capture>();
+        captures.add(capture);
+        valueMap.set(value, captures);
+      }
+    }
+    for (const segment of pathSegments) {
+      const captures = byPathSegment.get(segment) ?? new Set<Capture>();
+      captures.add(capture);
+      byPathSegment.set(segment, captures);
+    }
+  }
+  const index = { byKeyValue, byPathSegment };
+  fieldValueIndexCache.set(allActions, index);
+  return index;
 }
 
 /** True when `value` -- one member's own value for `fieldKey`, the sole
@@ -2269,11 +2322,13 @@ function isFieldValueThreadedElsewhere(
   }
   const stringValue = String(value);
   if (stringValue.length === 0) return true;
-  return allActions.some(({ capture }) => {
-    if (groupCaptures.has(capture)) return false;
-    const { byKey, pathSegments } = requestAndResponseValuesByKey(capture);
-    return (byKey.get(fieldKey)?.has(stringValue) ?? false) || pathSegments.has(stringValue);
-  });
+  const { byKeyValue, byPathSegment } = fieldValueIndex(allActions);
+  const isOutsideGroup = (captures: ReadonlySet<Capture> | undefined): boolean =>
+    captures !== undefined && [...captures].some((capture) => !groupCaptures.has(capture));
+  return (
+    isOutsideGroup(byKeyValue.get(fieldKey)?.get(stringValue)) ||
+    isOutsideGroup(byPathSegment.get(stringValue))
+  );
 }
 
 /**
@@ -5812,6 +5867,26 @@ export function emitMultiStepExecuteHttp(
         const scopedAccessor = (varName: string, field: string): string =>
           `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
+        // Computed once per fold target instead of once per `parameterize`
+        // call: `actions` never changes across the url/headers/body calls a
+        // single chain step makes (or across chain steps), so re-deriving
+        // this array inside the closure was O(actions.length) work repeated
+        // 3x per chain hop for no reason.
+        const allCaptures = actions.map((a) => a.capture);
+        // `isZeroVarianceRepeatCapture`'s verdict is a pure function of
+        // `chainCapture` (and the now-hoisted `allCaptures`, which is fixed
+        // for the whole target) — memoized here so the 3 `parameterize`
+        // calls a single chain step makes (url, headers, body) each share
+        // the one verdict computed for that step's `chainCapture` instead of
+        // re-scanning `allCaptures` from scratch every time.
+        const isProvenInvariantMemo = new Map<Capture, boolean>();
+        const isProvenInvariantFor = (chainCapture: Capture): boolean => {
+          const cached = isProvenInvariantMemo.get(chainCapture);
+          if (cached !== undefined) return cached;
+          const computed = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
+          isProvenInvariantMemo.set(chainCapture, computed);
+          return computed;
+        };
         // Whole-value substitution runs via substituteThreadedValues: a single
         // guarded regex-alternation pass over the original text, not a
         // per-field sequential `.replace()` loop — see that function's doc for
@@ -5833,11 +5908,7 @@ export function emitMultiStepExecuteHttp(
           // invisible and gets frozen as a literal.
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(
-              threadingScopes,
-              chainCapture,
-              actions.map((a) => a.capture)
-            ),
+            ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
           ]);
           // A proven ancestor-scoped drill (see isAncestorScoped above) still
           // rebinds fields findThreadedJoinFields left on itemVar purely
@@ -5924,17 +5995,10 @@ export function emitMultiStepExecuteHttp(
           // genuinely varying on another (`itemId`), so only the fields that
           // {@link isGenuineVaryingQueryValue} can't prove are real per-request
           // dependencies get excluded, never the whole substitution pass.
-          const isProvenInvariant = isZeroVarianceRepeatCapture(
-            chainCapture,
-            actions.map((a) => a.capture)
-          );
+          const isProvenInvariant = isProvenInvariantFor(chainCapture);
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
-                isGenuineVaryingQueryValue(
-                  b.value,
-                  chainCapture,
-                  actions.map((a) => a.capture)
-                )
+                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
               )
             : valueBindings;
           const result = substituteThreadedValues(swapped, filteredValueBindings);
@@ -5954,7 +6018,7 @@ export function emitMultiStepExecuteHttp(
               "emitMultiStepExecuteHttp",
               chainCapture,
               withDrillParamBindings,
-              actions.map((a) => a.capture)
+              allCaptures
             );
           }
           return withDrillParamBindings;
@@ -9936,6 +10000,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         const scopedAccessor = (varName: string, field: string): string =>
           `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
+        // Computed once per fold target instead of once per `parameterizeUrl`
+        // call: `actionSteps` never changes across the calls this target's
+        // chain steps make, so re-deriving this array on every one of
+        // findThreadedJoinFields/isZeroVarianceRepeatCapture/
+        // isGenuineVaryingQueryValue/assertNoFrozenVaryingDrillParams's own
+        // calls below was O(actionSteps.length) work repeated 4x per call.
+        const allCaptures = actionSteps.map((s) => s.capture);
         // Same word-boundary-anchored swap emitMultiStepExecuteHttp's own
         // `parameterize` performs — a plain split/join would also rewrite
         // unrelated substrings that happen to contain the join value.
@@ -9961,11 +10032,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               : rawUrl;
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
-            ...findThreadedJoinFields(
-              threadingScopes,
-              chainCapture,
-              actionSteps.map((s) => s.capture)
-            ),
+            ...findThreadedJoinFields(threadingScopes, chainCapture, allCaptures),
           ]);
           // Mirrors emitMultiStepExecuteHttp's identical rebind (see
           // isAncestorScoped above): a proven ancestor-scoped drill still
@@ -10022,17 +10089,10 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
           // ({@link isGenuineVaryingQueryValue}) for why this is decided
           // field by field rather than for the whole capture at once.
-          const isProvenInvariant = isZeroVarianceRepeatCapture(
-            chainCapture,
-            actionSteps.map((s) => s.capture)
-          );
+          const isProvenInvariant = isZeroVarianceRepeatCapture(chainCapture, allCaptures);
           const filteredValueBindings = isProvenInvariant
             ? valueBindings.filter((b) =>
-                isGenuineVaryingQueryValue(
-                  b.value,
-                  chainCapture,
-                  actionSteps.map((s) => s.capture)
-                )
+                isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
               )
             : valueBindings;
           const result = substituteThreadedValues(withBase, filteredValueBindings);
@@ -10049,7 +10109,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               "emitContractTs",
               chainCapture,
               withDrillParamBindings,
-              actionSteps.map((s) => s.capture)
+              allCaptures
             );
           }
           return withDrillParamBindings;
