@@ -5958,8 +5958,15 @@ export function emitMultiStepExecuteHttp(
         // colliding on `foldMatches`/`foldMatch`. The overwhelmingly common
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        // Only `itemVar` (and fold-match candidates) are `Record<string,
+        // unknown>`-typed — ancestor loop vars keep the real response-derived
+        // type, so re-asserting THEIR intermediate hops would be both
+        // unnecessary and, worse, would replace a real property access with
+        // an opaque cast in the emitted URL/body text.
         const scopedAccessor = (varName: string, field: string): string =>
-          unknownValueAccessor(varName, field.split("."));
+          varName === itemVar
+            ? unknownValueAccessor(varName, field.split("."))
+            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterize`
         // call: `actions` never changes across the url/headers/body calls a
@@ -10244,8 +10251,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           fullAncestors
         );
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
+        // Only `itemVar` (and fold-match candidates) are `Record<string,
+        // unknown>`-typed — ancestor loop vars keep the real response-derived
+        // type, so re-asserting THEIR intermediate hops would be both
+        // unnecessary and, worse, would replace a real property access with
+        // an opaque cast in the emitted URL/body text.
         const scopedAccessor = (varName: string, field: string): string =>
-          unknownValueAccessor(varName, field.split("."));
+          varName === itemVar
+            ? unknownValueAccessor(varName, field.split("."))
+            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterizeUrl`
         // call: `actionSteps` never changes across the calls this target's
