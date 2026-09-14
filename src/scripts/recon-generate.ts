@@ -5275,7 +5275,18 @@ export function emitMultiStepExecuteHttp(
   selectResolutions: SelectOptionResolution[] = [],
   outStructuredKeys: Map<string, string> = new Map(),
   rawCodeFields: Map<string, { wireKey: string; code: string }> = new Map(),
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  /**
+   * PascalCase plugin name used to cast the final `return { data: ... }`
+   * back to `${pascalName}Response` — every intermediate `httpClient` call
+   * this function emits is bound `as Record<string, unknown>` so per-item
+   * fold/merge code can probe arbitrary fields, but that cast otherwise
+   * widens the returned primary var past the richer response type the
+   * caller's own schema inference already promised, which fails to
+   * typecheck. `null` (the test-facing default) skips the cast, preserving
+   * prior output for callers that don't exercise the full pipeline.
+   */
+  pascalName: string | null = null
 ): string {
   interface Rendered {
     url: string;
@@ -6319,15 +6330,25 @@ export function emitMultiStepExecuteHttp(
   const everyPrimaryIsPlainObject = foldPlans.every((plan) =>
     isPlainObject(actions[plan.primaryStepIndex]!.capture.responseBody)
   );
+  // Every intermediate `httpClient` call above is bound `as Record<string,
+  // unknown>` regardless of its own `schema:`, so per-item fold/merge code
+  // can probe arbitrary fields without a per-step assertion type. That
+  // widened intermediate type doesn't match `${pascalName}Response` — the
+  // richer type schema inference already promised for THIS returned value —
+  // so the return itself needs its own assertion back to that promised
+  // type; `Record<string, unknown>` and the real inferred object type share
+  // no ancestry TS can see, so a plain `as` needs the `as unknown as` detour.
+  const castToResponseType = (expr: string): string =>
+    pascalName ? `${expr} as unknown as ${pascalName}Response` : expr;
   if (uniquePrimaryVarNames.length > 1 && everyPrimaryIsPlainObject) {
     lines.push(
-      `    return { data: mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")}) };`
+      `    return { data: ${castToResponseType(`mergeFoldedPrimaryBodies(${uniquePrimaryVarNames.join(", ")})`)} };`
     );
   } else {
     const returnVar = lastFoldPlan
       ? actions[lastFoldPlan.primaryStepIndex]!.varName
       : (returnAction?.varName ?? "undefined");
-    lines.push(`    return { data: ${returnVar} };`);
+    lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
   return lines.join("\n");
@@ -12008,7 +12029,8 @@ async function main(): Promise<void> {
             selectResolutions,
             discoveredStructuredKeys,
             rawCodeFields,
-            foldReturnSpec
+            foldReturnSpec,
+            pascal
           )
         : undefined;
 
