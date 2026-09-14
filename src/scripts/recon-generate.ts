@@ -4087,6 +4087,29 @@ function pathToPayloadFieldName(path: string[]): string {
     .join("");
 }
 
+/**
+ * Builds the `payload.<...>` accessor and the field name to register for a
+ * request-body leaf path. Array-index segments (`["sorts", "0"]`) are NOT
+ * flattened: the array itself (`sorts`) is registered as a single field
+ * elsewhere as a whole, and the element access stays a bracket-indexed
+ * `pathToAccessor` suffix into that same field — flattening it (`sorts0`)
+ * would target a field the schema never declares. Only the object-key
+ * segments before the first array index are collapsed via
+ * {@link pathToPayloadFieldName}; segments from the first array index onward
+ * are rendered with {@link pathToAccessor} against that flat prefix.
+ */
+function payloadAccessorForPath(path: string[]): { accessor: string; field: string } {
+  const arrayIndexPos = path.findIndex((segment) => /^\d+$/.test(segment));
+  if (arrayIndexPos === -1) {
+    const field = pathToPayloadFieldName(path);
+    return { accessor: `payload.${field}`, field };
+  }
+  const objectPath = path.slice(0, arrayIndexPos);
+  const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
+  const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
+  return { accessor: `payload.${field}${suffix}`, field };
+}
+
 /** Derives a valid camelCase identifier from a fixture filename (e.g.
  * "10219132.json" -> "fixture10219132", "acme-metrics.config.json" ->
  * "acmeMetricsConfig") for use in generated `loadFixture` const lines. */
@@ -5493,10 +5516,9 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      const accessorField = pathToPayloadFieldName(path);
-      const accessor = `payload.${accessorField}`;
+      const { accessor, field: accessorField } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
-      outDiscoveredFields.add(accessorField);
+      if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
       // lowercase even though r0's body had it uppercase) still get
