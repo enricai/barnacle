@@ -325,6 +325,60 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(allCaptures.length).toBe(38);
     expect(isZeroVarianceRepeatCapture(candidate, allCaptures)).toBe(true);
   });
+
+  it("does not flag a query key matching in exactly half of same-endpoint occurrences (a true 50/50 tie)", () => {
+    const candidate = {
+      method: "GET",
+      url: "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD",
+      requestPostData: null,
+    };
+    const occurrences = [
+      candidate,
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=X&environment=DEV",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=Y&environment=STAGE",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=Z&environment=TEST",
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(false);
+  });
+
+  it("flags a query key matching in a bare majority (one more than a 50/50 tie) of same-endpoint occurrences", () => {
+    const candidate = {
+      method: "GET",
+      url: "https://apply.acme.example/auth/responder.html?clientId=X&environment=PROD",
+      requestPostData: null,
+    };
+    const occurrences = [
+      candidate,
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=X&environment=DEV",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=X&environment=STAGE",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/auth/responder.html?clientId=Y&environment=TEST",
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {
