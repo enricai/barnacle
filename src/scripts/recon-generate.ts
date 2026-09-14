@@ -2132,7 +2132,13 @@ const SCAFFOLDING_FIELD_NAME_PATTERN =
 
 /** Every query-string and (when JSON-object-shaped) request-body field on a
  * capture, merged into one comparable map -- REST pagination/facet state can
- * live in either depending on the endpoint's own convention. */
+ * live in either depending on the endpoint's own convention. Body fields are
+ * flattened to their full leaf path (`paging.page`, not just `paging`) via
+ * {@link walkAllPrimitiveLeaves} so a nested pagination/facet/scaffolding
+ * object (`{"paging":{"page":1}}`) surfaces as its own comparable leaf
+ * instead of collapsing into one opaque, always-varying JSON-stringified
+ * key -- see {@link fieldKeyLeafName} for how callers recover the bare leaf
+ * name a nested path's own key-name pattern match must test against. */
 function captureRequestFields(capture: Capture): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   try {
@@ -2145,13 +2151,29 @@ function captureRequestFields(capture: Capture): Record<string, unknown> {
     try {
       const parsed: unknown = JSON.parse(capture.requestPostData);
       if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-        Object.assign(fields, parsed as Record<string, unknown>);
+        for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+          fields[path.join(".")] = value;
+        }
       }
     } catch {
       // A non-JSON body carries no per-field signal to merge in.
     }
   }
   return fields;
+}
+
+/** Recovers the bare field/leaf name (`page`) from a {@link
+ * captureRequestFields} key that may be a dotted nested path (`paging.page`)
+ * -- a flat top-level key is its own leaf name, so this is a no-op for the
+ * pre-existing flat case. Used wherever a key is tested against a NAME
+ * pattern ({@link PAGINATION_FIELD_NAME_PATTERN}, {@link
+ * SCAFFOLDING_FIELD_NAME_PATTERN}) or looked up in {@link
+ * requestAndResponseValuesByKey}'s index, both of which key by bare leaf
+ * name, not by the nested path that disambiguates it during varying-key
+ * detection. */
+function fieldKeyLeafName(key: string): string {
+  const segments = key.split(".");
+  return segments[segments.length - 1] ?? key;
 }
 
 /** True when `key` is carried ONLY by the URL query string across every
@@ -2416,7 +2438,8 @@ export function isRedundantSameEndpointGroup(
   if (varyingKeys.length === 0) return true;
   const groupCaptures = new Set(group.map((a) => a.capture));
   return varyingKeys.every((key) => {
-    if (PAGINATION_FIELD_NAME_PATTERN.test(key)) return true;
+    const leafName = fieldKeyLeafName(key);
+    if (PAGINATION_FIELD_NAME_PATTERN.test(leafName)) return true;
     // A flat response's varying field name must still look like scaffolding
     // UNLESS it lives only in the URL query string (never the JSON body) --
     // a query-string param is the conventional home for ephemeral
@@ -2429,14 +2452,14 @@ export function isRedundantSameEndpointGroup(
     // that nothing downstream happened to read it back.
     if (
       shapeKey === null &&
-      !SCAFFOLDING_FIELD_NAME_PATTERN.test(key) &&
+      !SCAFFOLDING_FIELD_NAME_PATTERN.test(leafName) &&
       !isQueryStringOnlyKey(key, group)
     ) {
       return false;
     }
     if (!allActions) return false;
     return fieldSets.every(
-      (fields) => !isFieldValueThreadedElsewhere(key, fields[key], groupCaptures, allActions)
+      (fields) => !isFieldValueThreadedElsewhere(leafName, fields[key], groupCaptures, allActions)
     );
   });
 }
