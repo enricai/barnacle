@@ -102,21 +102,29 @@ across four realistic desktop viewports (`1280×720`, `1366×768`, `1440×900`,
 `1920×1080`) makes session fingerprints harder to cluster by browser
 detection systems.
 
-### Why a per-target CDP init-script install, not context.addInitScript
+### Why both context.addInitScript and a per-target CDP init-script install
 
 Playwright/Stagehand's context-level `addInitScript` re-sends its script into
 sessions the context already knows about, but that's a CDP round trip — and a
-newly-attached child frame can start running its own inline scripts before
-that round trip lands. A third-party widget library that runs its own
-onload-driven initialization the instant its script tag parses, in a
+newly-attached cross-origin child frame can start running its own inline
+scripts before that round trip lands. A third-party widget library that runs
+its own onload-driven initialization the instant its script tag parses, in a
 cross-origin iframe, can beat a context-level init script to the punch and
 leave a monkeypatch installed a beat too late to matter.
-`src/scraper/cdp-frame-init-script.ts` closes the race at the protocol level:
+`src/scraper/cdp-frame-init-script.ts` closes that race at the protocol level:
 `Target.setAutoAttach({ autoAttach: true, waitForDebuggerOnStart: true })`
 pauses every newly-attached target before any of its scripts execute,
 `Page.addScriptToEvaluateOnNewDocument` installs into that target's own CDP
 session while it's still paused, and only then does `Runtime.runIfWaitingForDebugger`
 let the frame's scripts run — so the install always precedes the render.
+
+But a same-origin child iframe shares its parent's CDP target and therefore
+never fires `Target.attachedToTarget` — it is structurally invisible to
+`cdp-frame-init-script.ts`'s attach hook. That realm depends on
+`context.addInitScript`'s own delivery to every session it already knows
+about. `createBrowserSession()` therefore runs both install paths
+additively: each only resumes the sessions it itself paused, so running both
+does not reintroduce a double-resume race on the same session.
 
 ### Why per-plugin Bottleneck, not global rate limiting
 

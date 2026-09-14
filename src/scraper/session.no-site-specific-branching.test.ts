@@ -13,20 +13,23 @@ import { describe, expect, it } from "vitest";
  */
 
 const installerSource = readFileSync(join(__dirname, "cdp-frame-init-script.ts"), "utf-8");
+const sessionSource = readFileSync(join(__dirname, "session.ts"), "utf-8");
 
 /** Slices the source from a start marker to the end of the file. */
 function sliceFrom(source: string, startMarker: string): string {
   const startIdx = source.indexOf(startMarker);
-  expect(
-    startIdx,
-    `expected to find marker "${startMarker}" in cdp-frame-init-script.ts`
-  ).toBeGreaterThan(-1);
+  expect(startIdx, `expected to find marker "${startMarker}" in source`).toBeGreaterThan(-1);
   return source.slice(startIdx);
 }
 
 const installOnAllFramesBlock = sliceFrom(
   installerSource,
   "export async function installInitScriptOnAllFrames("
+);
+
+const createBrowserSessionBlock = sliceFrom(
+  sessionSource,
+  "export async function createBrowserSession("
 );
 
 // Per-site/plugin branch shapes CLAUDE.md forbids in site-agnostic core code.
@@ -56,5 +59,16 @@ describe("deterministic per-target init-script installer stays site-agnostic (cd
   it("only listens for generic Target/Page CDP events, not a site identifier", () => {
     expect(installOnAllFramesBlock).not.toMatch(/\bsiteId\b/);
     expect(installOnAllFramesBlock).not.toMatch(/\bplugin\./);
+  });
+});
+
+describe("createBrowserSession stays site-agnostic (session.ts)", () => {
+  it("contains no site/plugin-identifying branch or vendor name", () => {
+    for (const pattern of SITE_BRANCH_PATTERNS) {
+      expect(createBrowserSessionBlock).not.toMatch(pattern);
+    }
+    for (const pattern of VENDOR_NAME_PATTERNS) {
+      expect(createBrowserSessionBlock).not.toMatch(pattern);
+    }
   });
 });

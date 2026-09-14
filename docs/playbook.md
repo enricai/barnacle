@@ -124,17 +124,23 @@ it exists for the dispatch path's per-submission telemetry (5D).
 `createBrowserSession()` also installs the render-config callback-capture
 init script (`src/scraper/captcha-callback-capture.ts`) immediately after the
 session is created, for both providers — no siteId/plugin conditional. The
-install goes through `installInitScriptOnAllFrames()`
+install runs through two additive paths in parallel:
+`session.stagehand.context.addInitScript()`, Playwright's own context-level
+delivery to every session the context already knows about (including
+same-origin child frames, which share their parent's CDP target and never
+fire `Target.attachedToTarget`); and `installInitScriptOnAllFrames()`
 (`src/scraper/cdp-frame-init-script.ts`), which arms `Target.setAutoAttach`
 (`waitForDebuggerOnStart: true`) on every session and sends
 `Page.addScriptToEvaluateOnNewDocument` per target, recursing onto each
 newly-attached child session before resuming it via
-`Runtime.runIfWaitingForDebugger`. This closes the install-vs-render race a
-single context-level `addInitScript` call leaves open for a newly-attached
-cross-origin child frame realm, whose scripts can start running before that
-call's round trip lands. This monkeypatches the widget's `render` function
-before any site script runs, so a flow hook can later read back a
-programmatically-registered `callback` that never appears in the DOM.
+`Runtime.runIfWaitingForDebugger`. The latter closes the install-vs-render
+race the former leaves open for a newly-attached cross-origin child frame
+realm, whose scripts can start running before the context-level call's round
+trip lands. Each path only resumes the sessions it itself paused, so running
+both does not double-resume the same session. This monkeypatches the
+widget's `render` function before any site script runs, so a flow hook can
+later read back a programmatically-registered `callback` that never appears
+in the DOM.
 
 ### 1b — CDP session-level network capture
 
