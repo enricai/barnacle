@@ -147,4 +147,36 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
     expect(outAdditionalBodyKeys.has("category")).toBe(true);
     expect(outAdditionalBodyKeys.get("category")).toBe("string");
   });
+
+  it("registers a NESTED string leaf of the entry body (e.g. formData.reference) as a flat payload field", () => {
+    // The entry body's leaf sits below a nested object, so its JSON path has
+    // more than one segment. The registration pass must still declare a
+    // field for it — the payload schema is always flat, so the accessor it
+    // emits (and the field it registers) must both be a single flattened
+    // identifier, never a dotted/bracketed chain into a nonexistent nested
+    // shape.
+    const inputBody = { formData: { reference: "ORDER-REFERENCE-99182736" } };
+    const captures = [
+      capture({
+        url: ENTRY_URL,
+        requestPostData: JSON.stringify(inputBody),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:00Z",
+      }),
+      capture({
+        url: DRILL_URL,
+        requestPostData: JSON.stringify({ lookupRef: "ORDER-REFERENCE-99182736" }),
+        responseBody: { ok: true },
+        timestamp: "2024-01-01T00:00:01Z",
+      }),
+    ];
+    const outFields = new Set<string>();
+    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
+
+    const I = `$${"{"}`;
+    expect(body).toContain(`${I}payload.formDataReference}`);
+    expect(body).not.toMatch(/\$\{payload\.formData\.reference\}/);
+    expect(outFields.has("formDataReference")).toBe(true);
+  });
 });

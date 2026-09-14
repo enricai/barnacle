@@ -4063,6 +4063,30 @@ function isValidJsIdentifier(s: string): boolean {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
 }
 
+/**
+ * Collapses a JSON path (e.g. `["formData", "firstName"]`) into a single flat
+ * payload field name (`formDataFirstName`). The payload schema `emitContractTs`
+ * builds is always a flat, single-level `z.object({...})` — no pass anywhere
+ * in this file constructs a nested Zod shape — so a `payload.<field>` accessor
+ * must always resolve a single top-level identifier, never a dotted/bracketed
+ * chain. This is the single place that turns a (possibly multi-segment)
+ * request-body path into that field name, so the accessor text emitted into a
+ * template and the field registered in the schema can never diverge: both
+ * always derive from this same flat name. A non-identifier segment (an array
+ * index, a key with punctuation) is sanitized via {@link fieldNameToPascalCase}
+ * rather than dropped, so every path still yields a usable field name.
+ */
+function pathToPayloadFieldName(path: string[]): string {
+  return path
+    .map((segment, index) => {
+      const clean = isValidJsIdentifier(segment)
+        ? segment
+        : (fieldNameToPascalCase(segment, null) ?? `Field${index}`);
+      return index === 0 ? clean : clean.charAt(0).toUpperCase() + clean.slice(1);
+    })
+    .join("");
+}
+
 /** Derives a valid camelCase identifier from a fixture filename (e.g.
  * "10219132.json" -> "fixture10219132", "acme-metrics.config.json" ->
  * "acmeMetricsConfig") for use in generated `loadFixture` const lines. */
@@ -5469,14 +5493,10 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      const accessor = `payload${pathToAccessor(path)}`;
+      const accessorField = pathToPayloadFieldName(path);
+      const accessor = `payload.${accessorField}`;
       payloadAccessorByValue.set(value, accessor);
-      const accessorField = accessor.startsWith("payload.")
-        ? accessor.slice("payload.".length)
-        : null;
-      if (accessorField !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(accessorField)) {
-        outDiscoveredFields.add(accessorField);
-      }
+      outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
       // lowercase even though r0's body had it uppercase) still get
