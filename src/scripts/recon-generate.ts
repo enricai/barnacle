@@ -8801,6 +8801,21 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * in one response — keeps this exact to the shape state-threading is
  * actually needed for.
  *
+ * A later hop's request is only counted as threading a prior hop's response
+ * value when the two agree on the field/header NAME that carries it (or the
+ * value shows up as a bare, name-free URL PATH segment on the later
+ * request) — the same discipline {@link requestAndResponseValuesByKey}/
+ * {@link isFieldValueThreadedElsewhere} already enforce for the identical
+ * hazard elsewhere in this file. Bare cross-capture value equality alone
+ * (what this used before) lets a deeply-nested, unrelated response scalar —
+ * a UI sort-order integer, an unrelated feature-flag boolean — that merely
+ * happens to numerically coincide with some later request field's true
+ * value get proven "threaded" and then, via `indexStateValues`'
+ * `MIN_STATE_VALUE_LENGTH` exemption below, spliced into that unrelated
+ * field. Requiring the SAME name on both sides is what tells a value a
+ * later step genuinely re-reads under its own name apart from that
+ * coincidence.
+ *
  * Runs directly off raw actions (not `resolveFoldPlan`, which needs
  * `isMultipart` — unavailable before `compileActionSteps` has run) since
  * fold-plan DETECTION depends only on each action's `capture`.
@@ -8814,6 +8829,93 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
  * two unrelated steps can coincidentally match inside a totally unrelated
  * capture's own URL/body and get spliced into it.
  */
+/** Per-capture memoized: every response BODY leaf, grouped by the field NAME
+ * that carries it — gives {@link collectDependentDrillDownChainValues} the
+ * same name-correlation signal {@link requestAndResponseValuesByKey} already
+ * provides elsewhere in this file, instead of the bare, name-blind value set
+ * {@link collectResponseLeafValues} supplies. Deliberately BODY-only, unlike
+ * {@link collectResponseLeafValues}: a response HEADER (and especially a
+ * `Set-Cookie` token mint) is already a strong structural signal on its own
+ * — issuing a header/cookie at all is a deliberate server action, unlike an
+ * arbitrary deeply-nested body scalar that merely happens to be present — so
+ * header-sourced values keep the pre-existing bare-value match further down
+ * in {@link collectDependentDrillDownChainValues} rather than being held to
+ * a body-field's name correlation. */
+const responseBodyValuesByKeyCache = new WeakMap<Capture, Map<string, Set<string>>>();
+function responseBodyValuesByKey(capture: Capture): Map<string, Set<string>> {
+  const cached = responseBodyValuesByKeyCache.get(capture);
+  if (cached) return cached;
+  const byKey = new Map<string, Set<string>>();
+  const add = (key: string, value: string): void => {
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(value);
+    byKey.set(key, values);
+  };
+  for (const { value, path } of walkAllPrimitiveLeaves(capture.responseBody)) {
+    if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+  }
+  responseBodyValuesByKeyCache.set(capture, byKey);
+  return byKey;
+}
+
+/** Per-capture memoized request-side twin of {@link responseBodyValuesByKey}:
+ * every URL query param, JSON body leaf, and request header value, grouped
+ * by field/param/header NAME (header names lower-cased, since HTTP header
+ * names are case-insensitive and a capture's minted header casing need not
+ * match the later request's own casing of the same header), plus bare URL
+ * PATH segments kept name-free in {@link
+ * RequestAndResponseValues.pathSegments} — a REST-style detail fetch threads
+ * an id through its URL PATH, not a named field, so requiring a name match
+ * there too would blind chain-value correlation to that shape of genuine
+ * threading. Headers are included here (unlike {@link
+ * responseBodyValuesByKey}) so a body-sourced response value that a later
+ * hop re-sends as a request HEADER under the matching name still
+ * correlates. */
+const requestValuesByKeyCache = new WeakMap<Capture, RequestAndResponseValues>();
+function requestValuesByKeyIncludingHeaders(capture: Capture): RequestAndResponseValues {
+  const cached = requestValuesByKeyCache.get(capture);
+  if (cached) return cached;
+  const byKey = new Map<string, Set<string>>();
+  const pathSegments = new Set<string>();
+  const add = (key: string, value: string): void => {
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(value);
+    byKey.set(key, values);
+  };
+  try {
+    const url = new URL(capture.url);
+    for (const segment of url.pathname.split("/").filter(Boolean)) pathSegments.add(segment);
+    for (const [key, value] of url.searchParams) add(key, value);
+  } catch {
+    // Relative/invalid URLs carry no path/query signal to contribute.
+  }
+  if (capture.requestPostData) {
+    try {
+      const parsed: unknown = JSON.parse(capture.requestPostData);
+      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+        if (value !== null && path.length > 0) add(path[path.length - 1]!, String(value));
+      }
+    } catch {
+      // A non-JSON body carries no leaf values to contribute.
+    }
+  }
+  for (const [headerName, headerValue] of Object.entries(capture.requestHeaders)) {
+    add(headerName.toLowerCase(), headerValue);
+  }
+  const result = { byKey, pathSegments };
+  requestValuesByKeyCache.set(capture, result);
+  return result;
+}
+
+/** Matches a JSON path segment that's a bare array INDEX ("0", "12", ...)
+ * rather than an object field/header NAME. An array index carries no
+ * semantic meaning of its own — a top-level array response (`[42]`) or a
+ * value nested inside a request array (`{"tokens":[42]}`) has no field name
+ * to correlate on either side — so {@link collectDependentDrillDownChainValues}
+ * treats a leaf keyed by one as name-free, the same way it already treats a
+ * bare URL path segment, instead of requiring an impossible name match. */
+const ARRAY_INDEX_KEY_PATTERN = /^\d+$/;
+
 function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null
@@ -8828,17 +8930,54 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
         const priorIndex = target.chain[j]!;
         const priorCapture = actions[priorIndex]?.capture;
         if (!priorCapture) continue;
-        const responseValues = collectResponseLeafValues(priorCapture);
+        const priorResponseBodyByKey = responseBodyValuesByKey(priorCapture);
+        // Header/cookie-origin response values are matched by bare value
+        // further down, not by name — see {@link responseBodyValuesByKey}'s
+        // docstring for why a header/cookie mint doesn't need that
+        // correlation to already be a trustworthy threading signal.
+        const priorHeaderValues = new Set(Object.values(priorCapture.responseHeaders));
         const echoedValues = collectRequestValuesIncludingHeaders(priorCapture);
         for (let k = j + 1; k < target.chain.length; k++) {
           const laterCapture = actions[target.chain[k]!]?.capture;
           if (!laterCapture) continue;
+          const { byKey: laterRequestByKey, pathSegments: laterPathSegments } =
+            requestValuesByKeyIncludingHeaders(laterCapture);
           const laterRequestValues = collectRequestValuesIncludingHeaders(laterCapture);
-          for (const v of responseValues) {
-            if (echoedValues.has(v) || !laterRequestValues.has(v)) continue;
+          // Reverse index (value -> every later-side key it appears under),
+          // built once per (priorCapture, laterCapture) pair rather than
+          // once per value, so the array-index name-free fallback below
+          // doesn't re-walk laterRequestByKey per value.
+          const laterKeysByValue = new Map<string, Set<string>>();
+          for (const [k2, vs] of laterRequestByKey) {
+            for (const v of vs) {
+              const keys = laterKeysByValue.get(v) ?? new Set<string>();
+              keys.add(k2);
+              laterKeysByValue.set(v, keys);
+            }
+          }
+          const addConsumer = (v: string): void => {
             const consumers = consumersByValue.get(v) ?? new Set<Capture>();
             consumers.add(laterCapture);
             consumersByValue.set(v, consumers);
+          };
+          for (const [key, values] of priorResponseBodyByKey) {
+            const priorKeyIsArrayIndex = ARRAY_INDEX_KEY_PATTERN.test(key);
+            for (const v of values) {
+              if (echoedValues.has(v)) continue;
+              const laterKeysForValue = laterKeysByValue.get(v);
+              const sameNameMatch = laterKeysForValue?.has(key) ?? false;
+              const pathSegmentMatch = laterPathSegments.has(v);
+              const arrayIndexMatch =
+                laterKeysForValue !== undefined &&
+                (priorKeyIsArrayIndex ||
+                  [...laterKeysForValue].some((k2) => ARRAY_INDEX_KEY_PATTERN.test(k2)));
+              if (!sameNameMatch && !pathSegmentMatch && !arrayIndexMatch) continue;
+              addConsumer(v);
+            }
+          }
+          for (const v of priorHeaderValues) {
+            if (echoedValues.has(v) || !laterRequestValues.has(v)) continue;
+            addConsumer(v);
           }
         }
       }
