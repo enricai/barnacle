@@ -4505,6 +4505,35 @@ function buildValueAlternationPattern(sortedValues: string[]): RegExp {
 }
 
 /**
+ * Finds every `${...}` span in `text` by brace-depth counting rather than a
+ * non-nesting regex, so an ALREADY-nested placeholder (e.g. one produced by an
+ * earlier, buggier pass, or in principle any `${a${b}c}` shape) is reported as
+ * ONE span covering the outer `${` through its true matching `}` — never as
+ * just the innermost `${b}` — because a regex excluding `{`/`}` from its body
+ * (`/\$\{[^{}]*\}/`) cannot see past the first inner brace and would otherwise
+ * leave the outer span's `a`/`c` text unprotected for a later pass to splice
+ * into, compounding the corruption instead of guarding against it.
+ */
+function findBalancedPlaceholderSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const start = text.indexOf("${", searchFrom);
+    if (start === -1) break;
+    let depth = 1;
+    let cursor = start + 2;
+    while (cursor < text.length && depth > 0) {
+      if (text[cursor] === "{") depth++;
+      else if (text[cursor] === "}") depth--;
+      cursor++;
+    }
+    spans.push([start, cursor]);
+    searchFrom = cursor;
+  }
+  return spans;
+}
+
+/**
  * Runs `pattern` over `text`, replacing each match via `bindingByValue`,
  * EXCEPT a match that overlaps a `${...}` placeholder already present in
  * `text`. A single call's own matches never overlap each other (`replace`/
@@ -4530,10 +4559,7 @@ function replaceGuardedAgainstExistingPlaceholders(
   pattern: RegExp,
   bindingByValue: Map<string, string>
 ): string {
-  const protectedSpans: Array<[number, number]> = [...text.matchAll(/\$\{[^{}]*\}/g)].map((m) => [
-    m.index,
-    m.index + m[0].length,
-  ]);
+  const protectedSpans = findBalancedPlaceholderSpans(text);
   let result = "";
   let cursor = 0;
   for (const match of text.matchAll(pattern)) {
