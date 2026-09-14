@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -94,6 +94,192 @@ afterEach(() => {
   workDir = null;
   siteOutDir = null;
   tsconfigPath = null;
+});
+
+const REFINE_A_URL = `https://${OWN_BACKEND_HOST}/catalog/refine-a/`;
+const REFINE_B_URL = `https://${OWN_BACKEND_HOST}/catalog/refine-b/`;
+
+// A deeply-nested, unrelated numeric leaf on the drill loop's per-item
+// detail response. Kept under recon-generate's MIN_STATE_VALUE_LENGTH (8) so
+// the only way it could thread into the submit body is via the length-floor
+// bypass that requires field-name correlation.
+const SORT_ORDER_VALUE = 5;
+// The submit body's own, differently-named field that coincidentally shares
+// the SAME value as the unrelated nested leaf above.
+const PRIORITY_RANK_VALUE = SORT_ORDER_VALUE;
+
+// Same key ("region"), two DIFFERENT literal values, each on its own
+// non-entry step — the report's defect 1 shape (bugfix-001): dedupe-by-key
+// alone would only ever register the FIRST-scanned occurrence, leaving the
+// other step's own literal frozen instead of a declared payload accessor.
+const REGION_A_VALUE = "east";
+const REGION_B_VALUE = "west";
+
+function combinedFixtureCaptures(): Capture[] {
+  const listPage1 = buildCapture({
+    url: LIST_URL,
+    requestPostData: JSON.stringify({ warehouseRegion: REGION_VALUE, resultPage: 1 }),
+    responseBody: {
+      totalPages: 1,
+      results: [{ itemId: "item-a" }, { itemId: "item-b" }],
+    },
+    timestamp: "2026-03-01T00:00:00Z",
+  });
+  // The ancestor-drill loop's per-item detail call: its own response carries
+  // a deeply-nested scalar that coincidentally equals a later, differently-
+  // named submit-body field's true value.
+  const detailA = buildCapture({
+    url: DETAIL_URL,
+    requestPostData: JSON.stringify({ itemId: "item-a" }),
+    responseBody: {
+      storeCode: "store-42",
+      meta: { ranking: { display: { sortOrder: SORT_ORDER_VALUE } } },
+    },
+    timestamp: "2026-03-01T00:00:01Z",
+  });
+  const detailB = buildCapture({
+    url: DETAIL_URL,
+    requestPostData: JSON.stringify({ itemId: "item-b" }),
+    responseBody: {
+      storeCode: "store-43",
+      meta: { ranking: { display: { sortOrder: 99 } } },
+    },
+    timestamp: "2026-03-01T00:00:02Z",
+  });
+  // Two non-entry steps reusing the SAME field name under DIFFERENT literal
+  // values — every occurrence must independently resolve to `${payload.region}`.
+  const refineA = buildCapture({
+    url: REFINE_A_URL,
+    requestPostData: JSON.stringify({ region: REGION_A_VALUE }),
+    responseBody: { ok: true },
+    timestamp: "2026-03-01T00:00:03Z",
+  });
+  const refineB = buildCapture({
+    url: REFINE_B_URL,
+    requestPostData: JSON.stringify({ region: REGION_B_VALUE }),
+    responseBody: { ok: true },
+    timestamp: "2026-03-01T00:00:04Z",
+  });
+  // Re-sends the entry action's own `warehouseRegion` verbatim, plus the
+  // coincidence-shaped field (must never bind to the unrelated `sortOrder`
+  // leaf) and the second refine step's own `region` literal.
+  const submit = buildCapture({
+    url: SUBMIT_URL,
+    requestPostData: JSON.stringify({
+      itemId: "item-a",
+      warehouseRegion: REGION_VALUE,
+      priorityRank: PRIORITY_RANK_VALUE,
+      region: REGION_B_VALUE,
+    }),
+    responseBody: { ok: true },
+    timestamp: "2026-03-01T00:00:05Z",
+  });
+  return [listPage1, detailA, detailB, refineA, refineB, submit];
+}
+
+describe("recon-generate CLI + tsc --noEmit — combined multi-defect corpus (bugfix-001 + bugfix-002 + bugfix-003 composed on one generation pass)", () => {
+  it("emits a contract.ts that typechecks clean AND sources every collision-shaped body field from its own name-correlated accessor", () => {
+    if (!existsSync(TSC_BIN)) {
+      throw new Error("tsc not installed — cannot verify the emitted plugin compiles");
+    }
+
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-combined-multi-defect-corpus-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(runRoot, combinedFixtureCaptures());
+
+    const siteId = `combined-multi-defect-corpus-e2e-test${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "browse catalog search" },
+          { step: "open item detail panel" },
+          { step: "select refine filter A" },
+          { step: "select refine filter B" },
+          { step: "submit item selection", submitStep: true },
+        ],
+        submitEndpointPattern: "catalog/submit",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contractPath = join(siteOutDir, "contract.ts");
+    const contract = readFileSync(contractPath, "utf8");
+
+    // The ancestor-drill loop over the listing's own array is genuine, not a
+    // hardcoded per-item call.
+    expect(contract).toMatch(/\.results;\n\s*for\s*\(const \w+ of \w+\)/);
+
+    // The reused-key-with-different-literal-value fields must both resolve
+    // to their own name-correlated payload accessor, not stay frozen.
+    const refineOccurrences = contract.match(/"region":"\$\{payload\.region\}"/g) ?? [];
+    expect(refineOccurrences.length).toBeGreaterThanOrEqual(2);
+    expect(contract).not.toMatch(new RegExp(`"region":"${REGION_A_VALUE}"`));
+    expect(contract).not.toMatch(new RegExp(`"region":"${REGION_B_VALUE}"`));
+
+    // Isolate the submit call's request-body template literal.
+    const bodyLineMatch = contract.match(/catalog\/submit\/[\s\S]*?body:\s*`([^`]*)`/);
+    expect(bodyLineMatch, contract).not.toBeNull();
+    const bodyTemplate = bodyLineMatch![1]!;
+
+    // The entry action's own re-sent field must splice via its own
+    // name-correlated accessor.
+    const warehouseRegionLine = bodyTemplate.match(/"warehouseRegion"\s*:\s*"?\$\{([^}]*)\}"?/);
+    expect(warehouseRegionLine, bodyTemplate).not.toBeNull();
+    expect(warehouseRegionLine![1]).toMatch(/warehouseRegion/i);
+
+    // The coincidence-shaped field must never bind to the unrelated,
+    // deeply-nested `sortOrder` local it merely happens to equal in value.
+    const priorityRankLine = bodyTemplate.match(/"priorityRank"\s*:\s*"?([^,\n}]*)"?/);
+    if (priorityRankLine && priorityRankLine[1]!.includes("${")) {
+      expect(priorityRankLine[1]).not.toMatch(/sortOrder/i);
+    }
+
+    // No invalidly-nested placeholder anywhere in the emitted body.
+    expect(bodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
+
+    // The full corpus's emitted plugin must typecheck with zero diagnostics
+    // — the report's other defect (schema/body-emission disagreement).
+    tsconfigPath = join(REPO_ROOT, `tsconfig.combined-multi-defect-corpus.${process.pid}.json`);
+    writeFileSync(
+      tsconfigPath,
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: {
+          noEmit: true,
+          incremental: false,
+          tsBuildInfoFile: null,
+          paths: {
+            "@/*": ["./src/*"],
+            "@test/*": ["./test/*"],
+            "@enricai/barnacle/*": ["./src/*"],
+          },
+        },
+        include: [`src/sites/${siteId}/**/*.ts`],
+      })
+    );
+
+    const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+
+    const diagnostics = `${check.stdout}\n${check.stderr}`;
+    const referencesEmittedFiles = diagnostics.includes("contract.ts");
+    expect(referencesEmittedFiles, diagnostics).toBe(false);
+    expect(check.status, diagnostics).toBe(0);
+  }, 60_000);
 });
 
 describe("recon-generate CLI + tsc --noEmit — emitted body-field payload accessors stay declared on PayloadSchema", () => {
