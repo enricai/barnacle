@@ -3,52 +3,59 @@ import { emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
- * Targets a distinct shape from the sibling multi-field-collision-e2e test:
- * that test's three colliding accessors (`field1`/`field12`/`field123`) are
- * prefix-colliding NAMES whose bound VALUES independently substring-match one
- * opaque segment, and it only asserts the opaque segment never contains those
- * VALUES. It never asserts that an accessor's own NAME text is safe from
- * appearing inside another placeholder's body — the report's corrupted output
- * (`${displayOrder${displayOrder212}11}`) shows exactly that: the accessor
- * NAME text itself getting spliced into a placeholder, not just a value.
- *
- * Here every field name carries a digit suffix (`sortIndex7`/`queueDepth14`/
- * `retryCount3`), and each field's bound VALUE is engineered to coincidentally
- * embed the OTHER fields' numeric suffixes as substrings, threaded against one
- * same-host, fixed-query, zero-variance opaque-path beacon URL that also
- * embeds all three values plus one field's own NAME text as a literal. The
- * guard must hold regardless: no self-referential nested placeholder ever
- * opens, and no field's NAME text is left spliced into the opaque segment.
+ * Targets `replaceGuardedAgainstExistingPlaceholders`'s protected-span guard
+ * (recon-generate.ts ~4557-4573) against an ALREADY-nested `${a${b}c}` span
+ * that predates this pass — e.g. an opaque analytics/beacon path that a
+ * site's own backend has, for whatever reason, echoed back containing raw
+ * `${...}` template syntax from an unrelated internal system. Before the
+ * brace-depth `findBalancedPlaceholderSpans` fix, the protected-span regex
+ * (`/\$\{[^{}]*\}/`) could only see the INNERMOST `${...}` of such a span
+ * (here, a literal `${queueDepth14}` fragment) and left the OUTER wrapper's
+ * flanking text — including another field's own NAME text, `retryCount3` —
+ * unprotected, so a same-pass value coincidentally equal to that flanking
+ * NAME text still got spliced in, widening the pre-existing nesting instead
+ * of leaving the inert span alone (the report's own corrupted-output shape,
+ * `${displayOrder${displayOrder212}11}`, is exactly this: an untouchable
+ * span's own flanking text getting spliced into a new placeholder). The
+ * fixed brace-depth scan reports the whole `${sortIndex7${queueDepth14}
+ * retryCount3}` run as ONE span, so the coincidental value match on
+ * `retryCount3` is correctly skipped and the span is left byte-for-byte
+ * untouched.
  */
 
-const SORT_INDEX_VALUE = "ZQ14X3PL"; // embeds queueDepth14's "14" and retryCount3's "3"
-const QUEUE_DEPTH_VALUE = "MK7X3TQR"; // embeds sortIndex7's "7" and retryCount3's "3"
-const RETRY_COUNT_VALUE = "PL7X14QK"; // embeds sortIndex7's "7" and queueDepth14's "14"
+const QUEUE_DEPTH_VALUE = "MK7X3TQR";
+// `statusLabel`'s bound VALUE deliberately equals `retryCount3` — another
+// field's NAME text, not its value — reproducing the report's distinction
+// between a value-substring collision and a NAME-text collision.
+const STATUS_LABEL_VALUE = "retryCount3";
 
-const OPAQUE_SEGMENT = `wJbfQL-${SORT_INDEX_VALUE}-${QUEUE_DEPTH_VALUE}-${RETRY_COUNT_VALUE}-K0X`;
+// A same-host, fixed-query beacon whose opaque path segment already
+// contains, as raw literal data, a doubly-nested `${...}` run: outer text
+// "sortIndex7", an inner `${queueDepth14}` literal, then outer text
+// "retryCount3" — never produced by this generator, just pre-existing
+// characters in the captured URL.
+const OPAQUE_SEGMENT = "wJbfQL-${sortIndex7${queueDepth14}retryCount3}-K0X";
 
 function beaconUrl(host: string): string {
   return `https://${host}/beacon/${OPAQUE_SEGMENT}/responder.html?env=prod`;
 }
 
-describe("interpolateStateValues — digit-suffixed field names vs. one opaque path", () => {
+describe("replaceGuardedAgainstExistingPlaceholders — pre-existing nested ${a${b}c} span vs. a coincidental NAME-text value match", () => {
   function emitBeaconLine(): string {
     const producer = {
       capture: buildCapture({
         url: "https://api.example.com/queue/status",
         requestPostData: null,
         responseBody: {
-          sortIndex7: SORT_INDEX_VALUE,
           queueDepth14: QUEUE_DEPTH_VALUE,
-          retryCount3: RETRY_COUNT_VALUE,
+          statusLabel: STATUS_LABEL_VALUE,
         },
         timestamp: "2026-01-01T00:00:00Z",
       }),
       varName: "r0",
       produces: [
-        { kind: "body" as const, name: "sortIndex7", path: ["sortIndex7"] },
         { kind: "body" as const, name: "queueDepth14", path: ["queueDepth14"] },
-        { kind: "body" as const, name: "retryCount3", path: ["retryCount3"] },
+        { kind: "body" as const, name: "statusLabel", path: ["statusLabel"] },
       ],
       isMultipart: false,
       isCrossDomain: false,
@@ -86,29 +93,19 @@ describe("interpolateStateValues — digit-suffixed field names vs. one opaque p
     return match[1]!;
   }
 
-  it("never opens a self-referential nested placeholder", () => {
-    const url = emitBeaconLine();
-
-    expect(url).not.toMatch(/\$\{[^}]*\$\{/);
-  });
-
-  it("never leaks any field's NAME text into the opaque path segment", () => {
+  it("never widens the pre-existing nested span with a further placeholder", () => {
     const url = emitBeaconLine();
     const opaqueSlotMatch = url.match(/wJbfQL-(.*?)-K0X/);
     expect(opaqueSlotMatch, url).not.toBeNull();
     const opaqueSlot = opaqueSlotMatch![1]!;
 
-    expect(opaqueSlot).not.toContain("sortIndex7");
-    expect(opaqueSlot).not.toContain("queueDepth14");
-    expect(opaqueSlot).not.toContain("retryCount3");
-    expect(opaqueSlot).not.toMatch(/\$\{/);
-  });
+    // The bug: `retryCount3` (another field's NAME text, left unprotected by
+    // the old regex) gets spliced into `${statusLabel}`, producing a THIRD
+    // brace level nested inside the pre-existing span.
+    expect(opaqueSlot).not.toContain("${statusLabel}");
 
-  it("renders the beacon call as an exact literal when the opaque path is excluded from interpolation", () => {
-    const url = emitBeaconLine();
-
-    if (!url.includes("${")) {
-      expect(url).toContain(OPAQUE_SEGMENT);
-    }
+    // The pre-existing nested span itself must survive completely
+    // untouched — never widened, narrowed, or otherwise rewritten.
+    expect(opaqueSlot).toBe("${sortIndex7${queueDepth14}retryCount3}");
   });
 });
