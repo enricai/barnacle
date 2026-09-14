@@ -5159,6 +5159,17 @@ function applyUrlParamPayloadSubstitutions(
  * top-level keys also become caller-supplied payload fields. Used in Phase F
  * to parameterize fields like SourceCode that appear in r1's body but not
  * r0's (inputBody).
+ *
+ * Registration is keyed per (key, value) pair, not per key alone: a field
+ * name reused across two-plus steps with a DIFFERENT literal value on each
+ * occurrence must have EVERY one of its own occurrences registered and
+ * substituted, not just whichever occurrence this function's own body-array
+ * walk reaches first. A first-seen-value-wins table would only ever match
+ * (and thus only ever register) the ONE step whose literal happens to equal
+ * that first-seen value — every other step's own `"key":<its own value>`
+ * text would silently never become a `${payload.key}` reference at all here,
+ * even though the field genuinely IS one this step's own request sends as
+ * caller-supplied data.
  */
 function applyPayloadKeyValueSubstitutions(
   template: string,
@@ -5166,18 +5177,9 @@ function applyPayloadKeyValueSubstitutions(
   additionalBodies: unknown[] = [],
   outAdditionalKeys: Map<string, "string" | "number" | "boolean"> = new Map()
 ): string {
-  const merged: Array<[string, string | number | boolean | null]> = [];
-  const seenKeys = new Set<string>();
-  // Track keys from inputBody (r0) separately so we know which ones are NEW.
-  // Only NEW keys need to be added to discovered-form-fields — inputBody's
-  // own keys stay internal to the site request template, not the public
-  // payload schema (see basePayloadSchemaExpr in emitContractTs).
-  if (inputBody !== null && typeof inputBody === "object" && !Array.isArray(inputBody)) {
-    for (const { path } of walkAllPrimitiveLeaves(inputBody)) {
-      if (path.length === 1) seenKeys.add(path[0]!);
-    }
-  }
-  const inputBodyKeys = new Set(seenKeys);
+  const merged: Array<[string, string | number | boolean]> = [];
+  const seenPairs = new Set<string>();
+  const seenValueByKey = new Map<string, string | number | boolean>();
   const allBodies = [inputBody, ...additionalBodies];
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -5187,11 +5189,32 @@ function applyPayloadKeyValueSubstitutions(
       if (path.length !== 1) continue;
       const key = path[0]!;
       if (!isValidJsIdentifier(key)) continue;
-      if (seenKeys.has(key) && body !== inputBody) continue;
-      // For inputBody first pass: don't dedupe (we need all values).
-      if (body === inputBody && !inputBodyKeys.has(key)) continue;
-      seenKeys.add(key);
       if (value === null) continue;
+      // Dedupe identical (key, value) pairs only — a repeated occurrence of
+      // the SAME literal value for a key across bodies needs no second
+      // substitution pass, but a DIFFERENT value under the same key is its
+      // own distinct step's own occurrence and must still get one. EXCEPT a
+      // pagination-cursor-shaped key ({@link PAGINATION_FIELD_NAME_PATTERN},
+      // e.g. `page`/`offset`/`cursor`) whose value differs from the
+      // first-seen one: that shape is a same-endpoint re-query bump (see
+      // {@link isRedundantSameEndpointGroup}'s pagination-vs-payload
+      // distinction), not a genuinely different step's own caller data —
+      // aliasing both occurrences to the SAME `payload.<key>` accessor would
+      // make the generated re-query call replay the FIRST page's request
+      // instead of advancing to the next one, so the later occurrence stays
+      // an unsubstituted literal, matching this key's pre-fix behavior.
+      const priorValue = seenValueByKey.get(key);
+      if (
+        priorValue !== undefined &&
+        priorValue !== value &&
+        PAGINATION_FIELD_NAME_PATTERN.test(key)
+      ) {
+        continue;
+      }
+      seenValueByKey.set(key, value);
+      const pairKey = `${key} ${typeof value} ${value}`;
+      if (seenPairs.has(pairKey)) continue;
+      seenPairs.add(pairKey);
       merged.push([key, value]);
       // Record every substituted key, including inputBody's own, so the
       // contract emitter can add it to the payload schema. inputBody keys
