@@ -430,6 +430,19 @@ function endpointOrigin(url: string): string | null {
  * the varying key is simply ignored because it never advances past
  * "matches on at least one key."
  *
+ * A key is "fixed" when the candidate's own value for it is the STRICT
+ * MAJORITY value across every same-endpoint occurrence in `allCaptures`
+ * (more than half, with at least two supporting occurrences) — not
+ * necessarily every single one. `allCaptures` is the full raw capture list,
+ * which can include an incidental earlier/differently-scoped occurrence of
+ * the same endpoint (a page load before the flow proper starts) that
+ * legitimately carries a different value for every candidate key. Requiring
+ * literal unanimity would let that one outlier veto the proof for the
+ * entire flow's worth of genuinely fixed repeats; requiring only a majority
+ * still refuses to flag a key that varies freely (no value would ever reach
+ * a majority) while tolerating the minority-outlier shape a real archive
+ * produces.
+ *
  * The requirement that at least one key be fixed is deliberate, not an
  * extension/host special-case: it is what separates this from a genuinely
  * no-argument own endpoint that a flow legitimately polls with an identical
@@ -483,9 +496,12 @@ export function isZeroVarianceRepeatCapture(
       }
     })
     .filter((u): u is URL => u !== null);
-  const hasFixedKey = candidateKeys.some((key) =>
-    sameEndpointUrls.every((u) => u.searchParams.get(key) === candidateUrl.searchParams.get(key))
-  );
+  const hasFixedKey = candidateKeys.some((key) => {
+    const candidateValue = candidateUrl.searchParams.get(key);
+    const matchCount = sameEndpointUrls.filter((u) => u.searchParams.get(key) === candidateValue)
+      .length;
+    return matchCount >= 2 && matchCount > sameEndpointUrls.length / 2;
+  });
   if (!hasFixedKey) return false;
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
   return bodyIdentical || hasNoBusinessRelevantResponseState(candidate);
