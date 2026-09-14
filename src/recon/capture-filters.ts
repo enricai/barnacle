@@ -498,8 +498,9 @@ export function isZeroVarianceRepeatCapture(
     .filter((u): u is URL => u !== null);
   const hasFixedKey = candidateKeys.some((key) => {
     const candidateValue = candidateUrl.searchParams.get(key);
-    const matchCount = sameEndpointUrls.filter((u) => u.searchParams.get(key) === candidateValue)
-      .length;
+    const matchCount = sameEndpointUrls.filter(
+      (u) => u.searchParams.get(key) === candidateValue
+    ).length;
     return matchCount >= 2 && matchCount > sameEndpointUrls.length / 2;
   });
   if (!hasFixedKey) return false;
