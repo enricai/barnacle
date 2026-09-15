@@ -12301,6 +12301,16 @@ async function main(): Promise<void> {
       : undefined;
     const errorSignals = detectErrorSignals(actionSteps);
     const discoveredFormFields = new Set<string>();
+    // emitMultiStepExecuteHttp's outDiscoveredFields parameter is a generic
+    // payload-accessor accumulator — BaseUrl substitution, persona/producer-
+    // boundary bindings, entryUrlParams, tenant-subdomain headers, and
+    // walkStringLeaves-derived accessors all write into it, independent of
+    // form-schema discovery. It gets its own Set (rather than aliasing
+    // discoveredFormFields positionally) so the two concerns stay separately
+    // named; the explicit merge below is what actually wires its fields into
+    // emitContractTs's schema — never an incidental byproduct of sharing one
+    // reference across unrelated call sites.
+    const discoveredPayloadAccessorFields = new Set<string>();
     const discoveredOptionFields = new Set<string>();
     // Phase E: maps label-derived raw-option payload field name (e.g.
     // "AreYouOverTheAgeOf18OptionId") → recon-observed option-id UUID. Used to
@@ -12379,7 +12389,7 @@ async function main(): Promise<void> {
             inputBody,
             errorSignals,
             fieldNameMap,
-            discoveredFormFields,
+            discoveredPayloadAccessorFields,
             fieldOptionsMap,
             discoveredOptionFields,
             discoveredRawOptionFields,
@@ -12398,6 +12408,13 @@ async function main(): Promise<void> {
             pascal
           )
         : undefined;
+    // Explicit merge — every field emitMultiStepExecuteHttp registered as a
+    // `payload.<field>` accessor (BaseUrl, persona, entryUrlParams, tenant-
+    // subdomain headers, walkStringLeaves) flows into the same discovered-
+    // fields set emitContractTs's schema `.extend()` reads from below.
+    for (const field of discoveredPayloadAccessorFields) {
+      discoveredFormFields.add(field);
+    }
 
     const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
     const headerBindings = collectHeaderBindings(actionSteps);
