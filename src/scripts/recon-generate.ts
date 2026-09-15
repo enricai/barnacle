@@ -4822,18 +4822,54 @@ function replaceGuardedAgainstExistingPlaceholders(
   keyCorrelationGuard?: {
     restrictedValues: ReadonlySet<string>;
     sourceNameByValue: ReadonlyMap<string, string>;
+    // Values indexed only via the chain/force-include short-value exemption
+    // (see `StateValue.eligibleConsumers`) already had eligibility itself
+    // proven by a specific, real chain hop — every splice target must
+    // correlate unconditionally, exactly as before this parameter existed.
+    // A naturally-length-qualified value (this set holds the complement)
+    // never had that proof; it only earned production at all because it
+    // correlated with SOME downstream key (`compileActionSteps`' pre-scan),
+    // so narrowing its OTHER occurrences is only warranted once that one
+    // correlated "real home" is actually observed in THIS text — otherwise
+    // an ordinary single-producer/single-consumer value whose own derived
+    // name never lexically matches its one true consumer field (e.g. a
+    // `label` produce genuinely re-sent as a differently-named `ref`) would
+    // wrongly lose its only binding.
+    unconditionalValues: ReadonlySet<string>;
   }
 ): string {
   const protectedSpans = findBalancedPlaceholderSpans(text);
+  const matches = [...text.matchAll(pattern)].filter(
+    (match) =>
+      !protectedSpans.some(
+        ([spanStart, spanEnd]) => match.index < spanEnd && match.index + match[0].length > spanStart
+      )
+  );
+  const hasCorrelatedTargetByValue = new Map<string, boolean>();
+  if (keyCorrelationGuard) {
+    for (const match of matches) {
+      const value = match[0];
+      if (!keyCorrelationGuard.restrictedValues.has(value)) continue;
+      if (keyCorrelationGuard.unconditionalValues.has(value)) continue;
+      if (hasCorrelatedTargetByValue.get(value)) continue;
+      const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
+      const targetKey = findEnclosingJsonKey(text, match.index);
+      if (sourceName !== undefined && targetKey !== null && keysCorrelate(sourceName, targetKey)) {
+        hasCorrelatedTargetByValue.set(value, true);
+      }
+    }
+  }
   let result = "";
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of matches) {
     const start = match.index;
     const end = start + match[0].length;
-    if (protectedSpans.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart)) continue;
     const value = match[0];
-    if (keyCorrelationGuard?.restrictedValues.has(value)) {
-      const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
+    const isGated =
+      keyCorrelationGuard?.restrictedValues.has(value) &&
+      (keyCorrelationGuard.unconditionalValues.has(value) || hasCorrelatedTargetByValue.get(value));
+    if (isGated) {
+      const sourceName = keyCorrelationGuard?.sourceNameByValue.get(value);
       const targetKey = findEnclosingJsonKey(text, start);
       if (sourceName === undefined || targetKey === null || !keysCorrelate(sourceName, targetKey)) {
         result += text.slice(cursor, end);
@@ -4887,11 +4923,13 @@ function interpolateStateValues(
     bindingByValue.set(value, `\${${accessor}}`);
   }
   const restrictedValues = new Set<string>();
+  const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
+    if (binding.unconditional) unconditionalValues.add(value);
   }
   if (bindingByValue.size === 0) return template;
 
@@ -4902,7 +4940,9 @@ function interpolateStateValues(
     template,
     pattern,
     bindingByValue,
-    isJsonBody && restrictedValues.size > 0 ? { restrictedValues, sourceNameByValue } : undefined
+    isJsonBody && restrictedValues.size > 0
+      ? { restrictedValues, sourceNameByValue, unconditionalValues }
+      : undefined
   );
 }
 
@@ -5130,17 +5170,24 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * splices it into an unrelated capture's URL/body/headers.
  */
 /** A value → `${var}` binding {@link deriveStateVarByValue} hands to
- * {@link interpolateStateValues}. `restricted` mirrors `p.eligibleConsumers`
- * being set — the value only cleared the length floor via the chain/force-
- * include short-value exemption, a name-free eligibility signal (a bare
- * array index, a URL path segment) that proves nothing about which specific
- * body key downstream it may correlate with. `sourceName` is the produce's
+ * {@link interpolateStateValues}. `restricted` is set whenever the source has
+ * a real name to correlate (`sourceHasName`) — `sourceName` is the produce's
  * own field name (`p.name`), the signal `keysCorrelate` checks a restricted
- * binding's actual splice target against. */
+ * binding's actual splice target against. `unconditional` mirrors
+ * `p.eligibleConsumers` being set — the value only cleared the length floor
+ * via the chain/force-include short-value exemption, a name-free eligibility
+ * signal (a bare array index, a URL path segment) whose ONLY proof of a real
+ * downstream relationship is that exemption itself, so every splice target
+ * must correlate unconditionally. A naturally-length-qualified value (`false`)
+ * earned production some other way (a genuine name-correlated match
+ * elsewhere), so narrowing its OTHER occurrences is only warranted once that
+ * correlated occurrence is actually observed in the same text — see {@link
+ * replaceGuardedAgainstExistingPlaceholders}. */
 interface StateVarBinding {
   varName: string;
   sourceName: string;
   restricted: boolean;
+  unconditional: boolean;
 }
 
 function deriveStateVarByValue(
@@ -5168,7 +5215,17 @@ function deriveStateVarByValue(
         varNameByValue.set(value, {
           varName: p.name,
           sourceName: p.name,
-          restricted: p.eligibleConsumers !== undefined && sourceHasName,
+          // Requiring name/shape correlation at the splice site is not just
+          // for the chain/force-include short-value exemption — a
+          // naturally-length-qualified value that legitimately correlates
+          // with ONE downstream key (which is what got it produced at all,
+          // see `compileActionSteps`' `keyNamesCorrelate` pre-scan) must not
+          // also splice into an unrelated, differently-named key that merely
+          // coincides in value. `sourceHasName` gates this the same way it
+          // gates the chain-derived case: a name-free source (a bare array
+          // index) has nothing to correlate, so it stays unrestricted.
+          restricted: sourceHasName,
+          unconditional: p.eligibleConsumers !== undefined && sourceHasName,
         });
       }
     }
@@ -7177,17 +7234,41 @@ export interface FoldTarget {
  * other capture of this endpoint exists in `allCaptures`, variance can't be
  * observed either way, so every value is kept (unfiltered, matching the
  * behavior when `allCaptures` is omitted). */
-function collectRequestStringValues(
+function sameEndpointCapturesFor(
   capture: Capture,
-  allCaptures?: readonly Capture[]
-): Set<string> {
-  const sameEndpointCaptures = allCaptures
+  allCaptures: readonly Capture[] | undefined
+): readonly Capture[] {
+  return allCaptures
     ? allCaptures.filter((c) => c !== capture && endpointKey(c.url) === endpointKey(capture.url))
     : [];
-  const varies = (own: string, others: (string | undefined)[]): boolean =>
-    !allCaptures || sameEndpointCaptures.length === 0
-      ? true
-      : others.some((other) => other !== undefined && other !== own);
+}
+
+/** True when `own` differs from at least one same-endpoint sibling's value at
+ * the same location — the cross-capture variance test {@link
+ * collectRequestStringValues} and {@link collectRequestBodyValuesByKey} both
+ * apply to their respective candidate values. When no sibling capture exists
+ * (or `allCaptures` was omitted), variance can't be observed either way, so
+ * every value passes (matching the unfiltered behavior when `allCaptures` is
+ * omitted). */
+function requestValueVaries(
+  own: string,
+  others: (string | undefined)[],
+  sameEndpointCapturesLength: number
+): boolean {
+  return sameEndpointCapturesLength === 0
+    ? true
+    : others.some((other) => other !== undefined && other !== own);
+}
+
+/** The path-segment and query-parameter values present in `capture`'s own
+ * URL — the name-free half of {@link collectRequestStringValues}'s candidate
+ * set. Kept separate from the JSON body's leaf values so callers needing a
+ * by-key correlation gate on the body (e.g. {@link findThreadedJoinFields})
+ * can still treat URL/query matches as the name-free signal they've always
+ * been — a REST-style `/orders/{id}` path segment or query param carries no
+ * JSON key to correlate against in the first place. */
+function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Capture[]): Set<string> {
+  const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
   const values = new Set<string>();
   try {
     const url = new URL(capture.url);
@@ -7200,39 +7281,76 @@ function collectRequestStringValues(
           return undefined;
         }
       });
-      if (varies(value, otherValues)) values.add(value);
+      if (requestValueVaries(value, otherValues, sameEndpointCaptures.length)) values.add(value);
     }
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
   }
+  return values;
+}
+
+/** Same JSON-body walk and cross-capture variance gate as {@link
+ * collectRequestStringValues}'s body block, but grouped by the JSON
+ * key/array-index that carries each leaf value (see {@link
+ * jsonBodyLeafValuesByKey}'s same grouping) — the by-key candidate set
+ * {@link findThreadedJoinFields} correlates a threaded field's own name
+ * against, so a value that only coincidentally equals something in an
+ * UNRELATED body field can't be threaded onto it. Returns `null` when
+ * `capture.requestPostData` isn't parseable JSON, the same non-JSON signal
+ * {@link jsonBodyLeafValuesByKey} returns. */
+function collectRequestBodyValuesByKey(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Map<string, Set<string>> | null {
+  if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
+    return null;
+  }
   const parsedBody = ((): unknown => {
     try {
-      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
-        ? JSON.parse(capture.requestPostData)
-        : undefined;
+      return JSON.parse(capture.requestPostData!);
     } catch {
       return undefined;
     }
   })();
-  if (parsedBody !== undefined) {
-    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (value === null) continue;
-      const stringValue = String(value);
-      const otherValues = sameEndpointCaptures.map((c) => {
-        try {
-          const otherBody =
-            typeof c.requestPostData === "string" && c.requestPostData.length > 0
-              ? JSON.parse(c.requestPostData)
-              : undefined;
-          if (otherBody === undefined) return undefined;
-          const otherValue = readValueAtPath(otherBody, path);
-          return otherValue === undefined ? undefined : String(otherValue);
-        } catch {
-          return undefined;
-        }
-      });
-      if (varies(stringValue, otherValues)) values.add(stringValue);
-    }
+  if (parsedBody === undefined) return null;
+  const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
+  const byKey = new Map<string, Set<string>>();
+  for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (value === null || path.length === 0) continue;
+    const stringValue = String(value);
+    const otherValues = sameEndpointCaptures.map((c) => {
+      try {
+        const otherBody =
+          typeof c.requestPostData === "string" && c.requestPostData.length > 0
+            ? JSON.parse(c.requestPostData)
+            : undefined;
+        if (otherBody === undefined) return undefined;
+        const otherValue = readValueAtPath(otherBody, path);
+        return otherValue === undefined ? undefined : String(otherValue);
+      } catch {
+        return undefined;
+      }
+    });
+    if (!requestValueVaries(stringValue, otherValues, sameEndpointCaptures.length)) continue;
+    const namedSegment = [...path]
+      .reverse()
+      .find((segment) => !ARRAY_INDEX_KEY_PATTERN.test(segment));
+    const key = namedSegment ?? path[path.length - 1]!;
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(stringValue);
+    byKey.set(key, values);
+  }
+  return byKey;
+}
+
+function collectRequestStringValues(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Set<string> {
+  const values = collectRequestUrlValues(capture, allCaptures);
+  const bodyValuesByKey = collectRequestBodyValuesByKey(capture, allCaptures);
+  for (const leafValues of bodyValuesByKey?.values() ?? []) {
+    for (const value of leafValues) values.add(value);
   }
   return values;
 }
@@ -7601,16 +7719,37 @@ function findThreadedJoinFields(
   drillCapture: Capture,
   allCaptures?: readonly Capture[]
 ): ThreadedField[] {
-  const requestValues = collectRequestStringValues(drillCapture, allCaptures);
-  if (requestValues.size === 0) return [];
+  const urlValues = collectRequestUrlValues(drillCapture, allCaptures);
+  const bodyValuesByKey = collectRequestBodyValuesByKey(drillCapture, allCaptures);
+  if (urlValues.size === 0 && (bodyValuesByKey === null || bodyValuesByKey.size === 0)) return [];
+  // A candidate field's value must EITHER surface name-free in the drill
+  // request's own URL/query (a path segment or query param carries no JSON
+  // key to correlate against, matching interpolateStateValues' isJsonBody
+  // distinction — see its docstring) OR surface in the JSON body under a
+  // key that plausibly names the same concept as the field's own last path
+  // segment (via keyNamesCorrelate, the same discipline compileActionSteps'
+  // pre-scan already applies to body-value reuse). A value that ONLY
+  // coincidentally equals an unrelated body field's value — no URL match,
+  // no name correlation to the body key it landed under — is not threading;
+  // it's the value-coincidence bug this gate exists to close.
   return scopes.flatMap(({ varName, obj }) =>
     [...walkItemFieldPaths(obj)]
-      .filter(
-        ({ value: v }) =>
-          (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-          (typeof v === "number" && requestValues.has(String(v))) ||
-          (typeof v === "boolean" && requestValues.has(String(v)))
-      )
+      .filter(({ path, value: v }) => {
+        const stringValue =
+          typeof v === "string" && v.length > 0
+            ? v
+            : typeof v === "number" || typeof v === "boolean"
+              ? String(v)
+              : null;
+        if (stringValue === null) return false;
+        if (urlValues.has(stringValue)) return true;
+        if (bodyValuesByKey === null) return false;
+        const sourceKeyName = path.at(-1)!;
+        return [...bodyValuesByKey.entries()].some(
+          ([targetKey, leaves]) =>
+            leaves.has(stringValue) && keyNamesCorrelate(sourceKeyName, targetKey)
+        );
+      })
       .map(({ path }) => ({ varName, field: path.join(".") }))
   );
 }
@@ -10306,6 +10445,34 @@ export function emitContractTs(opts: {
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
     const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
     addExtendField(name, `  ${key}: ${value},`);
+  }
+
+  // Closing-the-loop safety net: every discovered-field source above tracks
+  // its own registration as it splices a `payload.<field>` accessor into the
+  // emitted body/url/headers text, but that tracking is scattered across N
+  // independent passes (form-schema discovery, option mappings, additional
+  // body keys, structured keys, drill-param bindings, and — inside
+  // emitMultiStepExecuteHttp's fold-loop `parameterize` closure — threaded
+  // join-field rebinding), any one of which can add an accessor to the
+  // rendered text without remembering to register it in the matching map
+  // above. Rather than trust each source to stay perfectly in sync with the
+  // text it emits, derive completeness from the actual rendered output: scan
+  // `multiStepBody` (already fully assembled at this point — every chain
+  // step's url/headers/body substitutions are done) for every
+  // `payload.<field>` reference and union in any name the sources above
+  // missed, with a conservative `z.string()` default. This closes the gap at
+  // its structural root regardless of which upstream pass forgot to record a
+  // field, instead of adding a fifth registration site that could itself be
+  // forgotten by a future pass.
+  if (multiStepBody) {
+    const bodyReferencedFields = new Set(
+      [...multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]!)
+    );
+    for (const name of [...bodyReferencedFields].sort()) {
+      if (extendFields.has(name)) continue;
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: z.string(),`);
+    }
   }
 
   // The structural walk over the captured request body that used to BE the
