@@ -36,6 +36,18 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
  * (frozen primary-index leak alone, no sibling capture) exercises the
  * combination of an in-primary frozen-index leak AND a leak from a capture
  * entirely outside the detected fold/drill chain in the same flow.
+ *
+ * Investigated (see run investigation notes) whether this exact combination
+ * still reproduces on the tree as of `#395`/`#396`: it does not. Every path
+ * that could splice one of these values into the wrong field is already
+ * gated — `findThreadedJoinFields`'s `keyNamesCorrelate` check (per-item
+ * body-value threading), `collectDependentDrillDownChainValues`'s same-NAME
+ * requirement on both sides of a chain hop (cross-hop state threading), and
+ * `MIN_STATE_VALUE_LENGTH` combined with `eligibleConsumers` scoping (short
+ * out-of-chain values, e.g. a boolean toggle, are never indexed as state at
+ * all unless the chain detector itself proves them threaded). This test
+ * therefore runs GREEN today and is kept as a pinned regression guard for
+ * that already-closed combination, not as a base-tree repro for bugfix-004.
  */
 
 const TOGGLES_URL = "https://api.example.com/config/feature-toggles/";
