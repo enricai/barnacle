@@ -19,10 +19,13 @@ import type { Capture } from "@/scripts/recon-shared";
  * that field from the scraped/produced local instead of the payload.
  *
  * The first call's own body carries the caller-supplied field. The second
- * call's response echoes the identical value under the same field name
- * (making it eligible for state threading too), and the second and third
- * calls both re-submit that same field — every one of those occurrences
- * must resolve to `payload.<field>`, never the echoed local.
+ * call's response echoes the identical value under the same field name —
+ * but the second call's OWN request body never carries that field, so this
+ * is a coincidental echo, not a producer-boundary coordinate (see
+ * recon-generate-producer-boundary.test.ts, which locks the opposite,
+ * deliberate case: a value a step both sends AND echoes threads the state
+ * var on every call after that producer). The third call re-submits the
+ * field and must resolve it to `payload.<field>`, never the echoed local.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -47,9 +50,16 @@ function fixtureCaptures(): Capture[] {
     responseBody: { results: [{ itemId: "item-a" }] },
     timestamp: "2026-01-01T00:00:00Z",
   });
+  // The detail step's OWN request body never carries measurementUnit — only
+  // its response echoes it — so this is a coincidental echo, not a
+  // producer-boundary coordinate (deriveProducerBoundaryBindings requires the
+  // producing step to re-send the value in its own body; see
+  // recon-generate-producer-boundary.test.ts's "does not bind a produced
+  // value that is NOT re-sent in its own producer body"). That distinction is
+  // exactly what must not collapse the payload precedence fixed here.
   const detail = buildCapture({
     url: DETAIL_URL,
-    requestPostData: JSON.stringify({ itemId: "item-a", measurementUnit: MEASUREMENT_UNIT_VALUE }),
+    requestPostData: JSON.stringify({ itemId: "item-a" }),
     responseBody: {
       conversion: { summary: { measurementUnit: MEASUREMENT_UNIT_VALUE } },
     },
@@ -120,30 +130,22 @@ describe("recon-generate CLI — payload-sourced body fields outrank a coinciden
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
-    // Isolate each call's request-body template literal by anchoring on its
-    // own URL, mirroring the sibling coincidence-threading-guard e2e test.
-    const detailBodyMatch = contract.match(/catalog\/detail\/[\s\S]*?body:\s*`([^`]*)`/);
-    expect(detailBodyMatch, contract).not.toBeNull();
-    const detailBodyTemplate = detailBodyMatch![1]!;
-
+    // Isolate the submit call's request-body template literal by anchoring on
+    // its own URL, mirroring the sibling coincidence-threading-guard e2e test.
+    // The detail step's own body never carries measurementUnit (see
+    // fixtureCaptures), so only submit's re-send of the field is at risk.
     const submitBodyMatch = contract.match(/catalog\/submit\/[\s\S]*?body:\s*`([^`]*)`/);
     expect(submitBodyMatch, contract).not.toBeNull();
     const submitBodyTemplate = submitBodyMatch![1]!;
 
-    // Every occurrence of the caller-supplied field must resolve to
-    // `payload.measurementUnit` — never a scraped/produced local, even
-    // though the detail step's response echoes the identical value under
-    // the identical field name.
-    const detailFieldLine = detailBodyTemplate.match(/"measurementUnit"\s*:\s*"?\$\{([^}]*)\}"?/);
-    expect(detailFieldLine, detailBodyTemplate).not.toBeNull();
-    expect(detailFieldLine![1]).toBe("payload.measurementUnit");
-
+    // The caller-supplied field must resolve to `payload.measurementUnit` —
+    // never the scraped/produced local — even though the detail step's
+    // response echoes the identical value under the identical field name.
     const submitFieldLine = submitBodyTemplate.match(/"measurementUnit"\s*:\s*"?\$\{([^}]*)\}"?/);
     expect(submitFieldLine, submitBodyTemplate).not.toBeNull();
     expect(submitFieldLine![1]).toBe("payload.measurementUnit");
 
-    // No invalidly-nested placeholder anywhere in either emitted body.
-    expect(detailBodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
+    // No invalidly-nested placeholder anywhere in the emitted body.
     expect(submitBodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
   }, 30_000);
 });

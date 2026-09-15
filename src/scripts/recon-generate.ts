@@ -4999,13 +4999,24 @@ function replaceGuardedAgainstExistingPlaceholders(
  * bare-value splice into either is exactly the name-free URL-path-segment
  * threading the eligibility gate already intends to allow, so callers
  * rendering those pass `false` (the default).
+ *
+ * A value already bound to a `payload.<field>` accessor keeps that accessor
+ * on every call EXCEPT where {@link deriveProducerBoundaryBindings} has
+ * deliberately scoped it to a producer step — that mechanism exists
+ * precisely so a value which both rides its producer's own request body AND
+ * echoes in that step's response can still thread as the ordinary `${var}`
+ * state var on every step AFTER the producer (see
+ * {@link applyWholeValuePayloadSubstitutions}'s docstring). A value with no
+ * such binding is a coincidental echo — never re-sent by the step whose
+ * response produced it — so payload precedence is unconditional for it.
  */
 function interpolateStateValues(
   template: string,
   priorSteps: ActionStep[],
   targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map(),
-  isJsonBody = false
+  isJsonBody = false,
+  producerBoundaryValues: ReadonlySet<string> = new Set()
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
@@ -5017,7 +5028,7 @@ function interpolateStateValues(
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
-    if (payloadAccessorByValue.has(value)) continue;
+    if (payloadAccessorByValue.has(value) && !producerBoundaryValues.has(value)) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
@@ -5915,6 +5926,11 @@ export function emitMultiStepExecuteHttp(
       payloadAccessorByValue.set(value, accessor);
     }
   }
+  // Values `deriveProducerBoundaryBindings` scoped to a single producer step —
+  // {@link interpolateStateValues} uses this to let the ordinary state var win
+  // on every step AFTER the producer, even though the value also carries a
+  // `payload.<field>` accessor from `inputBody`/persona/entry-URL sources.
+  const producerBoundaryValues = new Set(producerBoundaryBindings.keys());
   // G2: register any tenant-subdomain header values as payload-supplied fields
   // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
@@ -6048,7 +6064,7 @@ export function emitMultiStepExecuteHttp(
       actions.map((a) => a.capture)
     )
       ? cap.url
-      : interpolateStateValues(cap.url, prior, cap, payloadAccessorByValue);
+      : interpolateStateValues(cap.url, prior, cap, payloadAccessorByValue, false, producerBoundaryValues);
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
     // payload key-value passes then run on top. Option-id substitution runs
@@ -6150,7 +6166,14 @@ export function emitMultiStepExecuteHttp(
         : rawBodyWithProducerBoundary;
     const bodyAfterStateAndKv = rawBodyWithUrlParams
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithUrlParams, prior, cap, payloadAccessorByValue, true),
+          interpolateStateValues(
+            rawBodyWithUrlParams,
+            prior,
+            cap,
+            payloadAccessorByValue,
+            true,
+            producerBoundaryValues
+          ),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
@@ -6197,7 +6220,14 @@ export function emitMultiStepExecuteHttp(
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
       if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
-        perCallHeaders[k] = interpolateStateValues(v, prior, cap, payloadAccessorByValue);
+        perCallHeaders[k] = interpolateStateValues(
+          v,
+          prior,
+          cap,
+          payloadAccessorByValue,
+          false,
+          producerBoundaryValues
+        );
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -6737,7 +6767,14 @@ export function emitMultiStepExecuteHttp(
         const lower = k.toLowerCase();
         if (lower === "api-token" || lower === "authorization") {
           perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), cap, payloadAccessorByValue)}\``
+            `${JSON.stringify(k)}: \`${interpolateStateValues(
+              v,
+              actions.slice(0, i),
+              cap,
+              payloadAccessorByValue,
+              false,
+              producerBoundaryValues
+            )}\``
           );
         }
       }
