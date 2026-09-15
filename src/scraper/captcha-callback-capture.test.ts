@@ -287,7 +287,7 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
 
-    const originalRender = (_container: string, config: Record<string, unknown>): string =>
+    const originalRender = (_container: string, _config: Record<string, unknown>): string =>
       "widget-icims";
     (sandbox as Record<string, unknown>).__originalRender = originalRender;
     vm.runInContext(
