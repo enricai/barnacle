@@ -23,6 +23,9 @@ export default defineConfig({
         // Fastify server bootstrap — the entrypoint main() only fires
         // when the file is executed directly, not under vitest.
         "src/server.ts",
+        // Manual regression probe — testing it means booting a real
+        // Browserbase/Steel session against a live external URL.
+        "src/scripts/probe-setinputfiles.ts",
       ],
     },
     testTimeout: 30000,
