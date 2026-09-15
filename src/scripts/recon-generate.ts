@@ -5028,6 +5028,17 @@ function replaceGuardedAgainstExistingPlaceholders(
  * {@link applyWholeValuePayloadSubstitutions}'s docstring). A value with no
  * such binding is a coincidental echo — never re-sent by the step whose
  * response produced it — so payload precedence is unconditional for it.
+ *
+ * `topLevelPayloadKvValues` extends that same precedence to values too SHORT
+ * to ever enter `payloadAccessorByValue` (which only registers inputBody
+ * string leaves >= MIN_STATE_VALUE_LENGTH): a short top-level scalar
+ * (`{"currency":"usd"}`) is still unconditionally payload-ified by the later
+ * `applyPayloadKeyValueSubstitutions` key/value pass, but only if its literal
+ * survives THIS pass untouched. Without this set, a short value that also
+ * clears the chain/force-include exemption as a coincidentally-equal
+ * response-produced state var on an intervening call gets spliced here
+ * first, and the literal is gone by the time the KV pass runs — masking
+ * payload precedence on every call after the one that scraped it.
  */
 function interpolateStateValues(
   template: string,
@@ -5035,7 +5046,8 @@ function interpolateStateValues(
   targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map(),
   isJsonBody = false,
-  producerBoundaryValues: ReadonlySet<string> = new Set()
+  producerBoundaryValues: ReadonlySet<string> = new Set(),
+  topLevelPayloadKvValues: ReadonlySet<string> = new Set()
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
@@ -5048,6 +5060,7 @@ function interpolateStateValues(
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
     if (payloadAccessorByValue.has(value) && !producerBoundaryValues.has(value)) continue;
+    if (topLevelPayloadKvValues.has(value) && !producerBoundaryValues.has(value)) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
@@ -5971,6 +5984,30 @@ export function emitMultiStepExecuteHttp(
     }
   }
 
+  // Every value `applyPayloadKeyValueSubstitutions` will unconditionally
+  // payload-ify from the ENTRY payload's own top-level key/value pairs,
+  // gathered here so {@link interpolateStateValues} can give it payload
+  // precedence too, regardless of MIN_STATE_VALUE_LENGTH — see
+  // {@link interpolateStateValues}'s `topLevelPayloadKvValues` docstring for
+  // why this must run BEFORE that later pass, not just alongside it.
+  // `inputBody` only, deliberately NOT `additionalBodies`: a later call's own
+  // top-level field is exactly as likely to be a genuinely re-sent
+  // response-produced state value (draftId minted by an earlier call and
+  // resent as that later call's own `applicationDraftId`) as a caller-
+  // supplied literal, so extending precedence to it would wrongly freeze
+  // real cross-step state threading. Only the caller's OWN entry payload is
+  // an unambiguous non-state origin.
+  const topLevelPayloadKvValues = new Set<string>();
+  if (inputBody !== undefined && inputBody !== null && !Array.isArray(inputBody)) {
+    for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+      if (path.length !== 1) continue;
+      const key = path[0]!;
+      if (!isValidJsIdentifier(key)) continue;
+      if (value === null) continue;
+      topLevelPayloadKvValues.add(String(value));
+    }
+  }
+
   // Detect the flow's THREADED transaction id: a single UUID the site mints
   // once (on page load) and reuses across every submit body to correlate the
   // multi-step wizard — observed on real ATS flows where one such id spans
@@ -6191,7 +6228,8 @@ export function emitMultiStepExecuteHttp(
             cap,
             payloadAccessorByValue,
             true,
-            producerBoundaryValues
+            producerBoundaryValues,
+            topLevelPayloadKvValues
           ),
           inputBody,
           additionalBodies,
