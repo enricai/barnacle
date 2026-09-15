@@ -23,7 +23,8 @@ const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-const OWN_BACKEND_HOST = "www.composite-key-loop-scoped-dual-target-coincidence-fixture.example.com";
+const OWN_BACKEND_HOST =
+  "www.composite-key-loop-scoped-dual-target-coincidence-fixture.example.com";
 const LIST_URL = `https://${OWN_BACKEND_HOST}/catalog/search/`;
 const SUBMIT_URL = `https://${OWN_BACKEND_HOST}/catalog/select/`;
 
@@ -32,11 +33,15 @@ const SUBMIT_URL = `https://${OWN_BACKEND_HOST}/catalog/select/`;
 // segment, `displayOrder`, as the derived local name.
 const COMPOSITE_KEY = "variant-a;kind=option;region=x";
 
-// Kept short (well under MIN_STATE_VALUE_LENGTH = 8) so the only way either
-// submit-body field could thread the deep leaf is via a broken
-// name-correlation gate, not the length-floor bypass.
-const DISPLAY_ORDER_VALUE = 4;
+// 8+ digits so the value naturally clears MIN_STATE_VALUE_LENGTH on its own
+// (no chain/force-include exemption needed) — the guard under test applies
+// to every named produce, not only short-value-exempt ones.
+const DISPLAY_ORDER_VALUE = 20260914;
 
+// The submit body's own correlated occurrence — a same-named `displayOrder`
+// field also carrying the true leaf value — is what proves the value's "real
+// home" exists in this body at all, which is what arms the name-correlation
+// guard for the OTHER, differently-named occurrences below.
 // Two differently-named submit-body fields whose TRUE recorded values
 // coincidentally equal the deep leaf above — one pagination-like, one
 // quantity-like.
@@ -87,6 +92,7 @@ function fixtureCaptures(): Capture[] {
       url: SUBMIT_URL,
       requestPostData: JSON.stringify({
         itemId,
+        displayOrder: DISPLAY_ORDER_VALUE,
         pageIndex: PAGE_INDEX_VALUE,
         itemQuantity: ITEM_QUANTITY_VALUE,
       }),
@@ -173,23 +179,21 @@ describe("recon-generate CLI — loop-scoped composite-key coincidence never thr
     expect(itemIdLine, bodyTemplate).not.toBeNull();
     expect(itemIdLine![1]).toMatch(/\.itemId/);
 
-    // Neither the pagination-like nor the quantity-like collision field's
-    // template-literal source may match the deep leaf's own derived name
-    // (`displayOrder`) or leak the raw composite key text — the only way
-    // either could resolve to the deep leaf despite the name-correlation
-    // gate.
-    const pageIndexLine = bodyTemplate.match(/"pageIndex"\s*:\s*"?([^,\n}]*)"?/);
-    expect(pageIndexLine, bodyTemplate).not.toBeNull();
-    if (pageIndexLine![1]!.includes("${")) {
-      expect(pageIndexLine![1]).not.toMatch(/displayorder/i);
-      expect(pageIndexLine![1]).not.toMatch(/variant-a|kind=option|region=x/i);
-    }
-    const itemQuantityLine = bodyTemplate.match(/"itemQuantity"\s*:\s*"?([^,\n}]*)"?/);
-    expect(itemQuantityLine, bodyTemplate).not.toBeNull();
-    if (itemQuantityLine![1]!.includes("${")) {
-      expect(itemQuantityLine![1]).not.toMatch(/displayorder/i);
-      expect(itemQuantityLine![1]).not.toMatch(/variant-a|kind=option|region=x/i);
-    }
+    // The same-named `displayOrder` field IS threaded to the deep composite-
+    // key leaf's derived local — this is the field's "real home" that proves
+    // the value's accessor exists in this body at all, arming the
+    // name-correlation guard for the two coincidence fields below.
+    const displayOrderLine = bodyTemplate.match(/"displayOrder"\s*:\s*\$\{([^}]*)\}/);
+    expect(displayOrderLine, bodyTemplate).not.toBeNull();
+
+    // Neither the pagination-like nor the quantity-like collision field may
+    // thread the deep leaf's own accessor — each may only resolve to its own
+    // declared `payload.*` caller field (a legitimate, differently-sourced
+    // binding), never to the composite-key leaf's `displayOrder` local or
+    // the raw composite key text, since only `displayOrder`'s own name
+    // correlates with that splice target.
+    expect(bodyTemplate).toContain('"pageIndex":${payload.pageIndex}');
+    expect(bodyTemplate).toContain('"itemQuantity":${payload.itemQuantity}');
 
     // No invalidly-nested placeholder anywhere in the emitted body.
     expect(bodyTemplate).not.toMatch(/\$\{[^}]*\$\{/);
