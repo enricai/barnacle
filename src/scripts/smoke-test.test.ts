@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
@@ -20,7 +20,12 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
-const { loadResponseSchema, parseCli } = await import("@/scripts/smoke-test.js");
+let loadResponseSchema: typeof import("@/scripts/smoke-test.js").loadResponseSchema;
+let parseCli: typeof import("@/scripts/smoke-test.js").parseCli;
+
+beforeAll(async () => {
+  ({ loadResponseSchema, parseCli } = await import("@/scripts/smoke-test.js"));
+});
 
 describe("smoke-test/parseCli", () => {
   const originalArgv = process.argv;
@@ -104,7 +109,9 @@ describe("smoke-test/parseCli", () => {
 
     expect(() => parseCli()).toThrow("process.exit");
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(loggerStub.error).toHaveBeenCalledWith(expect.stringContaining("invalid --payload JSON"));
+    expect(loggerStub.error).toHaveBeenCalledWith(
+      expect.stringContaining("invalid --payload JSON")
+    );
 
     exitSpy.mockRestore();
   });
