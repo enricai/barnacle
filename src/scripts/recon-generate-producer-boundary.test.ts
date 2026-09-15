@@ -324,7 +324,7 @@ describe("emitMultiStepExecuteHttp — producer-boundary integration", () => {
     );
   }
 
-  it("binds step-1 coordinates to payload and keeps steps 2..N threading the state var", () => {
+  it("binds step-1 coordinates to payload and keeps steps 2..N sourcing the same fields from payload too", () => {
     // Two coordinates the producer both sends and echoes: a short id and a
     // composite human string whose inner token a genuinely-prior step produces
     // as its own state var (forcing the whole-value pass to run BEFORE state
@@ -373,11 +373,17 @@ describe("emitMultiStepExecuteHttp — producer-boundary integration", () => {
     // The fields are declared in the emitted payload schema.
     expect(outFields.has("orderRef")).toBe(true);
     expect(outFields.has("itemLocation")).toBe(true);
-    // The downstream (non-producer) step threads the produced state var, not the
-    // payload field — the producer-boundary bind is scoped to the producer alone.
+    // The downstream (non-producer) step re-sends the same coordinate under the
+    // same key: `applyWholeValuePayloadSubstitutions`'s producer scoping only
+    // governs the PRODUCER's own atomic bind (it cannot thread its own
+    // not-yet-existent response); it is not a license for `interpolateStateValues`
+    // to prefer the coincidentally-equal scraped state var over payload on every
+    // OTHER call. The field's payload precedence — established on the producer —
+    // must hold on every call that re-sends it, never falling back to the
+    // produced `${var}` echo.
     const downstream = body.slice(body.lastIndexOf("/submit"));
-    expect(downstream).toContain(`"orderRef":"${I}orderRef}"`);
-    expect(downstream).not.toContain(`"orderRef":"${I}payload.orderRef}"`);
+    expect(downstream).toContain(`"orderRef":"${I}payload.orderRef}"`);
+    expect(downstream).not.toContain(`"orderRef":"${I}orderRef}"`);
   });
 
   it("emits unchanged output when no producer-boundary reuse exists", () => {
