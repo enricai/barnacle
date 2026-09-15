@@ -7177,17 +7177,41 @@ export interface FoldTarget {
  * other capture of this endpoint exists in `allCaptures`, variance can't be
  * observed either way, so every value is kept (unfiltered, matching the
  * behavior when `allCaptures` is omitted). */
-function collectRequestStringValues(
+function sameEndpointCapturesFor(
   capture: Capture,
-  allCaptures?: readonly Capture[]
-): Set<string> {
-  const sameEndpointCaptures = allCaptures
+  allCaptures: readonly Capture[] | undefined
+): readonly Capture[] {
+  return allCaptures
     ? allCaptures.filter((c) => c !== capture && endpointKey(c.url) === endpointKey(capture.url))
     : [];
-  const varies = (own: string, others: (string | undefined)[]): boolean =>
-    !allCaptures || sameEndpointCaptures.length === 0
-      ? true
-      : others.some((other) => other !== undefined && other !== own);
+}
+
+/** True when `own` differs from at least one same-endpoint sibling's value at
+ * the same location — the cross-capture variance test {@link
+ * collectRequestStringValues} and {@link collectRequestBodyValuesByKey} both
+ * apply to their respective candidate values. When no sibling capture exists
+ * (or `allCaptures` was omitted), variance can't be observed either way, so
+ * every value passes (matching the unfiltered behavior when `allCaptures` is
+ * omitted). */
+function requestValueVaries(
+  own: string,
+  others: (string | undefined)[],
+  sameEndpointCapturesLength: number
+): boolean {
+  return sameEndpointCapturesLength === 0
+    ? true
+    : others.some((other) => other !== undefined && other !== own);
+}
+
+/** The path-segment and query-parameter values present in `capture`'s own
+ * URL — the name-free half of {@link collectRequestStringValues}'s candidate
+ * set. Kept separate from the JSON body's leaf values so callers needing a
+ * by-key correlation gate on the body (e.g. {@link findThreadedJoinFields})
+ * can still treat URL/query matches as the name-free signal they've always
+ * been — a REST-style `/orders/{id}` path segment or query param carries no
+ * JSON key to correlate against in the first place. */
+function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Capture[]): Set<string> {
+  const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
   const values = new Set<string>();
   try {
     const url = new URL(capture.url);
@@ -7200,39 +7224,76 @@ function collectRequestStringValues(
           return undefined;
         }
       });
-      if (varies(value, otherValues)) values.add(value);
+      if (requestValueVaries(value, otherValues, sameEndpointCaptures.length)) values.add(value);
     }
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
   }
+  return values;
+}
+
+/** Same JSON-body walk and cross-capture variance gate as {@link
+ * collectRequestStringValues}'s body block, but grouped by the JSON
+ * key/array-index that carries each leaf value (see {@link
+ * jsonBodyLeafValuesByKey}'s same grouping) — the by-key candidate set
+ * {@link findThreadedJoinFields} correlates a threaded field's own name
+ * against, so a value that only coincidentally equals something in an
+ * UNRELATED body field can't be threaded onto it. Returns `null` when
+ * `capture.requestPostData` isn't parseable JSON, the same non-JSON signal
+ * {@link jsonBodyLeafValuesByKey} returns. */
+function collectRequestBodyValuesByKey(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Map<string, Set<string>> | null {
+  if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
+    return null;
+  }
   const parsedBody = ((): unknown => {
     try {
-      return typeof capture.requestPostData === "string" && capture.requestPostData.length > 0
-        ? JSON.parse(capture.requestPostData)
-        : undefined;
+      return JSON.parse(capture.requestPostData!);
     } catch {
       return undefined;
     }
   })();
-  if (parsedBody !== undefined) {
-    for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
-      if (value === null) continue;
-      const stringValue = String(value);
-      const otherValues = sameEndpointCaptures.map((c) => {
-        try {
-          const otherBody =
-            typeof c.requestPostData === "string" && c.requestPostData.length > 0
-              ? JSON.parse(c.requestPostData)
-              : undefined;
-          if (otherBody === undefined) return undefined;
-          const otherValue = readValueAtPath(otherBody, path);
-          return otherValue === undefined ? undefined : String(otherValue);
-        } catch {
-          return undefined;
-        }
-      });
-      if (varies(stringValue, otherValues)) values.add(stringValue);
-    }
+  if (parsedBody === undefined) return null;
+  const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
+  const byKey = new Map<string, Set<string>>();
+  for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (value === null || path.length === 0) continue;
+    const stringValue = String(value);
+    const otherValues = sameEndpointCaptures.map((c) => {
+      try {
+        const otherBody =
+          typeof c.requestPostData === "string" && c.requestPostData.length > 0
+            ? JSON.parse(c.requestPostData)
+            : undefined;
+        if (otherBody === undefined) return undefined;
+        const otherValue = readValueAtPath(otherBody, path);
+        return otherValue === undefined ? undefined : String(otherValue);
+      } catch {
+        return undefined;
+      }
+    });
+    if (!requestValueVaries(stringValue, otherValues, sameEndpointCaptures.length)) continue;
+    const namedSegment = [...path]
+      .reverse()
+      .find((segment) => !ARRAY_INDEX_KEY_PATTERN.test(segment));
+    const key = namedSegment ?? path[path.length - 1]!;
+    const values = byKey.get(key) ?? new Set<string>();
+    values.add(stringValue);
+    byKey.set(key, values);
+  }
+  return byKey;
+}
+
+function collectRequestStringValues(
+  capture: Capture,
+  allCaptures?: readonly Capture[]
+): Set<string> {
+  const values = collectRequestUrlValues(capture, allCaptures);
+  const bodyValuesByKey = collectRequestBodyValuesByKey(capture, allCaptures);
+  for (const leafValues of bodyValuesByKey?.values() ?? []) {
+    for (const value of leafValues) values.add(value);
   }
   return values;
 }
@@ -7601,16 +7662,37 @@ function findThreadedJoinFields(
   drillCapture: Capture,
   allCaptures?: readonly Capture[]
 ): ThreadedField[] {
-  const requestValues = collectRequestStringValues(drillCapture, allCaptures);
-  if (requestValues.size === 0) return [];
+  const urlValues = collectRequestUrlValues(drillCapture, allCaptures);
+  const bodyValuesByKey = collectRequestBodyValuesByKey(drillCapture, allCaptures);
+  if (urlValues.size === 0 && (bodyValuesByKey === null || bodyValuesByKey.size === 0)) return [];
+  // A candidate field's value must EITHER surface name-free in the drill
+  // request's own URL/query (a path segment or query param carries no JSON
+  // key to correlate against, matching interpolateStateValues' isJsonBody
+  // distinction — see its docstring) OR surface in the JSON body under a
+  // key that plausibly names the same concept as the field's own last path
+  // segment (via keyNamesCorrelate, the same discipline compileActionSteps'
+  // pre-scan already applies to body-value reuse). A value that ONLY
+  // coincidentally equals an unrelated body field's value — no URL match,
+  // no name correlation to the body key it landed under — is not threading;
+  // it's the value-coincidence bug this gate exists to close.
   return scopes.flatMap(({ varName, obj }) =>
     [...walkItemFieldPaths(obj)]
-      .filter(
-        ({ value: v }) =>
-          (typeof v === "string" && v.length > 0 && requestValues.has(v)) ||
-          (typeof v === "number" && requestValues.has(String(v))) ||
-          (typeof v === "boolean" && requestValues.has(String(v)))
-      )
+      .filter(({ path, value: v }) => {
+        const stringValue =
+          typeof v === "string" && v.length > 0
+            ? v
+            : typeof v === "number" || typeof v === "boolean"
+              ? String(v)
+              : null;
+        if (stringValue === null) return false;
+        if (urlValues.has(stringValue)) return true;
+        if (bodyValuesByKey === null) return false;
+        const sourceKeyName = path.at(-1)!;
+        return [...bodyValuesByKey.entries()].some(
+          ([targetKey, leaves]) =>
+            leaves.has(stringValue) && keyNamesCorrelate(sourceKeyName, targetKey)
+        );
+      })
       .map(({ path }) => ({ varName, field: path.join(".") }))
   );
 }
