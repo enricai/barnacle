@@ -6291,16 +6291,32 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
-        perCallHeaders[k] = interpolateStateValues(
-          v,
-          prior,
-          cap,
-          payloadAccessorByValue,
-          false,
-          producerBoundaryBindings,
-          i
-        );
+      const interpolated = interpolateStateValues(
+        v,
+        prior,
+        cap,
+        payloadAccessorByValue,
+        false,
+        producerBoundaryBindings,
+        i
+      );
+      // Authorization/Api-Token and a structurally-detected join-carrying
+      // header are always emitted per-call (even when interpolation finds
+      // nothing to thread, matching this gate's prior behavior exactly).
+      // Any OTHER header name also gets a per-call entry once interpolation
+      // actually recognizes its value as a prior step's produced state var
+      // — interpolateStateValues itself is the source of truth for whether
+      // a value is genuinely threadable; restricting that recognition to a
+      // closed set of header names left every other header name frozen as
+      // a literal BASE_HEADERS entry (or dropped per-call) even when its
+      // captured value was a real, already-produced response field.
+      if (
+        lower === "api-token" ||
+        lower === "authorization" ||
+        joinCarryingHeaderNames?.has(k) ||
+        interpolated !== v
+      ) {
+        perCallHeaders[k] = interpolated;
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -6838,18 +6854,22 @@ export function emitMultiStepExecuteHttp(
       const perCallHeaderEntries: string[] = [];
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
-        if (lower === "api-token" || lower === "authorization") {
-          perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${interpolateStateValues(
-              v,
-              actions.slice(0, i),
-              cap,
-              payloadAccessorByValue,
-              false,
-              producerBoundaryBindings,
-              i
-            )}\``
-          );
+        const interpolated = interpolateStateValues(
+          v,
+          actions.slice(0, i),
+          cap,
+          payloadAccessorByValue,
+          false,
+          producerBoundaryBindings,
+          i
+        );
+        // Mirrors the non-multipart per-call header builder above: any
+        // header name (not just Authorization/Api-Token) that interpolation
+        // recognizes as a prior step's produced state var must thread
+        // per-call too, or its custom name freezes into an invariant
+        // BASE_HEADERS-equivalent literal.
+        if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
       }
       // G1+G2: include tenant-derived headers in the multipart fetch too.
