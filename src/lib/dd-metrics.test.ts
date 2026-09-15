@@ -29,12 +29,18 @@ describe("dd-metrics", () => {
 
   it("recordDdAttempt increments dispatch.attempt with site/path tags", () => {
     recordDdAttempt({ site: "acme", path: "http" });
-    expect(statsdStub.increment).toHaveBeenCalledWith("dispatch.attempt", 1, ["site:acme", "path:http"]);
+    expect(statsdStub.increment).toHaveBeenCalledWith("dispatch.attempt", 1, [
+      "site:acme",
+      "path:http",
+    ]);
   });
 
   it("recordDdSuccess increments dispatch.success with site/path tags", () => {
     recordDdSuccess({ site: "acme", path: "browser" });
-    expect(statsdStub.increment).toHaveBeenCalledWith("dispatch.success", 1, ["site:acme", "path:browser"]);
+    expect(statsdStub.increment).toHaveBeenCalledWith("dispatch.success", 1, [
+      "site:acme",
+      "path:browser",
+    ]);
   });
 
   it("recordDdFailure increments dispatch.failure with error_type tag", () => {
@@ -48,7 +54,10 @@ describe("dd-metrics", () => {
 
   it("recordDdDuration records dispatch.duration_ms timing with site/path tags", () => {
     recordDdDuration({ site: "acme", path: "http" }, 250);
-    expect(statsdStub.timing).toHaveBeenCalledWith("dispatch.duration_ms", 250, ["site:acme", "path:http"]);
+    expect(statsdStub.timing).toHaveBeenCalledWith("dispatch.duration_ms", 250, [
+      "site:acme",
+      "path:http",
+    ]);
   });
 
   it("recordDdFallback increments dispatch.fallback with site tag", () => {
@@ -81,6 +90,8 @@ describe("dd-metrics", () => {
 
   it("recordTrackingClickDuration records tracking_click.duration_ms timing with site tag", () => {
     recordTrackingClickDuration("acme", 100);
-    expect(statsdStub.timing).toHaveBeenCalledWith("tracking_click.duration_ms", 100, ["site:acme"]);
+    expect(statsdStub.timing).toHaveBeenCalledWith("tracking_click.duration_ms", 100, [
+      "site:acme",
+    ]);
   });
 });
