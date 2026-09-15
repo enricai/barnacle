@@ -5017,6 +5017,7 @@ function interpolateStateValues(
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
+    if (payloadAccessorByValue.has(value)) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
