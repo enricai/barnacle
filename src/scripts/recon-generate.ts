@@ -7234,13 +7234,34 @@ export interface FoldTarget {
  * other capture of this endpoint exists in `allCaptures`, variance can't be
  * observed either way, so every value is kept (unfiltered, matching the
  * behavior when `allCaptures` is omitted). */
+/** Per-`allCaptures`-array grouping of captures by {@link endpointKey}, built
+ * once per distinct `allCaptures` identity rather than re-filtering the
+ * whole array on every {@link sameEndpointCapturesFor} call — the O(n)
+ * per-call filter otherwise makes every caller that invokes it once per
+ * capture (e.g. {@link findThreadedJoinFields}) O(n^2) overall. */
+const endpointGroupsCache = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+
+function endpointGroupsFor(allCaptures: readonly Capture[]): Map<string, Capture[]> {
+  const cached = endpointGroupsCache.get(allCaptures);
+  if (cached) return cached;
+  const groups = new Map<string, Capture[]>();
+  for (const c of allCaptures) {
+    const key = endpointKey(c.url);
+    const group = groups.get(key) ?? [];
+    group.push(c);
+    groups.set(key, group);
+  }
+  endpointGroupsCache.set(allCaptures, groups);
+  return groups;
+}
+
 function sameEndpointCapturesFor(
   capture: Capture,
   allCaptures: readonly Capture[] | undefined
 ): readonly Capture[] {
-  return allCaptures
-    ? allCaptures.filter((c) => c !== capture && endpointKey(c.url) === endpointKey(capture.url))
-    : [];
+  if (!allCaptures) return [];
+  const group = endpointGroupsFor(allCaptures).get(endpointKey(capture.url)) ?? [];
+  return group.filter((c) => c !== capture);
 }
 
 /** True when `own` differs from at least one same-endpoint sibling's value at
@@ -7260,6 +7281,48 @@ function requestValueVaries(
     : others.some((other) => other !== undefined && other !== own);
 }
 
+/** Memoizes `JSON.parse(capture.requestPostData)` per capture — the same
+ * capture is re-parsed once per SIBLING lookup by every same-endpoint
+ * caller in {@link collectRequestBodyValuesByKey}'s leaf loop, so without
+ * this cache a group of N same-endpoint captures re-parses each sibling's
+ * body N times over (once per outer capture in the group). `undefined`
+ * means "not a parseable JSON body", the same non-JSON signal the
+ * unmemoized inline parse used to produce. */
+const parsedRequestBodyCache = new WeakMap<Capture, unknown>();
+const PARSE_FAILED = Symbol("parse-failed");
+
+function parsedRequestBodyFor(capture: Capture): unknown {
+  if (parsedRequestBodyCache.has(capture)) {
+    const cached = parsedRequestBodyCache.get(capture);
+    return cached === PARSE_FAILED ? undefined : cached;
+  }
+  const parsed = ((): unknown => {
+    if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
+      return PARSE_FAILED;
+    }
+    try {
+      return JSON.parse(capture.requestPostData);
+    } catch {
+      return PARSE_FAILED;
+    }
+  })();
+  parsedRequestBodyCache.set(capture, parsed);
+  return parsed === PARSE_FAILED ? undefined : parsed;
+}
+
+/** Per-(capture, allCaptures-identity) memoization for {@link
+ * collectRequestUrlValues} and {@link collectRequestBodyValuesByKey} —
+ * {@link findThreadedJoinFields} calls both fresh on every invocation and is
+ * itself invoked once per fold/drill-loop item across several call sites, so
+ * without caching the same capture's URL/body values are recomputed (and,
+ * for the body, re-walked and every sibling re-parsed) once per call. */
+const requestUrlValuesCache = new WeakMap<Capture, WeakMap<readonly Capture[], Set<string>>>();
+const requestBodyValuesByKeyCache = new WeakMap<
+  Capture,
+  WeakMap<readonly Capture[], Map<string, Set<string>> | null>
+>();
+const NO_ALL_CAPTURES = Object.freeze([]) as readonly Capture[];
+
 /** The path-segment and query-parameter values present in `capture`'s own
  * URL — the name-free half of {@link collectRequestStringValues}'s candidate
  * set. Kept separate from the JSON body's leaf values so callers needing a
@@ -7268,6 +7331,12 @@ function requestValueVaries(
  * been — a REST-style `/orders/{id}` path segment or query param carries no
  * JSON key to correlate against in the first place. */
 function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Capture[]): Set<string> {
+  const cacheKey = allCaptures ?? NO_ALL_CAPTURES;
+  const perCaptureCache = requestUrlValuesCache.get(capture) ?? new WeakMap();
+  requestUrlValuesCache.set(capture, perCaptureCache);
+  const cached = perCaptureCache.get(cacheKey);
+  if (cached) return cached;
+
   const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
   const values = new Set<string>();
   try {
@@ -7286,6 +7355,7 @@ function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Captur
   } catch {
     // Relative or malformed URL — no query params or path segments to contribute.
   }
+  perCaptureCache.set(cacheKey, values);
   return values;
 }
 
@@ -7305,14 +7375,16 @@ function collectRequestBodyValuesByKey(
   if (typeof capture.requestPostData !== "string" || capture.requestPostData.length === 0) {
     return null;
   }
-  const parsedBody = ((): unknown => {
-    try {
-      return JSON.parse(capture.requestPostData!);
-    } catch {
-      return undefined;
-    }
-  })();
-  if (parsedBody === undefined) return null;
+  const cacheKey = allCaptures ?? NO_ALL_CAPTURES;
+  const perCaptureCache = requestBodyValuesByKeyCache.get(capture) ?? new WeakMap();
+  requestBodyValuesByKeyCache.set(capture, perCaptureCache);
+  if (perCaptureCache.has(cacheKey)) return perCaptureCache.get(cacheKey)!;
+
+  const parsedBody = parsedRequestBodyFor(capture);
+  if (parsedBody === undefined) {
+    perCaptureCache.set(cacheKey, null);
+    return null;
+  }
   const sameEndpointCaptures = sameEndpointCapturesFor(capture, allCaptures);
   const byKey = new Map<string, Set<string>>();
   for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
@@ -7320,10 +7392,7 @@ function collectRequestBodyValuesByKey(
     const stringValue = String(value);
     const otherValues = sameEndpointCaptures.map((c) => {
       try {
-        const otherBody =
-          typeof c.requestPostData === "string" && c.requestPostData.length > 0
-            ? JSON.parse(c.requestPostData)
-            : undefined;
+        const otherBody = parsedRequestBodyFor(c);
         if (otherBody === undefined) return undefined;
         const otherValue = readValueAtPath(otherBody, path);
         return otherValue === undefined ? undefined : String(otherValue);
@@ -7340,6 +7409,7 @@ function collectRequestBodyValuesByKey(
     values.add(stringValue);
     byKey.set(key, values);
   }
+  perCaptureCache.set(cacheKey, byKey);
   return byKey;
 }
 
