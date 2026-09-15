@@ -4214,6 +4214,12 @@ interface BodyProduce {
   kind: "body";
   name: string;
   path: string[];
+  /** The leaf's actual runtime type at capture time, mirroring the
+   * `typeof`-based kind detection {@link inferZodSchemaFromSamples} uses on
+   * the same captured samples — carried so the emitted extraction cast can
+   * agree with the response schema's inferred type for this field instead
+   * of assuming every leaf is a string. */
+  leafType: "string" | "number" | "boolean";
   /** Mirrors {@link StateValue.eligibleConsumers} — set only when the produced
    * value was indexed exclusively via the chain/force-include exemption
    * (short value, no length-floor entry on its own merits). `undefined` means
@@ -4372,18 +4378,19 @@ function unknownValueAccessor(varName: string, path: string[]): string {
 
 /**
  * Builds a nested TypeScript assertion type matching a JSON path. e.g.
- *   ["Auth","Token"] -> `{ Auth: { Token: string } }`
- *   ["Sections","SectionIds","0"] -> `{ Sections: { SectionIds: { "0": string } } }`
- * The leaf is always `string` because produces[] entries are only emitted for
- * string leaves (see compileActionSteps + walkStringLeaves). Used to keep
- * emitted code free of `any` casts while still letting nested-path access
- * compile against `Record<string, unknown>`-typed response variables.
+ *   ["Auth","Token"], "string" -> `{ Auth: { Token: string } }`
+ *   ["Sections","Complete","0"], "boolean" -> `{ Sections: { Complete: { "0": boolean } } }`
+ * The leaf type is the produce's actual captured {@link BodyProduce.leafType}
+ * (string/number/boolean), so this always agrees with the same field's
+ * schema-inferred Zod type from {@link inferZodSchemaFromSamples}. Used to
+ * keep emitted code free of `any` casts while still letting nested-path
+ * access compile against `Record<string, unknown>`-typed response variables.
  */
-function pathToAssertionType(path: string[]): string {
-  if (path.length === 0) return "string";
+function pathToAssertionType(path: string[], leafType: "string" | "number" | "boolean"): string {
+  if (path.length === 0) return leafType;
   const segment = path[0]!;
   const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
-  return `{ ${key}: ${pathToAssertionType(path.slice(1))} }`;
+  return `{ ${key}: ${pathToAssertionType(path.slice(1), leafType)} }`;
 }
 
 /**
@@ -4696,7 +4703,9 @@ export function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ kind: "body", name, path, eligibleConsumers: sv.eligibleConsumers });
+        const leafType =
+          typeof rawValue === "number" ? "number" : typeof rawValue === "boolean" ? "boolean" : "string";
+        produces.push({ kind: "body", name, path, leafType, eligibleConsumers: sv.eligibleConsumers });
       }
     }
 
@@ -6679,7 +6688,7 @@ export function emitMultiStepExecuteHttp(
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
-            const assertion = pathToAssertionType(p.path);
+            const assertion = pathToAssertionType(p.path, p.leafType);
             chainLines.push(
               `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
             );
@@ -6732,7 +6741,7 @@ export function emitMultiStepExecuteHttp(
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
-      const assertion = pathToAssertionType(p.path);
+      const assertion = pathToAssertionType(p.path, p.leafType);
       produceLines.push(
         `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
       );
