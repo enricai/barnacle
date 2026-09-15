@@ -116,7 +116,7 @@ describe("recon-generate CLI — for-loop-nested submit body never threads a fro
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
 
-    const siteId = `loop-ancestor-value-coincidence-multifield-e2e-test-${process.pid}`;
+    const siteId = `loop-ancestor-value-coincidence-multifield-e2e-test${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
