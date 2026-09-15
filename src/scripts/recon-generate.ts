@@ -6735,7 +6735,15 @@ export function emitMultiStepExecuteHttp(
         // there is no ancestor loop to hoist into in the first place (a
         // flat, single-level fold), so it is treated as item-scoped too —
         // existing flat folds must keep emitting byte-identical code.
-        const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
+        // Word-boundary match on the bare identifier — not anchored to
+        // `${itemVar` — because `scopedAccessor`/`unknownValueAccessor`
+        // wraps every non-leaf hop in a `(itemVar.field as Record<string,
+        // unknown>)` cast for a nested field path, so the identifier can
+        // appear as `${(itemVar...` rather than immediately after `${`. An
+        // anchored pattern misses that shape entirely and lets a genuinely
+        // item-scoped reference get hoisted above the item loop, where
+        // `itemVar` is never declared.
+        const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
         let referencesItemVar = ancestorVars.length === 0;
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
@@ -11006,7 +11014,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
-      const itemVarRefPattern = new RegExp(`\\$\\{${itemVar}[.[]`);
+      // Word-boundary match — see emitMultiStepExecuteHttp's identical
+      // `itemVarRefPattern` for why an anchored `${itemVar` pattern misses a
+      // nested field path's `${(itemVar.field as Record<string,
+      // unknown>)...}` cast wrapper.
+      const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         const matchedPrimaryItem = primaryItemsWithAncestors[target.primaryMatchedItemIndex];
         if (!matchedPrimaryItem) {
