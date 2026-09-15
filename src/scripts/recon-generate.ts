@@ -4704,8 +4704,18 @@ export function compileActionSteps(
         }
         seenNames.add(name);
         const leafType =
-          typeof rawValue === "number" ? "number" : typeof rawValue === "boolean" ? "boolean" : "string";
-        produces.push({ kind: "body", name, path, leafType, eligibleConsumers: sv.eligibleConsumers });
+          typeof rawValue === "number"
+            ? "number"
+            : typeof rawValue === "boolean"
+              ? "boolean"
+              : "string";
+        produces.push({
+          kind: "body",
+          name,
+          path,
+          leafType,
+          eligibleConsumers: sv.eligibleConsumers,
+        });
       }
     }
 
