@@ -139,7 +139,12 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
       {
         ...drillStep,
         produces: [
-          { kind: "body", name: "unitId", path: ["units", "0", "unitId"] },
+          {
+            kind: "body",
+            name: "unitId",
+            path: ["units", "0", "unitId"],
+            leafType: "string",
+          },
         ] as unknown as never[],
       },
       buildStep("r5", {

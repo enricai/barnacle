@@ -4214,6 +4214,12 @@ interface BodyProduce {
   kind: "body";
   name: string;
   path: string[];
+  /** The leaf's actual runtime type at capture time, mirroring the
+   * `typeof`-based kind detection {@link inferZodSchemaFromSamples} uses on
+   * the same captured samples — carried so the emitted extraction cast can
+   * agree with the response schema's inferred type for this field instead
+   * of assuming every leaf is a string. */
+  leafType: "string" | "number" | "boolean";
   /** Mirrors {@link StateValue.eligibleConsumers} — set only when the produced
    * value was indexed exclusively via the chain/force-include exemption
    * (short value, no length-floor entry on its own merits). `undefined` means
@@ -4372,18 +4378,19 @@ function unknownValueAccessor(varName: string, path: string[]): string {
 
 /**
  * Builds a nested TypeScript assertion type matching a JSON path. e.g.
- *   ["Auth","Token"] -> `{ Auth: { Token: string } }`
- *   ["Sections","SectionIds","0"] -> `{ Sections: { SectionIds: { "0": string } } }`
- * The leaf is always `string` because produces[] entries are only emitted for
- * string leaves (see compileActionSteps + walkStringLeaves). Used to keep
- * emitted code free of `any` casts while still letting nested-path access
- * compile against `Record<string, unknown>`-typed response variables.
+ *   ["Auth","Token"], "string" -> `{ Auth: { Token: string } }`
+ *   ["Sections","Complete","0"], "boolean" -> `{ Sections: { Complete: { "0": boolean } } }`
+ * The leaf type is the produce's actual captured {@link BodyProduce.leafType}
+ * (string/number/boolean), so this always agrees with the same field's
+ * schema-inferred Zod type from {@link inferZodSchemaFromSamples}. Used to
+ * keep emitted code free of `any` casts while still letting nested-path
+ * access compile against `Record<string, unknown>`-typed response variables.
  */
-function pathToAssertionType(path: string[]): string {
-  if (path.length === 0) return "string";
+function pathToAssertionType(path: string[], leafType: "string" | "number" | "boolean"): string {
+  if (path.length === 0) return leafType;
   const segment = path[0]!;
   const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
-  return `{ ${key}: ${pathToAssertionType(path.slice(1))} }`;
+  return `{ ${key}: ${pathToAssertionType(path.slice(1), leafType)} }`;
 }
 
 /**
@@ -4696,7 +4703,19 @@ export function compileActionSteps(
           name = `${pathToVarName(path)}${suffix}`;
         }
         seenNames.add(name);
-        produces.push({ kind: "body", name, path, eligibleConsumers: sv.eligibleConsumers });
+        const leafType =
+          typeof rawValue === "number"
+            ? "number"
+            : typeof rawValue === "boolean"
+              ? "boolean"
+              : "string";
+        produces.push({
+          kind: "body",
+          name,
+          path,
+          leafType,
+          eligibleConsumers: sv.eligibleConsumers,
+        });
       }
     }
 
@@ -4999,13 +5018,36 @@ function replaceGuardedAgainstExistingPlaceholders(
  * bare-value splice into either is exactly the name-free URL-path-segment
  * threading the eligibility gate already intends to allow, so callers
  * rendering those pass `false` (the default).
+ *
+ * A value already bound to a `payload.<field>` accessor keeps that accessor
+ * on every call EXCEPT where {@link deriveProducerBoundaryBindings} has
+ * deliberately scoped it to a producer step — that mechanism exists
+ * precisely so a value which both rides its producer's own request body AND
+ * echoes in that step's response can still thread as the ordinary `${var}`
+ * state var on every step AFTER the producer (see
+ * {@link applyWholeValuePayloadSubstitutions}'s docstring). A value with no
+ * such binding is a coincidental echo — never re-sent by the step whose
+ * response produced it — so payload precedence is unconditional for it.
+ *
+ * `topLevelPayloadKvValues` extends that same precedence to values too SHORT
+ * to ever enter `payloadAccessorByValue` (which only registers inputBody
+ * string leaves >= MIN_STATE_VALUE_LENGTH): a short top-level scalar
+ * (`{"currency":"usd"}`) is still unconditionally payload-ified by the later
+ * `applyPayloadKeyValueSubstitutions` key/value pass, but only if its literal
+ * survives THIS pass untouched. Without this set, a short value that also
+ * clears the chain/force-include exemption as a coincidentally-equal
+ * response-produced state var on an intervening call gets spliced here
+ * first, and the literal is gone by the time the KV pass runs — masking
+ * payload precedence on every call after the one that scraped it.
  */
 function interpolateStateValues(
   template: string,
   priorSteps: ActionStep[],
   targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map(),
-  isJsonBody = false
+  isJsonBody = false,
+  producerBoundaryValues: ReadonlySet<string> = new Set(),
+  topLevelPayloadKvValues: ReadonlySet<string> = new Set()
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
@@ -5017,6 +5059,8 @@ function interpolateStateValues(
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
+    if (payloadAccessorByValue.has(value) && !producerBoundaryValues.has(value)) continue;
+    if (topLevelPayloadKvValues.has(value) && !producerBoundaryValues.has(value)) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
@@ -5914,6 +5958,11 @@ export function emitMultiStepExecuteHttp(
       payloadAccessorByValue.set(value, accessor);
     }
   }
+  // Values `deriveProducerBoundaryBindings` scoped to a single producer step —
+  // {@link interpolateStateValues} uses this to let the ordinary state var win
+  // on every step AFTER the producer, even though the value also carries a
+  // `payload.<field>` accessor from `inputBody`/persona/entry-URL sources.
+  const producerBoundaryValues = new Set(producerBoundaryBindings.keys());
   // G2: register any tenant-subdomain header values as payload-supplied fields
   // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
@@ -5932,6 +5981,30 @@ export function emitMultiStepExecuteHttp(
       additionalBodies.push(JSON.parse(cap.requestPostData));
     } catch {
       // skip non-JSON bodies (e.g. multipart raw bytes)
+    }
+  }
+
+  // Every value `applyPayloadKeyValueSubstitutions` will unconditionally
+  // payload-ify from the ENTRY payload's own top-level key/value pairs,
+  // gathered here so {@link interpolateStateValues} can give it payload
+  // precedence too, regardless of MIN_STATE_VALUE_LENGTH — see
+  // {@link interpolateStateValues}'s `topLevelPayloadKvValues` docstring for
+  // why this must run BEFORE that later pass, not just alongside it.
+  // `inputBody` only, deliberately NOT `additionalBodies`: a later call's own
+  // top-level field is exactly as likely to be a genuinely re-sent
+  // response-produced state value (draftId minted by an earlier call and
+  // resent as that later call's own `applicationDraftId`) as a caller-
+  // supplied literal, so extending precedence to it would wrongly freeze
+  // real cross-step state threading. Only the caller's OWN entry payload is
+  // an unambiguous non-state origin.
+  const topLevelPayloadKvValues = new Set<string>();
+  if (inputBody !== undefined && inputBody !== null && !Array.isArray(inputBody)) {
+    for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+      if (path.length !== 1) continue;
+      const key = path[0]!;
+      if (!isValidJsIdentifier(key)) continue;
+      if (value === null) continue;
+      topLevelPayloadKvValues.add(String(value));
     }
   }
 
@@ -6047,7 +6120,14 @@ export function emitMultiStepExecuteHttp(
       actions.map((a) => a.capture)
     )
       ? cap.url
-      : interpolateStateValues(cap.url, prior, cap, payloadAccessorByValue);
+      : interpolateStateValues(
+          cap.url,
+          prior,
+          cap,
+          payloadAccessorByValue,
+          false,
+          producerBoundaryValues
+        );
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
     // payload key-value passes then run on top. Option-id substitution runs
@@ -6149,7 +6229,15 @@ export function emitMultiStepExecuteHttp(
         : rawBodyWithProducerBoundary;
     const bodyAfterStateAndKv = rawBodyWithUrlParams
       ? applyPayloadKeyValueSubstitutions(
-          interpolateStateValues(rawBodyWithUrlParams, prior, cap, payloadAccessorByValue, true),
+          interpolateStateValues(
+            rawBodyWithUrlParams,
+            prior,
+            cap,
+            payloadAccessorByValue,
+            true,
+            producerBoundaryValues,
+            topLevelPayloadKvValues
+          ),
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys
@@ -6196,7 +6284,14 @@ export function emitMultiStepExecuteHttp(
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
       if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
-        perCallHeaders[k] = interpolateStateValues(v, prior, cap, payloadAccessorByValue);
+        perCallHeaders[k] = interpolateStateValues(
+          v,
+          prior,
+          cap,
+          payloadAccessorByValue,
+          false,
+          producerBoundaryValues
+        );
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
@@ -6648,7 +6743,7 @@ export function emitMultiStepExecuteHttp(
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
-            const assertion = pathToAssertionType(p.path);
+            const assertion = pathToAssertionType(p.path, p.leafType);
             chainLines.push(
               `      const ${p.name} = (${chainStep.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
             );
@@ -6701,7 +6796,7 @@ export function emitMultiStepExecuteHttp(
       if (declaredNames.has(p.name)) continue;
       if (!referencedNames.has(p.name)) continue;
       declaredNames.add(p.name);
-      const assertion = pathToAssertionType(p.path);
+      const assertion = pathToAssertionType(p.path, p.leafType);
       produceLines.push(
         `    const ${p.name} = (${step.varName} as ${assertion})${pathToAccessor(p.path, { assertNonNull: false })};`
       );
@@ -6736,7 +6831,14 @@ export function emitMultiStepExecuteHttp(
         const lower = k.toLowerCase();
         if (lower === "api-token" || lower === "authorization") {
           perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${interpolateStateValues(v, actions.slice(0, i), cap, payloadAccessorByValue)}\``
+            `${JSON.stringify(k)}: \`${interpolateStateValues(
+              v,
+              actions.slice(0, i),
+              cap,
+              payloadAccessorByValue,
+              false,
+              producerBoundaryValues
+            )}\``
           );
         }
       }
