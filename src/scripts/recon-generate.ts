@@ -5020,13 +5020,19 @@ function replaceGuardedAgainstExistingPlaceholders(
  * rendering those pass `false` (the default).
  *
  * A value already bound to a `payload.<field>` accessor keeps that accessor
- * on every call EXCEPT where {@link deriveProducerBoundaryBindings} has
- * deliberately scoped it to a producer step — that mechanism exists
- * precisely so a value which both rides its producer's own request body AND
- * echoes in that step's response can still thread as the ordinary `${var}`
- * state var on every step AFTER the producer (see
- * {@link applyWholeValuePayloadSubstitutions}'s docstring). A value with no
- * such binding is a coincidental echo — never re-sent by the step whose
+ * on EVERY call EXCEPT the value's own producing step, where
+ * {@link deriveProducerBoundaryBindings} has deliberately scoped a binding to
+ * THAT step (`producerIndex === stepIndex`, threaded in as `stepIndex` below):
+ * the producer cannot thread its own not-yet-existent response, so its own
+ * request body needs the ordinary produced-value handling elsewhere (see
+ * {@link applyWholeValuePayloadSubstitutions}'s docstring) rather than a second,
+ * redundant payload bind here. Every OTHER step — including every step AFTER
+ * the producer that re-sends the same coordinate — keeps payload precedence:
+ * a value legitimately sourced from `payload.<field>` on one call must resolve
+ * to that same accessor on every call that re-sends it, never fall back to the
+ * coincidentally-equal scraped `${var}` just because the value also happens to
+ * qualify as a producer-boundary coordinate. A value with no producer-boundary
+ * binding at all is a coincidental echo — never re-sent by the step whose
  * response produced it — so payload precedence is unconditional for it.
  *
  * `topLevelPayloadKvValues` extends that same precedence to values too SHORT
@@ -5046,7 +5052,8 @@ function interpolateStateValues(
   targetCapture: Capture,
   payloadAccessorByValue: Map<string, string> = new Map(),
   isJsonBody = false,
-  producerBoundaryValues: ReadonlySet<string> = new Set(),
+  producerBoundaryBindings: ReadonlyMap<string, ProducerBoundaryBinding> = new Map(),
+  stepIndex = -1,
   topLevelPayloadKvValues: ReadonlySet<string> = new Set()
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
@@ -5059,8 +5066,9 @@ function interpolateStateValues(
   const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
-    if (payloadAccessorByValue.has(value) && !producerBoundaryValues.has(value)) continue;
-    if (topLevelPayloadKvValues.has(value) && !producerBoundaryValues.has(value)) continue;
+    const isProducerStep = producerBoundaryBindings.get(value)?.producerIndex === stepIndex;
+    if (payloadAccessorByValue.has(value) && !isProducerStep) continue;
+    if (topLevelPayloadKvValues.has(value) && !isProducerStep) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
@@ -5251,11 +5259,14 @@ export function deriveProducerBoundaryBindings(
  * the exact `"<key>":` slot, so it only fires on a value's own JSON slot.
  *
  * `producerScoped` bindings fire only on their producing step
- * (`producerIndex === stepIndex`): a later step re-sending the same coordinate
- * threads the produced state var, the established behavior; only the producer,
- * which cannot thread its own not-yet-existent response, needs the payload bind.
- * `entryUrlBindings` (a caller coordinate lifted from the entry URL) fire on
- * EVERY step — they are the caller's data on every request, never a produced var.
+ * (`producerIndex === stepIndex`): only the producer, which cannot thread its
+ * own not-yet-existent response, needs this whole-value bind. A later step
+ * re-sending the same coordinate still resolves to `payload.<field>` — via
+ * {@link interpolateStateValues}'s own producer-scoped exemption, which lets
+ * the produced state var win ONLY on the producing step itself — never via a
+ * second whole-value bind here. `entryUrlBindings` (a caller coordinate lifted
+ * from the entry URL) fire on EVERY step — they are the caller's data on every
+ * request, never a produced var.
  */
 function applyWholeValuePayloadSubstitutions(
   template: string,
@@ -5958,11 +5969,6 @@ export function emitMultiStepExecuteHttp(
       payloadAccessorByValue.set(value, accessor);
     }
   }
-  // Values `deriveProducerBoundaryBindings` scoped to a single producer step —
-  // {@link interpolateStateValues} uses this to let the ordinary state var win
-  // on every step AFTER the producer, even though the value also carries a
-  // `payload.<field>` accessor from `inputBody`/persona/entry-URL sources.
-  const producerBoundaryValues = new Set(producerBoundaryBindings.keys());
   // G2: register any tenant-subdomain header values as payload-supplied fields
   // (e.g. an `API-ShortName: "addus"` header becomes `payload.ApiShortName`).
   for (const [headerName, _value] of tenantSubdomainHeaders) {
@@ -6126,7 +6132,8 @@ export function emitMultiStepExecuteHttp(
           cap,
           payloadAccessorByValue,
           false,
-          producerBoundaryValues
+          producerBoundaryBindings,
+          i
         );
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
@@ -6235,7 +6242,8 @@ export function emitMultiStepExecuteHttp(
             cap,
             payloadAccessorByValue,
             true,
-            producerBoundaryValues,
+            producerBoundaryBindings,
+            i,
             topLevelPayloadKvValues
           ),
           inputBody,
@@ -6290,7 +6298,8 @@ export function emitMultiStepExecuteHttp(
           cap,
           payloadAccessorByValue,
           false,
-          producerBoundaryValues
+          producerBoundaryBindings,
+          i
         );
       }
     }
@@ -6837,7 +6846,8 @@ export function emitMultiStepExecuteHttp(
               cap,
               payloadAccessorByValue,
               false,
-              producerBoundaryValues
+              producerBoundaryBindings,
+              i
             )}\``
           );
         }
