@@ -43,6 +43,10 @@ const ResponseEnvelopeSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Parses the smoke test's CLI flags, exiting the process with a logged
+ * error when required input is missing or malformed.
+ */
 export function parseCli(): {
   site: string;
   payload: Record<string, unknown>;
