@@ -112,7 +112,9 @@ afterEach(() => {
 
 describe("recon-generate CLI — for-loop-nested submit body never threads a frozen ancestor's bracket-keyed value into unrelated fields", () => {
   it("collapses per-item submits into a genuine loop, resolves itemId by name, and leaves both value-coincident fields unthreaded", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-loop-ancestor-value-coincidence-multifield-e2e-"));
+    workDir = mkdtempSync(
+      join(tmpdir(), "barnacle-loop-ancestor-value-coincidence-multifield-e2e-")
+    );
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
 
@@ -122,10 +124,7 @@ describe("recon-generate CLI — for-loop-nested submit body never threads a fro
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
-        steps: [
-          { step: "browse catalog search" },
-          { step: "select item", submitStep: true },
-        ],
+        steps: [{ step: "browse catalog search" }, { step: "select item", submitStep: true }],
         submitEndpointPattern: "catalog/select",
         requireSubmitEndpointMatch: true,
         ownBackendHostnames: [OWN_BACKEND_HOST],
