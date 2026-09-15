@@ -6854,18 +6854,22 @@ export function emitMultiStepExecuteHttp(
       const perCallHeaderEntries: string[] = [];
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
-        if (lower === "api-token" || lower === "authorization") {
-          perCallHeaderEntries.push(
-            `${JSON.stringify(k)}: \`${interpolateStateValues(
-              v,
-              actions.slice(0, i),
-              cap,
-              payloadAccessorByValue,
-              false,
-              producerBoundaryBindings,
-              i
-            )}\``
-          );
+        const interpolated = interpolateStateValues(
+          v,
+          actions.slice(0, i),
+          cap,
+          payloadAccessorByValue,
+          false,
+          producerBoundaryBindings,
+          i
+        );
+        // Mirrors the non-multipart per-call header builder above: any
+        // header name (not just Authorization/Api-Token) that interpolation
+        // recognizes as a prior step's produced state var must thread
+        // per-call too, or its custom name freezes into an invariant
+        // BASE_HEADERS-equivalent literal.
+        if (lower === "api-token" || lower === "authorization" || interpolated !== v) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${interpolated}\``);
         }
       }
       // G1+G2: include tenant-derived headers in the multipart fetch too.
