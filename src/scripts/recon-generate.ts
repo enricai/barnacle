@@ -6291,16 +6291,32 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      if (lower === "api-token" || lower === "authorization" || joinCarryingHeaderNames?.has(k)) {
-        perCallHeaders[k] = interpolateStateValues(
-          v,
-          prior,
-          cap,
-          payloadAccessorByValue,
-          false,
-          producerBoundaryBindings,
-          i
-        );
+      const interpolated = interpolateStateValues(
+        v,
+        prior,
+        cap,
+        payloadAccessorByValue,
+        false,
+        producerBoundaryBindings,
+        i
+      );
+      // Authorization/Api-Token and a structurally-detected join-carrying
+      // header are always emitted per-call (even when interpolation finds
+      // nothing to thread, matching this gate's prior behavior exactly).
+      // Any OTHER header name also gets a per-call entry once interpolation
+      // actually recognizes its value as a prior step's produced state var
+      // — interpolateStateValues itself is the source of truth for whether
+      // a value is genuinely threadable; restricting that recognition to a
+      // closed set of header names left every other header name frozen as
+      // a literal BASE_HEADERS entry (or dropped per-call) even when its
+      // captured value was a real, already-produced response field.
+      if (
+        lower === "api-token" ||
+        lower === "authorization" ||
+        joinCarryingHeaderNames?.has(k) ||
+        interpolated !== v
+      ) {
+        perCallHeaders[k] = interpolated;
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
