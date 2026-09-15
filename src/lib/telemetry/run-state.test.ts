@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { getTelemetryState, resetTelemetryState, setTelemetryState } from "@/lib/telemetry/run-state";
+import {
+  getTelemetryState,
+  resetTelemetryState,
+  setTelemetryState,
+} from "@/lib/telemetry/run-state";
 
 describe("run-state", () => {
   beforeEach(() => {
@@ -26,7 +30,11 @@ describe("run-state", () => {
   });
 
   it("restores the defaults after mutation", () => {
-    setTelemetryState({ currentRunFile: "/tmp/run.ndjson", currentRunFileSizeBytes: 42, orphansRecovered: 3 });
+    setTelemetryState({
+      currentRunFile: "/tmp/run.ndjson",
+      currentRunFileSizeBytes: 42,
+      orphansRecovered: 3,
+    });
 
     resetTelemetryState();
 
