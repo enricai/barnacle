@@ -36,6 +36,7 @@ const MIDDLE_NAME_VALUE = "Bartholomew";
 function fixtureCaptures(): Capture[] {
   const listPage = buildCapture({
     url: LIST_URL,
+    requestPostData: null,
     requestHeaders: { "Content-Type": "application/json", "API-ShortName": TENANT_SUBDOMAIN },
     responseBody: { totalPages: 1, results: [{ itemId: "req-1" }] },
     timestamp: "2026-02-01T00:00:00Z",
