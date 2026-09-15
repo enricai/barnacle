@@ -215,4 +215,140 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
       callback,
     });
   });
+
+  it("wraps render when a foreign script replaces the whole window.hcaptcha descriptor via Object.defineProperty", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const render = (_container: string, config: Record<string, unknown>): string =>
+      "widget-foreign";
+    (sandbox as Record<string, unknown>).__foreignRender = render;
+    vm.runInContext(
+      `Object.defineProperty(window, "hcaptcha", { configurable: true, value: { render: __foreignRender } });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-g", callback });
+
+    expect(widgetId).toBe("widget-foreign");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-g::widget-foreign"]).toEqual({
+      sitekey: "site-g",
+      widgetId: "widget-foreign",
+      callback,
+    });
+  });
+
+  it("wraps render when a foreign script replaces window.hcaptcha with its own accessor getter via Object.defineProperty", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const render = (_container: string, config: Record<string, unknown>): string => "widget-getter";
+    const foreignHcaptcha = { render };
+    (sandbox as Record<string, unknown>).__foreignHcaptcha = foreignHcaptcha;
+    vm.runInContext(
+      `Object.defineProperty(window, "hcaptcha", { configurable: true, get: function () { return __foreignHcaptcha; } });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-h", callback });
+
+    expect(widgetId).toBe("widget-getter");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-h::widget-getter"]).toEqual({
+      sitekey: "site-h",
+      widgetId: "widget-getter",
+      callback,
+    });
+  });
+
+  it("wraps render when a foreign script replaces the whole window.hcaptcha descriptor via Reflect.defineProperty", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const render = (_container: string, _config: Record<string, unknown>): string =>
+      "widget-reflect";
+    (sandbox as Record<string, unknown>).__foreignRender = render;
+    vm.runInContext(
+      `Reflect.defineProperty(window, "hcaptcha", { configurable: true, value: { render: __foreignRender } });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-j", callback });
+
+    expect(widgetId).toBe("widget-reflect");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-j::widget-reflect"]).toEqual({
+      sitekey: "site-j",
+      widgetId: "widget-reflect",
+      callback,
+    });
+  });
+
+  it("wraps render when hCaptcha's own api.js redefines window.hcaptcha via a getter, mirroring the recon's ICIMS_IFRAME probe", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const originalRender = (_container: string, _config: Record<string, unknown>): string =>
+      "widget-icims";
+    (sandbox as Record<string, unknown>).__originalRender = originalRender;
+    vm.runInContext(
+      `Object.defineProperty(window, "hcaptcha", { configurable: true, get: () => ({ render: __originalRender }) });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-i", callback });
+
+    expect(widgetId).toBe("widget-icims");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-i::widget-icims"]).toEqual({
+      sitekey: "site-i",
+      widgetId: "widget-icims",
+      callback,
+    });
+  });
 });

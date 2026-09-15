@@ -18,7 +18,11 @@ export const HCAPTCHA_CALLBACK_REGISTRY_GLOBAL = "__barnacleHcaptchaCallbacks";
  * `Page.addInitScript` — it installs itself once, wraps `hcaptcha.render`
  * whether `window.hcaptcha` already exists or is assigned later by the
  * site's own hcaptcha.js, and never throws or changes render's real return
- * value or side effects.
+ * value or side effects. Also patches `Object.defineProperty` and
+ * `Reflect.defineProperty` themselves so a site script that replaces
+ * `window.hcaptcha`'s whole property descriptor (rather than assigning
+ * through it, via either API) still gets its value or getter wrapped
+ * before any caller can observe the unwrapped `render`.
  */
 export function buildHcaptchaCallbackCaptureScript(): string {
   return `(function () {
@@ -60,6 +64,47 @@ export function buildHcaptchaCallbackCaptureScript(): string {
         // a non-writable render on some builds must not break the page
       }
       return hcaptcha;
+    }
+
+    function wrapHcaptchaDescriptor(obj, prop, desc) {
+      if (obj === window && prop === "hcaptcha" && desc && typeof desc === "object") {
+        if ("value" in desc) {
+          desc.value = wrapHcaptchaObject(desc.value);
+        } else if (typeof desc.get === "function" && !desc.get.__barnacleGetter) {
+          const originalGet = desc.get;
+          desc.get = function () {
+            return wrapHcaptchaObject(originalGet.apply(this, arguments));
+          };
+        }
+      }
+      return desc;
+    }
+
+    if (!Object.defineProperty.__barnacleWrapsHcaptcha) {
+      const originalDefineProperty = Object.defineProperty;
+      const patchedDefineProperty = function (obj, prop, desc) {
+        return originalDefineProperty.call(Object, obj, prop, wrapHcaptchaDescriptor(obj, prop, desc));
+      };
+      patchedDefineProperty.__barnacleWrapsHcaptcha = true;
+      Object.defineProperty = patchedDefineProperty;
+    }
+
+    if (
+      typeof Reflect !== "undefined" &&
+      typeof Reflect.defineProperty === "function" &&
+      !Reflect.defineProperty.__barnacleWrapsHcaptcha
+    ) {
+      const originalReflectDefineProperty = Reflect.defineProperty;
+      const patchedReflectDefineProperty = function (obj, prop, desc) {
+        return originalReflectDefineProperty.call(
+          Reflect,
+          obj,
+          prop,
+          wrapHcaptchaDescriptor(obj, prop, desc)
+        );
+      };
+      patchedReflectDefineProperty.__barnacleWrapsHcaptcha = true;
+      Reflect.defineProperty = patchedReflectDefineProperty;
     }
 
     const descriptor = Object.getOwnPropertyDescriptor(window, "hcaptcha");
