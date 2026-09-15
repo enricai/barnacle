@@ -4822,18 +4822,54 @@ function replaceGuardedAgainstExistingPlaceholders(
   keyCorrelationGuard?: {
     restrictedValues: ReadonlySet<string>;
     sourceNameByValue: ReadonlyMap<string, string>;
+    // Values indexed only via the chain/force-include short-value exemption
+    // (see `StateValue.eligibleConsumers`) already had eligibility itself
+    // proven by a specific, real chain hop — every splice target must
+    // correlate unconditionally, exactly as before this parameter existed.
+    // A naturally-length-qualified value (this set holds the complement)
+    // never had that proof; it only earned production at all because it
+    // correlated with SOME downstream key (`compileActionSteps`' pre-scan),
+    // so narrowing its OTHER occurrences is only warranted once that one
+    // correlated "real home" is actually observed in THIS text — otherwise
+    // an ordinary single-producer/single-consumer value whose own derived
+    // name never lexically matches its one true consumer field (e.g. a
+    // `label` produce genuinely re-sent as a differently-named `ref`) would
+    // wrongly lose its only binding.
+    unconditionalValues: ReadonlySet<string>;
   }
 ): string {
   const protectedSpans = findBalancedPlaceholderSpans(text);
+  const matches = [...text.matchAll(pattern)].filter(
+    (match) =>
+      !protectedSpans.some(
+        ([spanStart, spanEnd]) => match.index < spanEnd && match.index + match[0].length > spanStart
+      )
+  );
+  const hasCorrelatedTargetByValue = new Map<string, boolean>();
+  if (keyCorrelationGuard) {
+    for (const match of matches) {
+      const value = match[0];
+      if (!keyCorrelationGuard.restrictedValues.has(value)) continue;
+      if (keyCorrelationGuard.unconditionalValues.has(value)) continue;
+      if (hasCorrelatedTargetByValue.get(value)) continue;
+      const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
+      const targetKey = findEnclosingJsonKey(text, match.index);
+      if (sourceName !== undefined && targetKey !== null && keysCorrelate(sourceName, targetKey)) {
+        hasCorrelatedTargetByValue.set(value, true);
+      }
+    }
+  }
   let result = "";
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
+  for (const match of matches) {
     const start = match.index;
     const end = start + match[0].length;
-    if (protectedSpans.some(([spanStart, spanEnd]) => start < spanEnd && end > spanStart)) continue;
     const value = match[0];
-    if (keyCorrelationGuard?.restrictedValues.has(value)) {
-      const sourceName = keyCorrelationGuard.sourceNameByValue.get(value);
+    const isGated =
+      keyCorrelationGuard?.restrictedValues.has(value) &&
+      (keyCorrelationGuard.unconditionalValues.has(value) || hasCorrelatedTargetByValue.get(value));
+    if (isGated) {
+      const sourceName = keyCorrelationGuard?.sourceNameByValue.get(value);
       const targetKey = findEnclosingJsonKey(text, start);
       if (sourceName === undefined || targetKey === null || !keysCorrelate(sourceName, targetKey)) {
         result += text.slice(cursor, end);
@@ -4887,11 +4923,13 @@ function interpolateStateValues(
     bindingByValue.set(value, `\${${accessor}}`);
   }
   const restrictedValues = new Set<string>();
+  const unconditionalValues = new Set<string>();
   const sourceNameByValue = new Map<string, string>();
   for (const [value, binding] of stateBindings) {
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
+    if (binding.unconditional) unconditionalValues.add(value);
   }
   if (bindingByValue.size === 0) return template;
 
@@ -4902,7 +4940,9 @@ function interpolateStateValues(
     template,
     pattern,
     bindingByValue,
-    isJsonBody && restrictedValues.size > 0 ? { restrictedValues, sourceNameByValue } : undefined
+    isJsonBody && restrictedValues.size > 0
+      ? { restrictedValues, sourceNameByValue, unconditionalValues }
+      : undefined
   );
 }
 
@@ -5130,17 +5170,24 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * splices it into an unrelated capture's URL/body/headers.
  */
 /** A value → `${var}` binding {@link deriveStateVarByValue} hands to
- * {@link interpolateStateValues}. `restricted` mirrors `p.eligibleConsumers`
- * being set — the value only cleared the length floor via the chain/force-
- * include short-value exemption, a name-free eligibility signal (a bare
- * array index, a URL path segment) that proves nothing about which specific
- * body key downstream it may correlate with. `sourceName` is the produce's
+ * {@link interpolateStateValues}. `restricted` is set whenever the source has
+ * a real name to correlate (`sourceHasName`) — `sourceName` is the produce's
  * own field name (`p.name`), the signal `keysCorrelate` checks a restricted
- * binding's actual splice target against. */
+ * binding's actual splice target against. `unconditional` mirrors
+ * `p.eligibleConsumers` being set — the value only cleared the length floor
+ * via the chain/force-include short-value exemption, a name-free eligibility
+ * signal (a bare array index, a URL path segment) whose ONLY proof of a real
+ * downstream relationship is that exemption itself, so every splice target
+ * must correlate unconditionally. A naturally-length-qualified value (`false`)
+ * earned production some other way (a genuine name-correlated match
+ * elsewhere), so narrowing its OTHER occurrences is only warranted once that
+ * correlated occurrence is actually observed in the same text — see {@link
+ * replaceGuardedAgainstExistingPlaceholders}. */
 interface StateVarBinding {
   varName: string;
   sourceName: string;
   restricted: boolean;
+  unconditional: boolean;
 }
 
 function deriveStateVarByValue(
@@ -5168,7 +5215,17 @@ function deriveStateVarByValue(
         varNameByValue.set(value, {
           varName: p.name,
           sourceName: p.name,
-          restricted: p.eligibleConsumers !== undefined && sourceHasName,
+          // Requiring name/shape correlation at the splice site is not just
+          // for the chain/force-include short-value exemption — a
+          // naturally-length-qualified value that legitimately correlates
+          // with ONE downstream key (which is what got it produced at all,
+          // see `compileActionSteps`' `keyNamesCorrelate` pre-scan) must not
+          // also splice into an unrelated, differently-named key that merely
+          // coincides in value. `sourceHasName` gates this the same way it
+          // gates the chain-derived case: a name-free source (a bare array
+          // index) has nothing to correlate, so it stays unrestricted.
+          restricted: sourceHasName,
+          unconditional: p.eligibleConsumers !== undefined && sourceHasName,
         });
       }
     }
