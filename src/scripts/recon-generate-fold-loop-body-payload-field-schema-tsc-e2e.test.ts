@@ -154,7 +154,10 @@ describe("recon-generate CLI + tsc --noEmit — fold-loop per-item body payload 
     // — the core invariant this fix enforces.
     expect(contract).toMatch(/region:\s*z\.string\(\),/);
 
-    tsconfigPath = join(REPO_ROOT, `tsconfig.fold-loop-body-payload-field-schema.${process.pid}.json`);
+    tsconfigPath = join(
+      REPO_ROOT,
+      `tsconfig.fold-loop-body-payload-field-schema.${process.pid}.json`
+    );
     writeFileSync(
       tsconfigPath,
       JSON.stringify({
