@@ -282,4 +282,38 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
       callback,
     });
   });
+
+  it("wraps render when hCaptcha's own api.js redefines window.hcaptcha via a getter, mirroring the recon's ICIMS_IFRAME probe", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const originalRender = (_container: string, config: Record<string, unknown>): string =>
+      "widget-icims";
+    (sandbox as Record<string, unknown>).__originalRender = originalRender;
+    vm.runInContext(
+      `Object.defineProperty(window, "hcaptcha", { configurable: true, get: () => ({ render: __originalRender }) });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-i", callback });
+
+    expect(widgetId).toBe("widget-icims");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-i::widget-icims"]).toEqual({
+      sitekey: "site-i",
+      widgetId: "widget-icims",
+      callback,
+    });
+  });
 });
