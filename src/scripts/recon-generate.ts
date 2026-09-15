@@ -10308,6 +10308,34 @@ export function emitContractTs(opts: {
     addExtendField(name, `  ${key}: ${value},`);
   }
 
+  // Closing-the-loop safety net: every discovered-field source above tracks
+  // its own registration as it splices a `payload.<field>` accessor into the
+  // emitted body/url/headers text, but that tracking is scattered across N
+  // independent passes (form-schema discovery, option mappings, additional
+  // body keys, structured keys, drill-param bindings, and — inside
+  // emitMultiStepExecuteHttp's fold-loop `parameterize` closure — threaded
+  // join-field rebinding), any one of which can add an accessor to the
+  // rendered text without remembering to register it in the matching map
+  // above. Rather than trust each source to stay perfectly in sync with the
+  // text it emits, derive completeness from the actual rendered output: scan
+  // `multiStepBody` (already fully assembled at this point — every chain
+  // step's url/headers/body substitutions are done) for every
+  // `payload.<field>` reference and union in any name the sources above
+  // missed, with a conservative `z.string()` default. This closes the gap at
+  // its structural root regardless of which upstream pass forgot to record a
+  // field, instead of adding a fifth registration site that could itself be
+  // forgotten by a future pass.
+  if (multiStepBody) {
+    const bodyReferencedFields = new Set(
+      [...multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]!)
+    );
+    for (const name of [...bodyReferencedFields].sort()) {
+      if (extendFields.has(name)) continue;
+      if (isReservedByApplicantContactSchema(name)) continue;
+      addExtendField(name, `  ${name}: z.string(),`);
+    }
+  }
+
   // The structural walk over the captured request body that used to BE the
   // public payload schema (see basePayloadSchemaExpr above) is still the
   // right starting point for the plugin author's internal builder — it's
