@@ -7417,7 +7417,13 @@ function collectRequestStringValues(
   capture: Capture,
   allCaptures?: readonly Capture[]
 ): Set<string> {
-  const values = collectRequestUrlValues(capture, allCaptures);
+  // Copied rather than mutated in place: collectRequestUrlValues now returns
+  // a cached Set shared across every caller of this exact (capture,
+  // allCaptures) pair, so merging body values directly into it would leak
+  // them into every OTHER caller relying on collectRequestUrlValues' own
+  // URL-only contract (e.g. findThreadedJoinFields's separate URL/body
+  // gating).
+  const values = new Set(collectRequestUrlValues(capture, allCaptures));
   const bodyValuesByKey = collectRequestBodyValuesByKey(capture, allCaptures);
   for (const leafValues of bodyValuesByKey?.values() ?? []) {
     for (const value of leafValues) values.add(value);
