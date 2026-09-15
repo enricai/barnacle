@@ -220,7 +220,8 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
 
-    const render = (_container: string, config: Record<string, unknown>): string => "widget-foreign";
+    const render = (_container: string, config: Record<string, unknown>): string =>
+      "widget-foreign";
     (sandbox as Record<string, unknown>).__foreignRender = render;
     vm.runInContext(
       `Object.defineProperty(window, "hcaptcha", { configurable: true, value: { render: __foreignRender } });`,
@@ -279,6 +280,40 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     expect(registry["site-h::widget-getter"]).toEqual({
       sitekey: "site-h",
       widgetId: "widget-getter",
+      callback,
+    });
+  });
+
+  it("wraps render when a foreign script replaces the whole window.hcaptcha descriptor via Reflect.defineProperty", () => {
+    const sandbox = makeFakeWindow();
+    runScript(sandbox);
+
+    const render = (_container: string, _config: Record<string, unknown>): string =>
+      "widget-reflect";
+    (sandbox as Record<string, unknown>).__foreignRender = render;
+    vm.runInContext(
+      `Reflect.defineProperty(window, "hcaptcha", { configurable: true, value: { render: __foreignRender } });`,
+      sandbox
+    );
+
+    const hcaptcha = (sandbox.window as Record<string, unknown>).hcaptcha as {
+      render: { __barnacleWrapped?: boolean } & ((
+        container: string,
+        config: Record<string, unknown>
+      ) => string);
+    };
+    expect(hcaptcha.render.__barnacleWrapped).toBe(true);
+
+    const callback = (): void => undefined;
+    const widgetId = hcaptcha.render("h-captcha", { sitekey: "site-j", callback });
+
+    expect(widgetId).toBe("widget-reflect");
+    const registry = (sandbox.window as Record<string, unknown>)[
+      HCAPTCHA_CALLBACK_REGISTRY_GLOBAL
+    ] as Record<string, { sitekey: string; widgetId: string; callback: () => void }>;
+    expect(registry["site-j::widget-reflect"]).toEqual({
+      sitekey: "site-j",
+      widgetId: "widget-reflect",
       callback,
     });
   });
