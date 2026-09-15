@@ -43,7 +43,7 @@ const ResponseEnvelopeSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-function parseCli(): {
+export function parseCli(): {
   site: string;
   payload: Record<string, unknown>;
   host: string;
@@ -95,7 +95,7 @@ function parseCli(): {
  * export a Zod schema as its default export so the smoke test remains
  * site-agnostic — it validates without knowing which plugin it targets.
  */
-async function loadResponseSchema(schemaPath: string): Promise<z.ZodTypeAny> {
+export async function loadResponseSchema(schemaPath: string): Promise<z.ZodTypeAny> {
   try {
     const mod = (await import(schemaPath)) as { default?: z.ZodTypeAny };
     if (!mod.default || typeof (mod.default as z.ZodTypeAny).safeParse !== "function") {
@@ -271,7 +271,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  logger.error(`smoke-test error: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("smoke-test.ts") || process.argv[1].endsWith("smoke-test.js"))
+) {
+  main().catch((err) => {
+    logger.error(`smoke-test error: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}
