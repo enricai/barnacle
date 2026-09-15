@@ -10,7 +10,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { verifySubmitWithLLM, type VerifySubmitInput } from "./verify-submit";
+import { type VerifySubmitInput, verifySubmitWithLLM } from "./verify-submit";
 
 function fakeClient(parsedOutput: unknown): Anthropic {
   return {

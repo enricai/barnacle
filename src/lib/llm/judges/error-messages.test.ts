@@ -24,9 +24,7 @@ function fakeClient(parsedOutput: unknown): Anthropic {
 
 describe("judgeErrorMessagesWithLLM", () => {
   it("returns the parsed messages from the mocked judge", async () => {
-    const parsedOutput = [
-      { text: "Email is required", fieldHint: "email", severity: "error" },
-    ];
+    const parsedOutput = [{ text: "Email is required", fieldHint: "email", severity: "error" }];
     const client = fakeClient(parsedOutput);
     const result = await judgeErrorMessagesWithLLM({
       client,
