@@ -2765,6 +2765,97 @@ function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
   return sourceWords.some((sw) => targetWords.some((tw) => wordsMatch(sw, tw)));
 }
 
+/** A spliced `${...}` accessor/varName whose own derived name is
+ * legitimately name-free — it can never be required to correlate with the
+ * JSON key it lands under. A `payload.<field>` accessor matches its target
+ * BY DEFINITION (the schema field IS the body key), and a bare loop
+ * index/counter (`i`, `i0`, `idx0`) names a position, not a concept. Used by
+ * {@link deriveSplicedSourceName}. */
+const NAME_FREE_ACCESSOR_PATTERN = /^payload\./;
+const ARRAY_INDEX_VAR_PATTERN = /^(?:i|idx)\d*$/;
+
+/** {@link deriveSplicedSourceName} only derives a correlatable name for an
+ * accessor rooted at one of this file's own fold/drill per-item or
+ * ancestor-scope bindings — `item`/`item0`/... (see {@link
+ * pathToFoldLoopLines}'s `itemVar`) or `g0`/`g1`/... (its `groupVar`). These
+ * are exactly the bindings {@link findThreadedJoinFields} and {@link
+ * applyDrillParamBindings} thread a per-item/per-ancestor FIELD (as opposed
+ * to a whole produced value) into, which is the specific "picks the wrong
+ * source field for a given key" bug class this net closes. A top-level
+ * chain-produced var (`r0`, `token`, a response-derived `const label = ...`)
+ * is threaded by exact VALUE identity across steps, a different, already
+ * value-gated mechanism this net intentionally leaves alone — genuinely
+ * different names on either side of that kind of splice (a rotated `token`
+ * landing under an `auth` key, a `label` re-sent as a `ref`) are expected,
+ * not a bug. */
+const FOLD_SCOPED_ROOT_PATTERN = /^(?:item\d*|g\d+)\./;
+
+/**
+ * Derives the "own name" a spliced `${...}` accessor carries for {@link
+ * assertBodyFieldSourceNameCorrelates} to correlate against its enclosing
+ * JSON key — the last dot-separated path segment (e.g. `g0.identifiers.sku`
+ * -> `sku`, matching {@link keyNamesCorrelate}'s own source-key convention
+ * elsewhere in this file). Returns `null` for anything not rooted at a
+ * fold/drill per-item or ancestor binding (see {@link
+ * FOLD_SCOPED_ROOT_PATTERN}'s docstring for why only those are in scope) or
+ * that is otherwise legitimately name-free (see {@link
+ * NAME_FREE_ACCESSOR_PATTERN} / {@link ARRAY_INDEX_VAR_PATTERN}).
+ */
+function deriveSplicedSourceName(accessor: string): string | null {
+  const trimmed = accessor.trim();
+  if (NAME_FREE_ACCESSOR_PATTERN.test(trimmed) || ARRAY_INDEX_VAR_PATTERN.test(trimmed)) {
+    return null;
+  }
+  if (!FOLD_SCOPED_ROOT_PATTERN.test(trimmed)) return null;
+  // A non-identifier expression (a template literal, a ternary, a function
+  // call) carries no single derivable name to correlate — only a bare
+  // dotted-path accessor is in scope for this check.
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(trimmed)) return null;
+  const segments = trimmed.split(".");
+  return segments[segments.length - 1] ?? null;
+}
+
+/**
+ * Mechanism-agnostic, generation-time safety net closing the door on ANY
+ * fold/drill body-field/source-name correlation bug, regardless of which of
+ * this file's several independent per-item/ancestor threading passes
+ * (fold-item join fields, ancestor-scope rebinding, drill-param binding,
+ * ...) produced the offending splice — architecturally the same kind of
+ * final structural gate as {@link assertNoFrozenVaryingDrillParams}, not a
+ * fix specific to one mechanism. Walks the fully-assembled `renderedBody`
+ * for every `"<key>":${<accessor>}` pair whose accessor is rooted at a
+ * fold/drill binding (see {@link deriveSplicedSourceName}) and requires its
+ * own derived field name to plausibly name the same concept as the
+ * enclosing JSON key ({@link keyNamesCorrelate}) it was spliced under.
+ * Throws a site-agnostic description naming only the key/accessor pair
+ * (never a specific site or plugin) so a SEVENTH recurrence of this bug
+ * class, in a mechanism not yet built, fails generation loudly instead of
+ * silently shipping a body field assigned from an unrelated per-item/
+ * ancestor source field.
+ *
+ * Exported for unit testing — see `applyDrillParamBindings`/
+ * `compileActionSteps` for this file's existing precedent of exporting an
+ * otherwise-internal structural gate so it can be probed directly with a
+ * synthetic `renderedBody` string, independent of the fold-plan-detection
+ * machinery that decides which mechanism produces a given splice.
+ */
+export function assertBodyFieldSourceNameCorrelates(
+  emitterName: string,
+  renderedBody: string
+): void {
+  const pattern = /"([^"\\]+)"\s*:\s*"?\$\{([^{}]+)\}/g;
+  for (const match of renderedBody.matchAll(pattern)) {
+    const key = match[1]!;
+    const accessor = match[2]!;
+    const sourceName = deriveSplicedSourceName(accessor);
+    if (sourceName === null) continue;
+    if (keyNamesCorrelate(sourceName, key)) continue;
+    throw new Error(
+      `${emitterName}: body field "${key}" is spliced from "\${${accessor}}", whose own inferred name ("${sourceName}") doesn't correlate with "${key}" — a field must be assigned from a source whose own name plausibly names the same concept as the key it lands under, not from a value that only coincidentally matches`
+    );
+  }
+}
+
 /**
  * Yields every primitive leaf (string, number, boolean, null) in the JSON
  * value with its path. Used by the body-literal substitution pass to find
@@ -6766,7 +6857,9 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    return { data: ${castToResponseType(returnVar)} };`);
   }
 
-  return lines.join("\n");
+  const renderedMultiStepBody = lines.join("\n");
+  assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedMultiStepBody);
+  return renderedMultiStepBody;
 }
 
 function summariseResponseShape(value: unknown): unknown {
