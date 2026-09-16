@@ -43,6 +43,16 @@ describe("scraper/flow-runner flowHasSubmitSemantics", () => {
     expect(result).toBe(true);
   });
 
+  it("returns false when an earlier, non-final step submits but the final step does not", () => {
+    const result = flowHasSubmitSemantics({
+      steps: [{ submitStep: false }, { submitStep: true }, { submitStep: false }],
+      submitEndpointPattern: null,
+      requireSubmitEndpointMatch: false,
+    });
+
+    expect(result).toBe(false);
+  });
+
   it("returns false for an empty step list with no submit shape", () => {
     const result = flowHasSubmitSemantics({
       steps: [],

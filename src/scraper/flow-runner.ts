@@ -1467,12 +1467,18 @@ export function shouldCaptureSelectionState(params: {
 }
 
 /**
- * Whether a flow has ANY submit semantics at all — a step flagged
- * `submitStep: true`, a `submitEndpointPattern`, or `requireSubmitEndpointMatch`.
- * A read-only flow (none of the three) has no submit shape anywhere, so its
- * final step is an ordinary read/click, not a submit. Pure + exported so
- * callers can stop inferring submit-shape from `isFinalStep` alone on flows
- * that never declared a submit.
+ * Whether the flow's FINAL step carries submit semantics. A read-only flow
+ * (no step flagged `submitStep: true`, no `submitEndpointPattern`, no
+ * `requireSubmitEndpointMatch`) has no submit shape anywhere, so its final
+ * step is an ordinary read/click. When some step IS explicitly flagged
+ * `submitStep: true`, that flag is authoritative over inference — the final
+ * step only counts as submit-shaped if it is itself the flagged step, not
+ * merely because an earlier, unrelated step claims the submit role. Only
+ * when NO step carries an explicit flag do we fall back to inferring
+ * submit-shape onto the final step from `submitEndpointPattern` /
+ * `requireSubmitEndpointMatch` (the documented fallback for self-heal-
+ * appended final steps that never got the flag set). Pure + exported so
+ * callers can stop inferring submit-shape from `isFinalStep` alone.
  */
 export function flowHasSubmitSemantics(params: {
   steps: Array<{ submitStep: boolean }>;
@@ -1480,9 +1486,10 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
-  return (
-    steps.some((s) => s.submitStep) || submitEndpointPattern !== null || requireSubmitEndpointMatch
-  );
+  const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
+  return hasExplicitSubmitStep
+    ? (steps[steps.length - 1]?.submitStep ?? false)
+    : submitEndpointPattern !== null || requireSubmitEndpointMatch;
 }
 
 /**
