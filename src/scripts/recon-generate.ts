@@ -8139,7 +8139,11 @@ function findStructurallyCorrespondingAncestorField(
  * candidate array, not only the first: a sparse first element (e.g. a
  * sold-out entry missing an optional nested object that every OTHER sibling
  * genuinely carries) must not silently defeat a structural correspondence
- * that a later element in the same array would prove. */
+ * that a later element in the same array would prove. This applies equally
+ * to the recursive descent into a NESTED array-within-array: it also walks
+ * every sibling element rather than only element `0`, so a sparse first
+ * element one level up can't hide a match that lives in a nested array on a
+ * later sibling. */
 function findFieldInFirstArrayElement(
   obj: Record<string, unknown>,
   lastSegment: string,
@@ -8159,12 +8163,15 @@ function findFieldInFirstArrayElement(
           }
         }
       }
-      const first = value[0];
-      if (first !== null && typeof first === "object" && !Array.isArray(first)) {
-        const nested = findFieldInFirstArrayElement(first as Record<string, unknown>, lastSegment, [
-          ...childPath,
-          "0",
-        ]);
+      for (let i = 0; i < value.length; i++) {
+        const candidate = value[i];
+        if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate))
+          continue;
+        const nested = findFieldInFirstArrayElement(
+          candidate as Record<string, unknown>,
+          lastSegment,
+          [...childPath, String(i)]
+        );
         if (nested) return nested;
       }
       continue;
