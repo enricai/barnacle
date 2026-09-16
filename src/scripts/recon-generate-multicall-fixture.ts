@@ -1231,6 +1231,82 @@ export function buildMulticallNestedGroupedDrillDownSparseFirstElementAncestorSc
 }
 
 /**
+ * A grouped, nested-primary drill-down whose drilled endpoint's TWO literal
+ * query values (`code`, `zone`) each equal BOTH the matched (first) item's
+ * own top-level fields AND the ancestor group's own structurally-
+ * corresponding fields, which themselves live inside a NESTED ancestor
+ * array (`tags.0.code` / `tags.0.zone`) rather than directly on the
+ * ancestor object — unlike
+ * {@link buildMulticallNestedGroupedDrillDownTwoLevelNestedAncestorFieldActionSteps}'s
+ * ancestor-ONLY nested field (absent from the item scope entirely), here
+ * the SAME field names and values are genuinely present on both scopes at
+ * once, for two independently-resolved params. A literal-value search over
+ * the captured request necessarily lands on the item's own field first
+ * (it's the shallower, directly-typed match), so this is the exact shape
+ * that requires {@link findStructurallyCorrespondingAncestorField}'s
+ * traversal into the ancestor's own nested array — independently, for each
+ * param — to correctly REBIND the rendered accessor onto the ancestor's
+ * structural counterpart. A fold plan that skips or fails that rebind for
+ * either param will emit an accessor reading off the item loop's own bound
+ * variable at a splice point where it is not yet declared.
+ *
+ * Every OTHER item in the same group carries its own `code`/`zone`
+ * diverging from the matched item's, and the drill's response still
+ * resolves onto every one of them, proving the drilled value is genuinely
+ * ancestor-scoped — not merely coincident with the matched item's own
+ * field — so a correct fold plan hoists the chain fetch above the item loop
+ * and fetches once per group, never once per item.
+ */
+export function buildMulticallNestedGroupedDrillDownAncestorItemValueCoincidenceActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "group-sec1",
+            tags: [{ code: "meta-code-1", zone: "west" }],
+            entries: [
+              { entryId: "e1", code: "meta-code-1", zone: "west", name: "Widget" },
+              { entryId: "e2", code: "e2-own-code", zone: "e2-own-zone", name: "Gadget" },
+            ],
+          },
+          {
+            masterCode: "group-sec2",
+            tags: [{ code: "meta-code-2", zone: "east" }],
+            entries: [
+              { entryId: "e3", code: "meta-code-2", zone: "east", name: "Thingamajig" },
+              { entryId: "e4", code: "e4-own-code", zone: "e4-own-zone", name: "Contraption" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-06-15T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=meta-code-1&zone=west`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+        ],
+      },
+      timestamp: "2025-06-15T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated&zone=zzz-zone`,
+      requestPostData: null,
+      responseBody: {
+        details: [{ entryId: "zzz-unrelated", description: "An unrelated entry." }],
+      },
+      timestamp: "2025-06-15T00:00:02Z",
+    }),
+  ];
+}
+
+/**
  * A grouped, nested-primary drill-down whose drilled endpoint's literal
  * query value equals ONLY the matched (first) item's own field (`ownCode`)
  * — never the ancestor's own field directly — but the ancestor's structural
