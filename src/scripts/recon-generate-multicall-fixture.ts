@@ -1634,6 +1634,77 @@ export function buildMulticallAncestorOnlyMultiTargetDrillDownActionSteps(): Mul
   ];
 }
 
+/**
+ * An ancestor-scoped drill target generalizing
+ * {@link buildMulticallAncestorOnlyMultiTargetDrillDownActionSteps} from ONE
+ * threaded field to TWO: the drilled endpoint's query threads BOTH the
+ * primary join field (`entryId`, declared via `joinFields` and therefore
+ * always forced item-bound in {@link buildThreadedFieldPairs}'s raw input)
+ * AND a second, independently-discovered field (`regionCode`) that
+ * {@link findThreadedJoinFields} threads purely because its literal value is
+ * present in the drilled request — never declared in `joinFields` at all.
+ * `regionCode` is homogeneous across every sibling entry in a group (every
+ * entry in `sec1` shares `"north"`, every entry in `sec2` shares `"south"`),
+ * so it is genuinely ancestor-scoped data, not a per-item value — proving
+ * {@link buildThreadedFieldPairs}'s rebind must independently resolve EACH
+ * threaded field's own structural correspondence rather than deciding
+ * hoistability once for the whole target off a single post-hoc scan of the
+ * rendered text. Regression coverage for
+ * {@link https://github.com | recon-generate}'s fold-hoist ground-truth
+ * `referencesItemVar` signal (computed per value/placeholder binding, not by
+ * re-scanning final text): with two independently-rebound fields on one
+ * target, a hoist decision that silently disagrees with what either field's
+ * OWN accessor binding proves can no longer hide behind the other field's
+ * successful rebind.
+ */
+export function buildMulticallAncestorScopedDualThreadedFieldDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "sec1",
+            entries: [
+              { entryId: "e1", regionCode: "north", name: "Widget" },
+              { entryId: "e2", regionCode: "north", name: "Gadget" },
+              { entryId: "e3", regionCode: "north", name: "Doohickey" },
+            ],
+          },
+          {
+            masterCode: "sec2",
+            entries: [
+              { entryId: "e4", regionCode: "south", name: "Thingamajig" },
+              { entryId: "e5", regionCode: "south", name: "Contraption" },
+              { entryId: "e6", regionCode: "south", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-09-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_LABELS_URL}?code=e1&region=north`,
+      requestPostData: null,
+      responseBody: {
+        labels: [
+          { entryId: "e1", label: "north-widget" },
+          { entryId: "e2", label: "north-gadget" },
+          { entryId: "e3", label: "north-doohickey" },
+        ],
+      },
+      timestamp: "2025-09-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_LABELS_URL}?code=zzz-unrelated&region=zzz-region`,
+      requestPostData: null,
+      responseBody: { labels: [] },
+      timestamp: "2025-09-01T00:00:02Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
