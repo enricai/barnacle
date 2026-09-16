@@ -35,12 +35,58 @@ const logger = getScriptLogger("recon-summarize");
 const DEFAULT_OUT = "docs/target-recon.md";
 const PLACEHOLDER_ID = "<id>";
 
-function formatDate(iso: string): string {
+/** Renders an ISO timestamp as a UTC medium-date/short-time string for the findings doc. */
+export function formatDate(iso: string): string {
   return new Date(iso).toLocaleString("en-US", {
     timeZone: "UTC",
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+export interface EndpointTally {
+  methods: Set<string>;
+  operations: Set<string>;
+}
+
+/** Dedupes captures by origin+pathname while accumulating each endpoint's methods and operation names. */
+export function buildUniqueEndpoints(captures: Capture[]): Map<string, EndpointTally> {
+  const uniqueEndpoints = new Map<string, EndpointTally>();
+  for (const c of captures) {
+    try {
+      const u = new URL(c.url);
+      const key = `${u.origin}${u.pathname}`;
+      const entry = uniqueEndpoints.get(key) ?? {
+        methods: new Set<string>(),
+        operations: new Set<string>(),
+      };
+      entry.methods.add(c.method);
+      if (c.operationName) entry.operations.add(c.operationName);
+      uniqueEndpoints.set(key, entry);
+    } catch {
+      // skip
+    }
+  }
+  return uniqueEndpoints;
+}
+
+/** Flags auth/bot-detection/edge-provider hazards from replay statuses and rate-limit header sniffing. */
+export function detectHazards(replays: ReplayResult[], rateLimitRaw: RateLimitFinding[]): string[] {
+  const has401 = replays.some((r) => r.replayStatus === 401);
+  const has403 = replays.some((r) => r.replayStatus === 403);
+
+  const hazards: string[] = [];
+  if (has401) hazards.push("Auth required on some endpoints (401)");
+  if (has403)
+    hazards.push(
+      "Bot detection active on some endpoints (403) — may need more headers or Stagehand-only"
+    );
+  const rateLimitHeaders = rateLimitRaw.flatMap((f) => Object.keys(f.xRateLimitHeaders ?? {}));
+  if (rateLimitHeaders.some((h) => h.toLowerCase().includes("akamai")))
+    hazards.push("Akamai edge detected");
+  if (rateLimitHeaders.some((h) => h.toLowerCase().includes("cf-")))
+    hazards.push("Cloudflare edge detected");
+  return hazards;
 }
 
 async function main(): Promise<void> {
@@ -90,22 +136,7 @@ async function main(): Promise<void> {
   const now = new Date().toISOString();
   const reconDate = captures[0]?.timestamp ? formatDate(captures[0].timestamp) : "unknown";
 
-  const uniqueEndpoints = new Map<string, { methods: Set<string>; operations: Set<string> }>();
-  for (const c of captures) {
-    try {
-      const u = new URL(c.url);
-      const key = `${u.origin}${u.pathname}`;
-      const entry = uniqueEndpoints.get(key) ?? {
-        methods: new Set<string>(),
-        operations: new Set<string>(),
-      };
-      entry.methods.add(c.method);
-      if (c.operationName) entry.operations.add(c.operationName);
-      uniqueEndpoints.set(key, entry);
-    } catch {
-      // skip
-    }
-  }
+  const uniqueEndpoints = buildUniqueEndpoints(captures);
 
   const replayByUrl = new Map<string, ReplayResult>();
   for (const r of replays) {
@@ -122,6 +153,8 @@ async function main(): Promise<void> {
 
   const has401 = replays.some((r) => r.replayStatus === 401);
   const has403 = replays.some((r) => r.replayStatus === 403);
+
+  const hazards = detectHazards(replays, rateLimitRaw);
 
   const rateLimitSummary =
     rateLimitRaw.length === 0
@@ -144,18 +177,6 @@ async function main(): Promise<void> {
 
   const headerCounts = tallyResponseHeaders(replays);
   const successCount = replays.filter((r) => r.success).length;
-
-  const hazards: string[] = [];
-  if (has401) hazards.push("Auth required on some endpoints (401)");
-  if (has403)
-    hazards.push(
-      "Bot detection active on some endpoints (403) — may need more headers or Stagehand-only"
-    );
-  const rateLimitHeaders = rateLimitRaw.flatMap((f) => Object.keys(f.xRateLimitHeaders ?? {}));
-  if (rateLimitHeaders.some((h) => h.toLowerCase().includes("akamai")))
-    hazards.push("Akamai edge detected");
-  if (rateLimitHeaders.some((h) => h.toLowerCase().includes("cf-")))
-    hazards.push("Cloudflare edge detected");
 
   const lines: string[] = [
     `# Target Recon Findings`,
@@ -264,7 +285,12 @@ async function main(): Promise<void> {
   logger.info(`findings written to ${outPath}`);
 }
 
-main().catch((err) => {
-  logger.error(`recon-summarize failed: ${toErrorMessage(err)}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] !== undefined &&
+  (process.argv[1].endsWith("recon-summarize.ts") || process.argv[1].endsWith("recon-summarize.js"))
+) {
+  main().catch((err) => {
+    logger.error(`recon-summarize failed: ${toErrorMessage(err)}`);
+    process.exit(1);
+  });
+}
