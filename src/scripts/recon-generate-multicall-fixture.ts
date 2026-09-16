@@ -802,6 +802,86 @@ export function buildMulticallNestedGroupedDrillDownMultiGroupActionSteps(): Mul
 const CATALOG_ENTRY_DETAILS_URL = "https://api.example.com/catalog/entries/details";
 
 /**
+ * TWO fully independent fold plans in one action-step sequence, each bound to
+ * its OWN loop-variable name (`item0`/`item1` — every loop var is suffixed by
+ * plan index once more than one independent plan resolves): a flat,
+ * heuristically-detected primary/drill pair (products/reviews, `item0`) and a
+ * nested GROUPED primary/drill pair (sections/entries, `item1`) whose
+ * per-item join field lives under a NESTED path (`identifiers.code`).
+ *
+ * That nested path is the exact shape that regresses the fold-hoist decision
+ * in `emitMultiStepExecuteHttp`/`buildFoldMergeLines`: `scopedAccessor`/
+ * `unknownValueAccessor` wrap every non-leaf hop of a nested field path in a
+ * `(item1.identifiers as Record<string, unknown>)` cast, so the drill's
+ * itemVar reference renders as `${(item1.identifiers...` rather than
+ * `${item1...}`. An `itemVarRefPattern` anchored on `${itemVar` immediately
+ * following the interpolation brace misses that cast-wrapped shape entirely,
+ * wrongly concludes the drill never references `item1`, and hoists it above
+ * `item1`'s own loop — into a scope where `item1` is undeclared — even
+ * though `entries/details`' `code` value differs per item (`e1`/`e2`), which
+ * is only resolvable per-item, never once per group.
+ *
+ * Regression coverage: `item1`'s own chain fetch must stay lexically INSIDE
+ * `item1`'s own loop, and must never appear inside `item0`'s loop (and vice
+ * versa) — even though both plans' drills structurally target the same
+ * `entries/details` endpoint shape, so a scope-defeating fold-hoist bug has
+ * every opportunity to bleed one loop's bound identifier into the other's
+ * request body.
+ */
+export function buildMulticallTwoIndependentPrimariesNestedFieldLoopScopeActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SEARCH_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [{ productId: "p1" }, { productId: "p2" }],
+      },
+      timestamp: "2025-05-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: CATALOG_PRICING_URL,
+      requestPostData: '{"productId":"p1"}',
+      responseBody: { reviews: [{ productId: "p1", rating: 5 }] },
+      timestamp: "2025-05-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "sec1",
+            entries: [
+              { entryId: "e1", identifiers: { code: "code-e1" } },
+              { entryId: "e2", identifiers: { code: "code-e2" } },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-05-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=code-e1`,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e1", description: "d-e1" }] },
+      timestamp: "2025-05-01T00:00:03Z",
+    }),
+    buildStep("r4", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=code-e2`,
+      requestPostData: null,
+      responseBody: { details: [{ entryId: "e2", description: "d-e2" }] },
+      timestamp: "2025-05-01T00:00:04Z",
+    }),
+    buildStep("r5", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated`,
+      requestPostData: null,
+      responseBody: { details: [] },
+      timestamp: "2025-05-01T00:00:05Z",
+    }),
+  ];
+}
+
+/**
  * A grouped, nested-primary drill-down whose drilled endpoint requires TWO
  * threaded params at once: the PARENT group's own `id` (a field that lives
  * one level above the nested items and is unreachable once
