@@ -3326,3 +3326,40 @@ export function buildSessionHeartbeatNoiseStep(timestamp: string): MulticallFixt
     timestamp,
   });
 }
+
+const ORDERS_LINE_ITEMS_URL = "https://api.example.com/orders/line-items";
+const ORDERS_PROMO_URL = "https://api.example.com/orders/promo-eligibility";
+
+/**
+ * A flat, non-ancestor single-shot search → per-item drill-down whose primary
+ * array (`lineItems[]`) has no nested wildcard crossing at all, so its fold
+ * loop variable renders as bare `item`, never `g<n>` — structurally unrelated
+ * to any ancestor-grouped fold plan. Exists solely to be emitted as a SEPARATE
+ * `emitMultiStepExecuteHttp` call (its own generated function) and
+ * concatenated after an ancestor-grouped fold's own output, so a test can
+ * assert that this function's own, legitimately-declared `item` binding never
+ * bleeds into an unrelated, EARLIER ancestor (`g0`)-scoped hoisted call
+ * elsewhere in the same generated file — the two functions share no runtime
+ * scope, only file-level adjacency.
+ */
+export function buildMulticallOrdersLineItemPromoEligibilityActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ORDERS_LINE_ITEMS_URL,
+      requestPostData: '{"orderId":"ord-1"}',
+      responseBody: {
+        lineItems: [
+          { sku: "sku-a", quantity: 2 },
+          { sku: "sku-b", quantity: 1 },
+        ],
+      },
+      timestamp: "2025-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ORDERS_PROMO_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { eligibility: [{ sku: "sku-a", eligible: true }] },
+      timestamp: "2025-06-01T00:00:01Z",
+    }),
+  ];
+}
