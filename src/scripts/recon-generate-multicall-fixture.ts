@@ -1542,6 +1542,98 @@ export function buildMulticallNestedGroupedDrillDownDualItemLiteralDistinctSubpa
   ];
 }
 
+const CATALOG_ENTRY_LABELS_URL = "https://api.example.com/catalog/entries/labels";
+
+/**
+ * TWO fully independent drill-down targets sharing one ancestor group,
+ * whose literal query values each equal ONLY the matched (first) entry's
+ * own `entryId` — never any distinct ancestor-level field — but whose
+ * responses each return every OTHER sibling's row in the same group too,
+ * so both targets independently prove {@link isFoldTargetAncestorScoped}
+ * and rebind through the ancestor's own nested array (mirroring
+ * {@link buildMulticallNestedGroupedDrillDownDistinctValueAncestorScopedParamActionSteps}'s
+ * single-target rebind, generalized to two independent, CO-HOISTED targets
+ * at once). Regression coverage for a fold-hoist decision that derives
+ * whether a call may hoist above the item loop from the FINAL rendered
+ * text rather than from the value/placeholder bindings that actually feed
+ * the splice: a bug there can let one target's hoist decision silently
+ * disagree with what its own accessor bindings prove, emitting a call that
+ * references the item loop's own bound variable above the loop that
+ * declares it.
+ *
+ * `r1`/`r2` are the real drills (both resolve group `sec1` via `e1`'s own
+ * `entryId`). `r3`/`r4` are decoys — same drilled pathnames, but each
+ * returns an EMPTY result set — so {@link findFrozenVaryingDrillParams}'s
+ * same-endpoint variance check has a second, genuinely differing capture to
+ * compare each target's own param against, without themselves being
+ * mistaken for an independent primary/drill pair of their own.
+ */
+export function buildMulticallAncestorOnlyMultiTargetDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: CATALOG_SECTIONS_URL,
+      requestPostData: null,
+      responseBody: {
+        sections: [
+          {
+            masterCode: "sec1",
+            entries: [
+              { entryId: "e1", name: "Widget" },
+              { entryId: "e2", name: "Gadget" },
+              { entryId: "e3", name: "Doohickey" },
+            ],
+          },
+          {
+            masterCode: "sec2",
+            entries: [
+              { entryId: "e4", name: "Thingamajig" },
+              { entryId: "e5", name: "Contraption" },
+              { entryId: "e6", name: "Gizmo" },
+            ],
+          },
+        ],
+      },
+      timestamp: "2025-08-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=e1`,
+      requestPostData: null,
+      responseBody: {
+        details: [
+          { entryId: "e1", description: "A widget." },
+          { entryId: "e2", description: "A gadget." },
+          { entryId: "e3", description: "A doohickey." },
+        ],
+      },
+      timestamp: "2025-08-01T00:00:01Z",
+    }),
+    buildStep("r2", {
+      url: `${CATALOG_ENTRY_LABELS_URL}?tag=e1`,
+      requestPostData: null,
+      responseBody: {
+        labels: [
+          { entryId: "e1", label: "north-widget" },
+          { entryId: "e2", label: "north-gadget" },
+          { entryId: "e3", label: "north-doohickey" },
+        ],
+      },
+      timestamp: "2025-08-01T00:00:02Z",
+    }),
+    buildStep("r3", {
+      url: `${CATALOG_ENTRY_DETAILS_URL}?code=zzz-unrelated`,
+      requestPostData: null,
+      responseBody: { details: [] },
+      timestamp: "2025-08-01T00:00:03Z",
+    }),
+    buildStep("r4", {
+      url: `${CATALOG_ENTRY_LABELS_URL}?tag=zzz-unrelated`,
+      requestPostData: null,
+      responseBody: { labels: [] },
+      timestamp: "2025-08-01T00:00:04Z",
+    }),
+  ];
+}
+
 const ACCOUNT_SEARCH_URL = "https://api.example.com/accounts/search";
 const ACCOUNT_DETAIL_URL = "https://api.example.com/accounts/detail";
 
@@ -3233,4 +3325,41 @@ export function buildSessionHeartbeatNoiseStep(timestamp: string): MulticallFixt
     responseBody: { alive: true, intervalMs: 30000 },
     timestamp,
   });
+}
+
+const ORDERS_LINE_ITEMS_URL = "https://api.example.com/orders/line-items";
+const ORDERS_PROMO_URL = "https://api.example.com/orders/promo-eligibility";
+
+/**
+ * A flat, non-ancestor single-shot search → per-item drill-down whose primary
+ * array (`lineItems[]`) has no nested wildcard crossing at all, so its fold
+ * loop variable renders as bare `item`, never `g<n>` — structurally unrelated
+ * to any ancestor-grouped fold plan. Exists solely to be emitted as a SEPARATE
+ * `emitMultiStepExecuteHttp` call (its own generated function) and
+ * concatenated after an ancestor-grouped fold's own output, so a test can
+ * assert that this function's own, legitimately-declared `item` binding never
+ * bleeds into an unrelated, EARLIER ancestor (`g0`)-scoped hoisted call
+ * elsewhere in the same generated file — the two functions share no runtime
+ * scope, only file-level adjacency.
+ */
+export function buildMulticallOrdersLineItemPromoEligibilityActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: ORDERS_LINE_ITEMS_URL,
+      requestPostData: '{"orderId":"ord-1"}',
+      responseBody: {
+        lineItems: [
+          { sku: "sku-a", quantity: 2 },
+          { sku: "sku-b", quantity: 1 },
+        ],
+      },
+      timestamp: "2025-06-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: ORDERS_PROMO_URL,
+      requestPostData: '{"sku":"sku-a"}',
+      responseBody: { eligibility: [{ sku: "sku-a", eligible: true }] },
+      timestamp: "2025-06-01T00:00:01Z",
+    }),
+  ];
 }

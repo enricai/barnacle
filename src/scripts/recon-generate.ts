@@ -6628,6 +6628,7 @@ export function emitMultiStepExecuteHttp(
           // never re-shaped into `${payload.X}` form) can't re-match, so a
           // sequential pass here carries none of the reentrancy risk the
           // literal-value pass below has.
+          let swapFiredForItemBoundField = false;
           const swapped = threadedFieldPairs.reduce((acc, { valueField, accessorField }) => {
             const replacement = `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`;
             // applyPayloadKeyValueSubstitutions only ever names a payload
@@ -6641,10 +6642,18 @@ export function emitMultiStepExecuteHttp(
             // reference behind once the literal value itself has already
             // been replaced by the payload-key-value pass.
             const lastSegment = valueField.field.split(".").pop()!;
+            const payloadFieldPlaceholder = `\${payload.${valueField.field}}`;
+            const payloadLastSegmentPlaceholder = `\${payload.${lastSegment}}`;
+            if (
+              accessorField.varName === itemVar &&
+              (acc.includes(payloadFieldPlaceholder) || acc.includes(payloadLastSegmentPlaceholder))
+            ) {
+              swapFiredForItemBoundField = true;
+            }
             return acc
-              .split(`\${payload.${valueField.field}}`)
+              .split(payloadFieldPlaceholder)
               .join(replacement)
-              .split(`\${payload.${lastSegment}}`)
+              .split(payloadLastSegmentPlaceholder)
               .join(replacement);
           }, text);
           // Literal-value substitution: ONE guarded regex-alternation pass over
@@ -6669,9 +6678,12 @@ export function emitMultiStepExecuteHttp(
                 : {
                     value: stringValue,
                     replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                    isItemBound: accessorField.varName === itemVar,
                   };
             })
-            .filter((b): b is { value: string; replacement: string } => b !== null);
+            .filter(
+              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+            );
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // but the invariance verdict is per-capture, not per-field: a
@@ -6685,6 +6697,25 @@ export function emitMultiStepExecuteHttp(
                 isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
               )
             : valueBindings;
+          // Ground truth for the hoist gate, computed per FIELD from what
+          // this call actually spliced into the request, rather than
+          // inferred after the fact by re-scanning the fully rendered text
+          // for `itemVar`: a target's OTHER join fields can independently
+          // prove isAncestorScoped and rebind cleanly while THIS field's own
+          // rebind attempt still falls back to `?? tf` (no structurally-
+          // corresponding ancestor field exists for it). Deriving
+          // `referencesItemVar` straight from the same value/placeholder
+          // bindings that feed the splice below — rather than relying
+          // solely on the post-hoc itemVar word-boundary scan — closes the
+          // gap where a fallback accessor's occurrence in the final text
+          // could otherwise be missed. A binding whose value never survives
+          // to `filteredValueBindings` (unresolved, or excluded by the
+          // zero-variance guard) is correctly excluded here too — it never
+          // reaches the rendered request, so it can't leak an out-of-scope
+          // identifier into it.
+          if (swapFiredForItemBoundField || filteredValueBindings.some((b) => b.isItemBound)) {
+            referencesItemVar = true;
+          }
           const result = substituteThreadedValues(swapped, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
@@ -11178,9 +11209,12 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 : {
                     value: stringValue,
                     replacement: `\${${scopedAccessor(accessorField.varName, accessorField.field)}}`,
+                    isItemBound: accessorField.varName === itemVar,
                   };
             })
-            .filter((b): b is { value: string; replacement: string } => b !== null);
+            .filter(
+              (b): b is { value: string; replacement: string; isItemBound: boolean } => b !== null
+            );
           // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
           // must never have a COINCIDENTAL threaded value spliced into it —
           // see emitMultiStepExecuteHttp's identical `parameterize` guard
@@ -11192,6 +11226,20 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 isGenuineVaryingQueryValue(b.value, chainCapture, allCaptures)
               )
             : valueBindings;
+          // Mirrors emitMultiStepExecuteHttp's identical ground-truth hoist
+          // signal: derive `referencesItemVar` straight from the same
+          // value bindings that feed the splice below, rather than relying
+          // solely on the post-hoc itemVar word-boundary scan — a target's
+          // OTHER join fields can independently prove isAncestorScoped and
+          // rebind cleanly while THIS field's own rebind attempt still
+          // falls back to `?? tf` (no structurally-corresponding ancestor
+          // field exists for it). A binding excluded from
+          // `filteredValueBindings` (unresolved, or dropped by the
+          // zero-variance guard) never reaches the rendered URL, so it's
+          // correctly excluded here too.
+          if (filteredValueBindings.some((b) => b.isItemBound)) {
+            referencesItemVar = true;
+          }
           const result = substituteThreadedValues(withBase, filteredValueBindings);
           const withDrillParamBindings = applyDrillParamBindings(
             foldReturnSpec,
