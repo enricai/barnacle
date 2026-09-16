@@ -1448,12 +1448,16 @@ export function isCheckboxOrRadioIntentStep(instruction: string | null | undefin
  * Whether `snapshotPage` should build the per-element selection baseline
  * (`StepSnapshot.selectionStateByXpath`) for this step — i.e. whether
  * `verifyDomEffect`'s element-scoped click read-back is allowed to credit it.
- * True ONLY for a field-answer/selection step: a submit, a final, or an advance
- * step must be verified by a real network/URL transition, so its own
+ * True ONLY for a field-answer/selection step: a submit or an advance step
+ * must be verified by a real network/URL transition, so its own
  * self-toggling button (a submit flipping to a loading/pressed class, a "Next"
  * flipping `aria-pressed`) must never earn an element-scoped credit — matching
- * the `!submit`/`!final`/`!advance` exclusions the former
- * `isClickStateToggleVerified` gate enforced. Pure + exported so the gate the
+ * the `!submit`/`!advance` exclusions the former `isClickStateToggleVerified`
+ * gate enforced. A benign final step (one that is NOT itself the flagged
+ * submit step) still captures — `flowHasSubmitSemantics` describes the FLOW,
+ * not this step, so it must not veto capture on its own; `submitStep` alone
+ * (authoritative per {@link flowHasSubmitSemantics}) identifies the step that
+ * actually needs network/URL verification. Pure + exported so the gate the
  * cascade depends on is unit-testable, not buried in `executeStepWithHealing`.
  */
 export function shouldCaptureSelectionState(params: {
@@ -1462,8 +1466,8 @@ export function shouldCaptureSelectionState(params: {
   submitStep: boolean;
   flowHasSubmitSemantics: boolean;
 }): boolean {
-  const { step, isFinalStep, submitStep, flowHasSubmitSemantics } = params;
-  return !(submitStep || (isFinalStep && flowHasSubmitSemantics) || isAdvanceStep(step));
+  const { step, submitStep } = params;
+  return !(submitStep || isAdvanceStep(step));
 }
 
 /**
