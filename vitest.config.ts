@@ -27,6 +27,13 @@ export default defineConfig({
         // Browserbase/Steel session against a live external URL.
         "src/scripts/probe-setinputfiles.ts",
       ],
+      thresholds: {
+        autoUpdate: false,
+        statements: 79,
+        branches: 74,
+        functions: 83,
+        lines: 80,
+      },
     },
     testTimeout: 30000,
     pool: "forks",
