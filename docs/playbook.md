@@ -181,6 +181,13 @@ submit-shaped candidate via deep DOM traversal (including shadow roots) and
 clicking the top-ranked one directly. Non-submit steps are unaffected — the
 deep submit-control locator would be a guaranteed no-op there.
 
+Conversely, an `"effective"` verdict (real network/URL/element-selection-state
+change) ends the cascade immediately, the same as the network/URL verifier
+above — this applies to any step shape (final, submit, or an ordinary
+interior toggle), not just attempt 1: the n+16 `el.click()` fallback
+re-classifies against its own pre/post pair and grants the same credit if
+attempt 1's technique produced no DOM effect but the fallback's click did.
+
 **Deep-locator candidate walk (frame-scoped steps):** when `observe()` is
 blind to a cross-origin OOPIF, candidates resolve via `page.deepLocator()`
 (`src/scraper/deep-locator-candidates.ts`), scoped first to
