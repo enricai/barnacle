@@ -234,6 +234,17 @@ export interface HttpClientOptions<TResponse> {
    * is how vendor-specific wire quirks stay in the plugin instead of the engine.
    */
   classifyResponseBody?: (rawText: string, ctx: { url: string }) => ScraperError | undefined;
+  /**
+   * Aborts a call after this many milliseconds when the caller supplies no
+   * `init.signal` — Node's built-in fetch has no default timeout (see
+   * `HttpRequestInit.signal`), so a hot-path call to a site with a
+   * known-unreliable browser fallback would otherwise hang the socket
+   * indefinitely instead of failing fast into that fallback. Composed with a
+   * caller-supplied `init.signal` via `AbortSignal.any` (matching
+   * `createTimeoutFetch` in `src/scraper/session-shared.ts`) when both are
+   * present, so either firing aborts the call.
+   */
+  defaultTimeoutMs?: number;
 }
 
 /**
@@ -402,7 +413,15 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
 ): <TOverride = TResponse>(url: string, init?: HttpRequestInit<TOverride>) => Promise<TOverride> {
-  const { schema, bottleneck, baseHeaders, onResponse, bind = [], classifyResponseBody } = options;
+  const {
+    schema,
+    bottleneck,
+    baseHeaders,
+    onResponse,
+    bind = [],
+    classifyResponseBody,
+    defaultTimeoutMs,
+  } = options;
   // Values bound from prior responses (e.g. a minted auth cookie), keyed by
   // targetHeader. Lives for the lifetime of this client instance so a later
   // call can pick up what an earlier call captured — see HttpResponseBinding.
@@ -446,13 +465,22 @@ export function createHttpClient<TResponse>(
             headers[cookieKey] = mergedCookie;
           }
 
+          // Compose the caller's signal (if any) with a default timeout (if
+          // configured) so either firing aborts the call — mirrors
+          // `createTimeoutFetch` in `src/scraper/session-shared.ts`.
+          const signal =
+            init.signal && defaultTimeoutMs !== undefined
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(defaultTimeoutMs)])
+              : (init.signal ??
+                (defaultTimeoutMs !== undefined ? AbortSignal.timeout(defaultTimeoutMs) : undefined));
+
           let response: Response;
           try {
             response = await fetch(url, {
               method,
               headers,
               body: init.body,
-              signal: init.signal,
+              signal,
             });
           } catch (err) {
             // Caller-triggered cancellation — propagate without retry. The

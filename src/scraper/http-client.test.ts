@@ -1059,4 +1059,70 @@ describe("scraper/http-client response-header binding", () => {
     const headers = (call?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers["X-Conversation-Id"]).toBe("conv-2");
   });
+
+  describe("defaultTimeoutMs", () => {
+    /** Mimics real fetch's contract: never resolves on its own, but rejects when `signal` aborts. */
+    function neverResolvingFetch(): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(
+          (_url: string, init?: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                reject(new DOMException("The operation was aborted.", "TimeoutError"));
+              });
+            })
+        )
+      );
+    }
+
+    it("rejects at approximately the configured duration when the caller supplies no signal", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+        defaultTimeoutMs: 50,
+      });
+
+      const started = Date.now();
+      await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+        UnknownScraperError
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, 5_000);
+
+    it("does not time out when no defaultTimeoutMs is configured and the caller's signal fires first", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+      });
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 20);
+
+      await expect(
+        client("https://example.com/api/item", { signal: controller.signal })
+      ).rejects.toThrow();
+    }, 5_000);
+
+    it("aborts on whichever fires first when both a caller signal and defaultTimeoutMs are present", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+        defaultTimeoutMs: 50,
+      });
+      // Caller signal never fires — the shorter defaultTimeoutMs must still abort the call.
+      const controller = new AbortController();
+
+      const started = Date.now();
+      await expect(
+        client("https://example.com/api/item", { signal: controller.signal })
+      ).rejects.toBeInstanceOf(UnknownScraperError);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, 5_000);
+  });
 });

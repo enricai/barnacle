@@ -81,6 +81,14 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
       schema: jsonSchemaFragment,
     }),
     httpModule: z.string().optional(),
+    /**
+     * Per-call timeout (ms) for the direct-HTTP hot path, forwarded to the
+     * `httpModule`'s `createExecuteHttp` factory (see `loadHttpModule`) as
+     * `HttpClientOptions.defaultTimeoutMs`. Lets a manifest declare a fail-
+     * fast bound for a site with a known-unreliable browser fallback,
+     * shorter than Node fetch's no-default-timeout behavior.
+     */
+    httpTimeoutMs: z.number().optional(),
   }),
 });
 
@@ -178,6 +186,11 @@ function buildUploadFixture(
   };
 }
 
+/** Options forwarded into an `httpModule`'s `createExecuteHttp` factory, if it exports one. */
+interface HttpModuleFactoryOptions {
+  httpTimeoutMs?: number;
+}
+
 /**
  * Dynamically loads the optional `executeHttp` escape-hatch module a manifest
  * may reference. Kept async and separate so a browser-only manifest never pays
@@ -189,16 +202,37 @@ function buildUploadFixture(
  * resolves against the operator's `BARNACLE_PLUGINS_DIR`, not this module's
  * location under `dist/`); anything else is a bare package name left for Node's
  * resolver.
+ *
+ * A module may export either a static `executeHttp` function, or a
+ * `createExecuteHttp(options: HttpModuleFactoryOptions) => ExecuteHttpFn`
+ * factory — the latter is how `spec.httpTimeoutMs` reaches the module's own
+ * `createHttpClient({ defaultTimeoutMs })` call, since `ExecuteHttpFn`'s
+ * `(payload, context)` signature has no room for manifest-level config.
  */
-async function loadHttpModule(specifier: string, baseDir: string): Promise<ExecuteHttpFn> {
+async function loadHttpModule(
+  specifier: string,
+  baseDir: string,
+  factoryOptions: HttpModuleFactoryOptions
+): Promise<ExecuteHttpFn> {
   const resolved =
     specifier.startsWith(".") || specifier.startsWith("/")
       ? pathToFileURL(path.resolve(baseDir, specifier)).href
       : specifier;
   const mod = (await import(resolved)) as Record<string, unknown>;
+  if (typeof mod.createExecuteHttp === "function") {
+    const candidate = (
+      mod.createExecuteHttp as (options: HttpModuleFactoryOptions) => unknown
+    )(factoryOptions);
+    if (typeof candidate !== "function") {
+      throw new Error(`httpModule ${specifier}'s createExecuteHttp must return a function`);
+    }
+    return candidate as ExecuteHttpFn;
+  }
   const candidate = mod.executeHttp ?? mod.default;
   if (typeof candidate !== "function") {
-    throw new Error(`httpModule ${specifier} must export an executeHttp function`);
+    throw new Error(
+      `httpModule ${specifier} must export an executeHttp function or a createExecuteHttp factory`
+    );
   }
   return candidate as ExecuteHttpFn;
 }
@@ -226,7 +260,9 @@ export async function buildConfigPlugin(
   const responseSchema = jsonSchemaToZod(spec.response);
   const extractSchema = jsonSchemaToZod(spec.extract.schema);
 
-  const executeHttp = spec.httpModule ? await loadHttpModule(spec.httpModule, baseDir) : undefined;
+  const executeHttp = spec.httpModule
+    ? await loadHttpModule(spec.httpModule, baseDir, { httpTimeoutMs: spec.httpTimeoutMs })
+    : undefined;
 
   const hasUploadStep = spec.flow.steps.some((s) => typeof s !== "string" && s.upload === true);
   const hasSubmitStep = spec.flow.steps.some((s) => typeof s !== "string" && s.submitStep === true);

@@ -131,6 +131,21 @@ describe("buildConfigPlugin", () => {
     expect((result.data as { confirmationId?: string }).confirmationId).toBe("HTTP-CONF-1");
   });
 
+  it("forwards spec.httpTimeoutMs into the httpModule's createExecuteHttp factory", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).httpModule = "./config-http-module-timeout.js";
+    (manifest.spec as Record<string, unknown>).httpTimeoutMs = 2_500;
+
+    const plugin = await buildConfigPlugin(manifest, FIXTURES_DIR);
+
+    const fixture = (await import(
+      path.join(FIXTURES_DIR, "config-http-module-timeout.js")
+    )) as { receivedOptions: Array<{ defaultTimeoutMs?: number }> };
+    const lastOptions = fixture.receivedOptions.at(-1);
+    expect(lastOptions?.defaultTimeoutMs).toBe(2_500);
+    expect(typeof plugin.executeHttp).toBe("function");
+  });
+
   it("rejects a manifest whose httpModule cannot be resolved", async () => {
     const manifest = baseManifest();
     (manifest.spec as Record<string, unknown>).httpModule = "./does-not-exist.js";
