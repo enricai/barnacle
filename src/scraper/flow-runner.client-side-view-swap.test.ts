@@ -23,6 +23,25 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   });
 
   /**
+   * Case 1b: The structurally identical reverse toggle — a large DOM SHRINK
+   * (-~49KB) — on the same non-final/non-submit shape must be credited
+   * identically (magnitude-based, not growth-only).
+   */
+  it("credits a plain click with large DOM shrink (≥5KB) and zero network as verified", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      isFinalStep: false,
+      flowHasSubmitSemantics: true,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -49518,
+      textChanged: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  /**
    * Case 2: The same DOM-growth/zero-network shape on a final/submitStep
    * is NOT credited — submit-judge/isSubmitRevealedInvalid path still governs.
    */

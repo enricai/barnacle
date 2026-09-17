@@ -89,6 +89,6 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
     networkDelta !== 0 ||
     urlChanged ||
     elementStateChanged ||
-    bytesDelta >= TRIVIAL_DOM_DELTA_BYTES;
+    Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
   return hasEffect ? "effective" : "phantom";
 }

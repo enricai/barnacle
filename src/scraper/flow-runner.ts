@@ -1816,8 +1816,8 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
-  if (bytesDelta >= VIEW_SWAP_MIN_BYTES) return true;
-  return textChanged && bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES;
+  if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
+  return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
 /**
