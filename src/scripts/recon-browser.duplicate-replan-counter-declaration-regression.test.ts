@@ -29,6 +29,6 @@ describe("recon-browser.ts duplicate replan-budget counter declaration", () => {
   });
 
   it("loads/transforms cleanly (would throw esbuild's duplicate-symbol error otherwise)", async () => {
-    await expect(import("@/scripts/recon-browser")).resolves.toBeDefined();
+    await expect(import("@/scripts/recon-browser.js")).resolves.toBeDefined();
   });
 });
