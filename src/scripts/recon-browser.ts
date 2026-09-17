@@ -1077,14 +1077,34 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
  * (or the submit-verifier gate) silently stops firing on a replan-origin
  * resume. Pure over already-known strings/flags: same inputs, same output.
  * Leaves bridge steps that don't match the failed step's control untouched.
+ *
+ * Quoted-label overlap is the primary signal, but the replan prompt never
+ * asks the LLM to quote the same label it just failed on, so a bridge step
+ * can resume the failed control while quoting nothing at all. Per this
+ * file's splice invariant (bridge steps are emitted from the failure point
+ * back to where the original flow can resume — see the splice call site),
+ * the first bridge step is the one that resumes the failure point itself.
+ * When no step matches by label AND the first bridge step names no quoted
+ * control of its own (so it can't be a confirmed reference to a DIFFERENT
+ * control), fall back to that position instead of leaving the flags
+ * unattached.
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
   failedStep: NormalizedStep
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
-  return newSteps.map((s) =>
+  const labelMatchIndex = newSteps.findIndex((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
+  );
+  const resumeIndex =
+    labelMatchIndex !== -1
+      ? labelMatchIndex
+      : newSteps.length > 0 && extractQuotedLabels(newSteps[0]!.instruction).length === 0
+        ? 0
+        : -1;
+  return newSteps.map((s, idx) =>
+    idx === resumeIndex
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,

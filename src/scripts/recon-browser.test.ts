@@ -1543,6 +1543,14 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     const second = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
     expect(second).toEqual(first);
   });
+
+  it("retains flags on a bridge step that resumes the failed control without quoting any label", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Solve the challenge and submit the form again")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
