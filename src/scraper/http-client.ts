@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import type Bottleneck from "bottleneck";
 import pRetry, { AbortError } from "p-retry";
-import type { ZodType } from "zod/v4";
+import type { ZodIssue, ZodType } from "zod/v4";
 
 import { getLogger } from "@/lib/logging";
 import {
@@ -55,6 +55,92 @@ function parseRetryAfterMs(headers: Headers): number | undefined {
  * production unless explicitly enabled.
  */
 let baselineCallCounter = 0;
+
+/**
+ * Reads the value at a Zod issue's `path` out of an arbitrary JSON body, so a
+ * schema mismatch can be checked against what the server actually sent
+ * without re-parsing.
+ */
+function valueAtPath(body: unknown, path: ReadonlyArray<PropertyKey>): unknown {
+  return path.reduce<unknown>((node, key) => {
+    if (node === null || typeof node !== "object") return undefined;
+    return (node as Record<PropertyKey, unknown>)[key];
+  }, body);
+}
+
+/**
+ * Placeholder value that satisfies a Zod `invalid_type` issue's `expected`
+ * scalar type, used to temporarily stand in for a `null` field so the rest
+ * of the envelope can be validated. `undefined` means the type has no safe
+ * scalar placeholder, so the mismatch must be treated as genuine.
+ */
+function placeholderForExpectedType(expected: string): unknown {
+  switch (expected) {
+    case "string":
+      return "";
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "bigint":
+      return 0n;
+    case "date":
+      return new Date(0);
+    default:
+      return undefined;
+  }
+}
+
+function setAtPath(body: unknown, path: ReadonlyArray<PropertyKey>, value: unknown): unknown {
+  if (path.length === 0) return value;
+  const [key, ...rest] = path;
+  if (key === undefined) return value;
+  const clonedNode: Record<PropertyKey, unknown> | unknown[] = Array.isArray(body)
+    ? [...body]
+    : { ...(body as Record<PropertyKey, unknown>) };
+  (clonedNode as Record<PropertyKey, unknown>)[key] = setAtPath(
+    (clonedNode as Record<PropertyKey, unknown>)[key],
+    rest,
+    value
+  );
+  return clonedNode;
+}
+
+/**
+ * Degrades a schema mismatch that is confined to `null` scalars observed
+ * where the inferred schema declared a non-nullable type — the schema was
+ * honestly derived from recon samples that never happened to capture an
+ * empty result for that field, not a genuinely malformed response. Any other
+ * kind of mismatch (wrong type on non-null data, a missing/extra structural
+ * field) is left untouched so it still throws `HttpSchemaError`.
+ *
+ * Returns the parsed data with the offending fields surfaced as `null`, or
+ * `undefined` if the mismatch doesn't qualify for leniency.
+ */
+function tolerateNullScalarMismatch(
+  activeSchema: ZodType,
+  body: unknown,
+  issues: ReadonlyArray<ZodIssue>
+): unknown {
+  const nullMismatches = issues.filter(
+    (issue) => issue.code === "invalid_type" && valueAtPath(body, issue.path) === null
+  );
+  if (nullMismatches.length !== issues.length || nullMismatches.length === 0) return undefined;
+
+  const sanitizedBody = nullMismatches.reduce<unknown>((acc, issue) => {
+    const expected = "expected" in issue ? String(issue.expected) : "";
+    const placeholder = placeholderForExpectedType(expected);
+    return placeholder === undefined ? acc : setAtPath(acc, issue.path, placeholder);
+  }, body);
+
+  const reparsed = activeSchema.safeParse(sanitizedBody);
+  if (!reparsed.success) return undefined;
+
+  return nullMismatches.reduce<unknown>(
+    (acc, issue) => setAtPath(acc, issue.path, null),
+    reparsed.data
+  );
+}
 
 /**
  * Payload surfaced to the optional `onResponse` hook. Provides the raw HTTP
@@ -479,6 +565,13 @@ export function createHttpClient<TResponse>(
 
           const parsed = activeSchema.safeParse(body);
           if (!parsed.success) {
+            const tolerated = tolerateNullScalarMismatch(activeSchema, body, parsed.error.issues);
+            if (tolerated !== undefined) {
+              logger.warn(
+                `http schema mismatch from ${url} tolerated as null scalar: ${parsed.error.issues.map((i) => i.message).join("; ")}`
+              );
+              return tolerated as TOverride;
+            }
             logger.warn(
               `http schema mismatch from ${url}: ${parsed.error.issues.map((i) => i.message).join("; ")}`
             );

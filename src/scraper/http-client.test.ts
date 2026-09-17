@@ -145,6 +145,25 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
   });
 
+  it("resolves with the field as null when a declared non-nullable scalar is observed null on an otherwise-conformant body", async () => {
+    mockFetch(200, { id: "1", name: null });
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: null });
+  });
+
+  it("still throws HttpSchemaError when a field has the wrong type on real (non-null) data", async () => {
+    mockFetch(200, { id: "1", name: 42 });
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
+  });
+
+  it("still throws HttpSchemaError when a required field is missing entirely", async () => {
+    mockFetch(200, { id: "1" });
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
+  });
+
   // A plugin-supplied classifier stands in for a vendor sentinel body the engine
   // itself can't interpret. These exercise the generic seam, not any vendor's
   // wire format — the vendor-specific parity assertions live in the plugin.
