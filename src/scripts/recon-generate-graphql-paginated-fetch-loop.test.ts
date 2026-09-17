@@ -155,7 +155,7 @@ function evalPaginatedExecuteHttp(
     "getGql",
     "httpClient",
     "z",
-    "PRODUCTSEARCH_PRODUCTS_QUERY",
+    "GRAPHQLPAGINATEDFETCHLOOPPAGESIZEOVERRIDETEST_QUERY",
     `return async function executeHttp(payload, context) {\n${stripped}\n};`
   ) as (
     getGqlArg: unknown,
@@ -317,20 +317,18 @@ describe("recon-generate GraphQL paginated fetch loop: caller-supplied payload.p
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
 
     const seenVariables: Record<string, unknown>[] = [];
-    const getGql = (_baseUrl: string) => async (
-      _operationName: string,
-      _query: string,
-      variables: Record<string, unknown>
-    ) => {
-      seenVariables.push(variables);
-      const pagination = variables.pagination as { count: number; skip: number };
-      return {
-        search: {
-          total: 15,
-          items: makeProductPage(pagination.count),
-        },
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, variables: Record<string, unknown>) => {
+        seenVariables.push(variables);
+        const pagination = variables.pagination as { count: number; skip: number };
+        return {
+          search: {
+            total: 15,
+            items: makeProductPage(pagination.count),
+          },
+        };
       };
-    };
 
     const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
     await executeHttp({ pageSize: 100 }, { baseUrl: "https://www.products-fixture.example.com" });
