@@ -68,6 +68,13 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });
 
+  it("classifies as effective when the DOM shrinks past the trivial-delta threshold (magnitude, not growth-only)", () => {
+    const attempt = makeAttempt({
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 - 500 },
+    });
+    expect(classifyPhantomClick(attempt)).toBe("effective");
+  });
+
   it("classifies as unresolved regardless of an incidental post-snapshot effect", () => {
     const attempt = makeAttempt({
       actResultSuccess: false,

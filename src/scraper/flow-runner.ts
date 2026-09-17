@@ -1756,10 +1756,13 @@ export function isDomOnlyAdvanceVerified(params: {
  * (`VIEW_SWAP_MIN_BYTES` env var) lets a deployment lower the threshold
  * without regressing the shared default for other sites.
  *
- * **Scope guards:** Excludes final/submit steps (those require real network
- * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
- * (those require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled
- * to avoid wizard-ATS autosave-vs-transition ambiguity).
+ * **Scope guards:** Excludes steps explicitly flagged `submitStep: true`
+ * (those require real network per isSubmitRevealedInvalid + LLM submit
+ * judge — trusting only the step's own explicit flag, never the flow-level
+ * `flowHasSubmitSemantics` inference: an unflagged final step may genuinely
+ * be a legitimate client-side view swap) and advance-pattern steps (those
+ * require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled to
+ * avoid wizard-ATS autosave-vs-transition ambiguity).
  *
  * **Small-delta reveal credit:** a sub-section unhiding within an
  * already-loaded page (e.g. a validation-triggered "Work History requirement"
@@ -1789,9 +1792,7 @@ export function isDomOnlyAdvanceVerified(params: {
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
-  isFinalStep: boolean;
   submitStep: boolean;
-  flowHasSubmitSemantics: boolean;
   isAdvanceWithPattern: boolean;
   networkDelta: number;
   bytesDelta: number;
@@ -1802,9 +1803,7 @@ export function isClickViewSwapVerified(params: {
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
   const {
     resolvedAction,
-    isFinalStep,
     submitStep,
-    flowHasSubmitSemantics,
     isAdvanceWithPattern,
     networkDelta,
     bytesDelta,
@@ -1812,12 +1811,12 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
-  if (submitStep || (isFinalStep && flowHasSubmitSemantics)) return false;
+  if (submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
-  if (bytesDelta >= VIEW_SWAP_MIN_BYTES) return true;
-  return textChanged && bytesDelta >= VIEW_SWAP_REVEAL_MIN_BYTES;
+  if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
+  return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
 
 /**
@@ -11022,9 +11021,7 @@ export async function executeStepWithHealing(params: {
     // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
-      isFinalStep,
       submitStep,
-      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
@@ -11159,11 +11156,51 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
+    // Phantom-click verdict, computed from the same pre/post pair the
+    // signals above were derived from. Read HERE — at the point the retry
+    // loop decides whether to keep going — rather than only after the
+    // `verified` gate has already failed the attempt: an `"effective"`
+    // verdict (a real, observable change) must end the attempt loop
+    // immediately regardless of step shape (final, submit, or ordinary
+    // interior toggle), the same as the narrower `verified` boolean does.
+    // Previously the verdict was computed only for post-failure diagnostics/
+    // escalation, so an attempt explicitly classified `"effective"` could
+    // still be followed by wasted further attempts (see
+    // recon-browser-1.12.54-phantom-click-verdict-inconsistent-blocks-terminal-tab-toggle-steps-from-ever-completing.md).
+    record.phantomClickVerdict = classifyPhantomClick({
+      actResultSuccess: record.actResultSuccess,
+      pre,
+      post,
+      elementStateChanged: domVerified,
+      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+    });
+    // An `"effective"` verdict driven purely by the page-wide byte-delta
+    // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
+    // here: `clickViewSwapVerified`/`formValueVerified` already own that
+    // signal with the correct, much higher view-swap thresholds (5000B, or
+    // 500B+textChanged for a reveal) — see
+    // flow-runner.client-side-view-swap-cascade.test.ts's <5KB fixture,
+    // which must stay unverified so the cascade keeps excluding candidates.
+    // The one verdict-driven signal genuinely missing from `verified` is the
+    // element-scoped selection-state change (`domVerified`): a same-page
+    // toggle whose own committed state flips (Base Web `kind`/class, ARIA,
+    // native `checked`) with no network/URL/advance-pattern match had NO
+    // credit path at all outside the n+16 fallback's own checkbox-specific
+    // check, even though `classifyPhantomClick` already classifies it
+    // `"effective"` (excluded only on submit-shaped steps, to keep a stray
+    // self-toggle from defeating the submit escalation). Gated through
+    // `domVerifiedForStep` (not raw `domVerified`) so this credit path
+    // respects the SAME DOM-only-advance veto as the block above: a wizard
+    // "Next" step on a pattern-configured site whose only signal is a field
+    // toggle must stay unverified, not get waved through by the verdict.
+    const domEffectiveVerdict =
+      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
       domVerifiedForStep ||
       datepickerCommitted ||
+      domEffectiveVerdict ||
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));
@@ -11601,6 +11638,36 @@ export async function executeStepWithHealing(params: {
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
+          // Same effective-verdict credit the primary attempt's completion
+          // gate uses (see the `record.phantomClickVerdict` computation
+          // above), re-run against THIS fallback click's own pre/post pair
+          // (`pre`/`retryPost`) rather than the stale pre/post the primary
+          // technique captured — the primary technique's own act() call may
+          // not have produced any DOM effect at all, with the fallback's
+          // `el.click()` being the click that actually landed. Still subject
+          // to the `clickBlockedByDisabled`/`clickBlockedByInvalid`/
+          // `fallbackDomOnlyAdvance` vetoes below, same as every other
+          // fallback signal. `classifyPhantomClick` can still classify a
+          // submit-shaped step "effective" purely off the page-wide
+          // `TRIVIAL_DOM_DELTA_BYTES` floor (elementStateChanged is already
+          // excluded on submit-shaped steps below via `isSubmitShapedStep`),
+          // so the byte-delta-only branch of that verdict must not bypass
+          // the submit-endpoint corroboration gate any more than the raw
+          // `retryHtmlDelta`/`retryTextChanged` signals below may — same
+          // `retrySubmitShaped` exclusion the primary gate's
+          // `domEffectiveVerdict` applies. See
+          // flow-runner.viewswap-blocked-submit-acceptance.test.ts (must stay
+          // gated) and flow-runner.pricing-tab-symmetric-swap-verdict-
+          // acceptance.test.ts (a non-submit-shaped final step must still get
+          // credit here).
+          const retrySubmitShaped = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+          const retryVerdict = classifyPhantomClick({
+            actResultSuccess: record.actResultSuccess,
+            pre,
+            post: retryPost,
+            elementStateChanged: retrySelectionStateChanged,
+            isSubmitShapedStep: retrySubmitShaped,
+          });
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
@@ -11609,8 +11676,12 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               checkboxStateVerified ||
               retrySelectionStateChanged ||
+              (!retrySubmitShaped && retryVerdict === "effective") ||
               (weakDomSignalsAllowed &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          if (retryVerified) {
+            record.phantomClickVerdict = retryVerdict;
+          }
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
@@ -11758,22 +11829,10 @@ export async function executeStepWithHealing(params: {
     }
 
     const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
-    // Phantom-click verdict, computed from the SAME pre/post pair
-    // describeAttemptEffectSignals just rendered — not recomputed deltas.
-    // Recorded on every unverified attempt (not just attempt 1) so the
-    // failure dump's attempts[] always carries the classification; only
-    // attempt 1's verdict drives the escalation flag below.
-    record.phantomClickVerdict = classifyPhantomClick({
-      actResultSuccess: record.actResultSuccess,
-      pre,
-      post,
-      // Authoritative element-scoped signal: `verifyDomEffect` read the resolved
-      // element's own committed-state delta (Base Web `kind`/class, ARIA, native
-      // checked) into `domVerified`. A registered selection toggle no longer
-      // reads as a phantom just because it moved no network/URL/bytes.
-      elementStateChanged: domVerified,
-      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
-    });
+    // record.phantomClickVerdict was already computed above, before the
+    // `verified` gate — reaching this point means it is NOT `"effective"`
+    // (an effective verdict would have short-circuited to "completed"
+    // above), so it is either `"phantom"` or `"unresolved"` here.
     const reason = record.errorMessage
       ? effectSignals
         ? `${record.errorMessage}; ${effectSignals}`

@@ -11,8 +11,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("credits a plain click with large DOM growth (≥5KB) and zero network as verified", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -23,28 +21,44 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   });
 
   /**
-   * Case 2: The same DOM-growth/zero-network shape on a final/submitStep
-   * is NOT credited — submit-judge/isSubmitRevealedInvalid path still governs.
+   * Case 1b: The structurally identical reverse toggle — a large DOM SHRINK
+   * (-~49KB) — on the same non-final/non-submit shape must be credited
+   * identically (magnitude-based, not growth-only).
    */
-  it("rejects DOM growth on a final step (submit verification requires real network)", () => {
+  it("credits a plain click with large DOM shrink (≥5KB) and zero network as verified", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: true,
-      flowHasSubmitSemantics: true,
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -49518,
+      textChanged: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  /**
+   * Case 2: The same DOM-growth/zero-network shape on an unflagged final step
+   * (isFinalStep + flowHasSubmitSemantics true, submitStep false) IS credited
+   * — the flow-level `flowHasSubmitSemantics` inference is not authoritative
+   * over the step's own explicit `submitStep` flag, since an unflagged final
+   * step may genuinely be a legitimate client-side view swap.
+   */
+  it("credits DOM growth on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 49518,
       textChanged: false,
     });
-    expect(result).toBe(false);
+    expect(result).toBe(true);
   });
 
   it("rejects DOM growth on a submitStep (submit verification requires real network)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: true,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -61,8 +75,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects DOM growth on an advance-pattern step (advance verification requires real transition)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: true, // advanceTransitionBodyPattern is non-null
       networkDelta: 0,
@@ -80,8 +92,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects sub-threshold DOM delta (<5000B, the VIEW_SWAP_MIN_BYTES)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -94,8 +104,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects DOM delta at exactly the trivial boundary (500B)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -108,8 +116,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects DOM delta at 4999B (1B below the VIEW_SWAP_MIN_BYTES threshold)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -122,8 +128,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("credits DOM delta at exactly the VIEW_SWAP_MIN_BYTES threshold (5000B)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -139,8 +143,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects non-click actions (e.g., type, select) even with large DOM growth", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "type" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -153,8 +155,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects when resolvedAction is null", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: null,
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -170,8 +170,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects when network activity occurred (networkDelta > 0)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 1, // At least one network request
@@ -193,8 +191,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("credits a small text-changing reveal (+789B, the top-window site Work-History gate) below VIEW_SWAP_MIN_BYTES", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -207,8 +203,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("credits a reveal at exactly the VIEW_SWAP_REVEAL_MIN_BYTES threshold (500B) with text change", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -221,8 +215,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects a small delta (789B) with no visible text change (trivial reflow, not a reveal)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -235,8 +227,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects a text-changing delta below VIEW_SWAP_REVEAL_MIN_BYTES (499B)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -246,25 +236,21 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(false);
   });
 
-  it("rejects a small text-changing reveal on a final step (submit verification requires real network)", () => {
+  it("credits a small text-changing reveal on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: true,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 789,
       textChanged: true,
     });
-    expect(result).toBe(false);
+    expect(result).toBe(true);
   });
 
   it("rejects a small text-changing reveal on an advance-pattern step", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: true,
       networkDelta: 0,
@@ -277,8 +263,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects when network activity occurred with multiple requests", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 5,
@@ -298,8 +282,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects a large DOM-growth reveal when invalidMarkerDelta > 0 (blocked form submit, CVS repro)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -313,8 +295,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("rejects a small text-changing reveal when invalidMarkerDelta > 0", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -328,8 +308,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("still credits a legitimate view-swap reveal when invalidMarkerDelta is 0", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
@@ -343,8 +321,6 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   it("still credits a legitimate view-swap reveal when invalidMarkerDelta is omitted (default callers)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
-      isFinalStep: false,
-      flowHasSubmitSemantics: true,
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
