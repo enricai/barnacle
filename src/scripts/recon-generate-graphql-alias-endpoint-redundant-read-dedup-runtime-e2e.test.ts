@@ -177,6 +177,6 @@ describe("GraphQL alias-endpoint redundant read dedup — extraction through emi
     expect(contract).toContain('m["id"]');
 
     const executeHttpBody = contract;
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("(foldItems).map(async (item) => {");
   });
 });

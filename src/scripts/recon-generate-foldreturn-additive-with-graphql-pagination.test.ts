@@ -156,13 +156,13 @@ describe("GraphQL query-primary + pagination signal + foldReturn — extraction 
     // de-duplicated `itemsById` collection — not inside the per-page loop
     // body, and not dropped as a silent no-op the way the pre-fix regression
     // produced (byte-identical output with/without a declared foldReturn).
-    expect(withFoldBody).toContain("for (const item of foldItems)");
+    expect(withFoldBody).toContain("(foldItems).map(async (item) => {");
     expect(withFoldBody).toContain("itemsById.values()");
-    expect(withFoldBody.indexOf("for (const item of foldItems)")).toBeLessThan(
+    expect(withFoldBody.indexOf("(foldItems).map(async (item) => {")).toBeLessThan(
       withFoldBody.indexOf("const truncated = itemsById.size < total;")
     );
-    expect(withFoldBody).toMatch(/\}\n\s*const truncated = itemsById\.size < total;/);
+    expect(withFoldBody).toMatch(/\}\n\s*\)\);\n\n\s*const truncated = itemsById\.size < total;/);
 
-    expect(withoutFoldBody).not.toContain("for (const item of foldItems)");
+    expect(withoutFoldBody).not.toContain("(foldItems).map(async (item) => {");
   });
 });

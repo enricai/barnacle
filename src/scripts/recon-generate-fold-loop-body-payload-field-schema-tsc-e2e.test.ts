@@ -144,7 +144,7 @@ describe("recon-generate CLI + tsc --noEmit — fold-loop per-item body payload 
     const contract = readFileSync(contractPath, "utf8");
 
     // A genuine multi-item fold loop, not a hardcoded per-item call.
-    expect(contract).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     // The fold-loop's own per-item detail request splices `region` as a
     // payload accessor.

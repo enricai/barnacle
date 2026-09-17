@@ -267,7 +267,7 @@ describe("GraphQL query-primary + plain joinFields on a nested primary array + d
     // resultsPath crosses the outer "groups" array, so the fold-merge loop
     // is a nested `for` (not a flattened `foldItems`) — see
     // pathToFoldLoopLines's docstring.
-    expect(executeHttpBody).toContain("for (const item of g0.sailings)");
+    expect(executeHttpBody).toContain("(g0.sailings).map(async (item) => {");
     expect(executeHttpBody).toContain("item.id");
     expect(executeHttpBody).not.toContain("item.groupId ===");
 

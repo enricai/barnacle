@@ -420,7 +420,7 @@ describe("recon-generate CLI + tsc --noEmit — fold-match multi-candidate merge
     // Confirms the paginated loop actually ran (itemsById) and the fold
     // merge spliced in afterward with no intervening loose cast on `item`.
     expect(contract).toMatch(/itemsById/);
-    expect(contract).toMatch(/for \(const item of foldItems\)/);
+    expect(contract).toMatch(/\(foldItems\)\.map\(async \(item\) => \{/);
     expect(contract).toMatch(/Object\.assign\(item, Object\.fromEntries\(/);
 
     tsconfigPath = join(REPO_ROOT, `tsconfig.foldmatch-paginate-typing.${process.pid}.json`);

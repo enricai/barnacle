@@ -154,14 +154,14 @@ describe("GraphQL query-primary + pagination signal + declared foldReturn — ru
     // paginated loop against the final de-duplicated item set.
     expect(contract).toContain("/listings/api/v1/detail");
     expect(contract).toContain("const foldItems = [...itemsById.values()];");
-    expect(contract).toContain("for (const item of foldItems) {");
+    expect(contract).toContain("(foldItems).map(async (item) => {");
     expect(contract).toContain("httpClient(");
     // The fold loop must run AFTER the fetch loop has finished merging pages
     // (against the final assembled set), not before `itemsById` exists.
-    expect(contract.indexOf("for (const item of foldItems) {")).toBeGreaterThan(
+    expect(contract.indexOf("(foldItems).map(async (item) => {")).toBeGreaterThan(
       contract.indexOf("skip += PAGE_SIZE;")
     );
-    expect(contract.indexOf("for (const item of foldItems) {")).toBeLessThan(
+    expect(contract.indexOf("(foldItems).map(async (item) => {")).toBeLessThan(
       contract.indexOf("const withItems =")
     );
   }, 30_000);

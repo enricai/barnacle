@@ -226,7 +226,7 @@ describe("GraphQL query-primary + nested-array joinFields absent from the outer 
     expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).toContain("entries");
     expect(executeHttpBody).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of g0.entries)");
+    expect(executeHttpBody).toContain("(g0.entries).map(async (item) => {");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({

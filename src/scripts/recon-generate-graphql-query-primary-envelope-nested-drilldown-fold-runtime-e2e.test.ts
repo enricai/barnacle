@@ -212,7 +212,7 @@ describe("GraphQL-primary + data-enveloped nested-wildcard resultsPath drill-dow
     // runtime.
     expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of g0.items)");
+    expect(executeHttpBody).toContain("(g0.items).map(async (item) => {");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({

@@ -290,7 +290,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + m
     // runtime.
     expect(executeHttpBodyWith).toContain("for (const g0 of");
     expect(executeHttpBodyWith).not.toMatch(/\.groups\[\d+\]/);
-    expect(executeHttpBodyWith).toContain("for (const item of g0.items)");
+    expect(executeHttpBodyWith).toContain("(g0.items).map(async (item) => {");
     // The URL must be parameterized off `sku` — the field the captured
     // request actually varies on — even though the declared joinFields
     // name `id`, a field the request never carries.

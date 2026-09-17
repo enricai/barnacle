@@ -239,7 +239,7 @@ describe("GraphQL query-primary + composite (multi-field) joinFields drill-down 
     expect(contract).toContain('m["region"]');
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("(foldItems).map(async (item) => {");
     expect(executeHttpBody).toContain("item.id");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });

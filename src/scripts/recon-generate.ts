@@ -4521,6 +4521,48 @@ function pathToFoldLoopLines(
   };
 }
 
+/**
+ * Splices a fold's per-item body between `itemOpenLines`/`itemCloseLines`
+ * (see {@link pathToFoldLoopLines}) — either as the original sequential
+ * `for` loop, when the body never issues its own per-item drill fetch (so
+ * existing byte-identical fold output is preserved for every fold that has
+ * nothing to parallelize), or rewritten into a `Promise.allSettled`-based
+ * parallel form when it does: `for (const item of X) {` becomes `await
+ * Promise.allSettled((X).map(async (item) => { ... }));`. Every item's
+ * fetch then fires concurrently instead of one at a time, and a rejected
+ * item's promise can't abort a sibling's — `allSettled` never short-
+ * circuits on a rejection, and the sibling's `Object.assign` onto its own
+ * item already only runs once ITS OWN fetch resolves, so a failed item
+ * simply keeps its original (unmerged) fields instead of taking every other
+ * item's already-fetched data down with it.
+ */
+function emitItemLoopLines(
+  itemOpenLines: string[],
+  itemScopedLines: string[],
+  itemCloseLines: string[],
+  itemVar: string,
+  hasItemScopedFetch: boolean
+): string[] {
+  if (!hasItemScopedFetch) {
+    return [...itemOpenLines, ...itemScopedLines, ...itemCloseLines];
+  }
+  const forLineIndex = itemOpenLines.length - 1;
+  const forLine = itemOpenLines[forLineIndex]!;
+  const forLineMatch = forLine.match(/^(\s*)for \(const \w+ of (.+)\) \{$/);
+  if (!forLineMatch) {
+    throw new Error(`emitItemLoopLines: unrecognized fold item-loop shape: ${forLine}`);
+  }
+  const [, indent, iterableExpr] = forLineMatch as [string, string, string];
+  return [
+    ...itemOpenLines.slice(0, forLineIndex),
+    `${indent}await Promise.allSettled(`,
+    `${indent}  (${iterableExpr}).map(async (${itemVar}) => {`,
+    ...itemScopedLines,
+    `${indent}  })`,
+    `${indent});`,
+  ];
+}
+
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
  * up the path if the tail is numeric or not a valid JS identifier. */
 function pathToVarName(path: string[]): string {
@@ -6500,6 +6542,15 @@ export function emitMultiStepExecuteHttp(
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
+      // True once any target's own chain fetch ends up item-scoped (not
+      // hoisted above the item loop) — only then does the item loop have
+      // anything to parallelize; see emitItemLoopLines.
+      let hasItemScopedFetch = false;
+      // True once any item-scoped target's chain threads a response header
+      // through createHttpClient's shared `bind` store — see
+      // chainUsesHeaderThreading below for why that disqualifies
+      // parallelizing the item loop.
+      let hasItemScopedHeaderThreading = false;
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -6767,6 +6818,16 @@ export function emitMultiStepExecuteHttp(
         // `itemVar` is never declared.
         const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
         let referencesItemVar = ancestorVars.length === 0;
+        // A chain step that produces a response HEADER threads it through
+        // `createHttpClient`'s single shared `bind` store (see
+        // HttpClientOptions.bind), not a local variable — that store is
+        // mutated in call order and read by whichever call happens to run
+        // next, regardless of which item minted it. Running items
+        // concurrently would let one item's header overwrite another's
+        // in-flight header before its own later chain hop reads it back, so
+        // any target relying on header threading keeps the item loop
+        // sequential rather than risk cross-item header contamination.
+        let chainUsesHeaderThreading = false;
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
@@ -6794,7 +6855,10 @@ export function emitMultiStepExecuteHttp(
             `      })) as Record<string, unknown>;`
           );
           for (const p of chainStep.produces) {
-            if (p.kind === "header") continue;
+            if (p.kind === "header") {
+              chainUsesHeaderThreading = true;
+              continue;
+            }
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
@@ -6814,6 +6878,8 @@ export function emitMultiStepExecuteHttp(
         );
         if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else {
           hoistedChainLines.push(...chainLines);
           itemScopedLines.push(...matchLines);
@@ -6821,9 +6887,13 @@ export function emitMultiStepExecuteHttp(
       }
       lines.push(
         ...hoistedChainLines,
-        ...itemOpenLines,
-        ...itemScopedLines,
-        ...itemCloseLines,
+        ...emitItemLoopLines(
+          itemOpenLines,
+          itemScopedLines,
+          itemCloseLines,
+          itemVar,
+          hasItemScopedFetch && !hasItemScopedHeaderThreading
+        ),
         ...ancestorCloseLines,
         ""
       );
@@ -11091,6 +11161,14 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
+      // True once any target's own chain fetch ends up item-scoped — see
+      // emitMultiStepExecuteHttp's identical flag and emitItemLoopLines.
+      let hasItemScopedFetch = false;
+      // True once any item-scoped target's chain threads a response header
+      // through createHttpClient's shared `bind` store — see
+      // emitMultiStepExecuteHttp's identical flag for why that disqualifies
+      // parallelizing the item loop.
+      let hasItemScopedHeaderThreading = false;
       // Word-boundary match — see emitMultiStepExecuteHttp's identical
       // `itemVarRefPattern` for why an anchored `${itemVar` pattern misses a
       // nested field path's `${(itemVar.field as Record<string,
@@ -11269,9 +11347,19 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // treated as item-scoped too — flat folds must keep emitting
         // byte-identical code.
         let referencesItemVar = ancestorVars.length === 0;
+        // See emitMultiStepExecuteHttp's identical `chainUsesHeaderThreading`
+        // for why any header-kind produce disqualifies parallelizing the
+        // item loop — httpClient's shared `bind` store applies to every call
+        // this function's own chainLines make too, even though (unlike
+        // emitMultiStepExecuteHttp) this codegen path never renders a local
+        // variable for the produced header itself.
+        let chainUsesHeaderThreading = false;
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
+          if (chainStep.produces.some((p) => p.kind === "header")) {
+            chainUsesHeaderThreading = true;
+          }
           // The zero-variance guard lives inside `parameterizeUrl` itself
           // (see above) so it can skip only the threaded-value splice while
           // still letting a spec-declared drillParamBindings substitution
@@ -11302,6 +11390,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         );
         if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else {
           hoistedChainLines.push(...chainLines);
           itemScopedLines.push(...matchLines);
@@ -11309,9 +11399,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       }
       lines.push(
         ...hoistedChainLines,
-        ...itemOpenLines,
-        ...itemScopedLines,
-        ...itemCloseLines,
+        ...emitItemLoopLines(
+          itemOpenLines,
+          itemScopedLines,
+          itemCloseLines,
+          itemVar,
+          hasItemScopedFetch && !hasItemScopedHeaderThreading
+        ),
         ...ancestorCloseLines,
         ""
       );

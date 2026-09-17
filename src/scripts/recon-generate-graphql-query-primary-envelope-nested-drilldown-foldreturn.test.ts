@@ -257,7 +257,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     // fold-merge loop is now a nested `for` (not a `.flatMap`-derived
     // `foldItems`) — see pathToFoldLoopLines's docstring.
     expect(contract).toContain("for (const g0 of");
-    expect(contract).toContain("for (const item of g0.items) {");
+    expect(contract).toContain("(g0.items).map(async (item) => {");
   }, 30_000);
 
   it("never emits the 'no fold plan resolved' diagnostic for the resolvable declared foldReturn", () => {

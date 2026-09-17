@@ -1607,7 +1607,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // call per item, and merges each response back onto its item — so the
     // return references the folded primary, not the drill-down's own body.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -1665,7 +1665,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     const body = emit(buildCompositeJoinActionSteps(), COMPOSITE_SPEC);
 
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -1691,7 +1691,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // selectEffectiveResponseBody without a spec also drives emission — the
     // decoy `facets[]` array must not win over `results[]` here either.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -1715,7 +1715,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // drill) should win: the structural heuristic threads the `sku` join
     // value through the real `results[]`/`details[]` arrays on its own.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
@@ -1754,7 +1754,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     const body = emit(steps, SINGLE_SHOT_SPEC);
 
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(`/catalog/pricing/?sku=\${item.sku}`);
     expect(body).not.toContain("sku=sku-a");
     expect(body).not.toContain("sku=sku-b");
@@ -1773,7 +1773,7 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
     // response's DECLARED details[] array onto each item, re-issuing the
     // pricing call per item.
     expect(body).toContain("const foldItems = (r0 as { results: Record<string, unknown>[] })");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
@@ -1865,7 +1865,7 @@ describe("grouped/nested primary fold — detection, schema inference, and codeg
     expect(body).toContain(
       "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
-    expect(body).toContain("for (const item of g0.entries) {");
+    expect(body).toContain("(g0.entries).map(async (item) => {");
     expect(body).toContain(
       "const foldMatches = (r1 as { details: Record<string, unknown>[] }).details;"
     );
