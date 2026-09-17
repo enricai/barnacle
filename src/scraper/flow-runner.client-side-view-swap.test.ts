@@ -268,7 +268,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(false);
   });
 
-  it("rejects a small text-changing reveal on a final step (submit verification requires real network)", () => {
+  it("credits a small text-changing reveal on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: true,
@@ -279,7 +279,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       bytesDelta: 789,
       textChanged: true,
     });
-    expect(result).toBe(false);
+    expect(result).toBe(true);
   });
 
   it("rejects a small text-changing reveal on an advance-pattern step", () => {
