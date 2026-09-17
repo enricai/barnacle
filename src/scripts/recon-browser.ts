@@ -2313,6 +2313,12 @@ async function main(): Promise<void> {
     `recon-browser: target=${url} flow_steps=${flow.length} provider=${provider ?? "(config-default)"} advancedStealth=${advancedStealth} upload_fixture=${uploadFixture ? `${uploadFixturePath} (${uploadFixture.buffer.length}b)` : "(missing)"} runId=${runDir.runId} out=${runDir.root}`
   );
 
+  // Run-wide replan budgets: declared here (not inside runFlowAttempt) so a
+  // mid-flow CDP-teardown retry on a fresh session (see below) accumulates
+  // against the same ceiling instead of silently resetting to 0 per attempt.
+  let probeReplansUsed = 0;
+  let cascadeReplansUsed = 0;
+
   // Runs one whole-flow attempt on a brand-new session: create session ->
   // run the step loop -> post-loop truncation/CDP-teardown checks -> replan
   // write-back. Stagehand can tear its own CDP transport down mid-flow while
@@ -2416,9 +2422,6 @@ async function main(): Promise<void> {
         verifiedBy: AttemptRecord["verifiedBy"];
         targetId?: string;
       }[] = [];
-      let probeReplansUsed = 0;
-      let cascadeReplansUsed = 0;
-
       const STUCK_SKIP_THRESHOLD = 5;
       let consecutiveStaleSkips = 0;
       let lastSuccessNetworkCount = signalCounter.n;
