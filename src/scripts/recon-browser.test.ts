@@ -2779,6 +2779,26 @@ describe("recon-browser/isReplanCycle", () => {
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 52000 })).toBe(false);
   });
 
+  it("returns true when threshold reworded-but-structurally-identical proposals under static page state", () => {
+    const wordings = [
+      "Click the 'Submit Application' button to send the form",
+      "Press the 'Submit Application' button so the application is submitted",
+      "Tap on 'Submit Application' to finalize submission",
+    ];
+    const priors = wordings.map((p, i) =>
+      makeEvent(i + 1, [p], { url, htmlLength: 50000 + i * 10 })
+    );
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Hit 'Submit Application' one more time",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(true);
+  });
+
   it("returns false when proposals differ in instructions or order", () => {
     const priors = [
       makeEvent(1, ["Fill phone", "Click submit"], { url, htmlLength: 50000 }),

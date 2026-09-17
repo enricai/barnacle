@@ -586,10 +586,10 @@ export function isReplanCycle(
   currentState: { url: string; htmlLength: number }
 ): boolean {
   if (priorReplans.length < REPLAN_CYCLE_THRESHOLD) return false;
-  const newSig = newSteps.map((s) => s.instruction).join("|||");
+  const newSig = newSteps.map((s) => stepSignature(s.instruction)).join("|||");
   let identicalCount = 0;
   for (const prior of priorReplans) {
-    const priorSig = prior.replanSteps.map((s) => s.instruction).join("|||");
+    const priorSig = prior.replanSteps.map((s) => stepSignature(s.instruction)).join("|||");
     if (priorSig !== newSig) continue;
     const urlSame = prior.pageState.url === currentState.url;
     const htmlStatic =
@@ -1009,6 +1009,20 @@ function normalizeInstruction(instruction: string): string {
 function extractQuotedLabels(instruction: string): string[] {
   const matches = instruction.matchAll(/['"]([^'"]{2,80})['"]/g);
   return [...matches].map((m) => normalizeInstruction(m[1]!));
+}
+
+/**
+ * Structural per-step signature for cycle detection: quoted UI-control
+ * label(s) when present (sorted for stability), otherwise the normalized
+ * instruction text. An LLM rewords a semantically-identical bridge proposal
+ * freely between replan attempts, so raw string equality on `instruction`
+ * lets two structurally identical stuck states diverge non-deterministically;
+ * comparing on the control label(s) it names is prose-tolerant like the
+ * duplicate-step check above.
+ */
+function stepSignature(instruction: string): string {
+  const labels = extractQuotedLabels(instruction);
+  return labels.length > 0 ? [...labels].sort().join(",") : normalizeInstruction(instruction);
 }
 
 /**
