@@ -137,11 +137,46 @@ describe("recon-generate bounded paging: MAX_PAGES loop bound is threaded from p
       "for (let pageIndex = 1; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++)"
     );
 
-    // The pre-existing identity-merge and truncation-total-rewrite behavior
-    // is unchanged in shape by this parameterization.
+    // The pre-existing identity-merge behavior is unchanged in shape by this
+    // parameterization. The server's own `total` is preserved untouched;
+    // `deliveredCount`/`truncated` are exposed as separate sibling fields.
     expect(contract).toContain("itemsById.set(String(item.id), item);");
     expect(contract).toContain("const truncated = itemsById.size < total;");
-    expect(contract).toContain("total: truncated ? itemsById.size : withItems.search.total");
+    expect(contract).toContain("{ ...withItems, deliveredCount: itemsById.size, truncated }");
+    expect(contract).not.toContain("total: truncated ? itemsById.size");
+  }, 30_000);
+});
+
+describe("recon-generate bounded paging: server-reported total is preserved, not overwritten", () => {
+  it("keeps the server's original total intact and reports delivery/truncation as sibling fields", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-maxpages-total-preserved-"));
+    const runRoot = join(workDir, "run");
+    writePagedRunDir(runRoot);
+
+    const siteId = `maxpages-total-preserved-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    expect(existsSync(siteOutDir)).toBe(false);
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // The final envelope is built by spreading `withItems` (whose own
+    // `total` field is the server's untouched value from the last fetched
+    // page) and adding `deliveredCount`/`truncated` as siblings — a caller
+    // sees "total: <server's real count>, deliveredCount: <items actually
+    // fetched>, truncated: <total exceeds deliveredCount>" rather than a
+    // `total` silently rewritten to match delivery.
+    expect(contract).toContain(
+      "const data = { ...withItems, deliveredCount: itemsById.size, truncated } as"
+    );
+    expect(contract).not.toMatch(/total:\s*truncated\s*\?\s*itemsById\.size/);
   }, 30_000);
 });
 

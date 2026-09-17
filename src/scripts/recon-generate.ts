@@ -10427,15 +10427,12 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     arrayPath,
     "[...itemsById.values()]"
   );
-  // When MAX_PAGES caps the loop before `total` converges, the merged
-  // envelope's own total must say so instead of repeating the API's
-  // original (larger) reported total — otherwise a truncated payload still
-  // claims to be complete.
-  const withTotalOverrideExpr = buildNestedSpreadOverride(
-    "withItems",
-    totalPath,
-    `truncated ? itemsById.size : ${pathAccessExpr("withItems", totalPath)}`
-  );
+  // The server's own reported total is left untouched — overwriting it with
+  // the delivered count would make a MAX_PAGES-capped fetch indistinguishable
+  // from a genuinely complete one. `deliveredCount`/`truncated` are added as
+  // siblings on the response so a caller can tell "total=5000, delivered=100,
+  // truncated=true" apart from "total=436, delivered=436, truncated=false".
+  const withTotalOverrideExpr = `{ ...withItems, deliveredCount: itemsById.size, truncated }`;
 
   return `    const baseVariables = ${gqlVariablesExpr};
     const PAGE_SIZE = payload.pageSize ?? ${pageSize};
