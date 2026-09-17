@@ -1600,6 +1600,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
     ).toBe(true);
   });
 
+  it("does not fire when a single bridge step bundles a genuinely new clause ahead of the repeated control", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Solve the challenge, then click the 'Submit' button again to complete the form")],
+        "Click the 'Submit' button"
+      )
+    ).toBe(false);
+  });
+
   it("does not fire when the bridge adds a genuinely new step", () => {
     expect(
       isReplanReproposingFailedStep(
