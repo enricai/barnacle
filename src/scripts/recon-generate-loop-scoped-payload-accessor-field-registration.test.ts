@@ -11,7 +11,7 @@ import type { Capture } from "@/scripts/recon-shared";
  * Sibling of recon-generate-payload-accessor-field-registration.test.ts's
  * registration-discipline tests, routed through the ONE code path those
  * tests never exercise: a `payload.<field>` accessor emitted from WITHIN a
- * fold/drill `for (const item of ...)` loop body
+ * fold/drill `Promise.allSettled(...map(...))` loop body
  * (emitMultiStepExecuteHttp's per-item `parameterize` closure at
  * recon-generate.ts:6468, wrapped by the loop construction starting at
  * recon-generate.ts:6341), not the flat sequential path the sibling tests
@@ -87,7 +87,7 @@ describe("emitMultiStepExecuteHttp — payload schema field registration inside 
     const body = emit(captures, {}, outFields, outAdditionalBodyKeys);
 
     // A genuine multi-item fold loop, not a hardcoded per-item call.
-    expect(body).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(body).toMatch(/Promise\.allSettled\(\s*\(\w+\)\.map\(async \(\w+\) => \{/);
 
     const I = `$${"{"}`;
     // The fold loop's own per-item detail request splices `region` as a
