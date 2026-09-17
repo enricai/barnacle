@@ -14,9 +14,10 @@
  * this module's own `z` is the only instance-safe route.
  *
  * Scope is deliberately the flat form real form-field payloads need
- * (object/string/number/integer/boolean/array/enum + `required`). Anything
- * outside that surface throws at load time rather than silently degrading, so a
- * manifest that leans on unsupported JSON-Schema features fails loudly.
+ * (object/string/number/integer/boolean/array/enum/minimum/maximum + `required`).
+ * Anything outside that surface throws at load time rather than silently
+ * degrading, so a manifest that leans on unsupported JSON-Schema features fails
+ * loudly.
  */
 
 import { z } from "zod/v4";
@@ -41,6 +42,8 @@ export interface JsonSchemaNode {
   required?: string[];
   items?: JsonSchemaNode;
   enum?: string[];
+  minimum?: number;
+  maximum?: number;
   format?: string;
   description?: string;
 }
@@ -53,6 +56,8 @@ const JSON_SCHEMA_NODE: z.ZodType<JsonSchemaNode> = z.lazy(() =>
       required: z.array(z.string()).optional(),
       items: JSON_SCHEMA_NODE.optional(),
       enum: z.array(z.string()).min(1).optional(),
+      minimum: z.number().optional(),
+      maximum: z.number().optional(),
       format: z.string().optional(),
       description: z.string().optional(),
     })
@@ -69,8 +74,11 @@ function nodeToZod(node: JsonSchemaNode): z.ZodTypeAny {
     case "string":
       return z.string();
     case "number":
-    case "integer":
-      return z.number();
+    case "integer": {
+      const base = node.type === "integer" ? z.number().int() : z.number();
+      const withMin = node.minimum === undefined ? base : base.min(node.minimum);
+      return node.maximum === undefined ? withMin : withMin.max(node.maximum);
+    }
     case "boolean":
       return z.boolean();
     case "array":

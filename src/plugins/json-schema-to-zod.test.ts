@@ -52,6 +52,13 @@ describe("jsonSchemaToZod", () => {
     expect(schema.safeParse({}).success).toBe(false);
   });
 
+  it("rejects a numeric value over a declared maximum", () => {
+    const schema = jsonSchemaToZod({ type: "integer", minimum: 0, maximum: 10 });
+    expect(schema.safeParse(10).success).toBe(true);
+    expect(schema.safeParse(11).success).toBe(false);
+    expect(schema.safeParse(-1).success).toBe(false);
+  });
+
   it("throws UnsupportedJsonSchemaError on an unknown type", () => {
     expect(() => jsonSchemaToZod({ type: "geometry" })).toThrow(UnsupportedJsonSchemaError);
   });
