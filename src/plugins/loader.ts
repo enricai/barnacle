@@ -275,6 +275,12 @@ async function runPluginPipeline<TResult>(
         `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
       );
     }
+    if (isHttpClientError(httpErr)) {
+      context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
+      logger.warn(
+        `hot path client error for ${plugin.meta.siteId}: ${httpErr.message} — deterministic, not falling back`
+      );
+    }
     throw httpErr;
   }
 }

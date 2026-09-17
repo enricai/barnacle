@@ -10,6 +10,7 @@ import { getLogger } from "@/lib/logging";
 import { registerRoutes } from "@/plugins/loader";
 import {
   HttpBotChallengeError,
+  HttpClientError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
@@ -266,6 +267,7 @@ describe("dispatch — hotPathError telemetry recorded before a not-falling-back
   it.each([
     ["HttpRateLimitError", () => new HttpRateLimitError("http 429 rate limit exceeded"), 429],
     ["HttpUrlLockedError", () => new HttpUrlLockedError("requisition url locked"), 429],
+    ["HttpClientError", () => new HttpClientError(404, "http 404 client error"), 500],
   ])(
     "records hotPathError on the error-status envelope call and rethrows without invoking execute for %s",
     async (errorName, makeError, expectedStatus) => {
