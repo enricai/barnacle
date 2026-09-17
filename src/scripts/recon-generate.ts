@@ -9086,6 +9086,59 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
   }
 }
 
+/**
+ * Resolved reading of an object-form recon-flow.json's optional hot-path
+ * gating declarations. `browserFallbackGate` mirrors {@link SitePluginMeta}'s
+ * field: `false` disables the browser fallback outright, a non-empty string
+ * array names the `ScraperError` subclass `.name`s that MAY still fall back
+ * (every other hot-path error fails fast), and `undefined` preserves today's
+ * unconditional-cascade behavior. `httpTimeoutMs` is forwarded verbatim as
+ * `createHttpClient`'s `defaultTimeoutMs`.
+ */
+export interface FallbackGateSpec {
+  browserFallbackGate?: false | readonly string[];
+  httpTimeoutMs?: number;
+}
+
+/**
+ * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
+ * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
+ * a missing file, a legacy bare-array flow, or a malformed declaration all
+ * resolve to an empty spec (today's behavior) rather than aborting
+ * generation over a field that only tightens an opt-in guard.
+ */
+export function parseFallbackGateSpec(flowFileContents: string): FallbackGateSpec {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const { browserFallbackGate, httpTimeoutMs } = raw as {
+      browserFallbackGate?: unknown;
+      httpTimeoutMs?: unknown;
+    };
+    const resolvedGate: false | readonly string[] | undefined = (() => {
+      if (browserFallbackGate === false) return false;
+      if (
+        Array.isArray(browserFallbackGate) &&
+        browserFallbackGate.length > 0 &&
+        browserFallbackGate.every((n): n is string => typeof n === "string" && n.length > 0)
+      ) {
+        return browserFallbackGate;
+      }
+      return undefined;
+    })();
+    const resolvedTimeout =
+      typeof httpTimeoutMs === "number" && Number.isFinite(httpTimeoutMs) && httpTimeoutMs > 0
+        ? httpTimeoutMs
+        : undefined;
+    return {
+      ...(resolvedGate !== undefined ? { browserFallbackGate: resolvedGate } : {}),
+      ...(resolvedTimeout !== undefined ? { httpTimeoutMs: resolvedTimeout } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** The JS `typeof` a `drillParamBindings` entry's `default` must match for
  * its declared `type` — the same "assert the type, then check the default
  * agrees" pattern the rest of {@link parseFoldReturnSpec} uses for its other
@@ -10643,6 +10696,11 @@ export function emitContractTs(opts: {
    * the single-primary path can never disagree with the inferred shape on
    * whether a fold applies. */
   foldReturnSpec?: FoldReturnSpec | null;
+  /** Optional recon-flow.json-declared hot-path gating — see
+   * {@link parseFallbackGateSpec}. Absent (or an empty `{}`) emits today's
+   * output byte-for-byte: no `browserFallbackGate` meta field, and
+   * `createHttpClient(...)` unchanged. */
+  fallbackGateSpec?: FallbackGateSpec;
 }): string {
   const {
     siteId,
@@ -10679,7 +10737,25 @@ export function emitContractTs(opts: {
     optionalPayloadFieldNames = new Set<string>(),
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
+    fallbackGateSpec = {},
   } = opts;
+
+  const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
+  /** Rendered `meta.browserFallbackGate` literal: `false` verbatim, a
+   * list-derived arrow-function predicate matching against `error.name`, or
+   * "" (omitted) when the flow declared no gate — preserving byte-identical
+   * output for every flow that doesn't opt in. */
+  const browserFallbackGateLiteral =
+    browserFallbackGate === false
+      ? "\n    browserFallbackGate: false,"
+      : browserFallbackGate !== undefined
+        ? `\n    browserFallbackGate: (error) => ${JSON.stringify(browserFallbackGate)}.includes(error.name),`
+        : "";
+  /** Rendered `createHttpClient({ ..., defaultTimeoutMs })` fragment — "" when
+   * the flow declared no `httpTimeoutMs`, so the call is byte-identical to
+   * today's when the key is absent. */
+  const defaultTimeoutMsOption =
+    httpTimeoutMs !== undefined ? `, defaultTimeoutMs: ${httpTimeoutMs}` : "";
 
   // This is the CLIENT-level schema — createHttpClient's default, and the
   // plugin's caller-facing contract (what executeHttp's return value promises
@@ -11175,12 +11251,12 @@ ${
   // GraphQL to the primary endpoint.
   needsFoldHttpClient
     ? `
-const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
+const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `
     : ""
 }`
       : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `;
 
   const gqlOperationNameExpr = gqlOperationName
@@ -11679,7 +11755,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
@@ -12658,6 +12734,7 @@ async function main(): Promise<void> {
     requireSubmitEndpointMatch,
     displayName,
     foldReturnSpec,
+    fallbackGateSpec,
   } = (() => {
     const flowFileContents = (() => {
       try {
@@ -12670,6 +12747,11 @@ async function main(): Promise<void> {
     // valid `foldReturn` still resolves when the rest of the flow file is
     // degenerate — the two declarations fail independently.
     const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    // Same independence rule as `foldReturnSpec` above: an empty spec
+    // (missing/malformed declaration) is indistinguishable from "not
+    // declared" and preserves today's byte-identical output.
+    const fallbackGateSpec: FallbackGateSpec =
+      flowFileContents === null ? {} : parseFallbackGateSpec(flowFileContents);
     try {
       const raw: unknown = flowFileContents === null ? null : JSON.parse(flowFileContents);
       if (Array.isArray(raw))
@@ -12681,6 +12763,7 @@ async function main(): Promise<void> {
           requireSubmitEndpointMatch: false,
           displayName: undefined,
           foldReturnSpec,
+          fallbackGateSpec,
         };
       if (
         raw !== null &&
@@ -12704,6 +12787,7 @@ async function main(): Promise<void> {
           requireSubmitEndpointMatch: obj.requireSubmitEndpointMatch ?? false,
           displayName: obj.displayName,
           foldReturnSpec,
+          fallbackGateSpec,
         };
       }
       return {
@@ -12714,6 +12798,7 @@ async function main(): Promise<void> {
         requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
+        fallbackGateSpec,
       };
     } catch {
       return {
@@ -12724,6 +12809,7 @@ async function main(): Promise<void> {
         requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
+        fallbackGateSpec,
       };
     }
   })();
@@ -13308,6 +13394,7 @@ async function main(): Promise<void> {
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
+      fallbackGateSpec,
     };
 
     const contractCode = emitContractTs(contractOpts);
