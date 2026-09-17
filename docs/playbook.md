@@ -246,6 +246,21 @@ Each attempt classifies a `registryState` diagnostic:
   `renderedUnmatched` combined with `callbackDiscovered=false` is a genuine,
   non-retriable install failure.
 
+A `solveCaptcha` rejection (network error, provider timeout) is itself
+retried up to `CAPTCHA_REGISTRY_RETRY_ATTEMPTS` before the step throws —
+transient solve-provider failures no longer fail the step on the first
+attempt.
+
+When no transition is confirmed after inject, the explicit submit fallback
+(`submitCaptchaGatedForm`) resolves its target form the same way
+`injectCaptchaTokenAndSubmit` does: by the response field's own form first,
+falling back to the sitekey-anchored form (or the sole form on the page).
+This keeps the fallback from silently no-oping against an invisible/callback-only
+widget, whose render never creates a named response field. The function
+returns whether a form was actually found and submitted; a genuine no-op
+(`fallbackSubmitted=false`) is logged and surfaces in the retry/failure
+diagnostics.
+
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to
