@@ -156,4 +156,17 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
     });
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });
+
+  // The bug report's attempt 4: a submit-shaped step whose click merely grows
+  // the page body (no network, no URL, no committed element-state change)
+  // must NOT be lifted to "effective" by byte growth alone — a submit needs
+  // proof of a real transition, not a DOM reflow.
+  it("stays phantom on a submit-shaped step with byte growth alone (no network/URL/element-state)", () => {
+    const attempt = makeAttempt({
+      isSubmitShapedStep: true,
+      elementStateChanged: false,
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 + 10550 },
+    });
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
+  });
 });
