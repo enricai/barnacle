@@ -125,12 +125,18 @@ describe("recon-generate CLI regression: recon-flow.json fallback-gate/timeout k
 
     // Pre-feature generator's output, from the last commit before
     // browserFallbackGate/httpTimeoutMs parsing was introduced.
-    preChangeScriptDir = mkdtempSync(join(REPO_ROOT, "src", "scripts", ".pre-change-fallback-gate-"));
+    preChangeScriptDir = mkdtempSync(
+      join(REPO_ROOT, "src", "scripts", ".pre-change-fallback-gate-")
+    );
     const preChangeScript = join(preChangeScriptDir, "recon-generate.ts");
-    const preChangeSource = spawnSync("git", ["show", `${PRE_CHANGE_REF}:src/scripts/recon-generate.ts`], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
+    const preChangeSource = spawnSync(
+      "git",
+      ["show", `${PRE_CHANGE_REF}:src/scripts/recon-generate.ts`],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      }
+    );
     expect(preChangeSource.status, preChangeSource.stderr).toBe(0);
     expect(preChangeSource.stdout).not.toContain("browserFallbackGate");
     writeFileSync(preChangeScript, preChangeSource.stdout);
