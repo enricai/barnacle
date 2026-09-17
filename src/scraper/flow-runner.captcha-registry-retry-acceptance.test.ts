@@ -217,7 +217,9 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     solveCaptchaMock
       .mockRejectedValueOnce(new CaptchaError("2captcha task not ready yet"))
       .mockResolvedValueOnce({ token: "solved-token", provider: "2captcha", ms: 12 });
-    const { evaluate, getCallCount } = makeEvaluate((attempt) => (attempt >= 1 ? "populated" : "empty"));
+    const { evaluate, getCallCount } = makeEvaluate((attempt) =>
+      attempt >= 1 ? "populated" : "empty"
+    );
 
     // Only visible once the second solve+inject attempt has run, since
     // attempt 1 never reaches inject at all (solveCaptcha rejects first).
@@ -256,7 +258,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     // attempt 1's solve rejected before inject ever ran.
     expect(getCallCount()).toBe(1);
     expect(testLogger.error).toHaveBeenCalledWith(
-      expect.stringContaining("solve failed on attempt 1/3 (CaptchaError: 2captcha task not ready yet); retrying")
+      expect.stringContaining("solve failed on attempt 1/3 (2captcha task not ready yet); retrying")
     );
   });
 
@@ -278,7 +280,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     expect(solveCaptchaMock).toHaveBeenCalledTimes(3);
     expect(testLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        "solve failed on attempt 3/3 (CaptchaError: 2captcha task not ready yet); failing the step rather than silently proceeding"
+        "solve failed on attempt 3/3 (2captcha task not ready yet); failing the step rather than silently proceeding"
       )
     );
   });
