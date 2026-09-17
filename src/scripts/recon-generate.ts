@@ -10496,11 +10496,21 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
     let lastPage: ${pascal}Response = page;
     let total = ${totalAccessExpr};
-    for (const item of ${arrayAccessExpr}) {
+    const firstPageItems = ${arrayAccessExpr};
+    for (const item of firstPageItems) {
       itemsById.set(String(${identityAccessExpr}), item);
     }
     skip += PAGE_SIZE;
-    for (let pageIndex = 1; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++) {
+    // A first page shorter than what was asked for is the same "nothing left"
+    // signal as a short subsequent page — stop before ever entering the loop
+    // instead of issuing a request the server already told us would come
+    // back empty.
+    const firstPageWasShort = firstPageItems.length < PAGE_SIZE;
+    for (
+      let pageIndex = 1;
+      !firstPageWasShort && pageIndex < MAX_PAGES && itemsById.size < total;
+      pageIndex++
+    ) {
       const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
       lastPage = page;
       total = ${totalAccessExpr};

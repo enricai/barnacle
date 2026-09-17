@@ -352,6 +352,42 @@ describe("recon-generate GraphQL paginated fetch loop: server total overcounts d
     expect(callCount).toBe(5);
     expect((data as { deliveredCount: number }).deliveredCount).toBe(TOTAL_DISTINCT_IDS);
   });
+
+  it("stops after the very first page when it is already shorter than the page size, never entering the loop", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    // Only 30 distinct ids exist, but the server's `total` claims 437 — a
+    // mismatch on the FIRST page, before the loop is ever entered.
+    const PAGE_SIZE = 100;
+    let callCount = 0;
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, _variables: Record<string, unknown>) => {
+        callCount += 1;
+        return {
+          search: {
+            total: 437,
+            items: Array.from({ length: 30 }, (_, i) => ({
+              id: `prod-${i}`,
+              title: `Product ${i}`,
+            })),
+          },
+        };
+      };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    const { data } = await executeHttp(
+      { pageSize: PAGE_SIZE },
+      { baseUrl: "https://www.products-fixture.example.com" }
+    );
+
+    // Exactly 1 call: the first page is already shorter than PAGE_SIZE, which
+    // is itself the server's signal that nothing is left — the loop must
+    // never be entered to chase the inflated total.
+    expect(callCount).toBe(1);
+    expect((data as { deliveredCount: number }).deliveredCount).toBe(30);
+  });
 });
 
 describe("recon-generate GraphQL paginated fetch loop: caller-supplied payload.pageSize override", () => {

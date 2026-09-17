@@ -134,7 +134,7 @@ describe("recon-generate bounded paging: MAX_PAGES loop bound is threaded from p
     // The loop's comparison operand is the SAME identifier the initializer
     // line declares — no dangling second literal reintroduced elsewhere.
     expect(contract).toContain(
-      "for (let pageIndex = 1; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++)"
+      "pageIndex = 1;\n      !firstPageWasShort && pageIndex < MAX_PAGES && itemsById.size < total;\n      pageIndex++"
     );
 
     // The pre-existing identity-merge behavior is unchanged in shape by this
