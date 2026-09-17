@@ -9403,19 +9403,25 @@ export async function executeStepWithHealing(params: {
           // widget that renders on demand another chance to be caught.
           await captchaTarget.evaluate(buildHcaptchaCallbackCaptureScript()).catch(() => undefined);
         }
-        const solved = await solveCaptcha({
+        const solveResult = await solveCaptcha({
           type: "hcaptcha",
           siteKey,
           pageUrl,
           isInvisible,
           userAgent,
           proxy: sessionProxy ?? undefined,
-        }).catch((err: unknown) => {
+        })
+          .then((solved) => ({ ok: true as const, solved }))
+          .catch((err: unknown) => ({ ok: false as const, err }));
+        if (!solveResult.ok) {
+          const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
           logger.error(
-            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${toErrorMessage(solveResult.err)}); ${attemptsRemain ? "retrying" : "failing the step rather than silently proceeding"}`
           );
-          throw err;
-        });
+          if (attemptsRemain) continue;
+          throw solveResult.err;
+        }
+        const solved = solveResult.solved;
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
         const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
         const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(

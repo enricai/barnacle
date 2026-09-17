@@ -212,4 +212,74 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
       )
     );
   });
+
+  it("continues past a mid-retry solveCaptcha rejection and completes once a later attempt solves", async () => {
+    solveCaptchaMock
+      .mockRejectedValueOnce(new CaptchaError("2captcha task not ready yet"))
+      .mockResolvedValueOnce({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { evaluate, getCallCount } = makeEvaluate((attempt) => (attempt >= 1 ? "populated" : "empty"));
+
+    // Only visible once the second solve+inject attempt has run, since
+    // attempt 1 never reaches inject at all (solveCaptcha rejects first).
+    const writeConfirmingCaptureAfterSecondAttempt = () => {
+      writeFileSync(
+        join(capturesDir, "001-submit-real.json"),
+        JSON.stringify({
+          requestPostData: "type=next&step=review",
+          variables: { input: { type: "next" } },
+        })
+      );
+    };
+    const originalImpl = evaluate.getMockImplementation();
+    evaluate.mockImplementation(async (expr: unknown) => {
+      const result = await originalImpl?.(expr);
+      if (String(expr).includes("hasForm") && getCallCount() === 1) {
+        writeConfirmingCaptureAfterSecondAttempt();
+      }
+      return result;
+    });
+
+    const page = makeFakePage(evaluate);
+    const stagehand = {} as Stagehand;
+
+    vi.useFakeTimers();
+    const resultPromise = executeStepWithHealing(baseParams(page, stagehand));
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    expect(result).toBe("completed");
+    // solveCaptcha was invoked twice: attempt 1 rejected, attempt 2 solved --
+    // the rejection on attempt 1 must not have escaped the loop.
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(2);
+    // Only ONE solve+inject round actually reached the inject step, since
+    // attempt 1's solve rejected before inject ever ran.
+    expect(getCallCount()).toBe(1);
+    expect(testLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining("solve failed on attempt 1/3 (CaptchaError: 2captcha task not ready yet); retrying")
+    );
+  });
+
+  it("rethrows a solveCaptcha rejection on the final scripted attempt instead of retrying", async () => {
+    solveCaptchaMock.mockRejectedValue(new CaptchaError("2captcha task not ready yet"));
+    const { evaluate } = makeEvaluate(() => "empty");
+    const page = makeFakePage(evaluate);
+    const stagehand = {} as Stagehand;
+
+    vi.useFakeTimers();
+    const resultPromise = executeStepWithHealing(baseParams(page, stagehand));
+    const assertion = expect(resultPromise).rejects.toThrow(CaptchaError);
+    await vi.runAllTimersAsync();
+    await assertion;
+    vi.useRealTimers();
+
+    // Exactly 3 solve attempts, all rejecting -- the final one rethrows
+    // instead of retrying past the scripted budget.
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(3);
+    expect(testLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "solve failed on attempt 3/3 (CaptchaError: 2captcha task not ready yet); failing the step rather than silently proceeding"
+      )
+    );
+  });
 });
