@@ -20,9 +20,8 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
- * Combined acceptance test proving all eight root-cause fixes from
- * recon-royalcaribbean-plugin-root-causes.md interoperate on a single
- * site-agnostic (fictitious listings/booking) fixture, matching this repo's
+ * Combined acceptance test proving all eight root-cause fixes interoperate
+ * on a single site-agnostic (fictitious listings/booking) fixture, matching this repo's
  * own convention of a trailing combined regression test after a batch of
  * related fixes. Each `it()` exercises the fixes at the layer they actually
  * live in, and each fixture is built so it would have failed on the
