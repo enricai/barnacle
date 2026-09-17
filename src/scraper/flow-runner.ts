@@ -11156,11 +11156,47 @@ export async function executeStepWithHealing(params: {
         }
       }
     }
+    // Phantom-click verdict, computed from the same pre/post pair the
+    // signals above were derived from. Read HERE — at the point the retry
+    // loop decides whether to keep going — rather than only after the
+    // `verified` gate has already failed the attempt: an `"effective"`
+    // verdict (a real, observable change) must end the attempt loop
+    // immediately regardless of step shape (final, submit, or ordinary
+    // interior toggle), the same as the narrower `verified` boolean does.
+    // Previously the verdict was computed only for post-failure diagnostics/
+    // escalation, so an attempt explicitly classified `"effective"` could
+    // still be followed by wasted further attempts (see
+    // recon-browser-1.12.54-phantom-click-verdict-inconsistent-blocks-terminal-tab-toggle-steps-from-ever-completing.md).
+    record.phantomClickVerdict = classifyPhantomClick({
+      actResultSuccess: record.actResultSuccess,
+      pre,
+      post,
+      elementStateChanged: domVerified,
+      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+    });
+    // An `"effective"` verdict driven purely by the page-wide byte-delta
+    // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
+    // here: `clickViewSwapVerified`/`formValueVerified` already own that
+    // signal with the correct, much higher view-swap thresholds (5000B, or
+    // 500B+textChanged for a reveal) — see
+    // flow-runner.client-side-view-swap-cascade.test.ts's <5KB fixture,
+    // which must stay unverified so the cascade keeps excluding candidates.
+    // The one verdict-driven signal genuinely missing from `verified` is the
+    // element-scoped selection-state change (`domVerified`): a same-page
+    // toggle whose own committed state flips (Base Web `kind`/class, ARIA,
+    // native `checked`) with no network/URL/advance-pattern match had NO
+    // credit path at all outside the n+16 fallback's own checkbox-specific
+    // check, even though `classifyPhantomClick` already classifies it
+    // `"effective"` (excluded only on submit-shaped steps, to keep a stray
+    // self-toggle from defeating the submit escalation).
+    const domEffectiveVerdict =
+      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerified;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
       domVerifiedForStep ||
       datepickerCommitted ||
+      domEffectiveVerdict ||
       (!datepickerRejected &&
         !promptSelectorRejected &&
         (clickViewSwapVerified || formValueVerified));
@@ -11598,6 +11634,23 @@ export async function executeStepWithHealing(params: {
             ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
+          // Same effective-verdict credit the primary attempt's completion
+          // gate uses (see the `record.phantomClickVerdict` computation
+          // above), re-run against THIS fallback click's own pre/post pair
+          // (`pre`/`retryPost`) rather than the stale pre/post the primary
+          // technique captured — the primary technique's own act() call may
+          // not have produced any DOM effect at all, with the fallback's
+          // `el.click()` being the click that actually landed. Still subject
+          // to the `clickBlockedByDisabled`/`clickBlockedByInvalid`/
+          // `fallbackDomOnlyAdvance` vetoes below, same as every other
+          // fallback signal.
+          const retryVerdict = classifyPhantomClick({
+            actResultSuccess: record.actResultSuccess,
+            pre,
+            post: retryPost,
+            elementStateChanged: retrySelectionStateChanged,
+            isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+          });
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
@@ -11606,8 +11659,12 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               checkboxStateVerified ||
               retrySelectionStateChanged ||
+              retryVerdict === "effective" ||
               (weakDomSignalsAllowed &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
+          if (retryVerified) {
+            record.phantomClickVerdict = retryVerdict;
+          }
           // Apply the same submit-endpoint gate the primary verifier uses.
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
@@ -11755,22 +11812,10 @@ export async function executeStepWithHealing(params: {
     }
 
     const effectSignals = describeAttemptEffectSignals(pre, post, recentCaptureMeta, preMetaLength);
-    // Phantom-click verdict, computed from the SAME pre/post pair
-    // describeAttemptEffectSignals just rendered — not recomputed deltas.
-    // Recorded on every unverified attempt (not just attempt 1) so the
-    // failure dump's attempts[] always carries the classification; only
-    // attempt 1's verdict drives the escalation flag below.
-    record.phantomClickVerdict = classifyPhantomClick({
-      actResultSuccess: record.actResultSuccess,
-      pre,
-      post,
-      // Authoritative element-scoped signal: `verifyDomEffect` read the resolved
-      // element's own committed-state delta (Base Web `kind`/class, ARIA, native
-      // checked) into `domVerified`. A registered selection toggle no longer
-      // reads as a phantom just because it moved no network/URL/bytes.
-      elementStateChanged: domVerified,
-      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
-    });
+    // record.phantomClickVerdict was already computed above, before the
+    // `verified` gate — reaching this point means it is NOT `"effective"`
+    // (an effective verdict would have short-circuited to "completed"
+    // above), so it is either `"phantom"` or `"unresolved"` here.
     const reason = record.errorMessage
       ? effectSignals
         ? `${record.errorMessage}; ${effectSignals}`
