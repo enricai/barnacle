@@ -62,6 +62,18 @@ const JSON_SCHEMA_NODE: z.ZodType<JsonSchemaNode> = z.lazy(() =>
       description: z.string().optional(),
     })
     .strict()
+    .refine(
+      (node) => node.minimum === undefined || node.type === "number" || node.type === "integer",
+      {
+        message: "minimum is only supported on number/integer nodes",
+      }
+    )
+    .refine(
+      (node) => node.maximum === undefined || node.type === "number" || node.type === "integer",
+      {
+        message: "maximum is only supported on number/integer nodes",
+      }
+    )
 );
 
 /** Builds the Zod leaf/branch for one already-validated JSON-Schema node. */

@@ -68,4 +68,13 @@ describe("jsonSchemaToZod", () => {
       UnsupportedJsonSchemaError
     );
   });
+
+  it("throws UnsupportedJsonSchemaError on minimum/maximum outside number/integer", () => {
+    expect(() => jsonSchemaToZod({ type: "string", minimum: 5 })).toThrow(
+      UnsupportedJsonSchemaError
+    );
+    expect(() => jsonSchemaToZod({ type: "array", items: { type: "string" }, maximum: 5 })).toThrow(
+      UnsupportedJsonSchemaError
+    );
+  });
 });
