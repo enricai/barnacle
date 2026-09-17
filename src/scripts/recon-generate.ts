@@ -2115,6 +2115,19 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
 const PAGINATION_FIELD_NAME_PATTERN =
   /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
 
+/** Response leaf-key shapes that name a discoverable ceiling on some other
+ * numeric quantity (a capacity, a maximum, a limit) -- structural, like
+ * {@link PAGINATION_FIELD_NAME_PATTERN}, not tied to any domain's field
+ * vocabulary. Used to bound a request-side numeric field whose observed
+ * values never exceed a same-run response's declared ceiling. */
+const CAPACITY_FIELD_NAME_PATTERN = /(max|capacity|limit)/i;
+
+/** Upper bound on how many distinct string values a request field may show
+ * across a run's captures before it stops looking like a closed-set facet
+ * vocabulary and starts looking like free text -- past this, emitting
+ * z.enum(...) would lock callers out of values recon simply never sampled. */
+const VOCABULARY_ENUM_MAX_DISTINCT_VALUES = 8;
+
 /** Request-field key names that name known client-generated scaffolding
  * (a monotonic sequence counter, a correlation/trace id, an idempotency
  * nonce) rather than genuine payload data. Gates {@link
@@ -5515,6 +5528,29 @@ function applyUrlParamPayloadSubstitutions(
 }
 
 /**
+ * A request-body top-level key discovered by {@link applyPayloadKeyValueSubstitutions},
+ * with whatever value-constraint evidence the run's own captures support.
+ *
+ * `enumValues`/`capacityMax` are populated purely from observed shape — a
+ * closed set of distinct literals for a string key, or a response-declared
+ * ceiling for a numeric key — never from a site-specific field name, so the
+ * same inference applies to any domain's facet/capacity fields.
+ */
+export interface AdditionalBodyKeyInfo {
+  kind: "string" | "number" | "boolean";
+  /** Every distinct value this key took across the run's captures, when
+   * `kind` is "string" and the set is closed (2 to
+   * {@link VOCABULARY_ENUM_MAX_DISTINCT_VALUES} distinct values) — a facet
+   * field whose vocabulary recon fully sampled, not free text that merely
+   * hadn't varied yet. */
+  enumValues?: readonly string[];
+  /** Tightest same-run response-declared ceiling ({@link
+   * CAPACITY_FIELD_NAME_PATTERN}) that is `>=` every value this "number" key
+   * was observed to carry. */
+  capacityMax?: number;
+}
+
+/**
  * Substitutes literal JSON key/value pairs in a body template with payload
  * interpolations. Catches short strings (e.g. Culture: "en"), booleans
  * (FutureConsideration: true), and numbers that interpolateStateValues skips
@@ -5549,11 +5585,16 @@ function applyPayloadKeyValueSubstitutions(
   template: string,
   inputBody: unknown,
   additionalBodies: unknown[] = [],
-  outAdditionalKeys: Map<string, "string" | "number" | "boolean"> = new Map()
+  outAdditionalKeys: Map<string, AdditionalBodyKeyInfo> = new Map(),
+  /** Every capture's response body from the same run, scanned only for
+   * {@link CAPACITY_FIELD_NAME_PATTERN}-shaped numeric leaves — the
+   * evidence source for a discovered "number" key's `capacityMax`. */
+  responseBodiesForCapacitySignal: readonly unknown[] = []
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
   const seenValueByKey = new Map<string, string | number | boolean>();
+  const distinctValuesByKey = new Map<string, Set<string | number>>();
   const allBodies = [inputBody, ...additionalBodies];
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -5586,6 +5627,19 @@ function applyPayloadKeyValueSubstitutions(
         continue;
       }
       seenValueByKey.set(key, value);
+      // Tracked independently of the (key, value) dedupe below — a facet's
+      // vocabulary or a capacity ceiling needs every distinct value it took,
+      // not just the deduped substitution list, and pagination cursors are
+      // excluded from both (their values grow monotonically and are never a
+      // closed set).
+      if (
+        (typeof value === "string" || typeof value === "number") &&
+        !PAGINATION_FIELD_NAME_PATTERN.test(key)
+      ) {
+        const distinct = distinctValuesByKey.get(key) ?? new Set<string | number>();
+        distinct.add(value);
+        distinctValuesByKey.set(key, distinct);
+      }
       const pairKey = `${key} ${typeof value} ${value}`;
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
@@ -5596,9 +5650,47 @@ function applyPayloadKeyValueSubstitutions(
       // case) are filtered back out at the emitContractTs merge point via
       // isReservedByApplicantContactSchema — this function has no visibility
       // into that flag, so it must not special-case inputBody's own keys.
-      if (typeof value === "string") outAdditionalKeys.set(key, "string");
-      else if (typeof value === "number") outAdditionalKeys.set(key, "number");
-      else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
+      if (typeof value === "string") outAdditionalKeys.set(key, { kind: "string" });
+      else if (typeof value === "number") outAdditionalKeys.set(key, { kind: "number" });
+      else if (typeof value === "boolean") outAdditionalKeys.set(key, { kind: "boolean" });
+    }
+  }
+  // Vocabulary-derived enum: a "string" key whose distinct observed values
+  // form a small closed set is a facet field, not free text — emit the set
+  // so the generated schema rejects a caller value recon never sampled.
+  // Capacity-bounded number: a "number" key gets a ceiling only when some
+  // same-run response carries a max/capacity/limit-shaped numeric leaf that
+  // is >= every value this key was observed to carry; the tightest such
+  // ceiling wins so the bound is never looser than the evidence supports.
+  const capacityCandidatesByMinBound = (): number[] => {
+    const candidates: number[] = [];
+    for (const body of responseBodiesForCapacitySignal) {
+      if (body === undefined || body === null || typeof body !== "object") continue;
+      for (const { value, path } of walkAllPrimitiveLeaves(body)) {
+        const leafName = path[path.length - 1] ?? "";
+        if (typeof value !== "number") continue;
+        if (!CAPACITY_FIELD_NAME_PATTERN.test(leafName)) continue;
+        candidates.push(value);
+      }
+    }
+    return candidates;
+  };
+  const capacitySignals = capacityCandidatesByMinBound();
+  for (const [key, info] of outAdditionalKeys) {
+    const distinct = distinctValuesByKey.get(key);
+    if (!distinct) continue;
+    if (info.kind === "string") {
+      if (distinct.size >= 2 && distinct.size <= VOCABULARY_ENUM_MAX_DISTINCT_VALUES) {
+        info.enumValues = [...distinct].map(String).sort();
+      }
+      continue;
+    }
+    if (info.kind === "number") {
+      const maxObserved = Math.max(...[...distinct].map(Number));
+      const tightestCeiling = capacitySignals
+        .filter((v) => v >= maxObserved)
+        .sort((a, b) => a - b)[0];
+      if (tightestCeiling !== undefined) info.capacityMax = tightestCeiling;
     }
   }
   let result = template;
@@ -5865,7 +5957,7 @@ export function emitMultiStepExecuteHttp(
   fieldOptionsMap: FieldOptionsMap,
   outDiscoveredOptionFields: Set<string>,
   outDiscoveredRawOptionFields: Map<string, string>,
-  outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">,
+  outDiscoveredAdditionalBodyKeys: Map<string, AdditionalBodyKeyInfo>,
   baseUrl: string,
   baseUrlDerivedHeaders: Map<string, string>,
   tenantSubdomainHeaders: Map<string, string>,
@@ -6031,6 +6123,12 @@ export function emitMultiStepExecuteHttp(
       // skip non-JSON bodies (e.g. multipart raw bytes)
     }
   }
+  // Every action's response body, gathered once for the whole flow so a
+  // capacity/max ceiling discovered on ANY capture (not just the one that
+  // carries the request field itself) is available to bound a request-side
+  // numeric field — the ceiling and the field it bounds are frequently
+  // declared on different calls (an availability check, then a booking).
+  const allResponseBodies: unknown[] = actions.map((a) => a.capture.responseBody);
 
   // Every value `applyPayloadKeyValueSubstitutions` will unconditionally
   // payload-ify from the ENTRY payload's own top-level key/value pairs,
@@ -6290,7 +6388,8 @@ export function emitMultiStepExecuteHttp(
           ),
           inputBody,
           additionalBodies,
-          outDiscoveredAdditionalBodyKeys
+          outDiscoveredAdditionalBodyKeys,
+          allResponseBodies
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
@@ -10502,9 +10601,12 @@ export function emitContractTs(opts: {
    * where T3's structured enum can't be emitted. */
   discoveredRawOptionFields?: Map<string, string>;
   /** Phase F: top-level keys observed in action POST bodies beyond r0
-   * (inputBody). Mapped to their value type. Each becomes a payload field
-   * (string → z.string(), number → z.number(), boolean → z.boolean()). */
-  discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
+   * (inputBody). Mapped to their value type plus any observed-shape value
+   * constraint (a closed-set string vocabulary, a discovered numeric
+   * capacity ceiling). Each becomes a payload field (string → z.string() or
+   * z.enum(...), number → z.number() or a capacity-bounded z.number(),
+   * boolean → z.boolean()). */
+  discoveredAdditionalBodyKeys?: Map<string, AdditionalBodyKeyInfo>;
   /** Mechanism B: top-level body keys whose value is a whole caller-supplied
    * nested structure (arrays like experienceData/educationData, or the opaque
    * eventData blob), mapped to the inferred Zod schema expression for that
@@ -10877,18 +10979,27 @@ export function emitContractTs(opts: {
     ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
   let usesMultipartBoolean = false;
-  for (const [name, kind] of sortedAdditionalKeys) {
+  for (const [name, info] of sortedAdditionalKeys) {
     if (isReservedByApplicantContactSchema(name)) continue;
     // Use multipartBoolean() for booleans when multipart is in play, so
     // multipart string-encoded "true"/"false" round-trip to native booleans
     // (matches the inputBody boolean handling for parity).
+    // A closed-set vocabulary (string) or a discovered capacity ceiling
+    // (number) narrows the caller-facing schema instead of falling through
+    // to the unconstrained default — see {@link AdditionalBodyKeyInfo}.
     const zod =
-      kind === "string"
-        ? "z.string()"
-        : kind === "number"
-          ? payloadNeedsMultipart
-            ? "z.coerce.number()"
-            : "z.number()"
+      info.kind === "string"
+        ? info.enumValues
+          ? `z.enum([${info.enumValues.map((v) => JSON.stringify(v)).join(", ")}])`
+          : "z.string()"
+        : info.kind === "number"
+          ? info.capacityMax !== undefined
+            ? payloadNeedsMultipart
+              ? `z.coerce.number().max(${info.capacityMax})`
+              : `z.number().max(${info.capacityMax})`
+            : payloadNeedsMultipart
+              ? "z.coerce.number()"
+              : "z.number()"
           : payloadNeedsMultipart
             ? "multipartBoolean()"
             : "z.boolean()";
@@ -12980,7 +13091,7 @@ async function main(): Promise<void> {
     // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
     // that get parameterized. Recorded with their value type so the contract
     // emitter can add them to the payload schema with appropriate Zod types.
-    const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const discoveredAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
     // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
     // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the

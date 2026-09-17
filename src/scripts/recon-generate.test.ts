@@ -106,7 +106,7 @@ describe("emitContractTs — multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: true,
     inputBody: { Name: "Alice", FirstName: "Alice", SmsOptIn: true, Score: 1 },
-    discoveredAdditionalBodyKeys: new Map([["SmsOptIn", "boolean"]]),
+    discoveredAdditionalBodyKeys: new Map([["SmsOptIn", { kind: "boolean" }]]),
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
@@ -198,7 +198,7 @@ describe("emitContractTs — non-multipart plugin", () => {
     ...BASE_OPTS,
     hasMultipartStep: false,
     inputBody: { Name: "Alice", Active: true },
-    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredAdditionalBodyKeys: new Map([["Active", { kind: "boolean" }]]),
   });
 
   it("does not import multipartBoolean", () => {
@@ -307,7 +307,7 @@ describe("emitContractTs — purely scalar payload, no upload step, no structure
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: false,
-    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredAdditionalBodyKeys: new Map([["Active", { kind: "boolean" }]]),
   });
 
   it("still omits multipart: true (no regression)", () => {
@@ -386,12 +386,12 @@ describe("emitContractTs — hasMultipartStep:false with no structured keys keep
   const withoutStructuredKeysArg = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: false,
-    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredAdditionalBodyKeys: new Map([["Active", { kind: "boolean" }]]),
   });
   const withEmptyStructuredKeysMap = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: false,
-    discoveredAdditionalBodyKeys: new Map([["Active", "boolean"]]),
+    discoveredAdditionalBodyKeys: new Map([["Active", { kind: "boolean" }]]),
     discoveredStructuredKeys: new Map(),
   });
 

@@ -48,8 +48,8 @@ describe("emitContractTs — omitted-HTTP-path, multipart-step, non-boolean-only
       hasMultipartStep: true,
       inputBody,
       discoveredAdditionalBodyKeys: new Map([
-        ["ReferralSource", "string"],
-        ["YearsOfExperience", "number"],
+        ["ReferralSource", { kind: "string" }],
+        ["YearsOfExperience", { kind: "number" }],
       ]),
     });
 

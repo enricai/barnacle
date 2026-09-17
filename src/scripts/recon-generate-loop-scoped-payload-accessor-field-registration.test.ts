@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AdditionalBodyKeyInfo } from "@/scripts/recon-generate";
 import {
   compileActionSteps,
   emitMultiStepExecuteHttp,
@@ -58,7 +59,7 @@ function emit(
   captures: Capture[],
   inputBody: unknown,
   outFields: Set<string>,
-  outAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">
+  outAdditionalBodyKeys: Map<string, AdditionalBodyKeyInfo>
 ): string {
   const actionCaptures = captures.map((c, index) => ({ capture: c, index }));
   const stateIndex = indexStateValues(captures as never);
@@ -83,7 +84,7 @@ describe("emitMultiStepExecuteHttp — payload schema field registration inside 
   it("registers a payload.<field> accessor emitted from WITHIN the per-item fold loop body", () => {
     const captures = fixtureCaptures();
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, {}, outFields, outAdditionalBodyKeys);
 
     // A genuine multi-item fold loop, not a hardcoded per-item call.
