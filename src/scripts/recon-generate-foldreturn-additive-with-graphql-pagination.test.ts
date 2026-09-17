@@ -161,7 +161,7 @@ describe("GraphQL query-primary + pagination signal + foldReturn — extraction 
     expect(withFoldBody.indexOf("(foldItems).map(async (item) => {")).toBeLessThan(
       withFoldBody.indexOf("const truncated = itemsById.size < total;")
     );
-    expect(withFoldBody).toMatch(/\}\n\s*\)\);\n\n\s*const truncated = itemsById\.size < total;/);
+    expect(withFoldBody).toMatch(/\}\)\n\s*\);\n\n\s*const truncated = itemsById\.size < total;/);
 
     expect(withoutFoldBody).not.toContain("(foldItems).map(async (item) => {");
   });

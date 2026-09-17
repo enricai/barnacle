@@ -1797,8 +1797,8 @@ describe("emitMultiStepExecuteHttp — flow-declared foldReturn", () => {
 
     // Both the heuristic-found pricing target and the spec-declared stock
     // target must fold into the SAME loop over the SAME primary array —
-    // exactly one `for` block, not one per target.
-    expect(body.match(/for \(const item of foldItems\) \{/g)).toHaveLength(1);
+    // exactly one parallel item-map block, not one per target.
+    expect(body.match(/\(foldItems\)\.map\(async \(item\) => \{/g)).toHaveLength(1);
 
     expect(body).toContain(
       `const foldMatches0 = (r1 as { prices: Record<string, unknown>[] }).prices;`
