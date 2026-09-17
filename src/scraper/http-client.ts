@@ -8,6 +8,7 @@ import type { ZodIssue, ZodType } from "zod/v4";
 import { getLogger } from "@/lib/logging";
 import {
   HttpBotChallengeError,
+  HttpClientError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
@@ -513,6 +514,16 @@ export function createHttpClient<TResponse>(
             // Server error — non-retryable at the HTTP level; dispatch() will
             // engage the browser fallback instead.
             throw new AbortError(new HttpServerError(`http ${response.status} from ${url}`));
+          }
+
+          if (response.status >= 400) {
+            // Any other 4xx (404, 400, 422, ...) — deterministic client-side
+            // failure the target will never resolve on retry. Classified
+            // before the body is even read, so a non-JSON body (e.g. an HTML
+            // error page) never reaches parseJsonOrThrowRetryable.
+            throw new AbortError(
+              new HttpClientError(response.status, `http ${response.status} from ${url}`)
+            );
           }
 
           if (process.env.CAPTURE_BASELINE_BODIES === "1") {

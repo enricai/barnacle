@@ -37,6 +37,7 @@ import {
   isCaptchaError,
   isEmptyResultsError,
   isHttpBotChallengeError,
+  isHttpClientError,
   isHttpRateLimitError,
   isHttpSchemaError,
   isHttpServerError,
@@ -485,6 +486,7 @@ function classifyDispatchError(err: unknown): string {
   if (isHttpUrlLockedError(err)) return "url_locked";
   if (isHttpSchemaError(err)) return "schema_drift";
   if (isHttpServerError(err)) return "server_error";
+  if (isHttpClientError(err)) return "client_error";
   if (isCaptchaError(err)) return "captcha";
   if (isEmptyResultsError(err)) return "empty_results";
   if (isScraperError(err)) return "scraper_generic";

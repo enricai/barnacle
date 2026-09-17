@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 
 import {
   HttpBotChallengeError,
+  HttpClientError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
@@ -137,6 +138,21 @@ describe("scraper/http-client createHttpClient", () => {
     mockFetch(500, {});
     const client = makeClient();
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpServerError);
+  });
+
+  it("throws HttpClientError on a 404 with a non-JSON HTML body, without retrying", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue("<html><body>Not Found</body></html>"),
+        headers: new Headers(),
+      })
+    );
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpClientError);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
   it("throws HttpSchemaError when response does not match Zod schema", async () => {

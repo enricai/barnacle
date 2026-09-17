@@ -314,6 +314,26 @@ export function isHttpRateLimitError(err: unknown): err is HttpRateLimitError {
 }
 
 /**
+ * The direct-HTTP hot path received a non-2xx, non-5xx response outside the
+ * specifically classified statuses (401/403/429). Covers 404/400/422/etc —
+ * deterministic client-side failures the target will never resolve on retry,
+ * so it is classified before the body is even parsed as JSON.
+ */
+export class HttpClientError extends ScraperError {
+  readonly status: number;
+
+  constructor(status: number, message = `http ${status} client error`) {
+    super(message, false);
+    this.status = status;
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof HttpClientError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpClientError(err: unknown): err is HttpClientError {
+  return err instanceof HttpClientError || (err instanceof Error && err.name === "HttpClientError");
+}
+
+/**
  * A backend has locked the requested URL — a terminal "come back later" signal a
  * plugin raises (e.g. via `classifyResponseBody`) when the target refuses the
  * resource after repeated requests. Non-retryable and NOT a browser-fallback
