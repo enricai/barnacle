@@ -3,7 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod/v4";
+import { createHttpClient } from "@/scraper/http-client";
+import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  extractExecuteHttpBodyFromContract,
+  stripEmitterTypeAssertions,
+} from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 /**
  * Acceptance test for the bounded GraphQL paging loop (buildPaginatedGqlExecuteHttpBody):
@@ -122,6 +130,62 @@ function writeUnpagedRunDir(root: string): void {
     join(root, "graphql", "000-browse-the-products-action.json"),
     JSON.stringify(productSearch)
   );
+}
+
+const SEARCH_QUERY =
+  "query productSearch_Products($pagination: PaginationInput) { search(pagination: $pagination) { total items { id title } } }";
+
+function evalPaginatedExecuteHttp(
+  body: string,
+  getGql: (
+    baseUrl: string
+  ) => (
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>
+  ) => Promise<unknown>
+): (payload: Record<string, unknown>, context: { baseUrl: string }) => Promise<{ data: unknown }> {
+  const stripped = stripEmitterTypeAssertions(body);
+  const httpClient = createHttpClient({
+    schema: z.unknown(),
+    bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: 0 }),
+    baseHeaders: { "Content-Type": "application/json" },
+  });
+  const factory = new Function(
+    "getGql",
+    "httpClient",
+    "z",
+    "PRODUCTSEARCH_PRODUCTS_QUERY",
+    `return async function executeHttp(payload, context) {\n${stripped}\n};`
+  ) as (
+    getGqlArg: unknown,
+    httpClientArg: unknown,
+    zArg: unknown,
+    queryArg: string
+  ) => (
+    payload: Record<string, unknown>,
+    context: { baseUrl: string }
+  ) => Promise<{ data: unknown }>;
+  return factory(getGql, httpClient, z, SEARCH_QUERY);
+}
+
+function buildPagedContract(): string {
+  return emitContractTs({
+    siteId: "graphql-paginated-fetch-loop-pagesize-override-test",
+    pascal: "GraphqlPaginatedFetchLoopPagesizeOverrideTest",
+    baseUrl: "https://www.products-fixture.example.com",
+    baseHeaders: { "Content-Type": "application/json" },
+    minTime: 100,
+    safeRps: 10,
+    responseBody: { search: { total: 15, items: makeProductPage(5) } },
+    gql: true,
+    gqlQuery: SEARCH_QUERY,
+    endpointPath: "/products/graph",
+    gqlOperationName: "productSearch_Products",
+    gqlVariables: { pagination: { count: 5, skip: 0 }, sort: "RELEVANCE" },
+    auxFiles: [],
+    actionSteps: [],
+  });
 }
 
 let workDir: string | null = null;
@@ -245,4 +309,39 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
     expect(contract).not.toContain("maxPages");
     expect(contract).not.toContain("itemsById");
   }, 30_000);
+});
+
+describe("recon-generate GraphQL paginated fetch loop: caller-supplied payload.pageSize override", () => {
+  it("fetches using the caller-supplied pageSize as the wire count/limit value, not the captured page size", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    const seenVariables: Record<string, unknown>[] = [];
+    const getGql = (_baseUrl: string) => async (
+      _operationName: string,
+      _query: string,
+      variables: Record<string, unknown>
+    ) => {
+      seenVariables.push(variables);
+      const pagination = variables.pagination as { count: number; skip: number };
+      return {
+        search: {
+          total: 15,
+          items: makeProductPage(pagination.count),
+        },
+      };
+    };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    await executeHttp({ pageSize: 100 }, { baseUrl: "https://www.products-fixture.example.com" });
+
+    // The first fetch (before the loop) and every loop iteration must use the
+    // caller-supplied pageSize (100) as the wire count value, not the
+    // captured value (5) the recon run happened to observe.
+    expect(seenVariables.length).toBeGreaterThan(0);
+    for (const variables of seenVariables) {
+      const pagination = variables.pagination as { count: number };
+      expect(pagination.count).toBe(100);
+    }
+  });
 });
