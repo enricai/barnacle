@@ -11643,13 +11643,26 @@ export async function executeStepWithHealing(params: {
           // `el.click()` being the click that actually landed. Still subject
           // to the `clickBlockedByDisabled`/`clickBlockedByInvalid`/
           // `fallbackDomOnlyAdvance` vetoes below, same as every other
-          // fallback signal.
+          // fallback signal. `classifyPhantomClick` can still classify a
+          // submit-shaped step "effective" purely off the page-wide
+          // `TRIVIAL_DOM_DELTA_BYTES` floor (elementStateChanged is already
+          // excluded on submit-shaped steps below via `isSubmitShapedStep`),
+          // so the byte-delta-only branch of that verdict must not bypass
+          // the submit-endpoint corroboration gate any more than the raw
+          // `retryHtmlDelta`/`retryTextChanged` signals below may — same
+          // `retrySubmitShaped` exclusion the primary gate's
+          // `domEffectiveVerdict` applies. See
+          // flow-runner.viewswap-blocked-submit-acceptance.test.ts (must stay
+          // gated) and flow-runner.pricing-tab-symmetric-swap-verdict-
+          // acceptance.test.ts (a non-submit-shaped final step must still get
+          // credit here).
+          const retrySubmitShaped = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
             elementStateChanged: retrySelectionStateChanged,
-            isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+            isSubmitShapedStep: retrySubmitShaped,
           });
           let retryVerified =
             !clickBlockedByDisabled &&
@@ -11659,7 +11672,7 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               checkboxStateVerified ||
               retrySelectionStateChanged ||
-              retryVerdict === "effective" ||
+              (!retrySubmitShaped && retryVerdict === "effective") ||
               (weakDomSignalsAllowed &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
           if (retryVerified) {
