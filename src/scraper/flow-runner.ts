@@ -1448,12 +1448,16 @@ export function isCheckboxOrRadioIntentStep(instruction: string | null | undefin
  * Whether `snapshotPage` should build the per-element selection baseline
  * (`StepSnapshot.selectionStateByXpath`) for this step — i.e. whether
  * `verifyDomEffect`'s element-scoped click read-back is allowed to credit it.
- * True ONLY for a field-answer/selection step: a submit, a final, or an advance
- * step must be verified by a real network/URL transition, so its own
+ * True ONLY for a field-answer/selection step: a submit or an advance step
+ * must be verified by a real network/URL transition, so its own
  * self-toggling button (a submit flipping to a loading/pressed class, a "Next"
  * flipping `aria-pressed`) must never earn an element-scoped credit — matching
- * the `!submit`/`!final`/`!advance` exclusions the former
- * `isClickStateToggleVerified` gate enforced. Pure + exported so the gate the
+ * the `!submit`/`!advance` exclusions the former `isClickStateToggleVerified`
+ * gate enforced. A benign final step (one that is NOT itself the flagged
+ * submit step) still captures — `flowHasSubmitSemantics` describes the FLOW,
+ * not this step, so it must not veto capture on its own; `submitStep` alone
+ * (authoritative per {@link flowHasSubmitSemantics}) identifies the step that
+ * actually needs network/URL verification. Pure + exported so the gate the
  * cascade depends on is unit-testable, not buried in `executeStepWithHealing`.
  */
 export function shouldCaptureSelectionState(params: {
@@ -1462,17 +1466,23 @@ export function shouldCaptureSelectionState(params: {
   submitStep: boolean;
   flowHasSubmitSemantics: boolean;
 }): boolean {
-  const { step, isFinalStep, submitStep, flowHasSubmitSemantics } = params;
-  return !(submitStep || (isFinalStep && flowHasSubmitSemantics) || isAdvanceStep(step));
+  const { step, submitStep } = params;
+  return !(submitStep || isAdvanceStep(step));
 }
 
 /**
- * Whether a flow has ANY submit semantics at all — a step flagged
- * `submitStep: true`, a `submitEndpointPattern`, or `requireSubmitEndpointMatch`.
- * A read-only flow (none of the three) has no submit shape anywhere, so its
- * final step is an ordinary read/click, not a submit. Pure + exported so
- * callers can stop inferring submit-shape from `isFinalStep` alone on flows
- * that never declared a submit.
+ * Whether the flow's FINAL step carries submit semantics. A read-only flow
+ * (no step flagged `submitStep: true`, no `submitEndpointPattern`, no
+ * `requireSubmitEndpointMatch`) has no submit shape anywhere, so its final
+ * step is an ordinary read/click. When some step IS explicitly flagged
+ * `submitStep: true`, that flag is authoritative over inference — the final
+ * step only counts as submit-shaped if it is itself the flagged step, not
+ * merely because an earlier, unrelated step claims the submit role. Only
+ * when NO step carries an explicit flag do we fall back to inferring
+ * submit-shape onto the final step from `submitEndpointPattern` /
+ * `requireSubmitEndpointMatch` (the documented fallback for self-heal-
+ * appended final steps that never got the flag set). Pure + exported so
+ * callers can stop inferring submit-shape from `isFinalStep` alone.
  */
 export function flowHasSubmitSemantics(params: {
   steps: Array<{ submitStep: boolean }>;
@@ -1480,9 +1490,10 @@ export function flowHasSubmitSemantics(params: {
   requireSubmitEndpointMatch: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
-  return (
-    steps.some((s) => s.submitStep) || submitEndpointPattern !== null || requireSubmitEndpointMatch
-  );
+  const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
+  return hasExplicitSubmitStep
+    ? (steps[steps.length - 1]?.submitStep ?? false)
+    : submitEndpointPattern !== null || requireSubmitEndpointMatch;
 }
 
 /**
@@ -11171,7 +11182,20 @@ export async function executeStepWithHealing(params: {
     // state. A 2xx network response alone is insufficient (could be
     // telemetry). The Haiku judge defaults to verified=false when
     // ambiguous — strong evidence, not lax permission.
-    if (verified && requireSubmitEndpoint) {
+    //
+    // Only re-litigate an already-`verified` step through the judge when
+    // the step is EXPLICITLY the submit (`submitStep: true`) or a genuine
+    // transition fired (`networkIsRealAdvance` / `urlChanged`). A step that
+    // reached `verified` purely via the element-scoped selection-state
+    // credit (`domVerifiedForStep`) with no explicit `submitStep` flag is
+    // the inferred-final-step case — a same-page toggle the recon slice
+    // happened to end on, not the flow's real submit action (see
+    // flow-runner.final-step-toggle-not-submit-shaped-acceptance.test.ts).
+    // Forcing that toggle through the submit judge (which requires a DOM/
+    // URL/title post-submit signal it will never produce) false-negatives
+    // an already-genuine credit.
+    const hasSubmitTransitionSignal = submitStep || networkIsRealAdvance || urlChanged;
+    if (verified && requireSubmitEndpoint && hasSubmitTransitionSignal) {
       // Cap the scan from preMetaLength so we don't accept a historical
       // submit-shaped capture from an earlier step as proof for this one.
       const tail = recentCaptureMeta.slice(preMetaLength);
@@ -11591,8 +11615,16 @@ export async function executeStepWithHealing(params: {
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
           // judgment as the primary verifier — multi-signal corroboration
-          // replaces deterministic URL regex matching.
-          if (retryVerified && requireSubmitEndpoint) {
+          // replaces deterministic URL regex matching. Same
+          // hasSubmitTransitionSignal carve-out as the primary verifier: an
+          // inferred (non-explicit-submitStep) final step whose n+16 credit
+          // came only from the element-scoped `retrySelectionStateChanged`
+          // signal is the same ordinary-toggle shape, not a real submit —
+          // don't force it through a judge that requires evidence it can
+          // never produce.
+          const retryHasSubmitTransitionSignal =
+            submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
+          if (retryVerified && requireSubmitEndpoint && retryHasSubmitTransitionSignal) {
             const tail = recentCaptureMeta.slice(preMetaLength);
 
             // DOM-state probe (deterministic).

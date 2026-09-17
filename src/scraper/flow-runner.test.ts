@@ -127,12 +127,23 @@ describe("flow-runner/shouldCaptureSelectionState", () => {
     ).toBe(false);
   });
 
-  it("does NOT capture for the final step", () => {
+  it("captures a benign final step even when the flow has submit semantics elsewhere", () => {
     expect(
       shouldCaptureSelectionState({
         step: "Confirm your selections",
         isFinalStep: true,
         submitStep: false,
+        flowHasSubmitSemantics: true,
+      })
+    ).toBe(true);
+  });
+
+  it("does NOT capture for a final step that is itself the submit step", () => {
+    expect(
+      shouldCaptureSelectionState({
+        step: "Submit application",
+        isFinalStep: true,
+        submitStep: true,
         flowHasSubmitSemantics: true,
       })
     ).toBe(false);
