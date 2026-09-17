@@ -1792,9 +1792,7 @@ export function isDomOnlyAdvanceVerified(params: {
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
-  isFinalStep: boolean;
   submitStep: boolean;
-  flowHasSubmitSemantics: boolean;
   isAdvanceWithPattern: boolean;
   networkDelta: number;
   bytesDelta: number;
@@ -11023,9 +11021,7 @@ export async function executeStepWithHealing(params: {
     // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
-      isFinalStep,
       submitStep,
-      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
