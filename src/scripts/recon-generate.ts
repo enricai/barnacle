@@ -10339,7 +10339,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
   );
 
   return `    const baseVariables = ${gqlVariablesExpr};
-    const PAGE_SIZE = ${pageSize};
+    const PAGE_SIZE = payload.pageSize ?? ${pageSize};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
@@ -10355,9 +10355,15 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
       lastPage = page;
       total = ${totalAccessExpr};
+      const sizeBeforePage = itemsById.size;
       for (const item of ${arrayAccessExpr}) {
         itemsById.set(String(${identityAccessExpr}), item);
       }
+      // A server-reported total that doesn't exactly match the count of
+      // distinct items actually returned would otherwise drive the loop to
+      // MAX_PAGES worth of wasted empty requests; stop as soon as a page
+      // contributes nothing new.
+      if (itemsById.size === sizeBeforePage) break;
       skip += PAGE_SIZE;
     }
 ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const truncated = itemsById.size < total;
@@ -10746,6 +10752,7 @@ export function emitContractTs(opts: {
   // from the detected signal.
   if (paginationSignal) {
     addExtendField("maxPages", "  maxPages: z.number().int().positive().optional(),");
+    addExtendField("pageSize", "  pageSize: z.number().int().positive().optional(),");
   }
 
   // The base extend's own keys — job-application submission flows only.
