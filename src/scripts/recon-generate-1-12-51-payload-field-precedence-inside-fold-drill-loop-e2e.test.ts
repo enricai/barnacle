@@ -150,12 +150,12 @@ describe("recon-generate CLI — payload field precedence survives inside a real
     // A genuine per-item fold/drill loop, not a hardcoded per-item call —
     // proves the fixture actually exercises detectDrillDownFoldPlan's
     // structural machinery, not a hand-fed unit-level substitute.
-    expect(contract).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     // The chained submit call must itself be emitted INSIDE the loop body —
     // this is the report's exact repro shape (an in-loop call re-sending the
     // field), not a flat sequential call after the loop closes.
-    const loopMatch = contract.match(/for\s*\(const \w+ of \w+\)\s*\{([\s\S]*?)\n\s*\}\n/);
+    const loopMatch = contract.match(/\(\w+\)\.map\(async \(\w+\) => \{([\s\S]*?)\n\s*\}\)\n/);
     expect(loopMatch, contract).not.toBeNull();
     const loopBody = loopMatch![1]!;
     expect(loopBody).toMatch(/catalog\/submit\//);

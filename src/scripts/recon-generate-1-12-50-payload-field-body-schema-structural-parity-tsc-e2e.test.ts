@@ -192,7 +192,7 @@ describe("recon-generate CLI + tsc --noEmit — generalized payload.<field> body
     const contract = readFileSync(contractPath, "utf8");
 
     // A genuine ancestor for-loop drill, not a hardcoded per-item call.
-    expect(contract).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     const accessors = extractPayloadAccessors(contract);
     const schemaFields = extractSchemaFields(contract);

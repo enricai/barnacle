@@ -148,7 +148,7 @@ describe("recon-generate CLI — a value frozen at a fixed index into the primar
 
     // A genuine per-item ancestor for-loop drill, not a hardcoded per-item
     // call — proves the fixture actually exercises the fold/drill-loop path.
-    expect(contract).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     // Isolate the per-item drill call's request-body template literal.
     const drillBodyMatch = contract.match(/catalog\/detail\/[\s\S]*?body:\s*`([^`]*)`/);

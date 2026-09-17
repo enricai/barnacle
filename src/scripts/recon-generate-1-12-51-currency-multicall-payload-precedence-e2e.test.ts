@@ -148,7 +148,7 @@ describe("recon-generate CLI — currency multicall payload precedence through a
     // The generator resolved a genuine per-item fold loop, not a flat chain
     // — proves the loop+chained-drill shape this test targets was actually
     // exercised, not silently collapsed to a single-item linear plan.
-    expect(contract).toMatch(/for \(const \w+ of /);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     // Every request-body occurrence of `storeCurrency` — the entry call, the
     // loop body call, and the chained call nested inside the loop — must
