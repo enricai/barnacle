@@ -11182,7 +11182,20 @@ export async function executeStepWithHealing(params: {
     // state. A 2xx network response alone is insufficient (could be
     // telemetry). The Haiku judge defaults to verified=false when
     // ambiguous — strong evidence, not lax permission.
-    if (verified && requireSubmitEndpoint) {
+    //
+    // Only re-litigate an already-`verified` step through the judge when
+    // the step is EXPLICITLY the submit (`submitStep: true`) or a genuine
+    // transition fired (`networkIsRealAdvance` / `urlChanged`). A step that
+    // reached `verified` purely via the element-scoped selection-state
+    // credit (`domVerifiedForStep`) with no explicit `submitStep` flag is
+    // the inferred-final-step case — a same-page toggle the recon slice
+    // happened to end on, not the flow's real submit action (see
+    // flow-runner.final-step-toggle-not-submit-shaped-acceptance.test.ts).
+    // Forcing that toggle through the submit judge (which requires a DOM/
+    // URL/title post-submit signal it will never produce) false-negatives
+    // an already-genuine credit.
+    const hasSubmitTransitionSignal = submitStep || networkIsRealAdvance || urlChanged;
+    if (verified && requireSubmitEndpoint && hasSubmitTransitionSignal) {
       // Cap the scan from preMetaLength so we don't accept a historical
       // submit-shaped capture from an earlier step as proof for this one.
       const tail = recentCaptureMeta.slice(preMetaLength);
