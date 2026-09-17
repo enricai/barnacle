@@ -250,6 +250,38 @@ describe("scraper/http-client createHttpClient", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
+  it("classifyResponseBody still gets first look at a 4xx body — a plugin sentinel on a 404 wins over the generic HttpClientError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue(TERMINAL_BODY),
+        headers: new Headers(),
+      })
+    );
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpUrlLockedError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to HttpClientError on a 4xx body the plugin classifier doesn't recognize", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue("<html><body>Not Found</body></html>"),
+        headers: new Headers(),
+      })
+    );
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpClientError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
   it("classifyResponseBody returning undefined falls through to JSON parsing (retryable non-JSON)", async () => {
     stubBody("SOME_UNCLASSIFIED_BODY");
     await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
