@@ -107,9 +107,11 @@ describe("buildPaginatedGqlExecuteHttpBody at runtime: stops on a page with no n
     expect(
       (result.data as { catalog: { items: unknown[]; total: number } }).catalog.items
     ).toHaveLength(8);
-    // The merged envelope's own total is rewritten to what was actually
-    // delivered, since the loop stopped before the server's reported total
-    // (10) was reached.
-    expect((result.data as { catalog: { total: number } }).catalog.total).toBe(8);
+    // The merged envelope's own total is preserved untouched from the
+    // server's last response (10), even though the loop stopped before
+    // reaching it; delivery and truncation are exposed as sibling fields.
+    expect((result.data as { catalog: { total: number } }).catalog.total).toBe(10);
+    expect((result.data as unknown as { deliveredCount: number }).deliveredCount).toBe(8);
+    expect((result.data as unknown as { truncated: boolean }).truncated).toBe(true);
   });
 });

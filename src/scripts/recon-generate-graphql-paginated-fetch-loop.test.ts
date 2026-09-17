@@ -210,11 +210,11 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
     expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
 
-    // The merged envelope's own total must reflect what was actually delivered
-    // when the loop is capped by MAX_PAGES, not repeat the API's original
-    // (larger, un-delivered) total.
+    // The server's own reported total is preserved untouched; delivery and
+    // truncation are exposed as separate sibling fields on the envelope.
     expect(contract).toContain("const truncated = itemsById.size < total;");
-    expect(contract).toContain("total: truncated ? itemsById.size : withItems.search.total");
+    expect(contract).toContain("{ ...withItems, deliveredCount: itemsById.size, truncated }");
+    expect(contract).not.toContain("total: truncated ? itemsById.size");
   }, 30_000);
 });
 
