@@ -1094,17 +1094,17 @@ export function applyFailedStepFlagsToResumingBridgeStep(
   failedStep: NormalizedStep
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
-  const labelMatchIndex = newSteps.findIndex((s) =>
+  const hasLabelMatch = newSteps.some((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
   );
-  const resumeIndex =
-    labelMatchIndex !== -1
-      ? labelMatchIndex
-      : newSteps.length > 0 && extractQuotedLabels(newSteps[0]!.instruction).length === 0
-        ? 0
-        : -1;
+  const fallbackIndex =
+    !hasLabelMatch &&
+    newSteps.length > 0 &&
+    extractQuotedLabels(newSteps[0]!.instruction).length === 0
+      ? 0
+      : -1;
   return newSteps.map((s, idx) =>
-    idx === resumeIndex
+    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,

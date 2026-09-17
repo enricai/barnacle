@@ -1551,6 +1551,18 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.captchaGated).toBe(true);
     expect(out[0]!.submitStep).toBe(true);
   });
+
+  it("tags every bridge step that quotes the failed control's label, not just the first", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [
+      mk("Wait for the 'Submit' button to become active"),
+      mk("Click the 'Submit' button again"),
+    ];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[1]!.captchaGated).toBe(true);
+    expect(out[1]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
