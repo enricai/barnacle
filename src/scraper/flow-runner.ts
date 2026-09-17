@@ -5647,11 +5647,14 @@ export async function injectCaptchaTokenAndSubmit(
  * validation still run, matching real-browser submit semantics; falls back
  * to the bare `form.submit()` only when `requestSubmit` isn't available.
  *
- * Resolves to whether a field/form was actually found and acted on: the
- * widget's own render callback can tear down or replace the response field
- * between the inject and this re-query, in which case there's nothing to
- * submit. The caller needs that distinction to avoid logging a genuine
- * no-op identically to an attempted-but-unconfirmed submit.
+ * Resolves the form to submit by name first (the response field's own
+ * closest form), then falls back to the sitekey-anchored form (or the sole
+ * form on the page) the same way {@link injectCaptchaTokenAndSubmit} resolves
+ * its target: an invisible/callback-only widget never creates a named
+ * response field, so a named-field-only lookup here would silently no-op and
+ * no site-host traffic would ever follow the clean callback. Resolves to
+ * whether a form was actually found and acted on; a true no-op is reported
+ * only when the page has no form at all to resolve.
  */
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
@@ -5660,14 +5663,20 @@ export async function submitCaptchaGatedForm(
   const findFormExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
-    return Boolean(field && field.closest("form"));
+    const fieldForm = field ? field.closest("form") : null;
+    if (fieldForm) return true;
+    const forms = Array.from(document.querySelectorAll("form"));
+    const sitekeyForm = forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
+    return Boolean(sitekeyForm);
   })()`;
   const found = await target.evaluate<boolean>(findFormExpr).catch(() => false);
   if (!found) return false;
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
-    const form = field ? field.closest("form") : null;
+    const fieldForm = field ? field.closest("form") : null;
+    const forms = Array.from(document.querySelectorAll("form"));
+    const form = fieldForm ?? forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
     if (form) (form.requestSubmit ? form.requestSubmit() : form.submit());
   })()`;
   // form.submit() navigates the frame synchronously, tearing down the execution
