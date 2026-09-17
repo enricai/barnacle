@@ -311,6 +311,49 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
   }, 30_000);
 });
 
+describe("recon-generate GraphQL paginated fetch loop: server total overcounts distinct ids", () => {
+  it("stops once a page contributes no new ids instead of issuing a trailing request past the server's own total", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    // 436 distinct ids delivered across pages of 100 (4 full pages + a 36-item
+    // last page), while the server's `total` reads 437 throughout — one more
+    // than the distinct ids it ever actually returns.
+    const TOTAL_DISTINCT_IDS = 436;
+    const SERVER_REPORTED_TOTAL = 437;
+    const PAGE_SIZE = 100;
+    let callCount = 0;
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, _variables: Record<string, unknown>) => {
+        const skip = callCount * PAGE_SIZE;
+        callCount += 1;
+        const remaining = Math.max(0, TOTAL_DISTINCT_IDS - skip);
+        const pageItemCount = Math.min(PAGE_SIZE, remaining);
+        return {
+          search: {
+            total: SERVER_REPORTED_TOTAL,
+            items: Array.from({ length: pageItemCount }, (_, i) => ({
+              id: `prod-${skip + i}`,
+              title: `Product ${skip + i}`,
+            })),
+          },
+        };
+      };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    const { data } = await executeHttp(
+      { pageSize: PAGE_SIZE },
+      { baseUrl: "https://www.products-fixture.example.com" }
+    );
+
+    // ceil(436/100) = 5 page requests total — never a 6th trailing request
+    // for a page that would contribute zero new ids.
+    expect(callCount).toBe(5);
+    expect((data as { deliveredCount: number }).deliveredCount).toBe(TOTAL_DISTINCT_IDS);
+  });
+});
+
 describe("recon-generate GraphQL paginated fetch loop: caller-supplied payload.pageSize override", () => {
   it("fetches using the caller-supplied pageSize as the wire count/limit value, not the captured page size", async () => {
     const contract = buildPagedContract();

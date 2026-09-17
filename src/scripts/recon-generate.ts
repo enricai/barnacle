@@ -10505,7 +10505,8 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       lastPage = page;
       total = ${totalAccessExpr};
       const sizeBeforePage = itemsById.size;
-      for (const item of ${arrayAccessExpr}) {
+      const pageItems = ${arrayAccessExpr};
+      for (const item of pageItems) {
         itemsById.set(String(${identityAccessExpr}), item);
       }
       // A server-reported total that doesn't exactly match the count of
@@ -10514,6 +10515,11 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       // contributes nothing new.
       if (itemsById.size === sizeBeforePage) break;
       skip += PAGE_SIZE;
+      // A page shorter than what was asked for is the server's own signal
+      // that nothing is left, whether or not its reported total agrees —
+      // stop here instead of issuing a request the server already told us
+      // would come back empty.
+      if (pageItems.length < PAGE_SIZE) break;
     }
 ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const truncated = itemsById.size < total;
     const withItems = ${withItemsOverrideExpr};
