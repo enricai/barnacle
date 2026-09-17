@@ -120,7 +120,14 @@ const ORIGINAL_STEP = "Fill in field 0";
 const FAILING_STEPS = new Set([ORIGINAL_STEP, "Bridge 1", "Bridge 2", "Bridge 4", "Bridge 5"]);
 
 function flowArgv(): string[] {
-  return ["node", "recon-browser.ts", "--url", "https://example.com/apply", "--flow", JSON.stringify([ORIGINAL_STEP])];
+  return [
+    "node",
+    "recon-browser.ts",
+    "--url",
+    "https://example.com/apply",
+    "--flow",
+    JSON.stringify([ORIGINAL_STEP]),
+  ];
 }
 
 function replanResponse(bridgeStep: string): {
@@ -234,7 +241,10 @@ describe("recon-browser/main — cascade replan budget persists across a CDP-tra
 
     executeStepWithHealingStub.mockImplementation(async (args: { step: string }) => {
       if (FAILING_STEPS.has(args.step)) {
-        throw new StepVerificationError(`step failed verification: ${args.step}`, "cascade-exhausted");
+        throw new StepVerificationError(
+          `step failed verification: ${args.step}`,
+          "cascade-exhausted"
+        );
       }
       return "completed";
     });
