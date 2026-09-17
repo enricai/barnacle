@@ -35,6 +35,7 @@ const TAB_CANDIDATES = [
 ];
 // biome-ignore lint/style/noNonNullAssertion: fixed-length literal array above
 const SELECTED_CANDIDATE = TAB_CANDIDATES[0]!;
+const TAB_XPATH_BODY = "//button[@data-tab='studio']";
 
 interface CapturedLogs {
   info: string[];
@@ -68,6 +69,31 @@ interface AcceptanceSequenceState {
   unitTabClicked: boolean;
 }
 
+/**
+ * The element-scoped `ElementSelectionFingerprint` `verifyDomEffect`'s click
+ * branch diffs (see `selectionFingerprintObjSrc` / `SELECTION_STATE_MAP_EXPR`
+ * in flow-runner.ts): `ariaSelected` flips false->true the instant the click
+ * genuinely lands, mirroring a real "tab" role's `aria-selected` commit —
+ * live off `state.tabState` so the SAME live read serves both the pre-click
+ * baseline (`SELECTION_STATE_MAP_EXPR`) and the post-click element read-back
+ * (`elementSelectionFingerprintExpr`) without the fixture tracking pre/post
+ * separately.
+ */
+function tabFingerprint(tabState: AcceptanceSequenceState["tabState"]): Record<string, unknown> {
+  return {
+    kind: "",
+    cls: tabState === "studio-selected" ? "tab active" : "tab",
+    ariaPressed: "",
+    ariaChecked: "",
+    ariaSelected: tabState === "studio-selected" ? "true" : "false",
+    dataState: "",
+    dataSelected: "",
+    dataChecked: "",
+    checked: "",
+    value: "",
+  };
+}
+
 function makeFlowPage(state: AcceptanceSequenceState): Page {
   const session = { on: () => {}, off: () => {} };
   return {
@@ -83,6 +109,24 @@ function makeFlowPage(state: AcceptanceSequenceState): Page {
       }
       if (src.includes("isInvalid(el)")) return 0;
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
+      // SELECTION_STATE_MAP_EXPR: the pre-click element-scoped baseline map,
+      // built ONLY when shouldCaptureSelectionState allows it for this step.
+      if (src.includes("isCommittedValueControl")) {
+        return { [TAB_XPATH_BODY]: tabFingerprint(state.tabState) };
+      }
+      // elementSelectionFingerprintExpr: the post-click read-back of the
+      // resolved element's own fingerprint. Checked BEFORE the bare `el.type`
+      // probe below since this expression's `checked` field itself derives
+      // from `el.type === "checkbox"`, so it also contains the substring
+      // "el.type" and would otherwise be misrouted to the probe branch.
+      if (src.includes('el.getAttribute("kind")') && src.includes(JSON.stringify(TAB_XPATH_BODY))) {
+        return tabFingerprint(state.tabState);
+      }
+      // verifyDomEffect's click branch: the standalone `el.type` radio/
+      // checkbox-exclusion probe — a plain <button> has no `.type`.
+      if (src.includes("el.type") && src.includes(JSON.stringify(TAB_XPATH_BODY))) {
+        return null;
+      }
       return null;
     },
     url: () => BASE_URL,
