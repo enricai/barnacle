@@ -54,6 +54,7 @@ function makeFakePage(): { page: Page; submitCount: { n: number } } {
       submitCount.n += 1;
       return undefined;
     }
+    if (src.includes("closest")) return true;
     if (src.includes("getAttribute")) {
       return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
     }

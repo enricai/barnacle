@@ -90,6 +90,7 @@ function makeFakePage(opts: {
       submitCount.n += 1;
       return undefined;
     }
+    if (src.includes("closest")) return true;
     if (src.includes("getAttribute")) {
       return opts.hasSitekey
         ? { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true }
@@ -374,6 +375,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
         submitCount.n += 1;
         return undefined;
       }
+      if (src.includes("closest")) return true;
       if (src.includes("getAttribute")) {
         return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
       }
@@ -408,7 +410,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(1);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=true with no confirmed transition on attempt 1; retrying"
       )
     );
   });
@@ -434,6 +436,7 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
         return undefined;
       }
       if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("closest")) return true;
       if (src.includes("getAttribute")) {
         return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
       }
@@ -461,12 +464,12 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(solveCaptchaMock).toHaveBeenCalledTimes(3);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=true with no confirmed transition on attempt 1; retrying"
       )
     );
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 2; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=true with no confirmed transition on attempt 2; retrying"
       )
     );
   });

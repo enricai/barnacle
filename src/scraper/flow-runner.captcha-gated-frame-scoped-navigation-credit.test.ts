@@ -71,6 +71,10 @@ function makeFakeChildFrame(childUrl: { current: string }) {
         childUrl.current = `${ORIGIN}${REVIEW_PATH}`;
         return undefined;
       }
+      // `submitCaptchaGatedForm`'s own field/form precheck, keyed on
+      // `closest` — checked after `requestSubmit` since its submit expr
+      // also contains `closest`.
+      if (src.includes("closest")) return true;
       return null;
     }),
     locator: vi.fn().mockReturnValue({
