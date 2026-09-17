@@ -146,7 +146,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-abc");
 
     expect(field.value).toBe("solved-token-abc");
-    expect(field.dispatched).toEqual(["change"]);
+    expect(field.dispatched).toEqual(["input", "change"]);
     expect(form.submitCount).toBe(0);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
@@ -184,7 +184,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     expect(headerSearchForm.fields).toHaveLength(0);
     expect(applicationForm.fields).toHaveLength(1);
     expect(applicationForm.fields[0]?.value).toBe("solved-token-created");
-    expect(applicationForm.fields[0]?.dispatched).toEqual(["change"]);
+    expect(applicationForm.fields[0]?.dispatched).toEqual(["input", "change"]);
     expect(applicationForm.submitCount).toBe(0);
     expect(headerSearchForm.submitCount).toBe(0);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
@@ -207,7 +207,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-formless");
 
     expect(field.value).toBe("solved-token-formless");
-    expect(field.dispatched).toEqual(["change"]);
+    expect(field.dispatched).toEqual(["input", "change"]);
     expect(result).toEqual({ injected: true, hasForm: false, callbackDiscovered: false });
   });
 
@@ -253,7 +253,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
 
     expect(calls).toEqual(["solved-token-callback"]);
     expect(field.value).toBe("solved-token-callback");
-    expect(field.dispatched).toEqual([]);
+    expect(field.dispatched).toEqual(["input", "change"]);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: true });
   });
 
@@ -275,7 +275,7 @@ describe("flow-runner/injectCaptchaTokenAndSubmit", () => {
     const result = await injectCaptchaTokenAndSubmit(target, "solved-token-nocallback");
 
     expect(field.value).toBe("solved-token-nocallback");
-    expect(field.dispatched).toEqual(["change"]);
+    expect(field.dispatched).toEqual(["input", "change"]);
     expect(result).toEqual({ injected: true, hasForm: true, callbackDiscovered: false });
   });
 
