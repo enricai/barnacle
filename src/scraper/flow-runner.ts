@@ -11188,9 +11188,13 @@ export async function executeStepWithHealing(params: {
     // credit path at all outside the n+16 fallback's own checkbox-specific
     // check, even though `classifyPhantomClick` already classifies it
     // `"effective"` (excluded only on submit-shaped steps, to keep a stray
-    // self-toggle from defeating the submit escalation).
+    // self-toggle from defeating the submit escalation). Gated through
+    // `domVerifiedForStep` (not raw `domVerified`) so this credit path
+    // respects the SAME DOM-only-advance veto as the block above: a wizard
+    // "Next" step on a pattern-configured site whose only signal is a field
+    // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerified;
+      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
