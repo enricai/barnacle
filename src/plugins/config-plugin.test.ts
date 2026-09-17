@@ -3,6 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin, CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
+import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
 
 const mockRunHealingFlow = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ submitVerified: false, submitStepSkipped: false, lastStepIndex: -1 })
@@ -144,6 +145,39 @@ describe("buildConfigPlugin", () => {
     const lastOptions = fixture.receivedOptions.at(-1);
     expect(lastOptions?.defaultTimeoutMs).toBe(2_500);
     expect(typeof plugin.executeHttp).toBe("function");
+  });
+
+  it("leaves meta.browserFallbackGate undefined when the manifest omits spec.browserFallbackGate", async () => {
+    const plugin = await buildConfigPlugin(baseManifest());
+    expect(plugin.meta.browserFallbackGate).toBeUndefined();
+  });
+
+  it("translates spec.browserFallbackGate.skipOn into a predicate that returns false only for the listed failure classes", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).browserFallbackGate = { skipOn: ["schema_drift"] };
+
+    const plugin = await buildConfigPlugin(manifest);
+    const gate = plugin.meta.browserFallbackGate;
+    if (typeof gate !== "function") throw new Error("expected a predicate gate");
+
+    expect(gate(new HttpSchemaError("bad shape"))).toBe(false);
+    expect(gate(new HttpBotChallengeError("captcha"))).toBe(true);
+    expect(gate(new HttpServerError("500"))).toBe(true);
+  });
+
+  it("skips multiple named failure classes when spec.browserFallbackGate.skipOn lists more than one", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).browserFallbackGate = {
+      skipOn: ["bot_challenge", "server_error"],
+    };
+
+    const plugin = await buildConfigPlugin(manifest);
+    const gate = plugin.meta.browserFallbackGate;
+    if (typeof gate !== "function") throw new Error("expected a predicate gate");
+
+    expect(gate(new HttpBotChallengeError("captcha"))).toBe(false);
+    expect(gate(new HttpServerError("500"))).toBe(false);
+    expect(gate(new HttpSchemaError("bad shape"))).toBe(true);
   });
 
   it("rejects a manifest whose httpModule cannot be resolved", async () => {
@@ -501,6 +535,18 @@ describe("CONFIG_PLUGIN_MANIFEST", () => {
   it("requires a non-empty flow", () => {
     const bad = baseManifest();
     (bad.spec as { flow: { steps: unknown[] } }).flow.steps = [];
+    expect(CONFIG_PLUGIN_MANIFEST.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects a browserFallbackGate.skipOn naming an unknown failure class", () => {
+    const bad = baseManifest();
+    (bad.spec as Record<string, unknown>).browserFallbackGate = { skipOn: ["not_a_real_class"] };
+    expect(CONFIG_PLUGIN_MANIFEST.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects an empty browserFallbackGate.skipOn array", () => {
+    const bad = baseManifest();
+    (bad.spec as Record<string, unknown>).browserFallbackGate = { skipOn: [] };
     expect(CONFIG_PLUGIN_MANIFEST.safeParse(bad).success).toBe(false);
   });
 });
