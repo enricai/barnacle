@@ -47,7 +47,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     expect(body).not.toContain("return { data: r3 };");
     expect(body).not.toContain("return { data: r4 };");
     expect(body).toContain("const r2 = (await httpClient(");
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -63,7 +63,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const steps = buildMulticallSingleShotSearchDrillDownNoDecoyActionSteps();
     const body = emit(steps);
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -87,7 +87,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // produces a real fold loop, not just that detection succeeds.
     const body = emit(buildMulticallSingleShotSearchDrillDownPathThreadedJoinActionSteps());
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("foldMatches.find(");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
@@ -110,7 +110,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
       buildMulticallSingleShotSearchDrillDownCompositeNumericJoinNonFirstItemActionSteps()
     );
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting emitted template-literal source
     expect(body).toContain("region=${item.region}&accountId=${item.accountId}");
     expect(body).not.toContain("region=eu");
@@ -157,7 +157,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     const body = emit(steps);
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("const r4 = (await httpClient(");
     expect(body).toContain("const r5 = (await httpClient(");
     expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
@@ -199,7 +199,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     const body = emit(steps);
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatch = r2 as Record<string, unknown>;");
@@ -322,7 +322,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // rather than emitting a second hardcoded call for r3.
     const body = emit(buildMulticallDependentDrillDownActionSteps());
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(
       `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
     );
@@ -378,7 +378,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     const body = emit(steps);
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(`body: \`{"accountId":\${item.accountId}}\``);
     expect(body).not.toContain('"accountId":42');
   });
@@ -395,7 +395,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // loop is a nested `for` over every group (not a flattened
     // `foldItems`) — see pathToFoldLoopLines's docstring.
     expect(body).toContain("for (const g0 of");
-    expect(body).toContain("for (const item of g0.entries) {");
+    expect(body).toContain("(g0.entries).map(async (item) => {");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
     );

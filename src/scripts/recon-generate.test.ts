@@ -3366,7 +3366,7 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
       new Map()
     );
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatches = (r2 as");
@@ -3424,7 +3424,7 @@ describe("emitMultiStepExecuteHttp — fold-loop parameterize re-keys a boolean 
       new Map()
     );
 
-    expect(body).toContain("for (const item of foldItems) {");
+    expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(`$${"{"}item.primary}`);
     expect(body).not.toContain("primary=true");
   });

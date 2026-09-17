@@ -88,7 +88,7 @@ describe("recon-generate emitMultiStepExecuteHttp — payload field precedence a
     // A real structural fold loop was actually emitted for this fixture —
     // otherwise this test would silently degrade into the non-fold guard
     // that already exists.
-    expect(body).toContain("for (const item of foldItems)");
+    expect(body).toContain("(foldItems).map(async (item) => {");
 
     const regionOccurrences = [...body.matchAll(/"region"\s*:\s*"?([^,\n}]*)"?/g)];
     expect(regionOccurrences.length).toBeGreaterThanOrEqual(2);
