@@ -1789,9 +1789,7 @@ export function isDomOnlyAdvanceVerified(params: {
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
-  isFinalStep: boolean;
   submitStep: boolean;
-  flowHasSubmitSemantics: boolean;
   isAdvanceWithPattern: boolean;
   networkDelta: number;
   bytesDelta: number;
@@ -1802,9 +1800,7 @@ export function isClickViewSwapVerified(params: {
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
   const {
     resolvedAction,
-    isFinalStep,
     submitStep,
-    flowHasSubmitSemantics,
     isAdvanceWithPattern,
     networkDelta,
     bytesDelta,
@@ -1812,7 +1808,13 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
-  if (submitStep || (isFinalStep && flowHasSubmitSemantics)) return false;
+  // Only the step's own explicit submitStep flag identifies the step that
+  // actually needs network/URL verification — mirrors the submit-judge
+  // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
+  // submit-shape from isFinalStep && flowHasSubmitSemantics falsely vetoes
+  // an inferred final same-page toggle step that was never going to receive
+  // a real network/URL transition, leaving it structurally unverifiable.
+  if (submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
@@ -11022,9 +11024,7 @@ export async function executeStepWithHealing(params: {
     // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
-      isFinalStep,
       submitStep,
-      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
