@@ -1137,6 +1137,26 @@ export function filterReplanDuplicatingNextAuthored(
 }
 
 /**
+ * Detect whether a single bridge instruction is more than a reworded
+ * re-proposal of the same control action — i.e. it splices in a genuinely
+ * new clause (a precondition action like "Solve the challenge, then click
+ * ..." or a value-correction like "..., retrying with the corrected value")
+ * rather than merely padding the same action with justification/filler
+ * ("Try again to click ... now that the form is valid" stays single-clause).
+ * Comma- and "then"-delimited clauses are the cheapest reliable signal for
+ * "the bridge is doing more than repeating": a rewording that only adds
+ * rationale stays a single clause, while a bridge that actually resolves the
+ * blocker (solving a challenge, correcting a value) reads as two.
+ */
+function hasCompoundBridgeClause(instruction: string): boolean {
+  const clauses = instruction
+    .split(/,|\bthen\b/i)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  return clauses.length > 1;
+}
+
+/**
  * Detect a replan that only re-proposes the step that JUST terminally failed —
  * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step
  * matches the failed instruction's {@link stepSignature}. Compares by
@@ -1150,7 +1170,10 @@ export function filterReplanDuplicatingNextAuthored(
  * exhausted it (~1m40s wasted) before the cycle detector — which needs
  * REPLAN_CYCLE_THRESHOLD repeats under a static page — even engages. This
  * catches it on the FIRST occurrence. Pure; returns false whenever the
- * bridge adds any genuinely new step.
+ * bridge adds any genuinely new step, including a single step that itself
+ * bundles a new clause ahead of or alongside the repeated action (see
+ * {@link hasCompoundBridgeClause}) — a captcha-solve-then-resubmit or a
+ * corrected-value retry is forward progress, not a stuck repeat.
  */
 export function isReplanReproposingFailedStep(
   newSteps: readonly NormalizedStep[],
@@ -1158,7 +1181,9 @@ export function isReplanReproposingFailedStep(
 ): boolean {
   if (newSteps.length === 0) return false;
   const failedSig = stepSignature(failedStep);
-  return newSteps.every((s) => stepSignature(s.instruction) === failedSig);
+  return newSteps.every(
+    (s) => stepSignature(s.instruction) === failedSig && !hasCompoundBridgeClause(s.instruction)
+  );
 }
 
 /**
