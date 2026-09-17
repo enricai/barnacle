@@ -193,7 +193,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("attempt=2/3"));
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=true with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=true fallbackSubmitted=false with no confirmed transition on attempt 1; retrying"
       )
     );
   });
@@ -372,5 +372,90 @@ describe("flow-runner/executeStepWithHealing — captchaGated sessionProxy threa
       isInvisible: true,
       userAgent: "test-agent/1.0",
     });
+  });
+});
+
+describe("flow-runner/executeStepWithHealing — captchaGated explicit-submit-fallback finds nothing to submit", () => {
+  let capturesDir: string;
+
+  beforeAll(() => {
+    capturesDir = resolveReconRunDir().graphqlDir;
+  });
+
+  beforeEach(() => {
+    solveCaptchaMock.mockReset();
+    (testLogger.info as ReturnType<typeof vi.fn>).mockClear();
+    rmSync(capturesDir, { recursive: true, force: true });
+    mkdirSync(capturesDir, { recursive: true });
+  });
+
+  it("distinguishes a fallback submit that found no field/form from a genuine unconfirmed-but-attempted submit, and fails loudly instead of masking it", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    // The widget's own render callback fires cleanly (registry populated,
+    // no discoverable render-config callback) but tears down/replaces the
+    // response field before the fallback's post-callback DOM re-query runs
+    // — the re-query's `field.closest("form")` check resolves to nothing.
+    // Mirrors the acceptance-test file's mocking order: the callback-discovery
+    // lookup ("Boolean(__findCaptchaCallback") is checked before the generic
+    // sitekey-read ("getAttribute") marker, since __findCaptchaCallback itself
+    // calls getAttribute internally.
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("hasForm")) {
+        return { injected: true, hasForm: true, callbackDiscovered: false };
+      }
+      if (src.includes("Boolean(__findCaptchaCallback")) return false;
+      if (src.includes('return "absent"')) return "populated";
+      if (src.includes("getAttribute")) {
+        return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
+      }
+      if (src === "navigator.userAgent") return "test-agent/1.0";
+      if (src.includes("dispatchEvent")) return undefined;
+      if (src.includes("Boolean(field")) return false;
+      if (src.includes("requestSubmit")) return undefined;
+      if (src.includes("outerHTML")) return { html: 0, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+
+    const page = {
+      evaluate,
+      url: () => "https://apply.example.com/application/abc-123",
+      title: vi.fn().mockResolvedValue(""),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi
+        .fn()
+        .mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
+    } as unknown as Page;
+    const stagehand = {} as Stagehand;
+
+    vi.useFakeTimers();
+    const resultPromise = executeStepWithHealing(baseParams(page, stagehand)).catch(
+      (err: unknown) => err
+    );
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+    vi.useRealTimers();
+
+    // registryState=populated + callbackDiscovered=false + unconfirmed is
+    // not a race shouldRetryCaptchaRegistry retries on, so this gives up on
+    // attempt 1 and throws — but the thrown message must name that the
+    // fallback found nothing to submit, distinct from a generic "no
+    // transition confirmed" throw that would also fire for a genuine
+    // attempted-but-unconfirmed submit.
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain(
+      "the explicit submit fallback found no field/form to act on"
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "explicit submit fallback found no field/form to act on (widget likely tore down or replaced it after the callback fired); nothing was submitted"
+      )
+    );
   });
 });

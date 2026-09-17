@@ -5646,15 +5646,37 @@ export async function injectCaptchaTokenAndSubmit(
  * calls `preventDefault()` and drives its own submit logic) and native form
  * validation still run, matching real-browser submit semantics; falls back
  * to the bare `form.submit()` only when `requestSubmit` isn't available.
+ *
+ * Resolves the form to submit by name first (the response field's own
+ * closest form), then falls back to the sitekey-anchored form (or the sole
+ * form on the page) the same way {@link injectCaptchaTokenAndSubmit} resolves
+ * its target: an invisible/callback-only widget never creates a named
+ * response field, so a named-field-only lookup here would silently no-op and
+ * no site-host traffic would ever follow the clean callback. Resolves to
+ * whether a form was actually found and acted on; a true no-op is reported
+ * only when the page has no form at all to resolve.
  */
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
   responseField = "h-captcha-response"
-): Promise<void> {
+): Promise<boolean> {
+  const findFormExpr = `(() => {
+    const responseField = ${JSON.stringify(responseField)};
+    const field = document.querySelector('[name="' + responseField + '"]');
+    const fieldForm = field ? field.closest("form") : null;
+    if (fieldForm) return true;
+    const forms = Array.from(document.querySelectorAll("form"));
+    const sitekeyForm = forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
+    return Boolean(sitekeyForm);
+  })()`;
+  const found = await target.evaluate<boolean>(findFormExpr).catch(() => false);
+  if (!found) return false;
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
-    const form = field ? field.closest("form") : null;
+    const fieldForm = field ? field.closest("form") : null;
+    const forms = Array.from(document.querySelectorAll("form"));
+    const form = fieldForm ?? forms.find((candidate) => candidate.querySelector("[data-sitekey]")) ?? forms[0];
     if (form) (form.requestSubmit ? form.requestSubmit() : form.submit());
   })()`;
   // form.submit() navigates the frame synchronously, tearing down the execution
@@ -5662,6 +5684,7 @@ export async function submitCaptchaGatedForm(
   // that rejection is the expected outcome of a navigating evaluate, not a
   // real failure, so it's discarded here rather than awaited for a result.
   await target.evaluate(submitExpr).catch(() => undefined);
+  return true;
 }
 
 /**
@@ -9389,19 +9412,25 @@ export async function executeStepWithHealing(params: {
           // widget that renders on demand another chance to be caught.
           await captchaTarget.evaluate(buildHcaptchaCallbackCaptureScript()).catch(() => undefined);
         }
-        const solved = await solveCaptcha({
+        const solveResult = await solveCaptcha({
           type: "hcaptcha",
           siteKey,
           pageUrl,
           isInvisible,
           userAgent,
           proxy: sessionProxy ?? undefined,
-        }).catch((err: unknown) => {
+        })
+          .then((solved) => ({ ok: true as const, solved }))
+          .catch((err: unknown) => ({ ok: false as const, err }));
+        if (!solveResult.ok) {
+          const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
           logger.error(
-            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed (${toErrorMessage(err)}); failing the step rather than silently proceeding`
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: solve failed on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${toErrorMessage(solveResult.err)}); ${attemptsRemain ? "retrying" : "failing the step rather than silently proceeding"}`
           );
-          throw err;
-        });
+          if (attemptsRemain) continue;
+          throw solveResult.err;
+        }
+        const solved = solveResult.solved;
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
         const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
         const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
@@ -9460,9 +9489,14 @@ export async function executeStepWithHealing(params: {
         // only issue an explicit submit when no transition was observed AND a
         // form is known to exist to submit — otherwise this would double-submit
         // a form the widget's own callback already advanced.
+        let fallbackSubmitted = false;
         if (!confirmed && injectResult.hasForm) {
-          await submitCaptchaGatedForm(captchaTarget);
-          if (advanceTransitionBodyPattern) {
+          fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget);
+          if (!fallbackSubmitted) {
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: explicit submit fallback found no field/form to act on (widget likely tore down or replaced it after the callback fired); nothing was submitted`
+            );
+          } else if (advanceTransitionBodyPattern) {
             confirmed = await waitForTransitionBody({
               page,
               preIdx: preCaptchaCaptureIdx,
@@ -9514,7 +9548,7 @@ export async function executeStepWithHealing(params: {
           )
         ) {
           logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} with no confirmed transition on attempt ${captchaAttempt}; retrying`
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} fallbackSubmitted=${fallbackSubmitted} with no confirmed transition on attempt ${captchaAttempt}; retrying`
           );
           continue;
         }
@@ -9529,8 +9563,12 @@ export async function executeStepWithHealing(params: {
         // none configured, no network poll ever ran, so there's nothing here
         // to contradict the normal cascade/verifier.
         if (advanceTransitionBodyPattern && !injectResult.callbackDiscovered) {
+          const fallbackDetail =
+            injectResult.hasForm && !fallbackSubmitted
+              ? " and the explicit submit fallback found no field/form to act on"
+              : "";
           throw new CaptchaError(
-            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve`
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve${fallbackDetail}`
           );
         }
         break;

@@ -110,6 +110,7 @@ import {
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
+  applyFailedStepFlagsToResumingBridgeStep,
   buildRadioIdXPath,
   capturesAfterIndex,
   chooseRequiredSelectOption,
@@ -1501,6 +1502,49 @@ describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
   });
 });
 
+describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
+  const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+    ...extra,
+  });
+
+  it("tags the bridge step resuming the failed captcha submit with captchaGated", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [
+      mk("Solve the challenge, then click the 'Submit' button again to complete the form"),
+    ];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("leaves an unrelated bridge step untouched when no step resumes the failed control", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Click the 'Change Delivery Address' link to open the address panel")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBeUndefined();
+    expect(out[0]!.submitStep).toBeUndefined();
+  });
+
+  it("is a no-op when the failed step carried neither flag", () => {
+    const failedStep = mk("Click the 'Submit' button");
+    const newSteps = [mk("Click the 'Submit' button once more")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("is deterministic across repeated calls with the same inputs", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true });
+    const newSteps = [mk("Click the 'Submit' button again after solving the challenge")];
+    const first = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    const second = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(second).toEqual(first);
+  });
+});
+
 describe("recon-browser/isReplanReproposingFailedStep", () => {
   const mk = (instruction: string): NormalizedStep => ({
     instruction,
@@ -2733,6 +2777,26 @@ describe("recon-browser/isReplanCycle", () => {
       origin: "original",
     }));
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 52000 })).toBe(false);
+  });
+
+  it("returns true when threshold reworded-but-structurally-identical proposals under static page state", () => {
+    const wordings = [
+      "Click the 'Submit Application' button to send the form",
+      "Press the 'Submit Application' button so the application is submitted",
+      "Tap on 'Submit Application' to finalize submission",
+    ];
+    const priors = wordings.map((p, i) =>
+      makeEvent(i + 1, [p], { url, htmlLength: 50000 + i * 10 })
+    );
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Hit 'Submit Application' one more time",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(true);
   });
 
   it("returns false when proposals differ in instructions or order", () => {

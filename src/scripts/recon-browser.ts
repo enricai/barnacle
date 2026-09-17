@@ -586,10 +586,10 @@ export function isReplanCycle(
   currentState: { url: string; htmlLength: number }
 ): boolean {
   if (priorReplans.length < REPLAN_CYCLE_THRESHOLD) return false;
-  const newSig = newSteps.map((s) => s.instruction).join("|||");
+  const newSig = newSteps.map((s) => stepSignature(s.instruction)).join("|||");
   let identicalCount = 0;
   for (const prior of priorReplans) {
-    const priorSig = prior.replanSteps.map((s) => s.instruction).join("|||");
+    const priorSig = prior.replanSteps.map((s) => stepSignature(s.instruction)).join("|||");
     if (priorSig !== newSig) continue;
     const urlSame = prior.pageState.url === currentState.url;
     const htmlStatic =
@@ -1012,6 +1012,20 @@ function extractQuotedLabels(instruction: string): string[] {
 }
 
 /**
+ * Structural per-step signature for cycle detection: quoted UI-control
+ * label(s) when present (sorted for stability), otherwise the normalized
+ * instruction text. An LLM rewords a semantically-identical bridge proposal
+ * freely between replan attempts, so raw string equality on `instruction`
+ * lets two structurally identical stuck states diverge non-deterministically;
+ * comparing on the control label(s) it names is prose-tolerant like the
+ * duplicate-step check above.
+ */
+function stepSignature(instruction: string): string {
+  const labels = extractQuotedLabels(instruction);
+  return labels.length > 0 ? [...labels].sort().join(",") : normalizeInstruction(instruction);
+}
+
+/**
  * Detect whether a replan bridge step's action is a semantic duplicate of the
  * immediately-following authored step's action — e.g. the bridge says `Click
  * the 'Add New Work History' button to open a new work history entry form`
@@ -1038,6 +1052,46 @@ function isReplanStepDuplicatingNextAuthoredStep(
   const nextLabels = extractQuotedLabels(nextAuthoredStep);
   if (bridgeLabels.length === 0 || nextLabels.length === 0) return false;
   return bridgeLabels.some((label) => nextLabels.includes(label));
+}
+
+/**
+ * Detect whether a replan bridge step resumes the SAME control action as the
+ * step that just failed — e.g. the failed step was `click the 'Submit'
+ * button` (captchaGated) and the bridge re-emits `click the 'Submit' button
+ * again after solving the challenge`. Same quoted-label-overlap heuristic as
+ * {@link isReplanStepDuplicatingNextAuthoredStep}, applied against the failed
+ * step's instruction instead of the next authored one.
+ */
+function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string): boolean {
+  const bridgeLabels = extractQuotedLabels(bridgeStep);
+  const failedLabels = extractQuotedLabels(failedStep);
+  if (bridgeLabels.length === 0 || failedLabels.length === 0) return false;
+  return bridgeLabels.some((label) => failedLabels.includes(label));
+}
+
+/**
+ * Deterministically re-apply the failed step's captchaGated/submitStep flags
+ * onto whichever replan bridge step resumes that same action — the replan
+ * prompt never asks the LLM to carry these forward and the original failed
+ * step object is discarded at splice time, so without this the retry hook
+ * (or the submit-verifier gate) silently stops firing on a replan-origin
+ * resume. Pure over already-known strings/flags: same inputs, same output.
+ * Leaves bridge steps that don't match the failed step's control untouched.
+ */
+export function applyFailedStepFlagsToResumingBridgeStep(
+  newSteps: readonly NormalizedStep[],
+  failedStep: NormalizedStep
+): NormalizedStep[] {
+  if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
+  return newSteps.map((s) =>
+    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
+      ? {
+          ...s,
+          captchaGated: s.captchaGated || failedStep.captchaGated,
+          submitStep: s.submitStep || failedStep.submitStep,
+        }
+      : s
+  );
 }
 
 /**
@@ -2943,7 +2997,10 @@ async function main(): Promise<void> {
           // origin: "original" — that's what protects the canonical final
           // submit from being silently demoted to optional across replans.
           const taggedNewSteps = filterReplanDuplicatingNextAuthored(
-            newSteps.map((s) => ({ ...s, origin: "replan" as const })),
+            applyFailedStepFlagsToResumingBridgeStep(
+              newSteps.map((s) => ({ ...s, origin: "replan" as const })),
+              step
+            ),
             originalRemaining
           );
           plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);

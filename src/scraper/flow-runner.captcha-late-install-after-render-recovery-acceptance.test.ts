@@ -97,6 +97,7 @@ function makeEvaluate(registryStateForAttempt: (attempt: number) => "empty" | "p
     if (src === "navigator.userAgent") return "test-agent/1.0";
     if (src.includes("dispatchEvent")) return undefined;
     if (src.includes("requestSubmit")) return undefined;
+    if (src.includes("closest")) return true;
     if (src.includes("outerHTML")) return { html: 0, text: "0:" };
     if (src.includes("isInvalid(el)")) return 0;
     return null;
@@ -185,7 +186,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated late-install-after
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("attempt=2/3"));
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=true with no confirmed transition on attempt 1; retrying"
       )
     );
   });
