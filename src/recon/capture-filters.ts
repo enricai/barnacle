@@ -465,7 +465,7 @@ function endpointOrigin(url: string): string | null {
  *
  * A candidate with NO query string at all has no key to prove "fixed" —
  * `hasFixedKey` has nothing to key off — so it falls back to
- * {@link hasNoBusinessRelevantResponseState} directly, gated by
+ * {@link hasNoBusinessRelevantResponseState}, gated by
  * {@link MIN_QUERYLESS_REPEAT_COUNT} same-endpoint occurrences rather than the
  * fixed-query branch's bare `>= 2`. That higher bar is what keeps a
  * genuinely-polled own endpoint (e.g. a two-call `/health` check with no
@@ -473,6 +473,17 @@ function endpointOrigin(url: string): string | null {
  * or body, {@link hasNoBusinessRelevantResponseState} itself defaults to "no
  * business-relevant state," so query-key-less repeats need to already look
  * densely repeated before that default is trusted.
+ *
+ * When the request body varies across occurrences (unlike the fixed-query
+ * branch, which only needs the query key fixed), the missing-metadata
+ * default is NOT trusted: a same-endpoint POST with a differing body per
+ * call (e.g. a single `/graphql` endpoint fanning out distinct operations)
+ * only reads as noise when the candidate explicitly supplies a
+ * `content-type` header — otherwise the varying body is exactly the shape a
+ * real multi-operation API produces, and treating "no metadata given" as
+ * proof of noise would drop the whole flow. A byte-identical body across
+ * every occurrence is unambiguous regardless of metadata, so that case
+ * still defers fully to {@link hasNoBusinessRelevantResponseState}.
  */
 /**
  * Minimum same-endpoint occurrence count required to flag a query-less
@@ -506,10 +517,15 @@ export function isZeroVarianceRepeatCapture(
     (c) => c.method === candidate.method && endpointOrigin(c.url) === candidateEndpoint
   );
   if (candidateKeys.length === 0) {
-    return (
-      sameEndpoint.length >= MIN_QUERYLESS_REPEAT_COUNT &&
-      hasNoBusinessRelevantResponseState(candidate)
+    if (sameEndpoint.length < MIN_QUERYLESS_REPEAT_COUNT) return false;
+    const queryLessBodyIdentical = sameEndpoint.every(
+      (c) => c.requestPostData === candidate.requestPostData
     );
+    if (queryLessBodyIdentical) return hasNoBusinessRelevantResponseState(candidate);
+    const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
+      (key) => key.toLowerCase() === "content-type"
+    );
+    return hasExplicitContentType && hasNoBusinessRelevantResponseState(candidate);
   }
   if (sameEndpoint.length < 2) return false;
   const sameEndpointUrls = sameEndpoint
