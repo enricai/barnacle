@@ -1,0 +1,115 @@
+import Bottleneck from "bottleneck";
+import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
+import { createHttpClient } from "@/scraper/http-client";
+import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  extractExecuteHttpBodyFromContract,
+  stripEmitterTypeAssertions,
+} from "@/scripts/recon-generate-execute-http-harness.test-helper";
+
+const BASE = "https://api.example.com";
+const SEARCH_QUERY =
+  "query catalogSearch($pagination: PaginationInput) { catalog(pagination: $pagination) { total items { id title } } }";
+
+function evalPaginatedExecuteHttp(
+  body: string,
+  getGql: (
+    baseUrl: string
+  ) => (
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>
+  ) => Promise<unknown>
+): (payload: Record<string, unknown>, context: { baseUrl: string }) => Promise<{ data: unknown }> {
+  const stripped = stripEmitterTypeAssertions(body);
+  const httpClient = createHttpClient({
+    schema: z.unknown(),
+    bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: 0 }),
+    baseHeaders: { "Content-Type": "application/json" },
+  });
+  const factory = new Function(
+    "getGql",
+    "httpClient",
+    "z",
+    "CATALOGPAGINATEDSHORTPAGESTOPRUNTIMETEST_QUERY",
+    `return async function executeHttp(payload, context) {\n${stripped}\n};`
+  ) as (
+    getGqlArg: unknown,
+    httpClientArg: unknown,
+    zArg: unknown,
+    queryArg: string
+  ) => (
+    payload: Record<string, unknown>,
+    context: { baseUrl: string }
+  ) => Promise<{ data: unknown }>;
+  return factory(getGql, httpClient, z, SEARCH_QUERY);
+}
+
+function buildContract(): string {
+  const primaryResponseBody = { catalog: { total: 15, items: makeItems(5, 0) } };
+  return emitContractTs({
+    siteId: "catalog-paginated-short-page-stop-runtime-test",
+    pascal: "CatalogPaginatedShortPageStopRuntimeTest",
+    baseUrl: BASE,
+    baseHeaders: { "Content-Type": "application/json" },
+    minTime: 100,
+    safeRps: 10,
+    responseBody: primaryResponseBody,
+    gql: true,
+    gqlQuery: SEARCH_QUERY,
+    endpointPath: "/graphql",
+    gqlOperationName: "catalogSearch",
+    gqlVariables: { pagination: { count: 5, skip: 0 } },
+    auxFiles: [],
+    actionSteps: [],
+  });
+}
+
+function makeItems(count: number, startIndex: number): Record<string, unknown>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `item-${startIndex + i}`,
+    title: `Item ${startIndex + i}`,
+  }));
+}
+
+describe("buildPaginatedGqlExecuteHttpBody at runtime: stops on a page with no new distinct items", () => {
+  it("breaks the loop as soon as a fetched page contributes zero new items, instead of exhausting MAX_PAGES chasing a total that never converges (total=437, only 436 distinct ids)", async () => {
+    const contract = buildContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    // 8 distinct items exist across two non-empty pages, but the server's own
+    // `total` field claims 10 — a total/distinct-id mismatch, mirroring the
+    // total=437-vs-436-distinct-ids scenario in the success criteria.
+    const pages = [
+      { catalog: { total: 10, items: makeItems(5, 0) } },
+      { catalog: { total: 10, items: makeItems(3, 5) } },
+      // A third page would be reached under the old `itemsById.size < total`-only
+      // condition (8 < 10) — its response returns no items at all, simulating the
+      // server having nothing further to give despite the inflated total.
+      { catalog: { total: 10, items: [] } },
+    ];
+    let callCount = 0;
+    const getGql = (_baseUrl: string) => async () => {
+      const page = pages[callCount];
+      callCount += 1;
+      return page;
+    };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    const result = await executeHttp({}, { baseUrl: BASE });
+
+    // Exactly 3 calls: the initial fetch plus the loop's first iteration
+    // (8 items) then the loop's second iteration (0 new items, breaks
+    // immediately) — never reaches MAX_PAGES (50) chasing the phantom total.
+    expect(callCount).toBe(3);
+
+    expect(
+      (result.data as { catalog: { items: unknown[]; total: number } }).catalog.items
+    ).toHaveLength(8);
+    // The merged envelope's own total is rewritten to what was actually
+    // delivered, since the loop stopped before the server's reported total
+    // (10) was reached.
+    expect((result.data as { catalog: { total: number } }).catalog.total).toBe(8);
+  });
+});
