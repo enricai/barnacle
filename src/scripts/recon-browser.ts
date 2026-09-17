@@ -1138,22 +1138,27 @@ export function filterReplanDuplicatingNextAuthored(
 
 /**
  * Detect a replan that only re-proposes the step that JUST terminally failed —
- * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step is
- * byte-identical (whitespace/case-normalized) to the failed instruction. The
- * replan prompt allows a no-op re-emission of the failed step, but a bridge that
- * is NOTHING but the failed step is a guaranteed re-fail: resuming re-runs the
- * whole 5-attempt cascade on the exact click that just exhausted it (~1m40s
- * wasted) before the cycle detector — which needs REPLAN_CYCLE_THRESHOLD repeats
- * under a static page — even engages. This catches it on the FIRST occurrence.
- * Pure; returns false whenever the bridge adds any genuinely new step.
+ * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step
+ * matches the failed instruction's {@link stepSignature}. Compares by
+ * signature rather than raw normalized text for the same reason
+ * {@link isReplanCycle} does: an LLM rewords a semantically-identical
+ * re-proposal freely between replan attempts, so byte/case-identical
+ * comparison lets a genuinely stuck state slip through on reworded retries.
+ * The replan prompt allows a no-op re-emission of the failed step, but a
+ * bridge that is NOTHING but the failed step is a guaranteed re-fail:
+ * resuming re-runs the whole 5-attempt cascade on the exact click that just
+ * exhausted it (~1m40s wasted) before the cycle detector — which needs
+ * REPLAN_CYCLE_THRESHOLD repeats under a static page — even engages. This
+ * catches it on the FIRST occurrence. Pure; returns false whenever the
+ * bridge adds any genuinely new step.
  */
 export function isReplanReproposingFailedStep(
   newSteps: readonly NormalizedStep[],
   failedStep: string
 ): boolean {
   if (newSteps.length === 0) return false;
-  const failedNorm = normalizeInstruction(failedStep);
-  return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
+  const failedSig = stepSignature(failedStep);
+  return newSteps.every((s) => stepSignature(s.instruction) === failedSig);
 }
 
 /**

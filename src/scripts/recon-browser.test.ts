@@ -1591,6 +1591,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
     ).toBe(true);
   });
 
+  it("fires when the bridge rewords the failed step but names the same quoted control", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Try again to click the 'Submit' button now that the form is valid")],
+        "Click the 'Submit' button"
+      )
+    ).toBe(true);
+  });
+
   it("does not fire when the bridge adds a genuinely new step", () => {
     expect(
       isReplanReproposingFailedStep(
