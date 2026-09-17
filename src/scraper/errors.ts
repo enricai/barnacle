@@ -488,6 +488,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "HttpSchemaError",
   "HttpBotChallengeError",
   "HttpServerError",
+  "HttpClientError",
   "HttpRateLimitError",
   "HttpUrlLockedError",
   "BrowserbaseSessionCreateRateLimitError",
