@@ -1811,6 +1811,12 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
+  // Only the step's own explicit submitStep flag identifies the step that
+  // actually needs network/URL verification — mirrors the submit-judge
+  // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
+  // submit-shape from isFinalStep && flowHasSubmitSemantics falsely vetoes
+  // an inferred final same-page toggle step that was never going to receive
+  // a real network/URL transition, leaving it structurally unverifiable.
   if (submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;

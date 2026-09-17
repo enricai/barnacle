@@ -84,11 +84,13 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   // cascade's phantom-verdict-driven escalation to the deep submit locator would
   // be defeated by a stray self-toggle on the submit button.
   const elementStateChanged = !attempt.isSubmitShapedStep && attempt.elementStateChanged === true;
+  // Mirrors the elementStateChanged veto above: a submit-shaped step must prove
+  // itself via network/URL, so a mere DOM-byte reflow (growth OR shrink) must
+  // not lift the verdict off `phantom` either.
+  const bytesChangedSignificantly =
+    !attempt.isSubmitShapedStep && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
   const hasEffect =
-    networkDelta !== 0 ||
-    urlChanged ||
-    elementStateChanged ||
-    Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
+    networkDelta !== 0 || urlChanged || elementStateChanged || bytesChangedSignificantly;
   return hasEffect ? "effective" : "phantom";
 }

@@ -38,13 +38,16 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   });
 
   /**
-   * Case 2: The same DOM-growth/zero-network shape on an unflagged final step
-   * (isFinalStep + flowHasSubmitSemantics true, submitStep false) IS credited
-   * — the flow-level `flowHasSubmitSemantics` inference is not authoritative
-   * over the step's own explicit `submitStep` flag, since an unflagged final
-   * step may genuinely be a legitimate client-side view swap.
+   * Case 2: The same DOM-growth/zero-network shape on an inferred final step
+   * (isFinalStep is no longer a gate input) IS credited — only the step's own
+   * explicit submitStep flag identifies the step that actually needs
+   * network/URL verification, mirroring the submit-judge gate's
+   * hasSubmitTransitionSignal discipline (see 5763ac2). Inferring submit-shape
+   * from isFinalStep && flowHasSubmitSemantics used to veto this credit even
+   * though an inferred final same-page toggle step was never going to receive
+   * a real network/URL transition, leaving it structurally unverifiable.
    */
-  it("credits DOM growth on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
+  it("credits DOM growth on an inferred final step with no explicit submitStep flag", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       submitStep: false,
@@ -236,7 +239,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(false);
   });
 
-  it("credits a small text-changing reveal on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
+  it("credits a small text-changing reveal on an inferred final step with no explicit submitStep flag", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       submitStep: false,
