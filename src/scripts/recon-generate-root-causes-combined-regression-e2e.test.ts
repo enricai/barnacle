@@ -7,6 +7,7 @@ import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
+import { isZeroVarianceRepeatCapture } from "@/recon/capture-filters";
 import { HttpClientError } from "@/scraper/errors";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitContractTs } from "@/scripts/recon-generate";
@@ -115,7 +116,19 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
       })
     );
 
-    writeRunDir(runRoot, [listing, drillOne, ...noise]);
+    // Item 0's own regression, pinned directly: a widened queryless-repeat
+    // noise family (own-host, no query string, no business-relevant
+    // response state) must itself be classified as noise by
+    // `isZeroVarianceRepeatCapture` — this is the exact predicate that used
+    // to under-fire on this shape and let it compete for fold-plan primary
+    // selection. A same-host, single-hop listing capture below the
+    // queryless-repeat threshold must NOT be classified as noise merely for
+    // sharing a host with it.
+    const allCaptures = [listing, drillOne, ...noise];
+    expect(isZeroVarianceRepeatCapture(noise[0]!, allCaptures)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(listing, allCaptures)).toBe(false);
+
+    writeRunDir(runRoot, allCaptures);
 
     const siteId = `combined-root-causes-noise-drill-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
