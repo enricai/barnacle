@@ -42,10 +42,13 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
   });
 
   /**
-   * Case 2: The same DOM-growth/zero-network shape on a final/submitStep
-   * is NOT credited — submit-judge/isSubmitRevealedInvalid path still governs.
+   * Case 2: The same DOM-growth/zero-network shape on an unflagged final step
+   * (isFinalStep + flowHasSubmitSemantics true, submitStep false) IS credited
+   * — the flow-level `flowHasSubmitSemantics` inference is not authoritative
+   * over the step's own explicit `submitStep` flag, since an unflagged final
+   * step may genuinely be a legitimate client-side view swap.
    */
-  it("rejects DOM growth on a final step (submit verification requires real network)", () => {
+  it("credits DOM growth on an unflagged final step (explicit submitStep flag is authoritative, not the flow-level inference)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       isFinalStep: true,
@@ -56,7 +59,7 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
       bytesDelta: 49518,
       textChanged: false,
     });
-    expect(result).toBe(false);
+    expect(result).toBe(true);
   });
 
   it("rejects DOM growth on a submitStep (submit verification requires real network)", () => {

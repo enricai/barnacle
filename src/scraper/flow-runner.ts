@@ -1756,10 +1756,13 @@ export function isDomOnlyAdvanceVerified(params: {
  * (`VIEW_SWAP_MIN_BYTES` env var) lets a deployment lower the threshold
  * without regressing the shared default for other sites.
  *
- * **Scope guards:** Excludes final/submit steps (those require real network
- * per isSubmitRevealedInvalid + LLM submit judge) and advance-pattern steps
- * (those require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled
- * to avoid wizard-ATS autosave-vs-transition ambiguity).
+ * **Scope guards:** Excludes steps explicitly flagged `submitStep: true`
+ * (those require real network per isSubmitRevealedInvalid + LLM submit
+ * judge — trusting only the step's own explicit flag, never the flow-level
+ * `flowHasSubmitSemantics` inference: an unflagged final step may genuinely
+ * be a legitimate client-side view swap) and advance-pattern steps (those
+ * require real transition per isDomOnlyAdvanceVerified/isAdvanceStalled to
+ * avoid wizard-ATS autosave-vs-transition ambiguity).
  *
  * **Small-delta reveal credit:** a sub-section unhiding within an
  * already-loaded page (e.g. a validation-triggered "Work History requirement"
@@ -1802,9 +1805,7 @@ export function isClickViewSwapVerified(params: {
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
   const {
     resolvedAction,
-    isFinalStep,
     submitStep,
-    flowHasSubmitSemantics,
     isAdvanceWithPattern,
     networkDelta,
     bytesDelta,
@@ -1812,7 +1813,7 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
   } = params;
   if (resolvedAction?.method !== "click") return false;
-  if (submitStep || (isFinalStep && flowHasSubmitSemantics)) return false;
+  if (submitStep) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
