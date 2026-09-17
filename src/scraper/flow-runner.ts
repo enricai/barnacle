@@ -11615,8 +11615,16 @@ export async function executeStepWithHealing(params: {
           // Without this, the n+16 fallback would still ride past a
           // tracking-pixel-only click on the final step. Same Haiku LLM
           // judgment as the primary verifier — multi-signal corroboration
-          // replaces deterministic URL regex matching.
-          if (retryVerified && requireSubmitEndpoint) {
+          // replaces deterministic URL regex matching. Same
+          // hasSubmitTransitionSignal carve-out as the primary verifier: an
+          // inferred (non-explicit-submitStep) final step whose n+16 credit
+          // came only from the element-scoped `retrySelectionStateChanged`
+          // signal is the same ordinary-toggle shape, not a real submit —
+          // don't force it through a judge that requires evidence it can
+          // never produce.
+          const retryHasSubmitTransitionSignal =
+            submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
+          if (retryVerified && requireSubmitEndpoint && retryHasSubmitTransitionSignal) {
             const tail = recentCaptureMeta.slice(preMetaLength);
 
             // DOM-state probe (deterministic).
