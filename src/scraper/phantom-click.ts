@@ -25,8 +25,8 @@ export interface PhantomClickAttempt {
    * computes from the pre/post per-element fingerprint baseline
    * (`StepSnapshot.selectionStateByXpath`). A design-system option/toggle (Base
    * Web `kind` flip, hashed-class swap, ARIA, native `checked`) registers here
-   * with no network, no URL change, and a trivial/negative byte delta that the
-   * byte-floor branch can never catch. Element-scoped, so a state change on any
+   * with no network, no URL change, and a byte delta whose magnitude stays
+   * below the byte-floor branch's threshold. Element-scoped, so a state change on any
    * OTHER element on the page can never lift this verdict off `phantom`.
    * Optional so callers/tests that don't supply it default to `false`.
    */
@@ -77,7 +77,7 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   // The resolved element's OWN committed selection state changed across the
   // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
   // swap, ARIA, native `checked`) registers here with no network, no URL, and a
-  // trivial/negative byte delta the byte floor can never catch. Authoritative
+  // byte delta whose magnitude stays below the byte floor. Authoritative
   // and element-scoped (`verifyDomEffect` read it off the clicked element, not a
   // page-wide fingerprint), so an unrelated element's change can't fake it. NOT
   // on a submit-shaped step: a submit must prove itself via network/URL, or the
