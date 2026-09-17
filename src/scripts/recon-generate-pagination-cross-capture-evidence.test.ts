@@ -102,7 +102,7 @@ describe("emitContractTs — cross-capture pagination-signal recovery", () => {
       baseOpts([fullPageSiblingCapture(), differentOperationFullPageCapture()])
     );
 
-    expect(source).toContain("const PAGE_SIZE = 10;");
+    expect(source).toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(source).toContain("MAX_PAGES");
     expect(source).toContain("itemsById");
   });
@@ -110,7 +110,7 @@ describe("emitContractTs — cross-capture pagination-signal recovery", () => {
   it("falsifier: stays a single fixed-page executeHttp when no same-operation sibling proves pagination (control)", () => {
     const source = emitContractTs(baseOpts([differentOperationFullPageCapture()]));
 
-    expect(source).not.toContain("const PAGE_SIZE = 10;");
+    expect(source).not.toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(source).not.toContain("MAX_PAGES");
   });
 });

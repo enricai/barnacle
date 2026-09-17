@@ -169,7 +169,7 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     expect(result.status, out).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).toContain("const PAGE_SIZE = 10;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(contract).toContain("itemsById");
     expect(contract).toContain("MAX_PAGES");
   }, 60_000);
@@ -191,7 +191,7 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     expect(result.status, out).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).not.toContain("const PAGE_SIZE = 10;");
+    expect(contract).not.toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(contract).not.toContain("MAX_PAGES");
   }, 60_000);
 });

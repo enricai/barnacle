@@ -146,7 +146,7 @@ describe("GraphQL query-primary + pagination signal + declared foldReturn — ru
     const contract = readFileSync(join(siteOutDirWith, "contract.ts"), "utf8");
 
     // Still a real bounded-paging loop, not the single-fixed-page fallback.
-    expect(contract).toContain("const PAGE_SIZE = 2;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 2;");
     expect(contract).toContain("itemsById");
     expect(contract).toContain("MAX_PAGES");
 

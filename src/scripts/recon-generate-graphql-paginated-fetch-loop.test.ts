@@ -155,7 +155,7 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     // (a) The loop advances the pagination variable by the observed page count.
-    expect(contract).toContain("const PAGE_SIZE = 5;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("skip += PAGE_SIZE;");
     expect(contract).toContain(
       "pagination: { ...baseVariables.pagination, count: PAGE_SIZE, skip: skip }"
@@ -207,7 +207,7 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
 
     // PAGE_SIZE (5) * MAX_PAGES (50) = 250, which never reaches the response's
     // reported total of 1000 — the loop always exits on MAX_PAGES here.
-    expect(contract).toContain("const PAGE_SIZE = 5;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
 
     // The merged envelope's own total must reflect what was actually delivered
