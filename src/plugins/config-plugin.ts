@@ -220,9 +220,9 @@ async function loadHttpModule(
       : specifier;
   const mod = (await import(resolved)) as Record<string, unknown>;
   if (typeof mod.createExecuteHttp === "function") {
-    const candidate = (
-      mod.createExecuteHttp as (options: HttpModuleFactoryOptions) => unknown
-    )(factoryOptions);
+    const candidate = (mod.createExecuteHttp as (options: HttpModuleFactoryOptions) => unknown)(
+      factoryOptions
+    );
     if (typeof candidate !== "function") {
       throw new Error(`httpModule ${specifier}'s createExecuteHttp must return a function`);
     }

@@ -472,7 +472,9 @@ export function createHttpClient<TResponse>(
             init.signal && defaultTimeoutMs !== undefined
               ? AbortSignal.any([init.signal, AbortSignal.timeout(defaultTimeoutMs)])
               : (init.signal ??
-                (defaultTimeoutMs !== undefined ? AbortSignal.timeout(defaultTimeoutMs) : undefined));
+                (defaultTimeoutMs !== undefined
+                  ? AbortSignal.timeout(defaultTimeoutMs)
+                  : undefined));
 
           let response: Response;
           try {

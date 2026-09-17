@@ -138,9 +138,9 @@ describe("buildConfigPlugin", () => {
 
     const plugin = await buildConfigPlugin(manifest, FIXTURES_DIR);
 
-    const fixture = (await import(
-      path.join(FIXTURES_DIR, "config-http-module-timeout.js")
-    )) as { receivedOptions: Array<{ defaultTimeoutMs?: number }> };
+    const fixture = (await import(path.join(FIXTURES_DIR, "config-http-module-timeout.js"))) as {
+      receivedOptions: Array<{ defaultTimeoutMs?: number }>;
+    };
     const lastOptions = fixture.receivedOptions.at(-1);
     expect(lastOptions?.defaultTimeoutMs).toBe(2_500);
     expect(typeof plugin.executeHttp).toBe("function");
