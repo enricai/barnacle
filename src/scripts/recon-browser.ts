@@ -2328,6 +2328,13 @@ async function main(): Promise<void> {
   // CdpTransportClosedError instead of exiting so the caller can retry it
   // through withScraperRetry. Every other failure mode keeps exiting/
   // rejecting immediately, exactly as a single-attempt run always has.
+  // Hoisted out of runFlowAttempt() so a CdpTransportClosedError-triggered
+  // retry on a fresh session keeps consuming this SAME shared budget instead
+  // of resetting to 0/5 on every new session (withScraperRetry re-invokes
+  // runFlowAttempt() fresh on each retry — see recon-browser.ts:3100-3110).
+  let probeReplansUsed = 0;
+  let cascadeReplansUsed = 0;
+
   async function runFlowAttempt(): Promise<void> {
     const session = await createBrowserSession({ provider, advancedStealth });
     // `counter` indexes captures on disk (filenames must stay unique).
