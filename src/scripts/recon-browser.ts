@@ -1146,10 +1146,14 @@ export function filterReplanDuplicatingNextAuthored(
  * Comma- and "then"-delimited clauses are the cheapest reliable signal for
  * "the bridge is doing more than repeating": a rewording that only adds
  * rationale stays a single clause, while a bridge that actually resolves the
- * blocker (solving a challenge, correcting a value) reads as two.
+ * blocker (solving a challenge, correcting a value) reads as two. Quoted
+ * spans are blanked out before splitting — a fill value like `'Smith, John'`
+ * contains a comma that has nothing to do with clause structure, and
+ * splitting on it would misclassify a byte-identical repeat as compound.
  */
 function hasCompoundBridgeClause(instruction: string): boolean {
-  const clauses = instruction
+  const withoutQuotedSpans = instruction.replace(/['"][^'"]{2,80}['"]/g, "");
+  const clauses = withoutQuotedSpans
     .split(/,|\bthen\b/i)
     .map((c) => c.trim())
     .filter((c) => c.length > 0);

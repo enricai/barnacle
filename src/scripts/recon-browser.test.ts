@@ -1621,6 +1621,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
   it("does not fire on an empty bridge (handled separately earlier)", () => {
     expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
   });
+
+  it("still fires when the repeated step's quoted value contains a comma", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill in the 'Last Name' field with 'Smith, John'")],
+        "Fill in the 'Last Name' field with 'Smith, John'"
+      )
+    ).toBe(true);
+  });
 });
 
 describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
