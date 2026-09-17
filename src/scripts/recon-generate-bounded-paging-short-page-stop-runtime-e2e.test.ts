@@ -80,14 +80,13 @@ describe("buildPaginatedGqlExecuteHttpBody at runtime: stops on a page with no n
 
     // 8 distinct items exist across two non-empty pages, but the server's own
     // `total` field claims 10 — a total/distinct-id mismatch, mirroring the
-    // total=437-vs-436-distinct-ids scenario in the success criteria.
+    // total=437-vs-436-distinct-ids scenario in the success criteria. The
+    // second page (3 items) is shorter than the page size (5), which is
+    // itself the server's signal that nothing is left — the loop stops
+    // there instead of issuing a third request chasing the inflated total.
     const pages = [
       { catalog: { total: 10, items: makeItems(5, 0) } },
       { catalog: { total: 10, items: makeItems(3, 5) } },
-      // A third page would be reached under the old `itemsById.size < total`-only
-      // condition (8 < 10) — its response returns no items at all, simulating the
-      // server having nothing further to give despite the inflated total.
-      { catalog: { total: 10, items: [] } },
     ];
     let callCount = 0;
     const getGql = (_baseUrl: string) => async () => {
@@ -99,10 +98,10 @@ describe("buildPaginatedGqlExecuteHttpBody at runtime: stops on a page with no n
     const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
     const result = await executeHttp({}, { baseUrl: BASE });
 
-    // Exactly 3 calls: the initial fetch plus the loop's first iteration
-    // (8 items) then the loop's second iteration (0 new items, breaks
-    // immediately) — never reaches MAX_PAGES (50) chasing the phantom total.
-    expect(callCount).toBe(3);
+    // Exactly 2 calls: the initial fetch plus the loop's first iteration
+    // (8 items, a short page) — never reaches MAX_PAGES (50) chasing the
+    // phantom total, and never issues a third request past the short page.
+    expect(callCount).toBe(2);
 
     expect(
       (result.data as { catalog: { items: unknown[]; total: number } }).catalog.items
