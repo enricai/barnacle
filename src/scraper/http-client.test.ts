@@ -155,6 +155,25 @@ describe("scraper/http-client createHttpClient", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
+  it("classifies a non-JSON 4xx body as HttpClientError without ever calling JSON.parse on it", async () => {
+    const htmlBody = "<html><body>Not Found</body></html>";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue(htmlBody),
+        headers: new Headers(),
+      })
+    );
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpClientError);
+    expect(parseSpy).not.toHaveBeenCalledWith(htmlBody);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    parseSpy.mockRestore();
+  });
+
   it("throws HttpSchemaError when response does not match Zod schema", async () => {
     mockFetch(200, { id: 42, unexpected: true });
     const client = makeClient();
