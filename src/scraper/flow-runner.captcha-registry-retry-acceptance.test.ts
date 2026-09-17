@@ -178,7 +178,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining("attempt=2/3"));
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=false with no confirmed transition on attempt 1; retrying"
       )
     );
   });
@@ -203,12 +203,12 @@ describe("flow-runner/executeStepWithHealing — captchaGated registry-empty bou
     expect(getCallCount()).toBe(3);
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 1; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=false with no confirmed transition on attempt 1; retrying"
       )
     );
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining(
-        "registryState=empty callbackDiscovered=false with no confirmed transition on attempt 2; retrying"
+        "registryState=empty callbackDiscovered=false fallbackSubmitted=false with no confirmed transition on attempt 2; retrying"
       )
     );
   });

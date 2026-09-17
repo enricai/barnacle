@@ -60,12 +60,12 @@ function makeFakeTarget(field: FakeField | null): FrameTarget {
 }
 
 describe("flow-runner/submitCaptchaGatedForm", () => {
-  it("prefers form.requestSubmit() when it's available on the resolved form", async () => {
+  it("prefers form.requestSubmit() when it's available on the resolved form, and reports found=true", async () => {
     const form = new FakeForm({ hasRequestSubmit: true });
     const field = new FakeField("h-captcha-response");
     field.form = form;
 
-    await submitCaptchaGatedForm(makeFakeTarget(field));
+    await expect(submitCaptchaGatedForm(makeFakeTarget(field))).resolves.toBe(true);
 
     expect(form.requestSubmitCount).toBe(1);
     expect(form.submitCount).toBe(0);
@@ -76,7 +76,7 @@ describe("flow-runner/submitCaptchaGatedForm", () => {
     const field = new FakeField("h-captcha-response");
     field.form = form;
 
-    await submitCaptchaGatedForm(makeFakeTarget(field));
+    await expect(submitCaptchaGatedForm(makeFakeTarget(field))).resolves.toBe(true);
 
     expect(form.submitCount).toBe(1);
   });
@@ -86,12 +86,28 @@ describe("flow-runner/submitCaptchaGatedForm", () => {
     const field = new FakeField("g-recaptcha-response");
     field.form = form;
 
-    await submitCaptchaGatedForm(makeFakeTarget(field), "g-recaptcha-response");
+    await expect(
+      submitCaptchaGatedForm(makeFakeTarget(field), "g-recaptcha-response")
+    ).resolves.toBe(true);
 
     expect(form.requestSubmitCount).toBe(1);
   });
 
-  it("no-ops when there is no field to resolve a form from", async () => {
-    await expect(submitCaptchaGatedForm(makeFakeTarget(null))).resolves.toBeUndefined();
+  it("resolves to false and submits nothing when there is no field to resolve a form from", async () => {
+    const form = new FakeForm({ hasRequestSubmit: true });
+    const field = new FakeField("h-captcha-response");
+    field.form = form;
+
+    await expect(submitCaptchaGatedForm(makeFakeTarget(null))).resolves.toBe(false);
+
+    expect(form.requestSubmitCount).toBe(0);
+    expect(form.submitCount).toBe(0);
+  });
+
+  it("resolves to false when the field exists but has since been detached from any form", async () => {
+    const field = new FakeField("h-captcha-response");
+    field.form = null;
+
+    await expect(submitCaptchaGatedForm(makeFakeTarget(field))).resolves.toBe(false);
   });
 });
