@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  loadReconValueConstraints,
-  VALUE_CONSTRAINTS_NONE,
-} from "@/recon/load-value-constraints";
+import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import { EMPTY_VALUE_CONSTRAINTS } from "@/recon/value-constraints";
 
 const written: string[] = [];
