@@ -81,7 +81,7 @@ describe("emitContractTs — payload schema always declares every payload.<field
         "    })) as Record<string, unknown>;",
         "    return { data: r0 };",
       ].join("\n"),
-      discoveredAdditionalBodyKeys: new Map([["page", "number"]]),
+      discoveredAdditionalBodyKeys: new Map([["page", { kind: "number" }]]),
     });
 
     expect(source).toContain("page: z.number(),");

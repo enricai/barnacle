@@ -273,6 +273,95 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 
+  it("flags a query-less candidate densely repeated with no business-relevant response state", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/ping",
+      requestPostData: null,
+      responseHeaders: { "content-type": "text/plain" },
+      responseBody: "ok",
+    };
+    const occurrences = Array.from({ length: 12 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/ping",
+      requestPostData: null,
+      responseHeaders: { "content-type": "text/plain" },
+      responseBody: "ok",
+    }));
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
+
+  it("does not flag a query-less candidate densely repeated whose response carries real JSON business state", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/toggles",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true, variant: "control" },
+    };
+    const occurrences = Array.from({ length: 12 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/toggles",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true, variant: "control" },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
+  it("does not flag a query-less, densely-repeated POST with a varying body and no explicit content-type header", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: '{"op":"getViewer"}',
+    };
+    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: `{"op":"mutation${i}"}`,
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+  });
+
+  it("flags a query-less, densely-repeated POST with a varying body when the candidate supplies an explicit content-type header with no business-relevant response state", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "text/plain" },
+      responseBody: "ok",
+    };
+    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "text/plain" },
+      responseBody: "ok",
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
+  it("does not flag a query-less candidate below the dense-repeat threshold", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/ping",
+      requestPostData: null,
+      responseHeaders: { "content-type": "text/plain" },
+      responseBody: "ok",
+    };
+    const occurrences = [
+      first,
+      {
+        method: "GET",
+        url: "https://apply.acme.example/widget/ping",
+        requestPostData: null,
+        responseHeaders: { "content-type": "text/plain" },
+        responseBody: "ok",
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
   it("does not flag a fixed-query capture that never recurs", () => {
     const first = { method: "GET", url: beaconUrl, requestPostData: null };
     expect(isZeroVarianceRepeatCapture(first, [first])).toBe(false);

@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 
 import {
   HttpBotChallengeError,
+  HttpClientError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
@@ -139,8 +140,61 @@ describe("scraper/http-client createHttpClient", () => {
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpServerError);
   });
 
+  it("throws HttpClientError on a 404 with a non-JSON HTML body, without retrying", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue("<html><body>Not Found</body></html>"),
+        headers: new Headers(),
+      })
+    );
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpClientError);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies a non-JSON 4xx body as HttpClientError without ever calling JSON.parse on it", async () => {
+    const htmlBody = "<html><body>Not Found</body></html>";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue(htmlBody),
+        headers: new Headers(),
+      })
+    );
+    const parseSpy = vi.spyOn(JSON, "parse");
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpClientError);
+    expect(parseSpy).not.toHaveBeenCalledWith(htmlBody);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    parseSpy.mockRestore();
+  });
+
   it("throws HttpSchemaError when response does not match Zod schema", async () => {
     mockFetch(200, { id: 42, unexpected: true });
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
+  });
+
+  it("resolves with the field as null when a declared non-nullable scalar is observed null on an otherwise-conformant body", async () => {
+    mockFetch(200, { id: "1", name: null });
+    const client = makeClient();
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: null });
+  });
+
+  it("still throws HttpSchemaError when a field has the wrong type on real (non-null) data", async () => {
+    mockFetch(200, { id: "1", name: 42 });
+    const client = makeClient();
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
+  });
+
+  it("still throws HttpSchemaError when a required field is missing entirely", async () => {
+    mockFetch(200, { id: "1" });
     const client = makeClient();
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpSchemaError);
   });
@@ -211,6 +265,38 @@ describe("scraper/http-client createHttpClient", () => {
     stubBody(TERMINAL_BODY);
     await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
       HttpUrlLockedError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifyResponseBody still gets first look at a 4xx body — a plugin sentinel on a 404 wins over the generic HttpClientError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue(TERMINAL_BODY),
+        headers: new Headers(),
+      })
+    );
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpUrlLockedError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to HttpClientError on a 4xx body the plugin classifier doesn't recognize", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 404,
+        ok: false,
+        text: vi.fn().mockResolvedValue("<html><body>Not Found</body></html>"),
+        headers: new Headers(),
+      })
+    );
+    await expect(makeClassifiedClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpClientError
     );
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
@@ -991,5 +1077,71 @@ describe("scraper/http-client response-header binding", () => {
     const call = vi.mocked(fetch).mock.calls[2];
     const headers = (call?.[1] as RequestInit)?.headers as Record<string, string>;
     expect(headers["X-Conversation-Id"]).toBe("conv-2");
+  });
+
+  describe("defaultTimeoutMs", () => {
+    /** Mimics real fetch's contract: never resolves on its own, but rejects when `signal` aborts. */
+    function neverResolvingFetch(): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(
+          (_url: string, init?: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                reject(new DOMException("The operation was aborted.", "TimeoutError"));
+              });
+            })
+        )
+      );
+    }
+
+    it("rejects at approximately the configured duration when the caller supplies no signal", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+        defaultTimeoutMs: 50,
+      });
+
+      const started = Date.now();
+      await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
+        UnknownScraperError
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, 5_000);
+
+    it("does not time out when no defaultTimeoutMs is configured and the caller's signal fires first", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+      });
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 20);
+
+      await expect(
+        client("https://example.com/api/item", { signal: controller.signal })
+      ).rejects.toThrow();
+    }, 5_000);
+
+    it("aborts on whichever fires first when both a caller signal and defaultTimeoutMs are present", async () => {
+      neverResolvingFetch();
+      const client = createHttpClient<Item>({
+        schema: ItemSchema,
+        bottleneck: passThruLimiter,
+        baseHeaders: BASE_HEADERS,
+        defaultTimeoutMs: 50,
+      });
+      // Caller signal never fires — the shorter defaultTimeoutMs must still abort the call.
+      const controller = new AbortController();
+
+      const started = Date.now();
+      await expect(
+        client("https://example.com/api/item", { signal: controller.signal })
+      ).rejects.toBeInstanceOf(UnknownScraperError);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    }, 5_000);
   });
 });

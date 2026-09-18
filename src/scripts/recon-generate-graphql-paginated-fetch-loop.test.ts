@@ -3,7 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod/v4";
+import { createHttpClient } from "@/scraper/http-client";
+import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  extractExecuteHttpBodyFromContract,
+  stripEmitterTypeAssertions,
+} from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 /**
  * Acceptance test for the bounded GraphQL paging loop (buildPaginatedGqlExecuteHttpBody):
@@ -124,6 +132,62 @@ function writeUnpagedRunDir(root: string): void {
   );
 }
 
+const SEARCH_QUERY =
+  "query productSearch_Products($pagination: PaginationInput) { search(pagination: $pagination) { total items { id title } } }";
+
+function evalPaginatedExecuteHttp(
+  body: string,
+  getGql: (
+    baseUrl: string
+  ) => (
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown>
+  ) => Promise<unknown>
+): (payload: Record<string, unknown>, context: { baseUrl: string }) => Promise<{ data: unknown }> {
+  const stripped = stripEmitterTypeAssertions(body);
+  const httpClient = createHttpClient({
+    schema: z.unknown(),
+    bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: 0 }),
+    baseHeaders: { "Content-Type": "application/json" },
+  });
+  const factory = new Function(
+    "getGql",
+    "httpClient",
+    "z",
+    "GRAPHQLPAGINATEDFETCHLOOPPAGESIZEOVERRIDETEST_QUERY",
+    `return async function executeHttp(payload, context) {\n${stripped}\n};`
+  ) as (
+    getGqlArg: unknown,
+    httpClientArg: unknown,
+    zArg: unknown,
+    queryArg: string
+  ) => (
+    payload: Record<string, unknown>,
+    context: { baseUrl: string }
+  ) => Promise<{ data: unknown }>;
+  return factory(getGql, httpClient, z, SEARCH_QUERY);
+}
+
+function buildPagedContract(): string {
+  return emitContractTs({
+    siteId: "graphql-paginated-fetch-loop-pagesize-override-test",
+    pascal: "GraphqlPaginatedFetchLoopPagesizeOverrideTest",
+    baseUrl: "https://www.products-fixture.example.com",
+    baseHeaders: { "Content-Type": "application/json" },
+    minTime: 100,
+    safeRps: 10,
+    responseBody: { search: { total: 15, items: makeProductPage(5) } },
+    gql: true,
+    gqlQuery: SEARCH_QUERY,
+    endpointPath: "/products/graph",
+    gqlOperationName: "productSearch_Products",
+    gqlVariables: { pagination: { count: 5, skip: 0 }, sort: "RELEVANCE" },
+    auxFiles: [],
+    actionSteps: [],
+  });
+}
+
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
 
@@ -155,7 +219,7 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     // (a) The loop advances the pagination variable by the observed page count.
-    expect(contract).toContain("const PAGE_SIZE = 5;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("skip += PAGE_SIZE;");
     expect(contract).toContain(
       "pagination: { ...baseVariables.pagination, count: PAGE_SIZE, skip: skip }"
@@ -186,7 +250,7 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
 });
 
 describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the API's own total", () => {
-  it("rewrites the merged envelope's total to the delivered count instead of repeating the un-delivered original total", () => {
+  it("keeps the server's original total intact and reports delivery/truncation as sibling fields", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-paginated-truncation-"));
     const runRoot = join(workDir, "run");
     writeTruncatedPagedRunDir(runRoot);
@@ -207,14 +271,14 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
 
     // PAGE_SIZE (5) * MAX_PAGES (50) = 250, which never reaches the response's
     // reported total of 1000 — the loop always exits on MAX_PAGES here.
-    expect(contract).toContain("const PAGE_SIZE = 5;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
 
-    // The merged envelope's own total must reflect what was actually delivered
-    // when the loop is capped by MAX_PAGES, not repeat the API's original
-    // (larger, un-delivered) total.
+    // The server's own reported total is preserved untouched; delivery and
+    // truncation are exposed as separate sibling fields on the envelope.
     expect(contract).toContain("const truncated = itemsById.size < total;");
-    expect(contract).toContain("total: truncated ? itemsById.size : withItems.search.total");
+    expect(contract).toContain("{ ...withItems, deliveredCount: itemsById.size, truncated }");
+    expect(contract).not.toContain("total: truncated ? itemsById.size");
   }, 30_000);
 });
 
@@ -245,4 +309,116 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
     expect(contract).not.toContain("maxPages");
     expect(contract).not.toContain("itemsById");
   }, 30_000);
+});
+
+describe("recon-generate GraphQL paginated fetch loop: server total overcounts distinct ids", () => {
+  it("stops once a page contributes no new ids instead of issuing a trailing request past the server's own total", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    // 436 distinct ids delivered across pages of 100 (4 full pages + a 36-item
+    // last page), while the server's `total` reads 437 throughout — one more
+    // than the distinct ids it ever actually returns.
+    const TOTAL_DISTINCT_IDS = 436;
+    const SERVER_REPORTED_TOTAL = 437;
+    const PAGE_SIZE = 100;
+    let callCount = 0;
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, _variables: Record<string, unknown>) => {
+        const skip = callCount * PAGE_SIZE;
+        callCount += 1;
+        const remaining = Math.max(0, TOTAL_DISTINCT_IDS - skip);
+        const pageItemCount = Math.min(PAGE_SIZE, remaining);
+        return {
+          search: {
+            total: SERVER_REPORTED_TOTAL,
+            items: Array.from({ length: pageItemCount }, (_, i) => ({
+              id: `prod-${skip + i}`,
+              title: `Product ${skip + i}`,
+            })),
+          },
+        };
+      };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    const { data } = await executeHttp(
+      { pageSize: PAGE_SIZE },
+      { baseUrl: "https://www.products-fixture.example.com" }
+    );
+
+    // ceil(436/100) = 5 page requests total — never a 6th trailing request
+    // for a page that would contribute zero new ids.
+    expect(callCount).toBe(5);
+    expect((data as { deliveredCount: number }).deliveredCount).toBe(TOTAL_DISTINCT_IDS);
+  });
+
+  it("stops after the very first page when it is already shorter than the page size, never entering the loop", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    // Only 30 distinct ids exist, but the server's `total` claims 437 — a
+    // mismatch on the FIRST page, before the loop is ever entered.
+    const PAGE_SIZE = 100;
+    let callCount = 0;
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, _variables: Record<string, unknown>) => {
+        callCount += 1;
+        return {
+          search: {
+            total: 437,
+            items: Array.from({ length: 30 }, (_, i) => ({
+              id: `prod-${i}`,
+              title: `Product ${i}`,
+            })),
+          },
+        };
+      };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    const { data } = await executeHttp(
+      { pageSize: PAGE_SIZE },
+      { baseUrl: "https://www.products-fixture.example.com" }
+    );
+
+    // Exactly 1 call: the first page is already shorter than PAGE_SIZE, which
+    // is itself the server's signal that nothing is left — the loop must
+    // never be entered to chase the inflated total.
+    expect(callCount).toBe(1);
+    expect((data as { deliveredCount: number }).deliveredCount).toBe(30);
+  });
+});
+
+describe("recon-generate GraphQL paginated fetch loop: caller-supplied payload.pageSize override", () => {
+  it("fetches using the caller-supplied pageSize as the wire count/limit value, not the captured page size", async () => {
+    const contract = buildPagedContract();
+    const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
+
+    const seenVariables: Record<string, unknown>[] = [];
+    const getGql =
+      (_baseUrl: string) =>
+      async (_operationName: string, _query: string, variables: Record<string, unknown>) => {
+        seenVariables.push(variables);
+        const pagination = variables.pagination as { count: number; skip: number };
+        return {
+          search: {
+            total: 15,
+            items: makeProductPage(pagination.count),
+          },
+        };
+      };
+
+    const executeHttp = evalPaginatedExecuteHttp(executeHttpBody, getGql);
+    await executeHttp({ pageSize: 100 }, { baseUrl: "https://www.products-fixture.example.com" });
+
+    // The first fetch (before the loop) and every loop iteration must use the
+    // caller-supplied pageSize (100) as the wire count value, not the
+    // captured value (5) the recon run happened to observe.
+    expect(seenVariables.length).toBeGreaterThan(0);
+    for (const variables of seenVariables) {
+      const pagination = variables.pagination as { count: number };
+      expect(pagination.count).toBe(100);
+    }
+  });
 });

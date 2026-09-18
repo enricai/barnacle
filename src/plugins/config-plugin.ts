@@ -29,7 +29,13 @@ import { getLogger } from "@/lib/logging";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
-import { StepVerificationError } from "@/scraper/errors";
+import {
+  isHttpBotChallengeError,
+  isHttpSchemaError,
+  isHttpServerError,
+  type ScraperError,
+  StepVerificationError,
+} from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { navigateActivePage } from "@/scraper/navigate";
 import { guardedExtract } from "@/scraper/stagehand-guard";
@@ -38,6 +44,13 @@ import { testmailInboxFromAddress } from "@/testmail/client";
 
 /** JSON-Schema fragment as it appears verbatim in a manifest; converted to Zod at build time. */
 const jsonSchemaFragment = z.record(z.string(), z.unknown());
+
+/** Failure-class names a manifest can name in `spec.browserFallbackGate.skipOn`, matching `classifyDispatchError`'s tags in `src/plugins/loader.ts`. */
+const FALLBACK_GATE_FAILURE_CLASSES = ["schema_drift", "bot_challenge", "server_error"] as const;
+
+const browserFallbackGateSchema = z.object({
+  skipOn: z.array(z.enum(FALLBACK_GATE_FAILURE_CLASSES)).min(1),
+});
 
 const flowSchema = z.object({
   steps: z.array(RECON_FLOW_STEP_SCHEMA).min(1),
@@ -81,6 +94,20 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
       schema: jsonSchemaFragment,
     }),
     httpModule: z.string().optional(),
+    /**
+     * Per-call timeout (ms) for the direct-HTTP hot path, forwarded to the
+     * `httpModule`'s `createExecuteHttp` factory (see `loadHttpModule`) as
+     * `HttpClientOptions.defaultTimeoutMs`. Lets a manifest declare a fail-
+     * fast bound for a site with a known-unreliable browser fallback,
+     * shorter than Node fetch's no-default-timeout behavior.
+     */
+    httpTimeoutMs: z.number().optional(),
+    /**
+     * Declarative counterpart to the programmatic `SitePluginMeta.browserFallbackGate`
+     * predicate: names the hot-path failure classes for which the Stagehand browser
+     * fallback should be skipped. Absent means today's unconditional cascade.
+     */
+    browserFallbackGate: browserFallbackGateSchema.optional(),
   }),
 });
 
@@ -178,6 +205,34 @@ function buildUploadFixture(
   };
 }
 
+/** Maps a manifest failure-class name to the classifier that recognizes it, matching `classifyDispatchError` in `src/plugins/loader.ts`. */
+const FAILURE_CLASS_CLASSIFIERS: Record<
+  (typeof FALLBACK_GATE_FAILURE_CLASSES)[number],
+  (err: unknown) => boolean
+> = {
+  schema_drift: isHttpSchemaError,
+  bot_challenge: isHttpBotChallengeError,
+  server_error: isHttpServerError,
+};
+
+/**
+ * Converts `spec.browserFallbackGate.skipOn` into the predicate form
+ * `SitePluginMeta.browserFallbackGate` expects: `false` for a listed failure
+ * class, `true` for everything else, so unlisted classes still cascade.
+ */
+function buildBrowserFallbackGate(
+  skipOn: ConfigPluginManifest["spec"]["browserFallbackGate"]
+): ((error: ScraperError) => boolean) | undefined {
+  if (!skipOn) return undefined;
+  const classifiers = skipOn.skipOn.map((failureClass) => FAILURE_CLASS_CLASSIFIERS[failureClass]);
+  return (error: ScraperError) => !classifiers.some((isMatch) => isMatch(error));
+}
+
+/** Options forwarded into an `httpModule`'s `createExecuteHttp` factory, if it exports one. */
+interface HttpModuleFactoryOptions {
+  httpTimeoutMs?: number;
+}
+
 /**
  * Dynamically loads the optional `executeHttp` escape-hatch module a manifest
  * may reference. Kept async and separate so a browser-only manifest never pays
@@ -189,16 +244,37 @@ function buildUploadFixture(
  * resolves against the operator's `BARNACLE_PLUGINS_DIR`, not this module's
  * location under `dist/`); anything else is a bare package name left for Node's
  * resolver.
+ *
+ * A module may export either a static `executeHttp` function, or a
+ * `createExecuteHttp(options: HttpModuleFactoryOptions) => ExecuteHttpFn`
+ * factory — the latter is how `spec.httpTimeoutMs` reaches the module's own
+ * `createHttpClient({ defaultTimeoutMs })` call, since `ExecuteHttpFn`'s
+ * `(payload, context)` signature has no room for manifest-level config.
  */
-async function loadHttpModule(specifier: string, baseDir: string): Promise<ExecuteHttpFn> {
+async function loadHttpModule(
+  specifier: string,
+  baseDir: string,
+  factoryOptions: HttpModuleFactoryOptions
+): Promise<ExecuteHttpFn> {
   const resolved =
     specifier.startsWith(".") || specifier.startsWith("/")
       ? pathToFileURL(path.resolve(baseDir, specifier)).href
       : specifier;
   const mod = (await import(resolved)) as Record<string, unknown>;
+  if (typeof mod.createExecuteHttp === "function") {
+    const candidate = (mod.createExecuteHttp as (options: HttpModuleFactoryOptions) => unknown)(
+      factoryOptions
+    );
+    if (typeof candidate !== "function") {
+      throw new Error(`httpModule ${specifier}'s createExecuteHttp must return a function`);
+    }
+    return candidate as ExecuteHttpFn;
+  }
   const candidate = mod.executeHttp ?? mod.default;
   if (typeof candidate !== "function") {
-    throw new Error(`httpModule ${specifier} must export an executeHttp function`);
+    throw new Error(
+      `httpModule ${specifier} must export an executeHttp function or a createExecuteHttp factory`
+    );
   }
   return candidate as ExecuteHttpFn;
 }
@@ -226,7 +302,11 @@ export async function buildConfigPlugin(
   const responseSchema = jsonSchemaToZod(spec.response);
   const extractSchema = jsonSchemaToZod(spec.extract.schema);
 
-  const executeHttp = spec.httpModule ? await loadHttpModule(spec.httpModule, baseDir) : undefined;
+  const executeHttp = spec.httpModule
+    ? await loadHttpModule(spec.httpModule, baseDir, { httpTimeoutMs: spec.httpTimeoutMs })
+    : undefined;
+
+  const browserFallbackGate = buildBrowserFallbackGate(spec.browserFallbackGate);
 
   const hasUploadStep = spec.flow.steps.some((s) => typeof s !== "string" && s.upload === true);
   const hasSubmitStep = spec.flow.steps.some((s) => typeof s !== "string" && s.submitStep === true);
@@ -260,6 +340,7 @@ export async function buildConfigPlugin(
       ...(spec.browserbaseSessionCreateParams !== undefined && {
         browserbaseSessionCreateParams: spec.browserbaseSessionCreateParams,
       }),
+      ...(browserFallbackGate !== undefined && { browserFallbackGate }),
     },
     ...(executeHttp && { executeHttp }),
     async execute(

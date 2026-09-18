@@ -227,7 +227,7 @@ describe("recon-generate CLI + tsc --noEmit — combined value-coincidence and s
     // A genuine per-item ancestor for-loop drill — proves the fixture
     // actually exercises the fold/drill-loop path, not a hardcoded per-item
     // call.
-    expect(contract).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(/\(\w+\)\.map\(async \(\w+\) => \{/);
 
     // Non-vacuity: the auxiliary toggle read must have survived into its own
     // emitted httpClient call — otherwise the assertions below would pass

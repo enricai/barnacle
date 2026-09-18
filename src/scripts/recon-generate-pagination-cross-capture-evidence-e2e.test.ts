@@ -185,7 +185,7 @@ describe("recon-generate CLI — pagination signal survives a partial-page prima
     // fails the pagination check on its own), the bounded paging loop is
     // still emitted because the sibling full-page capture (10 items,
     // total:437) independently proves the operation paginates.
-    expect(contract).toContain("const PAGE_SIZE = 10;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(contract).toContain("skip += PAGE_SIZE;");
     expect(contract).toContain("const MAX_PAGES = payload.maxPages ?? 50;");
     expect(contract).toContain("itemsById.set(String(item.id), item);");

@@ -407,7 +407,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     expect(contract).not.toContain("payload.BaseUrl");
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);
-    expect(executeHttpBody).toContain("for (const item of foldItems)");
+    expect(executeHttpBody).toContain("(foldItems).map(async (item) => {");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
@@ -503,7 +503,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     // items at runtime.
     expect(executeHttpBody).toContain("for (const g0 of");
     expect(executeHttpBody).not.toMatch(/\.companies\[\d+\]/);
-    expect(executeHttpBody).toContain("for (const item of g0.postings)");
+    expect(executeHttpBody).toContain("(g0.postings).map(async (item) => {");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
     const httpClient = createHttpClient({
@@ -626,7 +626,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     expect(contractWithout).toContain('m["packageCode"]');
 
     const executeHttpBodyWith = extractExecuteHttpBodyFromContract(contractWith);
-    expect(executeHttpBodyWith).toContain("for (const item of foldItems)");
+    expect(executeHttpBodyWith).toContain("(foldItems).map(async (item) => {");
     // The URL must be parameterized off `packageCode` — the field the
     // captured request actually varies on — even though the declared
     // joinFields name `id`, a field the request never carries.

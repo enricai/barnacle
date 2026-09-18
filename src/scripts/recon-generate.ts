@@ -2115,6 +2115,19 @@ function collapseRedundantPatches(actions: ActionCapture[]): ActionCapture[] {
 const PAGINATION_FIELD_NAME_PATTERN =
   /^(page|pagenum|pagenumber|pageindex|pageno|offset|skip|start|cursor)$/i;
 
+/** Response leaf-key shapes that name a discoverable ceiling on some other
+ * numeric quantity (a capacity, a maximum, a limit) -- structural, like
+ * {@link PAGINATION_FIELD_NAME_PATTERN}, not tied to any domain's field
+ * vocabulary. Used to bound a request-side numeric field whose observed
+ * values never exceed a same-run response's declared ceiling. */
+const CAPACITY_FIELD_NAME_PATTERN = /(max|capacity|limit)/i;
+
+/** Upper bound on how many distinct string values a request field may show
+ * across a run's captures before it stops looking like a closed-set facet
+ * vocabulary and starts looking like free text -- past this, emitting
+ * z.enum(...) would lock callers out of values recon simply never sampled. */
+const VOCABULARY_ENUM_MAX_DISTINCT_VALUES = 8;
+
 /** Request-field key names that name known client-generated scaffolding
  * (a monotonic sequence counter, a correlation/trace id, an idempotency
  * nonce) rather than genuine payload data. Gates {@link
@@ -4521,6 +4534,48 @@ function pathToFoldLoopLines(
   };
 }
 
+/**
+ * Splices a fold's per-item body between `itemOpenLines`/`itemCloseLines`
+ * (see {@link pathToFoldLoopLines}) — either as the original sequential
+ * `for` loop, when the body never issues its own per-item drill fetch (so
+ * existing byte-identical fold output is preserved for every fold that has
+ * nothing to parallelize), or rewritten into a `Promise.allSettled`-based
+ * parallel form when it does: `for (const item of X) {` becomes `await
+ * Promise.allSettled((X).map(async (item) => { ... }));`. Every item's
+ * fetch then fires concurrently instead of one at a time, and a rejected
+ * item's promise can't abort a sibling's — `allSettled` never short-
+ * circuits on a rejection, and the sibling's `Object.assign` onto its own
+ * item already only runs once ITS OWN fetch resolves, so a failed item
+ * simply keeps its original (unmerged) fields instead of taking every other
+ * item's already-fetched data down with it.
+ */
+function emitItemLoopLines(
+  itemOpenLines: string[],
+  itemScopedLines: string[],
+  itemCloseLines: string[],
+  itemVar: string,
+  hasItemScopedFetch: boolean
+): string[] {
+  if (!hasItemScopedFetch) {
+    return [...itemOpenLines, ...itemScopedLines, ...itemCloseLines];
+  }
+  const forLineIndex = itemOpenLines.length - 1;
+  const forLine = itemOpenLines[forLineIndex]!;
+  const forLineMatch = forLine.match(/^(\s*)for \(const \w+ of (.+)\) \{$/);
+  if (!forLineMatch) {
+    throw new Error(`emitItemLoopLines: unrecognized fold item-loop shape: ${forLine}`);
+  }
+  const [, indent, iterableExpr] = forLineMatch as [string, string, string];
+  return [
+    ...itemOpenLines.slice(0, forLineIndex),
+    `${indent}await Promise.allSettled(`,
+    `${indent}  (${iterableExpr}).map(async (${itemVar}) => {`,
+    ...itemScopedLines,
+    `${indent}  })`,
+    `${indent});`,
+  ];
+}
+
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
  * up the path if the tail is numeric or not a valid JS identifier. */
 function pathToVarName(path: string[]): string {
@@ -5473,6 +5528,29 @@ function applyUrlParamPayloadSubstitutions(
 }
 
 /**
+ * A request-body top-level key discovered by {@link applyPayloadKeyValueSubstitutions},
+ * with whatever value-constraint evidence the run's own captures support.
+ *
+ * `enumValues`/`capacityMax` are populated purely from observed shape — a
+ * closed set of distinct literals for a string key, or a response-declared
+ * ceiling for a numeric key — never from a site-specific field name, so the
+ * same inference applies to any domain's facet/capacity fields.
+ */
+export interface AdditionalBodyKeyInfo {
+  kind: "string" | "number" | "boolean";
+  /** Every distinct value this key took across the run's captures, when
+   * `kind` is "string" and the set is closed (2 to
+   * {@link VOCABULARY_ENUM_MAX_DISTINCT_VALUES} distinct values) — a facet
+   * field whose vocabulary recon fully sampled, not free text that merely
+   * hadn't varied yet. */
+  enumValues?: readonly string[];
+  /** Tightest same-run response-declared ceiling ({@link
+   * CAPACITY_FIELD_NAME_PATTERN}) that is `>=` every value this "number" key
+   * was observed to carry. */
+  capacityMax?: number;
+}
+
+/**
  * Substitutes literal JSON key/value pairs in a body template with payload
  * interpolations. Catches short strings (e.g. Culture: "en"), booleans
  * (FutureConsideration: true), and numbers that interpolateStateValues skips
@@ -5507,11 +5585,16 @@ function applyPayloadKeyValueSubstitutions(
   template: string,
   inputBody: unknown,
   additionalBodies: unknown[] = [],
-  outAdditionalKeys: Map<string, "string" | "number" | "boolean"> = new Map()
+  outAdditionalKeys: Map<string, AdditionalBodyKeyInfo> = new Map(),
+  /** Every capture's response body from the same run, scanned only for
+   * {@link CAPACITY_FIELD_NAME_PATTERN}-shaped numeric leaves — the
+   * evidence source for a discovered "number" key's `capacityMax`. */
+  responseBodiesForCapacitySignal: readonly unknown[] = []
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
   const seenValueByKey = new Map<string, string | number | boolean>();
+  const distinctValuesByKey = new Map<string, Set<string | number>>();
   const allBodies = [inputBody, ...additionalBodies];
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -5544,6 +5627,19 @@ function applyPayloadKeyValueSubstitutions(
         continue;
       }
       seenValueByKey.set(key, value);
+      // Tracked independently of the (key, value) dedupe below — a facet's
+      // vocabulary or a capacity ceiling needs every distinct value it took,
+      // not just the deduped substitution list, and pagination cursors are
+      // excluded from both (their values grow monotonically and are never a
+      // closed set).
+      if (
+        (typeof value === "string" || typeof value === "number") &&
+        !PAGINATION_FIELD_NAME_PATTERN.test(key)
+      ) {
+        const distinct = distinctValuesByKey.get(key) ?? new Set<string | number>();
+        distinct.add(value);
+        distinctValuesByKey.set(key, distinct);
+      }
       const pairKey = `${key} ${typeof value} ${value}`;
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
@@ -5554,9 +5650,47 @@ function applyPayloadKeyValueSubstitutions(
       // case) are filtered back out at the emitContractTs merge point via
       // isReservedByApplicantContactSchema — this function has no visibility
       // into that flag, so it must not special-case inputBody's own keys.
-      if (typeof value === "string") outAdditionalKeys.set(key, "string");
-      else if (typeof value === "number") outAdditionalKeys.set(key, "number");
-      else if (typeof value === "boolean") outAdditionalKeys.set(key, "boolean");
+      if (typeof value === "string") outAdditionalKeys.set(key, { kind: "string" });
+      else if (typeof value === "number") outAdditionalKeys.set(key, { kind: "number" });
+      else if (typeof value === "boolean") outAdditionalKeys.set(key, { kind: "boolean" });
+    }
+  }
+  // Vocabulary-derived enum: a "string" key whose distinct observed values
+  // form a small closed set is a facet field, not free text — emit the set
+  // so the generated schema rejects a caller value recon never sampled.
+  // Capacity-bounded number: a "number" key gets a ceiling only when some
+  // same-run response carries a max/capacity/limit-shaped numeric leaf that
+  // is >= every value this key was observed to carry; the tightest such
+  // ceiling wins so the bound is never looser than the evidence supports.
+  const capacityCandidatesByMinBound = (): number[] => {
+    const candidates: number[] = [];
+    for (const body of responseBodiesForCapacitySignal) {
+      if (body === undefined || body === null || typeof body !== "object") continue;
+      for (const { value, path } of walkAllPrimitiveLeaves(body)) {
+        const leafName = path[path.length - 1] ?? "";
+        if (typeof value !== "number") continue;
+        if (!CAPACITY_FIELD_NAME_PATTERN.test(leafName)) continue;
+        candidates.push(value);
+      }
+    }
+    return candidates;
+  };
+  const capacitySignals = capacityCandidatesByMinBound();
+  for (const [key, info] of outAdditionalKeys) {
+    const distinct = distinctValuesByKey.get(key);
+    if (!distinct) continue;
+    if (info.kind === "string") {
+      if (distinct.size >= 2 && distinct.size <= VOCABULARY_ENUM_MAX_DISTINCT_VALUES) {
+        info.enumValues = [...distinct].map(String).sort();
+      }
+      continue;
+    }
+    if (info.kind === "number") {
+      const maxObserved = Math.max(...[...distinct].map(Number));
+      const tightestCeiling = capacitySignals
+        .filter((v) => v >= maxObserved)
+        .sort((a, b) => a - b)[0];
+      if (tightestCeiling !== undefined) info.capacityMax = tightestCeiling;
     }
   }
   let result = template;
@@ -5823,7 +5957,7 @@ export function emitMultiStepExecuteHttp(
   fieldOptionsMap: FieldOptionsMap,
   outDiscoveredOptionFields: Set<string>,
   outDiscoveredRawOptionFields: Map<string, string>,
-  outDiscoveredAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">,
+  outDiscoveredAdditionalBodyKeys: Map<string, AdditionalBodyKeyInfo>,
   baseUrl: string,
   baseUrlDerivedHeaders: Map<string, string>,
   tenantSubdomainHeaders: Map<string, string>,
@@ -5989,6 +6123,12 @@ export function emitMultiStepExecuteHttp(
       // skip non-JSON bodies (e.g. multipart raw bytes)
     }
   }
+  // Every action's response body, gathered once for the whole flow so a
+  // capacity/max ceiling discovered on ANY capture (not just the one that
+  // carries the request field itself) is available to bound a request-side
+  // numeric field — the ceiling and the field it bounds are frequently
+  // declared on different calls (an availability check, then a booking).
+  const allResponseBodies: unknown[] = actions.map((a) => a.capture.responseBody);
 
   // Every value `applyPayloadKeyValueSubstitutions` will unconditionally
   // payload-ify from the ENTRY payload's own top-level key/value pairs,
@@ -6248,7 +6388,8 @@ export function emitMultiStepExecuteHttp(
           ),
           inputBody,
           additionalBodies,
-          outDiscoveredAdditionalBodyKeys
+          outDiscoveredAdditionalBodyKeys,
+          allResponseBodies
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
@@ -6500,6 +6641,15 @@ export function emitMultiStepExecuteHttp(
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
+      // True once any target's own chain fetch ends up item-scoped (not
+      // hoisted above the item loop) — only then does the item loop have
+      // anything to parallelize; see emitItemLoopLines.
+      let hasItemScopedFetch = false;
+      // True once any item-scoped target's chain threads a response header
+      // through createHttpClient's shared `bind` store — see
+      // chainUsesHeaderThreading below for why that disqualifies
+      // parallelizing the item loop.
+      let hasItemScopedHeaderThreading = false;
 
       for (const [targetIndex, target] of foldPlan.targets.entries()) {
         // `firstItem` decides which captured literal `parameterize` rewrites
@@ -6767,6 +6917,16 @@ export function emitMultiStepExecuteHttp(
         // `itemVar` is never declared.
         const itemVarRefPattern = new RegExp(`\\b${itemVar}\\b`);
         let referencesItemVar = ancestorVars.length === 0;
+        // A chain step that produces a response HEADER threads it through
+        // `createHttpClient`'s single shared `bind` store (see
+        // HttpClientOptions.bind), not a local variable — that store is
+        // mutated in call order and read by whichever call happens to run
+        // next, regardless of which item minted it. Running items
+        // concurrently would let one item's header overwrite another's
+        // in-flight header before its own later chain hop reads it back, so
+        // any target relying on header threading keeps the item loop
+        // sequential rather than risk cross-item header contamination.
+        let chainUsesHeaderThreading = false;
         for (const chainIndex of target.chain) {
           const chainStep = actions[chainIndex]!;
           const chainRendered = rendered[chainIndex]!;
@@ -6794,7 +6954,10 @@ export function emitMultiStepExecuteHttp(
             `      })) as Record<string, unknown>;`
           );
           for (const p of chainStep.produces) {
-            if (p.kind === "header") continue;
+            if (p.kind === "header") {
+              chainUsesHeaderThreading = true;
+              continue;
+            }
             if (chainDeclared.has(p.name)) continue;
             if (!referencedNames.has(p.name)) continue;
             chainDeclared.add(p.name);
@@ -6814,6 +6977,8 @@ export function emitMultiStepExecuteHttp(
         );
         if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else {
           hoistedChainLines.push(...chainLines);
           itemScopedLines.push(...matchLines);
@@ -6821,9 +6986,13 @@ export function emitMultiStepExecuteHttp(
       }
       lines.push(
         ...hoistedChainLines,
-        ...itemOpenLines,
-        ...itemScopedLines,
-        ...itemCloseLines,
+        ...emitItemLoopLines(
+          itemOpenLines,
+          itemScopedLines,
+          itemCloseLines,
+          itemVar,
+          hasItemScopedFetch && !hasItemScopedHeaderThreading
+        ),
         ...ancestorCloseLines,
         ""
       );
@@ -8917,6 +9086,59 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
   }
 }
 
+/**
+ * Resolved reading of an object-form recon-flow.json's optional hot-path
+ * gating declarations. `browserFallbackGate` mirrors {@link SitePluginMeta}'s
+ * field: `false` disables the browser fallback outright, a non-empty string
+ * array names the `ScraperError` subclass `.name`s that MAY still fall back
+ * (every other hot-path error fails fast), and `undefined` preserves today's
+ * unconditional-cascade behavior. `httpTimeoutMs` is forwarded verbatim as
+ * `createHttpClient`'s `defaultTimeoutMs`.
+ */
+export interface FallbackGateSpec {
+  browserFallbackGate?: false | readonly string[];
+  httpTimeoutMs?: number;
+}
+
+/**
+ * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
+ * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
+ * a missing file, a legacy bare-array flow, or a malformed declaration all
+ * resolve to an empty spec (today's behavior) rather than aborting
+ * generation over a field that only tightens an opt-in guard.
+ */
+export function parseFallbackGateSpec(flowFileContents: string): FallbackGateSpec {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const { browserFallbackGate, httpTimeoutMs } = raw as {
+      browserFallbackGate?: unknown;
+      httpTimeoutMs?: unknown;
+    };
+    const resolvedGate: false | readonly string[] | undefined = (() => {
+      if (browserFallbackGate === false) return false;
+      if (
+        Array.isArray(browserFallbackGate) &&
+        browserFallbackGate.length > 0 &&
+        browserFallbackGate.every((n): n is string => typeof n === "string" && n.length > 0)
+      ) {
+        return browserFallbackGate;
+      }
+      return undefined;
+    })();
+    const resolvedTimeout =
+      typeof httpTimeoutMs === "number" && Number.isFinite(httpTimeoutMs) && httpTimeoutMs > 0
+        ? httpTimeoutMs
+        : undefined;
+    return {
+      ...(resolvedGate !== undefined ? { browserFallbackGate: resolvedGate } : {}),
+      ...(resolvedTimeout !== undefined ? { httpTimeoutMs: resolvedTimeout } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** The JS `typeof` a `drillParamBindings` entry's `default` must match for
  * its declared `type` — the same "assert the type, then check the default
  * agrees" pattern the rest of {@link parseFoldReturnSpec} uses for its other
@@ -10258,18 +10480,15 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     arrayPath,
     "[...itemsById.values()]"
   );
-  // When MAX_PAGES caps the loop before `total` converges, the merged
-  // envelope's own total must say so instead of repeating the API's
-  // original (larger) reported total — otherwise a truncated payload still
-  // claims to be complete.
-  const withTotalOverrideExpr = buildNestedSpreadOverride(
-    "withItems",
-    totalPath,
-    `truncated ? itemsById.size : ${pathAccessExpr("withItems", totalPath)}`
-  );
+  // The server's own reported total is left untouched — overwriting it with
+  // the delivered count would make a MAX_PAGES-capped fetch indistinguishable
+  // from a genuinely complete one. `deliveredCount`/`truncated` are added as
+  // siblings on the response so a caller can tell "total=5000, delivered=100,
+  // truncated=true" apart from "total=436, delivered=436, truncated=false".
+  const withTotalOverrideExpr = `{ ...withItems, deliveredCount: itemsById.size, truncated }`;
 
   return `    const baseVariables = ${gqlVariablesExpr};
-    const PAGE_SIZE = ${pageSize};
+    const PAGE_SIZE = payload.pageSize ?? ${pageSize};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
@@ -10277,18 +10496,40 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
     let lastPage: ${pascal}Response = page;
     let total = ${totalAccessExpr};
-    for (const item of ${arrayAccessExpr}) {
+    const firstPageItems = ${arrayAccessExpr};
+    for (const item of firstPageItems) {
       itemsById.set(String(${identityAccessExpr}), item);
     }
     skip += PAGE_SIZE;
-    for (let pageIndex = 1; pageIndex < MAX_PAGES && itemsById.size < total; pageIndex++) {
+    // A first page shorter than what was asked for is the same "nothing left"
+    // signal as a short subsequent page — stop before ever entering the loop
+    // instead of issuing a request the server already told us would come
+    // back empty.
+    const firstPageWasShort = firstPageItems.length < PAGE_SIZE;
+    for (
+      let pageIndex = 1;
+      !firstPageWasShort && pageIndex < MAX_PAGES && itemsById.size < total;
+      pageIndex++
+    ) {
       const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
       lastPage = page;
       total = ${totalAccessExpr};
-      for (const item of ${arrayAccessExpr}) {
+      const sizeBeforePage = itemsById.size;
+      const pageItems = ${arrayAccessExpr};
+      for (const item of pageItems) {
         itemsById.set(String(${identityAccessExpr}), item);
       }
+      // A server-reported total that doesn't exactly match the count of
+      // distinct items actually returned would otherwise drive the loop to
+      // MAX_PAGES worth of wasted empty requests; stop as soon as a page
+      // contributes nothing new.
+      if (itemsById.size === sizeBeforePage) break;
       skip += PAGE_SIZE;
+      // A page shorter than what was asked for is the server's own signal
+      // that nothing is left, whether or not its reported total agrees —
+      // stop here instead of issuing a request the server already told us
+      // would come back empty.
+      if (pageItems.length < PAGE_SIZE) break;
     }
 ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const truncated = itemsById.size < total;
     const withItems = ${withItemsOverrideExpr};
@@ -10426,9 +10667,12 @@ export function emitContractTs(opts: {
    * where T3's structured enum can't be emitted. */
   discoveredRawOptionFields?: Map<string, string>;
   /** Phase F: top-level keys observed in action POST bodies beyond r0
-   * (inputBody). Mapped to their value type. Each becomes a payload field
-   * (string → z.string(), number → z.number(), boolean → z.boolean()). */
-  discoveredAdditionalBodyKeys?: Map<string, "string" | "number" | "boolean">;
+   * (inputBody). Mapped to their value type plus any observed-shape value
+   * constraint (a closed-set string vocabulary, a discovered numeric
+   * capacity ceiling). Each becomes a payload field (string → z.string() or
+   * z.enum(...), number → z.number() or a capacity-bounded z.number(),
+   * boolean → z.boolean()). */
+  discoveredAdditionalBodyKeys?: Map<string, AdditionalBodyKeyInfo>;
   /** Mechanism B: top-level body keys whose value is a whole caller-supplied
    * nested structure (arrays like experienceData/educationData, or the opaque
    * eventData blob), mapped to the inferred Zod schema expression for that
@@ -10468,6 +10712,11 @@ export function emitContractTs(opts: {
    * the single-primary path can never disagree with the inferred shape on
    * whether a fold applies. */
   foldReturnSpec?: FoldReturnSpec | null;
+  /** Optional recon-flow.json-declared hot-path gating — see
+   * {@link parseFallbackGateSpec}. Absent (or an empty `{}`) emits today's
+   * output byte-for-byte: no `browserFallbackGate` meta field, and
+   * `createHttpClient(...)` unchanged. */
+  fallbackGateSpec?: FallbackGateSpec;
 }): string {
   const {
     siteId,
@@ -10504,7 +10753,25 @@ export function emitContractTs(opts: {
     optionalPayloadFieldNames = new Set<string>(),
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
+    fallbackGateSpec = {},
   } = opts;
+
+  const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
+  /** Rendered `meta.browserFallbackGate` literal: `false` verbatim, a
+   * list-derived arrow-function predicate matching against `error.name`, or
+   * "" (omitted) when the flow declared no gate — preserving byte-identical
+   * output for every flow that doesn't opt in. */
+  const browserFallbackGateLiteral =
+    browserFallbackGate === false
+      ? "\n    browserFallbackGate: false,"
+      : browserFallbackGate !== undefined
+        ? `\n    browserFallbackGate: (error) => ${JSON.stringify(browserFallbackGate)}.includes(error.name),`
+        : "";
+  /** Rendered `createHttpClient({ ..., defaultTimeoutMs })` fragment — "" when
+   * the flow declared no `httpTimeoutMs`, so the call is byte-identical to
+   * today's when the key is absent. */
+  const defaultTimeoutMsOption =
+    httpTimeoutMs !== undefined ? `, defaultTimeoutMs: ${httpTimeoutMs}` : "";
 
   // This is the CLIENT-level schema — createHttpClient's default, and the
   // plugin's caller-facing contract (what executeHttp's return value promises
@@ -10676,6 +10943,7 @@ export function emitContractTs(opts: {
   // from the detected signal.
   if (paginationSignal) {
     addExtendField("maxPages", "  maxPages: z.number().int().positive().optional(),");
+    addExtendField("pageSize", "  pageSize: z.number().int().positive().optional(),");
   }
 
   // The base extend's own keys — job-application submission flows only.
@@ -10800,18 +11068,27 @@ export function emitContractTs(opts: {
     ? [...discoveredAdditionalBodyKeys.entries()].sort(([a], [b]) => a.localeCompare(b))
     : [];
   let usesMultipartBoolean = false;
-  for (const [name, kind] of sortedAdditionalKeys) {
+  for (const [name, info] of sortedAdditionalKeys) {
     if (isReservedByApplicantContactSchema(name)) continue;
     // Use multipartBoolean() for booleans when multipart is in play, so
     // multipart string-encoded "true"/"false" round-trip to native booleans
     // (matches the inputBody boolean handling for parity).
+    // A closed-set vocabulary (string) or a discovered capacity ceiling
+    // (number) narrows the caller-facing schema instead of falling through
+    // to the unconstrained default — see {@link AdditionalBodyKeyInfo}.
     const zod =
-      kind === "string"
-        ? "z.string()"
-        : kind === "number"
-          ? payloadNeedsMultipart
-            ? "z.coerce.number()"
-            : "z.number()"
+      info.kind === "string"
+        ? info.enumValues
+          ? `z.enum([${info.enumValues.map((v) => JSON.stringify(v)).join(", ")}])`
+          : "z.string()"
+        : info.kind === "number"
+          ? info.capacityMax !== undefined
+            ? payloadNeedsMultipart
+              ? `z.coerce.number().max(${info.capacityMax})`
+              : `z.number().max(${info.capacityMax})`
+            : payloadNeedsMultipart
+              ? "z.coerce.number()"
+              : "z.number()"
           : payloadNeedsMultipart
             ? "multipartBoolean()"
             : "z.boolean()";
@@ -10990,12 +11267,12 @@ ${
   // GraphQL to the primary endpoint.
   needsFoldHttpClient
     ? `
-const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
+const httpClient = createHttpClient({ schema: z.unknown(), bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `
     : ""
 }`
       : `
-const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)} });
+const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottleneck: limiter, baseHeaders: BASE_HEADERS${bindOptionLiteral(headerBindings)}${defaultTimeoutMsOption} });
 `;
 
   const gqlOperationNameExpr = gqlOperationName
@@ -11091,6 +11368,14 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       // Every target's join/merge — plus any non-hoistable target's own
       // chain fetch — goes here, spliced inside the item loop.
       const itemScopedLines: string[] = [];
+      // True once any target's own chain fetch ends up item-scoped — see
+      // emitMultiStepExecuteHttp's identical flag and emitItemLoopLines.
+      let hasItemScopedFetch = false;
+      // True once any item-scoped target's chain threads a response header
+      // through createHttpClient's shared `bind` store — see
+      // emitMultiStepExecuteHttp's identical flag for why that disqualifies
+      // parallelizing the item loop.
+      let hasItemScopedHeaderThreading = false;
       // Word-boundary match — see emitMultiStepExecuteHttp's identical
       // `itemVarRefPattern` for why an anchored `${itemVar` pattern misses a
       // nested field path's `${(itemVar.field as Record<string,
@@ -11269,9 +11554,19 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // treated as item-scoped too — flat folds must keep emitting
         // byte-identical code.
         let referencesItemVar = ancestorVars.length === 0;
+        // See emitMultiStepExecuteHttp's identical `chainUsesHeaderThreading`
+        // for why any header-kind produce disqualifies parallelizing the
+        // item loop — httpClient's shared `bind` store applies to every call
+        // this function's own chainLines make too, even though (unlike
+        // emitMultiStepExecuteHttp) this codegen path never renders a local
+        // variable for the produced header itself.
+        let chainUsesHeaderThreading = false;
         for (const chainIndex of target.chain) {
           const chainStep = actionSteps[chainIndex];
           if (!chainStep) continue;
+          if (chainStep.produces.some((p) => p.kind === "header")) {
+            chainUsesHeaderThreading = true;
+          }
           // The zero-variance guard lives inside `parameterizeUrl` itself
           // (see above) so it can skip only the threaded-value splice while
           // still letting a spec-declared drillParamBindings substitution
@@ -11302,6 +11597,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         );
         if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
         } else {
           hoistedChainLines.push(...chainLines);
           itemScopedLines.push(...matchLines);
@@ -11309,9 +11606,13 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
       }
       lines.push(
         ...hoistedChainLines,
-        ...itemOpenLines,
-        ...itemScopedLines,
-        ...itemCloseLines,
+        ...emitItemLoopLines(
+          itemOpenLines,
+          itemScopedLines,
+          itemCloseLines,
+          itemVar,
+          hasItemScopedFetch && !hasItemScopedHeaderThreading
+        ),
         ...ancestorCloseLines,
         ""
       );
@@ -11470,7 +11771,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}
   },
 ${executeHttpMethodBlock}
   /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
@@ -12449,6 +12750,7 @@ async function main(): Promise<void> {
     requireSubmitEndpointMatch,
     displayName,
     foldReturnSpec,
+    fallbackGateSpec,
   } = (() => {
     const flowFileContents = (() => {
       try {
@@ -12461,6 +12763,11 @@ async function main(): Promise<void> {
     // valid `foldReturn` still resolves when the rest of the flow file is
     // degenerate — the two declarations fail independently.
     const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    // Same independence rule as `foldReturnSpec` above: an empty spec
+    // (missing/malformed declaration) is indistinguishable from "not
+    // declared" and preserves today's byte-identical output.
+    const fallbackGateSpec: FallbackGateSpec =
+      flowFileContents === null ? {} : parseFallbackGateSpec(flowFileContents);
     try {
       const raw: unknown = flowFileContents === null ? null : JSON.parse(flowFileContents);
       if (Array.isArray(raw))
@@ -12472,6 +12779,7 @@ async function main(): Promise<void> {
           requireSubmitEndpointMatch: false,
           displayName: undefined,
           foldReturnSpec,
+          fallbackGateSpec,
         };
       if (
         raw !== null &&
@@ -12495,6 +12803,7 @@ async function main(): Promise<void> {
           requireSubmitEndpointMatch: obj.requireSubmitEndpointMatch ?? false,
           displayName: obj.displayName,
           foldReturnSpec,
+          fallbackGateSpec,
         };
       }
       return {
@@ -12505,6 +12814,7 @@ async function main(): Promise<void> {
         requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
+        fallbackGateSpec,
       };
     } catch {
       return {
@@ -12515,6 +12825,7 @@ async function main(): Promise<void> {
         requireSubmitEndpointMatch: false,
         displayName: undefined,
         foldReturnSpec,
+        fallbackGateSpec,
       };
     }
   })();
@@ -12879,7 +13190,7 @@ async function main(): Promise<void> {
     // Phase F: keys from additional action POST bodies (beyond inputBody/r0)
     // that get parameterized. Recorded with their value type so the contract
     // emitter can add them to the payload schema with appropriate Zod types.
-    const discoveredAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const discoveredAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     // Mechanism A: reconcile flow SELECT steps to submitted option codes. The
     // resolutions drive a wire-key-anchored body rewrite (label→code dropdowns);
     // i18n-only dropdowns (labels all templated, e.g. gender) fall through to the
@@ -13099,6 +13410,7 @@ async function main(): Promise<void> {
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
       unpopulatedDeclaredVariables: primaryGraphQLOperation?.unpopulatedDeclaredVariables ?? [],
+      fallbackGateSpec,
     };
 
     const contractCode = emitContractTs(contractOpts);

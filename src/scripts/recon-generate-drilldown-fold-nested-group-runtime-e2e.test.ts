@@ -71,7 +71,9 @@ describe("recon-generate drill-down fold — nested/grouped primary array runtim
     expect(body).toContain(
       "for (const g0 of (r0 as { sections: ({ entries: Record<string, unknown>[] })[] }).sections) {"
     );
-    expect(body).toContain("for (const item of g0.entries) {");
+    // The item loop itself now dispatches concurrently (Promise.allSettled)
+    // instead of a bare sequential `for` — see bugfix-003.
+    expect(body).toContain("(g0.entries).map(async (item) => {");
     expect(body).not.toContain(".flatMap(");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });

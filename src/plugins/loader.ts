@@ -37,6 +37,7 @@ import {
   isCaptchaError,
   isEmptyResultsError,
   isHttpBotChallengeError,
+  isHttpClientError,
   isHttpRateLimitError,
   isHttpSchemaError,
   isHttpServerError,
@@ -251,7 +252,7 @@ async function runPluginPipeline<TResult>(
         (session) =>
           withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
         { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
-        plugin.meta.taskTimeoutMs,
+        plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
           ...(plugin.meta.browserbaseSessionCreateParams && {
@@ -272,6 +273,12 @@ async function runPluginPipeline<TResult>(
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       logger.warn(
         `hot path url-locked for ${plugin.meta.siteId}: ${httpErr.message} — not falling back`
+      );
+    }
+    if (isHttpClientError(httpErr)) {
+      context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
+      logger.warn(
+        `hot path client error for ${plugin.meta.siteId}: ${httpErr.message} — deterministic, not falling back`
       );
     }
     throw httpErr;
@@ -485,6 +492,7 @@ function classifyDispatchError(err: unknown): string {
   if (isHttpUrlLockedError(err)) return "url_locked";
   if (isHttpSchemaError(err)) return "schema_drift";
   if (isHttpServerError(err)) return "server_error";
+  if (isHttpClientError(err)) return "client_error";
   if (isCaptchaError(err)) return "captcha";
   if (isEmptyResultsError(err)) return "empty_results";
   if (isScraperError(err)) return "scraper_generic";

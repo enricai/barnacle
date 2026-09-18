@@ -51,8 +51,18 @@ function emitBody(): string {
  * of ...) { ... }` block, walking brace depth from the loop's own open brace
  * — so a caller can assert what a SPECIFIC loop's own body does or doesn't
  * reference without the other loop's text contaminating the check. */
+// Item-scoped fetches now parallelize into `Promise.allSettled((X).map(async
+// (item) => {...}))` (see emitItemLoopLines in recon-generate.ts) instead of
+// a bare `for (const item of X) {`, so both declaration shapes must be
+// recognized here.
+function findLoopMarker(body: string, loopVar: string): string {
+  const forMarker = `for (const ${loopVar} of`;
+  if (body.includes(forMarker)) return forMarker;
+  return `.map(async (${loopVar}) =>`;
+}
+
 function sliceLoopBody(body: string, loopVar: string): string {
-  const openMarker = `for (const ${loopVar} of`;
+  const openMarker = findLoopMarker(body, loopVar);
   const markerIndex = body.indexOf(openMarker);
   if (markerIndex === -1) {
     throw new Error(`sliceLoopBody: no "${openMarker}" loop found in the emitted body`);
@@ -77,7 +87,7 @@ function sliceLoopBody(body: string, loopVar: string): string {
  * sibling loop's own braces — a hoist into the shared ancestor scope above
  * both loops (this bug's actual failure mode) sits in neither slice. */
 function occurrencesOutsideOwnLoop(body: string, loopVar: string): string[] {
-  const openMarker = `for (const ${loopVar} of`;
+  const openMarker = findLoopMarker(body, loopVar);
   const markerIndex = body.indexOf(openMarker);
   const braceStart = body.indexOf("{", markerIndex);
   let depth = 0;
@@ -102,8 +112,8 @@ describe("recon-generate fold-hoist — out-of-scope loop-variable identifier bl
 
     // Both independent fold plans resolved — one per distinct loop-variable
     // name, proving this fixture actually exercises two separate scopes.
-    expect(body).toContain("for (const item0 of");
-    expect(body).toContain("for (const item1 of");
+    expect(body).toContain("(foldItems0).map(async (item0) =>");
+    expect(body).toContain("(g01.entries).map(async (item1) =>");
 
     const item0Body = sliceLoopBody(body, "item0");
     const item1Body = sliceLoopBody(body, "item1");

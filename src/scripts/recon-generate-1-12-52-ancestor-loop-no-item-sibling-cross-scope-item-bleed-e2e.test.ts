@@ -103,34 +103,41 @@ function emitUnrelatedItemLoopBody(): string {
  * fixture's own ancestor-only ownership loop; once, for real, inside the
  * wholly separate later function). */
 function allLoopBodySpans(body: string, loopVar: string): Array<{ start: number; end: number }> {
-  const openMarker = `for (const ${loopVar} of`;
+  // Item-scoped fetches now parallelize into `Promise.allSettled((X).map(async
+  // (item) => {...}))` (see emitItemLoopLines in recon-generate.ts) instead of
+  // a bare `for (const item of X) {`, so both declaration shapes must be
+  // recognized here.
+  const openMarkers = [`for (const ${loopVar} of`, `.map(async (${loopVar}) =>`];
   const spans: Array<{ start: number; end: number }> = [];
-  let searchFrom = 0;
-  for (;;) {
-    const markerIndex = body.indexOf(openMarker, searchFrom);
-    if (markerIndex === -1) break;
-    const braceStart = body.indexOf("{", markerIndex);
-    let depth = 0;
-    let loopEnd = -1;
-    for (let i = braceStart; i < body.length; i++) {
-      if (body[i] === "{") depth++;
-      if (body[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          loopEnd = i + 1;
-          break;
+  for (const openMarker of openMarkers) {
+    let searchFrom = 0;
+    for (;;) {
+      const markerIndex = body.indexOf(openMarker, searchFrom);
+      if (markerIndex === -1) break;
+      const braceStart = body.indexOf("{", markerIndex);
+      let depth = 0;
+      let loopEnd = -1;
+      for (let i = braceStart; i < body.length; i++) {
+        if (body[i] === "{") depth++;
+        if (body[i] === "}") {
+          depth--;
+          if (depth === 0) {
+            loopEnd = i + 1;
+            break;
+          }
         }
       }
+      if (loopEnd === -1) {
+        throw new Error(`allLoopBodySpans: unterminated "${openMarker}" loop body`);
+      }
+      // Span covers the loop's own header (`for (const <loopVar> of ...) {`
+      // or `.map(async (<loopVar>) => {`) through its closing brace, not just
+      // the inner body — the header itself is where `loopVar` is declared, so
+      // a bare inner-body-only span would wrongly flag the declaration itself
+      // as an "outside" occurrence.
+      spans.push({ start: markerIndex, end: loopEnd });
+      searchFrom = loopEnd;
     }
-    if (loopEnd === -1) {
-      throw new Error(`allLoopBodySpans: unterminated "${openMarker}" loop body`);
-    }
-    // Span covers the loop's own header (`for (const <loopVar> of ...) {`)
-    // through its closing brace, not just the inner body — the header
-    // itself is where `loopVar` is declared, so a bare inner-body-only span
-    // would wrongly flag the declaration itself as an "outside" occurrence.
-    spans.push({ start: markerIndex, end: loopEnd });
-    searchFrom = loopEnd;
   }
   return spans;
 }
@@ -160,7 +167,7 @@ describe("recon-generate fold-hoist — ancestor loop with no item sibling, cros
 
     // Both functions actually resolved the shapes this test depends on.
     expect(combinedBody).toContain("for (const g0 of");
-    expect(combinedBody).toContain("for (const item of");
+    expect(combinedBody).toContain(".map(async (item) =>");
 
     // The g0-scoped hoisted call reads only g0's own nested field.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template

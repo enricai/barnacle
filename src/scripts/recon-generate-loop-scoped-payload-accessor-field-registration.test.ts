@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AdditionalBodyKeyInfo } from "@/scripts/recon-generate";
 import {
   compileActionSteps,
   emitMultiStepExecuteHttp,
@@ -11,7 +12,7 @@ import type { Capture } from "@/scripts/recon-shared";
  * Sibling of recon-generate-payload-accessor-field-registration.test.ts's
  * registration-discipline tests, routed through the ONE code path those
  * tests never exercise: a `payload.<field>` accessor emitted from WITHIN a
- * fold/drill `for (const item of ...)` loop body
+ * fold/drill `Promise.allSettled(...map(...))` loop body
  * (emitMultiStepExecuteHttp's per-item `parameterize` closure at
  * recon-generate.ts:6468, wrapped by the loop construction starting at
  * recon-generate.ts:6341), not the flat sequential path the sibling tests
@@ -58,7 +59,7 @@ function emit(
   captures: Capture[],
   inputBody: unknown,
   outFields: Set<string>,
-  outAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">
+  outAdditionalBodyKeys: Map<string, AdditionalBodyKeyInfo>
 ): string {
   const actionCaptures = captures.map((c, index) => ({ capture: c, index }));
   const stateIndex = indexStateValues(captures as never);
@@ -83,11 +84,11 @@ describe("emitMultiStepExecuteHttp — payload schema field registration inside 
   it("registers a payload.<field> accessor emitted from WITHIN the per-item fold loop body", () => {
     const captures = fixtureCaptures();
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, {}, outFields, outAdditionalBodyKeys);
 
     // A genuine multi-item fold loop, not a hardcoded per-item call.
-    expect(body).toMatch(/for\s*\(const \w+ of \w+\)/);
+    expect(body).toMatch(/Promise\.allSettled\(\s*\(\w+\)\.map\(async \(\w+\) => \{/);
 
     const I = `$${"{"}`;
     // The fold loop's own per-item detail request splices `region` as a

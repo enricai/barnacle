@@ -301,7 +301,7 @@ describe("recon-generate read-only GraphQL flow: catalog-fixture capture set wit
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     // (a) The loop advances the pagination variable by the observed page size.
-    expect(contract).toContain("const PAGE_SIZE = 10;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 10;");
     expect(contract).toContain("skip += PAGE_SIZE;");
     expect(contract).toContain(
       "pagination: { ...baseVariables.pagination, count: PAGE_SIZE, skip: skip }"

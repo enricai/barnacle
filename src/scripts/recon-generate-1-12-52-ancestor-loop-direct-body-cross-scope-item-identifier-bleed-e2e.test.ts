@@ -262,30 +262,36 @@ function runGenerateAndTypecheck(
  * loop variable may legitimately be declared more than once across a
  * combined multi-invocation output. */
 function allLoopBodySpans(body: string, loopVar: string): Array<{ start: number; end: number }> {
-  const openMarker = `for (const ${loopVar} of`;
+  // Item-scoped fetches now parallelize into `Promise.allSettled((X).map(async
+  // (item) => {...}))` (see emitItemLoopLines in recon-generate.ts) instead of
+  // a bare `for (const item of X) {`, so both declaration shapes must be
+  // recognized here.
+  const openMarkers = [`for (const ${loopVar} of`, `.map(async (${loopVar}) =>`];
   const spans: Array<{ start: number; end: number }> = [];
-  let searchFrom = 0;
-  for (;;) {
-    const markerIndex = body.indexOf(openMarker, searchFrom);
-    if (markerIndex === -1) break;
-    const braceStart = body.indexOf("{", markerIndex);
-    let depth = 0;
-    let loopEnd = -1;
-    for (let i = braceStart; i < body.length; i++) {
-      if (body[i] === "{") depth++;
-      if (body[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          loopEnd = i + 1;
-          break;
+  for (const openMarker of openMarkers) {
+    let searchFrom = 0;
+    for (;;) {
+      const markerIndex = body.indexOf(openMarker, searchFrom);
+      if (markerIndex === -1) break;
+      const braceStart = body.indexOf("{", markerIndex);
+      let depth = 0;
+      let loopEnd = -1;
+      for (let i = braceStart; i < body.length; i++) {
+        if (body[i] === "{") depth++;
+        if (body[i] === "}") {
+          depth--;
+          if (depth === 0) {
+            loopEnd = i + 1;
+            break;
+          }
         }
       }
+      if (loopEnd === -1) {
+        throw new Error(`allLoopBodySpans: unterminated "${openMarker}" loop body`);
+      }
+      spans.push({ start: markerIndex, end: loopEnd });
+      searchFrom = loopEnd;
     }
-    if (loopEnd === -1) {
-      throw new Error(`allLoopBodySpans: unterminated "${openMarker}" loop body`);
-    }
-    spans.push({ start: markerIndex, end: loopEnd });
-    searchFrom = loopEnd;
   }
   return spans;
 }
@@ -349,7 +355,7 @@ describe("recon-generate CLI — ancestor loop's own direct request bodies never
     expect(ancestor.contract).toContain("for (const g0 of");
     expect(ancestor.contract).not.toContain("for (const item0 of");
     expect(ancestor.contract).not.toContain("for (const item1 of");
-    expect(unrelated.contract).toContain("for (const item of");
+    expect(unrelated.contract).toContain("(foldItems).map(async (item) =>");
 
     // Both of g0's own direct request bodies are issued directly inside the
     // g0 loop, before any per-entry sub-loop — reached only by drilling into

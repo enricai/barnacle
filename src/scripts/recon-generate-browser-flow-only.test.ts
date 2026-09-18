@@ -276,7 +276,7 @@ describe("emitContractTs — multipartBoolean import gate", () => {
       omitExecuteHttp: true,
       hasMultipartStep: true,
       inputBody,
-      discoveredAdditionalBodyKeys: new Map([["SubscribeToUpdates", "boolean"]]),
+      discoveredAdditionalBodyKeys: new Map([["SubscribeToUpdates", { kind: "boolean" }]]),
     });
 
     expect(source).toContain("import { multipartBoolean, multipartJsonObject }");

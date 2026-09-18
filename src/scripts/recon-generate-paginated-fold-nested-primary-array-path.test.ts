@@ -140,7 +140,7 @@ describe("paginated GraphQL fold onto a primaryArrayPath deeper than the paginat
     expect(foldLoopLine).not.toBeNull();
     const foldLoopExpr = foldLoopLine![1]!;
     expect(foldLoopExpr).toContain("itemsById.values()");
-    expect(body).toContain("for (const item of g0.groups) {");
+    expect(body).toContain("(g0.groups).map(async (item) => {");
 
     // The join/threaded URL param and the merge both read off the nested
     // group item's own `code` field, not the outer paginated item's.

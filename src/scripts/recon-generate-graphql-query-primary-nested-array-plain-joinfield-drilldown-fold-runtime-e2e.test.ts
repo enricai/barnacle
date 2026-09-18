@@ -267,14 +267,14 @@ describe("GraphQL query-primary + plain joinFields on a nested primary array + d
     // resultsPath crosses the outer "groups" array, so the fold-merge loop
     // is a nested `for` (not a flattened `foldItems`) — see
     // pathToFoldLoopLines's docstring.
-    expect(executeHttpBody).toContain("for (const item of g0.sailings)");
+    expect(executeHttpBody).toContain("(g0.sailings).map(async (item) => {");
     expect(executeHttpBody).toContain("item.id");
     expect(executeHttpBody).not.toContain("item.groupId ===");
 
     // Bug 3: exactly one drill+fold loop block, even with two primary
     // query captures (a re-filter) in the source recording.
     const drillFoldLoopOccurrences =
-      executeHttpBody.match(/for \(const item of g0\.sailings\)/g) ?? [];
+      executeHttpBody.match(/\(g0\.sailings\)\.map\(async \(item\) => \{/g) ?? [];
     expect(drillFoldLoopOccurrences).toHaveLength(1);
     const sailingsEndpointOccurrences =
       executeHttpBody.match(/\/itinerary\/api\/v1\/sailings/g) ?? [];

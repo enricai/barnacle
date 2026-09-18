@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AdditionalBodyKeyInfo } from "@/scripts/recon-generate";
 import {
   compileActionSteps,
   emitMultiStepExecuteHttp,
@@ -63,7 +64,7 @@ function emit(
   captures: RawCapture[],
   inputBody: unknown,
   outFields: Set<string>,
-  outAdditionalBodyKeys: Map<string, "string" | "number" | "boolean">
+  outAdditionalBodyKeys: Map<string, AdditionalBodyKeyInfo>
 ): string {
   const actionCaptures = captures.map((c, index) => ({ capture: c, index }));
   const stateIndex = indexStateValues(captures as never);
@@ -107,7 +108,7 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
       }),
     ];
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
 
     const I = `$${"{"}`;
@@ -139,13 +140,13 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
       }),
     ];
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
 
     const I = `$${"{"}`;
     expect(body).toContain(`"category":"${I}payload.category}"`);
     expect(outAdditionalBodyKeys.has("category")).toBe(true);
-    expect(outAdditionalBodyKeys.get("category")).toBe("string");
+    expect(outAdditionalBodyKeys.get("category")).toEqual({ kind: "string" });
   });
 
   it("registers a NESTED string leaf of the entry body (e.g. formData.reference) as a flat payload field", () => {
@@ -171,7 +172,7 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
       }),
     ];
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
 
     const I = `$${"{"}`;
@@ -210,7 +211,7 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
       }),
     ];
     const outFields = new Set<string>();
-    const outAdditionalBodyKeys = new Map<string, "string" | "number" | "boolean">();
+    const outAdditionalBodyKeys = new Map<string, AdditionalBodyKeyInfo>();
     const body = emit(captures, inputBody, outFields, outAdditionalBodyKeys);
 
     const I = `$${"{"}`;
@@ -219,6 +220,12 @@ describe("emitMultiStepExecuteHttp — payload schema field registration", () =>
     const payloadReferenceCount = body.split(`${I}payload.region}`).length - 1;
     expect(payloadReferenceCount).toBe(2);
     expect(outAdditionalBodyKeys.has("region")).toBe(true);
-    expect(outAdditionalBodyKeys.get("region")).toBe("string");
+    // Both distinct values register as the field's discovered vocabulary —
+    // this fixture's own two-step reuse doubles as evidence for the
+    // vocabulary-derived z.enum() emission this repo's schema now supports.
+    expect(outAdditionalBodyKeys.get("region")).toEqual({
+      kind: "string",
+      enumValues: ["east", "west"],
+    });
   });
 });

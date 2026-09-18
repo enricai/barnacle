@@ -219,7 +219,9 @@ describe("recon-generate CLI + tsc --noEmit — combined multi-defect corpus (bu
 
     // The ancestor-drill loop over the listing's own array is genuine, not a
     // hardcoded per-item call.
-    expect(contract).toMatch(/\.results;\n\s*for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(
+      /\.results;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/
+    );
 
     // The reused-key-with-different-literal-value fields must both resolve
     // to their own name-correlated payload accessor, not stay frozen.

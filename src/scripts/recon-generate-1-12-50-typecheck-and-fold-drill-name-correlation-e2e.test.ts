@@ -155,7 +155,9 @@ describe("recon-generate CLI — fold/drill-loop contract typechecks and never c
     // Verification hook (b): the fold/drill-loop is real — a genuine
     // per-item loop over the listing's own array, not a hardcoded per-item
     // call.
-    expect(contract).toMatch(/\.items;\n\s*for\s*\(const \w+ of \w+\)/);
+    expect(contract).toMatch(
+      /\.items;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/
+    );
 
     // Isolate the submit call's request-body template literal.
     const bodyLineMatch = contract.match(/catalog\/select\/[\s\S]*?body:\s*`([^`]*)`/);

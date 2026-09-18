@@ -73,7 +73,7 @@ describe("recon-generate drill-down fold — nested fold threads BOTH a parent-s
     // flattening `.flatMap`.
     expect(body).not.toContain(".flatMap(");
     expect(body).toContain("for (const g0 of");
-    expect(body).toContain("for (const item of g0.entries)");
+    expect(body).toContain("(g0.entries).map(async (item)");
 
     // #2: both the parent-only (`groupId`) and item-only (`itemDate`)
     // params interpolate off their own real binding.

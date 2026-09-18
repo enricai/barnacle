@@ -229,7 +229,7 @@ describe("emitContractTs — paged primary + dual scope-coincident, multi-depth 
 
     // The primary read is still a bounded paging loop (buildPaginatedGqlExecuteHttpBody), not
     // collapsed to a single fixed-page call by the fold's presence.
-    expect(contract).toContain("const PAGE_SIZE = 2;");
+    expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 2;");
     expect(contract).toContain("const itemsById = new Map<");
 
     // #330/#339 dedup guard: still exactly one httpClient call, textually.
@@ -379,6 +379,10 @@ describe("emitContractTs — paged primary + dual scope-coincident, multi-depth 
           ],
         },
       },
+      // Single page converges on the first fetch (total === PAGE_SIZE), so
+      // nothing was truncated — delivered count matches the server's total.
+      deliveredCount: 2,
+      truncated: false,
     });
 
     // Exactly 2 fetches — one drill per paginated group, not one per entry (which would make 6
