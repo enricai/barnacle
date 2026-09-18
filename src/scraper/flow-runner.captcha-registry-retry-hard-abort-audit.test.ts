@@ -159,7 +159,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated retry loop hard-ab
       .mockResolvedValueOnce({ token: "solved-token-2", provider: "2captcha", ms: 12 });
 
     const page = makeSuccessfulPage(capturesDir);
-    const originalEvaluate = page.evaluate as ReturnType<typeof vi.fn>;
+    const originalEvaluate = page.evaluate as unknown as (expr: unknown) => Promise<unknown>;
     let injectPrecheckCalls = 0;
     (page.evaluate as unknown) = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
