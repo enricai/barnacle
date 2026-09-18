@@ -252,7 +252,7 @@ async function runPluginPipeline<TResult>(
         (session) =>
           withSessionTelemetry(session, context, () => plugin.execute(payload, session, context)),
         { onRetry: plugin.onRetry, maxAttempts: plugin.meta.maxAttempts },
-        plugin.meta.taskTimeoutMs,
+        plugin.meta.browserFallbackTaskTimeoutMs ?? plugin.meta.taskTimeoutMs,
         {
           advancedStealth: plugin.meta.advancedStealth,
           ...(plugin.meta.browserbaseSessionCreateParams && {

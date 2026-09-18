@@ -151,6 +151,15 @@ export interface SitePluginMeta {
    */
   browserFallbackGate?: boolean | ((error: ScraperError) => boolean);
   /**
+   * Timeout (ms) for the browser fallback session specifically, applied only
+   * when a hot-path failure cascades into it. Overrides `taskTimeoutMs` for
+   * that one invocation so a plugin can bound a known-unreliable fallback
+   * more tightly than its whole-task ceiling without shortening the
+   * unconditional (no-hot-path) browser run. Absent falls back to
+   * `taskTimeoutMs`.
+   */
+  browserFallbackTaskTimeoutMs?: number;
+  /**
    * Optional semver range string declaring which plugin API version this plugin
    * targets (e.g. `"^1.0.0"`). Core compares this against `PLUGIN_API_VERSION`
    * at load time and disables the plugin on a major-version mismatch. Absent

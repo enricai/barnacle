@@ -124,4 +124,43 @@ describe("dispatch — gate and hotPathError telemetry compose on a gated hot-pa
 
     await app.close();
   });
+
+  it("uses meta.browserFallbackTaskTimeoutMs instead of taskTimeoutMs for a gate-cascaded browser fallback", async () => {
+    const siteId = "gate-fallback-timeout-override-test";
+    mockRunWithSession.mockResolvedValue({ status: "success", data: {} });
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId,
+        displayName: "Gate Fallback Timeout Override Test",
+        bodySchema: z.object({}),
+        responseSchema: z.unknown(),
+        taskTimeoutMs: 60_000,
+        browserFallbackTaskTimeoutMs: 5_000,
+      },
+      executeHttp: async () => {
+        throw new HttpBotChallengeError("bot challenge encountered");
+      },
+      execute: vi.fn(),
+    };
+    const app = await buildAppWithPlugin(plugin);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/${siteId}/run`,
+      payload: {},
+    });
+
+    expect(response.statusCode).toBeLessThan(500);
+    expect(mockRunWithSession).toHaveBeenCalledTimes(1);
+    // Third positional arg is the timeout passed to runWithSession — the
+    // fallback-specific override, not the plugin's whole-task taskTimeoutMs.
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ maxAttempts: undefined }),
+      5_000,
+      expect.anything()
+    );
+
+    await app.close();
+  });
 });
