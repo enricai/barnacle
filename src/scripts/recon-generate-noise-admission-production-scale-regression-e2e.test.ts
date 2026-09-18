@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { isZeroVarianceRepeatCapture } from "@/recon/capture-filters";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -75,7 +76,7 @@ describe("recon noise admission at production scale: mixed third-party + same-or
     // Same-origin, queryless, fixed-shape widget noise — the other half of
     // the reported family, repeating far more often than the real primary
     // and carrying no business-relevant response state.
-    const SAME_ORIGIN_NOISE_URL = `https://${OWN_BACKEND_HOST}/pulse/urgency-widget`;
+    const SAME_ORIGIN_NOISE_URL = `https://${OWN_BACKEND_HOST}/telemetry-ping`;
 
     workDir = mkdtempSync(join(tmpdir(), "barnacle-noise-scale-"));
     const runRoot = join(workDir, "run");
@@ -107,12 +108,18 @@ describe("recon noise admission at production scale: mixed third-party + same-or
       })
     );
     // 23 same-origin widget noise captures — production-scale repeat count,
-    // well above MIN_QUERYLESS_REPEAT_COUNT.
-    const sameOriginNoise: Capture[] = Array.from({ length: 23 }, () =>
+    // well above MIN_QUERYLESS_REPEAT_COUNT. Each response stamps a fresh,
+    // business-looking (non-URL-derivable) id rather than an empty body: an
+    // empty `{}` is already caught by `hasNoBusinessRelevantResponseState`
+    // regardless of the fix, so it would not exercise the branch item 0
+    // actually widened (`hasFreelyVaryingResponseAcrossOccurrences`), which
+    // is what tells a per-load noise widget apart from a genuinely-polled
+    // own endpoint when the response looks like real data.
+    const sameOriginNoise: Capture[] = Array.from({ length: 23 }, (_, i) =>
       buildCapture({
         url: SAME_ORIGIN_NOISE_URL,
         requestPostData: null,
-        responseBody: {},
+        responseBody: { impressionId: `imp-${i}-${Math.random()}` },
         timestamp: nextTimestamp(),
       })
     );
@@ -121,6 +128,18 @@ describe("recon noise admission at production scale: mixed third-party + same-or
     // 2-vs-48-total production ratio.
     const allCaptures = [search, drill, ...thirdPartyNoise, ...sameOriginNoise];
     expect(allCaptures).toHaveLength(48);
+
+    // Item 0's own regression, pinned directly at production scale: a
+    // per-occurrence-varying, business-looking (non-URL-derivable) queryless
+    // repeat is exactly the shape that used to under-fire — a byte-identical
+    // or empty response is already caught by `hasNoBusinessRelevantResponseState`
+    // regardless of the fix, so only a response that actually looks like real
+    // data on every call exercises the widened
+    // `hasFreelyVaryingResponseAcrossOccurrences` branch. The real search
+    // capture, which shares nothing in its (fixed) response shape, must not
+    // be swept in merely for repeating on the same host.
+    expect(isZeroVarianceRepeatCapture(sameOriginNoise[0]!, allCaptures)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(search, allCaptures)).toBe(false);
 
     writeRunDir(runRoot, allCaptures);
 
