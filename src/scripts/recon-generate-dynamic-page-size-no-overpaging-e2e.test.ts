@@ -9,11 +9,11 @@ import {
 } from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 /**
- * Combined acceptance test for item4 of recon-royalcaribbean-plugin-root-causes.md:
- * the generated PAGE_SIZE must be caller-overridable at runtime (not frozen at
- * the recon-captured value), and the paging loop must never issue a trailing
- * request past the server's actual last page when the server's own `total`
- * doesn't match the count of distinct ids that actually exist.
+ * Combined acceptance test: the generated PAGE_SIZE must be
+ * caller-overridable at runtime (not frozen at the recon-captured value),
+ * and the paging loop must never issue a trailing request past the
+ * server's actual last page when the server's own `total` doesn't match
+ * the count of distinct ids that actually exist.
  */
 
 const BASE = "https://api.example.com";
@@ -91,8 +91,9 @@ function evalPaginatedExecuteHttp(
 
 /**
  * A fake paginated server exposing exactly 436 distinct ids, whose own
- * `total` field reads 437 — one more than actually exists, mirroring the
- * royalcaribbean over-paging root cause. Each page's `count` variable is
+ * `total` field reads 437 — one more than actually exists, mirroring a
+ * server total that overstates the number of distinct ids actually
+ * returned. Each page's `count` variable is
  * recorded so the request payload's actual page size can be asserted.
  */
 function makeFakeServer(onPagination: (pagination: { skip: number; count: number }) => void) {

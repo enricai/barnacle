@@ -494,6 +494,36 @@ function endpointOrigin(url: string): string | null {
  */
 const MIN_QUERYLESS_REPEAT_COUNT = 3;
 
+/**
+ * True when same-endpoint occurrences carry JSON response bodies that are
+ * mostly pairwise distinct — i.e. the payload never settles back into a
+ * value it has already shown.
+ *
+ * This is what tells a genuinely-polled own endpoint (a feature-toggle feed,
+ * a health check) apart from a query-less noise widget whose response merely
+ * LOOKS like real data: both can carry non-URL-derivable JSON leaves, but a
+ * real polled endpoint cycles through a small closed set of states (a
+ * boolean flips between two values, say), so most occurrences duplicate an
+ * earlier one, while a per-load noise widget (a chat-bubble loader stamping
+ * a fresh counter/session id into its own response) produces a near-unique
+ * value on almost every occurrence. Comparing each occurrence against just
+ * the candidate's own value can't distinguish these — a two-state toggle and
+ * an ever-incrementing counter both differ from any single candidate about
+ * half the time — so this counts distinct values across ALL occurrences
+ * instead: a low-cardinality set (repeats dominate) is a real poll, a
+ * high-cardinality set (values rarely repeat) is noise. Occurrences with no
+ * response metadata supplied contribute no evidence either way, so this only
+ * fires when at least two occurrences actually carry a body to compare.
+ */
+function hasFreelyVaryingResponseAcrossOccurrences(
+  sameEndpoint: readonly { responseBody?: unknown }[]
+): boolean {
+  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  if (withBody.length < 2) return false;
+  const distinctSignatures = new Set(withBody.map((c) => JSON.stringify(c.responseBody)));
+  return distinctSignatures.size > withBody.length / 2;
+}
+
 export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
@@ -502,7 +532,13 @@ export function isZeroVarianceRepeatCapture(
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
   },
-  allCaptures: readonly { method: string; url: string; requestPostData: string | null }[]
+  allCaptures: readonly {
+    method: string;
+    url: string;
+    requestPostData: string | null;
+    responseHeaders?: Record<string, string>;
+    responseBody?: unknown;
+  }[]
 ): boolean {
   let candidateUrl: URL;
   try {
@@ -521,7 +557,10 @@ export function isZeroVarianceRepeatCapture(
     const queryLessBodyIdentical = sameEndpoint.every(
       (c) => c.requestPostData === candidate.requestPostData
     );
-    if (queryLessBodyIdentical) return hasNoBusinessRelevantResponseState(candidate);
+    if (queryLessBodyIdentical) {
+      if (hasNoBusinessRelevantResponseState(candidate)) return true;
+      return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
+    }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
       (key) => key.toLowerCase() === "content-type"
     );

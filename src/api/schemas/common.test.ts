@@ -163,21 +163,21 @@ describe("needsUserInfoResponseSchema", () => {
 });
 
 describe("facetValueSchema", () => {
-  const departurePortSchema = facetValueSchema("departurePort", ["MIA", "FLL", "GLA"]);
+  const colorCodeSchema = facetValueSchema("colorCode", ["RED", "BLU", "GRN"]);
 
   it("accepts a value from the declared coded set", () => {
-    const result = departurePortSchema.safeParse("MIA");
+    const result = colorCodeSchema.safeParse("RED");
     expect(result.success).toBe(true);
   });
 
   it("rejects a free-text value not in the declared coded set", () => {
-    const result = departurePortSchema.safeParse("Miami");
+    const result = colorCodeSchema.safeParse("Red");
     expect(result.success).toBe(false);
-    expect(result.error?.issues[0]?.message).toContain("departurePort must be one of");
+    expect(result.error?.issues[0]?.message).toContain("colorCode must be one of");
   });
 
   it("surfaces the rejection as a ZodError the shared error handler maps to FIELD_VIOLATION", () => {
-    expect(() => departurePortSchema.parse("Miami")).toThrowError(z.ZodError);
+    expect(() => colorCodeSchema.parse("Red")).toThrowError(z.ZodError);
   });
 });
 

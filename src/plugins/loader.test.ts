@@ -379,6 +379,17 @@ describe("dispatch — executeHttp hot-path branches", () => {
     expect(result.data).toEqual({ result: "hot" });
   });
 
+  it("does not engage the browser fallback for a tolerated empty-result response (non-nullable field null, zero-length results)", async () => {
+    mockHttpExecute.mockResolvedValueOnce({
+      data: { title: null, results: [] },
+    });
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+    expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+    expect(mockRecordHotPathSuccess).toHaveBeenCalledWith("http-site");
+    expect(result.data).toEqual({ title: null, results: [] });
+  });
+
   it("falls back to execute() and records fallback on HttpSchemaError", async () => {
     mockHttpExecute.mockRejectedValueOnce(new HttpSchemaError("schema mismatch"));
     const result = await dispatch(httpPlugin, {}, stubContext);
