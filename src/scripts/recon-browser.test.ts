@@ -1521,10 +1521,46 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.submitStep).toBe(true);
   });
 
-  it("leaves an unrelated bridge step untouched when no step resumes the failed control", () => {
+  it("leaves an unrelated bridge step untouched when it duplicates the next authored step", () => {
     const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
     const newSteps = [mk("Click the 'Change Delivery Address' link to open the address panel")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(
+      newSteps,
+      failedStep,
+      "If the address panel is closed, click the 'Change Delivery Address' link"
+    );
+    expect(out[0]!.captchaGated).toBeUndefined();
+    expect(out[0]!.submitStep).toBeUndefined();
+  });
+
+  it("retains flags when the first bridge step quotes a DIFFERENT control label naming the challenge widget itself", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Click the 'I'm not a robot' checkbox")];
     const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("retains flags regardless of how the challenge-resolution control is worded, as long as it isn't the next authored step", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Click the 'Prove you are not a machine' checkbox")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(
+      newSteps,
+      failedStep,
+      "Click the 'Continue' button to proceed to the next page"
+    );
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("leaves the first bridge step untouched when it duplicates the next authored step even without label overlap wording", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Click the 'Confirm Shipping Method' button to lock in the selection")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(
+      newSteps,
+      failedStep,
+      "Click the 'Confirm Shipping Method' button"
+    );
     expect(out[0]!.captchaGated).toBeUndefined();
     expect(out[0]!.submitStep).toBeUndefined();
   });

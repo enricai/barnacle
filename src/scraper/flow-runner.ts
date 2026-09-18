@@ -5648,11 +5648,19 @@ export async function injectCaptchaTokenAndSubmit(
  * used only when the caller's own transition poll observed no advance after
  * the inject, so the widget's callback (if any) evidently didn't submit for
  * us. Kept separate from the inject primitive so the caller can gate its use
- * on an observed transition rather than firing it unconditionally. Prefers
- * `form.requestSubmit()` so any submit-event listener (including one that
- * calls `preventDefault()` and drives its own submit logic) and native form
- * validation still run, matching real-browser submit semantics; falls back
- * to the bare `form.submit()` only when `requestSubmit` isn't available.
+ * on an observed transition rather than firing it unconditionally.
+ *
+ * Dispatches a real, framework-observed click via the same
+ * {@link buildRankSubmitCandidatesExpr}/{@link buildClickByDeepIndexExpr}
+ * primitives the phantom-click cascade uses, rather than a synthetic
+ * `form.requestSubmit()`/`form.submit()` call: on a React/SPA site the
+ * submit button's `onClick` handler owns the actual submission (validation,
+ * XHR/fetch dispatch, etc.), and `<form>`-level APIs never fire it, so
+ * "success" here would silently produce zero site-host HTTP traffic for
+ * {@link waitForCaptchaNavigation} to observe. Only when no submit-shaped
+ * control can be found or clicked does this fall back to the form-level API
+ * — a plain server-rendered form with no button-bound JS handler still needs
+ * `requestSubmit()`/`submit()` to actually navigate.
  *
  * Resolves the form to submit by name first (the response field's own
  * closest form), then falls back to the sitekey-anchored form (or the sole
@@ -5678,6 +5686,20 @@ export async function submitCaptchaGatedForm(
   })()`;
   const found = await target.evaluate<boolean>(findFormExpr).catch(() => false);
   if (!found) return false;
+
+  const rankResult = await target
+    .evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
+    .catch(() => [] as SubmitCandidate[]);
+  const ranked = Array.isArray(rankResult) ? rankResult : [];
+  // biome-ignore lint/style/noNonNullAssertion: guarded by the length check
+  const top = ranked.length > 0 ? ranked[0]! : null;
+  const clickResult = top
+    ? await target
+        .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+        .catch(() => ({ clicked: false }))
+    : { clicked: false };
+  if (clickResult.clicked) return true;
+
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
@@ -9439,9 +9461,23 @@ export async function executeStepWithHealing(params: {
         }
         const solved = solveResult.solved;
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
-        const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
-        const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
-          `(() => {
+        const preCaptchaMetaLength = recentCaptureMeta.length;
+        // Both the inject-and-submit primitive and the registry-state probe
+        // below evaluate against `captchaTarget` after the solve's ~120s poll
+        // has already elapsed, so a page navigation or frame detach that
+        // happened during that wait can leave the frame stale/wedged and
+        // make either evaluate throw via `withWatchdog` — a possibility
+        // distinct from (and unguarded by) the solveCaptcha rejection handled
+        // above. Fold that into the same attempts-remaining tolerance rather
+        // than letting it escape the loop uncaught on every attempt: retry
+        // when attempts remain, still throw on the final attempt so a
+        // genuine failure fails the step per the comment below.
+        let injectResult: InjectCaptchaTokenResult;
+        let registryState: CaptchaRegistryState;
+        try {
+          injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+          registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
+            `(() => {
           const sitekey = ${JSON.stringify(siteKey)};
           const findSitekeyEl = function () {
             return Array.prototype.find.call(
@@ -9467,7 +9503,15 @@ export async function executeStepWithHealing(params: {
           if (hcaptchaLoaded && widgetRendered) return "renderedUnmatched";
           return "empty";
         })()`
-        );
+          );
+        } catch (err) {
+          const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
+          logger.error(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token inject/registry-probe threw on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${toErrorMessage(err)}); ${attemptsRemain ? "retrying" : "failing the step rather than silently proceeding"}`
+          );
+          if (attemptsRemain) continue;
+          throw err;
+        }
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: attempt=${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
         );
@@ -9538,6 +9582,24 @@ export async function executeStepWithHealing(params: {
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit navigation to a new origin/path confirmed the advance`
           );
           trajectory?.push({ stepIndex, verifiedBy: "url" });
+          return "completed";
+        }
+        // Neither transition poll above can see a same-origin submit whose
+        // response never changes the page's URL (an XHR/fetch-driven submit
+        // with no client-side redirect). `findRecentPageTransition` is the
+        // SAME network-capture detector the probe-absent path below already
+        // relies on for exactly this case — reusing it here, scoped to the
+        // captures landed since this attempt's solve, catches the submit a
+        // clean callback dispatches even when the URL/origin never moves.
+        const networkTransitionUrl = findRecentPageTransition({
+          recentCaptureMeta,
+          preMetaLength: preCaptchaMetaLength,
+        });
+        if (networkTransitionUrl !== null) {
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit network response confirmed the advance (${networkTransitionUrl})`
+          );
+          trajectory?.push({ stepIndex, verifiedBy: "network" });
           return "completed";
         }
         // The intermittent race this loop exists for: a still-empty/absent
