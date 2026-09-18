@@ -50,7 +50,9 @@ import {
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
+import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-value-constraints";
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
+import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import type { EmailStepConfig } from "@/scraper/flow-runner";
 import {
@@ -10679,6 +10681,15 @@ export function emitContractTs(opts: {
    * value. Each becomes a `<key>: <schema>` payload field so the caller passes
    * its own history/analytics rather than replaying the recon sample. */
   discoveredStructuredKeys?: Map<string, string>;
+  /** Consumer-declared domain facts (a closed enum, a true min/max) that no
+   * captured response leaf exposes a shape for — see
+   * {@link ReconValueConstraints}. Applied at the single merge point every
+   * field source above funnels through: a declared field whose name matches
+   * an already-discovered field overrides that field's emitted Zod
+   * expression regardless of which discovery mechanism produced it. A
+   * declared field with no matching discovered field is a no-op — it has no
+   * schema line to attach to. */
+  valueConstraints?: ReconValueConstraints;
   /** PascalCase candidate-PII field names the browser flow splices as
    * `payload.<field>` (from resolveStepPayloadField). Each is added to the
    * payload schema so those references typecheck. Shares the accumulator with
@@ -10749,6 +10760,7 @@ export function emitContractTs(opts: {
     discoveredRawOptionFields,
     discoveredAdditionalBodyKeys,
     discoveredStructuredKeys,
+    valueConstraints = EMPTY_VALUE_CONSTRAINTS,
     payloadFieldNames,
     optionalPayloadFieldNames = new Set<string>(),
     headerBindings = [],
@@ -11177,6 +11189,33 @@ export function emitContractTs(opts: {
     ) {
       extendFields.set(fieldName, line.replace(/,\s*$/, ".optional(),"));
     }
+  }
+  // A consumer-declared value constraint overrides its matching field's
+  // emitted Zod expression here, at the single merge point every discovery
+  // source above funnels through — see {@link ReconValueConstraints}. A
+  // declared field name with no entry in extendFields never appeared in any
+  // capture this run and is a no-op, not an error: there is no schema line
+  // for it to attach to.
+  for (const [fieldName, constraint] of Object.entries(valueConstraints)) {
+    const line = extendFields.get(fieldName);
+    if (line === null || line === undefined) continue;
+    if (
+      constraint.enumValues === undefined &&
+      constraint.min === undefined &&
+      constraint.max === undefined
+    ) {
+      continue;
+    }
+    const key = isValidJsIdentifier(fieldName) ? fieldName : JSON.stringify(fieldName);
+    const zod = constraint.enumValues
+      ? `z.enum([${constraint.enumValues.map((v) => JSON.stringify(v)).join(", ")}])`
+      : [
+          "z.number()",
+          ...(constraint.min !== undefined ? [`.min(${constraint.min})`] : []),
+          ...(constraint.max !== undefined ? [`.max(${constraint.max})`] : []),
+        ].join("");
+    const optional = line.trimEnd().endsWith(".optional(),");
+    extendFields.set(fieldName, `  ${key}: ${zod}${optional ? ".optional()" : ""},`);
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
@@ -12441,6 +12480,23 @@ async function resolveFormSchema(specifier: string): Promise<ReconFormSchema | n
   return formSchema;
 }
 
+/**
+ * Resolves the consumer-declared value constraints for this run.
+ *
+ * Absent `--value-constraints`, no override happens: every field's emitted
+ * Zod expression stays whatever its discovery mechanism (Phase E/F options,
+ * form-schema fields, structured keys) already inferred — the same "absence
+ * means none" discipline `--vocabulary`/`--form-schema` use.
+ */
+async function resolveValueConstraints(specifier: string): Promise<ReconValueConstraints> {
+  if (!specifier) return EMPTY_VALUE_CONSTRAINTS;
+  const valueConstraints = await loadReconValueConstraints(specifier, process.cwd());
+  logger.info(
+    `value-constraints: ${specifier === VALUE_CONSTRAINTS_NONE ? "none (no field overrides)" : `custom constraints from ${specifier}`}`
+  );
+  return valueConstraints;
+}
+
 /** Everything `main()`'s emit === "ts" branch needs to write its output,
  * plus the bits {@link healUnreferencedUrlFieldsOnce} needs to identify which
  * capture(s) to exclude on a narrowed retry. */
@@ -12655,6 +12711,7 @@ async function main(): Promise<void> {
   let emit: "ts" | "config" = "ts";
   let vocabularySpecifier = "";
   let formSchemaSpecifier = "";
+  let valueConstraintsSpecifier = "";
   let runDir: string | undefined;
   let allowEmptyCapture = false;
 
@@ -12662,6 +12719,8 @@ async function main(): Promise<void> {
     if (args[i] === "--site-id" && args[i + 1]) siteId = args[++i]!;
     else if (args[i] === "--vocabulary" && args[i + 1]) vocabularySpecifier = args[++i]!;
     else if (args[i] === "--form-schema" && args[i + 1]) formSchemaSpecifier = args[++i]!;
+    else if (args[i] === "--value-constraints" && args[i + 1])
+      valueConstraintsSpecifier = args[++i]!;
     else if (args[i] === "--run-dir" && args[i + 1]) runDir = args[++i]!;
     else if (args[i] === "--force") force = true;
     else if (args[i] === "--allow-empty-capture") allowEmptyCapture = true;
@@ -12845,6 +12904,10 @@ async function main(): Promise<void> {
   // Consumer-supplied wire keys for ATS form-schema recovery, or null. When
   // null the recovery functions no-op — the engine hardcodes no vendor format.
   const formSchema = await resolveFormSchema(formSchemaSpecifier);
+  // Consumer-declared domain facts (enum/min/max) that no captured response
+  // leaf exposes a shape for, or EMPTY_VALUE_CONSTRAINTS when absent — see
+  // {@link ReconValueConstraints}.
+  const valueConstraints = await resolveValueConstraints(valueConstraintsSpecifier);
 
   const pascal = toPascalCase(siteId);
   // Read the flow's declared own-backend hosts BEFORE deriving baseUrl, so
@@ -13406,6 +13469,7 @@ async function main(): Promise<void> {
       discoveredRawOptionFields,
       discoveredAdditionalBodyKeys,
       discoveredStructuredKeys,
+      valueConstraints,
       payloadFieldNames: browserFlow.payloadFieldNames,
       optionalPayloadFieldNames: browserFlow.optionalPayloadFieldNames,
       headerBindings,
