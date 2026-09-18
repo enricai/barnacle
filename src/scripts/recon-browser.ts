@@ -1087,32 +1087,25 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
  * invariant (bridge steps are emitted from the failure point back to where
  * the original flow can resume — see the splice call site), the first
  * bridge step is ALWAYS the one that resumes the failure point, so the
- * fallback targets that position by default. The one structural (not
- * wording-based) case where the first bridge step is genuinely NOT a resume
- * step is when it duplicates the label of the next AUTHORED step still
- * queued to run — that means the LLM front-loaded upcoming, already-planned
- * work rather than proposing recovery content, which {@link
- * isReplanStepDuplicatingNextAuthoredStep} already detects for the sibling
- * dedup pass. `nextAuthoredStepInstruction` is optional because not every
- * call site has an original remaining tail to compare against; when absent,
- * the documented invariant (first bridge step always resumes the failure)
- * is trusted outright.
+ * fallback targets that position by default.
+ *
+ * `newSteps` MUST already have had {@link filterReplanDuplicatingNextAuthored}
+ * applied — this function no longer re-derives that filter's verdict itself
+ * (an earlier version predicted it via a `nextAuthoredStepInstruction`
+ * parameter, which could tag a step that the filter was about to drop,
+ * silently losing the flags). Requiring filter-then-tag ordering at the call
+ * site means whatever lands in position 0 here is guaranteed to actually
+ * survive to the spliced plan.
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
-  failedStep: NormalizedStep,
-  nextAuthoredStepInstruction?: string
+  failedStep: NormalizedStep
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
   const hasLabelMatch = newSteps.some((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
   );
-  const firstStepInstruction = newSteps.length > 0 ? newSteps[0]!.instruction : "";
-  const firstStepDuplicatesNextAuthored =
-    nextAuthoredStepInstruction !== undefined &&
-    isReplanStepDuplicatingNextAuthoredStep(firstStepInstruction, nextAuthoredStepInstruction);
-  const fallbackIndex =
-    !hasLabelMatch && newSteps.length > 0 && !firstStepDuplicatesNextAuthored ? 0 : -1;
+  const fallbackIndex = !hasLabelMatch && newSteps.length > 0 ? 0 : -1;
   return newSteps.map((s, idx) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {
@@ -3060,15 +3053,37 @@ async function main(): Promise<void> {
           // can force them optional on write-back. originalRemaining keeps its
           // origin: "original" — that's what protects the canonical final
           // submit from being silently demoted to optional across replans.
-          const taggedNewSteps = filterReplanDuplicatingNextAuthored(
-            applyFailedStepFlagsToResumingBridgeStep(
-              newSteps.map((s) => ({ ...s, origin: "replan" as const })),
-              step,
-              originalRemaining[0]?.instruction
-            ),
+          //
+          // Filter BEFORE tagging (not after): a bridge step that duplicates
+          // originalRemaining[0]'s action is dropped outright, so tagging it
+          // first only to have it discarded loses the flags with nowhere to
+          // land. Filtering first guarantees applyFailedStepFlagsToResuming-
+          // BridgeStep only ever tags a step that actually survives into the
+          // spliced plan.
+          const survivingNewSteps = filterReplanDuplicatingNextAuthored(
+            newSteps.map((s) => ({ ...s, origin: "replan" as const })),
             originalRemaining
           );
-          plan.splice(i, plan.length - i, ...taggedNewSteps, ...originalRemaining);
+          const taggedNewSteps = applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step);
+          // If every bridge step duplicated the next authored step, the
+          // filter above drops them all and originalRemaining[0] itself is
+          // the step that resumes the failure point — re-apply the flags
+          // there so they aren't silently lost.
+          const resumeTarget = originalRemaining[0];
+          const patchedOriginalRemaining =
+            taggedNewSteps.length === 0 &&
+            resumeTarget !== undefined &&
+            (step.captchaGated || step.submitStep)
+              ? [
+                  {
+                    ...resumeTarget,
+                    captchaGated: resumeTarget.captchaGated || step.captchaGated,
+                    submitStep: resumeTarget.submitStep || step.submitStep,
+                  },
+                  ...originalRemaining.slice(1),
+                ]
+              : originalRemaining;
+          plan.splice(i, plan.length - i, ...taggedNewSteps, ...patchedOriginalRemaining);
           i--;
         }
       }

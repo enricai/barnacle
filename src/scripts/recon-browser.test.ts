@@ -1521,16 +1521,20 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.submitStep).toBe(true);
   });
 
-  it("leaves an unrelated bridge step untouched when it duplicates the next authored step", () => {
+  it("tags whichever bridge step survives filterReplanDuplicatingNextAuthored when the first one is dropped for duplicating the next authored step", () => {
     const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
-    const newSteps = [mk("Click the 'Change Delivery Address' link to open the address panel")];
-    const out = applyFailedStepFlagsToResumingBridgeStep(
-      newSteps,
-      failedStep,
-      "If the address panel is closed, click the 'Change Delivery Address' link"
-    );
-    expect(out[0]!.captchaGated).toBeUndefined();
-    expect(out[0]!.submitStep).toBeUndefined();
+    const newSteps = [
+      mk("Click the 'Change Delivery Address' link to open the address panel"),
+      mk("Click the 'Confirm' button to resume checkout"),
+    ];
+    const originalRemaining = [
+      mk("If the address panel is closed, click the 'Change Delivery Address' link"),
+    ];
+    const surviving = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(surviving).toHaveLength(1);
+    const out = applyFailedStepFlagsToResumingBridgeStep(surviving, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
   });
 
   it("retains flags when the first bridge step quotes a DIFFERENT control label naming the challenge widget itself", () => {
@@ -1541,28 +1545,25 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.submitStep).toBe(true);
   });
 
-  it("retains flags regardless of how the challenge-resolution control is worded, as long as it isn't the next authored step", () => {
+  it("retains flags regardless of how the challenge-resolution control is worded, as long as it survived filtering", () => {
     const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
     const newSteps = [mk("Click the 'Prove you are not a machine' checkbox")];
-    const out = applyFailedStepFlagsToResumingBridgeStep(
-      newSteps,
-      failedStep,
-      "Click the 'Continue' button to proceed to the next page"
-    );
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
     expect(out[0]!.captchaGated).toBe(true);
     expect(out[0]!.submitStep).toBe(true);
   });
 
-  it("leaves the first bridge step untouched when it duplicates the next authored step even without label overlap wording", () => {
+  it("carries flags onto the re-appended originalRemaining[0] when every bridge step duplicates it and gets filtered", () => {
     const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
     const newSteps = [mk("Click the 'Confirm Shipping Method' button to lock in the selection")];
-    const out = applyFailedStepFlagsToResumingBridgeStep(
-      newSteps,
-      failedStep,
-      "Click the 'Confirm Shipping Method' button"
-    );
-    expect(out[0]!.captchaGated).toBeUndefined();
-    expect(out[0]!.submitStep).toBeUndefined();
+    const originalRemaining = [mk("Click the 'Confirm Shipping Method' button")];
+    const surviving = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(surviving).toHaveLength(0);
+    const out = applyFailedStepFlagsToResumingBridgeStep(surviving, failedStep);
+    expect(out).toHaveLength(0);
+    // Nothing survived in the bridge steps to carry the flags — the splice
+    // call site is responsible for re-applying them to originalRemaining[0]
+    // once it becomes the step that actually resumes the failure point.
   });
 
   it("is a no-op when the failed step carried neither flag", () => {

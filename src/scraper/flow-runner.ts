@@ -5400,6 +5400,42 @@ export interface InjectCaptchaTokenResult {
    * False means neither existed, so the raw field-set fallback ran instead.
    */
   callbackDiscovered: boolean;
+  /**
+   * Set only when the discovered callback's invoke eval rejected with a
+   * genuine in-page exception (classified via
+   * {@link isNavigatingEvaluateRejection}) rather than the expected
+   * context-teardown rejection of a callback that navigated the frame.
+   * `injected`/`callbackDiscovered` are both computed from the precheck
+   * BEFORE this invoke runs, so their being `true` does NOT mean the token
+   * was actually delivered when this field is set — callers must check it
+   * before trusting them.
+   */
+  callbackInvokeError?: string;
+}
+
+/**
+ * Distinguishes a navigating evaluate's expected context-teardown rejection
+ * (the callback/submit dispatch it wraps synchronously navigated the frame,
+ * tearing down the execution context before a return value marshals) from a
+ * genuine in-page exception — a thrown `TypeError`, a rejected fetch, or any
+ * other real failure inside the site's own callback/submit logic. Both are
+ * indistinguishable to a blanket `.catch(() => undefined)`, which is exactly
+ * why a genuinely thrown-and-swallowed exception during the callback invoke
+ * used to log `callbackDiscovered=true`/`injected=true` (both computed
+ * BEFORE the invoke) while never actually dispatching anything. Only a
+ * context-teardown rejection is safe to discard silently; this is what lets
+ * callers keep doing that for the first case while surfacing the second.
+ */
+function isNavigatingEvaluateRejection(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase();
+  return (
+    message.includes("execution context was destroyed") ||
+    message.includes("execution context is not available") ||
+    message.includes("cannot find context with specified id") ||
+    message.includes("target closed") ||
+    message.includes("frame was detached") ||
+    message.includes("no frame for given id found")
+  );
 }
 
 /**
@@ -5559,8 +5595,11 @@ export async function injectCaptchaTokenAndSubmit(
     // case: it's an anonymous closure living in the registry, not a named
     // `window` global, so it cannot be marshalled back from the precheck's
     // evaluate call.
-    await target.evaluate(invokeCallbackExpr).catch(() => undefined);
-    return { injected, hasForm, callbackDiscovered };
+    const callbackInvokeError = await target.evaluate(invokeCallbackExpr).then(
+      () => undefined,
+      (err: unknown) => (isNavigatingEvaluateRejection(err) ? undefined : toErrorMessage(err))
+    );
+    return { injected, hasForm, callbackDiscovered, callbackInvokeError };
   }
 
   // Belt-and-suspenders: this frame missed session.ts's page-init-script
@@ -5592,8 +5631,11 @@ export async function injectCaptchaTokenAndSubmit(
     // the non-late invoke above: the callback is free to submit the form
     // synchronously off the field value that's now present, tearing down the
     // execution context before a return value marshals.
-    await target.evaluate(invokeLateCallbackExpr).catch(() => undefined);
-    return { injected, hasForm, callbackDiscovered: true };
+    const callbackInvokeError = await target.evaluate(invokeLateCallbackExpr).then(
+      () => undefined,
+      (err: unknown) => (isNavigatingEvaluateRejection(err) ? undefined : toErrorMessage(err))
+    );
+    return { injected, hasForm, callbackDiscovered: true, callbackInvokeError };
   }
 
   const setValueExpr = `(() => {
@@ -5670,6 +5712,12 @@ export async function injectCaptchaTokenAndSubmit(
  * no site-host traffic would ever follow the clean callback. Resolves to
  * whether a form was actually found and acted on; a true no-op is reported
  * only when the page has no form at all to resolve.
+ *
+ * The click-dispatch and form-level submit evals both tolerate the expected
+ * context-teardown rejection of a click/submit that navigated the frame —
+ * see {@link isNavigatingEvaluateRejection} — but rethrow anything else, so a
+ * genuine in-page exception during the dispatch propagates to the caller
+ * instead of silently resolving as a successful submit.
  */
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
@@ -5696,7 +5744,10 @@ export async function submitCaptchaGatedForm(
   const clickResult = top
     ? await target
         .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
-        .catch(() => ({ clicked: false }))
+        .catch((err: unknown) => {
+          if (isNavigatingEvaluateRejection(err)) return { clicked: false };
+          throw err;
+        })
     : { clicked: false };
   if (clickResult.clicked) return true;
 
@@ -5712,7 +5763,10 @@ export async function submitCaptchaGatedForm(
   // context before Runtime.evaluate can marshal a return value for this call —
   // that rejection is the expected outcome of a navigating evaluate, not a
   // real failure, so it's discarded here rather than awaited for a result.
-  await target.evaluate(submitExpr).catch(() => undefined);
+  await target.evaluate(submitExpr).catch((err: unknown) => {
+    if (isNavigatingEvaluateRejection(err)) return undefined;
+    throw err;
+  });
   return true;
 }
 
@@ -9397,7 +9451,7 @@ export async function executeStepWithHealing(params: {
   // instead of silently falling through as if unverified-but-passing.
   const isSubmitOrFinalStep = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
   if (captchaGated && isSubmitOrFinalStep) {
-    const captchaTarget = frameTarget ?? mainFrameTarget(page);
+    let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
       const el = document.querySelector("[data-sitekey]");
       if (!el) return { siteKey: null, isInvisible: false };
@@ -9435,6 +9489,18 @@ export async function executeStepWithHealing(params: {
         captchaAttempt++
       ) {
         if (captchaAttempt > 1) {
+          // Re-resolve the target frame before every retry, mirroring the
+          // main step loop's per-step `resolveFrameTarget` call: a
+          // navigation or detach triggered by the prior attempt (its solve's
+          // ~120s wait, its inject, or its submit) can leave `captchaTarget`
+          // bound to a torn-down frame, and every evaluate below would
+          // otherwise silently keep operating on that stale target for the
+          // rest of the retries. A target with no declared frame selector
+          // (main-frame flows) resolves this immediately with zero polling.
+          captchaTarget = await resolveFrameTarget(
+            page,
+            captchaTarget.frameSelector ?? captchaTarget.declaredFrameSelector ?? null
+          );
           // Re-assert the capture install in the target frame before
           // retrying: a late-attaching registry may not exist yet on the
           // first attempt, and re-running this idempotent install gives a
@@ -9542,7 +9608,23 @@ export async function executeStepWithHealing(params: {
         // a form the widget's own callback already advanced.
         let fallbackSubmitted = false;
         if (!confirmed && injectResult.hasForm) {
-          fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget);
+          try {
+            fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget);
+          } catch (err) {
+            // A genuine in-page exception from the click/submit dispatch
+            // (classified via `isNavigatingEvaluateRejection` inside
+            // `submitCaptchaGatedForm`) — not the expected context-teardown
+            // rejection of a submit that navigated the frame. Fold into the
+            // same attempts-remaining tolerance as the inject/registry-probe
+            // catch above rather than letting it silently resolve as a
+            // no-op fallback.
+            const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
+            logger.error(
+              `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: explicit submit fallback threw a genuine in-page exception on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${toErrorMessage(err)}); ${attemptsRemain ? "retrying" : "failing the step rather than silently proceeding"}`
+            );
+            if (attemptsRemain) continue;
+            throw err;
+          }
           if (!fallbackSubmitted) {
             logger.info(
               `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: explicit submit fallback found no field/form to act on (widget likely tore down or replaced it after the callback fired); nothing was submitted`
@@ -9602,6 +9684,33 @@ export async function executeStepWithHealing(params: {
           trajectory?.push({ stepIndex, verifiedBy: "network" });
           return "completed";
         }
+        // The discovered callback threw a genuine in-page exception during
+        // its invoke (classified via `isNavigatingEvaluateRejection`), and
+        // none of the transition detectors above confirmed an advance
+        // either. Checked BEFORE `shouldRetryCaptchaRegistry` below so the
+        // swallowed exception is always logged and threaded into the retry
+        // decision — never silently absorbed into that check's generic
+        // "callback fired but no nav" retry reasoning, which says nothing
+        // about a real thrown error having occurred. A thrown exception is
+        // direct evidence the token was never actually delivered, not merely
+        // an absence of a poll result, so it must never be folded into the
+        // "clean callback, no evidence either way" fallthrough further below
+        // either. Retry while attempts remain (the exception may be
+        // transient, e.g. a stale frame on this attempt — re-resolved at the
+        // top of the next iteration), else fail loudly naming the real cause
+        // instead of silently reporting `callbackDiscovered=true`/
+        // `injected=true` and falling through to the phantom-click cascade
+        // with no trace of it.
+        if (injectResult.callbackInvokeError) {
+          const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
+          logger.error(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: the discovered callback threw a genuine in-page exception on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${injectResult.callbackInvokeError}); ${attemptsRemain ? "retrying" : "failing the step rather than silently falling through to the cascade"}`
+          );
+          if (attemptsRemain) continue;
+          throw new CaptchaError(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: the discovered callback threw a genuine in-page exception (${injectResult.callbackInvokeError}) instead of delivering the token, and no transition was confirmed after the solve`
+          );
+        }
         // The intermittent race this loop exists for: a still-empty/absent
         // registry means the callback attach hadn't landed when this attempt
         // solved+injected, and a discovered-but-unconfirmed callback means it
@@ -9640,7 +9749,24 @@ export async function executeStepWithHealing(params: {
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve${fallbackDetail}`
           );
         }
-        break;
+        // The remaining shape: a render-config callback WAS cleanly
+        // discovered and invoked on every attempt (or no pattern was
+        // configured to distinguish that from the branch above), yet
+        // neither the navigation poll nor the network-capture scan ever
+        // confirmed an advance on any attempt. `shouldRetryCaptchaRegistry`
+        // above already exhausted every attempt worth retrying, so this is
+        // not a registry race — the token was solved and handed to the
+        // widget's own callback, but nothing observable ever moved. Fail
+        // loudly here too instead of `break`-ing into the normal
+        // phantom-click cascade as if the solve had worked; that fallthrough
+        // is the exact misleading "callbackDiscovered=true" silent no-op
+        // this hook must never produce, pattern-configured or not.
+        logger.error(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} produced no confirmed transition after exhausting all ${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} attempts; failing the step rather than silently falling through to the cascade`
+        );
+        throw new CaptchaError(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} produced no confirmed transition after exhausting all attempts`
+        );
       }
     }
   }
