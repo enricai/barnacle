@@ -163,7 +163,7 @@ describe("recon noise admission at production scale: mixed third-party + same-or
 
     expect(contract).toContain("catalog-search/");
     expect(contract).toContain("catalog-detail/");
-    expect(contract).not.toContain("urgency-widget");
+    expect(contract).not.toContain("telemetry-ping");
     expect(contract).not.toContain("adsrvr.org");
     expect(contract).not.toContain("googletagmanager.com");
     expect(contract).not.toContain("doubleclick.net");
