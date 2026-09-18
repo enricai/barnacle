@@ -26,6 +26,7 @@ interface FakeEl {
   rect: { width: number; height: number };
   computedStyle: { display: string; visibility: string };
   disabled: boolean;
+  parentElement: FakeEl | null;
   clicked: boolean;
   focused: boolean;
   getAttribute(name: string): string | null;
@@ -60,6 +61,7 @@ function makeEl(
     rect,
     computedStyle,
     disabled: overrides.disabled ?? false,
+    parentElement: null,
     clicked: false,
     focused: false,
     getAttribute(name) {
@@ -92,6 +94,7 @@ function flattenDescendants(children: FakeEl[]): FakeEl[] {
 
 function appendChild(parent: FakeEl, child: FakeEl): FakeEl {
   parent.children.push(child);
+  child.parentElement = parent;
   return child;
 }
 
@@ -410,6 +413,22 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.tier).toBe(1);
     expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes a candidate wrapped in an aria-disabled="true" ancestor container while ranking a lower-tier enabled sibling first', () => {
+    const wrapper = makeEl("div", { "aria-disabled": "true" });
+    appendChild(wrapper, makeEl("div", { role: "button" }, "Submit"));
+    const enabledFallback = makeEl("div", { role: "button" }, "Submit Application");
+    const document = makeRoot([wrapper, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.deepIndex).toBe(2);
   });
 
   it("does not shift a later candidate's deepIndex when an earlier candidate is excluded for being unrendered", () => {

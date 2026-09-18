@@ -9,7 +9,7 @@
  * included, and "Back"/"Cancel"/"Save draft"-shaped controls never appear.
  */
 
-import { clickActivationExpr } from "@/scraper/browser-click-expr";
+import { clickActivationExpr, MAX_SELECTION_ANCESTOR_DEPTH } from "@/scraper/browser-click-expr";
 
 /**
  * Verbs that identify a control as NOT the submit action even when it is
@@ -54,18 +54,25 @@ const IS_VISIBLE_EXPR = `((el) => {
 
 /**
  * Disabled check: a candidate carrying the native `disabled` property or
- * `aria-disabled="true"` can never produce a real submit — clicking it is a
- * silent no-op that would otherwise be reported as `clicked: true`. Mirrors
- * `flow-runner.ts`'s `DISABLED_MARKER_EL_EXPR` predicate shape for
- * consistency with the codebase's existing disabled-veto convention.
- * Applied both when ranking (so a disabled candidate never outranks an
- * enabled one) and when clicking (so a candidate that became disabled
- * between the rank and click calls is reported as not-actionable instead of
- * dispatching a phantom click).
+ * `aria-disabled="true"` — on itself or an ancestor within
+ * {@link MAX_SELECTION_ANCESTOR_DEPTH} levels — can never produce a real
+ * submit — clicking it is a silent no-op that would otherwise be reported
+ * as `clicked: true`. Mirrors `flow-runner.ts`'s `DISABLED_MARKER_EL_EXPR`
+ * predicate shape (including the ancestor walk, since a wrapping
+ * `aria-disabled` container is not reflected onto its descendants the way
+ * native `disabled` on a `<fieldset>` is) for consistency with the
+ * codebase's existing disabled-veto convention. Applied both when ranking
+ * (so a disabled candidate never outranks an enabled one) and when
+ * clicking (so a candidate that became disabled between the rank and
+ * click calls is reported as not-actionable instead of dispatching a
+ * phantom click).
  */
 const IS_DISABLED_EXPR = `((el) => {
-  if (el.disabled === true) return true;
-  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+  for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && el; depth++) {
+    if (el.disabled === true) return true;
+    if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+    el = el.parentElement;
+  }
   return false;
 })`;
 
