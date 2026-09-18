@@ -461,7 +461,13 @@ function endpointOrigin(url: string): string | null {
  * timestamp, or session nonce that differs on every fire even though the
  * fixed query is the only signal that actually identifies the endpoint —
  * the body varies, but the response never carries anything the flow could
- * not already derive from the request itself.
+ * not already derive from the request itself. When the response DOES carry
+ * business-looking (non-URL-derivable) values, that alone is not proof of a
+ * real endpoint either: a beacon can stamp a fresh fingerprint/session id
+ * into its own response on every fire, so this also falls back to
+ * {@link hasFreelyVaryingResponseAcrossOccurrences} — a response that varies
+ * on almost every occurrence is exactly as much noise as one that echoes the
+ * request.
  *
  * A candidate with NO query string at all has no key to prove "fixed" —
  * `hasFixedKey` has nothing to key off — so it falls back to
@@ -474,6 +480,14 @@ function endpointOrigin(url: string): string | null {
  * business-relevant state," so query-key-less repeats need to already look
  * densely repeated before that default is trusted.
  *
+ * When the query-less candidate's request body is byte-identical across every
+ * occurrence, a business-looking response is trusted only if it shows SOME
+ * evidence of real state: either it varies almost every call
+ * ({@link hasFreelyVaryingResponseAcrossOccurrences}) or it never varies at
+ * all ({@link hasNoObservedResponseVariance}) both read as noise, because
+ * neither demonstrates the bounded, repeats-dominate cycling (e.g. a boolean
+ * flipping between two values) a genuinely-polled own endpoint produces.
+ *
  * When the request body varies across occurrences (unlike the fixed-query
  * branch, which only needs the query key fixed), the missing-metadata
  * default is NOT trusted: a same-endpoint POST with a differing body per
@@ -481,9 +495,13 @@ function endpointOrigin(url: string): string | null {
  * only reads as noise when the candidate explicitly supplies a
  * `content-type` header — otherwise the varying body is exactly the shape a
  * real multi-operation API produces, and treating "no metadata given" as
- * proof of noise would drop the whole flow. A byte-identical body across
- * every occurrence is unambiguous regardless of metadata, so that case
- * still defers fully to {@link hasNoBusinessRelevantResponseState}.
+ * proof of noise would drop the whole flow. Once that header is present, a
+ * business-looking response still falls back to
+ * {@link hasFreelyVaryingResponseAcrossOccurrences} for the same reason as
+ * the fixed-query branch — a same-origin widget can vary both its request
+ * body and its response payload per call and still be noise. A byte-identical
+ * body across every occurrence is unambiguous regardless of metadata, so that
+ * case still defers fully to {@link hasNoBusinessRelevantResponseState}.
  */
 /**
  * Minimum same-endpoint occurrence count required to flag a query-less
@@ -518,10 +536,49 @@ const MIN_QUERYLESS_REPEAT_COUNT = 3;
 function hasFreelyVaryingResponseAcrossOccurrences(
   sameEndpoint: readonly { responseBody?: unknown }[]
 ): boolean {
-  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  const { withBody, distinctSignatures } = responseSignatureCardinality(sameEndpoint);
   if (withBody.length < 2) return false;
-  const distinctSignatures = new Set(withBody.map((c) => JSON.stringify(c.responseBody)));
   return distinctSignatures.size > withBody.length / 2;
+}
+
+/**
+ * Distinct JSON-response signatures observed across same-endpoint occurrences,
+ * alongside the subset that actually carried a body — the shared cardinality
+ * count {@link hasFreelyVaryingResponseAcrossOccurrences} (high-cardinality
+ * noise) and {@link hasNoObservedResponseVariance} (zero-cardinality noise)
+ * each read off, so the two "not real state" signals can't drift apart on
+ * how a signature is computed.
+ */
+function responseSignatureCardinality(sameEndpoint: readonly { responseBody?: unknown }[]): {
+  withBody: readonly { responseBody?: unknown }[];
+  distinctSignatures: Set<string>;
+} {
+  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  return {
+    withBody,
+    distinctSignatures: new Set(withBody.map((c) => JSON.stringify(c.responseBody))),
+  };
+}
+
+/**
+ * True when every same-endpoint occurrence that carried a response body
+ * carried the SAME body — i.e. the response never once demonstrated a
+ * second state. A genuinely-polled own endpoint with real closed-set state
+ * (a toggle that flips between two values) shows at least one differing
+ * occurrence somewhere in the archive; a query-less noise widget that
+ * happens to have been captured returning one static, business-looking-but-
+ * non-URL-derivable value for the whole archived session shows none. This is
+ * the query-less-only counterpart to {@link hasFreelyVaryingResponseAcrossOccurrences}:
+ * that one catches a widget whose value changes almost every call, this one
+ * catches the opposite extreme — a widget whose value never changes at all —
+ * neither of which is evidence of the bounded, repeats-dominate cycling a
+ * real closed-set poll produces.
+ */
+function hasNoObservedResponseVariance(
+  sameEndpoint: readonly { responseBody?: unknown }[]
+): boolean {
+  const { withBody, distinctSignatures } = responseSignatureCardinality(sameEndpoint);
+  return withBody.length >= 2 && distinctSignatures.size <= 1;
 }
 
 export function isZeroVarianceRepeatCapture(
@@ -559,12 +616,15 @@ export function isZeroVarianceRepeatCapture(
     );
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
-      return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
+      if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
+      return hasNoObservedResponseVariance(sameEndpoint);
     }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
       (key) => key.toLowerCase() === "content-type"
     );
-    return hasExplicitContentType && hasNoBusinessRelevantResponseState(candidate);
+    if (!hasExplicitContentType) return false;
+    if (hasNoBusinessRelevantResponseState(candidate)) return true;
+    return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
   }
   if (sameEndpoint.length < 2) return false;
   const sameEndpointUrls = sameEndpoint
@@ -585,7 +645,9 @@ export function isZeroVarianceRepeatCapture(
   });
   if (!hasFixedKey) return false;
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
-  return bodyIdentical || hasNoBusinessRelevantResponseState(candidate);
+  if (bodyIdentical) return true;
+  if (hasNoBusinessRelevantResponseState(candidate)) return true;
+  return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }
 
 /**
