@@ -309,6 +309,27 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 
+  it("flags a query-less candidate densely repeated whose JSON response has non-URL-derivable leaves that vary per occurrence", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/loader",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/loader",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    for (const occurrence of occurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, occurrences)).toBe(true);
+    }
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
   it("does not flag a query-less, densely-repeated POST with a varying body and no explicit content-type header", () => {
     const first = {
       method: "POST",
@@ -496,8 +517,10 @@ describe("isZeroVarianceRepeatCapture", () => {
     }));
     const widgetOccurrences = Array.from({ length: 12 }, (_, i) => ({
       method: "GET",
-      url: `https://apply.acme.example/widget/loader?widgetId=chat-bubble&loadTs=${1700000000 + i}&sessionId=sess-${i}`,
+      url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
     }));
     const allCaptures = [
       searchCapture,
