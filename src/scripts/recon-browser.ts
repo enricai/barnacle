@@ -1077,14 +1077,34 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
  * (or the submit-verifier gate) silently stops firing on a replan-origin
  * resume. Pure over already-known strings/flags: same inputs, same output.
  * Leaves bridge steps that don't match the failed step's control untouched.
+ *
+ * Quoted-label overlap is the primary signal, but the replan prompt never
+ * asks the LLM to quote the same label it just failed on, so a bridge step
+ * can resume the failed control while quoting nothing at all. Per this
+ * file's splice invariant (bridge steps are emitted from the failure point
+ * back to where the original flow can resume — see the splice call site),
+ * the first bridge step is the one that resumes the failure point itself.
+ * When no step matches by label AND the first bridge step names no quoted
+ * control of its own (so it can't be a confirmed reference to a DIFFERENT
+ * control), fall back to that position instead of leaving the flags
+ * unattached.
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
   failedStep: NormalizedStep
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
-  return newSteps.map((s) =>
+  const hasLabelMatch = newSteps.some((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
+  );
+  const fallbackIndex =
+    !hasLabelMatch &&
+    newSteps.length > 0 &&
+    extractQuotedLabels(newSteps[0]!.instruction).length === 0
+      ? 0
+      : -1;
+  return newSteps.map((s, idx) =>
+    isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,
@@ -1117,23 +1137,57 @@ export function filterReplanDuplicatingNextAuthored(
 }
 
 /**
+ * Detect whether a single bridge instruction is more than a reworded
+ * re-proposal of the same control action — i.e. it splices in a genuinely
+ * new clause (a precondition action like "Solve the challenge, then click
+ * ..." or a value-correction like "..., retrying with the corrected value")
+ * rather than merely padding the same action with justification/filler
+ * ("Try again to click ... now that the form is valid" stays single-clause).
+ * Comma- and "then"-delimited clauses are the cheapest reliable signal for
+ * "the bridge is doing more than repeating": a rewording that only adds
+ * rationale stays a single clause, while a bridge that actually resolves the
+ * blocker (solving a challenge, correcting a value) reads as two. Quoted
+ * spans are blanked out before splitting — a fill value like `'Smith, John'`
+ * contains a comma that has nothing to do with clause structure, and
+ * splitting on it would misclassify a byte-identical repeat as compound.
+ */
+function hasCompoundBridgeClause(instruction: string): boolean {
+  const withoutQuotedSpans = instruction.replace(/['"][^'"]{2,80}['"]/g, "");
+  const clauses = withoutQuotedSpans
+    .split(/,|\bthen\b/i)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  return clauses.length > 1;
+}
+
+/**
  * Detect a replan that only re-proposes the step that JUST terminally failed —
- * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step is
- * byte-identical (whitespace/case-normalized) to the failed instruction. The
- * replan prompt allows a no-op re-emission of the failed step, but a bridge that
- * is NOTHING but the failed step is a guaranteed re-fail: resuming re-runs the
- * whole 5-attempt cascade on the exact click that just exhausted it (~1m40s
- * wasted) before the cycle detector — which needs REPLAN_CYCLE_THRESHOLD repeats
- * under a static page — even engages. This catches it on the FIRST occurrence.
- * Pure; returns false whenever the bridge adds any genuinely new step.
+ * i.e. after {@link filterCompletedFromReplan} the sole surviving bridge step
+ * matches the failed instruction's {@link stepSignature}. Compares by
+ * signature rather than raw normalized text for the same reason
+ * {@link isReplanCycle} does: an LLM rewords a semantically-identical
+ * re-proposal freely between replan attempts, so byte/case-identical
+ * comparison lets a genuinely stuck state slip through on reworded retries.
+ * The replan prompt allows a no-op re-emission of the failed step, but a
+ * bridge that is NOTHING but the failed step is a guaranteed re-fail:
+ * resuming re-runs the whole 5-attempt cascade on the exact click that just
+ * exhausted it (~1m40s wasted) before the cycle detector — which needs
+ * REPLAN_CYCLE_THRESHOLD repeats under a static page — even engages. This
+ * catches it on the FIRST occurrence. Pure; returns false whenever the
+ * bridge adds any genuinely new step, including a single step that itself
+ * bundles a new clause ahead of or alongside the repeated action (see
+ * {@link hasCompoundBridgeClause}) — a captcha-solve-then-resubmit or a
+ * corrected-value retry is forward progress, not a stuck repeat.
  */
 export function isReplanReproposingFailedStep(
   newSteps: readonly NormalizedStep[],
   failedStep: string
 ): boolean {
   if (newSteps.length === 0) return false;
-  const failedNorm = normalizeInstruction(failedStep);
-  return newSteps.every((s) => normalizeInstruction(s.instruction) === failedNorm);
+  const failedSig = stepSignature(failedStep);
+  return newSteps.every(
+    (s) => stepSignature(s.instruction) === failedSig && !hasCompoundBridgeClause(s.instruction)
+  );
 }
 
 /**

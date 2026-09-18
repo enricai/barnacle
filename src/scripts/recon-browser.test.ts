@@ -1543,6 +1543,26 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     const second = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
     expect(second).toEqual(first);
   });
+
+  it("retains flags on a bridge step that resumes the failed control without quoting any label", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Solve the challenge and submit the form again")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("tags every bridge step that quotes the failed control's label, not just the first", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [
+      mk("Wait for the 'Submit' button to become active"),
+      mk("Click the 'Submit' button again"),
+    ];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[1]!.captchaGated).toBe(true);
+    expect(out[1]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
@@ -1571,6 +1591,24 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
     ).toBe(true);
   });
 
+  it("fires when the bridge rewords the failed step but names the same quoted control", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Try again to click the 'Submit' button now that the form is valid")],
+        "Click the 'Submit' button"
+      )
+    ).toBe(true);
+  });
+
+  it("does not fire when a single bridge step bundles a genuinely new clause ahead of the repeated control", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Solve the challenge, then click the 'Submit' button again to complete the form")],
+        "Click the 'Submit' button"
+      )
+    ).toBe(false);
+  });
+
   it("does not fire when the bridge adds a genuinely new step", () => {
     expect(
       isReplanReproposingFailedStep(
@@ -1582,6 +1620,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
 
   it("does not fire on an empty bridge (handled separately earlier)", () => {
     expect(isReplanReproposingFailedStep([], "Click Next")).toBe(false);
+  });
+
+  it("still fires when the repeated step's quoted value contains a comma", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill in the 'Last Name' field with 'Smith, John'")],
+        "Fill in the 'Last Name' field with 'Smith, John'"
+      )
+    ).toBe(true);
   });
 });
 

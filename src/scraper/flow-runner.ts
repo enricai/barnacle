@@ -5455,6 +5455,10 @@ function setResponseFieldAndInvokeCallbackExprSrc(responseField: string, token: 
     } else if (field) {
       field.value = token;
     }
+    if (field) {
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
     found.invoke(token);
   `;
 }
@@ -5624,7 +5628,10 @@ export async function injectCaptchaTokenAndSubmit(
   const dispatchChangeExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
-    if (field) field.dispatchEvent(new Event("change", { bubbles: true }));
+    if (field) {
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
   })()`;
   // Dispatching "change" can trigger a page's own submit-on-token callback,
   // which navigates the frame synchronously from within this call and tears
