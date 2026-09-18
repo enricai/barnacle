@@ -250,7 +250,7 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
 });
 
 describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the API's own total", () => {
-  it("rewrites the merged envelope's total to the delivered count instead of repeating the un-delivered original total", () => {
+  it("keeps the server's original total intact and reports delivery/truncation as sibling fields", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-graphql-paginated-truncation-"));
     const runRoot = join(workDir, "run");
     writeTruncatedPagedRunDir(runRoot);
