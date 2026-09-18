@@ -174,10 +174,20 @@ the browser flow as data. Point `BARNACLE_PLUGINS` at the file (or drop
 manifests into `BARNACLE_PLUGINS_CONFIG_DIR`); `spec.httpModule` can reference
 a compiled `executeHttp` module for the direct-HTTP hot path. The JSON Schema
 converter supports only `object`, `string`, `number`, `integer`, `boolean`,
-`array` (with `items`), `enum`, `required` — flow steps interpolate
-`{{ .request.FieldName }}`, failing loudly on an undeclared field. Template:
+`array` (with `items`), `enum`, `minimum`/`maximum` (number/integer only),
+`required` — flow steps interpolate `{{ .request.FieldName }}`, failing
+loudly on an undeclared field. Template:
 [`examples/plugins/acme-jobs.plugin.json`](../examples/plugins/acme-jobs.plugin.json).
 `BARNACLE_PLUGINS=./plugins/acme-jobs.plugin.json pnpm start`
+
+`spec.httpTimeoutMs` sets a per-call timeout (ms) for the `httpModule`'s
+direct-HTTP hot path, forwarded to a `createExecuteHttp(options)` factory
+export as `HttpClientOptions.defaultTimeoutMs` (a static `executeHttp` export
+still works but can't receive it). `spec.browserFallbackGate.skipOn` names
+one or more of `schema_drift` / `bot_challenge` / `server_error` — hot-path
+failures of a listed class skip the Stagehand browser fallback instead of
+cascading into it, for a site whose fallback is known to be unreliable for
+that failure class.
 
 A flow step's `emailStep: true` (pause, poll the run's allocated testmail
 inbox, extract a link/code from the matched message, then navigate/fill it —
