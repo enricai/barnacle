@@ -34,12 +34,14 @@ const STATUS_LABEL_VALUE = "retryCount3";
 // "sortIndex7", an inner `${queueDepth14}` literal, then outer text
 // "retryCount3" — never produced by this generator, just pre-existing
 // characters in the captured URL.
+// biome-ignore lint/suspicious/noTemplateCurlyInString: literal pre-existing "${...}" bytes captured from generator output, not a template literal
 const OPAQUE_SEGMENT = "wJbfQL-${sortIndex7${queueDepth14}retryCount3}-K0X";
 
 function beaconUrl(host: string): string {
   return `https://${host}/beacon/${OPAQUE_SEGMENT}/responder.html?env=prod`;
 }
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: test title documents literal "${a${b}c}" nesting syntax, not a template literal
 describe("replaceGuardedAgainstExistingPlaceholders — pre-existing nested ${a${b}c} span vs. a coincidental NAME-text value match", () => {
   function emitBeaconLine(): string {
     const producer = {
@@ -102,10 +104,12 @@ describe("replaceGuardedAgainstExistingPlaceholders — pre-existing nested ${a$
     // The bug: `retryCount3` (another field's NAME text, left unprotected by
     // the old regex) gets spliced into `${statusLabel}`, producing a THIRD
     // brace level nested inside the pre-existing span.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal "${statusLabel}" bytes captured from generator output, not a template literal
     expect(opaqueSlot).not.toContain("${statusLabel}");
 
     // The pre-existing nested span itself must survive completely
     // untouched — never widened, narrowed, or otherwise rewritten.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal "${...}" bytes captured from generator output, not a template literal
     expect(opaqueSlot).toBe("${sortIndex7${queueDepth14}retryCount3}");
   });
 });

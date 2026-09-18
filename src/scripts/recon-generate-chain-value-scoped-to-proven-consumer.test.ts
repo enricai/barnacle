@@ -128,6 +128,7 @@ describe("recon-generate — a chain-proven short state value is scoped to its p
 
     // `${payload.BaseUrl}` is the only legitimate interpolation any emitted
     // URL template carries.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: matching literal "${payload.BaseUrl}" bytes captured from generator output, not a template literal
     const pathPortion = authUrlTemplate.replace("${payload.BaseUrl}", "");
 
     // The authenticator's own path contains zero state-value references —
