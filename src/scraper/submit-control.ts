@@ -53,6 +53,23 @@ const IS_VISIBLE_EXPR = `((el) => {
 })`;
 
 /**
+ * Disabled check: a candidate carrying the native `disabled` property or
+ * `aria-disabled="true"` can never produce a real submit — clicking it is a
+ * silent no-op that would otherwise be reported as `clicked: true`. Mirrors
+ * `flow-runner.ts`'s `DISABLED_MARKER_EL_EXPR` predicate shape for
+ * consistency with the codebase's existing disabled-veto convention.
+ * Applied both when ranking (so a disabled candidate never outranks an
+ * enabled one) and when clicking (so a candidate that became disabled
+ * between the rank and click calls is reported as not-actionable instead of
+ * dispatching a phantom click).
+ */
+const IS_DISABLED_EXPR = `((el) => {
+  if (el.disabled === true) return true;
+  if (el.getAttribute && el.getAttribute("aria-disabled") === "true") return true;
+  return false;
+})`;
+
+/**
  * Recursive open-shadow-root walker, identical in shape to `deep-query.ts`'s
  * private `DEEP_ELEMENTS_EXPR` (duplicated rather than imported because both
  * are browser-context expression strings composed by string interpolation,
@@ -111,7 +128,10 @@ const RANK_TIERS_EXPR = `((el, name) => {
  * treatment for a node that fails {@link IS_VISIBLE_EXPR}: a hidden
  * per-step submit button in a wizard (0x0 layout box, `display:none`) is
  * dropped before ranking so it can never outrank the rendered one and win
- * a click that would silently no-op.
+ * a click that would silently no-op. Same treatment again for a node that
+ * fails {@link IS_DISABLED_EXPR}: a natively disabled or `aria-disabled`
+ * candidate is dropped before ranking so it can never outrank an enabled
+ * sibling and earn a phantom `clicked: true`.
  *
  * Each returned candidate carries `deepIndex`, the candidate's position in
  * this same deterministic deep-traversal order. {@link buildClickByDeepIndexExpr}
@@ -132,6 +152,7 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
     const accessibleName = ${ACCESSIBLE_NAME_EXPR};
     const rankTier = ${RANK_TIERS_EXPR};
     const isVisible = ${IS_VISIBLE_EXPR};
+    const isDisabled = ${IS_DISABLED_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
     const all = deepElements(${root});
     const ranked = [];
@@ -141,6 +162,7 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
       const tier = rankTier(el, name);
       if (tier === 0) continue;
       if (!isVisible(el)) continue;
+      if (isDisabled(el)) continue;
       ranked.push({
         deepIndex: i,
         tier,
@@ -164,11 +186,13 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
  * out of range for the current DOM (e.g. the page changed between the
  * locate and click calls), and `{ clicked: false, reason: "not-actionable" }`
  * without dispatching any event if the element at that index fails
- * {@link IS_VISIBLE_EXPR} — a node with no layout box makes a real click
- * throw a CDP `-32000 Node does not have a layout object` error, so this
- * check reports the same outcome as data instead. `buildRankSubmitCandidatesExpr`
- * already filters unrendered candidates out of its ranking, so this only
- * fires when the DOM changed between the rank and click calls.
+ * {@link IS_VISIBLE_EXPR} or {@link IS_DISABLED_EXPR} — a node with no
+ * layout box makes a real click throw a CDP `-32000 Node does not have a
+ * layout object` error, and a disabled node accepts a synthetic click as a
+ * silent no-op, so this check reports the same outcome as data instead.
+ * `buildRankSubmitCandidatesExpr` already filters unrendered and disabled
+ * candidates out of its ranking, so this only fires when the DOM changed
+ * between the rank and click calls.
  *
  * `root` overrides the traversal root expression (default `"document"`)
  * and must match the `root` passed to the {@link buildRankSubmitCandidatesExpr}
@@ -178,11 +202,12 @@ export function buildRankSubmitCandidatesExpr(root = "document"): string {
 export function buildClickByDeepIndexExpr(deepIndex: number, root = "document"): string {
   return `(() => {
     const isVisible = ${IS_VISIBLE_EXPR};
+    const isDisabled = ${IS_DISABLED_EXPR};
     const deepElements = ${DEEP_ELEMENTS_EXPR};
     const all = deepElements(${root});
     const el = all[${JSON.stringify(deepIndex)}];
     if (!el) return { clicked: false };
-    if (!isVisible(el)) return { clicked: false, reason: "not-actionable" };
+    if (!isVisible(el) || isDisabled(el)) return { clicked: false, reason: "not-actionable" };
     ${clickActivationExpr("el")}
     return { clicked: true };
   })()`;
