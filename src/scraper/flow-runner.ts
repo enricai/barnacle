@@ -9461,9 +9461,22 @@ export async function executeStepWithHealing(params: {
         }
         const solved = solveResult.solved;
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
-        const injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
-        const registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
-          `(() => {
+        // Both the inject-and-submit primitive and the registry-state probe
+        // below evaluate against `captchaTarget` after the solve's ~120s poll
+        // has already elapsed, so a page navigation or frame detach that
+        // happened during that wait can leave the frame stale/wedged and
+        // make either evaluate throw via `withWatchdog` — a possibility
+        // distinct from (and unguarded by) the solveCaptcha rejection handled
+        // above. Fold that into the same attempts-remaining tolerance rather
+        // than letting it escape the loop uncaught on every attempt: retry
+        // when attempts remain, still throw on the final attempt so a
+        // genuine failure fails the step per the comment below.
+        let injectResult: InjectCaptchaTokenResult;
+        let registryState: CaptchaRegistryState;
+        try {
+          injectResult = await injectCaptchaTokenAndSubmit(captchaTarget, solved.token);
+          registryState = await captchaTarget.evaluate<CaptchaRegistryState>(
+            `(() => {
           const sitekey = ${JSON.stringify(siteKey)};
           const findSitekeyEl = function () {
             return Array.prototype.find.call(
@@ -9489,7 +9502,15 @@ export async function executeStepWithHealing(params: {
           if (hcaptchaLoaded && widgetRendered) return "renderedUnmatched";
           return "empty";
         })()`
-        );
+          );
+        } catch (err) {
+          const attemptsRemain = captchaAttempt < CAPTCHA_REGISTRY_RETRY_ATTEMPTS;
+          logger.error(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: token inject/registry-probe threw on attempt ${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} (${toErrorMessage(err)}); ${attemptsRemain ? "retrying" : "failing the step rather than silently proceeding"}`
+          );
+          if (attemptsRemain) continue;
+          throw err;
+        }
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: attempt=${captchaAttempt}/${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} token injected=${injectResult.injected} hasForm=${injectResult.hasForm} callbackDiscovered=${injectResult.callbackDiscovered} registryState=${registryState}`
         );
