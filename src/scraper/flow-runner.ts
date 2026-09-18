@@ -9749,7 +9749,24 @@ export async function executeStepWithHealing(params: {
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: no render-config callback could be found and delivered, and no transition was confirmed after the solve${fallbackDetail}`
           );
         }
-        break;
+        // The remaining shape: a render-config callback WAS cleanly
+        // discovered and invoked on every attempt (or no pattern was
+        // configured to distinguish that from the branch above), yet
+        // neither the navigation poll nor the network-capture scan ever
+        // confirmed an advance on any attempt. `shouldRetryCaptchaRegistry`
+        // above already exhausted every attempt worth retrying, so this is
+        // not a registry race — the token was solved and handed to the
+        // widget's own callback, but nothing observable ever moved. Fail
+        // loudly here too instead of `break`-ing into the normal
+        // phantom-click cascade as if the solve had worked; that fallthrough
+        // is the exact misleading "callbackDiscovered=true" silent no-op
+        // this hook must never produce, pattern-configured or not.
+        logger.error(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} produced no confirmed transition after exhausting all ${CAPTCHA_REGISTRY_RETRY_ATTEMPTS} attempts; failing the step rather than silently falling through to the cascade`
+        );
+        throw new CaptchaError(
+          `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: registryState=${registryState} callbackDiscovered=${injectResult.callbackDiscovered} produced no confirmed transition after exhausting all attempts`
+        );
       }
     }
   }
