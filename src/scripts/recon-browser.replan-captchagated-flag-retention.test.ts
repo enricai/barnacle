@@ -40,7 +40,10 @@ vi.mock("@/config", () => ({
   },
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
-vi.mock("@/scraper/session", () => ({ createBrowserSession: vi.fn() }));
+const { createBrowserSessionStub } = vi.hoisted(() => ({
+  createBrowserSessionStub: vi.fn(),
+}));
+vi.mock("@/scraper/session", () => ({ createBrowserSession: createBrowserSessionStub }));
 vi.mock("@/scraper/errors", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/scraper/errors")>();
   return { ...actual };
@@ -110,7 +113,6 @@ vi.mock("@/lib/llm/anthropic-client", () => ({
 }));
 
 import { StepVerificationError } from "@/scraper/errors";
-import { createBrowserSession } from "@/scraper/session";
 import { main } from "@/scripts/recon-browser";
 
 const BASE_URL = "https://portal.example.net/app/checkout";
@@ -174,7 +176,7 @@ describe("recon-browser/main — captchaGated flag retention across a global rep
     guardedObserveStub.mockResolvedValue([]);
     messagesParseStub.mockReset();
     generateObjectStub.mockReset();
-    vi.mocked(createBrowserSession).mockReset();
+    createBrowserSessionStub.mockReset();
     loggerStub.info.mockClear();
     loggerStub.warn.mockClear();
     loggerStub.error.mockClear();
@@ -193,7 +195,7 @@ describe("recon-browser/main — captchaGated flag retention across a global rep
 
   it("re-applies captchaGated:true to the spliced bridge step even though the mocked replan LLM output carried no flag at all", async () => {
     const { stagehand } = makeFakePage();
-    vi.mocked(createBrowserSession).mockResolvedValue({
+    createBrowserSessionStub.mockResolvedValue({
       stagehand,
       limiter: {} as never,
       sessionId: "test-session",
@@ -232,5 +234,74 @@ describe("recon-browser/main — captchaGated flag retention across a global rep
     // that re-executes against the same "Submit" control still carries it.
     expect(bridgeCallArgs?.captchaGated).toBe(true);
     expect(bridgeCallArgs?.submitStep).toBe(true);
+  });
+
+  it("re-applies captchaGated:true to the next authored step when the only bridge step duplicates it and gets filtered", async () => {
+    const NEXT_AUTHORED_STEP = "Click the 'Confirm Order' button to finalize the purchase";
+    const DUPLICATE_BRIDGE_STEP = "Click the 'Confirm Order' button to finalize the purchase";
+
+    // resolveReconRunDir() memoizes its run root per module instance — force
+    // a fresh recon-browser module instance (and its recon-shared import) so
+    // this run resolves against the runsRoot this test just created rather
+    // than reusing the prior test's now-deleted temp dir.
+    process.argv = ["node", "vitest"];
+    vi.resetModules();
+    const { main } = await import("@/scripts/recon-browser.js");
+
+    const { stagehand } = makeFakePage();
+    createBrowserSessionStub.mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // The replan LLM's sole bridge step quotes the SAME label as the next
+    // authored step (front-loading upcoming work instead of proposing
+    // recovery content for the failed "Submit" control) — this gets dropped
+    // by filterReplanDuplicatingNextAuthored, so nothing in the bridge
+    // carries a resume signal for the failed control at all.
+    messagesParseStub.mockResolvedValueOnce(replanResponse(DUPLICATE_BRIDGE_STEP));
+
+    executeStepWithHealingStub.mockImplementation(async (args: { step: string }) => {
+      if (args.step === ORIGINAL_STEP) {
+        throw new StepVerificationError(
+          "step failed verification: cascade exhausted",
+          "cascade-exhausted"
+        );
+      }
+      return "completed";
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      BASE_URL,
+      "--flow",
+      JSON.stringify([
+        { step: ORIGINAL_STEP, captchaGated: true, submitStep: true },
+        { step: NEXT_AUTHORED_STEP },
+      ]),
+    ];
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(messagesParseStub).toHaveBeenCalledTimes(1);
+    // The duplicate bridge step was filtered out entirely — only the
+    // original step (fails) and the re-appended next authored step run.
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+
+    const resumeCallArgs = executeStepWithHealingStub.mock.calls.find(
+      ([args]) => (args as { step: string }).step === NEXT_AUTHORED_STEP
+    )?.[0] as { step: string; captchaGated: boolean; submitStep: boolean } | undefined;
+
+    expect(resumeCallArgs).toBeDefined();
+    // The flags had nowhere to land in the (entirely filtered-out) bridge,
+    // so they must have been re-applied to the next authored step that
+    // actually resumes the failure point in the spliced plan.
+    expect(resumeCallArgs?.captchaGated).toBe(true);
+    expect(resumeCallArgs?.submitStep).toBe(true);
   });
 });
