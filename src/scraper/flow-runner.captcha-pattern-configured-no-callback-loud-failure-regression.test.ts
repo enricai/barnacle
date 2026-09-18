@@ -56,7 +56,7 @@ function baseParams(
     // The pre-existing narrow throw condition this test pins: a pattern IS
     // configured, but no render-config callback is EVER discoverable on any
     // attempt, so neither transition detector has anything to confirm.
-    advanceTransitionBodyPattern: /"status":"submitted"/,
+    advanceTransitionBodyPattern: '"status":"submitted"',
     successUrlFragments: [] as string[],
     successPageTitleHints: [] as string[],
     ownBackendHostnames: [] as string[],
