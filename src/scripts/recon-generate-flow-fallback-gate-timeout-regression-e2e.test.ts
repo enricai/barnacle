@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
  * alongside {@link import("@/scripts/recon-generate").parseFallbackGateSpec}).
  * Unlike `recon-generate-fallback-gate-emission-e2e.test.ts`'s substring
  * assertions, the omission case here diffs the FULL generated file,
- * byte-for-byte, against the pre-change generator (git ref `79f5c52`, the
+ * byte-for-byte, against the pre-change generator (git ref `36cc9c3`, the
  * last commit before the fallback-gate feature landed) — so any stray
  * whitespace, ordering, or formatting drift introduced anywhere else in
  * `emitContractTs` by this feature would surface here even if it never
@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const CURRENT_GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
-const PRE_CHANGE_REF = "79f5c52";
+const PRE_CHANGE_REF = "36cc9c3";
 
 function writeRunDir(root: string): void {
   mkdirSync(join(root, "graphql"), { recursive: true });
