@@ -1070,37 +1070,6 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
 }
 
 /**
- * Word-boundary phrase patterns identifying an interactive-challenge
- * resolution control ("I'm not a robot" checkbox, "verify you are human",
- * a solve-the-challenge widget), keyed lowercase like {@link SIGN_IN_PATTERNS}.
- * Generic to any challenge provider — no site-specific wording.
- */
-const CHALLENGE_RESOLUTION_PATTERNS = [
-  /\bcaptcha\b/,
-  /\brobot\b/,
-  /\bchallenge\b/,
-  /\bverif(?:y|ication)\b/,
-  /\bhuman\b/,
-  /\bpuzzle\b/,
-  /\bsolve\b/,
-];
-
-/**
- * Detect whether a bridge instruction names a challenge-resolution control
- * (a captcha checkbox, "verify you're human" widget, etc.) rather than an
- * arbitrary other UI control. Used to widen the fallback in
- * {@link applyFailedStepFlagsToResumingBridgeStep} to a first bridge step
- * that quotes a DIFFERENT label than the failed captchaGated step: the LLM
- * commonly names the challenge widget itself ("Click the 'I'm not a robot'
- * checkbox") rather than re-quoting the control that failed, and that step
- * is still the one resuming the failure point, not an unrelated action.
- */
-function isChallengeResolutionStep(instruction: string): boolean {
-  const norm = normalizeInstruction(instruction);
-  return CHALLENGE_RESOLUTION_PATTERNS.some((p) => p.test(norm));
-}
-
-/**
  * Deterministically re-apply the failed step's captchaGated/submitStep flags
  * onto whichever replan bridge step resumes that same action — the replan
  * prompt never asks the LLM to carry these forward and the original failed
@@ -1111,34 +1080,39 @@ function isChallengeResolutionStep(instruction: string): boolean {
  *
  * Quoted-label overlap is the primary signal, but the replan prompt never
  * asks the LLM to quote the same label it just failed on, so a bridge step
- * can resume the failed control while quoting nothing at all. Per this
- * file's splice invariant (bridge steps are emitted from the failure point
- * back to where the original flow can resume — see the splice call site),
- * the first bridge step is the one that resumes the failure point itself.
- * When no step matches by label, fall back to that position UNLESS the
- * first bridge step names a quoted control of its own that reads as a
- * confirmed reference to a genuinely DIFFERENT, non-resuming action. A
- * quoted label alone isn't that confirmation for a captchaGated failure:
- * the LLM commonly names the challenge widget itself ("Click the 'I'm not
- * a robot' checkbox") rather than re-quoting the control that failed, and
- * that's still the resume step, not an unrelated one — so a first step
- * that quotes a label AND reads as challenge-resolution (see
- * {@link isChallengeResolutionStep}) also falls back to this position.
+ * can resume the failed control while quoting nothing at all — with any
+ * wording the LLM happens to pick for the resume action, including naming
+ * the challenge widget itself ("Click the 'I'm not a robot' checkbox")
+ * rather than re-quoting the control that failed. Per this file's splice
+ * invariant (bridge steps are emitted from the failure point back to where
+ * the original flow can resume — see the splice call site), the first
+ * bridge step is ALWAYS the one that resumes the failure point, so the
+ * fallback targets that position by default. The one structural (not
+ * wording-based) case where the first bridge step is genuinely NOT a resume
+ * step is when it duplicates the label of the next AUTHORED step still
+ * queued to run — that means the LLM front-loaded upcoming, already-planned
+ * work rather than proposing recovery content, which {@link
+ * isReplanStepDuplicatingNextAuthoredStep} already detects for the sibling
+ * dedup pass. `nextAuthoredStepInstruction` is optional because not every
+ * call site has an original remaining tail to compare against; when absent,
+ * the documented invariant (first bridge step always resumes the failure)
+ * is trusted outright.
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
-  failedStep: NormalizedStep
+  failedStep: NormalizedStep,
+  nextAuthoredStepInstruction?: string
 ): NormalizedStep[] {
   if (!failedStep.captchaGated && !failedStep.submitStep) return [...newSteps];
   const hasLabelMatch = newSteps.some((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
   );
   const firstStepInstruction = newSteps.length > 0 ? newSteps[0]!.instruction : "";
-  const firstStepIsConfirmedOtherControl =
-    extractQuotedLabels(firstStepInstruction).length > 0 &&
-    !(failedStep.captchaGated && isChallengeResolutionStep(firstStepInstruction));
+  const firstStepDuplicatesNextAuthored =
+    nextAuthoredStepInstruction !== undefined &&
+    isReplanStepDuplicatingNextAuthoredStep(firstStepInstruction, nextAuthoredStepInstruction);
   const fallbackIndex =
-    !hasLabelMatch && newSteps.length > 0 && !firstStepIsConfirmedOtherControl ? 0 : -1;
+    !hasLabelMatch && newSteps.length > 0 && !firstStepDuplicatesNextAuthored ? 0 : -1;
   return newSteps.map((s, idx) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {
@@ -3089,7 +3063,8 @@ async function main(): Promise<void> {
           const taggedNewSteps = filterReplanDuplicatingNextAuthored(
             applyFailedStepFlagsToResumingBridgeStep(
               newSteps.map((s) => ({ ...s, origin: "replan" as const })),
-              step
+              step,
+              originalRemaining[0]?.instruction
             ),
             originalRemaining
           );
