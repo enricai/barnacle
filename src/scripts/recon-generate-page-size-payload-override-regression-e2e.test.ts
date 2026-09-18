@@ -84,7 +84,7 @@ function evalPaginatedExecuteHttp(
 }
 
 /** 20 distinct items total, split into pages of `pageSize` on each call. */
-function makeGetGql(pageSize: number, onCall: () => void) {
+function makeGetGql(_pageSize: number, onCall: () => void) {
   const TOTAL = 20;
   return (_baseUrl: string) =>
     async (

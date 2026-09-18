@@ -130,6 +130,67 @@ describe("emitContractTs — multipart plugin", () => {
   });
 });
 
+describe("emitContractTs — valueConstraints", () => {
+  it("overrides a Phase F additional-body-key field's emitted zod expression with a declared enum", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["tier", { kind: "string" }]]),
+      valueConstraints: { tier: { enumValues: ["gold", "silver", "bronze"] } },
+    });
+    expect(source).toContain('tier: z.enum(["gold", "silver", "bronze"]),');
+  });
+
+  it("overrides a Phase F additional-body-key field's emitted zod expression with a declared min/max", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["seatCount", { kind: "number" }]]),
+      valueConstraints: { seatCount: { min: 1, max: 4 } },
+    });
+    expect(source).toContain("seatCount: z.number().min(1).max(4),");
+  });
+
+  it("overrides a Mechanism B structured-key field regardless of which discovery source produced it", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      discoveredStructuredKeys: new Map([["capacity", "z.number()"]]),
+      valueConstraints: { capacity: { min: 1, max: 10 } },
+    });
+    expect(source).toContain("capacity: z.number().min(1).max(10),");
+  });
+
+  it("is a no-op for a declared field name that never appears in any discovered field source", () => {
+    const withConstraint = emitContractTs({
+      ...BASE_OPTS,
+      valueConstraints: { neverDiscovered: { min: 1, max: 4 } },
+    });
+    const without = emitContractTs(BASE_OPTS);
+    expect(withConstraint).toBe(without);
+  });
+
+  it("preserves the .optional() downgrade from an unpopulated declared GraphQL variable when also overridden by a value constraint", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["seatCount", { kind: "number" }]]),
+      unpopulatedDeclaredVariables: ["seatCount"],
+      valueConstraints: { seatCount: { min: 1, max: 4 } },
+    });
+    expect(source).toContain("seatCount: z.number().min(1).max(4).optional(),");
+  });
+
+  it("emits byte-identical output when valueConstraints is absent", () => {
+    const withEmpty = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["tier", { kind: "string" }]]),
+    });
+    const withNone = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["tier", { kind: "string" }]]),
+      valueConstraints: {},
+    });
+    expect(withEmpty).toBe(withNone);
+  });
+});
+
 describe("emitContractTs — query-type plugin with a multipart step", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
