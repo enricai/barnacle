@@ -187,6 +187,22 @@ describe("scraper/http-client createHttpClient", () => {
     expect(result).toEqual({ id: "1", name: null });
   });
 
+  it("resolves a null non-nullable scalar alongside a zero-length result array (empty-result hot-path shape)", async () => {
+    const EmptyResultSchema = z.object({
+      id: z.string(),
+      name: z.string(),
+      results: z.array(z.unknown()),
+    });
+    const client = createHttpClient<z.infer<typeof EmptyResultSchema>>({
+      schema: EmptyResultSchema,
+      bottleneck: passThruLimiter,
+      baseHeaders: BASE_HEADERS,
+    });
+    mockFetch(200, { id: "1", name: null, results: [] });
+    const result = await client("https://example.com/api/item");
+    expect(result).toEqual({ id: "1", name: null, results: [] });
+  });
+
   it("still throws HttpSchemaError when a field has the wrong type on real (non-null) data", async () => {
     mockFetch(200, { id: "1", name: 42 });
     const client = makeClient();
