@@ -9461,6 +9461,7 @@ export async function executeStepWithHealing(params: {
         }
         const solved = solveResult.solved;
         const preCaptchaCaptureIdx = latestCaptureIndex(recentCaptures);
+        const preCaptchaMetaLength = recentCaptureMeta.length;
         // Both the inject-and-submit primitive and the registry-state probe
         // below evaluate against `captchaTarget` after the solve's ~120s poll
         // has already elapsed, so a page navigation or frame detach that
@@ -9581,6 +9582,24 @@ export async function executeStepWithHealing(params: {
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit navigation to a new origin/path confirmed the advance`
           );
           trajectory?.push({ stepIndex, verifiedBy: "url" });
+          return "completed";
+        }
+        // Neither transition poll above can see a same-origin submit whose
+        // response never changes the page's URL (an XHR/fetch-driven submit
+        // with no client-side redirect). `findRecentPageTransition` is the
+        // SAME network-capture detector the probe-absent path below already
+        // relies on for exactly this case — reusing it here, scoped to the
+        // captures landed since this attempt's solve, catches the submit a
+        // clean callback dispatches even when the URL/origin never moves.
+        const networkTransitionUrl = findRecentPageTransition({
+          recentCaptureMeta,
+          preMetaLength: preCaptchaMetaLength,
+        });
+        if (networkTransitionUrl !== null) {
+          logger.info(
+            `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit network response confirmed the advance (${networkTransitionUrl})`
+          );
+          trajectory?.push({ stepIndex, verifiedBy: "network" });
           return "completed";
         }
         // The intermittent race this loop exists for: a still-empty/absent
