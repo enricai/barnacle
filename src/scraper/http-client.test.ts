@@ -174,6 +174,30 @@ describe("scraper/http-client createHttpClient", () => {
     parseSpy.mockRestore();
   });
 
+  it.each([400, 404, 422])(
+    "classifies a non-JSON %i body as HttpClientError carrying that status, without calling JSON.parse",
+    async (status) => {
+      const htmlBody = "<html><body>error</body></html>";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          status,
+          ok: false,
+          text: vi.fn().mockResolvedValue(htmlBody),
+          headers: new Headers(),
+        })
+      );
+      const parseSpy = vi.spyOn(JSON, "parse");
+      const client = makeClient();
+      const rejection = client("https://example.com/api/item");
+      await expect(rejection).rejects.toBeInstanceOf(HttpClientError);
+      await expect(rejection).rejects.toMatchObject({ status });
+      expect(parseSpy).not.toHaveBeenCalledWith(htmlBody);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+      parseSpy.mockRestore();
+    }
+  );
+
   it("throws HttpSchemaError when response does not match Zod schema", async () => {
     mockFetch(200, { id: 42, unexpected: true });
     const client = makeClient();
