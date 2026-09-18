@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 
 import { httpStatusForCode } from "@/api/errors";
 import {
   ERROR_CODE_DESCRIPTIONS,
   ERROR_CODES,
+  facetValueSchema,
   needsUserInfoResponseSchema,
+  occupancyWithinCapacitySchema,
+  withOccupancyWithinCapacity,
 } from "@/api/schemas/common";
 
 describe("ERROR_CODES — new verification codes", () => {
@@ -155,5 +159,65 @@ describe("needsUserInfoResponseSchema", () => {
       requiresOtp: false,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("facetValueSchema", () => {
+  const departurePortSchema = facetValueSchema("departurePort", ["MIA", "FLL", "GLA"]);
+
+  it("accepts a value from the declared coded set", () => {
+    const result = departurePortSchema.safeParse("MIA");
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a free-text value not in the declared coded set", () => {
+    const result = departurePortSchema.safeParse("Miami");
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toContain("departurePort must be one of");
+  });
+
+  it("surfaces the rejection as a ZodError the shared error handler maps to FIELD_VIOLATION", () => {
+    expect(() => departurePortSchema.parse("Miami")).toThrowError(z.ZodError);
+  });
+});
+
+describe("occupancyWithinCapacitySchema", () => {
+  const partySizeSchema = occupancyWithinCapacitySchema("partySize", 4);
+
+  it("accepts an occupancy count within the declared capacity", () => {
+    expect(partySizeSchema.safeParse(4).success).toBe(true);
+  });
+
+  it("rejects an occupancy count exceeding the declared capacity", () => {
+    const result = partySizeSchema.safeParse(5);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toContain("must not exceed capacity of 4");
+  });
+
+  it("rejects a non-positive occupancy count", () => {
+    expect(partySizeSchema.safeParse(0).success).toBe(false);
+  });
+});
+
+describe("withOccupancyWithinCapacity", () => {
+  const roomBookingSchema = withOccupancyWithinCapacity(
+    z.object({
+      partySize: z.number().int().positive(),
+      roomCapacity: z.number().int().positive(),
+    }),
+    "partySize",
+    "roomCapacity"
+  );
+
+  it("accepts an occupancy count within the request's own declared capacity field", () => {
+    const result = roomBookingSchema.safeParse({ partySize: 3, roomCapacity: 4 });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an occupancy count exceeding the request's own declared capacity field", () => {
+    const result = roomBookingSchema.safeParse({ partySize: 5, roomCapacity: 4 });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["partySize"]);
+    expect(result.error?.issues[0]?.message).toContain("must not exceed roomCapacity (4)");
   });
 });

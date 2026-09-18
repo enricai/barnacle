@@ -114,3 +114,61 @@ export const needsUserInfoResponseSchema = z.object({
   requiresOtp: z.boolean(),
   metrics: DispatchMetricsSchema.optional(),
 });
+
+/**
+ * Builds a schema for a facet value constrained to a plugin's declared
+ * enumerated/coded value set (e.g. a port or airport code). Rejects a
+ * caller-supplied free-text value at request-validation time so it never
+ * reaches the hot path as a technically-valid but semantically-empty
+ * lookup — the request-validation layer throws a `ZodError`, which the
+ * shared error handler converts into a `FIELD_VIOLATION` 4xx.
+ */
+export function facetValueSchema<const Values extends readonly [string, ...string[]]>(
+  fieldName: string,
+  allowedValues: Values
+): z.ZodEnum<{ [K in Values[number]]: K }> {
+  return z.enum(allowedValues, {
+    error: `${fieldName} must be one of: ${allowedValues.join(", ")}`,
+  });
+}
+
+/**
+ * Builds a schema for an occupancy-style count (e.g. party size) that must
+ * not exceed a capacity ceiling a plugin declares for the unit being
+ * booked (e.g. a room's rated capacity). Rejects an over-capacity count at
+ * request-validation time so a caller never learns only after the hot path
+ * runs that the target site silently ignored the excess occupants.
+ */
+export function occupancyWithinCapacitySchema(fieldName: string, capacity: number): z.ZodNumber {
+  return z
+    .number()
+    .int()
+    .positive()
+    .max(capacity, { error: `${fieldName} must not exceed capacity of ${capacity}` });
+}
+
+/**
+ * Wraps an object schema with a cross-field check that an occupancy-style
+ * count field does not exceed a capacity field also present on the same
+ * object (e.g. party size vs. a room's declared capacity, when both are
+ * supplied in the same request rather than one being a plugin constant).
+ * Reports the violation on the occupancy field so `FIELD_VIOLATION`
+ * messages point callers at the field they need to change.
+ */
+export function withOccupancyWithinCapacity<Schema extends z.ZodObject>(
+  schema: Schema,
+  occupancyField: keyof z.infer<Schema> & string,
+  capacityField: keyof z.infer<Schema> & string
+): Schema {
+  return schema.superRefine((value, ctx) => {
+    const occupancy = value[occupancyField] as number;
+    const capacity = value[capacityField] as number;
+    if (occupancy > capacity) {
+      ctx.addIssue({
+        code: "custom",
+        path: [occupancyField],
+        message: `${occupancyField} (${occupancy}) must not exceed ${capacityField} (${capacity})`,
+      });
+    }
+  });
+}
