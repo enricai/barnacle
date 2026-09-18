@@ -194,7 +194,9 @@ describe("recon-generate CLI — loop-scoped composite-key coincidence never thr
     // binding), never to the composite-key leaf's `displayOrder` local or
     // the raw composite key text, since only `displayOrder`'s own name
     // correlates with that splice target.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal "${...}" bytes captured from generator output, not a template literal
     expect(bodyTemplate).toContain('"pageIndex":${payload.pageIndex}');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal "${...}" bytes captured from generator output, not a template literal
     expect(bodyTemplate).toContain('"itemQuantity":${payload.itemQuantity}');
 
     // No invalidly-nested placeholder anywhere in the emitted body.

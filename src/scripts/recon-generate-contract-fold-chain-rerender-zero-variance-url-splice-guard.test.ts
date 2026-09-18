@@ -107,6 +107,7 @@ describe("emitContractTs — fold chain re-render zero-variance-repeat URL splic
     // — that is not the splice under test. The rest of the path/query, the
     // part `isGenuineVaryingQueryValue` gates, must be the beacon's exact
     // literal bytes.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on literal "${context.baseUrl}" bytes captured from generator output, not a template literal
     expect(url).toBe("${context.baseUrl}/beacon/item-a/verify?clientId=abc123&siteId=xyz&nonce=1");
   });
 
@@ -114,6 +115,7 @@ describe("emitContractTs — fold chain re-render zero-variance-repeat URL splic
     const url = emitBeaconUrl();
 
     expect(url).not.toMatch(/\$\{[^}]*\$\{/);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: matching literal "${context.baseUrl}" bytes captured from generator output, not a template literal
     expect(url.replace("${context.baseUrl}", "")).not.toContain("${");
   });
 });

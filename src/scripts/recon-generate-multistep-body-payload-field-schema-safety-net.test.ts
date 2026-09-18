@@ -39,6 +39,7 @@ describe("emitContractTs — payload schema always declares every payload.<field
       inputBody: { itemId: "item-a" },
       multiStepBody: [
         "    for (const g0 of (r0 as { items: unknown[] }).items) {",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
         "      const r1 = (await httpClient(`https://api.example.com/catalog/drill?region=${payload.region}`, {",
         '        method: "GET",',
         "        schema: z.unknown(),",
@@ -75,6 +76,7 @@ describe("emitContractTs — payload schema always declares every payload.<field
       isSubmissionFlow: true,
       inputBody: { itemId: "item-a" },
       multiStepBody: [
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
         "    const r1 = (await httpClient(`https://api.example.com/catalog/drill?page=${payload.page}`, {",
         '      method: "GET",',
         "      schema: z.unknown(),",

@@ -24,7 +24,9 @@ const BASE = "https://api.example.com";
 describe("assertBodyFieldSourceNameCorrelates", () => {
   it("throws when a spliced item field's own name doesn't correlate with the JSON key it lands under", () => {
     const renderedBody = [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
       "const r1 = await httpClient(`${payload.BaseUrl}/status`, {",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
       '  body: `{"orderId":"${item.orderId}","region":${item.warehouseZone}}`,',
       "});",
     ].join("\n");
@@ -34,6 +36,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   });
 
   it("throws for an ancestor-scoped (`gN.`) splice whose own name doesn't correlate with the key", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"currency":${g0.accountRegionCode}}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
@@ -41,6 +44,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   });
 
   it("stays silent when the item field's own name correlates with the JSON key (exact match)", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"orderId":"${item.orderId}"}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
@@ -48,6 +52,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   });
 
   it("stays silent when the item field's own name correlates with the JSON key (compound match)", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"accountId":"${g1.applicationAccountId}"}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
@@ -55,6 +60,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   });
 
   it("stays silent for a `payload.<field>` accessor regardless of key name — matches by definition", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"adultCount":${payload.numberOfGuests}}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
@@ -62,6 +68,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   });
 
   it("stays silent for a bare array index/counter — names a position, not a concept", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"childCount":${i}}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
@@ -73,6 +80,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
     // already value-gated whole-value substitution mechanism (see
     // recon-generate-biome-clean.test.ts's Bug B fixture, `token` -> `auth`),
     // which legitimately allows a differently-named target key.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"auth":${token}}`,';
     expect(() =>
       assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
