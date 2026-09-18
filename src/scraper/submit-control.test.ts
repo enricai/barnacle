@@ -25,6 +25,8 @@ interface FakeEl {
   shadowRoot: FakeRoot | null;
   rect: { width: number; height: number };
   computedStyle: { display: string; visibility: string };
+  disabled: boolean;
+  parentElement: FakeEl | null;
   clicked: boolean;
   focused: boolean;
   getAttribute(name: string): string | null;
@@ -45,6 +47,7 @@ function makeEl(
   overrides: Partial<{
     rect: { width: number; height: number };
     computedStyle: { display: string; visibility: string };
+    disabled: boolean;
   }> = {}
 ): FakeEl {
   const rect = overrides.rect ?? { width: 100, height: 20 };
@@ -57,6 +60,8 @@ function makeEl(
     shadowRoot: null,
     rect,
     computedStyle,
+    disabled: overrides.disabled ?? false,
+    parentElement: null,
     clicked: false,
     focused: false,
     getAttribute(name) {
@@ -89,6 +94,7 @@ function flattenDescendants(children: FakeEl[]): FakeEl[] {
 
 function appendChild(parent: FakeEl, child: FakeEl): FakeEl {
   parent.children.push(child);
+  child.parentElement = parent;
   return child;
 }
 
@@ -379,6 +385,52 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.deepIndex).toBe(1);
   });
 
+  it('excludes a visible type="submit" button carrying `disabled` while ranking a lower-tier enabled sibling first', () => {
+    const disabledSubmit = makeEl("button", { type: "submit" }, "Submit", { disabled: true });
+    const enabledFallback = makeEl("div", { role: "button" }, "Submit Application");
+    const document = makeRoot([disabledSubmit, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes a role="button" candidate carrying aria-disabled="true" while ranking a lower-tier enabled sibling first', () => {
+    const disabledCandidate = makeEl("div", { role: "button", "aria-disabled": "true" }, "Submit");
+    const enabledFallback = makeEl("div", { role: "button" }, "Submit Application");
+    const document = makeRoot([disabledCandidate, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes a candidate wrapped in an aria-disabled="true" ancestor container while ranking a lower-tier enabled sibling first', () => {
+    const wrapper = makeEl("div", { "aria-disabled": "true" });
+    appendChild(wrapper, makeEl("div", { role: "button" }, "Submit"));
+    const enabledFallback = makeEl("div", { role: "button" }, "Submit Application");
+    const document = makeRoot([wrapper, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.deepIndex).toBe(2);
+  });
+
   it("does not shift a later candidate's deepIndex when an earlier candidate is excluded for being unrendered", () => {
     const hiddenStepSubmit = makeEl("button", { type: "submit" }, "Submit", {
       rect: { width: 0, height: 0 },
@@ -507,6 +559,20 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
 
     expect(result).toEqual({ clicked: false, reason: "not-actionable" });
     expect(unrendered.clicked).toBe(false);
+  });
+
+  it('returns {clicked:false, reason:"not-actionable"} without dispatching events when the node at deepIndex is disabled', () => {
+    const disabled = makeEl("button", { type: "submit" }, "Submit", { disabled: true });
+    const document = makeRoot([disabled]);
+
+    const result = evaluateInFakePage(buildClickByDeepIndexExpr(0), document) as {
+      clicked: boolean;
+      reason?: string;
+    };
+
+    expect(result).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(disabled.clicked).toBe(false);
+    expect(disabled.focused).toBe(false);
   });
 
   it("clicks the candidate in a frame-document-like tree via the root arg, ignoring the outer document", () => {
