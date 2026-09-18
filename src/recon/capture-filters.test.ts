@@ -468,6 +468,57 @@ describe("isZeroVarianceRepeatCapture", () => {
     ];
     expect(isZeroVarianceRepeatCapture(candidate, occurrences)).toBe(true);
   });
+
+  it("admits a dense archive of mixed noise (fixed-query third-party beacon, queryless bot-sensor pixel, repeated own-domain widget with per-load-varying values) while refusing the real search+drill pair", () => {
+    const searchCapture = {
+      method: "POST",
+      url: "https://apply.acme.example/api/search",
+      requestPostData: '{"destination":"Bahamas","month":"2026-10"}',
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: "cruise-1" }, { id: "cruise-2" }] },
+    };
+    const drillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/api/search/details?id=cruise-1",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "cruise-1", price: 899 },
+    };
+    const thirdPartyBeacon = Array.from({ length: 20 }, (_, i) => ({
+      method: "GET",
+      url: `https://pixel.adnoise.example/beacon?clientId=X&environment=PROD&nonce=${i}`,
+      requestPostData: null,
+    }));
+    const botSensorPixel = Array.from({ length: 14 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/sensor.gif",
+      requestPostData: null,
+    }));
+    const widgetOccurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "GET",
+      url: `https://apply.acme.example/widget/loader?widgetId=chat-bubble&loadTs=${1700000000 + i}&sessionId=sess-${i}`,
+      requestPostData: null,
+    }));
+    const allCaptures = [
+      searchCapture,
+      drillCapture,
+      ...thirdPartyBeacon,
+      ...botSensorPixel,
+      ...widgetOccurrences,
+    ];
+    expect(allCaptures.length).toBe(48);
+    for (const beacon of thirdPartyBeacon) {
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+    }
+    for (const pixel of botSensorPixel) {
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+    }
+    for (const widgetCall of widgetOccurrences) {
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+    }
+    expect(isZeroVarianceRepeatCapture(searchCapture, allCaptures)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {
