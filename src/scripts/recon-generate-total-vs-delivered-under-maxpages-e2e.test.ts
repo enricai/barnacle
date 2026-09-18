@@ -9,12 +9,12 @@ import {
 } from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 /**
- * Acceptance test for item4 of recon-royalcaribbean-plugin-root-causes.md:
- * when a caller-supplied `maxPages` caps the paging loop before every page
- * has been fetched, the response's server-reported `total` must stay the
- * server's real value, and the count of items actually delivered must be
- * exposed as a separate sibling field — never silently overwriting `total`
- * with however many items happened to make it through the cap.
+ * Acceptance test: when a caller-supplied `maxPages` caps the paging loop
+ * before every page has been fetched, the response's server-reported
+ * `total` must stay the server's real value, and the count of items
+ * actually delivered must be exposed as a separate sibling field — never
+ * silently overwriting `total` with however many items happened to make it
+ * through the cap.
  */
 
 const BASE = "https://api.example.com";
