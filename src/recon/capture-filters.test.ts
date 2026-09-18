@@ -260,6 +260,24 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
   });
 
+  it("flags a same-host, fixed-query beacon whose request body varies every call and whose business-looking JSON response also differs almost every occurrence", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
   it("does not flag a candidate with no fixed query string", () => {
     const first = {
       method: "GET",
@@ -291,7 +309,7 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
   });
 
-  it("does not flag a query-less candidate densely repeated whose response carries real JSON business state", () => {
+  it("flags a query-less candidate densely repeated whose business-looking JSON response never once shows a second value", () => {
     const first = {
       method: "GET",
       url: "https://apply.acme.example/widget/toggles",
@@ -306,7 +324,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: true, variant: "control" },
     }));
-    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
   });
 
   it("does not flag a query-less candidate whose JSON response cycles between two states rather than never repeating", () => {
@@ -371,6 +389,24 @@ describe("isZeroVarianceRepeatCapture", () => {
       requestPostData: `fingerprint=${i}`,
       responseHeaders: { "content-type": "text/plain" },
       responseBody: "ok",
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
+  it("flags a query-less, densely-repeated POST whose request body varies every call and whose business-looking JSON response also differs almost every occurrence", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
     }));
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
   });
