@@ -495,31 +495,33 @@ function endpointOrigin(url: string): string | null {
 const MIN_QUERYLESS_REPEAT_COUNT = 3;
 
 /**
- * True when at least two same-endpoint occurrences carry a JSON response
- * body whose leaf values differ from `candidate`'s own — i.e. the payload
- * changes from call to call rather than answering every occurrence
- * identically.
+ * True when same-endpoint occurrences carry JSON response bodies that are
+ * mostly pairwise distinct — i.e. the payload never settles back into a
+ * value it has already shown.
  *
  * This is what tells a genuinely-polled own endpoint (a feature-toggle feed,
  * a health check) apart from a query-less noise widget whose response merely
  * LOOKS like real data: both can carry non-URL-derivable JSON leaves, but a
- * real polled endpoint answers every occurrence with the SAME state until
- * that state actually changes, while a per-load noise widget (a chat-bubble
- * loader stamping a fresh counter/session id into its own response) never
- * repeats a value across occurrences. Occurrences with no response metadata
- * supplied contribute no evidence either way, so this only fires when at
- * least two occurrences besides the candidate actually carry a body to
- * compare.
+ * real polled endpoint cycles through a small closed set of states (a
+ * boolean flips between two values, say), so most occurrences duplicate an
+ * earlier one, while a per-load noise widget (a chat-bubble loader stamping
+ * a fresh counter/session id into its own response) produces a near-unique
+ * value on almost every occurrence. Comparing each occurrence against just
+ * the candidate's own value can't distinguish these — a two-state toggle and
+ * an ever-incrementing counter both differ from any single candidate about
+ * half the time — so this counts distinct values across ALL occurrences
+ * instead: a low-cardinality set (repeats dominate) is a real poll, a
+ * high-cardinality set (values rarely repeat) is noise. Occurrences with no
+ * response metadata supplied contribute no evidence either way, so this only
+ * fires when at least two occurrences actually carry a body to compare.
  */
 function hasFreelyVaryingResponseAcrossOccurrences(
-  candidate: { responseBody?: unknown },
   sameEndpoint: readonly { responseBody?: unknown }[]
 ): boolean {
-  const candidateSignature = JSON.stringify(candidate.responseBody ?? null);
-  const differing = sameEndpoint.filter(
-    (c) => c.responseBody !== undefined && JSON.stringify(c.responseBody) !== candidateSignature
-  );
-  return differing.length >= 2;
+  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  if (withBody.length < 2) return false;
+  const distinctSignatures = new Set(withBody.map((c) => JSON.stringify(c.responseBody)));
+  return distinctSignatures.size > withBody.length / 2;
 }
 
 export function isZeroVarianceRepeatCapture(
@@ -557,7 +559,7 @@ export function isZeroVarianceRepeatCapture(
     );
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
-      return hasFreelyVaryingResponseAcrossOccurrences(candidate, sameEndpoint);
+      return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
     }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
       (key) => key.toLowerCase() === "content-type"
