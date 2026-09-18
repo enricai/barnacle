@@ -261,6 +261,18 @@ returns whether a form was actually found and submitted; a genuine no-op
 (`fallbackSubmitted=false`) is logged and surfaces in the retry/failure
 diagnostics.
 
+When `executeStepWithHealing` calls the fallback, it opts into phantom-click
+verification (`{signalCounter, page}`): a shadow-root/web-component control
+can report `clicked: true` on the ranked top pick while wiring no real
+handler, so a bare `clicked: true` would let the same phantom-click shape
+that motivates the 1c cascade escalation above masquerade as a resolved
+submit here too. The fallback snapshots pre/post via `snapshotPage` and
+classifies with `classifyPhantomClick({isSubmitShapedStep: true})`; a
+`phantom` verdict retries the runner-up candidate once (mirroring the
+cascade's own single runner-up retry) before falling through to the
+form-level submit. `verification` is optional — callers exercising the
+rank/click primitives directly get the original, non-verifying contract.
+
 ### 1d — Step failure dump
 
 When the cascade exhausts, the executor writes a diagnostic bundle to

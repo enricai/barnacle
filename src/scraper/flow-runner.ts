@@ -5718,10 +5718,25 @@ export async function injectCaptchaTokenAndSubmit(
  * see {@link isNavigatingEvaluateRejection} — but rethrow anything else, so a
  * genuine in-page exception during the dispatch propagates to the caller
  * instead of silently resolving as a successful submit.
+ *
+ * The ranked-candidate click is verified the same way the main cascade's
+ * `deep-submit-locator` verifies its top pick (see `executeStepWithHealing`
+ * at flow-runner.ts:10374-10428): a shadow-root/web-component control can
+ * report `clicked: true` while wiring no real handler, so a bare
+ * `clicked: true` here would let a phantom click masquerade as a resolved
+ * submit and this fallback would return `true` with zero site-host traffic
+ * ever following. When `verification` is supplied, snapshots pre/post via
+ * `snapshotPage` and classifies with `classifyPhantomClick({isSubmitShapedStep:
+ * true})`; a `phantom` verdict retries the runner-up candidate once (mirroring
+ * the cascade's single runner-up retry) before falling through to the
+ * form-level submit below. `verification` is optional so callers that only
+ * need the non-polling, non-verifying original contract (and existing tests
+ * exercising the rank/click primitives directly) are unaffected.
  */
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
-  responseField = "h-captcha-response"
+  responseField = "h-captcha-response",
+  verification?: { signalCounter: { n: number }; page?: Page }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -5741,15 +5756,38 @@ export async function submitCaptchaGatedForm(
   const ranked = Array.isArray(rankResult) ? rankResult : [];
   // biome-ignore lint/style/noNonNullAssertion: guarded by the length check
   const top = ranked.length > 0 ? ranked[0]! : null;
-  const clickResult = top
-    ? await target
-        .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
-        .catch((err: unknown) => {
-          if (isNavigatingEvaluateRejection(err)) return { clicked: false };
-          throw err;
-        })
-    : { clicked: false };
-  if (clickResult.clicked) return true;
+  if (top) {
+    const pre = verification
+      ? await snapshotPage(target, verification.signalCounter, verification.page)
+      : null;
+    const clickResult = await target
+      .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+      .catch((err: unknown) => {
+        if (isNavigatingEvaluateRejection(err)) return { clicked: false };
+        throw err;
+      });
+    if (clickResult.clicked) {
+      if (!pre || !verification) return true;
+      const post = await snapshotPage(target, verification.signalCounter, verification.page);
+      const verdict = classifyPhantomClick({
+        actResultSuccess: true,
+        pre,
+        post,
+        isSubmitShapedStep: true,
+      });
+      if (verdict !== "phantom") return true;
+      const runnerUp = ranked[1];
+      if (runnerUp) {
+        const runnerUpClickResult = await target
+          .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+          .catch((err: unknown) => {
+            if (isNavigatingEvaluateRejection(err)) return { clicked: false };
+            throw err;
+          });
+        if (runnerUpClickResult.clicked) return true;
+      }
+    }
+  }
 
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -9609,7 +9647,10 @@ export async function executeStepWithHealing(params: {
         let fallbackSubmitted = false;
         if (!confirmed && injectResult.hasForm) {
           try {
-            fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget);
+            fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget, "h-captcha-response", {
+              signalCounter,
+              page,
+            });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
             // (classified via `isNavigatingEvaluateRejection` inside
