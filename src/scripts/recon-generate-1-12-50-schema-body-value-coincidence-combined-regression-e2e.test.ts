@@ -179,7 +179,9 @@ describe("recon-generate CLI — combined schema-parity + multi-typed value-coin
 
     // The fold/drill-loop is genuine — a per-item loop over the listing's
     // own array, not a hardcoded per-item call.
-    expect(contract).toMatch(/\.items;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/);
+    expect(contract).toMatch(
+      /\.items;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/
+    );
 
     // Isolate the submit call's request-body template literal.
     const bodyLineMatch = contract.match(/catalog\/select\/[\s\S]*?body:\s*`([^`]*)`/);

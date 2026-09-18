@@ -165,7 +165,9 @@ describe("recon-generate CLI — loop-scoped composite-key coincidence never thr
     // (a) A genuine `for (const <var> of <sections array>)` loop over the
     // entry response's own array — the repeated per-item submits were
     // collapsed into one loop body, not unrolled per-item httpClient calls.
-    expect(contract).toMatch(/\.sections;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/);
+    expect(contract).toMatch(
+      /\.sections;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/
+    );
     expect(contract.match(/catalog\/select\/`/g)?.length).toBe(1);
 
     // Isolate the loop-scoped submit call's request-body template literal.

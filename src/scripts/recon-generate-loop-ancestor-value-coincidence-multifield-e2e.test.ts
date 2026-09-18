@@ -146,7 +146,9 @@ describe("recon-generate CLI — for-loop-nested submit body never threads a fro
     // entry response's own array — the endpoint-collapse mechanism folded
     // the repeated per-item submits into one loop body, not one unrolled
     // httpClient call per item.
-    expect(contract).toMatch(/\.sections;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/);
+    expect(contract).toMatch(
+      /\.sections;\n\s*await Promise\.allSettled\(\n\s*\(\w+\)\.map\(async \(\w+\) => \{/
+    );
     expect(contract.match(/catalog\/select\/`/g)?.length).toBe(1);
 
     // Isolate the submit call's request-body template literal.

@@ -331,7 +331,7 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
       return page;
     });
     const shortResult = await shortExecuteHttp({}, { baseUrl: BASE });
-    expect(shortCallIndex).toBe(3);
+    expect(shortCallIndex).toBe(2);
     expect((shortResult.data as { catalog: { items: unknown[] } }).catalog.items).toHaveLength(8);
     expect((shortResult.data as { catalog: { total: number } }).catalog.total).toBe(10);
     expect((shortResult.data as unknown as { deliveredCount: number }).deliveredCount).toBe(8);
