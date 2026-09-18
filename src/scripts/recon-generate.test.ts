@@ -167,6 +167,16 @@ describe("emitContractTs — valueConstraints", () => {
     expect(withConstraint).toBe(without);
   });
 
+  it("preserves the .optional() downgrade from an unpopulated declared GraphQL variable when also overridden by a value constraint", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      discoveredAdditionalBodyKeys: new Map([["seatCount", { kind: "number" }]]),
+      unpopulatedDeclaredVariables: ["seatCount"],
+      valueConstraints: { seatCount: { min: 1, max: 4 } },
+    });
+    expect(source).toContain("seatCount: z.number().min(1).max(4).optional(),");
+  });
+
   it("emits byte-identical output when valueConstraints is absent", () => {
     const withEmpty = emitContractTs({
       ...BASE_OPTS,

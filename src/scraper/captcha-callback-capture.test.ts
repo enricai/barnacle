@@ -220,7 +220,7 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
 
-    const render = (_container: string, config: Record<string, unknown>): string =>
+    const render = (_container: string, _config: Record<string, unknown>): string =>
       "widget-foreign";
     (sandbox as Record<string, unknown>).__foreignRender = render;
     vm.runInContext(
@@ -254,7 +254,8 @@ describe("buildHcaptchaCallbackCaptureScript", () => {
     const sandbox = makeFakeWindow();
     runScript(sandbox);
 
-    const render = (_container: string, config: Record<string, unknown>): string => "widget-getter";
+    const render = (_container: string, _config: Record<string, unknown>): string =>
+      "widget-getter";
     const foreignHcaptcha = { render };
     (sandbox as Record<string, unknown>).__foreignHcaptcha = foreignHcaptcha;
     vm.runInContext(
