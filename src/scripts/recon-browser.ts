@@ -1070,6 +1070,37 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
 }
 
 /**
+ * Word-boundary phrase patterns identifying an interactive-challenge
+ * resolution control ("I'm not a robot" checkbox, "verify you are human",
+ * a solve-the-challenge widget), keyed lowercase like {@link SIGN_IN_PATTERNS}.
+ * Generic to any challenge provider — no site-specific wording.
+ */
+const CHALLENGE_RESOLUTION_PATTERNS = [
+  /\bcaptcha\b/,
+  /\brobot\b/,
+  /\bchallenge\b/,
+  /\bverif(?:y|ication)\b/,
+  /\bhuman\b/,
+  /\bpuzzle\b/,
+  /\bsolve\b/,
+];
+
+/**
+ * Detect whether a bridge instruction names a challenge-resolution control
+ * (a captcha checkbox, "verify you're human" widget, etc.) rather than an
+ * arbitrary other UI control. Used to widen the fallback in
+ * {@link applyFailedStepFlagsToResumingBridgeStep} to a first bridge step
+ * that quotes a DIFFERENT label than the failed captchaGated step: the LLM
+ * commonly names the challenge widget itself ("Click the 'I'm not a robot'
+ * checkbox") rather than re-quoting the control that failed, and that step
+ * is still the one resuming the failure point, not an unrelated action.
+ */
+function isChallengeResolutionStep(instruction: string): boolean {
+  const norm = normalizeInstruction(instruction);
+  return CHALLENGE_RESOLUTION_PATTERNS.some((p) => p.test(norm));
+}
+
+/**
  * Deterministically re-apply the failed step's captchaGated/submitStep flags
  * onto whichever replan bridge step resumes that same action — the replan
  * prompt never asks the LLM to carry these forward and the original failed
@@ -1084,10 +1115,15 @@ function isReplanStepResumingFailedStep(bridgeStep: string, failedStep: string):
  * file's splice invariant (bridge steps are emitted from the failure point
  * back to where the original flow can resume — see the splice call site),
  * the first bridge step is the one that resumes the failure point itself.
- * When no step matches by label AND the first bridge step names no quoted
- * control of its own (so it can't be a confirmed reference to a DIFFERENT
- * control), fall back to that position instead of leaving the flags
- * unattached.
+ * When no step matches by label, fall back to that position UNLESS the
+ * first bridge step names a quoted control of its own that reads as a
+ * confirmed reference to a genuinely DIFFERENT, non-resuming action. A
+ * quoted label alone isn't that confirmation for a captchaGated failure:
+ * the LLM commonly names the challenge widget itself ("Click the 'I'm not
+ * a robot' checkbox") rather than re-quoting the control that failed, and
+ * that's still the resume step, not an unrelated one — so a first step
+ * that quotes a label AND reads as challenge-resolution (see
+ * {@link isChallengeResolutionStep}) also falls back to this position.
  */
 export function applyFailedStepFlagsToResumingBridgeStep(
   newSteps: readonly NormalizedStep[],
@@ -1097,12 +1133,12 @@ export function applyFailedStepFlagsToResumingBridgeStep(
   const hasLabelMatch = newSteps.some((s) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction)
   );
+  const firstStepInstruction = newSteps.length > 0 ? newSteps[0]!.instruction : "";
+  const firstStepIsConfirmedOtherControl =
+    extractQuotedLabels(firstStepInstruction).length > 0 &&
+    !(failedStep.captchaGated && isChallengeResolutionStep(firstStepInstruction));
   const fallbackIndex =
-    !hasLabelMatch &&
-    newSteps.length > 0 &&
-    extractQuotedLabels(newSteps[0]!.instruction).length === 0
-      ? 0
-      : -1;
+    !hasLabelMatch && newSteps.length > 0 && !firstStepIsConfirmedOtherControl ? 0 : -1;
   return newSteps.map((s, idx) =>
     isReplanStepResumingFailedStep(s.instruction, failedStep.instruction) || idx === fallbackIndex
       ? {

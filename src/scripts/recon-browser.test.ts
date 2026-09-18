@@ -1529,6 +1529,14 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.submitStep).toBeUndefined();
   });
 
+  it("retains flags when the first bridge step quotes a DIFFERENT control label naming the challenge widget itself", () => {
+    const failedStep = mk("Click the 'Submit' button", { captchaGated: true, submitStep: true });
+    const newSteps = [mk("Click the 'I'm not a robot' checkbox")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
   it("is a no-op when the failed step carried neither flag", () => {
     const failedStep = mk("Click the 'Submit' button");
     const newSteps = [mk("Click the 'Submit' button once more")];
