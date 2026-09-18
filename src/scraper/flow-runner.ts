@@ -5648,11 +5648,19 @@ export async function injectCaptchaTokenAndSubmit(
  * used only when the caller's own transition poll observed no advance after
  * the inject, so the widget's callback (if any) evidently didn't submit for
  * us. Kept separate from the inject primitive so the caller can gate its use
- * on an observed transition rather than firing it unconditionally. Prefers
- * `form.requestSubmit()` so any submit-event listener (including one that
- * calls `preventDefault()` and drives its own submit logic) and native form
- * validation still run, matching real-browser submit semantics; falls back
- * to the bare `form.submit()` only when `requestSubmit` isn't available.
+ * on an observed transition rather than firing it unconditionally.
+ *
+ * Dispatches a real, framework-observed click via the same
+ * {@link buildRankSubmitCandidatesExpr}/{@link buildClickByDeepIndexExpr}
+ * primitives the phantom-click cascade uses, rather than a synthetic
+ * `form.requestSubmit()`/`form.submit()` call: on a React/SPA site the
+ * submit button's `onClick` handler owns the actual submission (validation,
+ * XHR/fetch dispatch, etc.), and `<form>`-level APIs never fire it, so
+ * "success" here would silently produce zero site-host HTTP traffic for
+ * {@link waitForCaptchaNavigation} to observe. Only when no submit-shaped
+ * control can be found or clicked does this fall back to the form-level API
+ * — a plain server-rendered form with no button-bound JS handler still needs
+ * `requestSubmit()`/`submit()` to actually navigate.
  *
  * Resolves the form to submit by name first (the response field's own
  * closest form), then falls back to the sitekey-anchored form (or the sole
@@ -5678,6 +5686,20 @@ export async function submitCaptchaGatedForm(
   })()`;
   const found = await target.evaluate<boolean>(findFormExpr).catch(() => false);
   if (!found) return false;
+
+  const rankResult = await target
+    .evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
+    .catch(() => [] as SubmitCandidate[]);
+  const ranked = Array.isArray(rankResult) ? rankResult : [];
+  // biome-ignore lint/style/noNonNullAssertion: guarded by the length check
+  const top = ranked.length > 0 ? ranked[0]! : null;
+  const clickResult = top
+    ? await target
+        .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+        .catch(() => ({ clicked: false }))
+    : { clicked: false };
+  if (clickResult.clicked) return true;
+
   const submitExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
     const field = document.querySelector('[name="' + responseField + '"]');
