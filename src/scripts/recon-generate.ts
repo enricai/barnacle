@@ -10462,10 +10462,17 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
     | { kind: "rest"; endpointPath: string };
+  /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
+   * the detected pagination count-key field has a declared `max`, that real
+   * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
+   * size happened to be captured during recon. */
+  valueConstraints?: ReconValueConstraints;
 }): string {
-  const { pascal, gqlVariablesExpr, signal, foldMergeLines, fetchCall } = opts;
+  const { pascal, gqlVariablesExpr, signal, foldMergeLines, fetchCall, valueConstraints } = opts;
   const { totalPath, arrayPath, containerPath, countKey, skipKey, pageSize, identityField } =
     signal;
+  const declaredMax = valueConstraints?.[countKey]?.max;
+  const pageSizeDefault = declaredMax ?? pageSize;
   const pageFetchExpr = (variablesExpr: string): string =>
     fetchCall.kind === "gql"
       ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
@@ -10500,7 +10507,7 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   const withTotalOverrideExpr = `{ ...withItems, deliveredCount: itemsById.size, truncated }`;
 
   return `    const baseVariables = ${gqlVariablesExpr};
-    const PAGE_SIZE = payload.pageSize ?? ${pageSize};
+    const PAGE_SIZE = payload.pageSize ?? ${pageSizeDefault};
     // Bounded so a paging bug (a total that never converges) can't loop forever.
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
@@ -11701,6 +11708,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           gqlVariablesExpr,
           signal: paginationSignal,
           foldMergeLines: paginatedFoldMergeLines,
+          valueConstraints,
           fetchCall: gql
             ? {
                 kind: "gql",
