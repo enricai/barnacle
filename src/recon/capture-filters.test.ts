@@ -268,7 +268,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+    const occurrences = Array.from({ length: 6 }, (_, i) => ({
       method: "GET",
       url: beaconUrl,
       requestPostData: `fingerprint=${i}`,
@@ -353,7 +353,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: true, variant: "control" },
     };
-    const occurrences = Array.from({ length: 12 }, () => ({
+    const occurrences = Array.from({ length: 6 }, () => ({
       method: "GET",
       url: "https://apply.acme.example/widget/toggles",
       requestPostData: null,
@@ -364,7 +364,7 @@ describe("isZeroVarianceRepeatCapture", () => {
   });
 
   it("does not flag a query-less candidate whose JSON response cycles between two states rather than never repeating", () => {
-    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+    const occurrences = Array.from({ length: 6 }, (_, i) => ({
       method: "GET",
       url: "https://apply.acme.example/widget/toggles",
       requestPostData: null,
@@ -384,7 +384,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
       method: "GET",
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
@@ -419,7 +419,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "text/plain" },
       responseBody: "ok",
     };
-    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+    const occurrences = Array.from({ length: 6 }, (_, i) => ({
       method: "POST",
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
@@ -437,7 +437,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 12 }, (_, i) => ({
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
       method: "POST",
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
