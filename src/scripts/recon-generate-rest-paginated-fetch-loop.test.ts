@@ -269,11 +269,8 @@ describe("recon-generate REST paginated fetch loop: no total/count signal", () =
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
-    expect(contract).toContain(
-      'const data = await httpClient(`${context.baseUrl}/api/products/search`, {\n' +
-        '      method: "POST",\n' +
-        "      body: JSON.stringify({ query: payload.query }),\n" +
-        "    });"
+    expect(contract).toMatch(
+      /const data = await httpClient\(`\$\{context\.baseUrl\}\/api\/products\/search`, \{\n {6}method: "POST",\n {6}body: JSON\.stringify\(\{ query: payload\.query \}\),\n {4}\}\);/
     );
     expect(contract).not.toContain("MAX_PAGES");
     expect(contract).not.toContain("maxPages");
