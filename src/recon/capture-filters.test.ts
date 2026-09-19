@@ -353,7 +353,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { enabled: true, variant: "control" },
     };
-    const occurrences = Array.from({ length: 6 }, () => ({
+    const occurrences = Array.from({ length: 10 }, () => ({
       method: "GET",
       url: "https://apply.acme.example/widget/toggles",
       requestPostData: null,
@@ -361,6 +361,24 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { enabled: true, variant: "control" },
     }));
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
+
+  it("does not flag a query-less candidate whose JSON response never shows a second value below the dense-repeat threshold — a genuinely-polled toggle that simply has not flipped yet in this archive produces the exact same shape at that scale", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/toggles",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true, variant: "control" },
+    };
+    const occurrences = Array.from({ length: 6 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/toggles",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true, variant: "control" },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 
   it("does not flag a query-less candidate whose JSON response cycles between two states rather than never repeating", () => {
@@ -384,7 +402,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+    const occurrences = Array.from({ length: 10 }, (_, i) => ({
       method: "GET",
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
@@ -437,7 +455,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+    const occurrences = Array.from({ length: 10 }, (_, i) => ({
       method: "POST",
       url: "https://apply.acme.example/widget/beacon",
       requestPostData: `fingerprint=${i}`,
@@ -445,6 +463,24 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
     }));
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
+  it("does not flag a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, even with a business-looking varying JSON response — a paged listing or per-item drill produces the exact same shape at that scale", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
   });
 
   it("does not flag a query-less candidate below the dense-repeat threshold", () => {

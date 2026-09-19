@@ -513,6 +513,37 @@ function endpointOrigin(url: string): string | null {
 const MIN_QUERYLESS_REPEAT_COUNT = 3;
 
 /**
+ * Minimum same-endpoint occurrence count required before a QUERY-LESS
+ * candidate's response-body variance (or lack of it) is trusted as a noise
+ * signal via {@link hasFreelyVaryingResponseAcrossOccurrences} /
+ * {@link hasNoObservedResponseVariance}.
+ *
+ * A query-less candidate has no fixed query key to independently corroborate
+ * that every occurrence really is the same recurring widget (unlike the
+ * fixed-query-key branch below, where a recurring key such as
+ * `clientId`/`environment` already proves that), so "the whole URL has no
+ * query string" is true of both a same-origin noise widget AND a
+ * genuinely-repeated own endpoint (a toggle feed whose value has not yet
+ * flipped in this archive, a per-item drill invoked with a distinct per-call
+ * business argument in its POST body) — and in both shapes the JSON response
+ * signature cardinality can look identical (a beacon stamping a fresh
+ * counter into `{ viewCount, greeting }` and a paged listing stamping the
+ * current page's `{ products }` both produce high-cardinality signatures; a
+ * beacon that happens to return one static value for the whole archived
+ * session and a toggle that has not yet flipped both produce zero-cardinality
+ * signatures). Occurrence count is the only remaining corroborating signal
+ * for a query-less candidate: a same-origin widget fires on every page load
+ * and accumulates a dense repeat count over one recon session, while a real
+ * own endpoint's repeat count is bounded by how many pages/items/polls the
+ * flow actually performs, which recon fixtures and most live flows exercise
+ * as single digits. This does NOT gate the fixed-query-key branch, whose
+ * recurring key is itself the corroborating signal a query-less candidate
+ * lacks — that branch's own regression coverage proves the classification
+ * must hold well below this floor.
+ */
+const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
+
+/**
  * True when same-endpoint occurrences carry JSON response bodies that are
  * mostly pairwise distinct — i.e. the payload never settles back into a
  * value it has already shown.
@@ -616,6 +647,7 @@ export function isZeroVarianceRepeatCapture(
     );
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
+      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
       if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
       return hasNoObservedResponseVariance(sameEndpoint);
     }
@@ -624,6 +656,7 @@ export function isZeroVarianceRepeatCapture(
     );
     if (!hasExplicitContentType) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
+    if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
     return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
   }
   if (sameEndpoint.length < 2) return false;
