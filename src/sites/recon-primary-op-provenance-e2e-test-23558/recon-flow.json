@@ -1,1 +1,0 @@
-{"ownBackendHostnames":["shop.example.com"],"steps":[{"step":"select 'widgets' from the Category dropdown","payloadField":"category"}]}

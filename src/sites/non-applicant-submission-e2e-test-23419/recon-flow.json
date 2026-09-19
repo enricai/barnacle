@@ -1,1 +1,0 @@
-{"steps":[{"step":"authorize session"},{"step":"browse paged facet search"},{"step":"drill into unit availability"},{"step":"book availability","submitStep":true}],"ownBackendHostnames":["www.own-backend-non-applicant-submission-fixture.example.com"]}
