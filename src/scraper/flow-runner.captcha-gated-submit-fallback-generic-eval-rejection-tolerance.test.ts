@@ -34,7 +34,7 @@ function makeFakeTarget(evaluateCalls: ((expr: unknown) => unknown)[]): FrameTar
 
 describe("flow-runner/submitCaptchaGatedForm — click-dispatch tolerates the generic content-free eval rejection", () => {
   it("resolves true when the ranked-candidate click dispatch rejects with the literal StagehandEvalError: Uncaught message, falling through to a successful form-level submit", async () => {
-    const candidate: SubmitCandidate = { deepIndex: 0, tier: 1 };
+    const candidate: SubmitCandidate = { deepIndex: 0, tier: 1, tag: "button", accessibleName: "Submit" };
     const target = makeFakeTarget([
       () => true,
       () => [candidate],
