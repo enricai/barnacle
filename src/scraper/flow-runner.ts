@@ -5414,17 +5414,40 @@ export interface InjectCaptchaTokenResult {
 }
 
 /**
+ * Stagehand's `StagehandEvalError` message when CDP's `Runtime.evaluate`
+ * reports an exception with no `exception.description` to fall back on:
+ * `exceptionDetails.text` is a content-free classification string ("Uncaught",
+ * "Uncaught (in promise)") Chrome sets on every thrown/rejected evaluate
+ * regardless of what was actually thrown, and Stagehand's own placeholder
+ * ("Evaluation failed") when neither field is present at all. None of these
+ * carry any evidence about what happened in-page — they fire for a clean
+ * teardown-adjacent throw exactly as often as a genuine bug — so a rejection
+ * whose full message is exactly one of these (after bugfix-001's page.js/
+ * frame.js patch already preferred the real `description` when Chrome
+ * provided one) is content-free, not evidence of a real exception.
+ */
+const GENERIC_CONTENT_FREE_EVAL_REJECTION_MESSAGES = new Set([
+  "stagehandevalerror: uncaught",
+  "stagehandevalerror: uncaught (in promise)",
+  "stagehandevalerror: evaluation failed",
+]);
+
+/**
  * Distinguishes a navigating evaluate's expected context-teardown rejection
  * (the callback/submit dispatch it wraps synchronously navigated the frame,
- * tearing down the execution context before a return value marshals) from a
- * genuine in-page exception — a thrown `TypeError`, a rejected fetch, or any
- * other real failure inside the site's own callback/submit logic. Both are
- * indistinguishable to a blanket `.catch(() => undefined)`, which is exactly
- * why a genuinely thrown-and-swallowed exception during the callback invoke
- * used to log `callbackDiscovered=true`/`injected=true` (both computed
- * BEFORE the invoke) while never actually dispatching anything. Only a
- * context-teardown rejection is safe to discard silently; this is what lets
- * callers keep doing that for the first case while surfacing the second.
+ * tearing down the execution context before a return value marshals) — or a
+ * rejection whose message carries no diagnostic content beyond Stagehand's
+ * generic classification wrapper (see
+ * {@link GENERIC_CONTENT_FREE_EVAL_REJECTION_MESSAGES}) — from a genuine
+ * in-page exception with real diagnostic detail: a thrown `TypeError`, a
+ * rejected fetch, or any other real failure inside the site's own
+ * callback/submit logic. All three are indistinguishable to a blanket
+ * `.catch(() => undefined)`, which is exactly why a genuinely
+ * thrown-and-swallowed exception during the callback invoke used to log
+ * `callbackDiscovered=true`/`injected=true` (both computed BEFORE the
+ * invoke) while never actually dispatching anything. Only a context-teardown
+ * or content-free rejection is safe to discard silently; this is what lets
+ * callers keep doing that for those cases while surfacing genuine detail.
  */
 function isNavigatingEvaluateRejection(error: unknown): boolean {
   const message = toErrorMessage(error).toLowerCase();
@@ -5434,7 +5457,8 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
     message.includes("cannot find context with specified id") ||
     message.includes("target closed") ||
     message.includes("frame was detached") ||
-    message.includes("no frame for given id found")
+    message.includes("no frame for given id found") ||
+    GENERIC_CONTENT_FREE_EVAL_REJECTION_MESSAGES.has(message.trim())
   );
 }
 

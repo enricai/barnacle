@@ -3,6 +3,13 @@
 # (aisdk.js inferProviderName, zodCompat.js toJsonSchema) still exist at the same
 # dist/{cjs,esm} paths in 3.6.0 and the patched code is present after
 # `pnpm install --frozen-lockfile` reapplies this patch cleanly. Keep both hunks.
+#
+# 2026-09-19 (bugfix-001): added understudy/page.js and understudy/frame.js
+# hunks (cjs+esm) so evaluate() prefers CDP's exceptionDetails.exception.description
+# over the generic, always-"Uncaught" exceptionDetails.text field. page.js
+# already fell back to .description but only after .text, which Chrome always
+# populates, so the fallback never fired; frame.js had no .description
+# fallback at all. Keep all six hunks in this file.
 diff --git a/dist/cjs/lib/v3/llm/aisdk.js b/dist/cjs/lib/v3/llm/aisdk.js
 index 164294dfb71e05e45022b7d07e3bc5669a0ea265..fb1a660e3cb6b6621ec842c97455b02d17dc6528 100644
 --- a/dist/cjs/lib/v3/llm/aisdk.js
@@ -85,3 +92,59 @@ index e97ff17b9cb176b17ba37badd8b9b04354ec72ea..8744baa2d34d4d8aec7ed3cacde1fce5
      const zodWithJsonSchema = z;
      if (zodWithJsonSchema.toJSONSchema) {
          return zodWithJsonSchema.toJSONSchema(schema);
+diff --git a/dist/cjs/lib/v3/understudy/frame.js b/dist/cjs/lib/v3/understudy/frame.js
+index ce8b21a..2650eb4 100644
+--- a/dist/cjs/lib/v3/understudy/frame.js
++++ b/dist/cjs/lib/v3/understudy/frame.js
+@@ -131,7 +131,7 @@ class Frame {
+             });
+         }
+         if (res.exceptionDetails) {
+-            throw new sdkErrors_js_1.StagehandEvalError(res.exceptionDetails.text ?? "Evaluation failed");
++            throw new sdkErrors_js_1.StagehandEvalError(res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "Evaluation failed");
+         }
+         return res.result.value;
+     }
+diff --git a/dist/cjs/lib/v3/understudy/page.js b/dist/cjs/lib/v3/understudy/page.js
+index b6559d8..a4b2791 100644
+--- a/dist/cjs/lib/v3/understudy/page.js
++++ b/dist/cjs/lib/v3/understudy/page.js
+@@ -1417,8 +1417,8 @@ let Page = (() => {
+                 awaitPromise: true,
+             });
+             if (exceptionDetails) {
+-                const msg = exceptionDetails.text ||
+-                    exceptionDetails.exception?.description ||
++                const msg = exceptionDetails.exception?.description ||
++                    exceptionDetails.text ||
+                     "Evaluation failed";
+                 throw new sdkErrors_js_1.StagehandEvalError(msg);
+             }
+diff --git a/dist/esm/lib/v3/understudy/frame.js b/dist/esm/lib/v3/understudy/frame.js
+index 23848ee..f5c6139 100644
+--- a/dist/esm/lib/v3/understudy/frame.js
++++ b/dist/esm/lib/v3/understudy/frame.js
+@@ -128,7 +128,7 @@ export class Frame {
+             });
+         }
+         if (res.exceptionDetails) {
+-            throw new StagehandEvalError(res.exceptionDetails.text ?? "Evaluation failed");
++            throw new StagehandEvalError(res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "Evaluation failed");
+         }
+         return res.result.value;
+     }
+diff --git a/dist/esm/lib/v3/understudy/page.js b/dist/esm/lib/v3/understudy/page.js
+index 3aa8edd..9af33a5 100644
+--- a/dist/esm/lib/v3/understudy/page.js
++++ b/dist/esm/lib/v3/understudy/page.js
+@@ -1414,8 +1414,8 @@ let Page = (() => {
+                 awaitPromise: true,
+             });
+             if (exceptionDetails) {
+-                const msg = exceptionDetails.text ||
+-                    exceptionDetails.exception?.description ||
++                const msg = exceptionDetails.exception?.description ||
++                    exceptionDetails.text ||
+                     "Evaluation failed";
+                 throw new StagehandEvalError(msg);
+             }

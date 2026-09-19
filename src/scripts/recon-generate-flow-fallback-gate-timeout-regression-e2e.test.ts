@@ -145,8 +145,19 @@ describe("recon-generate CLI regression: recon-flow.json fallback-gate/timeout k
     expect(preChangeResult.status, `${preChangeResult.stdout}\n${preChangeResult.stderr}`).toBe(0);
     const preChangeContract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
-    expect(currentContract).toBe(preChangeContract);
+    // PRE_CHANGE_REF predates the hyphen-digit identifier-sanitizer fix (91a94b8), which
+    // is intentional and unrelated to the fallback-gate feature this test pins, so the
+    // siteId-derived identifier is normalized out of both sides before the byte-diff.
+    expect(stripSiteIdentifier(currentContract, siteId)).toBe(
+      stripSiteIdentifier(preChangeContract, siteId)
+    );
     expect(currentContract).not.toContain("browserFallbackGate");
     expect(currentContract).not.toContain("defaultTimeoutMs");
   }, 30_000);
 });
+
+function stripSiteIdentifier(contract: string, siteId: string): string {
+  const camel = siteId.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+  const camelLegacy = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+  return contract.split(camel).join("__SITE_IDENT__").split(camelLegacy).join("__SITE_IDENT__");
+}
