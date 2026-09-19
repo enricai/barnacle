@@ -45,10 +45,7 @@ function gqlCapture(overrides: {
   };
 }
 
-function restCapture(overrides: {
-  variables: Record<string, unknown>;
-  responseBody: unknown;
-}) {
+function restCapture(overrides: { variables: Record<string, unknown>; responseBody: unknown }) {
   return {
     timestamp: "2026-08-18T10:23:03.000Z",
     phase: "browse-the-products",
