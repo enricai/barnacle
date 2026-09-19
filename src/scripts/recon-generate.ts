@@ -10318,7 +10318,7 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
 
 /** Bounded-paging signal detected from a primary read operation's own
  * captured response body and request variables — see
- * {@link buildPaginatedGqlExecuteHttpBody}. */
+ * {@link buildPaginatedFetchLoopExecuteHttpBody}. */
 interface PaginationSignal {
   totalPath: string[];
   arrayPath: string[];
@@ -10434,11 +10434,17 @@ function buildNestedSpreadOverride(
 }
 
 /**
- * Emits a bounded paging loop for a read-only GraphQL primary operation
- * exposing {@link PaginationSignal}: advances the skip/offset variable by
- * the observed page size on each call, stops once the response's own
- * reported total is reached or `MAX_PAGES` caps it, and merges pages by the
- * detected identity field rather than concatenating blindly.
+ * Emits a bounded paging loop for a read-only primary operation exposing
+ * {@link PaginationSignal}: advances the skip/offset variable by the
+ * observed page size on each call, stops once the response's own reported
+ * total is reached or `MAX_PAGES` caps it, and merges pages by the detected
+ * identity field rather than concatenating blindly.
+ *
+ * The primary operation may be GraphQL (each page issued via `getGql`) or a
+ * plain REST endpoint (each page issued via `httpClient`) — `fetchCall`
+ * selects which, and is the only call-shape-specific piece of the loop; the
+ * skip/PAGE_SIZE/MAX_PAGES bookkeeping, de-dup, and halt guards below are
+ * shared verbatim between both.
  *
  * `foldMergeLines`, when non-empty, threads a resolved single-primary fold
  * plan (see `emitContractTs`'s `singlePrimaryFoldPlans`) additively into the
@@ -10448,18 +10454,22 @@ function buildNestedSpreadOverride(
  * mutates its item in place (`Object.assign`), which is visible through
  * `itemsById`'s own stored references — no re-`set` needed.
  */
-function buildPaginatedGqlExecuteHttpBody(opts: {
+function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   pascal: string;
-  gqlOperationNameExpr: string;
-  queryConstName: string;
   gqlVariablesExpr: string;
   signal: PaginationSignal;
   foldMergeLines: string[];
+  fetchCall:
+    | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
+    | { kind: "rest"; endpointPath: string };
 }): string {
-  const { pascal, gqlOperationNameExpr, queryConstName, gqlVariablesExpr, signal, foldMergeLines } =
-    opts;
+  const { pascal, gqlVariablesExpr, signal, foldMergeLines, fetchCall } = opts;
   const { totalPath, arrayPath, containerPath, countKey, skipKey, pageSize, identityField } =
     signal;
+  const pageFetchExpr = (variablesExpr: string): string =>
+    fetchCall.kind === "gql"
+      ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
+      : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
 
   const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
   const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
@@ -10495,7 +10505,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
     const MAX_PAGES = payload.maxPages ?? 50;
     const itemsById = new Map<string, ${itemTypeExpr}>();
     let skip = 0;
-    const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
+    const page = await ${pageFetchExpr(variablesForCall)};
     let lastPage: ${pascal}Response = page;
     let total = ${totalAccessExpr};
     const firstPageItems = ${arrayAccessExpr};
@@ -10513,7 +10523,7 @@ function buildPaginatedGqlExecuteHttpBody(opts: {
       !firstPageWasShort && pageIndex < MAX_PAGES && itemsById.size < total;
       pageIndex++
     ) {
-      const page = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${queryConstName}, ${variablesForCall});
+      const page = await ${pageFetchExpr(variablesForCall)};
       lastPage = page;
       total = ${totalAccessExpr};
       const sizeBeforePage = itemsById.size;
@@ -10882,17 +10892,21 @@ export function emitContractTs(opts: {
     : inputBody
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
-  // Only the single-endpoint GraphQL read path (a real primary operation, no
+  // Only the single-endpoint read path (a real primary operation, no
   // multi-step flow) is a candidate for a paging signal — multiStepBody
-  // already owns its own per-call semantics.
+  // already owns its own per-call semantics. A REST primary has no
+  // operationName/query, so it already collapses to the same identity
+  // operationGroupKey falls back to for such a capture
+  // (`${endpointPath}::anonymous`) — this is the same identity
+  // detectPaginationSignal uses to match sibling captures below.
+  const paginationOperationIdentity = gql
+    ? gqlOperationName
+      ? `${endpointPath}::${gqlOperationName}`
+      : null
+    : `${endpointPath}::anonymous`;
   const paginationSignal =
-    !multiStepBody && gql && gqlOperationName
-      ? detectPaginationSignal(
-          responseBody,
-          gqlVariables,
-          `${endpointPath}::${gqlOperationName}`,
-          allCaptures
-        )
+    !multiStepBody && paginationOperationIdentity
+      ? detectPaginationSignal(responseBody, gqlVariables, paginationOperationIdentity, allCaptures)
       : null;
   // A resolved drill-down fold plan on the single-primary getGql/httpClient
   // hot path (`multiStepBody` unset — see emitMultiStepExecuteHttp for the
@@ -10902,7 +10916,7 @@ export function emitContractTs(opts: {
   // drop the fold feature the flow author declared (see
   // recon-generate-foldreturn-regresses-primary-op-and-payload-to-ats-submission-shape.md).
   // Also threaded additively into `paginationSignal`'s fetch loop below (see
-  // buildPaginatedGqlExecuteHttpBody) — the fold runs against the final
+  // buildPaginatedFetchLoopExecuteHttpBody) — the fold runs against the final
   // assembled/de-duplicated page items, not just the first page's captured
   // sample, so a paginated primary is no longer excluded from folding.
   const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
@@ -10949,7 +10963,7 @@ export function emitContractTs(opts: {
     extendFields.set(name, line);
   };
 
-  // A detected bounded-paging signal means buildPaginatedGqlExecuteHttpBody
+  // A detected bounded-paging signal means buildPaginatedFetchLoopExecuteHttpBody
   // will emit a loop bounded by MAX_PAGES — expose that bound as a caller-
   // overridable payload field, mirroring how PAGE_SIZE is already sourced
   // from the detected signal.
@@ -11317,9 +11331,15 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   const gqlOperationNameExpr = gqlOperationName
     ? JSON.stringify(gqlOperationName)
     : JSON.stringify(`${pascal}Search`);
+  // A REST primary with a detected paging signal renders `baseVariables` from
+  // the same captured request-variables object the signal was itself
+  // detected from (see paginationOperationIdentity above) — the default
+  // `{ q: payload.query }` REST body has no skip/count container to advance.
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
-    : "{ q: payload.query }";
+    : paginationSignal
+      ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
+      : "{ q: payload.query }";
 
   /** Builds the nested `for` loop block(s) — see {@link pathToFoldLoopLines}
    * — that fold every resolved plan's drill-down data onto `dataVarName`'s
@@ -11676,13 +11696,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   const executeHttpBody = multiStepBody
     ? multiStepBody
     : paginationSignal
-      ? buildPaginatedGqlExecuteHttpBody({
+      ? buildPaginatedFetchLoopExecuteHttpBody({
           pascal,
-          gqlOperationNameExpr,
-          queryConstName: `${pascal.toUpperCase()}_QUERY`,
           gqlVariablesExpr,
           signal: paginationSignal,
           foldMergeLines: paginatedFoldMergeLines,
+          fetchCall: gql
+            ? {
+                kind: "gql",
+                gqlOperationNameExpr,
+                queryConstName: `${pascal.toUpperCase()}_QUERY`,
+              }
+            : { kind: "rest", endpointPath },
         })
       : gql
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
@@ -13453,7 +13478,13 @@ async function main(): Promise<void> {
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
         : (fallbackGraphQLCapture?.operationName ??
           parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
-      gqlVariables: primaryGraphQLOperation?.capture.variables ?? null,
+      // For a REST primary (no primaryGraphQLOperation), the winning
+      // capture's own `variables`/`decodedParams` is the REST equivalent of
+      // a GraphQL operation's captured variables — the object
+      // detectPaginationSignal walks to find a skip/count container.
+      gqlVariables:
+        primaryGraphQLOperation?.capture.variables ??
+        (!gql ? (winningCapture?.variables ?? winningCapture?.decodedParams ?? null) : null),
       allCaptures: activeCaptures,
       auxFiles,
       multiStepBody,
