@@ -394,7 +394,7 @@ describe("isZeroVarianceRepeatCapture", () => {
     }
   });
 
-  it("flags a query-less candidate densely repeated whose JSON response has non-URL-derivable leaves that vary per occurrence", () => {
+  it("flags a query-less candidate with an identical request whose JSON response has non-URL-derivable leaves that vary per occurrence, even below the dense-repeat threshold — an identical request can't explain a varying response regardless of count", () => {
     const first = {
       method: "GET",
       url: "https://apply.acme.example/widget/loader",
@@ -402,7 +402,7 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
     };
-    const occurrences = Array.from({ length: 10 }, (_, i) => ({
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
       method: "GET",
       url: "https://apply.acme.example/widget/loader",
       requestPostData: null,
