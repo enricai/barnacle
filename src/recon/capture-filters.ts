@@ -641,6 +641,128 @@ function otherEndpointPaths(
 }
 
 /**
+ * The response-shape verdict {@link poolPathLooksNoiseShaped} compares
+ * pairwise between a candidate and each pool path it might be "vouched for"
+ * by: which of the two weak, corroboration-dependent noise signals
+ * ({@link hasNoObservedResponseVariance} — a response that never once shows
+ * a second state — or {@link hasFreelyVaryingResponseAcrossOccurrences} — one
+ * that varies almost every call) a path's own occurrences exhibit, if any.
+ * `null` means neither fires (the path shows genuine bounded/business-like
+ * variance) — the common case for a real endpoint and the thing that makes
+ * it trustworthy as a corroborator regardless of what it is being asked to
+ * corroborate.
+ */
+type WeakNoiseSignal = "no-variance" | "freely-varying" | null;
+
+function weakNoiseSignalFor(sameEndpoint: readonly { responseBody?: unknown }[]): WeakNoiseSignal {
+  if (hasNoObservedResponseVariance(sameEndpoint)) return "no-variance";
+  if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return "freely-varying";
+  return null;
+}
+
+/**
+ * True when `poolPath` should NOT be trusted as corroboration for
+ * `candidateEndpoint`'s isolation check — i.e. what
+ * {@link nonNoiseOtherEndpointPaths} excludes from the pool
+ * {@link isCorroboratedByStructuralIsolation} compares a candidate's raw
+ * segments/tokens against.
+ *
+ * A pool path with an intrinsically empty/echoed response
+ * ({@link hasNoBusinessRelevantResponseState}) is excluded unconditionally —
+ * that signal needs no corroboration of its own to trust, so a path that
+ * shows it is disqualified as a corroborator regardless of what asked.
+ *
+ * Otherwise, a pool path is excluded only when BOTH it and the candidate it
+ * is being asked to corroborate exhibit `"no-variance"` (see
+ * {@link poolPathLooksNoiseShaped}'s own doc for why `"freely-varying"` is
+ * exempt from this half of the rule): two distinct, structurally-unrelated
+ * noise endpoints that merely share one raw path segment (e.g. a shared
+ * infra/widget-family prefix) and are BOTH byte-identical-forever would
+ * otherwise "vouch" for each other's raw-segment overlap and neither would
+ * be recognized as isolated — mirroring why
+ * {@link isStructurallyIsolatedCapture} excludes self-referential pool paths
+ * from ITS overlap set.
+ *
+ * This mutual-exclusion rule fires ONLY for the `"no-variance"` signal (a
+ * response that is byte-identical on every occurrence), never for
+ * `"freely-varying"`: a real endpoint family routinely has TWO siblings that
+ * both show freely-varying, near-unique responses (a paged listing and a
+ * per-item drill both produce a different body on every call) — that shared
+ * high-cardinality pattern is the NORMAL shape of genuine business data, not
+ * evidence against it, and corroboration between such siblings is exactly
+ * how {@link isZeroVarianceRepeatCapture} is designed to rescue a real,
+ * low-occurrence, per-page/per-item candidate from its own high-cardinality
+ * reading. A byte-identical response, in contrast, is never how a real
+ * per-occurrence data endpoint behaves regardless of occurrence count, so
+ * two such endpoints "corroborating" each other via nothing but a shared raw
+ * segment carries no evidentiary weight. An occurrence count alone is
+ * deliberately NOT used as this discriminator: that would repeat the exact
+ * absolute-count mistake this corroboration check exists to correct.
+ *
+ * A pool path with no observed response body at all (the common case for a
+ * chain's own plain sibling steps, which this file's fixtures never attach a
+ * body to) contributes no evidence either way and is treated as a genuine
+ * sibling — absence of data is not evidence of noise.
+ */
+function poolPathLooksNoiseShaped(
+  poolPath: string,
+  candidateEndpoint: string,
+  candidateSignal: WeakNoiseSignal,
+  allCaptures: readonly {
+    method: string;
+    url: string;
+    requestPostData: string | null;
+    responseHeaders?: Record<string, string>;
+    responseBody?: unknown;
+  }[]
+): boolean {
+  const atPoolPath = allCaptures.filter((capture) => {
+    if (endpointOrigin(capture.url) === candidateEndpoint) return false;
+    try {
+      return new URL(capture.url).pathname === poolPath;
+    } catch {
+      return false;
+    }
+  });
+  const withBody = atPoolPath.filter((capture) => capture.responseBody !== undefined);
+  const representative = withBody[0];
+  if (representative === undefined) return false;
+  if (hasNoBusinessRelevantResponseState(representative)) return true;
+  if (candidateSignal !== "no-variance") return false;
+  const sameEndpoint = atPoolPath.filter((capture) => capture.method === representative.method);
+  return weakNoiseSignalFor(sameEndpoint) === "no-variance";
+}
+
+/**
+ * {@link otherEndpointPaths}, minus any pool path that is itself
+ * {@link poolPathLooksNoiseShaped noise-shaped RELATIVE TO `candidate`} — the
+ * corroboration pool {@link isCorroboratedByStructuralIsolation} actually
+ * compares a candidate's raw segments/tokens against. Kept separate from the
+ * raw, unfiltered {@link otherEndpointPaths} result because "no other
+ * endpoint exists in this run at all" (isolation genuinely cannot be
+ * established) and "every other endpoint in this run is itself noise"
+ * (isolation from every LEGITIMATE sibling is fully established) are
+ * different findings and must not collapse to the same "nothing to compare"
+ * fallback.
+ */
+function nonNoiseOtherEndpointPaths(
+  candidateEndpoint: string,
+  candidateSameEndpoint: readonly { responseBody?: unknown }[],
+  allCaptures: readonly {
+    method: string;
+    url: string;
+    requestPostData: string | null;
+    responseHeaders?: Record<string, string>;
+    responseBody?: unknown;
+  }[]
+): string[] {
+  const candidateSignal = weakNoiseSignalFor(candidateSameEndpoint);
+  return otherEndpointPaths(candidateEndpoint, allCaptures).filter(
+    (path) => !poolPathLooksNoiseShaped(path, candidateEndpoint, candidateSignal, allCaptures)
+  );
+}
+
+/**
  * True when `a` and `b` are the same word, or one is a shared-stem prefix of
  * the other (e.g. `avail` / `available`, `product` / `products`) — the same
  * abbreviation and pluralization variants a same-flow endpoint family
@@ -709,16 +831,30 @@ function sharesStemmedToken(
  * When the run captured no OTHER distinct endpoint at all, there is nothing
  * to compare against, so isolation cannot be established either way — the
  * caller falls back to the occurrence-count floor in that case.
+ *
+ * The comparison pool is split into two arguments on purpose:
+ * `otherPaths` (every other distinct endpoint captured in the run, raw and
+ * unfiltered) only answers "is there anything to compare against at all",
+ * while `corroboratingPaths` ({@link nonNoiseOtherEndpointPaths}, with any
+ * pool path that is itself {@link poolPathLooksNoiseShaped noise-shaped}
+ * excluded) is what the token/segment overlap is actually checked against.
+ * Using the unfiltered pool for both would let two distinct, structurally-
+ * unrelated noise endpoints that merely share one raw path segment "vouch"
+ * for each other via that shared segment, so neither is ever recognized as
+ * isolated — the raw-segment fallback below has no protection of its own
+ * against that the way {@link isStructurallyIsolatedCapture} already does
+ * for its pool.
  */
 function isCorroboratedByStructuralIsolation(
   candidatePath: string,
-  otherPaths: readonly string[]
+  otherPaths: readonly string[],
+  corroboratingPaths: readonly string[]
 ): boolean {
   if (otherPaths.length === 0) return false;
   const candidateTokens = pathStructuralTokens(candidatePath);
   if (
     candidateTokens.size > 0 &&
-    otherPaths.some((otherPath) =>
+    corroboratingPaths.some((otherPath) =>
       sharesStemmedToken(candidateTokens, pathStructuralTokens(otherPath))
     )
   ) {
@@ -726,7 +862,7 @@ function isCorroboratedByStructuralIsolation(
   }
   const candidateSegments = meaningfulPathSegments(candidatePath);
   if (candidateSegments.length === 0) return false;
-  const otherSegments = new Set(otherPaths.flatMap((path) => meaningfulPathSegments(path)));
+  const otherSegments = new Set(corroboratingPaths.flatMap((path) => meaningfulPathSegments(path)));
   return !candidateSegments.some((segment) => otherSegments.has(segment));
 }
 
@@ -839,7 +975,8 @@ export function isZeroVarianceRepeatCapture(
         sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
         !isCorroboratedByStructuralIsolation(
           candidateUrl.pathname,
-          otherEndpointPaths(candidateEndpoint, allCaptures)
+          otherEndpointPaths(candidateEndpoint, allCaptures),
+          nonNoiseOtherEndpointPaths(candidateEndpoint, sameEndpoint, allCaptures)
         )
       ) {
         return false;
@@ -856,7 +993,8 @@ export function isZeroVarianceRepeatCapture(
       sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
       !isCorroboratedByStructuralIsolation(
         candidateUrl.pathname,
-        otherEndpointPaths(candidateEndpoint, allCaptures)
+        otherEndpointPaths(candidateEndpoint, allCaptures),
+        nonNoiseOtherEndpointPaths(candidateEndpoint, sameEndpoint, allCaptures)
       )
     ) {
       return false;
