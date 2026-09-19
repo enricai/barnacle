@@ -703,6 +703,126 @@ describe("isZeroVarianceRepeatCapture", () => {
     );
   });
 
+  it("flags a query-less, structurally-isolated widget at 7 occurrences and never flags any real endpoint in a realistically diverse pool of endpoint families", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/pulse/api/v1/urgency",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { level: "high", campaign: "flash-sale" },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const diversePool = [
+      { method: "GET", url: "https://apply.acme.example/booking/search", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/sections/name",
+        requestPostData: null,
+      },
+      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      { method: "POST", url: "https://apply.acme.example/booking/submit", requestPostData: "{}" },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/catalog/item-detail-vas",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/promo/listing-avail-vas/state",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/promo/item-detail-vas/state",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/promo/product-avail/state",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/catalog/available-products/list",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/feature-toggles/catalog",
+        requestPostData: null,
+      },
+      { method: "GET", url: "https://apply.acme.example/catalog/listing", requestPostData: null },
+      { method: "GET", url: "https://apply.acme.example/user/profile", requestPostData: null },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/user/profile/edit",
+        requestPostData: null,
+      },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/catalog/item/lookup",
+        requestPostData: '{"itemId":"1000"}',
+      },
+      { method: "GET", url: "https://apply.acme.example/auth/session", requestPostData: null },
+      { method: "GET", url: "https://apply.acme.example/widget/ping", requestPostData: null },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/widget/beacon",
+        requestPostData: "fingerprint=abc123",
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/account/settings/notifications",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/checkout/payment-methods",
+        requestPostData: null,
+      },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/checkout/apply-discount",
+        requestPostData: "{}",
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/shipping/address-book",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/inventory/warehouse-status",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/reviews/product-summary",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/support/ticket-history",
+        requestPostData: null,
+      },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/loyalty/rewards-balance",
+        requestPostData: null,
+      },
+      {
+        method: "POST",
+        url: "https://apply.acme.example/newsletter/subscribe-preferences",
+        requestPostData: "{}",
+      },
+    ];
+    const allCaptures = [...occurrences, ...diversePool];
+    expect(isZeroVarianceRepeatCapture(first, allCaptures)).toBe(true);
+    for (const realEndpoint of diversePool) {
+      expect(isZeroVarianceRepeatCapture(realEndpoint, allCaptures)).toBe(false);
+    }
+  });
+
   it("does not flag a query-less candidate below the dense-repeat threshold", () => {
     const first = {
       method: "GET",
