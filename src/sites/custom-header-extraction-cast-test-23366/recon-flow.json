@@ -1,0 +1,1 @@
+{"steps":[{"step":"browse catalog search"},{"step":"open item detail panel"},{"step":"submit item selection","submitStep":true}],"submitEndpointPattern":"catalog/submit","requireSubmitEndpointMatch":true,"ownBackendHostnames":["www.custom-header-extraction-cast-fixture.example.com"]}

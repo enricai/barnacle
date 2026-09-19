@@ -1,0 +1,1 @@
+{"steps":[{"step":"search for companies"}],"foldReturn":{"endpointPattern":"/listings/api/v1/openings","resultsPath":"companySearch.companies","drillResultsPath":"opening","joinFields":["id"]}}
