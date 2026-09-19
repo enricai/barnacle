@@ -624,6 +624,29 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
   });
 
+  it("does not flag a query-less, structurally-isolated POST drill whose per-call response leaves are entirely derivable from that same call's own request body, at a low occurrence count below the old dense-repeat floor", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/catalog/item/lookup",
+      requestPostData: '{"itemId":"1000"}',
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { itemId: "1000" },
+    };
+    const occurrences = Array.from({ length: 5 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/catalog/item/lookup",
+      requestPostData: `{"itemId":"${1001 + i}"}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { itemId: `${1001 + i}` },
+    }));
+    const unrelatedFlow = [
+      { method: "GET", url: "https://apply.acme.example/auth/session", requestPostData: null },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...unrelatedFlow])).toBe(
+      false
+    );
+  });
+
   it("does not flag a query-less candidate below the dense-repeat threshold", () => {
     const first = {
       method: "GET",
