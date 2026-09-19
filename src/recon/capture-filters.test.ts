@@ -278,6 +278,42 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
   });
 
+  it("flags a same-host, fixed-query beacon whose business-looking JSON response varies per call even when it only repeats 7 times (below the old absolute-count floor)", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
+  it("does not flag a genuine closed-set toggle poll cycling between 2 states across only 6 occurrences", () => {
+    const first = {
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: "fingerprint=0",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true },
+    };
+    const occurrences = Array.from({ length: 6 }, (_, i) => ({
+      method: "GET",
+      url: beaconUrl,
+      requestPostData: `fingerprint=${i + 1}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: i % 2 === 0 },
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+  });
+
   it("does not flag a candidate with no fixed query string", () => {
     const first = {
       method: "GET",
