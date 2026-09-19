@@ -556,6 +556,60 @@ const MIN_QUERYLESS_REPEAT_COUNT = 3;
 const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
 
 /**
+ * Distinct pathnames belonging to endpoints OTHER than `candidateEndpoint`,
+ * present in `allCaptures` — the reference pool {@link isCorroboratedByStructuralIsolation}
+ * compares the candidate against. Drawn from the same capture run so the
+ * signal stays intrinsic to this archive rather than any global assumption
+ * about what a "real" path looks like.
+ */
+function otherEndpointPaths(
+  candidateEndpoint: string,
+  allCaptures: readonly { url: string }[]
+): string[] {
+  const paths = new Set<string>();
+  for (const capture of allCaptures) {
+    if (endpointOrigin(capture.url) === candidateEndpoint) continue;
+    try {
+      paths.add(new URL(capture.url).pathname);
+    } catch {
+      // unparsable URL contributes no comparison path
+    }
+  }
+  return [...paths];
+}
+
+/**
+ * True when a query-less candidate's repeat is corroborated as noise by
+ * structural isolation from every OTHER distinct endpoint already present in
+ * the same capture run — a signal intrinsic to the capture's relationship to
+ * the rest of the flow, unlike an absolute occurrence count, which cannot
+ * tell a low-count real endpoint apart from a low-count noise widget (both
+ * produce the identical response-variance shape at a small sample size; see
+ * capture-filters.test.ts's own paired isolated/related fixtures at the same
+ * 7-occurrence count).
+ *
+ * Reuses {@link isStructurallyRelevantCapture}'s token-overlap rule directly
+ * rather than {@link isStructurallyIsolatedCapture}'s more conservative
+ * "assume related unless self-referential" fallback: that fallback exists to
+ * protect a *plain-word chain step* from being misread as noise when it
+ * shares no token with its siblings, which is the opposite of what this
+ * predicate needs — here, a plain-word, non-self-referential path (an
+ * `/pulse/api/v1/urgency`-shaped candidate) sharing nothing with the rest of
+ * the flow is exactly the isolation this predicate must recognize.
+ *
+ * When the run captured no OTHER distinct endpoint at all, there is nothing
+ * to compare against, so isolation cannot be established either way — the
+ * caller falls back to the occurrence-count floor in that case.
+ */
+function isCorroboratedByStructuralIsolation(
+  candidatePath: string,
+  otherPaths: readonly string[]
+): boolean {
+  if (otherPaths.length === 0) return false;
+  return !isStructurallyRelevantCapture(candidatePath, otherPaths);
+}
+
+/**
  * True when same-endpoint occurrences carry JSON response bodies that are
  * mostly pairwise distinct — i.e. the payload never settles back into a
  * value it has already shown.
@@ -660,7 +714,15 @@ export function isZeroVarianceRepeatCapture(
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
       if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
-      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
+      if (
+        sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
+        !isCorroboratedByStructuralIsolation(
+          candidateUrl.pathname,
+          otherEndpointPaths(candidateEndpoint, allCaptures)
+        )
+      ) {
+        return false;
+      }
       return hasNoObservedResponseVariance(sameEndpoint);
     }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
@@ -668,7 +730,15 @@ export function isZeroVarianceRepeatCapture(
     );
     if (!hasExplicitContentType) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
-    if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
+    if (
+      sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
+      !isCorroboratedByStructuralIsolation(
+        candidateUrl.pathname,
+        otherEndpointPaths(candidateEndpoint, allCaptures)
+      )
+    ) {
+      return false;
+    }
     return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
   }
   if (sameEndpoint.length < 2) return false;
