@@ -21,6 +21,12 @@ import type { Capture } from "@/scripts/recon-shared";
  * unconstrained z.number() output byte-for-byte against the explicit
  * `--value-constraints none` opt-out, guarding against a regression in the
  * default (no-flag) path.
+ *
+ * A third case proves the declared constraint OVERRIDES a field the
+ * generator's own shape-only inference already bounded from response data —
+ * the module doc's claim ("the generator prefers a declared constraint over
+ * its own shape-only inference") for the case where an inference already
+ * exists, not just the case where none does.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -213,5 +219,96 @@ describe("recon-generate CLI — declared --value-constraints bounds a field no 
     // Both leave partySize unconstrained — no defaulted bound sneaks in.
     expect(contractOmitted).toMatch(/partySize:\s*z\.number\(\),/);
     expect(contractOmitted).not.toContain(".max(");
+  }, 30_000);
+
+  it("overrides a field the generator's own shape-only inference already bounded", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-declared-value-constraint-validation-e2e-"));
+    const runRoot = join(workDir, "run");
+    // unitPlan's distinct values form a shape-inferred closed set, and
+    // partySize is paired with the confirm response's capacity-shaped
+    // partyCapacityLimit leaf — both fields already get a shape-only
+    // enum/max before any declared constraint is considered.
+    const search = buildCapture({
+      url: SEARCH_URL,
+      requestPostData: JSON.stringify({ query: "lakeside" }),
+      responseBody: { results: [{ unitId: "unit-a" }] },
+      timestamp: "2026-05-01T00:00:00Z",
+    });
+    const hold = buildCapture({
+      url: HOLD_URL,
+      requestPostData: JSON.stringify({ unitId: "unit-a", unitPlan: "Standard", partySize: 2 }),
+      responseBody: { held: true },
+      timestamp: "2026-05-01T00:00:01Z",
+    });
+    const confirm = buildCapture({
+      url: CONFIRM_URL,
+      requestPostData: JSON.stringify({ unitId: "unit-a", unitPlan: "Deluxe", partySize: 3 }),
+      responseBody: { confirmed: true, partyCapacityLimit: 4 },
+      timestamp: "2026-05-01T00:00:02Z",
+    });
+    writeRunDir(runRoot, [search, hold, confirm]);
+
+    const siteId = `declared-value-constraint-override-e2e-test-${process.pid}`;
+    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirs.push(siteOutDir);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "search for a lakeside unit" },
+          { step: "place a hold on the selected unit" },
+          { step: "confirm the unit hold", submitStep: true },
+        ],
+        submitEndpointPattern: "lodging/confirm",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const constraintsPath = join(workDir, "value-constraints.mjs");
+    writeFileSync(
+      constraintsPath,
+      `export const valueConstraints = {
+  unitPlan: { enumValues: ["Standard", "Deluxe", "Suite"] },
+  partySize: { max: 2 },
+};
+`
+    );
+
+    const result = runGenerate(runRoot, siteId, ["--value-constraints", constraintsPath]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    // The declared enum replaces the shape-inferred one (which would have
+    // been just ["Standard", "Deluxe"], the two observed values).
+    expect(contract).toMatch(/unitPlan:\s*z\.enum\(\["Standard", "Deluxe", "Suite"\]\),/);
+    // The declared max (2) replaces the shape-inferred max (4), even though
+    // one of the run's own captures (partySize: 3) exceeds it.
+    expect(contract).toMatch(/partySize:\s*z\.number\(\)\.max\(2\),/);
+    expect(contract).not.toMatch(/partySize:\s*z\.number\(\)\.max\(4\),/);
+
+    const payloadSchemaMatch = contract.match(
+      /const \w+PayloadSchema = ([\s\S]*?);\n\nexport type/
+    );
+    expect(payloadSchemaMatch, contract).not.toBeNull();
+    const payloadSchemaExpr = payloadSchemaMatch![1]!;
+    const PayloadSchema = new Function("z", `return ${payloadSchemaExpr};`)(z) as z.ZodType;
+
+    const BASE_VALID_PAYLOAD = {
+      BaseUrl: `https://${OWN_BACKEND_HOST}`,
+      query: "lakeside",
+      unitId: "unit-a",
+    };
+
+    // A value the shape-only inference would have accepted (3, observed in
+    // this very run) is now rejected under the declared, tighter bound.
+    expect(
+      PayloadSchema.safeParse({ ...BASE_VALID_PAYLOAD, unitPlan: "Standard", partySize: 3 }).success
+    ).toBe(false);
+    expect(
+      PayloadSchema.safeParse({ ...BASE_VALID_PAYLOAD, unitPlan: "Deluxe", partySize: 2 }).success
+    ).toBe(true);
   }, 30_000);
 });
