@@ -68,6 +68,18 @@ vi.mock("@/config", () => ({
 }));
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
+// `waitForSpaReady` gates readiness with `withWatchdog`, which races the
+// fake page's mocked `evaluate()` against a REAL `setTimeout`. The mocked
+// promise settles synchronously in test terms, but under scheduler
+// contention its microtask can be starved past the watchdog's real timer,
+// spuriously "timing out" and driving the function into its real
+// `page.waitForTimeout`-polling loop against a real `Date.now()` deadline —
+// a genuine wall-clock dependency this test must not inherit, since it is
+// orthogonal to the cascade-budget/replan-cycle abort signature under test.
+vi.mock("@/scraper/spa-readiness", () => ({
+  waitForSpaReady: vi.fn().mockResolvedValue(undefined),
+}));
+
 const { createBrowserSessionStub } = vi.hoisted(() => ({
   createBrowserSessionStub: vi.fn(),
 }));
