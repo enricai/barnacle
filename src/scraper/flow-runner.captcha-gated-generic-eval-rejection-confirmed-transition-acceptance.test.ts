@@ -22,14 +22,15 @@ import type { Logger } from "@/types/logging";
  * Regression guard for the precedence between transition confirmation and
  * the callback-invoke rejection classification: a captchaGated step whose
  * callback-invoke eval rejects with the bare, content-free
- * `StagehandEvalError: Uncaught` message (not classified as a navigating
- * evaluate's context-teardown rejection by `isNavigatingEvaluateRejection`,
- * so `injectResult.callbackInvokeError` is set) must still resolve
- * `completed` when the transition-body poll independently confirms an
- * advance on the same attempt. The confirmed-transition checks run and can
- * return `completed` BEFORE `injectResult.callbackInvokeError` is ever
- * consulted, so a co-occurring generic rejection must never veto a
- * genuinely detected transition.
+ * `StagehandEvalError: Uncaught` message — itself discarded as a tolerable
+ * rejection by `isNavigatingEvaluateRejection`, so `injectResult.
+ * callbackInvokeError` stays unset — must still resolve `completed` when the
+ * transition-body poll independently confirms an advance on the same
+ * attempt. The confirmed-transition checks run and can return `completed`
+ * BEFORE `injectResult.callbackInvokeError` is ever consulted, so a
+ * co-occurring generic rejection must never veto a genuinely detected
+ * transition, whether or not the rejection itself carried
+ * `callbackInvokeError`.
  */
 
 const testLogger = {
