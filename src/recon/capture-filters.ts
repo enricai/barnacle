@@ -588,14 +588,20 @@ function otherEndpointPaths(
  * capture-filters.test.ts's own paired isolated/related fixtures at the same
  * 7-occurrence count).
  *
- * Reuses {@link isStructurallyRelevantCapture}'s token-overlap rule directly
- * rather than {@link isStructurallyIsolatedCapture}'s more conservative
- * "assume related unless self-referential" fallback: that fallback exists to
- * protect a *plain-word chain step* from being misread as noise when it
+ * Reuses {@link isStructurallyRelevantCapture}'s token-overlap rule for a
+ * candidate with a compound segment. A plain-word candidate (empty token
+ * set) does NOT get {@link isStructurallyIsolatedCapture}'s conservative
+ * "assume related unless self-referential" fallback — that fallback exists
+ * to protect a *plain-word chain step* from being misread as noise when it
  * shares no token with its siblings, which is the opposite of what this
- * predicate needs — here, a plain-word, non-self-referential path (an
- * `/pulse/api/v1/urgency`-shaped candidate) sharing nothing with the rest of
- * the flow is exactly the isolation this predicate must recognize.
+ * predicate needs. But it also must not default to "isolated" outright: a
+ * plain-word candidate that shares a raw meaningful segment with another
+ * endpoint (e.g. `/user/profile` alongside a sibling `/user/profile/edit`)
+ * is still demonstrably part of the same flow. So a plain-word candidate
+ * falls back to a raw-segment overlap check instead — isolated only when it
+ * shares nothing, token or segment, with any other endpoint in the run (an
+ * `/pulse/api/v1/urgency`-shaped candidate sharing nothing with the rest of
+ * the flow).
  *
  * When the run captured no OTHER distinct endpoint at all, there is nothing
  * to compare against, so isolation cannot be established either way — the
@@ -606,7 +612,13 @@ function isCorroboratedByStructuralIsolation(
   otherPaths: readonly string[]
 ): boolean {
   if (otherPaths.length === 0) return false;
-  return !isStructurallyRelevantCapture(candidatePath, otherPaths);
+  if (pathStructuralTokens(candidatePath).size > 0) {
+    return !isStructurallyRelevantCapture(candidatePath, otherPaths);
+  }
+  const candidateSegments = meaningfulPathSegments(candidatePath);
+  if (candidateSegments.length === 0) return false;
+  const otherSegments = new Set(otherPaths.flatMap((path) => meaningfulPathSegments(path)));
+  return !candidateSegments.some((segment) => otherSegments.has(segment));
 }
 
 /**

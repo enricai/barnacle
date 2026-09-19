@@ -503,6 +503,23 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
   });
 
+  it("does not flag a query-less candidate with only plain-word (non-compound) path segments at 7 occurrences when a sibling endpoint shares a raw path segment with it", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/user/profile",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { name: "static" },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/user/profile/edit",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
   it("flags a query-less POST whose request body and response both vary every call at only 7 occurrences when structurally isolated from every other endpoint in the run", () => {
     const first = {
       method: "POST",
