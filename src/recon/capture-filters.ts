@@ -514,32 +514,44 @@ const MIN_QUERYLESS_REPEAT_COUNT = 3;
 
 /**
  * Minimum same-endpoint occurrence count required before a QUERY-LESS
- * candidate's response-body variance (or lack of it) is trusted as a noise
- * signal via {@link hasFreelyVaryingResponseAcrossOccurrences} /
- * {@link hasNoObservedResponseVariance}.
+ * candidate's LACK of observed response variance is trusted as a noise
+ * signal — i.e. before {@link hasNoObservedResponseVariance} (identical
+ * request, response never once shows a second value) or a query-less
+ * candidate whose own request body ALSO varies every call is allowed to fall
+ * through to {@link hasFreelyVaryingResponseAcrossOccurrences}.
  *
  * A query-less candidate has no fixed query key to independently corroborate
  * that every occurrence really is the same recurring widget (unlike the
  * fixed-query-key branch below, where a recurring key such as
- * `clientId`/`environment` already proves that), so "the whole URL has no
- * query string" is true of both a same-origin noise widget AND a
- * genuinely-repeated own endpoint (a toggle feed whose value has not yet
- * flipped in this archive, a per-item drill invoked with a distinct per-call
- * business argument in its POST body) — and in both shapes the JSON response
- * signature cardinality can look identical (a beacon stamping a fresh
- * counter into `{ viewCount, greeting }` and a paged listing stamping the
- * current page's `{ products }` both produce high-cardinality signatures; a
- * beacon that happens to return one static value for the whole archived
- * session and a toggle that has not yet flipped both produce zero-cardinality
- * signatures). Occurrence count is the only remaining corroborating signal
- * for a query-less candidate: a same-origin widget fires on every page load
- * and accumulates a dense repeat count over one recon session, while a real
- * own endpoint's repeat count is bounded by how many pages/items/polls the
- * flow actually performs, which recon fixtures and most live flows exercise
- * as single digits. This does NOT gate the fixed-query-key branch, whose
- * recurring key is itself the corroborating signal a query-less candidate
- * lacks — that branch's own regression coverage proves the classification
- * must hold well below this floor.
+ * `clientId`/`environment` already proves that). Two shapes need this
+ * corroboration:
+ *
+ * 1. An identical-body query-less candidate whose response has never once
+ *    shown a second value ({@link hasNoObservedResponseVariance}) is
+ *    genuinely ambiguous at low count: a same-origin noise widget that
+ *    happens to return one static value for its whole archived session
+ *    looks identical to a real closed-set poll (a feature toggle) that
+ *    simply has not flipped yet within a short capture window. A widget's
+ *    response varying almost every call ({@link hasFreelyVaryingResponseAcrossOccurrences})
+ *    is NOT gated here — nothing about an identical, unchanging request can
+ *    explain a varying response, so that signal is trustworthy regardless
+ *    of count.
+ * 2. A query-less candidate whose own request body ALSO varies every call
+ *    has no corroboration for {@link hasFreelyVaryingResponseAcrossOccurrences}
+ *    either: a paged listing's `{ page: n }` body and a per-item drill's
+ *    `{ productId }` body produce a response signature just as
+ *    high-cardinality as an actual per-call-varying beacon's fingerprint, at
+ *    the same low occurrence counts recon fixtures and most live flows
+ *    exercise (a handful of pages, a handful of drilled items).
+ *
+ * In both shapes, occurrence count is the only remaining corroborating
+ * signal for a query-less candidate: a same-origin widget fires on every
+ * page load and accumulates a dense repeat count over one recon session,
+ * while a real own endpoint's repeat count is bounded by how many
+ * pages/items/polls the flow actually performs. This does NOT gate the
+ * fixed-query-key branch, whose recurring key is itself the corroborating
+ * signal a query-less candidate lacks — that branch's own regression
+ * coverage proves the classification must hold well below this floor.
  */
 const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
 
@@ -647,8 +659,8 @@ export function isZeroVarianceRepeatCapture(
     );
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
-      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
       if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
+      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
       return hasNoObservedResponseVariance(sameEndpoint);
     }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
