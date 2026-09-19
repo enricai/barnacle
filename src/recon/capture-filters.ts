@@ -641,6 +641,36 @@ function otherEndpointPaths(
 }
 
 /**
+ * True when `a` and `b` are the same word, or one is a shared-stem prefix of
+ * the other (e.g. `avail` / `available`, `product` / `products`) — the same
+ * abbreviation and pluralization variants a same-flow endpoint family
+ * routinely uses for what is, structurally, the same resource word. The
+ * 4-character floor keeps this from firing on short, coincidentally-
+ * overlapping fragments.
+ */
+function tokensShareStem(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  return shorter.length >= 4 && longer.startsWith(shorter);
+}
+
+/**
+ * True when any token in `candidateTokens` shares a stem (see
+ * {@link tokensShareStem}) with any token in `referenceTokens`.
+ */
+function sharesStemmedToken(
+  candidateTokens: ReadonlySet<string>,
+  referenceTokens: ReadonlySet<string>
+): boolean {
+  for (const candidateToken of candidateTokens) {
+    for (const referenceToken of referenceTokens) {
+      if (tokensShareStem(candidateToken, referenceToken)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when a query-less candidate's repeat is corroborated as noise by
  * structural isolation from every OTHER distinct endpoint already present in
  * the same capture run — a signal intrinsic to the capture's relationship to
@@ -650,20 +680,31 @@ function otherEndpointPaths(
  * capture-filters.test.ts's own paired isolated/related fixtures at the same
  * 7-occurrence count).
  *
- * Reuses {@link isStructurallyRelevantCapture}'s token-overlap rule for a
- * candidate with a compound segment. A plain-word candidate (empty token
- * set) does NOT get {@link isStructurallyIsolatedCapture}'s conservative
- * "assume related unless self-referential" fallback — that fallback exists
- * to protect a *plain-word chain step* from being misread as noise when it
- * shares no token with its siblings, which is the opposite of what this
- * predicate needs. But it also must not default to "isolated" outright: a
- * plain-word candidate that shares a raw meaningful segment with another
- * endpoint (e.g. `/user/profile` alongside a sibling `/user/profile/edit`)
- * is still demonstrably part of the same flow. So a plain-word candidate
- * falls back to a raw-segment overlap check instead — isolated only when it
- * shares nothing, token or segment, with any other endpoint in the run (an
- * `/pulse/api/v1/urgency`-shaped candidate sharing nothing with the rest of
- * the flow).
+ * Does NOT reuse {@link isStructurallyRelevantCapture}'s exact-token-equality
+ * rule for a candidate with a compound segment: that rule is deliberately
+ * strict because its job (schema-inference family membership) is hurt more
+ * by a false "related" than a false "unrelated". This predicate's bias runs
+ * the other way — a false "isolated" here discards a real endpoint's data as
+ * noise — so it uses {@link sharesStemmedToken}'s more permissive stem
+ * comparison instead: two same-flow endpoints commonly spell the same
+ * resource word as an abbreviation or a different inflection (a `product-
+ * avail` poll and an `available-products` listing sharing "avail"/
+ * "available"), which an exact-token bar can't see. A plain-word candidate
+ * (empty token set) does NOT get {@link isStructurallyIsolatedCapture}'s
+ * conservative "assume related unless self-referential" fallback — that
+ * fallback exists to protect a *plain-word chain step* from being misread as
+ * noise when it shares no token with its siblings, which is the opposite of
+ * what this predicate needs. But it also must not default to "isolated"
+ * outright: a candidate that shares a raw meaningful segment with another
+ * endpoint (e.g. `/user/profile` alongside a sibling `/user/profile/edit`,
+ * or `/feature-toggles/catalog` alongside a sibling `/catalog/listing`) is
+ * still demonstrably part of the same flow even when its compound segment's
+ * tokens don't line up with the sibling's. So EVERY candidate — compound-
+ * token or plain-word — additionally falls back to a raw-segment overlap
+ * check when the token check finds nothing: isolated only when it shares
+ * nothing, stemmed token or raw segment, with any other endpoint in the run
+ * (an `/pulse/api/v1/urgency`-shaped candidate sharing nothing with the rest
+ * of the flow).
  *
  * When the run captured no OTHER distinct endpoint at all, there is nothing
  * to compare against, so isolation cannot be established either way — the
@@ -674,8 +715,14 @@ function isCorroboratedByStructuralIsolation(
   otherPaths: readonly string[]
 ): boolean {
   if (otherPaths.length === 0) return false;
-  if (pathStructuralTokens(candidatePath).size > 0) {
-    return !isStructurallyRelevantCapture(candidatePath, otherPaths);
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (
+    candidateTokens.size > 0 &&
+    otherPaths.some((otherPath) =>
+      sharesStemmedToken(candidateTokens, pathStructuralTokens(otherPath))
+    )
+  ) {
+    return false;
   }
   const candidateSegments = meaningfulPathSegments(candidatePath);
   if (candidateSegments.length === 0) return false;
