@@ -513,6 +513,21 @@ function endpointOrigin(url: string): string | null {
 const MIN_QUERYLESS_REPEAT_COUNT = 3;
 
 /**
+ * Minimum same-endpoint occurrence count required before a business-looking
+ * response's variance (or lack of it) is trusted as a noise signal. A
+ * genuinely-polled own endpoint or a per-item drill can legitimately repeat
+ * only a handful of times (three sailings, six toggle polls) and still show
+ * per-call-varying or ever-identical response data — that shape only becomes
+ * distinguishable from a beacon-style noise widget at the sustained,
+ * page-load-driven fire counts (a dozen-plus) noise widgets actually produce.
+ * Below this count neither {@link hasFreelyVaryingResponseAcrossOccurrences}
+ * nor {@link hasNoObservedResponseVariance} is evidence of anything — a
+ * three-item drill returning three different item payloads is exactly what a
+ * real multi-item flow looks like, not noise.
+ */
+const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
+
+/**
  * True when same-endpoint occurrences carry JSON response bodies that are
  * mostly pairwise distinct — i.e. the payload never settles back into a
  * value it has already shown.
@@ -616,6 +631,7 @@ export function isZeroVarianceRepeatCapture(
     );
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
+      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
       if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
       return hasNoObservedResponseVariance(sameEndpoint);
     }
@@ -624,6 +640,7 @@ export function isZeroVarianceRepeatCapture(
     );
     if (!hasExplicitContentType) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
+    if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
     return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
   }
   if (sameEndpoint.length < 2) return false;
@@ -647,6 +664,7 @@ export function isZeroVarianceRepeatCapture(
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
   if (bodyIdentical) return true;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
+  if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
   return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }
 
