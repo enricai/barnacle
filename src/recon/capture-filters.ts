@@ -333,6 +333,68 @@ function urlOwnValues(url: string): Set<string> {
 }
 
 /**
+ * The set of raw values a request's own POST body already exposes to the
+ * caller: every leaf value of a JSON body, or every value of a URL-encoded
+ * form body. Parsed the same permissive way {@link urlOwnValues} treats the
+ * query string — an unparsable or absent body simply contributes no values,
+ * never an error.
+ */
+function bodyOwnValues(requestPostData: string | null): Set<string> {
+  const values = new Set<string>();
+  if (!requestPostData) return values;
+  try {
+    const leaves: string[] = [];
+    collectLeafValues(JSON.parse(requestPostData), leaves);
+    for (const leaf of leaves) values.add(leaf);
+    return values;
+  } catch {
+    // not JSON — fall through to URL-encoded form parsing
+  }
+  try {
+    for (const value of new URLSearchParams(requestPostData).values()) values.add(value);
+  } catch {
+    // unparsable body contributes no derivable values
+  }
+  return values;
+}
+
+/**
+ * True when every same-endpoint occurrence that carries a response body has
+ * a response fully explained by that SAME occurrence's own request — every
+ * response leaf is one of that occurrence's own URL query/path values or its
+ * own POST body's own values. A same-origin noise widget's varying response
+ * (a fresh session id, an incrementing counter) has no such relationship to
+ * its own request; a real per-item drill's response is, by definition, a
+ * function of the identifier the caller just sent it. This is what tells the
+ * two apart when they are otherwise indistinguishable by cardinality alone —
+ * {@link MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL}'s own docs note a
+ * drill's `{ productId }` body produces a response signature "just as
+ * high-cardinality as an actual per-call-varying beacon's fingerprint."
+ * Requires at least two occurrences to actually carry a body, mirroring
+ * {@link hasFreelyVaryingResponseAcrossOccurrences}'s own evidence floor.
+ */
+function hasResponseFullyExplainedByOwnRequestPerOccurrence(
+  sameEndpoint: readonly {
+    url: string;
+    requestPostData: string | null;
+    responseBody?: unknown;
+  }[]
+): boolean {
+  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  if (withBody.length < 2) return false;
+  return withBody.every((occurrence) => {
+    const leaves: string[] = [];
+    collectLeafValues(occurrence.responseBody, leaves);
+    if (leaves.length === 0) return false;
+    const ownValues = new Set([
+      ...urlOwnValues(occurrence.url),
+      ...bodyOwnValues(occurrence.requestPostData),
+    ]);
+    return leaves.every((leaf) => ownValues.has(leaf));
+  });
+}
+
+/**
  * True when `capture`'s response carries no business-relevant state: a
  * non-JSON (or absent) content-type, a null/undefined body, a JSON body
  * with no keys, or a JSON body whose every leaf value is already present in
@@ -556,6 +618,119 @@ const MIN_QUERYLESS_REPEAT_COUNT = 3;
 const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
 
 /**
+ * Distinct pathnames belonging to endpoints OTHER than `candidateEndpoint`,
+ * present in `allCaptures` — the reference pool {@link isCorroboratedByStructuralIsolation}
+ * compares the candidate against. Drawn from the same capture run so the
+ * signal stays intrinsic to this archive rather than any global assumption
+ * about what a "real" path looks like.
+ */
+function otherEndpointPaths(
+  candidateEndpoint: string,
+  allCaptures: readonly { url: string }[]
+): string[] {
+  const paths = new Set<string>();
+  for (const capture of allCaptures) {
+    if (endpointOrigin(capture.url) === candidateEndpoint) continue;
+    try {
+      paths.add(new URL(capture.url).pathname);
+    } catch {
+      // unparsable URL contributes no comparison path
+    }
+  }
+  return [...paths];
+}
+
+/**
+ * True when `a` and `b` are the same word, or one is a shared-stem prefix of
+ * the other (e.g. `avail` / `available`, `product` / `products`) — the same
+ * abbreviation and pluralization variants a same-flow endpoint family
+ * routinely uses for what is, structurally, the same resource word. The
+ * 4-character floor keeps this from firing on short, coincidentally-
+ * overlapping fragments.
+ */
+function tokensShareStem(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  return shorter.length >= 4 && longer.startsWith(shorter);
+}
+
+/**
+ * True when any token in `candidateTokens` shares a stem (see
+ * {@link tokensShareStem}) with any token in `referenceTokens`.
+ */
+function sharesStemmedToken(
+  candidateTokens: ReadonlySet<string>,
+  referenceTokens: ReadonlySet<string>
+): boolean {
+  for (const candidateToken of candidateTokens) {
+    for (const referenceToken of referenceTokens) {
+      if (tokensShareStem(candidateToken, referenceToken)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when a query-less candidate's repeat is corroborated as noise by
+ * structural isolation from every OTHER distinct endpoint already present in
+ * the same capture run — a signal intrinsic to the capture's relationship to
+ * the rest of the flow, unlike an absolute occurrence count, which cannot
+ * tell a low-count real endpoint apart from a low-count noise widget (both
+ * produce the identical response-variance shape at a small sample size; see
+ * capture-filters.test.ts's own paired isolated/related fixtures at the same
+ * 7-occurrence count).
+ *
+ * Does NOT reuse {@link isStructurallyRelevantCapture}'s exact-token-equality
+ * rule for a candidate with a compound segment: that rule is deliberately
+ * strict because its job (schema-inference family membership) is hurt more
+ * by a false "related" than a false "unrelated". This predicate's bias runs
+ * the other way — a false "isolated" here discards a real endpoint's data as
+ * noise — so it uses {@link sharesStemmedToken}'s more permissive stem
+ * comparison instead: two same-flow endpoints commonly spell the same
+ * resource word as an abbreviation or a different inflection (a `product-
+ * avail` poll and an `available-products` listing sharing "avail"/
+ * "available"), which an exact-token bar can't see. A plain-word candidate
+ * (empty token set) does NOT get {@link isStructurallyIsolatedCapture}'s
+ * conservative "assume related unless self-referential" fallback — that
+ * fallback exists to protect a *plain-word chain step* from being misread as
+ * noise when it shares no token with its siblings, which is the opposite of
+ * what this predicate needs. But it also must not default to "isolated"
+ * outright: a candidate that shares a raw meaningful segment with another
+ * endpoint (e.g. `/user/profile` alongside a sibling `/user/profile/edit`,
+ * or `/feature-toggles/catalog` alongside a sibling `/catalog/listing`) is
+ * still demonstrably part of the same flow even when its compound segment's
+ * tokens don't line up with the sibling's. So EVERY candidate — compound-
+ * token or plain-word — additionally falls back to a raw-segment overlap
+ * check when the token check finds nothing: isolated only when it shares
+ * nothing, stemmed token or raw segment, with any other endpoint in the run
+ * (an `/pulse/api/v1/urgency`-shaped candidate sharing nothing with the rest
+ * of the flow).
+ *
+ * When the run captured no OTHER distinct endpoint at all, there is nothing
+ * to compare against, so isolation cannot be established either way — the
+ * caller falls back to the occurrence-count floor in that case.
+ */
+function isCorroboratedByStructuralIsolation(
+  candidatePath: string,
+  otherPaths: readonly string[]
+): boolean {
+  if (otherPaths.length === 0) return false;
+  const candidateTokens = pathStructuralTokens(candidatePath);
+  if (
+    candidateTokens.size > 0 &&
+    otherPaths.some((otherPath) =>
+      sharesStemmedToken(candidateTokens, pathStructuralTokens(otherPath))
+    )
+  ) {
+    return false;
+  }
+  const candidateSegments = meaningfulPathSegments(candidatePath);
+  if (candidateSegments.length === 0) return false;
+  const otherSegments = new Set(otherPaths.flatMap((path) => meaningfulPathSegments(path)));
+  return !candidateSegments.some((segment) => otherSegments.has(segment));
+}
+
+/**
  * True when same-endpoint occurrences carry JSON response bodies that are
  * mostly pairwise distinct — i.e. the payload never settles back into a
  * value it has already shown.
@@ -660,15 +835,32 @@ export function isZeroVarianceRepeatCapture(
     if (queryLessBodyIdentical) {
       if (hasNoBusinessRelevantResponseState(candidate)) return true;
       if (hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint)) return true;
-      if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
+      if (
+        sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
+        !isCorroboratedByStructuralIsolation(
+          candidateUrl.pathname,
+          otherEndpointPaths(candidateEndpoint, allCaptures)
+        )
+      ) {
+        return false;
+      }
       return hasNoObservedResponseVariance(sameEndpoint);
     }
     const hasExplicitContentType = Object.keys(candidate.responseHeaders ?? {}).some(
       (key) => key.toLowerCase() === "content-type"
     );
     if (!hasExplicitContentType) return false;
+    if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
-    if (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL) return false;
+    if (
+      sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
+      !isCorroboratedByStructuralIsolation(
+        candidateUrl.pathname,
+        otherEndpointPaths(candidateEndpoint, allCaptures)
+      )
+    ) {
+      return false;
+    }
     return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
   }
   if (sameEndpoint.length < 2) return false;

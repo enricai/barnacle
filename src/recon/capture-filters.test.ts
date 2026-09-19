@@ -465,7 +465,174 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
   });
 
-  it("does not flag a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, even with a business-looking varying JSON response — a paged listing or per-item drill produces the exact same shape at that scale", () => {
+  it("flags a query-less candidate whose response never varies at only 7 occurrences when it is structurally isolated from every other endpoint in the capture run", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/pulse/api/v1/urgency",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { level: "high", campaign: "flash-sale" },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const realFlow = [
+      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/sections/name",
+        requestPostData: null,
+      },
+      { method: "POST", url: "https://apply.acme.example/booking/submit", requestPostData: "{}" },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, ...realFlow])).toBe(true);
+  });
+
+  it("does not flag a query-less candidate whose response never varies at 7 occurrences when a structurally related sibling endpoint corroborates it as part of the real flow", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/promo/listing-avail-vas/state",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { available: true, tier: "gold" },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/promo/item-detail-vas/state",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("does not flag a query-less candidate at 7 occurrences when a sibling endpoint shares an abbreviated/pluralized stem of its compound-segment token rather than an exact token", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/promo/product-avail/state",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { available: true },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/available-products/list",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("does not flag a query-less candidate with a compound segment at 7 occurrences when a sibling endpoint shares only a raw non-compound segment, not a token", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/feature-toggles/catalog",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/listing",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("does not flag a query-less candidate with only plain-word (non-compound) path segments at 7 occurrences when a sibling endpoint shares a raw path segment with it", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/user/profile",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { name: "static" },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/user/profile/edit",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("flags a query-less POST whose request body and response both vary every call at only 7 occurrences when structurally isolated from every other endpoint in the run", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/pulse/api/v1/urgency",
+      requestPostData: "seed=0",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/pulse/api/v1/urgency",
+      requestPostData: `seed=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    const realFlow = [
+      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/sections/name",
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+  });
+
+  it.each([7, 12])(
+    "flags a query-less, explicit-json-content-type POST whose response leaves are not derivable from the request URL or body at %i occurrences, structurally isolated from every other endpoint in the run — noise regardless of the old absolute-count floor",
+    (occurrenceCount) => {
+      const first = {
+        method: "POST",
+        url: "https://apply.acme.example/pulse/api/v1/urgency",
+        requestPostData: "seed=0",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+      };
+      const occurrences = Array.from({ length: occurrenceCount }, (_, i) => ({
+        method: "POST",
+        url: "https://apply.acme.example/pulse/api/v1/urgency",
+        requestPostData: `seed=${i}`,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      }));
+      const realFlow = [
+        { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+        {
+          method: "GET",
+          url: "https://apply.acme.example/booking/sections/name",
+          requestPostData: null,
+        },
+      ];
+      expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+    }
+  );
+
+  it("does not flag a query-less POST whose request body and response both vary every call at 7 occurrences when a structurally related sibling endpoint corroborates it as part of the real flow", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/promo/listing-avail-vas/state",
+      requestPostData: "seed=0",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+    };
+    const occurrences = Array.from({ length: 7 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/promo/listing-avail-vas/state",
+      requestPostData: `seed=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/promo/item-detail-vas/state",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("flags a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, when its response leaves are not derivable from the request and it is structurally isolated from every other endpoint in the run", () => {
     const first = {
       method: "POST",
       url: "https://apply.acme.example/widget/beacon",
@@ -480,7 +647,38 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+    const realFlow = [
+      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/sections/name",
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+  });
+
+  it("does not flag a query-less, structurally-isolated POST drill whose per-call response leaves are entirely derivable from that same call's own request body, at a low occurrence count below the old dense-repeat floor", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/catalog/item/lookup",
+      requestPostData: '{"itemId":"1000"}',
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { itemId: "1000" },
+    };
+    const occurrences = Array.from({ length: 5 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/catalog/item/lookup",
+      requestPostData: `{"itemId":"${1001 + i}"}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { itemId: `${1001 + i}` },
+    }));
+    const unrelatedFlow = [
+      { method: "GET", url: "https://apply.acme.example/auth/session", requestPostData: null },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...unrelatedFlow])).toBe(
+      false
+    );
   });
 
   it("does not flag a query-less candidate below the dense-repeat threshold", () => {
