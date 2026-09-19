@@ -546,6 +546,35 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
   });
 
+  it.each([7, 12])(
+    "flags a query-less, explicit-json-content-type POST whose response leaves are not derivable from the request URL or body at %i occurrences, structurally isolated from every other endpoint in the run — noise regardless of the old absolute-count floor",
+    (occurrenceCount) => {
+      const first = {
+        method: "POST",
+        url: "https://apply.acme.example/pulse/api/v1/urgency",
+        requestPostData: "seed=0",
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+      };
+      const occurrences = Array.from({ length: occurrenceCount }, (_, i) => ({
+        method: "POST",
+        url: "https://apply.acme.example/pulse/api/v1/urgency",
+        requestPostData: `seed=${i}`,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      }));
+      const realFlow = [
+        { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+        {
+          method: "GET",
+          url: "https://apply.acme.example/booking/sections/name",
+          requestPostData: null,
+        },
+      ];
+      expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
+    }
+  );
+
   it("does not flag a query-less POST whose request body and response both vary every call at 7 occurrences when a structurally related sibling endpoint corroborates it as part of the real flow", () => {
     const first = {
       method: "POST",
@@ -569,7 +598,7 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, relatedSibling])).toBe(false);
   });
 
-  it("does not flag a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, even with a business-looking varying JSON response — a paged listing or per-item drill produces the exact same shape at that scale", () => {
+  it("flags a query-less POST whose request body ALSO varies every call below the dense-repeat threshold, when its response leaves are not derivable from the request and it is structurally isolated from every other endpoint in the run", () => {
     const first = {
       method: "POST",
       url: "https://apply.acme.example/widget/beacon",
@@ -584,7 +613,15 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
     }));
-    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+    const realFlow = [
+      { method: "POST", url: "https://apply.acme.example/booking/create", requestPostData: "{}" },
+      {
+        method: "GET",
+        url: "https://apply.acme.example/booking/sections/name",
+        requestPostData: null,
+      },
+    ];
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences, ...realFlow])).toBe(true);
   });
 
   it("does not flag a query-less candidate below the dense-repeat threshold", () => {
