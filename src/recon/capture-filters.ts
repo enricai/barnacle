@@ -333,6 +333,68 @@ function urlOwnValues(url: string): Set<string> {
 }
 
 /**
+ * The set of raw values a request's own POST body already exposes to the
+ * caller: every leaf value of a JSON body, or every value of a URL-encoded
+ * form body. Parsed the same permissive way {@link urlOwnValues} treats the
+ * query string — an unparsable or absent body simply contributes no values,
+ * never an error.
+ */
+function bodyOwnValues(requestPostData: string | null): Set<string> {
+  const values = new Set<string>();
+  if (!requestPostData) return values;
+  try {
+    const leaves: string[] = [];
+    collectLeafValues(JSON.parse(requestPostData), leaves);
+    for (const leaf of leaves) values.add(leaf);
+    return values;
+  } catch {
+    // not JSON — fall through to URL-encoded form parsing
+  }
+  try {
+    for (const value of new URLSearchParams(requestPostData).values()) values.add(value);
+  } catch {
+    // unparsable body contributes no derivable values
+  }
+  return values;
+}
+
+/**
+ * True when every same-endpoint occurrence that carries a response body has
+ * a response fully explained by that SAME occurrence's own request — every
+ * response leaf is one of that occurrence's own URL query/path values or its
+ * own POST body's own values. A same-origin noise widget's varying response
+ * (a fresh session id, an incrementing counter) has no such relationship to
+ * its own request; a real per-item drill's response is, by definition, a
+ * function of the identifier the caller just sent it. This is what tells the
+ * two apart when they are otherwise indistinguishable by cardinality alone —
+ * {@link MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL}'s own docs note a
+ * drill's `{ productId }` body produces a response signature "just as
+ * high-cardinality as an actual per-call-varying beacon's fingerprint."
+ * Requires at least two occurrences to actually carry a body, mirroring
+ * {@link hasFreelyVaryingResponseAcrossOccurrences}'s own evidence floor.
+ */
+function hasResponseFullyExplainedByOwnRequestPerOccurrence(
+  sameEndpoint: readonly {
+    url: string;
+    requestPostData: string | null;
+    responseBody?: unknown;
+  }[]
+): boolean {
+  const withBody = sameEndpoint.filter((c) => c.responseBody !== undefined);
+  if (withBody.length < 2) return false;
+  return withBody.every((occurrence) => {
+    const leaves: string[] = [];
+    collectLeafValues(occurrence.responseBody, leaves);
+    if (leaves.length === 0) return false;
+    const ownValues = new Set([
+      ...urlOwnValues(occurrence.url),
+      ...bodyOwnValues(occurrence.requestPostData),
+    ]);
+    return leaves.every((leaf) => ownValues.has(leaf));
+  });
+}
+
+/**
  * True when `capture`'s response carries no business-relevant state: a
  * non-JSON (or absent) content-type, a null/undefined body, a JSON body
  * with no keys, or a JSON body whose every leaf value is already present in
@@ -741,6 +803,7 @@ export function isZeroVarianceRepeatCapture(
       (key) => key.toLowerCase() === "content-type"
     );
     if (!hasExplicitContentType) return false;
+    if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
     if (
       sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
