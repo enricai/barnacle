@@ -503,6 +503,40 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
   });
 
+  it("does not flag a query-less candidate at 7 occurrences when a sibling endpoint shares an abbreviated/pluralized stem of its compound-segment token rather than an exact token", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/promo/product-avail/state",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { available: true },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/available-products/list",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
+  it("does not flag a query-less candidate with a compound segment at 7 occurrences when a sibling endpoint shares only a raw non-compound segment, not a token", () => {
+    const first = {
+      method: "GET",
+      url: "https://apply.acme.example/feature-toggles/catalog",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { enabled: true },
+    };
+    const occurrences = Array.from({ length: 7 }, () => ({ ...first }));
+    const relatedSibling = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/listing",
+      requestPostData: null,
+    };
+    expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
+  });
+
   it("does not flag a query-less candidate with only plain-word (non-compound) path segments at 7 occurrences when a sibling endpoint shares a raw path segment with it", () => {
     const first = {
       method: "GET",
