@@ -554,6 +554,28 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [...occurrences, relatedSibling])).toBe(false);
   });
 
+  it("still flags two distinct, structurally-unrelated noise endpoints as noise when they share only a raw path segment (neither self-referential) and cannot mutually vouch for each other via that shared segment", () => {
+    const banner = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/banner",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { status: "active" },
+    };
+    const bannerOccurrences = Array.from({ length: 5 }, () => ({ ...banner }));
+    const ticker = {
+      method: "GET",
+      url: "https://apply.acme.example/widget/ticker",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { status: "active" },
+    };
+    const tickerOccurrences = Array.from({ length: 5 }, () => ({ ...ticker }));
+    const all = [...bannerOccurrences, ...tickerOccurrences];
+    expect(isZeroVarianceRepeatCapture(banner, all)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(ticker, all)).toBe(true);
+  });
+
   it("flags a query-less POST whose request body and response both vary every call at only 7 occurrences when structurally isolated from every other endpoint in the run", () => {
     const first = {
       method: "POST",
