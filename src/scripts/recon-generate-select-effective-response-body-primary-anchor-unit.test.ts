@@ -77,7 +77,9 @@ function noiseCapture(): MulticallStep {
     url: GRAPHQL_URL,
     responseBody: {
       meta: { beacons: [{ id: "b1" }] },
-      catalog: { results: { items: [{ id: "item-a", name: "Beacon", priceCents: "unavailable" }] } },
+      catalog: {
+        results: { items: [{ id: "item-a", name: "Beacon", priceCents: "unavailable" }] },
+      },
     },
     timestamp: "2024-01-01T00:00:01Z",
     operationName: "telemetryHeartbeat",
@@ -127,7 +129,9 @@ describe("selectEffectiveResponseBody — anchor-constrained shape inference is 
 
     expect(bodyNoiseFirst).toEqual(bodyRealFirst);
     expect(bodyNoiseFirst).toEqual({
-      catalog: { results: { items: [{ id: "item-a", name: "Widget", priceCents: 1999, stock: 7 }] } },
+      catalog: {
+        results: { items: [{ id: "item-a", name: "Widget", priceCents: 1999, stock: 7 }] },
+      },
     });
   });
 
@@ -135,8 +139,18 @@ describe("selectEffectiveResponseBody — anchor-constrained shape inference is 
     const orderNoiseFirst = [noiseCapture(), realCapture(), drillCapture()];
     const orderRealFirst = [realCapture(), noiseCapture(), drillCapture()];
 
-    const bodyNoiseFirst = selectEffectiveResponseBody(false, orderNoiseFirst, null, FOLD_RETURN_SPEC);
-    const bodyRealFirst = selectEffectiveResponseBody(false, orderRealFirst, null, FOLD_RETURN_SPEC);
+    const bodyNoiseFirst = selectEffectiveResponseBody(
+      false,
+      orderNoiseFirst,
+      null,
+      FOLD_RETURN_SPEC
+    );
+    const bodyRealFirst = selectEffectiveResponseBody(
+      false,
+      orderRealFirst,
+      null,
+      FOLD_RETURN_SPEC
+    );
 
     expect(bodyNoiseFirst).not.toEqual(bodyRealFirst);
   });
