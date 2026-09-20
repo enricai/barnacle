@@ -1085,9 +1085,12 @@ export function selectEffectiveResponseBody<T extends { capture: Capture; isMult
   isSubmissionFlow: boolean,
   actionSteps: readonly T[],
   replayResponseBody: unknown,
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  // See resolveFoldPlan's identical parameter — threaded through so shape
+  // inference can't disagree with emitContractTs's own emitted-primary anchor.
+  primaryIdentityAnchor: string | null = null
 ): unknown {
-  const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec);
+  const foldPlans = resolveFoldPlan(actionSteps, foldReturnSpec, primaryIdentityAnchor);
   const lastFoldPlan = foldPlans[foldPlans.length - 1] ?? null;
   if (foldPlans.length <= 1) {
     if (lastFoldPlan) return foldResponseBodyForShapeInference(actionSteps, lastFoldPlan);
@@ -13439,13 +13442,31 @@ async function main(): Promise<void> {
 
     const hasMultipartStep = actionSteps.some((s) => s.isMultipart);
     const headerBindings = collectHeaderBindings(actionSteps);
+    // Mirrors the exact gqlOperationName expression fed into contractOpts
+    // below (see the `gqlOperationName:` field), so this anchor can never
+    // disagree with the one emitContractTs computes from that same
+    // contractOpts — see computeEmittedPrimaryAnchor.
+    const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
+      gql,
+      endpointPath,
+      primaryGraphQLOperation
+        ? (primaryGraphQLOperation.capture.operationName ??
+            parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
+        : (fallbackGraphQLCapture?.operationName ??
+            parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
+      gqlQuery
+    );
     // Shape inference targets the SAME call executeHttp returns — see
     // selectEffectiveResponseBody — so the two surfaces can't describe different calls.
+    // A submission flow's fold plan must stay byte-identical to
+    // emitMultiStepExecuteHttp's own unanchored resolveFoldPlan call, which the
+    // actual multi-step runtime loop uses — so the anchor is withheld there.
     const effectiveResponseBody = selectEffectiveResponseBody(
       isSubmissionFlow,
       actionSteps,
       responseBody,
-      foldReturnSpec
+      foldReturnSpec,
+      isSubmissionFlow ? null : emittedPrimaryAnchor
     );
 
     // A declared foldReturn that resolves to no plan is a silent no-op otherwise
@@ -13458,20 +13479,6 @@ async function main(): Promise<void> {
     // diagnostic must consult the SAME resolution each path actually applies,
     // or it falsely reports "no fold plan resolved" for every multi-step flow
     // with a working foldReturn.
-    // Mirrors the exact gqlOperationName expression fed into contractOpts
-    // below (see the `gqlOperationName:` field), so this diagnostic's own
-    // anchor can never disagree with the one emitContractTs computes from
-    // that same contractOpts — see computeEmittedPrimaryAnchor.
-    const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
-      gql,
-      endpointPath,
-      primaryGraphQLOperation
-        ? (primaryGraphQLOperation.capture.operationName ??
-            parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
-        : (fallbackGraphQLCapture?.operationName ??
-            parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
-      gqlQuery
-    );
     const effectiveFoldPlanCount = multiStepBody
       ? resolveFoldPlan(actionSteps, foldReturnSpec).length
       : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody, emittedPrimaryAnchor)
