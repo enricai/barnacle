@@ -949,9 +949,7 @@ function hasStableOperationIdentity(
   sameEndpoint: readonly { operationName?: string | null }[]
 ): boolean {
   if (!candidateOperationName) return false;
-  const matchCount = sameEndpoint.filter(
-    (c) => c.operationName === candidateOperationName
-  ).length;
+  const matchCount = sameEndpoint.filter((c) => c.operationName === candidateOperationName).length;
   return matchCount >= 2 && matchCount > sameEndpoint.length / 2;
 }
 
