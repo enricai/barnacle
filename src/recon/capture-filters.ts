@@ -936,21 +936,34 @@ function hasNoObservedResponseVariance(
 }
 
 /**
- * True when `candidate`'s operationName is non-empty and matches the
- * operationName of a strict majority (>1/2, >=2 supporting occurrences) of
- * `sameEndpoint`. Mirrors {@link hasFixedKey}'s reasoning for URL query
- * keys: a stable operation identity carried by the call itself — not
- * derived from the URL or body, which are expected to vary per-call for a
- * real re-issued operation — is evidence of a real, repeatedly-invoked API
- * call rather than a noise widget that merely happens to recur densely.
+ * True when `candidate`'s operationName is non-empty, recurs at least
+ * twice among `sameEndpoint`, and its occurrence count is a plurality —
+ * at least as large as every other distinct operationName group observed
+ * at that endpoint. A strict majority is implausible on an endpoint that
+ * legitimately multiplexes many distinct operations (none individually
+ * over half of traffic), so plurality — the candidate's identity beating
+ * or tying every rival group rather than dominating the whole endpoint —
+ * is what actually distinguishes a stable, repeated identity from a
+ * coincidental one-off, mirroring {@link hasFixedKey}'s reasoning for URL
+ * query keys: a stable operation identity carried by the call itself —
+ * not derived from the URL or body, which are expected to vary per-call
+ * for a real re-issued operation — is evidence of a real, repeatedly-
+ * invoked API call rather than a noise widget that merely happens to
+ * recur densely.
  */
 function hasStableOperationIdentity(
   candidateOperationName: string | null | undefined,
   sameEndpoint: readonly { operationName?: string | null }[]
 ): boolean {
   if (!candidateOperationName) return false;
-  const matchCount = sameEndpoint.filter((c) => c.operationName === candidateOperationName).length;
-  return matchCount >= 2 && matchCount > sameEndpoint.length / 2;
+  const groupCounts = new Map<string, number>();
+  for (const c of sameEndpoint) {
+    if (!c.operationName) continue;
+    groupCounts.set(c.operationName, (groupCounts.get(c.operationName) ?? 0) + 1);
+  }
+  const candidateCount = groupCounts.get(candidateOperationName) ?? 0;
+  if (candidateCount < 2) return false;
+  return [...groupCounts.values()].every((count) => candidateCount >= count);
 }
 
 export function isZeroVarianceRepeatCapture(
@@ -1043,6 +1056,7 @@ export function isZeroVarianceRepeatCapture(
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
   if (bodyIdentical) return true;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
+  if (hasStableOperationIdentity(candidate.operationName, sameEndpoint)) return false;
   return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }
 

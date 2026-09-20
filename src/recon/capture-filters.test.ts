@@ -505,6 +505,26 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
   });
 
+  it("does not flag a query-less, densely-repeated POST whose operationName recurs as the largest (but not majority) group among 3+ distinct operationName groups sharing the endpoint", () => {
+    const buildOccurrence = (i: number, operationName: string) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: JSON.stringify({ operationName, variables: { i } }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+      operationName,
+    });
+    const first = buildOccurrence(0, "catalogSearch");
+    const occurrences = [
+      first,
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "catalogSearch")),
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 5, "cartSummary")),
+      ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "orderHistory")),
+    ];
+    expect(occurrences.length).toBe(11);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
   it("flags a query-less candidate whose response never varies at only 7 occurrences when it is structurally isolated from every other endpoint in the capture run", () => {
     const first = {
       method: "GET",
@@ -1126,6 +1146,26 @@ describe("isZeroVarianceRepeatCapture", () => {
       expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
     }
     expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+  });
+
+  it("does not flag a fixed-query-string GraphQL candidate whose operationName recurs as the largest (but not majority) group among 3+ distinct operationName groups sharing the endpoint", () => {
+    const buildOccurrence = (i: number, operationName: string) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql?v=1",
+      requestPostData: JSON.stringify({ operationName, variables: { i } }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+      operationName,
+    });
+    const first = buildOccurrence(0, "catalogSearch");
+    const occurrences = [
+      first,
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "catalogSearch")),
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 5, "cartSummary")),
+      ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "orderHistory")),
+    ];
+    expect(occurrences.length).toBe(11);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 });
 
