@@ -935,6 +935,24 @@ function hasNoObservedResponseVariance(
   return withBody.length >= 2 && distinctSignatures.size <= 1;
 }
 
+/**
+ * True when `candidate`'s operationName is non-empty and matches the
+ * operationName of a strict majority (>1/2, >=2 supporting occurrences) of
+ * `sameEndpoint`. Mirrors {@link hasFixedKey}'s reasoning for URL query
+ * keys: a stable operation identity carried by the call itself — not
+ * derived from the URL or body, which are expected to vary per-call for a
+ * real re-issued operation — is evidence of a real, repeatedly-invoked API
+ * call rather than a noise widget that merely happens to recur densely.
+ */
+function hasStableOperationIdentity(
+  candidateOperationName: string | null | undefined,
+  sameEndpoint: readonly { operationName?: string | null }[]
+): boolean {
+  if (!candidateOperationName) return false;
+  const matchCount = sameEndpoint.filter((c) => c.operationName === candidateOperationName).length;
+  return matchCount >= 2 && matchCount > sameEndpoint.length / 2;
+}
+
 export function isZeroVarianceRepeatCapture(
   candidate: {
     method: string;
@@ -942,6 +960,7 @@ export function isZeroVarianceRepeatCapture(
     requestPostData: string | null;
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
+    operationName?: string | null;
   },
   allCaptures: readonly {
     method: string;
@@ -949,6 +968,7 @@ export function isZeroVarianceRepeatCapture(
     requestPostData: string | null;
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
+    operationName?: string | null;
   }[]
 ): boolean {
   let candidateUrl: URL;
@@ -989,6 +1009,7 @@ export function isZeroVarianceRepeatCapture(
     if (!hasExplicitContentType) return false;
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
+    if (hasStableOperationIdentity(candidate.operationName, sameEndpoint)) return false;
     if (
       sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
       !isCorroboratedByStructuralIsolation(
