@@ -1146,6 +1146,93 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
   });
 
+  it("admits a combined archive of all four previously-excluded noise shapes plus a query-text-only GraphQL primary while retaining both real search+drill pairs", () => {
+    const searchOccurrences = Array.from({ length: 18 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: JSON.stringify({
+        operationName: "catalogSearch",
+        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+      }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+      operationName: "catalogSearch",
+    }));
+    const drillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=item-0",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "item-0", price: 100 },
+    };
+    const fixedQueryBeacon = Array.from({ length: 15 }, (_, i) => ({
+      method: "GET",
+      url: `${beaconUrl}&nonce=${i}`,
+      requestPostData: null,
+    }));
+    const querylessBotPixel = Array.from({ length: 14 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/sensor.gif",
+      requestPostData: null,
+    }));
+    const freelyVaryingWidget = Array.from({ length: 12 }, (_, i) => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/loader",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    const queryTextSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
+      const query = `query catalogSearch($destination: String!, $month: String!) { search(destination: $destination, month: $month) { id price } }`;
+      return {
+        method: "POST",
+        url: "https://apply.acme.example/graphql",
+        requestPostData: JSON.stringify({
+          query,
+          operationName: null,
+          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+        operationName: null,
+        query,
+      };
+    });
+    const queryTextDrillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=item-1",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "item-1", price: 100 },
+    };
+    const allCaptures = [
+      ...searchOccurrences,
+      drillCapture,
+      ...fixedQueryBeacon,
+      ...querylessBotPixel,
+      ...freelyVaryingWidget,
+      ...queryTextSearchOccurrences,
+      queryTextDrillCapture,
+    ];
+    for (const beacon of fixedQueryBeacon) {
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+    }
+    for (const pixel of querylessBotPixel) {
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+    }
+    for (const widgetCall of freelyVaryingWidget) {
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+    }
+    for (const searchCall of searchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    for (const occurrence of queryTextSearchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures)).toBe(false);
+  });
+
   it("does not flag a query-less, explicit-json POST search primary re-issued 19 times with a stable operationName, varying variables, and a genuinely varying business response, nor its drill", () => {
     const searchOccurrences = Array.from({ length: 19 }, (_, i) => ({
       method: "POST",
