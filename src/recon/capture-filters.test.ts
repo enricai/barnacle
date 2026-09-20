@@ -465,6 +465,46 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
   });
 
+  it("does not flag a query-less, densely-repeated POST with a varying body and varying JSON response when the candidate's operationName recurs as a strict majority across occurrences — a real re-issued operation, not a widget", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+      operationName: "getViewer",
+    };
+    const occurrences = Array.from({ length: 10 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      operationName: "getViewer",
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(false);
+  });
+
+  it("flags a query-less, densely-repeated POST with a varying body and varying JSON response when operationName is present but does not recur as a strict majority", () => {
+    const first = {
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: "fingerprint=abc123",
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000, greeting: "Welcome back, guest 0!" },
+      operationName: "getViewer",
+    };
+    const occurrences = Array.from({ length: 10 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/widget/beacon",
+      requestPostData: `fingerprint=${i}`,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+      operationName: `op${i}`,
+    }));
+    expect(isZeroVarianceRepeatCapture(first, [first, ...occurrences])).toBe(true);
+  });
+
   it("flags a query-less candidate whose response never varies at only 7 occurrences when it is structurally isolated from every other endpoint in the capture run", () => {
     const first = {
       method: "GET",
