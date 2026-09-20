@@ -1394,6 +1394,27 @@ function operationGroupKey(capture: Capture): string {
 }
 
 /**
+ * The identity (in {@link operationGroupKey}'s `endpointPath::operationName`
+ * format) of the GraphQL operation already selected upstream as this run's
+ * emitted primary — `null` for a REST primary, since fold-plan/emitted-primary
+ * drift is a GraphQL-only concern (a REST primary has no operationName to
+ * diverge on in the first place). Shared verbatim by {@link emitContractTs}
+ * and the "no fold plan resolved" diagnostic in `main()` so both anchor
+ * `resolveFoldPlan`/`resolveApplicableFoldPlans` to the SAME identity and can
+ * never independently resolve a different primary.
+ */
+function computeEmittedPrimaryAnchor(
+  gql: boolean,
+  endpointPath: string,
+  gqlOperationName: string | null | undefined,
+  gqlQuery: string | null
+): string | null {
+  if (!gql) return null;
+  const name = gqlOperationName ?? parsedOperationName(gqlQuery ?? "") ?? "anonymous";
+  return `${endpointPath}::${name}`;
+}
+
+/**
  * Every 2xx capture in the run sharing `winningCapture`'s operation identity
  * (its `operationGroupKey` for a GraphQL winner, `endpointKey` for a
  * plain-REST one), deduplicated by response body. A single recon run can
@@ -8852,7 +8873,14 @@ function scanPrimaryCandidateGroups<T extends { capture: Capture }>(
 }
 
 export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
-  actions: readonly T[]
+  actions: readonly T[],
+  // When set (see computeEmittedPrimaryAnchor), constrains the outer loop's
+  // primary candidate search to only the action whose own operationGroupKey
+  // matches this identity, so this can never resolve a fold plan anchored on
+  // a DIFFERENT operation than the one already selected upstream as this
+  // run's emitted primary. `null`/omitted preserves today's unconstrained,
+  // order-dependent structural search for every other call site.
+  primaryIdentityAnchor: string | null = null
 ): FoldPlan[] {
   const plans: FoldPlan[] = [];
   // Spans every primary candidate, not just the current one's own drill
@@ -8897,6 +8925,12 @@ export function detectDrillDownFoldPlan<T extends { capture: Capture }>(
   for (let primaryIndex = 0; primaryIndex < actions.length; primaryIndex++) {
     if (globallyConsumedIndices.has(primaryIndex)) continue;
     const primary = actions[primaryIndex]!;
+    if (
+      primaryIdentityAnchor !== null &&
+      operationGroupKey(primary.capture) !== primaryIdentityAnchor
+    ) {
+      continue;
+    }
     const groups = scanCached(primaryIndex);
     if (groups.length === 0) continue;
 
@@ -9546,7 +9580,10 @@ function compileFoldReturnResultsMatcher(
 
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   actions: readonly T[],
-  spec: FoldReturnSpec
+  spec: FoldReturnSpec,
+  // See detectDrillDownFoldPlan's identical parameter — constrains this
+  // function's own primaryStepIndex loop to the same anchor identity.
+  primaryIdentityAnchor: string | null = null
 ): FoldPlan | null {
   const primaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
@@ -9558,6 +9595,12 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   const requestValueIndex = buildRequestValueIndex(actions);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
+    if (
+      primaryIdentityAnchor !== null &&
+      operationGroupKey(actions[primaryStepIndex]!.capture) !== primaryIdentityAnchor
+    ) {
+      continue;
+    }
     const primaryItems = objectItemsAtPath(
       actions[primaryStepIndex]!.capture.responseBody,
       primaryArrayPath
@@ -9750,10 +9793,15 @@ function isDescendantArrayPath(candidate: readonly string[], base: readonly stri
 function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   structuralPlans: readonly FoldPlan[],
   actions: readonly T[],
-  foldReturnSpec: FoldReturnSpec | null
+  foldReturnSpec: FoldReturnSpec | null,
+  // See detectDrillDownFoldPlan's identical parameter. Threaded into this
+  // function's own buildFoldPlanFromSpec call so a spec plan resolved here
+  // can never anchor on a DIFFERENT primary than the (already anchor-
+  // constrained) structuralPlans it's about to be merged onto.
+  primaryIdentityAnchor: string | null = null
 ): FoldPlan[] {
   if (foldReturnSpec === null) return [...structuralPlans];
-  const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+  const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
   if (specPlan === null) return [...structuralPlans];
   const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
   // Deliberately keyed on the RAW primaryStepIndex (not endpoint identity):
@@ -10127,15 +10175,23 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
 
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
-  foldReturnSpec: FoldReturnSpec | null = null
+  foldReturnSpec: FoldReturnSpec | null = null,
+  // See detectDrillDownFoldPlan's identical parameter — threaded through to
+  // both the structural and spec-driven resolution paths below.
+  primaryIdentityAnchor: string | null = null
 ): FoldPlan[] {
-  const structuralPlans = detectDrillDownFoldPlan(actions);
+  const structuralPlans = detectDrillDownFoldPlan(actions, primaryIdentityAnchor);
   const plans =
     structuralPlans.length > 0
-      ? mergeSpecPlanOntoSamePrimary(structuralPlans, actions, foldReturnSpec)
+      ? mergeSpecPlanOntoSamePrimary(
+          structuralPlans,
+          actions,
+          foldReturnSpec,
+          primaryIdentityAnchor
+        )
       : ((): FoldPlan[] => {
           if (foldReturnSpec === null) return [];
-          const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec);
+          const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
           return specPlan === null ? [] : [specPlan];
         })();
   return plans.flatMap((plan) => {
@@ -10168,10 +10224,14 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
 export function resolveApplicableFoldPlans<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null,
-  multiStepBody: string | undefined
+  multiStepBody: string | undefined,
+  // See detectDrillDownFoldPlan's identical parameter — threaded through so
+  // this function's single-primary output can never diverge from the
+  // caller's already-selected emitted primary.
+  primaryIdentityAnchor: string | null = null
 ): FoldPlan[] {
   if (multiStepBody) return [];
-  const plans = resolveFoldPlan(actions, foldReturnSpec);
+  const plans = resolveFoldPlan(actions, foldReturnSpec, primaryIdentityAnchor);
   const primaryKey = (plan: FoldPlan): string =>
     `${endpointKey(actions[plan.primaryStepIndex]!.capture.url)}\u0000${plan.primaryArrayPath.join(".")}`;
   const freshestStepIndexByPrimary = new Map<string, number>();
@@ -10926,33 +10986,27 @@ export function emitContractTs(opts: {
   // buildPaginatedFetchLoopExecuteHttpBody) — the fold runs against the final
   // assembled/de-duplicated page items, not just the first page's captured
   // sample, so a paginated primary is no longer excluded from folding.
+  // Constrains the resolution below to the operation already selected as
+  // this run's emitted primary (gqlOperationName/gqlQuery, computed
+  // independently upstream) — see computeEmittedPrimaryAnchor. Without this,
+  // a fold plan's primaryStepIndex was resolved purely structurally (does
+  // the declared resultsPath resolve to an object array on that capture),
+  // with no anchor to the emitted primary, so it could resolve onto a
+  // DIFFERENT operation than the one `data` holds at runtime. Scoped to gql:
+  // REST fold-plan/emitted-primary drift is a distinct, undocumented concern
+  // out of scope here.
+  const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
+    gql,
+    endpointPath,
+    gqlOperationName,
+    gqlQuery
+  );
   const singlePrimaryFoldPlans = resolveApplicableFoldPlans(
     actionSteps,
     foldReturnSpec,
-    multiStepBody
+    multiStepBody,
+    emittedPrimaryAnchor
   );
-  // A fold plan's primaryStepIndex is resolved purely structurally (does the
-  // declared resultsPath resolve to an object array on that capture), with
-  // no comparison against the operation actually selected as primary for
-  // emission (gqlOperationName/gqlQuery, computed independently upstream).
-  // When they diverge, buildFoldMergeLines below would cast `data` to the
-  // fold plan's operation's shape even though `data` at runtime holds the
-  // emitted primary operation's response — a cast that can never typecheck.
-  // Scoped to gql: REST fold-plan/emitted-primary drift is a distinct,
-  // undocumented concern out of scope here.
-  if (gql) {
-    const emittedPrimaryIdentity = `${endpointPath}::${gqlOperationName ?? parsedOperationName(gqlQuery ?? "") ?? "anonymous"}`;
-    for (const plan of singlePrimaryFoldPlans) {
-      const primaryStep = actionSteps[plan.primaryStepIndex];
-      if (!primaryStep) continue;
-      const foldPrimaryIdentity = operationGroupKey(primaryStep.capture);
-      if (foldPrimaryIdentity !== emittedPrimaryIdentity) {
-        throw new Error(
-          `emitContractTs: fold plan primary operation ${foldPrimaryIdentity} differs from the emitted primary operation ${emittedPrimaryIdentity} — the declared foldReturn no longer applies to this run's selected primary; drop or re-resolve the foldReturn spec against the emitted primary operation`
-        );
-      }
-    }
-  }
   // A GraphQL primary with a resolved drill-down fold has no other REST
   // client to issue the drill request(s) with — getGql only ever speaks
   // GraphQL to the primary endpoint.
@@ -13404,9 +13458,24 @@ async function main(): Promise<void> {
     // diagnostic must consult the SAME resolution each path actually applies,
     // or it falsely reports "no fold plan resolved" for every multi-step flow
     // with a working foldReturn.
+    // Mirrors the exact gqlOperationName expression fed into contractOpts
+    // below (see the `gqlOperationName:` field), so this diagnostic's own
+    // anchor can never disagree with the one emitContractTs computes from
+    // that same contractOpts — see computeEmittedPrimaryAnchor.
+    const emittedPrimaryAnchor = computeEmittedPrimaryAnchor(
+      gql,
+      endpointPath,
+      primaryGraphQLOperation
+        ? (primaryGraphQLOperation.capture.operationName ??
+            parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
+        : (fallbackGraphQLCapture?.operationName ??
+            parsedOperationName(fallbackGraphQLCapture?.query ?? "")),
+      gqlQuery
+    );
     const effectiveFoldPlanCount = multiStepBody
       ? resolveFoldPlan(actionSteps, foldReturnSpec).length
-      : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody).length;
+      : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody, emittedPrimaryAnchor)
+          .length;
     if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
