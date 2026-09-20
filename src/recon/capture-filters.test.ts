@@ -525,6 +525,30 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
 
+  it("does not flag a query-less, densely-repeated POST whose operationName field is null but whose query text names the operation, recurring as a plurality among 3+ distinct query-text-named groups sharing the endpoint", () => {
+    const buildOccurrence = (i: number, operationName: string) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: JSON.stringify({
+        query: `query ${operationName} { widgets(i: ${i}) { id } }`,
+        variables: { i },
+      }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+      operationName: null,
+      query: `query ${operationName} { widgets(i: ${i}) { id } }`,
+    });
+    const first = buildOccurrence(0, "SearchWidgets");
+    const occurrences = [
+      first,
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "SearchWidgets")),
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 5, "CartSummary")),
+      ...Array.from({ length: 2 }, (_, i) => buildOccurrence(i + 9, "OrderHistory")),
+    ];
+    expect(occurrences.length).toBe(11);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
   it("flags a query-less candidate whose response never varies at only 7 occurrences when it is structurally isolated from every other endpoint in the capture run", () => {
     const first = {
       method: "GET",

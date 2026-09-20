@@ -44,6 +44,7 @@ import {
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
+  parsedOperationName,
   pathStructuralTokens,
   registrableDomain,
   telemetryUrlPatterns,
@@ -1365,16 +1366,6 @@ function declaredOperationVariableNames(query: string): string[] {
   );
   if (!signature) return [];
   return Array.from(signature[1]!.matchAll(/\$(\w+)\s*:/g), (m) => m[1]!);
-}
-
-/**
- * Parses the operation name out of the query body itself, for captures whose
- * top-level `operationName` field is null (an inline document with no
- * separate operationName was still sent with a named `query`/`mutation`).
- */
-function parsedOperationName(query: string): string | null {
-  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(stripLeadingGraphQLComments(query));
-  return signature?.[1] ?? null;
 }
 
 /**

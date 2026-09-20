@@ -936,6 +936,39 @@ function hasNoObservedResponseVariance(
 }
 
 /**
+ * Strips leading blank lines and `#`-comment lines (GraphQL comments run
+ * from `#` to end of line) so operation-signature regexes anchored at the
+ * `query`/`mutation` keyword still match documents preceded by a comment.
+ */
+function stripLeadingGraphQLComments(query: string): string {
+  return query.replace(/^(?:[ \t]*(?:#[^\n]*)?\r?\n)*/, "");
+}
+
+/**
+ * Parses the operation name out of the query body itself, for captures whose
+ * top-level `operationName` field is null (an inline document with no
+ * separate operationName was still sent with a named `query`/`mutation`).
+ */
+export function parsedOperationName(query: string): string | null {
+  const signature = /^\s*(?:query|mutation)\s+(\w+)/.exec(stripLeadingGraphQLComments(query));
+  return signature?.[1] ?? null;
+}
+
+/**
+ * An occurrence's effective operation identity: the raw `operationName`
+ * field when present, otherwise the name parsed out of its `query` text —
+ * the same fallback `recon-generate.ts`'s `operationGroupKey` uses for
+ * recurrence counting, so a client that only sends a named inline document
+ * (no separate `operationName` field) still corroborates as one identity.
+ */
+function effectiveOperationName(occurrence: {
+  operationName?: string | null;
+  query?: string | null;
+}): string | null {
+  return occurrence.operationName ?? parsedOperationName(occurrence.query ?? "") ?? null;
+}
+
+/**
  * True when `candidate`'s operationName is non-empty, recurs at least
  * twice among `sameEndpoint`, and its occurrence count is a plurality —
  * at least as large as every other distinct operationName group observed
@@ -952,16 +985,18 @@ function hasNoObservedResponseVariance(
  * recur densely.
  */
 function hasStableOperationIdentity(
-  candidateOperationName: string | null | undefined,
-  sameEndpoint: readonly { operationName?: string | null }[]
+  candidate: { operationName?: string | null; query?: string | null },
+  sameEndpoint: readonly { operationName?: string | null; query?: string | null }[]
 ): boolean {
-  if (!candidateOperationName) return false;
+  const candidateIdentity = effectiveOperationName(candidate);
+  if (!candidateIdentity) return false;
   const groupCounts = new Map<string, number>();
   for (const c of sameEndpoint) {
-    if (!c.operationName) continue;
-    groupCounts.set(c.operationName, (groupCounts.get(c.operationName) ?? 0) + 1);
+    const identity = effectiveOperationName(c);
+    if (!identity) continue;
+    groupCounts.set(identity, (groupCounts.get(identity) ?? 0) + 1);
   }
-  const candidateCount = groupCounts.get(candidateOperationName) ?? 0;
+  const candidateCount = groupCounts.get(candidateIdentity) ?? 0;
   if (candidateCount < 2) return false;
   return [...groupCounts.values()].every((count) => candidateCount >= count);
 }
@@ -974,6 +1009,7 @@ export function isZeroVarianceRepeatCapture(
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
     operationName?: string | null;
+    query?: string | null;
   },
   allCaptures: readonly {
     method: string;
@@ -982,6 +1018,7 @@ export function isZeroVarianceRepeatCapture(
     responseHeaders?: Record<string, string>;
     responseBody?: unknown;
     operationName?: string | null;
+    query?: string | null;
   }[]
 ): boolean {
   let candidateUrl: URL;
@@ -1022,7 +1059,7 @@ export function isZeroVarianceRepeatCapture(
     if (!hasExplicitContentType) return false;
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
-    if (hasStableOperationIdentity(candidate.operationName, sameEndpoint)) return false;
+    if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
     if (
       sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
       !isCorroboratedByStructuralIsolation(
@@ -1056,7 +1093,7 @@ export function isZeroVarianceRepeatCapture(
   const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
   if (bodyIdentical) return true;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
-  if (hasStableOperationIdentity(candidate.operationName, sameEndpoint)) return false;
+  if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
   return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }
 
