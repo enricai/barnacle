@@ -1293,7 +1293,9 @@ function deriveRequestHeaders(
 }
 
 function isGraphQL(captures: Capture[]): boolean {
-  return captures.some((c) => c.operationName !== null);
+  return captures.some(
+    (c) => c.operationName !== null || parsedOperationName(c.query ?? "") !== null
+  );
 }
 
 /**
