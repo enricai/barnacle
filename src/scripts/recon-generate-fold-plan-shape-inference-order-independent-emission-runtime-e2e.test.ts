@@ -6,29 +6,52 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * Complements recon-generate-fold-plan-primary-order-independent-emission-runtime-e2e.test.ts,
- * which pins order-independence for WHICH capture's fold plan resolves but
- * whose noise/real items coincidentally share the same per-item shape — so a
- * shape-inference divergence at selectEffectiveResponseBody's call site
- * never surfaces as a textual difference in that test's generated contract.
- * Here the noise capture's items carry an extra field (`urgencyLabel`) the
- * real primary's items do not have, so if selectEffectiveResponseBody ever
- * infers shape from the noise capture instead of the anchored emitted
- * primary, the generated response type picks up that field and the two
- * capture orderings stop being byte-identical.
+ * Complements recon-generate-fold-plan-primary-order-independent-emission-runtime-e2e.test.ts
+ * (which pins WHICH capture wins the fold plan, using a noise/real pair that
+ * coincidentally share the same shape at `foldReturn.resultsPath`, so a
+ * shape-inference divergence at `selectEffectiveResponseBody`'s own call
+ * site never surfaces through that fixture) by proving the fix's other half
+ * through the real CLI: the noise and real candidates here fold to
+ * DIFFERING shapes at the resolved primary's own array — the noise capture
+ * carries a `meta.beacons` array (paired with a `total` count field) that
+ * satisfies `detectPaginationSignal`'s bounded-paging heuristic, while the
+ * real `catalogSearch` capture carries neither. `emitContractTs` runs an
+ * internal consistency check between the paginated array `detectPaginationSignal`
+ * finds (derived from `selectEffectiveResponseBody`'s pick) and the fold
+ * plan's own primary array path, and throws
+ * ("... no longer extends the paginated collection's own array path ...")
+ * when the two disagree — exactly what happens pre-fix when the unanchored
+ * search picks the noise capture as the effective primary while the
+ * anchored fold plan (already fixed for `resolveApplicableFoldPlans`, see
+ * PR #436) still targets the real one. Before this fix
+ * (`a150d5c`/bugfix-001), whichever structurally-matching capture — the
+ * real `catalogSearch` primary or the noise `telemetryHeartbeat` capture —
+ * came later in the run directory won `selectEffectiveResponseBody`'s own
+ * unanchored fold-plan resolution independent of order, so one of the two
+ * capture orderings below crashes generation entirely while the other
+ * succeeds. After the fix, both orderings resolve
+ * `selectEffectiveResponseBody`'s fold plan against the SAME anchored
+ * primary (the real `catalogSearch` capture, which trips no pagination
+ * signal), so both exit 0 and emit byte-identical contracts.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-const SEARCH_QUERY = "query catalogSearch { catalog { results { items { id name } } } }";
-// Declares an EARLIER object array (`meta.beacons`) than `catalog.results.items`
-// so `dedupRedundantSameOperationCaptures`'s shape-key comparison (keyed on the
-// FIRST object array `findObjectArrayField` finds) sees a different shape than
-// the real primary and does not drop this capture as a redundant duplicate.
+const SEARCH_QUERY =
+  "query catalogSearch($first: Int, $skip: Int) { catalog(first: $first, skip: $skip) { results { items { id name } } } }";
+// Declares an EARLIER object array (`meta.beacons`, paired with a sibling
+// `total` count) than `catalog.results.items` so `dedupRedundantSameOperationCaptures`'s
+// shape-key comparison (keyed on the FIRST object array `findObjectArrayField`
+// finds) sees a different shape than the real primary and does not drop this
+// capture as a redundant duplicate. `meta.beacons` is also what makes this
+// capture's shape genuinely DIVERGE from the real primary's: it satisfies
+// `detectPaginationSignal`'s bounded-paging check (2 items, evenly divides
+// the real primary's own `first: 2` page size, paired with the `total` field)
+// while the real primary's own shape trips no such signal at all.
 const NOISE_QUERY =
-  "query telemetryHeartbeat { meta { beacons { id } } catalog { results { items { id name urgencyLabel } } } }";
+  "query telemetryHeartbeat { meta { beacons { id } } catalog { results { total items { id name } } } }";
 
 function graphqlSearchCapture(index: number): unknown {
   return {
@@ -38,7 +61,7 @@ function graphqlSearchCapture(index: number): unknown {
     url: "https://example.com/graphql",
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: JSON.stringify({ query: SEARCH_QUERY, variables: {} }),
+    requestPostData: JSON.stringify({ query: SEARCH_QUERY, variables: { first: 2, skip: 0 } }),
     responseHeaders: {},
     responseBody: {
       catalog: {
@@ -52,17 +75,17 @@ function graphqlSearchCapture(index: number): unknown {
     },
     operationName: "catalogSearch",
     query: SEARCH_QUERY,
-    variables: {},
+    variables: { first: 2, skip: 0 },
     decodedParams: null,
   };
 }
 
 // Same resultsPath as the real primary and the same join id (`item-a`) the
-// drill-down capture correlates against, but its `catalog.results.items`
-// entries carry an extra `urgencyLabel` field the real primary's items never
-// have — a shape DIVERGENCE, not a coincidental match. Never chosen as the
-// emitted primary by selectPrimaryGraphQLOperation's scoring, which favors
-// catalogSearch's higher recurrence.
+// drill-down capture correlates against, but its shape genuinely diverges
+// via the sibling `meta.beacons`/`total` fields described above — a shape
+// DIVERGENCE, not a coincidental match. Never chosen as the emitted primary
+// by selectPrimaryGraphQLOperation's scoring, which favors catalogSearch's
+// higher recurrence.
 function graphqlNoiseCapture(): unknown {
   return {
     timestamp: "2024-01-01T00:00:05Z",
@@ -74,10 +97,11 @@ function graphqlNoiseCapture(): unknown {
     requestPostData: JSON.stringify({ query: NOISE_QUERY, variables: {} }),
     responseHeaders: {},
     responseBody: {
-      meta: { beacons: [{ id: "b1" }] },
+      meta: { beacons: [{ id: "b1" }, { id: "c2" }] },
       catalog: {
         results: {
-          items: [{ id: "item-a", name: "Beacon", urgencyLabel: "high" }],
+          total: 10,
+          items: [{ id: "item-a", name: "Beacon" }],
         },
       },
     },
@@ -186,6 +210,10 @@ describe("recon-generate fold plan shape inference — order independence runtim
       const result = run(runRoot, siteId);
       const out = `${result.stdout}\n${result.stderr}`;
 
+      // Pre-fix, whichever ordering resolves selectEffectiveResponseBody's
+      // unanchored fold plan onto the noise capture trips emitContractTs's
+      // own pagination/fold-plan consistency guard and exits non-zero —
+      // this is exactly the divergence this test pins closed.
       expect(result.status, out).toBe(0);
       expect(out).not.toContain("differs from the emitted primary operation");
       expect(out).not.toContain("no fold plan resolved");
@@ -196,11 +224,10 @@ describe("recon-generate fold plan shape inference — order independence runtim
     const [noiseFirstContract, realFirstContract] = contracts as [string, string];
 
     // Neither ordering may infer the response shape from the noise
-    // capture's shape — the generated type must never carry its
-    // noise-only field, and both orderings must agree byte-for-byte.
+    // capture's shape — the generated contract must never carry its
+    // noise-only identifiers, and both orderings must agree byte-for-byte.
     for (const contract of [noiseFirstContract, realFirstContract]) {
       expect(contract).toContain("catalogSearch");
-      expect(contract).not.toContain("urgencyLabel");
       expect(contract).not.toContain("telemetryHeartbeat");
       expect(contract).toContain("/inventory/api/v1/items");
     }
