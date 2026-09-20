@@ -83,7 +83,10 @@ describe("GraphQL search primary densely re-issued with a freely-varying JSON re
   it("keeps a search primary captured >=10x with distinct variables in extractGraphQLActionSequence's output, and resolves a fold plan referencing the drill-down", () => {
     const REPEAT_COUNT = 12;
     const searchCaptures = Array.from({ length: REPEAT_COUNT }, (_, i) =>
-      catalogSearchCapture(`category:outdoor|page:${i}`, `2024-01-01T00:00:${String(i).padStart(2, "0")}Z`)
+      catalogSearchCapture(
+        `category:outdoor|page:${i}`,
+        `2024-01-01T00:00:${String(i).padStart(2, "0")}Z`
+      )
     );
     const captures: unknown[] = [
       ...searchCaptures,
