@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,15 +12,17 @@ import { afterEach, describe, expect, it } from "vitest";
  * facets/config response with no results array, captured more often, so
  * `selectPrimaryGraphQLOperation`'s recurrenceScore picks it as the emitted
  * primary. `catalogSearch` (op B) carries the nested array the flow's
- * declared `foldReturn.resultsPath` names, captured once, so
- * `extractGraphQLActionSequence` admits only op B (and the matching
- * drill-down) into `actionSteps`, and `buildFoldPlanFromSpec` resolves the
- * fold plan's `primaryStepIndex` against op B — a different operation than
- * the one actually emitted as primary. Before bugfix-001, `emitContractTs`
- * had no check for this divergence and would cast `data` to op B's shape
- * even though runtime `data` holds op A's response — a cast that can never
- * typecheck. This asserts `recon-generate` now throws naming the mismatch
- * instead of exiting 0 with that unsound cast.
+ * declared `foldReturn.resultsPath` names, captured once. Before bugfix-001,
+ * `buildFoldPlanFromSpec`/`detectDrillDownFoldPlan` resolved their primary
+ * candidate purely structurally, with no anchor to the operation already
+ * selected as the emitted primary, so they could resolve the fold plan's
+ * `primaryStepIndex` against op B while `data` at runtime actually holds op
+ * A's response — a cast that can never typecheck. `emitContractTs` used to
+ * catch this after the fact with a throw; now the resolution itself is
+ * constrained to the emitted primary's identity (op A), so op B's fold plan
+ * can never resolve in the first place. This asserts `recon-generate` exits
+ * 0, logs that no fold plan resolved, and never emits a fold cast/merge
+ * referencing op B's shape.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -162,7 +164,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
 }
 
 describe("recon-generate fold plan primary op differs from emitted primary — runtime e2e", () => {
-  it("throws naming the mismatch instead of emitting an unsound fold cast", () => {
+  it("never resolves a fold plan against a different operation than the emitted primary", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-fold-primary-mismatch-"));
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot);
@@ -174,9 +176,11 @@ describe("recon-generate fold plan primary op differs from emitted primary — r
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.status, out).not.toBe(0);
-    expect(out).toContain("catalogFacets");
-    expect(out).toContain("catalogSearch");
-    expect(out).toContain("differs from the emitted primary operation");
+    expect(result.status, out).toBe(0);
+    expect(out).toContain("no fold plan resolved");
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("catalogSearch");
+    expect(contract).not.toContain("results.items");
   }, 30_000);
 });
