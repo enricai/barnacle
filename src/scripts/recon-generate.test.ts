@@ -1244,6 +1244,57 @@ describe("extractActionSequence — foldReturnSpec-scoped GET admission", () => 
   });
 });
 
+describe("extractActionSequence — a repeatedly-fired real search primary survives the zero-variance repeat filter", () => {
+  const BASE = "https://api.example.com";
+  const foldReturnSpec: FoldReturnSpec = {
+    endpointPattern: "/items/[^/]+/detail",
+    resultsPath: "itemSearch.results.items",
+    joinFields: ["itemId"],
+  };
+
+  const searchCapture = (i: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/search`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: `query=${i}`,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { itemSearch: { results: { items: [{ itemId: `item-${i}` }] } } },
+    operationName: "SearchItems",
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const drillCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "GET",
+    url: `${BASE}/items/item-0/detail`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  it("keeps the repeated search POST and the fold-matched drill GET instead of excluding the real primary as noise", () => {
+    const captures = [...Array.from({ length: 19 }, (_, i) => searchCapture(i)), drillCapture];
+
+    const kept = extractActionSequence(captures, null, foldReturnSpec);
+    const keptUrls = kept.map((a) => a.capture.url);
+
+    expect(keptUrls).toContain(`${BASE}/search`);
+    expect(keptUrls).toContain(`${BASE}/items/item-0/detail`);
+  });
+});
+
 describe("resolveManifestActionSequence — authoritative submission selection", () => {
   const capture = (url: string) => ({
     timestamp: "2024-01-01T00:00:00Z",
