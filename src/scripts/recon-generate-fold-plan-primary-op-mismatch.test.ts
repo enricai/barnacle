@@ -149,27 +149,11 @@ describe("fold plan primary op diverging from the emitted primary op", () => {
         foldReturnSpec: SEARCH_ITEMS_SPEC,
       });
 
-    let contract: string | null = null;
-    let thrown: unknown = null;
-    try {
-      contract = buildContract();
-    } catch (error) {
-      thrown = error;
-    }
-
-    if (thrown !== null) {
-      expect(thrown).toBeInstanceOf(Error);
-      const message = (thrown as Error).message;
-      expect(message).toContain("catalogFacets");
-      expect(message).toContain("catalogSearch");
-      return;
-    }
-
-    // If emission did not throw, it must not have resolved the fold plan
+    // emitContractTs must not throw, and must not resolve the fold plan
     // against op B's shape: a cast/merge referencing `catalogSearch` (only
     // present on op B's response, never on the emitted op A response) would
     // be a reference to a path absent from the emitted primary's type.
-    expect(contract).not.toBeNull();
+    const contract = buildContract();
     expect(contract).not.toContain("catalogSearch");
   });
 });
