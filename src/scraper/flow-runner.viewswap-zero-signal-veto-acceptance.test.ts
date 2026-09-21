@@ -501,4 +501,339 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     const allLogged = [...SILENT_LOGGER_CALLS.info, ...SILENT_LOGGER_CALLS.warn].join("\n");
     expect(allLogged).not.toContain("verifiedBy=view-swap");
   });
+
+  /**
+   * Pins `resolvedClickTargetStillPresent`'s fail-open contract
+   * (flow-runner.ts:4078-4086): the presence probe must default to `true`
+   * (never veto) whenever presence genuinely can't be determined, rather
+   * than whenever it CAN be determined-and-is-false. A same-page toggle
+   * whose resolved click selector isn't xpath-shaped (a plain CSS id
+   * selector) drives `xpathBodyForEvaluate` to return `null`, so the probe
+   * returns `true` without ever calling `evaluate` — and the genuine
+   * same-page reveal that follows must still be credited
+   * `verifiedBy: 'view-swap'`. A hypothetical fail-closed variant (default
+   * flipped to `false`) would veto this credit outright, since the CSS
+   * selector can never positively prove presence.
+   */
+  it("a same-page reveal whose resolved click selector is not xpath-shaped is still credited verifiedBy='view-swap'", async () => {
+    const window = new Window({ url: BASE_URL });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="settingsWizard">
+        <h1>Settings</h1>
+        <button id="advancedOptionsBtn" aria-label="Advanced Options"></button>
+      </div>
+    `;
+
+    const buttonEl = document.getElementById("advancedOptionsBtn") as unknown as HappyDomElement;
+    expect(buttonEl).not.toBeNull();
+
+    // A genuine same-page toggle: the button stays in the DOM and a large
+    // reveal panel is appended alongside it, clearing VIEW_SWAP_MIN_BYTES.
+    const REVEAL_PADDING = "x".repeat(6_000);
+    let revealCount = 0;
+    (
+      buttonEl as unknown as {
+        addEventListener: (type: string, cb: (ev: unknown) => void) => void;
+      }
+    ).addEventListener("click", () => {
+      revealCount += 1;
+      const panel = document.createElement("div");
+      panel.setAttribute("class", "advancedPanel");
+      panel.textContent = REVEAL_PADDING;
+      document.querySelector(".settingsWizard")?.appendChild(panel);
+    });
+
+    const documentElement = document.documentElement as unknown as HappyDomElement;
+    const win = window as unknown as { XPathResult?: unknown };
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+    (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
+      (expr: string) => {
+        const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
+        return { singleNodeValue: node };
+      };
+
+    const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const src = String(expr);
+      const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
+        d: unknown,
+        x: unknown
+      ) => unknown;
+      return fn(document, win.XPathResult);
+    };
+
+    const frameTarget: FrameTarget = {
+      frame: undefined,
+      frameSelector: undefined,
+      evaluate: evaluateImpl,
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      url: () => Promise.resolve(BASE_URL),
+      title: () => Promise.resolve("Settings"),
+    } as unknown as FrameTarget;
+
+    const session = { on: () => {}, off: () => {} };
+    const page: Page = {
+      evaluate: evaluateImpl,
+      url: () => BASE_URL,
+      title: async () => "Settings",
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+
+    const stagehand: Stagehand = {} as unknown as Stagehand;
+
+    // The resolved action's selector is a plain CSS id selector — not
+    // `xpath=`-prefixed and doesn't start with `/` or `(` — so
+    // `xpathBodyForEvaluate` returns null and the presence probe can never
+    // run.
+    guardedAct.mockImplementation(async () => {
+      const live = document.getElementById("advancedOptionsBtn") as unknown as {
+        click?: () => void;
+      } | null;
+      live?.click?.();
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: STEP_INSTRUCTION,
+        actions: [
+          {
+            selector: "#advancedOptionsBtn",
+            description: "Advanced Options button",
+            method: "click",
+          },
+        ],
+      };
+    });
+    guardedObserve.mockResolvedValue([
+      {
+        selector: "#advancedOptionsBtn",
+        description: "Advanced Options button",
+        method: "click",
+      },
+    ]);
+
+    const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
+
+    const result = await executeStepWithHealing({
+      stagehand,
+      page,
+      frameTarget,
+      step: STEP_INSTRUCTION,
+      optional: false,
+      upload: false,
+      submitStep: false,
+      flowHasSubmitSemantics: false,
+      stepIndex: 0,
+      totalSteps: () => 3,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      trajectory,
+      onStepFailure: () => null,
+    });
+
+    expect(result).toBe("completed");
+    expect(revealCount).toBe(1);
+
+    // The fail-open contract under test: presence couldn't be determined
+    // (non-xpath selector), so the probe never vetoed, and the genuine
+    // reveal is credited on the primary gate.
+    expect(trajectory).toHaveLength(1);
+    expect(trajectory[0]?.verifiedBy).toBe("view-swap");
+  });
+
+  /**
+   * Pins `resolvedClickTargetStillPresent`'s other fail-open branch
+   * (flow-runner.ts:4098-4099): when the presence-probe's own
+   * `target.evaluate` call throws, the probe must default to `true` (never
+   * veto) rather than treat the throw as proof of absence. The resolved
+   * click selector stays xpath-shaped here — every OTHER `evaluate` call
+   * (DOM snapshot, fingerprint read-back) still runs for real against the
+   * live happy-dom document; only the presence probe's own distinguishing
+   * expression throws.
+   */
+  it("a same-page reveal whose presence-probe evaluate call throws is still credited verifiedBy='view-swap'", async () => {
+    const window = new Window({ url: BASE_URL });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="settingsWizard">
+        <h1>Settings</h1>
+        <button id="advancedOptionsBtn" aria-label="Advanced Options"></button>
+      </div>
+    `;
+
+    const buttonEl = document.getElementById("advancedOptionsBtn") as unknown as HappyDomElement;
+    expect(buttonEl).not.toBeNull();
+    const buttonXPath = absoluteXPathFor(buttonEl);
+
+    const REVEAL_PADDING = "x".repeat(6_000);
+    let revealCount = 0;
+    (
+      buttonEl as unknown as {
+        addEventListener: (type: string, cb: (ev: unknown) => void) => void;
+      }
+    ).addEventListener("click", () => {
+      revealCount += 1;
+      const panel = document.createElement("div");
+      panel.setAttribute("class", "advancedPanel");
+      panel.textContent = REVEAL_PADDING;
+      document.querySelector(".settingsWizard")?.appendChild(panel);
+    });
+
+    const documentElement = document.documentElement as unknown as HappyDomElement;
+    const win = window as unknown as { XPathResult?: unknown };
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+    (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
+      (expr: string) => {
+        const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
+        return { singleNodeValue: node };
+      };
+
+    // Every evaluate call runs for real EXCEPT the presence probe's own
+    // distinguishing expression (matched by its exact literal template from
+    // flow-runner.ts:4094), which throws to simulate a live evaluate
+    // failure.
+    const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const src = String(expr);
+      if (src.includes("FIRST_ORDERED_NODE_TYPE") && src.includes("singleNodeValue !== null")) {
+        throw new Error("simulated evaluate failure in presence probe");
+      }
+      const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
+        d: unknown,
+        x: unknown
+      ) => unknown;
+      return fn(document, win.XPathResult);
+    };
+
+    const frameTarget: FrameTarget = {
+      frame: undefined,
+      frameSelector: undefined,
+      evaluate: evaluateImpl,
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      url: () => Promise.resolve(BASE_URL),
+      title: () => Promise.resolve("Settings"),
+    } as unknown as FrameTarget;
+
+    const session = { on: () => {}, off: () => {} };
+    const page: Page = {
+      evaluate: evaluateImpl,
+      url: () => BASE_URL,
+      title: async () => "Settings",
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+
+    const stagehand: Stagehand = {} as unknown as Stagehand;
+
+    guardedAct.mockImplementation(async () => {
+      const live = resolveAbsoluteXPath(documentElement, buttonXPath) as unknown as {
+        click?: () => void;
+      } | null;
+      live?.click?.();
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: STEP_INSTRUCTION,
+        actions: [
+          {
+            selector: `xpath=${buttonXPath}`,
+            description: "Advanced Options button",
+            method: "click",
+          },
+        ],
+      };
+    });
+    guardedObserve.mockResolvedValue([
+      {
+        selector: `xpath=${buttonXPath}`,
+        description: "Advanced Options button",
+        method: "click",
+      },
+    ]);
+
+    const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
+
+    const result = await executeStepWithHealing({
+      stagehand,
+      page,
+      frameTarget,
+      step: STEP_INSTRUCTION,
+      optional: false,
+      upload: false,
+      submitStep: false,
+      flowHasSubmitSemantics: false,
+      stepIndex: 0,
+      totalSteps: () => 3,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      trajectory,
+      onStepFailure: () => null,
+    });
+
+    expect(result).toBe("completed");
+    expect(revealCount).toBe(1);
+
+    // The fail-open contract under test: the probe's own evaluate call
+    // threw, so presence couldn't be determined, and the genuine reveal is
+    // still credited on the primary gate.
+    expect(trajectory).toHaveLength(1);
+    expect(trajectory[0]?.verifiedBy).toBe("view-swap");
+  });
 });
