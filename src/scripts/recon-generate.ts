@@ -1922,7 +1922,12 @@ export function extractActionSequence(
               denselyNameSpaced ? safeUrlPathname(h.capture.url) !== path : j !== i
             )
             .map((h) => safeUrlPathname(h.capture.url));
-          return !isStructurallyIsolatedCapture(path, otherPaths);
+          // A capture admitted via the flow's own declared foldReturnSpec
+          // endpointPattern (the drill-down target) is authoritative by
+          // construction — the flow author named it explicitly — so it is
+          // exempt from token-overlap isolation, which exists to catch
+          // INCIDENTAL same-host captures the flow never declared.
+          return matchesFoldReturn(capture) || !isStructurallyIsolatedCapture(path, otherPaths);
         })
       : hostGated;
 
