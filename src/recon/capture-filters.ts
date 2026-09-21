@@ -994,20 +994,15 @@ function responseShapeSignature(value: unknown): string {
 }
 
 /**
- * True when `candidate`'s operationName is non-empty, recurs at least
- * twice among `sameEndpoint`, and its occurrence count is a plurality —
- * at least as large as every other distinct operationName group observed
- * at that endpoint. A strict majority is implausible on an endpoint that
- * legitimately multiplexes many distinct operations (none individually
- * over half of traffic), so plurality — the candidate's identity beating
- * or tying every rival group rather than dominating the whole endpoint —
- * is what actually distinguishes a stable, repeated identity from a
- * coincidental one-off, mirroring {@link hasFixedKey}'s reasoning for URL
- * query keys: a stable operation identity carried by the call itself —
- * not derived from the URL or body, which are expected to vary per-call
- * for a real re-issued operation — is evidence of a real, repeatedly-
- * invoked API call rather than a noise widget that merely happens to
- * recur densely.
+ * True when `candidate`'s operationName is non-empty and recurs at least
+ * twice among `sameEndpoint`. That recurrence is sufficient evidence of a
+ * stable, repeatedly-invoked identity on its own — how much OTHER traffic
+ * happens to share the endpoint has no bearing on whether THIS operation
+ * is real, so no comparison against other operationName groups is made.
+ * A stable operation identity carried by the call itself — not derived
+ * from the URL or body, which are expected to vary per-call for a real
+ * re-issued operation — is evidence of a real, repeatedly-invoked API
+ * call rather than a noise widget that merely happens to recur densely.
  *
  * A candidate whose OWN occurrence carries neither an `operationName` nor
  * a `query` (an Automatic-Persisted-Query re-issue: the client sends only
@@ -1022,11 +1017,11 @@ function responseShapeSignature(value: unknown): string {
  * structural — ignores the actual data values, which are expected to
  * differ per-call) recovers it exactly the way a fixed query key
  * corroborates a beacon's identity elsewhere in this file: the shape a
- * named plurality group's responses share is itself evidence the
- * candidate is a re-issue of that SAME operation, not a coincidental
- * schema collision with a one-off. The matched group must still clear the
- * same `>= 2` and plurality bar as the named-identity path — an
- * unidentified candidate gets no less scrutiny than an identified one.
+ * named group's responses share is itself evidence the candidate is a
+ * re-issue of that SAME operation, not a coincidental schema collision
+ * with a one-off. The matched group must still clear the same `>= 2`
+ * recurrence bar as the named-identity path — an unidentified candidate
+ * gets no less scrutiny than an identified one.
  */
 function hasStableOperationIdentity(
   candidate: { operationName?: string | null; query?: string | null; responseBody?: unknown },
@@ -1049,8 +1044,7 @@ function hasStableOperationIdentity(
   const candidateIdentity = effectiveOperationName(candidate);
   if (candidateIdentity) {
     const candidateCount = groupCounts.get(candidateIdentity) ?? 0;
-    if (candidateCount < 2) return false;
-    return [...groupCounts.values()].every((count) => candidateCount >= count);
+    return candidateCount >= 2;
   }
   if (candidate.responseBody === undefined) return false;
   const candidateShape = responseShapeSignature(candidate.responseBody);
@@ -1059,8 +1053,7 @@ function hasStableOperationIdentity(
   )?.[0];
   if (!matchedIdentity) return false;
   const matchedCount = groupCounts.get(matchedIdentity) ?? 0;
-  if (matchedCount < 2) return false;
-  return [...groupCounts.values()].every((count) => matchedCount >= count);
+  return matchedCount >= 2;
 }
 
 export function isZeroVarianceRepeatCapture(
