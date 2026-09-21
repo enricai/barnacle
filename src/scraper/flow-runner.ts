@@ -1823,6 +1823,7 @@ export function isClickViewSwapVerified(params: {
   textChanged: boolean;
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
+  resolvedElementIsSubmitShaped?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1835,6 +1836,7 @@ export function isClickViewSwapVerified(params: {
     textChanged,
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
+    resolvedElementIsSubmitShaped = false,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   // Only the step's own explicit submitStep flag identifies the step that
@@ -1843,7 +1845,14 @@ export function isClickViewSwapVerified(params: {
   // submit-shape from isFinalStep && flowHasSubmitSemantics falsely vetoes
   // an inferred final same-page toggle step that was never going to receive
   // a real network/URL transition, leaving it structurally unverifiable.
-  if (submitStep) return false;
+  // `resolvedElementIsSubmitShaped` closes the same gap from the OTHER
+  // direction: a step the flow never flagged `submitStep` can still resolve
+  // onto an objectively submit-shaped control (an HTML `type="submit"`
+  // affordance, or an unmarked `<button>` owned by a `<form>`, whose default
+  // type IS submit) — that control needs the same real-transition proof
+  // regardless of flow authoring, so a byte-positive form reset can't be
+  // mistaken for a byte-positive real submit.
+  if (submitStep || resolvedElementIsSubmitShaped) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
@@ -4106,6 +4115,42 @@ async function resolvedClickTargetStillPresent(
     return result !== false;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Site-agnostic, attribute-based submit-shape signal read directly from the
+ * resolved click target — the counterpart to the flow-authored `submitStep`
+ * flag. A step the flow never flagged can still resolve onto an objectively
+ * submit-shaped control: `<input type="submit">` / `<input type="image">`, or
+ * a `<button>` with no `type` (or `type="submit"`) owned by a `<form>` — per
+ * the HTML spec a button's default type IS submit, so an unmarked in-form
+ * button commits the form exactly like an explicit `type="submit"` one.
+ * Deliberately NOT a CTA-wording word list (fragile, and site-specific) — only
+ * the element's own tag/type/form-ownership, which is the same shape on any
+ * site. Returns `false` — never manufactures a submit-shape veto — on a
+ * non-xpath selector, a miss, or an evaluate failure.
+ */
+async function resolvedClickTargetIsSubmitShaped(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = r.singleNodeValue;
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toUpperCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
+    if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
   }
 }
 
@@ -11433,6 +11478,16 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : true;
+    // Attribute-based submit-shape read of the resolved click target itself —
+    // independent of the flow-authored `submitStep` flag. See
+    // resolvedClickTargetIsSubmitShaped's doc comment.
+    const resolvedElementIsSubmitShaped =
+      isClick && resolvedAction?.selector
+        ? await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )
+        : false;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -11450,6 +11505,7 @@ export async function executeStepWithHealing(params: {
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
+      resolvedElementIsSubmitShaped,
     });
     if (
       clickViewSwapVerified === false &&
@@ -11849,6 +11905,16 @@ export async function executeStepWithHealing(params: {
           // even though the leaf element is still live; re-anchor on the
           // leaf's own last two steps before giving up.
           const xpathTail = xpathTailForRetarget(xpath);
+          // Attribute-based submit-shape read of the resolved fallback click
+          // target, taken BEFORE the trusted click below fires — a genuine
+          // submit (or a full-page reset) can remove the clicked control from
+          // the DOM entirely, so reading its shape AFTER the click would
+          // silently blind this signal on exactly the cases it exists to
+          // catch. See resolvedClickTargetIsSubmitShaped's doc comment.
+          const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
           // delivery can suppress the synthetic `clickActivationExpr`
@@ -12084,10 +12150,6 @@ export async function executeStepWithHealing(params: {
           const clickTargetIsSelectionMarker =
             xpath !== null &&
             (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
-          const weakDomSignalsAllowed =
-            ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
-            !isCheckboxOrRadioIntentStep(step) &&
-            !clickTargetIsSelectionMarker;
           // Same effective-verdict credit the primary attempt's completion
           // gate uses (see the `record.phantomClickVerdict` computation
           // above), re-run against THIS fallback click's own pre/post pair
@@ -12109,8 +12171,21 @@ export async function executeStepWithHealing(params: {
           // flow-runner.viewswap-blocked-submit-acceptance.test.ts (must stay
           // gated) and flow-runner.pricing-tab-symmetric-swap-verdict-
           // acceptance.test.ts (a non-submit-shaped final step must still get
-          // credit here).
-          const retrySubmitShaped = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+          // credit here). `retryResolvedElementIsSubmitShaped` folds the
+          // attribute-based, flag-independent signal into the SAME boolean
+          // every one of those consumers already gates on, so an unflagged
+          // step resolving onto an objectively submit-shaped control is
+          // treated identically to an explicitly flagged one everywhere this
+          // value is read below.
+          const retrySubmitShaped =
+            submitStep ||
+            (isFinalStep && flowHasSubmitSemanticsFlag) ||
+            retryResolvedElementIsSubmitShaped;
+          const weakDomSignalsAllowed =
+            ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
+              requireSubmitEndpoint) &&
+            !isCheckboxOrRadioIntentStep(step) &&
+            !clickTargetIsSelectionMarker;
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
