@@ -1290,6 +1290,38 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
   });
 
+  it("does not flag a query-less, densely re-issued named GraphQL search operation, including a later Automatic-Persisted-Query re-issue with null operationName and no query text corroborated only by shared endpoint and response shape, interleaved with many distinct one-off operations at the same endpoint", () => {
+    const apqReissueIndex = 15;
+    const searchOccurrences = Array.from({ length: 19 }, (_, i) => {
+      const isApqReissue = i === apqReissueIndex;
+      return {
+        method: "POST",
+        url: "https://apply.acme.example/graphql",
+        requestPostData: JSON.stringify({
+          operationName: isApqReissue ? null : "catalogSearch",
+          query: isApqReissue ? "" : undefined,
+          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+        operationName: isApqReissue ? null : "catalogSearch",
+        query: isApqReissue ? "" : undefined,
+      };
+    });
+    const oneOffOperations = Array.from({ length: 8 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: JSON.stringify({ operationName: `oneOff${i}`, variables: { i } }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { widget: { id: i } },
+      operationName: `oneOff${i}`,
+    }));
+    const allCaptures = [...searchOccurrences, ...oneOffOperations];
+    for (const occurrence of searchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+    }
+  });
+
   it("does not flag a fixed-query-string GraphQL candidate whose operationName recurs as the largest (but not majority) group among 3+ distinct operationName groups sharing the endpoint", () => {
     const buildOccurrence = (i: number, operationName: string) => ({
       method: "POST",
