@@ -11367,7 +11367,10 @@ export async function executeStepWithHealing(params: {
     // place. See isClickViewSwapVerified's doc comment.
     const clickedElementStillPresent =
       isClick && resolvedAction?.selector
-        ? await resolvedClickTargetStillPresent(frameTarget ?? mainFrameTarget(page), resolvedAction.selector)
+        ? await resolvedClickTargetStillPresent(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )
         : true;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
