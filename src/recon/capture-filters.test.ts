@@ -1369,6 +1369,169 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures)).toBe(false);
   });
 
+  it("admits a combined archive of all four previously-excluded noise shapes plus a query-text-only GraphQL primary and an APQ-reissued primary while retaining a production-scale multi-operation real primary sharing its endpoint with hundreds of one-off operations, including one that outfires it", () => {
+    const searchOccurrences = Array.from({ length: 18 }, (_, i) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql",
+      requestPostData: JSON.stringify({
+        operationName: "catalogSearch",
+        variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+      }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+      operationName: "catalogSearch",
+    }));
+    const drillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=item-0",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "item-0", price: 100 },
+    };
+    const fixedQueryBeacon = Array.from({ length: 15 }, (_, i) => ({
+      method: "GET",
+      url: `${beaconUrl}&nonce=${i}`,
+      requestPostData: null,
+    }));
+    const querylessBotPixel = Array.from({ length: 14 }, () => ({
+      method: "GET",
+      url: "https://apply.acme.example/sensor.gif",
+      requestPostData: null,
+    }));
+    const freelyVaryingWidget = Array.from({ length: 12 }, (_, i) => ({
+      method: "GET",
+      url: "https://apply.acme.example/widget/loader",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { viewCount: 4000 + i, greeting: `Welcome back, guest ${i}!` },
+    }));
+    const queryTextSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
+      const query = `query catalogSearch($destination: String!, $month: String!) { search(destination: $destination, month: $month) { id price } }`;
+      return {
+        method: "POST",
+        url: "https://apply.acme.example/graphql",
+        requestPostData: JSON.stringify({
+          query,
+          operationName: null,
+          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+        operationName: null,
+        query,
+      };
+    });
+    const queryTextDrillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=item-1",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "item-1", price: 100 },
+    };
+    const apqReissueIndex = 15;
+    const apqSearchOccurrences = Array.from({ length: 19 }, (_, i) => {
+      const isApqReissue = i === apqReissueIndex;
+      return {
+        method: "POST",
+        url: "https://apply.acme.example/graphql2",
+        requestPostData: JSON.stringify({
+          operationName: isApqReissue ? null : "catalogSearch",
+          query: isApqReissue ? "" : undefined,
+          variables: { destination: `region-${i}`, month: `2026-${(i % 12) + 1}` },
+        }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}`, price: 100 + i }] },
+        operationName: isApqReissue ? null : "catalogSearch",
+        query: isApqReissue ? "" : undefined,
+      };
+    });
+    const apqDrillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=item-2",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "item-2", price: 100 },
+    };
+    // Production-scale shape: a genuinely repeated search primary shares its
+    // own endpoint with 240 distinct one-off operations (1-12 occurrences
+    // each) plus a single sibling that outfires the primary itself
+    // (25 > 19) — the exact volume of concurrently-multiplexed same-endpoint
+    // traffic that used to sink hasStableOperationIdentity's cross-operation
+    // plurality gate and drop the primary from the fold candidate pool.
+    const multiOpEndpoint = "https://apply.acme.example/graphql3";
+    const multiOpSearchOccurrences = Array.from({ length: 19 }, (_, i) => ({
+      method: "POST",
+      url: multiOpEndpoint,
+      requestPostData: JSON.stringify({
+        operationName: "catalogSearch",
+        variables: { page: i + 1 },
+      }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `sku-${i}`, price: 100 + i }] },
+      operationName: "catalogSearch",
+    }));
+    const multiOpDrillCapture = {
+      method: "GET",
+      url: "https://apply.acme.example/catalog/item/details?id=sku-0",
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: "sku-0", price: 100 },
+    };
+    const buildOneOffOperationOccurrences = (operationName: string, count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        method: "POST",
+        url: multiOpEndpoint,
+        requestPostData: JSON.stringify({ operationName, variables: { occurrence: i } }),
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { [operationName]: { id: `${operationName}-${i}` } },
+        operationName,
+      }));
+    const oneOffOperations = Array.from({ length: 240 }, (_, opIndex) =>
+      buildOneOffOperationOccurrences(`getWidgetData${opIndex}`, (opIndex % 12) + 1)
+    ).flat();
+    const outMultiplyingOperation = buildOneOffOperationOccurrences("getFeatureFlagsRefresh", 25);
+    const allCaptures = [
+      ...searchOccurrences,
+      drillCapture,
+      ...fixedQueryBeacon,
+      ...querylessBotPixel,
+      ...freelyVaryingWidget,
+      ...queryTextSearchOccurrences,
+      queryTextDrillCapture,
+      ...apqSearchOccurrences,
+      apqDrillCapture,
+      ...multiOpSearchOccurrences,
+      multiOpDrillCapture,
+      ...oneOffOperations,
+      ...outMultiplyingOperation,
+    ];
+    for (const beacon of fixedQueryBeacon) {
+      expect(isZeroVarianceRepeatCapture(beacon, allCaptures)).toBe(true);
+    }
+    for (const pixel of querylessBotPixel) {
+      expect(isZeroVarianceRepeatCapture(pixel, allCaptures)).toBe(true);
+    }
+    for (const widgetCall of freelyVaryingWidget) {
+      expect(isZeroVarianceRepeatCapture(widgetCall, allCaptures)).toBe(true);
+    }
+    for (const searchCall of searchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(searchCall, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(drillCapture, allCaptures)).toBe(false);
+    for (const occurrence of queryTextSearchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(queryTextDrillCapture, allCaptures)).toBe(false);
+    for (const occurrence of apqSearchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(apqDrillCapture, allCaptures)).toBe(false);
+    for (const occurrence of multiOpSearchOccurrences) {
+      expect(isZeroVarianceRepeatCapture(occurrence, allCaptures)).toBe(false);
+    }
+    expect(isZeroVarianceRepeatCapture(multiOpDrillCapture, allCaptures)).toBe(false);
+  });
+
   it("does not flag a query-less, explicit-json POST search primary re-issued 19 times with a stable operationName, varying variables, and a genuinely varying business response, nor its drill", () => {
     const searchOccurrences = Array.from({ length: 19 }, (_, i) => ({
       method: "POST",
