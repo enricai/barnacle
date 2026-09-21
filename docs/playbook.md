@@ -370,11 +370,13 @@ enough to bake into the codebase and load at startup via
 `src/scraper/fixtures.ts` rather than re-fetching per request.
 
 Each fixture is written with a provenance record in
-`<run-dir>/aux/aux-manifest.json`. `recon:generate` only copies a fixture to
-`src/sites/<id>/fixtures/` when its manifested hostname is an own-backend
-host (matches the flow's declared `ownBackendHostnames`, or the site's own
-registrable domain). A file in `aux/` with no manifest entry is excluded
-rather than assumed safe.
+`<run-dir>/aux/aux-manifest.json`. `recon:generate` emits a commented-out
+`loadFixture` suggestion in `contract.ts` for each fixture whose manifested
+hostname is an own-backend host (matches the flow's declared
+`ownBackendHostnames`, or the site's own registrable domain), naming the
+file and its source URL — pull the file from the archived run's `aux/`
+directory into `src/sites/<id>/fixtures/` yourself, then uncomment. A file
+in `aux/` with no manifest entry is excluded rather than assumed safe.
 
 ```ts
 import { z } from "zod";
@@ -429,9 +431,9 @@ The only phase with meaningful human judgment. Output: `src/sites/<id>/contract.
   pnpm run recon:generate -- --site-id my-site
   ```
 
-  Writes `src/sites/my-site/{contract.ts, flows/browser-flow.ts, index.ts,
-  fixtures/}` from Phases 1–3 artifacts. Pass `--force` to overwrite. Review
-  the generated code before registering the plugin.
+  Writes `src/sites/my-site/{contract.ts, flows/browser-flow.ts, index.ts}`
+  from Phases 1–3 artifacts. Pass `--force` to overwrite. Review the
+  generated code before registering the plugin.
 
   A flow step marked `emailStep: true` is emitted into `browser-flow.ts` as
   `{ emailStep: true, emailStepConfig: {...} }` on that step's literal — the
