@@ -2058,6 +2058,34 @@ function dumpStepFailure(params: {
   return target;
 }
 
+/**
+ * Sibling of {@link dumpStepFailure} for the success side of a heal: when a
+ * step only verifies on attempt > 1, this persists which selector the
+ * fallback actually resolved and clicked, so a triager can identify the
+ * healed element directly instead of inferring it from log-line position or
+ * interactivity plausibility.
+ */
+function dumpStepHeal(params: {
+  stepIndex: number;
+  technique: AttemptRecord["technique"];
+  resolvedSelector: string | null;
+  attempt: number;
+}): string {
+  const { stepHealsDir } = resolveReconRunDir();
+  const idx = String(params.stepIndex).padStart(3, "0");
+  const filename = `${idx}-attempt${params.attempt}.json`;
+  const bundle = {
+    timestamp: new Date().toISOString(),
+    stepIndex: params.stepIndex,
+    technique: params.technique,
+    resolvedSelector: params.resolvedSelector,
+    attempt: params.attempt,
+  };
+  const target = join(stepHealsDir, filename);
+  writeFileSync(target, JSON.stringify(bundle, null, 2));
+  return target;
+}
+
 // Resolved against the engine's own module location (via resume-fixture.ts), not
 // the process CWD — so the default résumé fixture is found even when recon-browser
 // runs from a consumer repo's working directory (the ENOENT WARN's root cause).
@@ -2707,6 +2735,7 @@ async function main(): Promise<void> {
                   trajectory,
                   captureFn,
                   onStepFailure: dumpStepFailure,
+                  onStepHeal: dumpStepHeal,
                 });
           // Races the step's own promise against the session's teardown death
           // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP

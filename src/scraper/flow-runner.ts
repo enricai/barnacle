@@ -9224,6 +9224,22 @@ export async function executeStepWithHealing(params: {
     bodyOuterHtml: string | null;
     unfocusedObserve: Action[];
   }) => string | null;
+  /**
+   * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
+   * Invoked whenever a step only verifies on attempt > 1, carrying the
+   * selector the fallback actually resolved and clicked — the same
+   * information `triedSelectors` gives a failed step's dump, without which
+   * a triager has no direct artifact for which element a heal targeted.
+   * Keeps this leaf module free of the recon CLI's on-disk `step-heals/`
+   * layout; the CLI passes its own `dumpStepHeal`. When omitted, no artifact
+   * is written.
+   */
+  onStepHeal?: (params: {
+    stepIndex: number;
+    technique: AttemptRecord["technique"];
+    resolvedSelector: string | null;
+    attempt: number;
+  }) => void;
 }): Promise<"completed" | "skipped"> {
   const {
     stagehand,
@@ -9261,6 +9277,7 @@ export async function executeStepWithHealing(params: {
     getSuppressedAisdkElementIdErrorCount,
     trajectory,
     onStepFailure,
+    onStepHeal,
   } = params;
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
@@ -12314,6 +12331,12 @@ export async function executeStepWithHealing(params: {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
+              onStepHeal?.({
+                stepIndex,
+                technique: record.technique,
+                resolvedSelector: resolvedAction?.selector ?? null,
+                attempt,
+              });
             } else {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
@@ -12337,6 +12360,12 @@ export async function executeStepWithHealing(params: {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} verifiedBy=${record.verifiedBy})`
         );
+        onStepHeal?.({
+          stepIndex,
+          technique: record.technique,
+          resolvedSelector: resolvedAction?.selector ?? null,
+          attempt,
+        });
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
         // successes were silent — only attempts 2+ emitted "healed on attempt
