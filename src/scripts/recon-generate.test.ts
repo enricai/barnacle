@@ -1293,6 +1293,16 @@ describe("extractActionSequence — a repeatedly-fired real search primary survi
     expect(keptUrls).toContain(`${BASE}/search`);
     expect(keptUrls).toContain(`${BASE}/items/item-0/detail`);
   });
+
+  it("keeps the repeated search POST and the fold-matched drill GET when host provenance gates the pool (structural-isolation pass)", () => {
+    const captures = [...Array.from({ length: 19 }, (_, i) => searchCapture(i)), drillCapture];
+
+    const kept = extractActionSequence(captures, null, foldReturnSpec, ["api.example.com"], null);
+    const keptUrls = kept.map((a) => a.capture.url);
+
+    expect(keptUrls).toContain(`${BASE}/search`);
+    expect(keptUrls).toContain(`${BASE}/items/item-0/detail`);
+  });
 });
 
 describe("resolveManifestActionSequence — authoritative submission selection", () => {

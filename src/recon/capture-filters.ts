@@ -969,6 +969,31 @@ function effectiveOperationName(occurrence: {
 }
 
 /**
+ * Structural shape of a JSON value with every leaf collapsed to its
+ * `typeof` and every array collapsed to the shape of its first element —
+ * i.e. equal for two responses that carry the same schema but different
+ * data (`{ destination: "region-3" }` vs `{ destination: "region-9" }`
+ * both become `{destination:string}`). This is what lets an Automatic-
+ * Persisted-Query re-issue (see {@link hasStableOperationIdentity}'s own
+ * doc) be recognized as belonging to a named operation's response family
+ * by shape alone, without relying on any value the request/response pair
+ * happens to carry.
+ */
+function responseShapeSignature(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (Array.isArray(value)) {
+    return `[${value.length > 0 ? responseShapeSignature(value[0]) : ""}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => `${key}:${responseShapeSignature((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return typeof value;
+}
+
+/**
  * True when `candidate`'s operationName is non-empty, recurs at least
  * twice among `sameEndpoint`, and its occurrence count is a plurality —
  * at least as large as every other distinct operationName group observed
@@ -983,22 +1008,59 @@ function effectiveOperationName(occurrence: {
  * for a real re-issued operation — is evidence of a real, repeatedly-
  * invoked API call rather than a noise widget that merely happens to
  * recur densely.
+ *
+ * A candidate whose OWN occurrence carries neither an `operationName` nor
+ * a `query` (an Automatic-Persisted-Query re-issue: the client sends only
+ * a persisted-query hash after the server has already cached the
+ * document, so this exact occurrence has no self-declared identity at
+ * all) cannot be grouped by {@link effectiveOperationName} — it falls out
+ * of every group's count and would otherwise fall through to the raw
+ * response-cardinality checks alongside every OTHER distinct operation
+ * multiplexed on the same endpoint, which reads as "freely varying" and
+ * misclassifies it as noise. Corroborating it against a same-endpoint
+ * IDENTIFIED group's response shape ({@link responseShapeSignature},
+ * structural — ignores the actual data values, which are expected to
+ * differ per-call) recovers it exactly the way a fixed query key
+ * corroborates a beacon's identity elsewhere in this file: the shape a
+ * named plurality group's responses share is itself evidence the
+ * candidate is a re-issue of that SAME operation, not a coincidental
+ * schema collision with a one-off. The matched group must still clear the
+ * same `>= 2` and plurality bar as the named-identity path — an
+ * unidentified candidate gets no less scrutiny than an identified one.
  */
 function hasStableOperationIdentity(
-  candidate: { operationName?: string | null; query?: string | null },
-  sameEndpoint: readonly { operationName?: string | null; query?: string | null }[]
+  candidate: { operationName?: string | null; query?: string | null; responseBody?: unknown },
+  sameEndpoint: readonly {
+    operationName?: string | null;
+    query?: string | null;
+    responseBody?: unknown;
+  }[]
 ): boolean {
-  const candidateIdentity = effectiveOperationName(candidate);
-  if (!candidateIdentity) return false;
   const groupCounts = new Map<string, number>();
+  const groupShapes = new Map<string, string>();
   for (const c of sameEndpoint) {
     const identity = effectiveOperationName(c);
     if (!identity) continue;
     groupCounts.set(identity, (groupCounts.get(identity) ?? 0) + 1);
+    if (!groupShapes.has(identity) && c.responseBody !== undefined) {
+      groupShapes.set(identity, responseShapeSignature(c.responseBody));
+    }
   }
-  const candidateCount = groupCounts.get(candidateIdentity) ?? 0;
-  if (candidateCount < 2) return false;
-  return [...groupCounts.values()].every((count) => candidateCount >= count);
+  const candidateIdentity = effectiveOperationName(candidate);
+  if (candidateIdentity) {
+    const candidateCount = groupCounts.get(candidateIdentity) ?? 0;
+    if (candidateCount < 2) return false;
+    return [...groupCounts.values()].every((count) => candidateCount >= count);
+  }
+  if (candidate.responseBody === undefined) return false;
+  const candidateShape = responseShapeSignature(candidate.responseBody);
+  const matchedIdentity = [...groupShapes.entries()].find(
+    ([, shape]) => shape === candidateShape
+  )?.[0];
+  if (!matchedIdentity) return false;
+  const matchedCount = groupCounts.get(matchedIdentity) ?? 0;
+  if (matchedCount < 2) return false;
+  return [...groupCounts.values()].every((count) => matchedCount >= count);
 }
 
 export function isZeroVarianceRepeatCapture(
