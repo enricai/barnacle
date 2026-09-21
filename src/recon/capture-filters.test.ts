@@ -1477,6 +1477,43 @@ describe("isZeroVarianceRepeatCapture", () => {
     expect(occurrences.length).toBe(11);
     expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
   });
+
+  it("does not flag a fixed-query-string GraphQL candidate whose operationName recurs at least twice even when a DIFFERENT operation multiplexed on the same endpoint recurs MORE often — not merely 'largest but not majority', not the largest at all", () => {
+    const buildOccurrence = (i: number, operationName: string) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql?v=1",
+      requestPostData: JSON.stringify({ operationName, variables: { i } }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+      operationName,
+    });
+    const first = buildOccurrence(0, "cruiseSearch_Cruises");
+    const occurrences = [
+      first,
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "cruiseSearch_Cruises")),
+      ...Array.from({ length: 40 }, (_, i) => buildOccurrence(i + 5, "typeahead")),
+    ];
+    expect(occurrences.length).toBe(45);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(false);
+  });
+
+  it("flags a fixed-query-string GraphQL candidate whose operationName occurs only once among many distinct one-off operationName groups sharing the endpoint", () => {
+    const buildOccurrence = (i: number, operationName: string) => ({
+      method: "POST",
+      url: "https://apply.acme.example/graphql?v=1",
+      requestPostData: JSON.stringify({ operationName, variables: { i } }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+      operationName,
+    });
+    const first = buildOccurrence(0, "getViewer");
+    const occurrences = [
+      first,
+      ...Array.from({ length: 10 }, (_, i) => buildOccurrence(i + 1, `op${i}`)),
+    ];
+    expect(occurrences.length).toBe(11);
+    expect(isZeroVarianceRepeatCapture(first, occurrences)).toBe(true);
+  });
 });
 
 describe("ERROR_SINK_PATH_SEGMENT", () => {
