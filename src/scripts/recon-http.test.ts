@@ -173,9 +173,9 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
   });
 
-  it("keeps a subdomain declared in ownBackendHostnames and a bare .json path", () => {
+  it("excludes a locale-dictionary-shaped path on a declared subdomain, but keeps a real reference-data path", () => {
     const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/dictionary.json" }),
+      replay({ url: "https://api.example.com/pulse/api/v1/locales/en/dictionary" }),
       replay({ url: "https://www.example.com/labels/en.json" }),
     ];
 
@@ -185,10 +185,17 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       null
     );
 
-    expect(candidates.map((c) => c.url).sort()).toEqual([
-      "https://api.example.com/dictionary.json",
-      "https://www.example.com/labels/en.json",
-    ]);
+    expect(candidates.map((c) => c.url)).toEqual(["https://www.example.com/labels/en.json"]);
+  });
+
+  it("excludes a feature-flag-resolver-shaped path even though it ends in .json", () => {
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/bin/services/core/flags/resolve.json" }),
+    ];
+
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+
+    expect(candidates).toEqual([]);
   });
 
   it("falls back to the registrable domain of fallbackHost when ownBackendHostnames is unset", () => {

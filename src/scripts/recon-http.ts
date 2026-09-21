@@ -247,15 +247,19 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
 
 /**
  * Builds the aux-fixture candidate set from replay results. A candidate must
- * be path-shaped like a static fixture (markets/currencies/labels/etc. or a
- * bare `.json`), must not be `isNoiseUrl` noise (defense-in-depth, mirroring
- * `selectRateLimitTargets` — this function must not trust that `replays` was
- * pre-filtered by the caller), and must resolve to one of the flow's
- * declared `ownBackendHostnames`. When the flow declares none, it falls back
- * to same-registrable-domain as `fallbackHost` (the run's own replayed
- * traffic) so an undeclared flow doesn't silently harvest nothing — but
- * still excludes every other third-party host that happens to serve
- * static-JSON-shaped paths (analytics/survey/pixel vendor config).
+ * be path-shaped like genuine static reference data (markets/currencies/
+ * labels/config), must not be `isNoiseUrl` noise (defense-in-depth,
+ * mirroring `selectRateLimitTargets` — this function must not trust that
+ * `replays` was pre-filtered by the caller), and must resolve to one of the
+ * flow's declared `ownBackendHostnames`. When the flow declares none, it
+ * falls back to same-registrable-domain as `fallbackHost` (the run's own
+ * replayed traffic) so an undeclared flow doesn't silently harvest nothing —
+ * but still excludes every other third-party host that happens to serve
+ * static-JSON-shaped paths (analytics/survey/pixel vendor config). A bare
+ * `.json` extension is deliberately NOT sufficient on its own: locale/i18n
+ * dictionary endpoints and feature-flag resolver endpoints are own-host and
+ * `.json`-shaped too, but they are per-request/per-session state, not static
+ * reference data, so they must not be harvested as fixtures.
  */
 export function selectAuxFixtureCandidates(
   replays: ReplayResult[],
@@ -274,9 +278,7 @@ export function selectAuxFixtureCandidates(
       return false;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isFixtureShaped =
-      pathname.endsWith(".json") ||
-      /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname);
+    const isFixtureShaped = /\/(markets|currencies|labels|config)(\/|\.json|$)/.test(pathname);
     if (!isFixtureShaped) return false;
     return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
   });
