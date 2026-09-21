@@ -231,7 +231,7 @@ describe("out-of-tree e2e — recon-generate output typechecks against the packa
     gql: true,
     gqlQuery: "query Search { results { id } }",
     endpointPath: "/graphql",
-    auxFiles: ["markets.json"],
+    auxFiles: [{ filename: "markets.json", url: "https://example.com/markets.json" }],
     hasMultipartStep: true,
     inputBody: { Name: "Alice" },
     payloadFieldNames: browserFlow.payloadFieldNames,

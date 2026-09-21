@@ -20,14 +20,7 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
@@ -10718,7 +10711,7 @@ export function emitContractTs(opts: {
    * sibling capture when the selected primary capture is a partial page.
    * Defaults to `[]` for call sites that don't have the raw run captures. */
   allCaptures?: readonly Capture[];
-  auxFiles: string[];
+  auxFiles: Array<{ filename: string; url: string }>;
   /** Multi-step submission flow body — when set, replaces the default single-endpoint hot path. */
   multiStepBody?: string;
   /** Browser-flow-only fallback: a multi-action flow whose captured sequence
@@ -11792,11 +11785,13 @@ ${dataFoldMergeBlock}    return { data };`;
 
   const fixtureComments =
     auxFiles.length > 0
-      ? `\n// Fixtures downloaded by recon — commit to src/sites/${siteId}/fixtures/ and uncomment:\n` +
+      ? `\n// Aux captures from the recon run (pull the file(s) from the archived run's\n` +
+        `// aux/ directory into src/sites/${siteId}/fixtures/ yourself, then uncomment):\n` +
         auxFiles
           .map(
             (f) =>
-              `// const ${sanitizeFixtureIdentifier(f)} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f)}, z.unknown());`
+              `// ${f.filename} <- ${f.url}\n` +
+              `// const ${sanitizeFixtureIdentifier(f.filename)} = loadFixture(${JSON.stringify(siteId)}, ${JSON.stringify(f.filename)}, z.unknown());`
           )
           .join("\n") +
         "\n"
@@ -12601,7 +12596,7 @@ interface TsGenerationResult {
   contractCode: string;
   contractOpts: Parameters<typeof emitContractTs>[0];
   browserFlow: ReturnType<typeof emitBrowserFlowTs>;
-  auxFiles: string[];
+  auxFiles: Array<{ filename: string; url: string }>;
   /** The resolved action-sequence pool that drove schema/response/fold
    * inference for this generation — the same pool a same-host, page-load-only
    * capture with no other step referencing or threading it can slip into. */
@@ -12892,9 +12887,10 @@ async function main(): Promise<void> {
       return JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf8")) as Array<{
         filename: string;
         hostname: string;
+        url: string;
       }>;
     } catch {
-      return [] as Array<{ filename: string; hostname: string }>;
+      return [] as Array<{ filename: string; hostname: string; url: string }>;
     }
   })();
 
@@ -13043,8 +13039,8 @@ async function main(): Promise<void> {
         }
         return allowed;
       })
-      .map((entry) => entry.filename)
-      .sort();
+      .map((entry) => ({ filename: entry.filename, url: entry.url }))
+      .sort((a, b) => a.filename.localeCompare(b.filename));
     // A file on disk with no manifest entry predates the write-time provenance
     // record (bugfix-002) or otherwise landed outside probeAuxiliaryEndpoints —
     // its source host is unverifiable, so it is excluded, not assumed safe.
@@ -13630,14 +13626,6 @@ async function main(): Promise<void> {
 
   writeFileSync(`${outDir}/index.ts`, emitIndexTs({ siteId, pascal }));
   logger.info(`wrote ${outDir}/index.ts`);
-
-  if (final.auxFiles.length > 0) {
-    mkdirSync(`${outDir}/fixtures`, { recursive: true });
-    for (const f of final.auxFiles) {
-      copyFileSync(join(auxDir, f), `${outDir}/fixtures/${f}`);
-    }
-    logger.info(`copied ${final.auxFiles.length} fixture(s) to ${outDir}/fixtures/`);
-  }
 
   logger.info(
     `done — review ${outDir}/, build the package, then point BARNACLE_PLUGINS at the compiled module (no core edits required): BARNACLE_PLUGINS=./dist/sites/${siteId}/index.js pnpm start`

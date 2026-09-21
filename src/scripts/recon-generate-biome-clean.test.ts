@@ -275,9 +275,15 @@ describe("emitContractTs — uncommented loadFixture lines parse (G2)", () => {
       endpointPath: "/api/search",
       hasMultipartStep: false,
       auxFiles: [
-        "10219132.json",
-        "vendorwidget.config-a.example-net.json",
-        "acme-domains-configuration.json",
+        { filename: "10219132.json", url: "https://example.com/10219132.json" },
+        {
+          filename: "vendorwidget.config-a.example-net.json",
+          url: "https://vendorwidget.config-a.example.net/data.json",
+        },
+        {
+          filename: "acme-domains-configuration.json",
+          url: "https://example.com/acme-domains-configuration.json",
+        },
       ],
     });
     const uncommented = source

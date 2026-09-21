@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,12 +7,15 @@ import { afterEach, describe, expect, it } from "vitest";
 
 /**
  * Regression test for the report's exact ask: a flow declaring
- * `ownBackendHostnames` must yield zero fixtures from hosts outside that
- * list, even when the run's `aux/` directory holds stale/unfiltered
- * entries — files with no `aux-manifest.json` entry at all, which is what
- * a pre-fix run dir looks like. Exercises the real `recon:generate` CLI
- * against a temp run dir rather than re-deriving the filtering logic
- * inline.
+ * `ownBackendHostnames` must yield zero fixture suggestions from hosts
+ * outside that list, even when the run's `aux/` directory holds
+ * stale/unfiltered entries — files with no `aux-manifest.json` entry at all,
+ * which is what a pre-fix run dir looks like. Exercises the real
+ * `recon:generate` CLI against a temp run dir rather than re-deriving the
+ * filtering logic inline. Generation never copies aux captures into
+ * fixtures/ (the maintainer pulls them from the archived run's aux/
+ * directory themselves), so this asserts the host filter through the
+ * emitted suggestion comment instead of the filesystem.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -51,7 +54,7 @@ afterEach(() => {
 });
 
 describe("recon-generate aux-fixture host allowlist CLI e2e", () => {
-  it("copies zero fixtures from hosts outside ownBackendHostnames, including stale unmanifested entries", () => {
+  it("suggests zero fixtures from hosts outside ownBackendHostnames, including stale unmanifested entries", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-aux-host-allowlist-"));
     const runRoot = join(workDir, "run");
     const capturesDir = join(runRoot, "graphql");
@@ -104,12 +107,14 @@ describe("recon-generate aux-fixture host allowlist CLI e2e", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
+    // Generation never copies aux captures into fixtures/ — it only suggests
+    // them via a commented-out loadFixture line in contract.ts.
     const fixturesDir = join(siteOutDir, "fixtures");
-    const fixtureFiles = existsSync(fixturesDir) ? readdirSync(fixturesDir) : [];
+    expect(existsSync(fixturesDir)).toBe(false);
 
-    expect(fixtureFiles).toContain("own-backend.json");
-    expect(fixtureFiles).not.toContain("other-vendor-manifested.json");
-    expect(fixtureFiles).not.toContain("other-vendor-stale.json");
-    expect(fixtureFiles.length).toBe(1);
+    const contractCode = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contractCode).toContain("own-backend.json");
+    expect(contractCode).not.toContain("other-vendor-manifested.json");
+    expect(contractCode).not.toContain("other-vendor-stale.json");
   }, 30_000);
 });

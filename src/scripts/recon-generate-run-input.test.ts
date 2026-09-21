@@ -1,13 +1,5 @@
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -117,25 +109,21 @@ describe("recon-generate reads a single run's directory, not a mixed one", () =>
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    const fixtureFiles = readdirSync(join(siteOutDir, "fixtures"));
-    const fixtureContents = fixtureFiles.map((f) =>
-      readFileSync(join(siteOutDir!, "fixtures", f), "utf8")
-    );
     const generatedFiles = [
       contract,
       readFileSync(join(siteOutDir, "flows", "browser-flow.ts"), "utf8"),
       readFileSync(join(siteOutDir, "index.ts"), "utf8"),
-      ...fixtureContents,
     ];
+
+    // Generation never copies aux captures into fixtures/ — only the commented-out
+    // loadFixture suggestion in contract.ts names the aux filename.
+    expect(existsSync(join(siteOutDir, "fixtures"))).toBe(false);
 
     // Run A's data made it into the generated output (a wrong/missing run dir would
     // silently pass an absence-only check, since readJsonDir swallows read errors into []).
     expect(contract).toContain("RUN_A_MARKER");
-    expect(fixtureFiles).toContain("RUN_A_MARKER.json");
-    expect(fixtureContents.some((c) => c.includes("RUN_A_MARKER"))).toBe(true);
 
     // Run B's sibling artifacts never leak into any loaded collection or generated file.
-    expect(fixtureFiles).not.toContain("RUN_B_MARKER.json");
     for (const content of generatedFiles) {
       expect(content).not.toContain("RUN_B_MARKER");
     }

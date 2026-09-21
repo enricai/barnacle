@@ -4268,7 +4268,11 @@ describe("extractActionSequence + compileActionSteps — repeated-section flow w
 describe("emitContractTs — sanitizeFixtureIdentifier keeps loadFixture comments valid JS (G2)", () => {
   const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-  function fixtureConstLines(auxFiles: string[]): string[] {
+  function fixtureConstLines(filenames: string[]): string[] {
+    const auxFiles = filenames.map((filename) => ({
+      filename,
+      url: `https://example.com/${filename}`,
+    }));
     const source = emitContractTs({ ...BASE_OPTS, hasMultipartStep: false, auxFiles });
     return source
       .split("\n")
