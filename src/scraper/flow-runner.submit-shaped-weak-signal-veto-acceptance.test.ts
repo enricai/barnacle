@@ -207,6 +207,147 @@ function buildFixture(params: {
   return { page, stagehand, steps, logger, info, warn };
 }
 
+/**
+ * Sibling regression, distinct mechanism from the n+16 suite above: pins
+ * that the stronger-signal requirement for a `submitStep: true` step
+ * (network call, URL change, or the Haiku `verifySubmitWithLLM` judge)
+ * applies unconditionally — not only when `requireSubmitEndpoint` happens
+ * to be true because a `submitEndpointPattern` was configured
+ * (flow-runner.ts's `requireSubmitEndpoint = (isFinalStep || submitStep) &&
+ * submitEndpointPattern !== null`). When no pattern is configured, the
+ * judge that (per its own docstring) enforces "network/URL/title
+ * post-submit signal, not formValueChanged alone" never runs at all, so a
+ * `submitStep` whose resolved action reports a state-class method (`fill`)
+ * with a formValueSignature delta — the exact `network=false url=false ...
+ * verified=true` shape from the report — rides the
+ * `verified = ... || (clickViewSwapVerified || formValueVerified)` union
+ * straight through uncontested.
+ *
+ * Both arms below share the identical fixture (same act()/evaluate
+ * responses); only `submitEndpointPattern` differs, isolating the judge
+ * gate itself as the variable under test rather than any other signal.
+ */
+describe("flow-runner submit-shaped step — weak-signal (formValueChanged-only) veto applies regardless of submitEndpointPattern configuration", () => {
+  const SUBMIT_ONLY_STEP = "Click the 'Submit Application' button";
+
+  interface JudgeGateSequenceState {
+    url: string;
+    bodyHtmlLength: number;
+    visibleText: string;
+    values: string;
+    invalidMarkerCount: number;
+  }
+
+  function makeJudgeGatePage(state: JudgeGateSequenceState): Page {
+    const session = { on: () => {}, off: () => {} };
+    return {
+      evaluate: async (expr: unknown) => {
+        const src = String(expr);
+        if (src.includes("outerHTML") && src.includes("innerText")) {
+          return {
+            html: state.bodyHtmlLength,
+            text: `${state.bodyHtmlLength}:${state.visibleText}`,
+            values: state.values,
+          };
+        }
+        if (src.includes("isInvalid(el)")) return state.invalidMarkerCount;
+        return null;
+      },
+      url: () => state.url,
+      title: async () => "Apply | Submit Application",
+      locator: () => ({
+        first: () => ({
+          isChecked: async () => false,
+          // Deliberately returns "" — never matching the fill's expected
+          // argument — so verifyDomEffect's own `hit` check is always
+          // false, keeping the fixture's only credit path formValueVerified.
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+  }
+
+  /**
+   * Fake `Stagehand`: `act()` resolves the flagged submit step as a
+   * successful `fill` (state-class method) that never touches network or
+   * URL but does grow the DOM and change the form-value/text signatures —
+   * modeling a form RESET rather than a genuine submit, structurally
+   * identical to a real submit from network/url alone.
+   */
+  function makeJudgeGateStagehand(state: JudgeGateSequenceState): Stagehand {
+    return {
+      act: vi.fn().mockImplementation(async () => {
+        state.bodyHtmlLength += 1250;
+        state.visibleText = "form cleared";
+        state.values = "reset";
+        return {
+          success: true,
+          message: "filled",
+          actionDescription: SUBMIT_ONLY_STEP,
+          actions: [
+            {
+              selector: "css=[data-automation-id=hiddenSubmitField]",
+              description: "Submit Application",
+              method: "fill",
+              arguments: ["x"],
+            },
+          ],
+        };
+      }),
+      observe: vi
+        .fn()
+        .mockImplementation(async (instruction?: unknown) =>
+          typeof instruction === "string"
+            ? []
+            : [{ selector: "xpath=//probe-presence", description: "probe-presence" }]
+        ),
+    } as unknown as Stagehand;
+  }
+
+  function buildJudgeGateSteps(): HealingFlowStep[] {
+    return [{ instruction: SUBMIT_ONLY_STEP, optional: false, upload: false, submitStep: true }];
+  }
+
+  it.each([
+    ["no submitEndpointPattern configured", undefined],
+    ["a submitEndpointPattern IS configured", "/api/apply/submit"],
+  ])(
+    "does NOT credit the submit step as verified from formValueChanged/textChanged/htmlDelta alone, network=false url=false, when %s",
+    async (_label, submitEndpointPattern) => {
+      const state: JudgeGateSequenceState = {
+        url: BASE_URL,
+        bodyHtmlLength: 40_000,
+        visibleText: "",
+        values: "initial",
+        invalidMarkerCount: 0,
+      };
+
+      const stagehand = makeJudgeGateStagehand(state);
+      const page = makeJudgeGatePage(state);
+      const { logger, info } = makeLogger();
+
+      await expect(
+        runHealingFlow({
+          stagehand,
+          page,
+          steps: buildJudgeGateSteps(),
+          logger,
+          anthropic: null,
+          rephraseModel: null,
+          uploadFixture: null,
+          submitEndpointPattern: submitEndpointPattern ?? null,
+        })
+      ).rejects.toBeTruthy();
+
+      expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+    }
+  );
+});
+
 describe("flow-runner n+16 fallback — submit-shaped weak-signal veto (offline fixture, live happy-dom, no network)", () => {
   it("does NOT credit an UNFLAGGED, non-final step whose resolved control is a genuine HTML submit affordance on formValueChanged/textChanged/htmlDelta alone", async () => {
     // A byte-positive form RESET: the click handler clears the form's own
