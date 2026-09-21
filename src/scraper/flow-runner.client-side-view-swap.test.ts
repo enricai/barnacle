@@ -332,4 +332,69 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     });
     expect(result).toBe(true);
   });
+
+  /**
+   * The reported false positive (recon-viewswap-false-pass-on-zero-signal-click.md):
+   * a click that leaves NO genuine forward-progress signal (network=false,
+   * url=false, no element-scoped dom credit) — a page reset reverting to an
+   * earlier screen — nets a large negative byte delta structurally identical
+   * to a legitimate same-page toggle, EXCEPT the reset also replaces the
+   * clicked control itself. Must NOT be credited once that absence is
+   * confirmed.
+   */
+  it("rejects a large DOM shrink when the clicked element itself is confirmed gone post-click (zero-signal reset)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -49518,
+      textChanged: false,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a small text-changing reveal when the clicked element itself is confirmed gone post-click", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 789,
+      textChanged: true,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  /**
+   * Still credits the symmetric shrink-toggle (PR #409) when the clicked
+   * control's continued presence is EXPLICITLY confirmed — the genuine local
+   * swap this gate exists to protect.
+   */
+  it("still credits a plain click with large DOM shrink when the clicked element's presence is explicitly confirmed", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -49518,
+      textChanged: false,
+      clickedElementStillPresent: true,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("still credits a plain click with large DOM shrink when clickedElementStillPresent is omitted (default callers)", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -49518,
+      textChanged: false,
+    });
+    expect(result).toBe(true);
+  });
 });

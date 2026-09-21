@@ -1789,6 +1789,21 @@ export function isDomOnlyAdvanceVerified(params: {
  * credit regardless of which growth branch would otherwise fire. Optional
  * and defaults to 0 (no veto) so existing callers that don't thread the
  * marker count are unaffected.
+ *
+ * **Zero-signal reset veto:** the magnitude-based byte-delta credit above
+ * (introduced to correctly score a same-page tab/panel toggle whose net
+ * delta is negative — see the shrink-toggle case this doc pins) is
+ * indistinguishable, from these four inputs alone, from a full client-side
+ * page RESET that reverts to an earlier screen (e.g. a signed-out landing
+ * page), which also nets a large negative byte delta with zero network/url
+ * and no text-signature match. A reset replaces the clicked control itself
+ * along with everything else, whereas a genuine same-page toggle leaves the
+ * clicked control in place. `clickedElementStillPresent` — whether the
+ * resolved click target can still be found in the post-click DOM, from a
+ * best-effort live probe — is `false` only on POSITIVE proof of absence;
+ * when the probe can't run (non-xpath selector, evaluate failure) it stays
+ * at its default `true` so it never manufactures a veto out of missing
+ * information. Only a confirmed `false` blocks the credit.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -1798,6 +1813,7 @@ export function isClickViewSwapVerified(params: {
   bytesDelta: number;
   textChanged: boolean;
   invalidMarkerDelta?: number;
+  clickedElementStillPresent?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1809,6 +1825,7 @@ export function isClickViewSwapVerified(params: {
     bytesDelta,
     textChanged,
     invalidMarkerDelta = 0,
+    clickedElementStillPresent = true,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   // Only the step's own explicit submitStep flag identifies the step that
@@ -1821,6 +1838,7 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
+  if (!clickedElementStillPresent) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
@@ -4053,6 +4071,32 @@ async function readElementSelectionFingerprint(
     return asSelectionFingerprint(await target.evaluate(elementSelectionFingerprintExpr(xpath)));
   } catch {
     return null;
+  }
+}
+
+/**
+ * Best-effort live probe for {@link isClickViewSwapVerified}'s
+ * `clickedElementStillPresent` veto input: does the resolved click target's
+ * own xpath still resolve to a node in the post-click DOM? A same-page
+ * toggle (a settings-page tab switcher swapping its panel content) leaves
+ * the clicked control itself in place; a full client-side reset that reverts
+ * to an earlier screen replaces it along with everything else. Returns
+ * `true` — never veto — whenever presence genuinely can't be determined (a
+ * non-xpath selector, an evaluate failure): only a positive `false` read
+ * back from the DOM counts as proof of absence.
+ */
+async function resolvedClickTargetStillPresent(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return true;
+  const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); return r.singleNodeValue !== null; })()`;
+  try {
+    const result = await target.evaluate(expr);
+    return result !== false;
+  } catch {
+    return true;
   }
 }
 
@@ -11315,6 +11359,16 @@ export async function executeStepWithHealing(params: {
     const postInvalidMarkerCount = isClick
       ? await countNgInvalidContainers(frameTarget ?? mainFrameTarget(page)).catch(() => 0)
       : preInvalidMarkerCount;
+    // Zero-signal reset veto input for the view-swap gate below. Read only
+    // for a resolved click with a usable selector — a page reset that reverts
+    // to an earlier screen (recon-viewswap-false-pass-on-zero-signal-click.md)
+    // replaces the clicked control along with everything else, while a
+    // genuine same-page toggle (a settings-page tab switcher) leaves it in
+    // place. See isClickViewSwapVerified's doc comment.
+    const clickedElementStillPresent =
+      isClick && resolvedAction?.selector
+        ? await resolvedClickTargetStillPresent(frameTarget ?? mainFrameTarget(page), resolvedAction.selector)
+        : true;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -11331,6 +11385,7 @@ export async function executeStepWithHealing(params: {
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
+      clickedElementStillPresent,
     });
     if (
       clickViewSwapVerified === false &&
