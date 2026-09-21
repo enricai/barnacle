@@ -1652,6 +1652,137 @@ describe("foldReturn-admitted read+drill classification — no mutation present 
   });
 });
 
+describe("extractGraphQLActionSequence — mutation-path narrowing ignores REST-verb-only mutation signal (#bugfix-001)", () => {
+  const BASE = "https://aidfinder.example.com";
+  const OWN_BACKEND = "aidfinder.example.com";
+
+  const gqlQueryCapture = (operationName: string) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"op":"${operationName}"}`,
+    responseHeaders: {},
+    responseBody: { data: { searchResults: { items: [{ id: "1" }] } } },
+    operationName,
+    query: `query ${operationName}($input: Input) {\n  ${operationName}(input: $input) { id }\n}`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  // A same-origin, non-flow REST capture (e.g. a telemetry/session-heartbeat
+  // ping) that isMutationCapture's REST-verb heuristic classifies as a
+  // mutation purely because it is a POST, not because it is a genuine write
+  // belonging to this flow.
+  const telemetryPostCapture = {
+    timestamp: "2024-01-01T00:00:01Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/api/session-heartbeat`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+
+  const foldReturnSpec = {
+    endpointPattern: "/graphql",
+    resultsPath: "data.searchResults.items",
+    joinFields: ["id"],
+  };
+
+  it("does not let a REST-verb-only telemetry POST narrow away the flow's own genuine query primary", () => {
+    const primaryQuery = gqlQueryCapture("SearchResults");
+    const captures = [primaryQuery, telemetryPostCapture];
+
+    const kept = extractGraphQLActionSequence(
+      captures,
+      null,
+      foldReturnSpec,
+      [OWN_BACKEND],
+      null
+    ).map((a) => a.capture.operationName ?? a.capture.url);
+
+    expect(kept).toContain("SearchResults");
+  });
+});
+
+describe("extractGraphQLActionSequence — real read primary survives mutationPaths built entirely from REST-verb-misclassified noise", () => {
+  const BASE = "https://catalog.example.com";
+  const OWN_BACKEND = "catalog.example.com";
+
+  const primaryCapture = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: '{"op":"SearchCatalog"}',
+    responseHeaders: {},
+    responseBody: { data: { searchResults: { items: [{ id: "1" }] } } },
+    operationName: "SearchCatalog",
+    query: "query SearchCatalog($filters: String) {\n  searchCatalog(filters: $filters) { id }\n}",
+    variables: null,
+    decodedParams: null,
+  };
+
+  // Same-origin, query-less POST captures with paths sharing no structural
+  // token with the primary's own path. isMutationCapture's REST-verb
+  // heuristic classifies each of these as a mutation purely because it is a
+  // POST — none is a genuine GraphQL-document mutation belonging to this
+  // flow, so none should be able to anchor mutation-path narrowing.
+  const noisePaths = [
+    "/telemetry-beacon/abc123",
+    "/api/events",
+    "/api/session-heartbeat",
+    "/metrics-ingest/xyz789",
+    "/log-sink/qrs456",
+  ];
+  const noiseCaptures = noisePaths.map((path, i) => ({
+    timestamp: `2024-01-01T00:00:0${i + 1}Z`,
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}${path}`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: "{}",
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  }));
+
+  const foldReturnSpec = {
+    endpointPattern: "/graphql",
+    resultsPath: "data.searchResults.items",
+    joinFields: ["id"],
+  };
+
+  it("keeps the real GraphQL read primary when host provenance is engaged and every mutation-shaped capture is REST-verb-only noise", () => {
+    const captures = [primaryCapture, ...noiseCaptures];
+
+    const kept = extractGraphQLActionSequence(
+      captures,
+      null,
+      foldReturnSpec,
+      [OWN_BACKEND],
+      null
+    ).map((a) => a.capture.operationName ?? a.capture.url);
+
+    expect(kept).toContain("SearchCatalog");
+  });
+});
+
 describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks response size (#bugfix-003)", () => {
   const BASE = "https://catalog.example.com";
   const QUERY = `query SearchProducts($filters: String) {

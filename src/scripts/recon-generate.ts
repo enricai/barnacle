@@ -2011,6 +2011,16 @@ function isMutationCapture(capture: Capture): boolean {
   return MUTATING_HTTP_METHODS.has(capture.method.toUpperCase());
 }
 
+/** A genuine GraphQL-document mutation: `capture.query` is present and its
+ * document is `mutation`-prefixed. Unlike {@link isMutationCapture}, this
+ * never treats a REST verb as a mutation signal — a same-origin
+ * analytics/telemetry POST classified as a mutation by HTTP verb alone must
+ * not anchor a flow's mutation-path narrowing, only its own genuine writes
+ * should. */
+function isGraphQLMutationCapture(capture: Capture): boolean {
+  return capture.query !== null && /^\s*mutation\b/.test(capture.query);
+}
+
 export function extractGraphQLActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
@@ -2027,7 +2037,7 @@ export function extractGraphQLActionSequence(
   // only applies once the caller has actually resolved a notion of "own
   // backend" to check against.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const isMutation = isMutationCapture;
+  const isMutation = isGraphQLMutationCapture;
 
   const admitted = captures
     .map((capture, index) => ({ capture, index }))
@@ -2446,8 +2456,7 @@ export function isRedundantSameEndpointGroup(
     // feature-flag/heartbeat check fired via POST), the same zero-variance
     // signal {@link isZeroVarianceRepeatCapture} already uses for noise
     // exclusion, generalized here for the collapse decision.
-    const isGraphQLMutation = (capture: Capture): boolean =>
-      capture.query !== null && /^\s*mutation\b/.test(capture.query);
+    const isGraphQLMutation = isGraphQLMutationCapture;
     const responsesByteIdentical = group.every(
       (a) =>
         JSON.stringify(a.capture.responseBody) === JSON.stringify(group[0]!.capture.responseBody)
