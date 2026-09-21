@@ -888,6 +888,15 @@ const MAX_STEP_ATTEMPTS = 5;
 /** Per-attempt linear backoff base; sleep = attempt * BACKOFF_MS. */
 const ATTEMPT_BACKOFF_MS = 1_000;
 /**
+ * Timeout for the n+16 fallback's trusted-click delivery attempt
+ * (`.locator().first().click()`). Short on purpose: this is a best-effort
+ * upgrade over the synthetic evaluate() dispatch, tried once per fallback
+ * before falling back to that dispatch — it must not eat into the step's
+ * overall watchdog budget waiting for an element that never becomes
+ * actionable.
+ */
+const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
+/**
  * Per-step watchdog passed as Stagehand's native `timeout` on every
  * `act()`/`observe()`. Stagehand's `ensureTimeRemaining()` checks the
  * deadline between work units and throws `ActTimeoutError` cleanly on
@@ -10239,6 +10248,58 @@ export async function executeStepWithHealing(params: {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`);
     return { resolvedAction: null };
   };
+  // Delivers a trusted (`isTrusted=true`) click at `selector` — the SAME
+  // primitive pairing `trusted-click-retry` above uses (top-window
+  // `.locator().first().click()`, or OOPIF `clickDeepLocatorCandidate` with
+  // `preferTrustedClick: true`) — reused here for the n+16 fallback so the
+  // click_filter overlay defect (a real control that only honours a genuine
+  // user gesture) resolves through the same mechanism proven to work
+  // end-to-end, rather than a second synthetic-dispatch heuristic. Resolves
+  // `true` on a delivered click, `false` on ANY failure (selector unusable,
+  // no candidate resolves, the click throws) so the caller can fall back to
+  // the existing evaluate()-based activation unconditionally — this keeps
+  // every fake `page`/`frameTarget` that only stubs `.evaluate()` resolving
+  // exactly as before.
+  const attemptN16TrustedClick = async (selector: string): Promise<boolean> => {
+    try {
+      if (!frameTarget?.frame) {
+        const topWindowTarget = frameTarget ?? mainFrameTarget(page);
+        await withWatchdog(() => topWindowTarget.locator(selector).first().click(), {
+          timeoutMs: N16_TRUSTED_CLICK_TIMEOUT_MS,
+          label: "n+16 fallback: trusted click delivery",
+        });
+        return true;
+      }
+      await reresolveFrameTargetIfLost();
+      const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
+        page,
+        frameTarget.frameSelector,
+        step,
+        { frameTarget }
+      );
+      for (const candidate of candidates) {
+        try {
+          await clickDeepLocatorCandidate(
+            page,
+            frameTarget.frameSelector,
+            innerSelector,
+            candidate.index,
+            {
+              frameTarget,
+              preferTrustedClick: true,
+            }
+          );
+          return true;
+        } catch {
+          // Try the next ranked candidate — same "keep walking" contract
+          // `runDeepLocatorClickWalk`'s cascade uses.
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
   let phantomClickAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
@@ -11788,7 +11849,34 @@ export async function executeStepWithHealing(params: {
           // even though the leaf element is still live; re-anchor on the
           // leaf's own last two steps before giving up.
           const xpathTail = xpathTailForRetarget(xpath);
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          // Trusted-click delivery for the plain-click branch: attempted
+          // BEFORE the resolve/activate expression below (so a successful
+          // delivery can suppress the synthetic `clickActivationExpr`
+          // dispatch further down and become the thing that decides
+          // success — the reused `trusted-click-retry` primitive pairing,
+          // see `attemptN16TrustedClick`'s docblock). Never attempted for a
+          // checkbox/radio-intent step: that branch forces `.checked` and
+          // dispatches its OWN click+change pair unconditionally below
+          // (state-forcing, not delivery — out of this fix's scope), and a
+          // genuine trusted click landing first would double-fire the site's
+          // handler. `isCheckboxOrRadioIntentStep` is the same instruction-
+          // text heuristic `weakDomSignalsAllowed` already gates on just
+          // below, not a fresh DOM probe — resolving the element AGAIN
+          // read-only before every plain click would double every existing
+          // fixture's evaluate() call count for no added evidence (the
+          // resolved element's checkbox-ness is exactly what this heuristic
+          // already predicts from the instruction that drove Stagehand to
+          // this xpath in the first place).
+          const n16TrustedClickEligible = !isCheckboxOrRadioIntentStep(step);
+          const n16TrustedDelivered = n16TrustedClickEligible
+            ? await attemptN16TrustedClick(resolvedAction.selector)
+            : false;
+          const n16DeliveryBranch = n16TrustedDelivered
+            ? "trusted"
+            : n16TrustedClickEligible
+              ? "synthetic-fallback"
+              : "synthetic-not-eligible";
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -12139,7 +12227,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified} delivery=${n16DeliveryBranch}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
