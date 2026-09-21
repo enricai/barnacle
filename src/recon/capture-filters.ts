@@ -1017,11 +1017,11 @@ function responseShapeSignature(value: unknown): string {
  * structural — ignores the actual data values, which are expected to
  * differ per-call) recovers it exactly the way a fixed query key
  * corroborates a beacon's identity elsewhere in this file: the shape a
- * named plurality group's responses share is itself evidence the
- * candidate is a re-issue of that SAME operation, not a coincidental
- * schema collision with a one-off. The matched group must still clear the
- * same `>= 2` and plurality bar as the named-identity path — an
- * unidentified candidate gets no less scrutiny than an identified one.
+ * named group's responses share is itself evidence the candidate is a
+ * re-issue of that SAME operation, not a coincidental schema collision
+ * with a one-off. The matched group must still clear the same `>= 2`
+ * recurrence bar as the named-identity path — an unidentified candidate
+ * gets no less scrutiny than an identified one.
  */
 function hasStableOperationIdentity(
   candidate: { operationName?: string | null; query?: string | null; responseBody?: unknown },
