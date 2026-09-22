@@ -1506,6 +1506,58 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     ]);
   });
 
+  it("with two fields sharing one value: flags the reset field stale but keeps trusting the still-filled one", () => {
+    const raw = [
+      mk("Fill in the Password field with 'Secr3t!'"),
+      mk("Fill in the Confirm Password field with 'Secr3t!'"),
+      mk("Click NEXT"),
+    ];
+    const completed = [
+      "Fill in the Password field with 'Secr3t!'",
+      "Fill in the Confirm Password field with 'Secr3t!'",
+    ];
+    // Only Password's own element was reset; Confirm Password still holds the value.
+    const bodyHtmlAtFailure =
+      "<body>" +
+      "<label for='pw'>Password</label><input id='pw' value=''>" +
+      "<label for='pw2'>Confirm Password</label><input id='pw2' value='Secr3t!'>" +
+      "</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Password field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
+
+  it("with two fields sharing one value: drops both completed fills when both still hold their values", () => {
+    const raw = [
+      mk("Fill in the Password field with 'Secr3t!'"),
+      mk("Fill in the Confirm Password field with 'Secr3t!'"),
+      mk("Click NEXT"),
+    ];
+    const completed = [
+      "Fill in the Password field with 'Secr3t!'",
+      "Fill in the Confirm Password field with 'Secr3t!'",
+    ];
+    const bodyHtmlAtFailure =
+      "<body>" +
+      "<label for='pw'>Password</label><input id='pw' value='Secr3t!'>" +
+      "<label for='pw2'>Confirm Password</label><input id='pw2' value='Secr3t!'>" +
+      "</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual(["Click NEXT"]);
+  });
+
   it("drops a re-proposed fill whose targeted element holds a DIFFERENT non-empty value (not just empty)", () => {
     const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
     const completed = ["Fill in the Email field with 'x@y.z'"];
