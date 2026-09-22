@@ -142,6 +142,7 @@ import {
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
+  isSubmitShapedInstructionText,
   isUploadAffordanceLabel,
   isWizardExitAction,
   type LeafInvalidField,
@@ -1918,6 +1919,33 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
         ["Click 'Create Account'"]
       )
     ).toBe(false);
+  });
+});
+
+describe("recon-browser/isSubmitShapedInstructionText", () => {
+  it("returns true for submit/finalize-shaped instructions", () => {
+    expect(isSubmitShapedInstructionText("Click the Place Order button")).toBe(true);
+    expect(isSubmitShapedInstructionText("Click Save and Continue")).toBe(true);
+    expect(isSubmitShapedInstructionText("Click Submit")).toBe(true);
+    expect(isSubmitShapedInstructionText("Complete the purchase")).toBe(true);
+    expect(isSubmitShapedInstructionText("Finalize the order")).toBe(true);
+    expect(isSubmitShapedInstructionText("Proceed to checkout")).toBe(true);
+  });
+
+  it("returns false for plain field-fill/click instructions", () => {
+    expect(isSubmitShapedInstructionText("Fill in the Company Name field with Acme Inc")).toBe(
+      false
+    );
+    expect(isSubmitShapedInstructionText("Click Next")).toBe(false);
+    expect(isSubmitShapedInstructionText("Select the shipping method")).toBe(false);
+  });
+
+  it("matches case-insensitively and across whitespace variation", () => {
+    expect(isSubmitShapedInstructionText("  SUBMIT   the  application  ")).toBe(true);
+  });
+
+  it("does not false-positive on unrelated words containing the same substring", () => {
+    expect(isSubmitShapedInstructionText("Commit the change to the draft")).toBe(false);
   });
 });
 

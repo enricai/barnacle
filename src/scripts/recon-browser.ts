@@ -1368,6 +1368,32 @@ export function isReplanRegressingAcrossAuthBoundary(
   });
 }
 
+/** Word-boundary phrase patterns identifying submit/finalize wording in a step's own instruction text. */
+const SUBMIT_SHAPED_INSTRUCTION_PATTERNS = [
+  /\bsubmit\b/,
+  /\bplace\s+(the\s+)?order\b/,
+  /\bcomplete\s+(the\s+)?(order|purchase|application|checkout)\b/,
+  /\bfinish\s+(and\s+)?(order|purchase|application|checkout)\b/,
+  /\bconfirm\s+(and\s+)?(order|purchase|application)\b/,
+  /\bsave\s+and\s+continue\b/,
+  /\bfinalize\b/,
+  /\bcheckout\b/,
+];
+
+/**
+ * Decide whether a step's own instruction text is submit/finalize-shaped,
+ * so callers can ask the step itself instead of trusting a flag carried
+ * forward from elsewhere in the flow (e.g. a stale `submitStep`/`isFinalStep`
+ * combination that no longer matches what this particular step does).
+ * Matches on word boundaries against normalized (lowercased, whitespace-
+ * collapsed) text, mirroring {@link SIGN_IN_PATTERNS}/{@link ACCOUNT_CREATION_PATTERNS},
+ * so a phrase like "commit the change" does not false-positive on "submit". Pure.
+ */
+export function isSubmitShapedInstructionText(instruction: string): boolean {
+  const norm = normalizeInstruction(instruction);
+  return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
+}
+
 /** Top-level keys `persistReplannedFlow` already threads explicitly (plus `steps`). */
 const MANAGED_FLOW_FILE_KEYS = new Set([
   "steps",
