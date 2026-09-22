@@ -99,6 +99,7 @@ import {
   latestCaptureIndex,
   logBillingErrorIfPresent,
   parseFillStep,
+  parseFillValueIntent,
   probeLeafInvalidContainers,
   renderLeafInvalidFields,
   renderUnfocusedObserve,
@@ -985,13 +986,30 @@ export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedSt
  * plan and wastes wall-clock + replan budget re-doing done work. Drop any bridge
  * step whose instruction matches a completed step, EXCEPT a re-emission of the
  * failed step itself (a legitimate no-op bridge the replan prompt allows).
+ *
+ * An intervening navigation/panel-toggle can silently reset an earlier fill
+ * without producing a failure of its own, so "already completed" does not
+ * guarantee "still true" for fills. When `bodyHtmlAtFailure` is provided, a
+ * completed step that parses as a fill (via `parseFillStep`, falling back to
+ * `parseFillValueIntent` for the field-label phrasing drift `parseFillStep`
+ * is strict about) is excluded from the trusted set unless its expected
+ * value is still present in that DOM — so a reset fill is never treated as
+ * still-completed and a replan's fresh re-fill for that field survives the
+ * filter.
  */
 export function filterCompletedFromReplan(
   newSteps: readonly NormalizedStep[],
   completedSteps: readonly string[],
-  failedStep: string
+  failedStep: string,
+  bodyHtmlAtFailure?: string | null
 ): NormalizedStep[] {
-  const completed = new Set(completedSteps);
+  const isStaleFill = (step: string): boolean => {
+    if (!bodyHtmlAtFailure) return false;
+    const value = parseFillStep(step)?.value ?? parseFillValueIntent(step)?.value;
+    if (!value) return false;
+    return !bodyHtmlAtFailure.includes(value);
+  };
+  const completed = new Set(completedSteps.filter((s) => !isStaleFill(s)));
   return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));
 }
 
@@ -2995,7 +3013,24 @@ async function main(): Promise<void> {
           // Resume-from-failure: drop any replan bridge step that re-runs an
           // already-completed step (see filterCompletedFromReplan). Keeps the
           // failed step's re-emission. originalRemaining is re-appended below.
-          const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, step.instruction);
+          // The untruncated failure-time DOM re-verifies completed fills so a
+          // silently-reset field isn't trusted as still-completed.
+          const bodyHtmlAtFailure = (() => {
+            try {
+              const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
+                bodyOuterHtml?: string | null;
+              };
+              return dump.bodyOuterHtml ?? null;
+            } catch {
+              return null;
+            }
+          })();
+          const newSteps = filterCompletedFromReplan(
+            rawNewSteps,
+            completedSteps,
+            step.instruction,
+            bodyHtmlAtFailure
+          );
           const droppedCompleted = rawNewSteps.length - newSteps.length;
           if (droppedCompleted > 0) {
             logger.info(

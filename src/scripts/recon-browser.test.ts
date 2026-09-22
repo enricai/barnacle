@@ -1454,6 +1454,48 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     const out = filterCompletedFromReplan(raw, [], "Step failed");
     expect(out).toEqual(raw);
   });
+
+  it("preserves a re-proposed fill whose completed value is absent from the failure-time DOM", () => {
+    const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
+    const completed = ["Fill in the Email field with 'x@y.z'"];
+    const bodyHtmlAtFailure = "<body><input name='email' value=''></body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Email field with 'x@y.z'",
+      "Click NEXT",
+    ]);
+  });
+
+  it("still drops a re-proposed fill whose completed value IS present in the failure-time DOM", () => {
+    const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
+    const completed = ["Fill in the Email field with 'x@y.z'"];
+    const bodyHtmlAtFailure = "<body><input name='email' value='x@y.z'></body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual(["Click NEXT"]);
+  });
+
+  it("never affects a still-completed non-fill step even when bodyHtmlAtFailure is provided", () => {
+    const raw = [mk("Click the NEXT button to proceed"), mk("Click DONE")];
+    const completed = ["Click the NEXT button to proceed"];
+    const bodyHtmlAtFailure = "<body>irrelevant</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual(["Click DONE"]);
+  });
 });
 
 describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
