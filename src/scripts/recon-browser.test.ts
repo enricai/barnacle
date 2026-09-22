@@ -2156,7 +2156,10 @@ describe("recon-browser/extractSubmitJudgeRequiredFields", () => {
     const reasons = [
       "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method fields) with an 'Errors Found' section visible; no submission occurred—the form is incomplete and requires corrections before it can be submitted.",
     ];
-    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Shipping Address", "Payment Method"]);
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+    ]);
   });
 
   it("extracts a single field name from the parenthetical", () => {
