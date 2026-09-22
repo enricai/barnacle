@@ -11560,7 +11560,23 @@ export async function executeStepWithHealing(params: {
     // effect" even though the value genuinely landed. Scoped to state-class
     // actions (fill/check/etc.), same as domVerified, so it never lets an
     // advance/submit step ride a stray value mutation elsewhere on the page.
-    const formValueVerified = isStateClass && post.formValueSignature !== pre.formValueSignature;
+    // Same submit-shape veto the n+16 fallback's weakDomSignalsAllowed and
+    // isClickViewSwapVerified already apply: a bare formValueSignature delta
+    // (e.g. a form RESET clearing every field) is structurally identical to
+    // a real submit's value commit, so a submit-shaped step (explicit
+    // submitStep, inferred final-step, or an attribute-detected submit
+    // control) may not ride this signal alone — only when the submit-judge
+    // gate (requireSubmitEndpoint) will re-litigate the credit below.
+    const formValueWeakSignalAllowed =
+      !(
+        submitStep ||
+        (isFinalStep && flowHasSubmitSemanticsFlag) ||
+        resolvedElementIsSubmitShaped
+      ) || requireSubmitEndpoint;
+    const formValueVerified =
+      isStateClass &&
+      formValueWeakSignalAllowed &&
+      post.formValueSignature !== pre.formValueSignature;
     // Committed-value guard on the act-success path. A controlled datepicker
     // (react-datepicker) accepts the typed value, discards it on React's next
     // render, and — since the act resolved as a `click` that opened the calendar
