@@ -10491,6 +10491,14 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
         );
         trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        if (attempt > 1) {
+          onStepHeal?.({
+            stepIndex,
+            technique: record.technique,
+            resolvedSelector: fieldLabelOutcome.matched.selector,
+            attempt,
+          });
+        }
         return "completed";
       }
       if (fieldLabelOutcome.kind === "actuation-failed") {
