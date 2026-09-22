@@ -5,7 +5,12 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { emitContractTs, emitMultiStepExecuteHttp } from "@/scripts/recon-generate";
+import {
+  emitContractTs,
+  emitMultiStepExecuteHttp,
+  type FoldReturnSpec,
+} from "@/scripts/recon-generate";
+import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
 /** Resolve the Biome binary from the repo's own `node_modules/.bin` rather than
@@ -156,6 +161,94 @@ function bugBDeadBindingSteps(): unknown[] {
   ];
 }
 
+const BUG_C_BASE = "https://api.example.com";
+
+const BUG_C_FOLD_RETURN_SPEC: FoldReturnSpec = {
+  endpointPattern: "/orders/hold",
+  resultsPath: "results",
+  joinFields: ["sku"],
+  drillParamBindings: {},
+};
+
+/**
+ * Bug C: `emitContractTs`'s own fold-merge chain loop (unlike
+ * `emitMultiStepExecuteHttp`'s sibling loop, Bug B's regression) drives a
+ * multi-hop `target.chain` — a `hold` call (chain[0], non-terminal) whose
+ * `holdToken` is threaded into a later `detail` call (chain[1], the real
+ * `chainTerminalIndex`) that carries the actual per-item fold data. Pre-fix
+ * every chain hop was unconditionally bound (`const rN = await
+ * httpClient(...)`), so the `hold` hop's binding was dead: nothing in the
+ * emitted fold loop ever reads it, which Biome's `noUnusedVariables` flags.
+ */
+function bugCFoldChainNonTerminalHopSteps(): {
+  actionSteps: unknown[];
+  foldReturnSpec: FoldReturnSpec;
+  primaryResponseBody: unknown;
+} {
+  const search = {
+    capture: buildCapture({
+      url: `${BUG_C_BASE}/catalog/search/`,
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "item-a" }, { sku: "item-b" }] },
+      timestamp: "2026-01-01T00:00:01Z",
+    }),
+    varName: "r1",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  const hold = {
+    capture: buildCapture({
+      url: `${BUG_C_BASE}/orders/hold/`,
+      requestPostData: '{"sku":"item-a"}',
+      responseBody: { holdToken: "hold-token-item-a-abcdefgh" },
+      timestamp: "2026-01-01T00:00:02Z",
+    }),
+    varName: "r2",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  const detail = {
+    capture: buildCapture({
+      url: `${BUG_C_BASE}/orders/detail/`,
+      requestPostData: '{"holdToken":"hold-token-item-a-abcdefgh"}',
+      responseBody: { sku: "item-a", price: 42, holdToken: "hold-token-item-a-abcdefgh" },
+      timestamp: "2026-01-01T00:00:03Z",
+    }),
+    varName: "r3",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  return {
+    actionSteps: [search, hold, detail],
+    foldReturnSpec: BUG_C_FOLD_RETURN_SPEC,
+    primaryResponseBody: search.capture.responseBody,
+  };
+}
+
+function emitBugCContract(): string {
+  const { actionSteps, foldReturnSpec, primaryResponseBody } = bugCFoldChainNonTerminalHopSteps();
+  return emitContractTs({
+    siteId: "bug-c-test-site",
+    pascal: "BugCTestSite",
+    baseUrl: BUG_C_BASE,
+    baseHeaders: {},
+    minTime: 100,
+    safeRps: 10,
+    responseBody: primaryResponseBody,
+    gql: false,
+    gqlQuery: null,
+    endpointPath: "/catalog/search",
+    gqlOperationName: null,
+    gqlVariables: null,
+    auxFiles: [],
+    actionSteps: actionSteps as Parameters<typeof emitContractTs>[0]["actionSteps"],
+    foldReturnSpec,
+  });
+}
+
 /** Deterministic, offline structural guard for the two shipped regressions. */
 function assertPatternsClean(body: string): void {
   expect(body, "emitted a non-null assertion on a bracket accessor").not.toMatch(/\]!/);
@@ -243,9 +336,57 @@ describe("emitMultiStepExecuteHttp — emitted code is Biome-clean", () => {
           })
         ).not.toThrow();
       }
+
+      // Bug C: emitContractTs's own fold-merge chain loop, not
+      // emitMultiStepExecuteHttp's — a distinct emitter with its own
+      // dead-binding risk (see the describe block below). Extended into
+      // this same real-Biome-lint sweep rather than a separate binary
+      // invocation.
+      const bugCBody = extractExecuteHttpBody(emitBugCContract());
+      const bugCPreamble = [
+        "async function executeHttp(",
+        "  payload: Record<string, unknown>,",
+        "  context: { baseUrl: string },",
+        "): Promise<{ data: unknown }> {",
+        "  const httpClient = (_url: string, _init: unknown): Promise<unknown> => Promise.resolve({});",
+        "  const z = { object: (_: unknown) => ({}), string: () => ({}), boolean: () => ({}), number: () => ({}), array: (_: unknown) => ({}) };",
+        "  void z;",
+      ].join("\n");
+      const bugCFile = join(dir, "bugC.ts");
+      writeFileSync(bugCFile, `${bugCPreamble}\n${bugCBody}\n}\nvoid executeHttp;\n`);
+      expect(() =>
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, bugCFile], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+      ).not.toThrow();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("emitContractTs — fold-merge chain loop emitted code is Biome-clean", () => {
+  it("never binds the non-terminal chain hop's response to a variable (Bug C)", () => {
+    const contract = emitBugCContract();
+    const body = extractExecuteHttpBody(contract);
+
+    // The hold hop's call must still fire (it's a genuine prerequisite for
+    // the detail call) but must never be bound to a local — no `const rN =`
+    // immediately precedes its URL.
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold\/`/);
+    expect(body).not.toMatch(
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold\/`/
+    );
+
+    // The real terminal (detail) IS bound, since its response is what gets
+    // folded onto the primary item.
+    expect(body).toMatch(
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/detail\/`/
+    );
+
+    assertPatternsClean(body);
   });
 });
 

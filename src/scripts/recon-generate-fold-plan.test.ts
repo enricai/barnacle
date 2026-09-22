@@ -3,6 +3,7 @@ import {
   collectRequestValuesIncludingHeaders,
   collectResponseLeafValues,
   detectDrillDownFoldPlan,
+  emitMultiStepExecuteHttp,
   type FoldPlan,
   type FoldReturnSpec,
   findAllObjectArrayFields,
@@ -1178,6 +1179,127 @@ describe("resolveFoldPlan — spec target shares a drillStepIndex with a shallow
   });
 });
 
+describe("resolveFoldPlan — drill endpoint captured twice at the same primary array level", () => {
+  it("overrides joinFields to the spec's declared value even when the spec and the structural heuristic resolve onto different occurrences of the same re-issued drill endpoint", () => {
+    const steps: MulticallFixtureStep[] = [
+      buildStep("r0", {
+        url: "https://api.example.com/catalog/variants",
+        requestPostData: JSON.stringify({ page: 1 }),
+        responseBody: {
+          variants: [
+            // Only this item carries the optional nested field — a value
+            // that happens to thread into the FIRST availability call below,
+            // which is why the structural heuristic locks onto it. Every
+            // item (including this one) also carries `productId`, the
+            // schema-required field the flow actually declares as its
+            // foldReturn joinFields.
+            { productId: "p1", meta: { sku: "sig1" } },
+            // The real fixture row the flow's own drill-down actually
+            // matches: no nested `meta.sku` field at all, only `productId`.
+            { productId: "p2" },
+          ],
+        },
+        timestamp: "2025-04-01T00:00:00Z",
+      }),
+      // First occurrence of the re-issued `availability` endpoint — threads
+      // only item0's nested `meta.sku` value, never `productId`.
+      buildStep("r1", {
+        url: "https://api.example.com/catalog/availability?sku=sig1",
+        requestPostData: null,
+        responseBody: { sku: "sig1", available: true },
+        timestamp: "2025-04-01T00:00:01Z",
+      }),
+      // Second, later occurrence of the SAME endpoint (per facet/page) —
+      // threads item1's `productId` instead, never `meta.sku`.
+      buildStep("r2", {
+        url: "https://api.example.com/catalog/availability?productId=p2",
+        requestPostData: null,
+        responseBody: { productId: "p2", available: false },
+        timestamp: "2025-04-01T00:00:02Z",
+      }),
+    ];
+
+    // The structural heuristic collapses the re-issued endpoint to a single
+    // target anchored on the FIRST occurrence it walks (r1), whose only
+    // threaded field is the nested, largely-absent `meta.sku`.
+    const structuralPlans = detectDrillDownFoldPlan(steps);
+    expect(structuralPlans).toHaveLength(1);
+    expect(structuralPlans[0]?.targets[0]?.drillStepIndex).toBe(1);
+    expect(structuralPlans[0]?.targets[0]?.joinFields).toEqual(["meta.sku"]);
+
+    const spec: FoldReturnSpec = {
+      endpointPattern: "catalog/availability",
+      resultsPath: "variants",
+      joinFields: ["productId"],
+    };
+
+    // buildFoldPlanFromSpec scans matching drill occurrences freshest-first,
+    // so it resolves onto the LATER occurrence (r2) instead — a DIFFERENT
+    // raw drillStepIndex than the structural heuristic's own target, even
+    // though both concern the exact same re-issued endpoint.
+    const resolved = resolveFoldPlan(steps, spec);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets).toHaveLength(1);
+    // The spec's declared joinFields must win — keyed onto the structural
+    // target by drill ENDPOINT IDENTITY, not raw drillStepIndex equality —
+    // instead of silently keeping the heuristic's own `meta.sku`, a field
+    // absent from the real fixture row (item1/p2) the flow's drill-down
+    // actually matches.
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+  });
+});
+
+describe("resolveFoldPlan — heuristic-only (no foldReturnSpec) no-regression guard", () => {
+  it("leaves the structural heuristic's own joinFields and emitted join-condition untouched when no spec is provided", () => {
+    const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+
+    // Pre-fix heuristic behavior: with no foldReturnSpec, resolveFoldPlan
+    // must fall through to the structural heuristic unchanged and resolve
+    // onto the real, present `productId` join key.
+    const resolved = resolveFoldPlan(steps as unknown as Parameters<typeof resolveFoldPlan>[0]);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets).toHaveLength(1);
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+
+    const inputBody = JSON.parse(steps[0]!.capture.requestPostData ?? "null") as unknown;
+    const body = emitMultiStepExecuteHttp(
+      steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      undefined
+    );
+
+    const findLineMatch = body.match(
+      /const foldMatch\d* = foldMatches\d*\.length.*\.find\(\(m\) => [^;]+;/
+    );
+    expect(findLineMatch).not.toBeNull();
+    const findLine = findLineMatch![0];
+
+    // The emitted join-condition text is byte-identical to the pre-fix
+    // heuristic-only output: keyed on `productId`, the structurally-derived
+    // field, with no spec-driven override involved at all.
+    expect(findLine).toContain('m["productId"]');
+  });
+});
+
 describe("resolveFoldPlan — multiple independent primaries", () => {
   it("returns a resolved fold plan for EVERY independent primary/drill-down pair when neither is disqualified", () => {
     const steps: MulticallFixtureStep[] = [
@@ -1580,18 +1702,21 @@ describe("resolveFoldPlan — large capture set performance regression", () => {
     const plan = resolveFoldPlan(steps, spec);
     const elapsedMs = Date.now() - started;
 
-    // The structural detector now collapses every drill of this SAME
-    // endpoint (each threaded from a different widget) into ONE target
-    // (see FoldPlan.absorbedIndices) instead of one target per raw capture
-    // — mergeSpecPlanOntoSamePrimary additionally keeps the declared spec's
-    // own freshest-occurrence target (drillStepIndex itemCount), so this
-    // resolves to 2 targets total, not one per item, with every other
-    // occurrence recorded as absorbed.
+    // The structural detector collapses every drill of this SAME endpoint
+    // (each threaded from a different widget) into ONE target (see
+    // FoldPlan.absorbedIndices) instead of one target per raw capture.
+    // mergeSpecPlanOntoSamePrimary matches the declared spec's own
+    // freshest-occurrence resolution onto that SAME target by drill
+    // endpoint identity (not raw drillStepIndex equality) and overrides its
+    // joinFields in place, rather than appending a second, redundant target
+    // for the same endpoint — so this still resolves to exactly one target,
+    // with every other occurrence (including the spec's own freshest one)
+    // recorded as absorbed.
     expect(plan).toHaveLength(1);
     expect(plan[0]?.primaryStepIndex).toBe(0);
-    expect(plan[0]?.targets).toHaveLength(2);
+    expect(plan[0]?.targets).toHaveLength(1);
     expect(plan[0]?.targets[0]?.drillStepIndex).toBe(1);
-    expect(plan[0]?.targets[1]?.drillStepIndex).toBe(itemCount);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["widgetId"]);
     expect(plan[0]?.absorbedIndices).toHaveLength(itemCount - 1);
     expect(elapsedMs).toBeLessThan(5000);
   });

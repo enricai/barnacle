@@ -159,14 +159,22 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain("const r4 = (await httpClient(");
-    expect(body).toContain("const r5 = (await httpClient(");
+    // r5's own response ({ held: true }) is never read downstream — it is
+    // called only for its side effect of threading r4's unitId — so it must
+    // not be bound to an unused local.
+    expect(body).toContain("await httpClient(");
+    expect(body).not.toContain("const r5 = (await httpClient(");
     expect(body).toContain('const unitId = (r4 as { units: { "0": { unitId: string } } })');
     expect(body).toContain("const foldMatches = (r4 as");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
     );
     // r5 must not be re-issued a second time outside the fold loop.
-    expect(body.match(/const r5 = \(await httpClient\(/g)).toHaveLength(1);
+    expect(
+      body.match(
+        /httpClient\(`\$\{payload\.BaseUrl\}\/listings-avail-api\/units\/\$\{unitId\}\/hold`/g
+      )
+    ).toHaveLength(1);
   });
 
   it("folds a flat-object chain terminal two hops downstream, past an intermediate token-only step", () => {
@@ -200,7 +208,10 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     const body = emit(steps);
 
     expect(body).toContain("(foldItems).map(async (item) => {");
-    expect(body).toContain("const r1 = (await httpClient(");
+    // r1's own response ({ priceToken }) is never read downstream — only
+    // r2, the chain terminal, is — so r1 must not be bound to an unused
+    // local.
+    expect(body).not.toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatch = r2 as Record<string, unknown>;");
     expect(body).toContain(

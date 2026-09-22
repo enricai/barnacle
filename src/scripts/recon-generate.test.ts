@@ -3620,15 +3620,18 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
     );
 
     expect(body).toContain("(foldItems).map(async (item) => {");
-    expect(body).toContain("const r1 = (await httpClient(");
+    // r1's own response (`prices[]`) is never read back — only its
+    // `priceToken` threads into r2's request — so the fold loop must not
+    // bind it to a local.
+    expect(body).toContain("await httpClient(");
+    expect(body).not.toContain("const r1 = (await httpClient(");
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatches = (r2 as");
     expect(body).toContain(
       "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
     );
-    // r1/r2 are only ever issued inside the fold loop — never a second time
+    // r2 is only ever issued inside the fold loop — never a second time
     // outside it.
-    expect(body.match(/const r1 = \(await httpClient\(/g)).toHaveLength(1);
     expect(body.match(/const r2 = \(await httpClient\(/g)).toHaveLength(1);
   });
 });

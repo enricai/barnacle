@@ -6970,15 +6970,32 @@ export function emitMultiStepExecuteHttp(
           ) {
             referencesItemVar = true;
           }
+          // Only bind this hop's response to a local when something actually
+          // reads it back: the chain terminal (consumed by
+          // emitFoldMatchAndMergeLines via `terminalStep.varName` below) or a
+          // non-header `produces` entry some later step's request threads
+          // (header threading goes through httpClient's own `bind` store, not
+          // a local — see the header branch below). A hop chained purely to
+          // unlock a later request (e.g. it sets server-side state via a
+          // header token) has no reader for its own response and must stay
+          // unbound, or the emitted loop declares a variable nothing
+          // references (Biome noUnusedVariables).
+          const isChainTerminal = chainIndex === target.chainTerminalIndex;
+          const hasReferencedProduce = chainStep.produces.some(
+            (p) => p.kind !== "header" && referencedNames.has(p.name)
+          );
+          const bindsChainResponse = isChainTerminal || hasReferencedProduce;
           chainLines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`,
+            bindsChainResponse
+              ? `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`
+              : `      await httpClient(\`${paramUrl}\`, {`,
             `        method: ${JSON.stringify(chainRendered.method)},`
           );
           const joined = [paramHeaders, paramBody].filter((s) => s !== "").join(" ");
           if (joined !== "") chainLines.push(`        ${joined}`);
+          chainLines.push(`        schema: ${chainRendered.schemaExpr},`);
           chainLines.push(
-            `        schema: ${chainRendered.schemaExpr},`,
-            `      })) as Record<string, unknown>;`
+            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
           for (const p of chainStep.produces) {
             if (p.kind === "header") {
@@ -9822,27 +9839,44 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
   );
   if (samePrimaryPlan !== undefined) {
-    // A drillStepIndex the structural heuristic ALSO resolved keeps its
-    // structurally-resolved chain/drillArrayPath (already proven to reach
-    // real per-item data), but its `joinFields` is overridden to the spec's
-    // declared value — the heuristic's own joinFields only prove a field
-    // threads INTO the drill's REQUEST, which says nothing about whether
-    // that same field can be found on the drill's RESPONSE to match it back
-    // onto a primary item (see emitFoldMatchAndMergeLines). A flow author
-    // declaring `joinFields` on a foldReturn is asserting exactly that: this
-    // is the field their drill-down's RESPONSE actually carries.
-    const specTargetsByDrillStepIndex = new Map(
-      specPlan.targets.map((target) => [target.drillStepIndex, target])
+    // A structural target serving the SAME drill-down the spec declares
+    // keeps its structurally-resolved chain/drillArrayPath (already proven
+    // to reach real per-item data), but its `joinFields` is overridden to
+    // the spec's declared value — the heuristic's own joinFields only prove
+    // a field threads INTO the drill's REQUEST, which says nothing about
+    // whether that same field can be found on the drill's RESPONSE to match
+    // it back onto a primary item (see emitFoldMatchAndMergeLines). A flow
+    // author declaring `joinFields` on a foldReturn is asserting exactly
+    // that: this is the field their drill-down's RESPONSE actually carries.
+    // Matched by the drill's ENDPOINT IDENTITY (the same identity
+    // scanPrimaryCandidateGroups' own `alreadyTargetedSameEndpoint` check
+    // uses), not raw drillStepIndex equality: the spec's own entryIndex
+    // resolution (resolveSpecMatchedPrimaryItemIndexAlongChain) and the
+    // heuristic's own request-threading scan can each land on a different,
+    // but equally valid, occurrence of the SAME re-issued/paginated drill
+    // endpoint — raw-index equality only happened to override when both
+    // resolutions picked the identical occurrence, silently leaving every
+    // other occurrence's joinFields un-overridden.
+    const specTargetsByDrillEndpointKey = new Map(
+      specPlan.targets.map((target) => [
+        endpointKey(actions[target.drillStepIndex]!.capture.url),
+        target,
+      ])
     );
     return structuralPlans.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
       const mergedTargets = plan.targets.map((target) => {
-        const specTarget = specTargetsByDrillStepIndex.get(target.drillStepIndex);
+        const specTarget = specTargetsByDrillEndpointKey.get(
+          endpointKey(actions[target.drillStepIndex]!.capture.url)
+        );
         return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
       });
-      const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+      const existingDrillEndpointKeys = new Set(
+        plan.targets.map((target) => endpointKey(actions[target.drillStepIndex]!.capture.url))
+      );
       const newTargets = specPlan.targets.filter(
-        (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+        (target) =>
+          !existingDrillEndpointKeys.has(endpointKey(actions[target.drillStepIndex]!.capture.url))
       );
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
@@ -11703,11 +11737,24 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               chainStep.capture.responseBody,
             ]),
           });
+          // This emitter never renders a per-hop `produces` accessor (unlike
+          // emitMultiStepExecuteHttp's identical chain loop) — only the
+          // chain terminal's response is ever read, via
+          // `terminalStep.varName` inside emitFoldMatchAndMergeLines below.
+          // A non-terminal hop chained purely to unlock a later request
+          // (e.g. it sets server-side state via a threaded header) has no
+          // reader for its own response, so binding it to a local declares a
+          // variable nothing references (Biome noUnusedVariables).
+          const bindsChainResponse = chainIndex === target.chainTerminalIndex;
           chainLines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`,
+            bindsChainResponse
+              ? `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`
+              : `      await httpClient(\`${url}\`, {`,
             `        method: ${JSON.stringify(chainStep.capture.method)},`,
-            `        schema: ${schemaExpr},`,
-            `      })) as Record<string, unknown>;`
+            `        schema: ${schemaExpr},`
+          );
+          chainLines.push(
+            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
