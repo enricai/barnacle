@@ -110,7 +110,18 @@ function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }
 
   return files.map((filename) => {
     const raw = readFileSync(join(dir, filename), "utf8");
-    return { filename, capture: JSON.parse(raw) as Capture };
+    const capture = JSON.parse(raw) as Capture;
+    // Legacy archives can persist `query`/`operationName` as non-strings; coerce
+    // at this read boundary so a stray object doesn't get replayed as a GraphQL
+    // query body (see recon-shared.ts readCaptureDir for the same guard).
+    return {
+      filename,
+      capture: {
+        ...capture,
+        query: typeof capture.query === "string" ? capture.query : null,
+        operationName: typeof capture.operationName === "string" ? capture.operationName : null,
+      },
+    };
   });
 }
 

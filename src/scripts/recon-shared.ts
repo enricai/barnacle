@@ -210,6 +210,20 @@ export function readJsonDir<T>(dir: string, exclude: string[] = []): T[] {
 }
 
 /**
+ * Reads a directory of capture JSON files and coerces `query`/`operationName`
+ * to `null` whenever the on-disk value isn't a string, so archives written by
+ * a prior version (or hand-edited) can't hand a non-string into code that
+ * assumes the declared `Capture` shape.
+ */
+export function readCaptureDir(dir: string, exclude: string[] = []): Capture[] {
+  return readJsonDir<Capture>(dir, exclude).map((capture) => ({
+    ...capture,
+    query: typeof capture.query === "string" ? capture.query : null,
+    operationName: typeof capture.operationName === "string" ? capture.operationName : null,
+  }));
+}
+
+/**
  * Reads just `successUrlFragments` out of a recon flow file.
  *
  * Why a separate reader rather than reusing recon-browser's `parseReconFlow`:

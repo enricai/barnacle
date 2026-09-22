@@ -293,8 +293,8 @@ export function wireSignalCapture(
           ? (decodedParams as Record<string, unknown>)
           : null;
       if (parsed) {
-        operationName = (parsed.operationName as string) ?? null;
-        query = (parsed.query as string) ?? null;
+        operationName = typeof parsed.operationName === "string" ? parsed.operationName : null;
+        query = typeof parsed.query === "string" ? parsed.query : null;
         variables = parsed.variables ?? null;
       }
     }

@@ -53,6 +53,7 @@ import {
   type Capture,
   type RateLimitFinding,
   type ReplayResult,
+  readCaptureDir,
   readJsonDir,
   readOwnBackendHostnames,
   resolveLatestReconRunRoot,
@@ -12849,7 +12850,7 @@ async function main(): Promise<void> {
   const replaysDir = join(runRoot, "replays");
   const auxDir = join(runRoot, "aux");
 
-  const captures = readJsonDir<Capture>(capturesDir);
+  const captures = readCaptureDir(capturesDir);
   // No captures means recon-browser walked no flow (or ran with --allow-empty-flow):
   // every downstream derivation (baseUrl, actionSteps, isSubmissionFlow) reads
   // `captures`, so an empty graphql/ silently yields a skeleton plugin whose
