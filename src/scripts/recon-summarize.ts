@@ -25,6 +25,7 @@ import {
   type Capture,
   type RateLimitFinding,
   type ReplayResult,
+  readCaptureDir,
   readJsonDir,
   resolveLatestReconRunRoot,
   tallyResponseHeaders,
@@ -108,7 +109,7 @@ async function main(): Promise<void> {
   const replaysDir = join(runRoot, "replays");
   const auxDir = join(runRoot, "aux");
 
-  const captures = readJsonDir<Capture>(capturesDir);
+  const captures = readCaptureDir(capturesDir);
   const replays = readJsonDir<ReplayResult>(replaysDir, [
     "rate-limit.json",
     "introspection-schema.json",
