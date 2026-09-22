@@ -94,7 +94,7 @@ import {
   buildRankSubmitCandidatesExpr,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
-import { withWatchdog } from "@/scraper/watchdog";
+import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
@@ -10317,20 +10317,39 @@ export async function executeStepWithHealing(params: {
   // click_filter overlay defect (a real control that only honours a genuine
   // user gesture) resolves through the same mechanism proven to work
   // end-to-end, rather than a second synthetic-dispatch heuristic. Resolves
-  // `true` on a delivered click, `false` on ANY failure (selector unusable,
-  // no candidate resolves, the click throws) so the caller can fall back to
-  // the existing evaluate()-based activation unconditionally — this keeps
-  // every fake `page`/`frameTarget` that only stubs `.evaluate()` resolving
-  // exactly as before.
-  const attemptN16TrustedClick = async (selector: string): Promise<boolean> => {
+  // `{ delivered: true }` on a delivered click, `{ delivered: false, reason,
+  // message }` on ANY failure (selector unusable, no candidate resolves, the
+  // click throws) so the caller can fall back to the existing
+  // evaluate()-based activation unconditionally — this keeps every fake
+  // `page`/`frameTarget` that only stubs `.evaluate()` resolving exactly as
+  // before. `reason` distinguishes `timeout` (WatchdogTimeoutError),
+  // `no-candidate` (widening resolved zero candidates), `not-actionable`
+  // (every candidate's click rejected — the last candidate's message is
+  // kept) and `threw` (anything else, e.g. frame resolution failing).
+  const attemptN16TrustedClick = async (
+    selector: string
+  ): Promise<
+    | { delivered: true }
+    | {
+        delivered: false;
+        reason: "timeout" | "no-candidate" | "not-actionable" | "threw";
+        message: string;
+      }
+  > => {
     try {
       if (!frameTarget?.frame) {
         const topWindowTarget = frameTarget ?? mainFrameTarget(page);
-        await withWatchdog(() => topWindowTarget.locator(selector).first().click(), {
-          timeoutMs: N16_TRUSTED_CLICK_TIMEOUT_MS,
-          label: "n+16 fallback: trusted click delivery",
-        });
-        return true;
+        try {
+          await withWatchdog(() => topWindowTarget.locator(selector).first().click(), {
+            timeoutMs: N16_TRUSTED_CLICK_TIMEOUT_MS,
+            label: "n+16 fallback: trusted click delivery",
+          });
+          return { delivered: true };
+        } catch (err) {
+          return err instanceof WatchdogTimeoutError
+            ? { delivered: false, reason: "timeout", message: toErrorMessage(err) }
+            : { delivered: false, reason: "threw", message: toErrorMessage(err) };
+        }
       }
       await reresolveFrameTargetIfLost();
       const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
@@ -10339,6 +10358,10 @@ export async function executeStepWithHealing(params: {
         step,
         { frameTarget }
       );
+      if (candidates.length === 0) {
+        return { delivered: false, reason: "no-candidate", message: "no candidates resolved" };
+      }
+      let lastCandidateError = "";
       for (const candidate of candidates) {
         try {
           await clickDeepLocatorCandidate(
@@ -10351,15 +10374,16 @@ export async function executeStepWithHealing(params: {
               preferTrustedClick: true,
             }
           );
-          return true;
-        } catch {
+          return { delivered: true };
+        } catch (err) {
           // Try the next ranked candidate — same "keep walking" contract
           // `runDeepLocatorClickWalk`'s cascade uses.
+          lastCandidateError = toErrorMessage(err);
         }
       }
-      return false;
-    } catch {
-      return false;
+      return { delivered: false, reason: "not-actionable", message: lastCandidateError };
+    } catch (err) {
+      return { delivered: false, reason: "threw", message: toErrorMessage(err) };
     }
   };
   let phantomClickAfterAttempt1 = false;
@@ -11975,14 +11999,19 @@ export async function executeStepWithHealing(params: {
           // already predicts from the instruction that drove Stagehand to
           // this xpath in the first place).
           const n16TrustedClickEligible = !isCheckboxOrRadioIntentStep(step);
-          const n16TrustedDelivered = n16TrustedClickEligible
+          const n16TrustedClickResult = n16TrustedClickEligible
             ? await attemptN16TrustedClick(resolvedAction.selector)
-            : false;
+            : { delivered: false as const };
+          const n16TrustedDelivered = n16TrustedClickResult.delivered;
           const n16DeliveryBranch = n16TrustedDelivered
             ? "trusted"
             : n16TrustedClickEligible
               ? "synthetic-fallback"
               : "synthetic-not-eligible";
+          const n16TrustedClickFailure =
+            !n16TrustedDelivered && "reason" in n16TrustedClickResult
+              ? n16TrustedClickResult
+              : null;
           const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
@@ -12342,8 +12371,11 @@ export async function executeStepWithHealing(params: {
               failureReasons.push(`n+16 fallback: submit-judge-rejected: ${judgeVerdict.reason}`);
             }
           }
+          const n16TrustedClickFailureSuffix = n16TrustedClickFailure
+            ? ` trustedClickError=${n16TrustedClickFailure.message} trustedClickReason=${n16TrustedClickFailure.reason}`
+            : "";
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified} delivery=${n16DeliveryBranch}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified} delivery=${n16DeliveryBranch}${n16TrustedClickFailureSuffix}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
