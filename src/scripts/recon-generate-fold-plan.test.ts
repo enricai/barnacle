@@ -3,6 +3,7 @@ import {
   collectRequestValuesIncludingHeaders,
   collectResponseLeafValues,
   detectDrillDownFoldPlan,
+  emitMultiStepExecuteHttp,
   type FoldPlan,
   type FoldReturnSpec,
   findAllObjectArrayFields,
@@ -1246,6 +1247,56 @@ describe("resolveFoldPlan — drill endpoint captured twice at the same primary 
     // absent from the real fixture row (item1/p2) the flow's drill-down
     // actually matches.
     expect(resolved[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+  });
+});
+
+describe("resolveFoldPlan — heuristic-only (no foldReturnSpec) no-regression guard", () => {
+  it("leaves the structural heuristic's own joinFields and emitted join-condition untouched when no spec is provided", () => {
+    const steps = buildMulticallHeterogeneousActionStepsWithDrillDown();
+
+    // Pre-fix heuristic behavior: with no foldReturnSpec, resolveFoldPlan
+    // must fall through to the structural heuristic unchanged and resolve
+    // onto the real, present `productId` join key.
+    const resolved = resolveFoldPlan(steps as unknown as Parameters<typeof resolveFoldPlan>[0]);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.targets).toHaveLength(1);
+    expect(resolved[0]?.targets[0]?.joinFields).toEqual(["productId"]);
+
+    const inputBody = JSON.parse(steps[0]!.capture.requestPostData ?? "null") as unknown;
+    const body = emitMultiStepExecuteHttp(
+      steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
+      inputBody,
+      { stringMessageKey: null, nestedErrorPaths: [] },
+      new Map(),
+      new Set(),
+      new Map(),
+      new Set(),
+      new Map(),
+      new Map(),
+      "https://api.example.com",
+      new Map(),
+      new Map(),
+      null,
+      new Map(),
+      new Map(),
+      new Set(),
+      [],
+      new Map(),
+      new Map(),
+      undefined
+    );
+
+    const findLineMatch = body.match(
+      /const foldMatch\d* = foldMatches\d*\.length.*\.find\(\(m\) => [^;]+;/
+    );
+    expect(findLineMatch).not.toBeNull();
+    const findLine = findLineMatch![0];
+
+    // The emitted join-condition text is byte-identical to the pre-fix
+    // heuristic-only output: keyed on `productId`, the structurally-derived
+    // field, with no spec-driven override involved at all.
+    expect(findLine).toContain('m["productId"]');
   });
 });
 
