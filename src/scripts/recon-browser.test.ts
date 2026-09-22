@@ -2180,6 +2180,17 @@ describe("recon-browser/extractSubmitJudgeRequiredFields", () => {
     ]);
   });
 
+  it("splits on 'and' with an Oxford comma", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method, and Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+      "Discount Code",
+    ]);
+  });
+
   it("returns [] for reasons with no submit-judge-rejected parenthetical", () => {
     const reasons = [
       "structured-click: no checkable input reachable from prior selector",

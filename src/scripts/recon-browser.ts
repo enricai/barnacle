@@ -1129,7 +1129,7 @@ export function extractSubmitJudgeRequiredFields(reasons: readonly string[]): st
     if (!match?.[1]) return [];
     return match[1]
       .split(/\s*,\s*|\s+and\s+/)
-      .map((field) => field.trim())
+      .map((field) => field.replace(/^and\s+/, "").trim())
       .filter((field) => field.length > 0);
   });
 }
