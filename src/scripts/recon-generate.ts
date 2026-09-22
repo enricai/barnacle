@@ -9822,27 +9822,44 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
   );
   if (samePrimaryPlan !== undefined) {
-    // A drillStepIndex the structural heuristic ALSO resolved keeps its
-    // structurally-resolved chain/drillArrayPath (already proven to reach
-    // real per-item data), but its `joinFields` is overridden to the spec's
-    // declared value — the heuristic's own joinFields only prove a field
-    // threads INTO the drill's REQUEST, which says nothing about whether
-    // that same field can be found on the drill's RESPONSE to match it back
-    // onto a primary item (see emitFoldMatchAndMergeLines). A flow author
-    // declaring `joinFields` on a foldReturn is asserting exactly that: this
-    // is the field their drill-down's RESPONSE actually carries.
-    const specTargetsByDrillStepIndex = new Map(
-      specPlan.targets.map((target) => [target.drillStepIndex, target])
+    // A structural target serving the SAME drill-down the spec declares
+    // keeps its structurally-resolved chain/drillArrayPath (already proven
+    // to reach real per-item data), but its `joinFields` is overridden to
+    // the spec's declared value — the heuristic's own joinFields only prove
+    // a field threads INTO the drill's REQUEST, which says nothing about
+    // whether that same field can be found on the drill's RESPONSE to match
+    // it back onto a primary item (see emitFoldMatchAndMergeLines). A flow
+    // author declaring `joinFields` on a foldReturn is asserting exactly
+    // that: this is the field their drill-down's RESPONSE actually carries.
+    // Matched by the drill's ENDPOINT IDENTITY (the same identity
+    // scanPrimaryCandidateGroups' own `alreadyTargetedSameEndpoint` check
+    // uses), not raw drillStepIndex equality: the spec's own entryIndex
+    // resolution (resolveSpecMatchedPrimaryItemIndexAlongChain) and the
+    // heuristic's own request-threading scan can each land on a different,
+    // but equally valid, occurrence of the SAME re-issued/paginated drill
+    // endpoint — raw-index equality only happened to override when both
+    // resolutions picked the identical occurrence, silently leaving every
+    // other occurrence's joinFields un-overridden.
+    const specTargetsByDrillEndpointKey = new Map(
+      specPlan.targets.map((target) => [
+        endpointKey(actions[target.drillStepIndex]!.capture.url),
+        target,
+      ])
     );
     return structuralPlans.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
       const mergedTargets = plan.targets.map((target) => {
-        const specTarget = specTargetsByDrillStepIndex.get(target.drillStepIndex);
+        const specTarget = specTargetsByDrillEndpointKey.get(
+          endpointKey(actions[target.drillStepIndex]!.capture.url)
+        );
         return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
       });
-      const existingDrillStepIndexes = new Set(plan.targets.map((target) => target.drillStepIndex));
+      const existingDrillEndpointKeys = new Set(
+        plan.targets.map((target) => endpointKey(actions[target.drillStepIndex]!.capture.url))
+      );
       const newTargets = specPlan.targets.filter(
-        (target) => !existingDrillStepIndexes.has(target.drillStepIndex)
+        (target) =>
+          !existingDrillEndpointKeys.has(endpointKey(actions[target.drillStepIndex]!.capture.url))
       );
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
