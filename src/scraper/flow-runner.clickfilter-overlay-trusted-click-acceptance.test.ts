@@ -209,5 +209,6 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
 
     const n16ProbeLines = SILENT_LOGGER_CALLS.info.filter((line) => line.includes("n+16 probe"));
     expect(n16ProbeLines.some((line) => line.includes("delivery=trusted"))).toBe(true);
+    expect(n16ProbeLines.some((line) => line.includes("trustedClickError="))).toBe(false);
   });
 });
