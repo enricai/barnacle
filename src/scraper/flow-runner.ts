@@ -888,6 +888,15 @@ const MAX_STEP_ATTEMPTS = 5;
 /** Per-attempt linear backoff base; sleep = attempt * BACKOFF_MS. */
 const ATTEMPT_BACKOFF_MS = 1_000;
 /**
+ * Timeout for the n+16 fallback's trusted-click delivery attempt
+ * (`.locator().first().click()`). Short on purpose: this is a best-effort
+ * upgrade over the synthetic evaluate() dispatch, tried once per fallback
+ * before falling back to that dispatch — it must not eat into the step's
+ * overall watchdog budget waiting for an element that never becomes
+ * actionable.
+ */
+const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
+/**
  * Per-step watchdog passed as Stagehand's native `timeout` on every
  * `act()`/`observe()`. Stagehand's `ensureTimeRemaining()` checks the
  * deadline between work units and throws `ActTimeoutError` cleanly on
@@ -1814,6 +1823,7 @@ export function isClickViewSwapVerified(params: {
   textChanged: boolean;
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
+  resolvedElementIsSubmitShaped?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1826,6 +1836,7 @@ export function isClickViewSwapVerified(params: {
     textChanged,
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
+    resolvedElementIsSubmitShaped = false,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   // Only the step's own explicit submitStep flag identifies the step that
@@ -1834,7 +1845,14 @@ export function isClickViewSwapVerified(params: {
   // submit-shape from isFinalStep && flowHasSubmitSemantics falsely vetoes
   // an inferred final same-page toggle step that was never going to receive
   // a real network/URL transition, leaving it structurally unverifiable.
-  if (submitStep) return false;
+  // `resolvedElementIsSubmitShaped` closes the same gap from the OTHER
+  // direction: a step the flow never flagged `submitStep` can still resolve
+  // onto an objectively submit-shaped control (an HTML `type="submit"`
+  // affordance, or an unmarked `<button>` owned by a `<form>`, whose default
+  // type IS submit) — that control needs the same real-transition proof
+  // regardless of flow authoring, so a byte-positive form reset can't be
+  // mistaken for a byte-positive real submit.
+  if (submitStep || resolvedElementIsSubmitShaped) return false;
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
@@ -4097,6 +4115,42 @@ async function resolvedClickTargetStillPresent(
     return result !== false;
   } catch {
     return true;
+  }
+}
+
+/**
+ * Site-agnostic, attribute-based submit-shape signal read directly from the
+ * resolved click target — the counterpart to the flow-authored `submitStep`
+ * flag. A step the flow never flagged can still resolve onto an objectively
+ * submit-shaped control: `<input type="submit">` / `<input type="image">`, or
+ * a `<button>` with no `type` (or `type="submit"`) owned by a `<form>` — per
+ * the HTML spec a button's default type IS submit, so an unmarked in-form
+ * button commits the form exactly like an explicit `type="submit"` one.
+ * Deliberately NOT a CTA-wording word list (fragile, and site-specific) — only
+ * the element's own tag/type/form-ownership, which is the same shape on any
+ * site. Returns `false` — never manufactures a submit-shape veto — on a
+ * non-xpath selector, a miss, or an evaluate failure.
+ */
+async function resolvedClickTargetIsSubmitShaped(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = r.singleNodeValue;
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toUpperCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
+    if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
+    return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
   }
 }
 
@@ -9170,6 +9224,22 @@ export async function executeStepWithHealing(params: {
     bodyOuterHtml: string | null;
     unfocusedObserve: Action[];
   }) => string | null;
+  /**
+   * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
+   * Invoked whenever a step only verifies on attempt > 1, carrying the
+   * selector the fallback actually resolved and clicked — the same
+   * information `triedSelectors` gives a failed step's dump, without which
+   * a triager has no direct artifact for which element a heal targeted.
+   * Keeps this leaf module free of the recon CLI's on-disk `step-heals/`
+   * layout; the CLI passes its own `dumpStepHeal`. When omitted, no artifact
+   * is written.
+   */
+  onStepHeal?: (params: {
+    stepIndex: number;
+    technique: AttemptRecord["technique"];
+    resolvedSelector: string | null;
+    attempt: number;
+  }) => void;
 }): Promise<"completed" | "skipped"> {
   const {
     stagehand,
@@ -9207,6 +9277,7 @@ export async function executeStepWithHealing(params: {
     getSuppressedAisdkElementIdErrorCount,
     trajectory,
     onStepFailure,
+    onStepHeal,
   } = params;
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
@@ -10239,6 +10310,58 @@ export async function executeStepWithHealing(params: {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${failureMessage}`);
     return { resolvedAction: null };
   };
+  // Delivers a trusted (`isTrusted=true`) click at `selector` — the SAME
+  // primitive pairing `trusted-click-retry` above uses (top-window
+  // `.locator().first().click()`, or OOPIF `clickDeepLocatorCandidate` with
+  // `preferTrustedClick: true`) — reused here for the n+16 fallback so the
+  // click_filter overlay defect (a real control that only honours a genuine
+  // user gesture) resolves through the same mechanism proven to work
+  // end-to-end, rather than a second synthetic-dispatch heuristic. Resolves
+  // `true` on a delivered click, `false` on ANY failure (selector unusable,
+  // no candidate resolves, the click throws) so the caller can fall back to
+  // the existing evaluate()-based activation unconditionally — this keeps
+  // every fake `page`/`frameTarget` that only stubs `.evaluate()` resolving
+  // exactly as before.
+  const attemptN16TrustedClick = async (selector: string): Promise<boolean> => {
+    try {
+      if (!frameTarget?.frame) {
+        const topWindowTarget = frameTarget ?? mainFrameTarget(page);
+        await withWatchdog(() => topWindowTarget.locator(selector).first().click(), {
+          timeoutMs: N16_TRUSTED_CLICK_TIMEOUT_MS,
+          label: "n+16 fallback: trusted click delivery",
+        });
+        return true;
+      }
+      await reresolveFrameTargetIfLost();
+      const { candidates, innerSelector } = await resolveDeepLocatorCandidatesWithWidening(
+        page,
+        frameTarget.frameSelector,
+        step,
+        { frameTarget }
+      );
+      for (const candidate of candidates) {
+        try {
+          await clickDeepLocatorCandidate(
+            page,
+            frameTarget.frameSelector,
+            innerSelector,
+            candidate.index,
+            {
+              frameTarget,
+              preferTrustedClick: true,
+            }
+          );
+          return true;
+        } catch {
+          // Try the next ranked candidate — same "keep walking" contract
+          // `runDeepLocatorClickWalk`'s cascade uses.
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
   let phantomClickAfterAttempt1 = false;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
@@ -10368,6 +10491,14 @@ export async function executeStepWithHealing(params: {
           `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.actResultDescription}`
         );
         trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        if (attempt > 1) {
+          onStepHeal?.({
+            stepIndex,
+            technique: record.technique,
+            resolvedSelector: fieldLabelOutcome.matched.selector,
+            attempt,
+          });
+        }
         return "completed";
       }
       if (fieldLabelOutcome.kind === "actuation-failed") {
@@ -11372,6 +11503,16 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : true;
+    // Attribute-based submit-shape read of the resolved click target itself —
+    // independent of the flow-authored `submitStep` flag. See
+    // resolvedClickTargetIsSubmitShaped's doc comment.
+    const resolvedElementIsSubmitShaped =
+      isClick && resolvedAction?.selector
+        ? await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )
+        : false;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -11389,6 +11530,7 @@ export async function executeStepWithHealing(params: {
       textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
+      resolvedElementIsSubmitShaped,
     });
     if (
       clickViewSwapVerified === false &&
@@ -11418,7 +11560,23 @@ export async function executeStepWithHealing(params: {
     // effect" even though the value genuinely landed. Scoped to state-class
     // actions (fill/check/etc.), same as domVerified, so it never lets an
     // advance/submit step ride a stray value mutation elsewhere on the page.
-    const formValueVerified = isStateClass && post.formValueSignature !== pre.formValueSignature;
+    // Same submit-shape veto the n+16 fallback's weakDomSignalsAllowed and
+    // isClickViewSwapVerified already apply: a bare formValueSignature delta
+    // (e.g. a form RESET clearing every field) is structurally identical to
+    // a real submit's value commit, so a submit-shaped step (explicit
+    // submitStep, inferred final-step, or an attribute-detected submit
+    // control) may not ride this signal alone — only when the submit-judge
+    // gate (requireSubmitEndpoint) will re-litigate the credit below.
+    const formValueWeakSignalAllowed =
+      !(
+        submitStep ||
+        (isFinalStep && flowHasSubmitSemanticsFlag) ||
+        resolvedElementIsSubmitShaped
+      ) || requireSubmitEndpoint;
+    const formValueVerified =
+      isStateClass &&
+      formValueWeakSignalAllowed &&
+      post.formValueSignature !== pre.formValueSignature;
     // Committed-value guard on the act-success path. A controlled datepicker
     // (react-datepicker) accepts the typed value, discards it on React's next
     // render, and — since the act resolved as a `click` that opened the calendar
@@ -11788,7 +11946,44 @@ export async function executeStepWithHealing(params: {
           // even though the leaf element is still live; re-anchor on the
           // leaf's own last two steps before giving up.
           const xpathTail = xpathTailForRetarget(xpath);
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          // Attribute-based submit-shape read of the resolved fallback click
+          // target, taken BEFORE the trusted click below fires — a genuine
+          // submit (or a full-page reset) can remove the clicked control from
+          // the DOM entirely, so reading its shape AFTER the click would
+          // silently blind this signal on exactly the cases it exists to
+          // catch. See resolvedClickTargetIsSubmitShaped's doc comment.
+          const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          );
+          // Trusted-click delivery for the plain-click branch: attempted
+          // BEFORE the resolve/activate expression below (so a successful
+          // delivery can suppress the synthetic `clickActivationExpr`
+          // dispatch further down and become the thing that decides
+          // success — the reused `trusted-click-retry` primitive pairing,
+          // see `attemptN16TrustedClick`'s docblock). Never attempted for a
+          // checkbox/radio-intent step: that branch forces `.checked` and
+          // dispatches its OWN click+change pair unconditionally below
+          // (state-forcing, not delivery — out of this fix's scope), and a
+          // genuine trusted click landing first would double-fire the site's
+          // handler. `isCheckboxOrRadioIntentStep` is the same instruction-
+          // text heuristic `weakDomSignalsAllowed` already gates on just
+          // below, not a fresh DOM probe — resolving the element AGAIN
+          // read-only before every plain click would double every existing
+          // fixture's evaluate() call count for no added evidence (the
+          // resolved element's checkbox-ness is exactly what this heuristic
+          // already predicts from the instruction that drove Stagehand to
+          // this xpath in the first place).
+          const n16TrustedClickEligible = !isCheckboxOrRadioIntentStep(step);
+          const n16TrustedDelivered = n16TrustedClickEligible
+            ? await attemptN16TrustedClick(resolvedAction.selector)
+            : false;
+          const n16DeliveryBranch = n16TrustedDelivered
+            ? "trusted"
+            : n16TrustedClickEligible
+              ? "synthetic-fallback"
+              : "synthetic-not-eligible";
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -11996,10 +12191,6 @@ export async function executeStepWithHealing(params: {
           const clickTargetIsSelectionMarker =
             xpath !== null &&
             (await clickTargetHasSelectionMarker(frameTarget ?? mainFrameTarget(page), xpath));
-          const weakDomSignalsAllowed =
-            ((!isFinalStep && !submitStep) || requireSubmitEndpoint) &&
-            !isCheckboxOrRadioIntentStep(step) &&
-            !clickTargetIsSelectionMarker;
           // Same effective-verdict credit the primary attempt's completion
           // gate uses (see the `record.phantomClickVerdict` computation
           // above), re-run against THIS fallback click's own pre/post pair
@@ -12021,8 +12212,21 @@ export async function executeStepWithHealing(params: {
           // flow-runner.viewswap-blocked-submit-acceptance.test.ts (must stay
           // gated) and flow-runner.pricing-tab-symmetric-swap-verdict-
           // acceptance.test.ts (a non-submit-shaped final step must still get
-          // credit here).
-          const retrySubmitShaped = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+          // credit here). `retryResolvedElementIsSubmitShaped` folds the
+          // attribute-based, flag-independent signal into the SAME boolean
+          // every one of those consumers already gates on, so an unflagged
+          // step resolving onto an objectively submit-shaped control is
+          // treated identically to an explicitly flagged one everywhere this
+          // value is read below.
+          const retrySubmitShaped =
+            submitStep ||
+            (isFinalStep && flowHasSubmitSemanticsFlag) ||
+            retryResolvedElementIsSubmitShaped;
+          const weakDomSignalsAllowed =
+            ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
+              requireSubmitEndpoint) &&
+            !isCheckboxOrRadioIntentStep(step) &&
+            !clickTargetIsSelectionMarker;
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
@@ -12139,7 +12343,7 @@ export async function executeStepWithHealing(params: {
             }
           }
           logger.info(
-            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified}`
+            `n+16 probe: step=${stepIndex + 1}/${totalSteps?.() ?? "?"} attempt=${attempt} el.click() fallback fired=${fired === true} kind=${probeResult.kind ?? "none"} checkboxStateVerified=${checkboxStateVerified} ancestorStillInvalid=${ancestorStillInvalid}; network=${retryNetworkFired} url=${retryUrlChanged} htmlDelta=${retryHtmlDelta} textChanged=${retryTextChanged} formValueChanged=${retryFormValueChanged} selectionStateChanged=${retrySelectionStateChanged} verified=${retryVerified} delivery=${n16DeliveryBranch}`
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
@@ -12151,6 +12355,12 @@ export async function executeStepWithHealing(params: {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} + el.click() fallback`
               );
+              onStepHeal?.({
+                stepIndex,
+                technique: record.technique,
+                resolvedSelector: resolvedAction?.selector ?? null,
+                attempt,
+              });
             } else {
               logger.info(
                 `${formatStepPrefix(stepIndex, totalSteps)} succeeded on attempt 1 via ${record.technique} + el.click() fallback`
@@ -12174,6 +12384,12 @@ export async function executeStepWithHealing(params: {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} healed on attempt ${attempt} via ${record.technique} (network=${networkFired} url=${urlChanged} dom=${domVerified} verifiedBy=${record.verifiedBy})`
         );
+        onStepHeal?.({
+          stepIndex,
+          technique: record.technique,
+          resolvedSelector: resolvedAction?.selector ?? null,
+          attempt,
+        });
       } else {
         // Why log first-try wins explicitly: prior to this change, attempt-1
         // successes were silent — only attempts 2+ emitted "healed on attempt

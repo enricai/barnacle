@@ -15,7 +15,14 @@ import { getScriptLogger } from "@/lib/logging";
 const logger = getScriptLogger("recon-shared");
 
 /** Subdirectory names created under every resolved recon run root. */
-const RUN_SUBDIRS = ["graphql", "cookies", "replays", "aux", "step-failures"] as const;
+const RUN_SUBDIRS = [
+  "graphql",
+  "cookies",
+  "replays",
+  "aux",
+  "step-failures",
+  "step-heals",
+] as const;
 
 export interface ReconRunDir {
   runId: string;
@@ -25,6 +32,7 @@ export interface ReconRunDir {
   replaysDir: string;
   auxDir: string;
   stepFailuresDir: string;
+  stepHealsDir: string;
 }
 
 /** Memoized so repeated calls within one process share a single run root and runId. */
@@ -69,6 +77,7 @@ export function resolveReconRunDir(): ReconRunDir {
     replaysDir: join(root, "replays"),
     auxDir: join(root, "aux"),
     stepFailuresDir: join(root, "step-failures"),
+    stepHealsDir: join(root, "step-heals"),
   };
 
   for (const subdir of RUN_SUBDIRS) {
