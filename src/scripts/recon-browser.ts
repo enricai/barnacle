@@ -55,6 +55,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
 import { format, formatISO } from "date-fns";
+import { type Element, type HTMLInputElement, type HTMLTextAreaElement, Window } from "happy-dom";
 import { z } from "zod/v4";
 
 import { config } from "@/config";
@@ -990,13 +991,87 @@ export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedSt
  * An intervening navigation/panel-toggle can silently reset an earlier fill
  * without producing a failure of its own, so "already completed" does not
  * guarantee "still true" for fills. When `bodyHtmlAtFailure` is provided, a
- * completed step that parses as a fill (via `parseFillStep`, falling back to
- * `parseFillValueIntent` for the field-label phrasing drift `parseFillStep`
- * is strict about) is excluded from the trusted set unless its expected
- * value is still present in that DOM — so a reset fill is never treated as
- * still-completed and a replan's fresh re-fill for that field survives the
- * filter.
+ * completed step that parses as a fill (via `parseFillStep`) is excluded
+ * from the trusted set unless the SPECIFIC input/textarea/select the step
+ * named still holds its expected value — resolved by parsing
+ * `bodyHtmlAtFailure` into a DOM and matching the step's field label to a
+ * control's accessible name, the same field-label-first resolution the live
+ * page cascade uses. A step that only parses via the looser
+ * `parseFillValueIntent` fallback (no field label available) has no element
+ * to resolve, so it falls back to the old whole-body value search — the one
+ * case where that coarser signal remains the best available evidence.
  */
+/** Whitespace-collapsed, lowercased comparison key, mirroring `flow-runner.ts`'s `normalizeFieldLabel`. */
+function normalizeStaleFillLabel(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Standards-first accessible name for a form control parsed from
+ * `bodyHtmlAtFailure`: `aria-labelledby` referenced text, `aria-label`, an
+ * associated `<label for=id>`/wrapping `<label>`, then `name`/`id`/
+ * `placeholder` as a last resort. Mirrors the live-page label lookup used
+ * elsewhere in the recovery cascade (`flow-runner.ts`'s in-page `labelFor`),
+ * generalized to run against a happy-dom-parsed snapshot instead of a live
+ * page — no site-specific attribute conventions.
+ */
+function accessibleNameForControl(el: Element, window: Window): string {
+  const { document } = window;
+  const labelledBy = el.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const text = labelledBy
+      .split(/\s+/)
+      .map((id: string) => document.getElementById(id)?.textContent ?? "")
+      .join(" ")
+      .trim();
+    if (text) return text;
+  }
+  const ariaLabel = el.getAttribute("aria-label");
+  if (ariaLabel?.trim()) return ariaLabel;
+  const id = el.getAttribute("id");
+  if (id) {
+    const label = document.querySelector(`label[for="${window.CSS.escape(id)}"]`);
+    if (label?.textContent?.trim()) return label.textContent;
+  }
+  const wrappingLabel = el.closest("label");
+  if (wrappingLabel?.textContent?.trim()) return wrappingLabel.textContent;
+  return el.getAttribute("name") || id || el.getAttribute("placeholder") || "";
+}
+
+/**
+ * Resolves the specific input/textarea/select `bodyHtmlAtFailure` contains
+ * for the named field, using the same exact-then-substring normalized-label
+ * matching semantics as `flow-runner.ts`'s
+ * `findDeepLocatorCandidateByFieldLabel`. Returns `null` — never a guess —
+ * when no control's accessible name relates to `fieldLabel` at all, or when
+ * `bodyHtmlAtFailure` fails to parse.
+ */
+function resolveFieldElementValue(bodyHtmlAtFailure: string, fieldLabel: string): string | null {
+  const normalizedLabel = normalizeStaleFillLabel(fieldLabel);
+  if (!normalizedLabel) return null;
+  const window = new Window();
+  try {
+    window.document.body.innerHTML = bodyHtmlAtFailure;
+    const controls = Array.from(window.document.querySelectorAll("input,textarea,select"));
+    const named = controls
+      .map((control) => ({
+        control,
+        text: normalizeStaleFillLabel(accessibleNameForControl(control, window)),
+      }))
+      .filter((entry) => entry.text.length > 0);
+    const exact = named.find((entry) => entry.text === normalizedLabel);
+    const partial =
+      exact ??
+      named.find(
+        (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
+      );
+    if (!partial) return null;
+    return (partial.control as HTMLInputElement | HTMLTextAreaElement).value;
+  } finally {
+    window.close();
+  }
+}
+
 export function filterCompletedFromReplan(
   newSteps: readonly NormalizedStep[],
   completedSteps: readonly string[],
@@ -1005,6 +1080,11 @@ export function filterCompletedFromReplan(
 ): NormalizedStep[] {
   const isStaleFill = (step: string): boolean => {
     if (!bodyHtmlAtFailure) return false;
+    const fieldLabel = parseFillStep(step)?.fieldLabel;
+    if (fieldLabel) {
+      const fieldValue = resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel);
+      if (fieldValue !== null) return !fieldValue;
+    }
     const value = parseFillStep(step)?.value ?? parseFillValueIntent(step)?.value;
     if (!value) return false;
     return !bodyHtmlAtFailure.includes(value);
