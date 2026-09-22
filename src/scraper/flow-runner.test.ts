@@ -411,6 +411,44 @@ describe("flow-runner/wireSignalCapture — Set-Cookie from responseReceivedExtr
   });
 });
 
+describe("flow-runner/wireSignalCapture — non-string query/operationName in decoded body", () => {
+  const REQ = "req-nonstring-query";
+  const REQ_URL = "https://api.example.com/graphql";
+
+  it("nulls out query/operationName instead of persisting a non-string value", async () => {
+    const { page, emit } = fakeCapturePage();
+    const captured: Capture[] = [];
+    const teardown = wireSignalCapture(page, {
+      counter: { n: 0 },
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      getCurrentPhase: () => "action",
+      getCurrentPageOrigin: () => "https://api.example.com",
+      onCapture: (capture) => captured.push(capture),
+    });
+    emit("Network.requestWillBeSent", {
+      requestId: REQ,
+      request: {
+        url: REQ_URL,
+        method: "POST",
+        headers: {},
+        postData: JSON.stringify({
+          query: { nested: "object" },
+          operationName: 123,
+          variables: { id: 1 },
+        }),
+      },
+    });
+    await emit("Network.loadingFinished", { requestId: REQ });
+    teardown();
+    const cap = captured[0];
+    if (!cap) throw new Error("no capture emitted");
+    expect(cap.query).toBeNull();
+    expect(cap.operationName).toBeNull();
+  });
+});
+
 describe("flow-runner/wireSignalCapture — Cookie from requestWillBeSentExtraInfo", () => {
   const REQ = "req-2";
   const REQ_URL = "https://api.example.com/apply/submit";
