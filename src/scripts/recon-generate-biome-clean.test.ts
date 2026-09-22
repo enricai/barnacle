@@ -76,6 +76,31 @@ function emit(steps: unknown): string {
   );
 }
 
+function emitWithFold(steps: unknown, foldReturnSpec: FoldReturnSpec): string {
+  return emitMultiStepExecuteHttp(
+    steps as EmitSteps,
+    null,
+    { stringMessageKey: null, nestedErrorPaths: [] },
+    new Map(),
+    new Set(),
+    new Map(),
+    new Set(),
+    new Map(),
+    new Map(),
+    "https://api.example.com",
+    new Map(),
+    new Map(),
+    null,
+    new Map(),
+    new Map(),
+    new Set(),
+    [],
+    new Map(),
+    new Map(),
+    foldReturnSpec
+  );
+}
+
 /**
  * Bug A: a step produces a value at a NUMERIC-key path
  * (`data["221"].label`) that a later step's body re-sends, so the emitter writes
@@ -356,6 +381,179 @@ describe("emitMultiStepExecuteHttp — emitted code is Biome-clean", () => {
       writeFileSync(bugCFile, `${bugCPreamble}\n${bugCBody}\n}\nvoid executeHttp;\n`);
       expect(() =>
         execFileSync(BIOME_BIN, ["lint", "--config-path", dir, bugCFile], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+      ).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+const BUG_D_BASE = "https://api.example.com";
+
+const BUG_D_FOLD_RETURN_SPEC: FoldReturnSpec = {
+  endpointPattern: "/orders/hold",
+  resultsPath: "results",
+  joinFields: ["sku"],
+  drillParamBindings: {},
+};
+
+/**
+ * Bug D: `emitMultiStepExecuteHttp`'s own fold-chain loop (the sibling
+ * copy of Bug C's loop, living in the OTHER emitter) binds a non-terminal
+ * chain hop's response to a local whenever `hasReferencedProduce` sees its
+ * produce name in the flow's global `referencedNames` set — but that set
+ * doesn't know about `chainDeclared`, the SAME dedup the produce-extraction
+ * loop a few lines below applies. Two non-terminal chain hops (`hold` then
+ * `holdAgain`) both declare a produce named `token`; an unrelated `auth`
+ * call's own `token` is what makes `referencedNames` contain "token" at
+ * all, and a later `audit` call echoes `auth`'s token literal so the
+ * substitution pass actually renders `${token}` somewhere. `hold` (the
+ * first chain member to see the name) legitimately binds and declares
+ * `const token = ...`; `holdAgain`'s own `token` extraction is then
+ * dedup-skipped by `chainDeclared` — pre-fix, `hasReferencedProduce`
+ * doesn't re-check `chainDeclared`, so `holdAgain` was STILL bound to a
+ * local (`const rN = await httpClient(...)`) that nothing ever reads,
+ * tripping Biome's `noUnusedVariables`.
+ */
+function bugDFoldChainProduceNameCollisionSteps(): unknown[] {
+  const authToken = "AUTH-TOKEN-VALUE-abcdefghijklmnop";
+  const holdTokenValue = "HOLD-TOKEN-VALUE-abcdefghijklmnop";
+  const holdAgainTokenValue = "HOLD-AGAIN-TOKEN-VALUE-abcdefghijklmnop";
+  return [
+    {
+      varName: "r0",
+      produces: [{ kind: "body", name: "token", path: ["token"] }],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/auth`,
+        requestPostData: "{}",
+        responseBody: { token: authToken },
+        ts: "2026-01-01T00:00:00Z",
+      }),
+    },
+    {
+      varName: "r1",
+      produces: [],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/catalog/search/`,
+        requestPostData: '{"page":1}',
+        responseBody: { results: [{ sku: "item-a" }, { sku: "item-b" }] },
+        ts: "2026-01-01T00:00:01Z",
+      }),
+    },
+    {
+      varName: "r2",
+      produces: [{ kind: "body", name: "token", path: ["token"] }],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/orders/hold/`,
+        requestPostData: '{"sku":"item-a"}',
+        responseBody: { token: holdTokenValue },
+        ts: "2026-01-01T00:00:02Z",
+      }),
+    },
+    {
+      varName: "r3",
+      // Same produce NAME as r2, deliberately, with a distinct literal
+      // value — the reproduction of Finding 2's collision shape.
+      produces: [{ kind: "body", name: "token", path: ["token"] }],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/orders/hold-again/`,
+        requestPostData: JSON.stringify({ token: holdTokenValue }),
+        responseBody: { token: holdAgainTokenValue },
+        ts: "2026-01-01T00:00:03Z",
+      }),
+    },
+    {
+      varName: "r4",
+      produces: [],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/orders/detail/`,
+        requestPostData: JSON.stringify({ token: holdAgainTokenValue }),
+        responseBody: { sku: "item-a", price: 42, token: holdAgainTokenValue },
+        ts: "2026-01-01T00:00:04Z",
+      }),
+    },
+    {
+      varName: "r5",
+      produces: [],
+      isMultipart: false,
+      isCrossDomain: false,
+      capture: cap({
+        url: `${BUG_D_BASE}/audit`,
+        requestPostData: JSON.stringify({ auditToken: authToken }),
+        responseBody: { ok: true },
+        ts: "2026-01-01T00:00:05Z",
+      }),
+    },
+  ];
+}
+
+describe("emitMultiStepExecuteHttp — fold-chain produce-name-collision binding is Biome-clean (Bug D)", () => {
+  it("never binds a chain hop whose only produce name collides with one already declared earlier in the same chain", () => {
+    const body = emitWithFold(bugDFoldChainProduceNameCollisionSteps(), BUG_D_FOLD_RETURN_SPEC);
+
+    expect(body).toMatch(/const token = \(r2 as/);
+    // r3 (hold-again) is a genuine prerequisite request and must still fire,
+    // but its own `token` extraction is dedup-skipped (r2 already declared
+    // the name), so it must never be bound to a local.
+    expect(body).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/hold-again\/`/);
+    expect(body).not.toMatch(
+      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/hold-again\/`/
+    );
+    assertPatternsClean(body);
+  });
+
+  it("passes `biome lint`", () => {
+    if (!existsSync(BIOME_BIN)) {
+      throw new Error(`biome binary not found at ${BIOME_BIN} — run pnpm install`);
+    }
+    const preamble = [
+      "async function executeHttp(",
+      "  httpClient: (url: string, init: unknown) => Promise<unknown>,",
+      "  payload: Record<string, unknown>,",
+      "): Promise<{ data: unknown }> {",
+      "  const z = { object: (_: unknown) => ({}), string: () => ({}), boolean: () => ({}), number: () => ({}), array: (_: unknown) => ({}) };",
+      "  void z;",
+    ].join("\n");
+
+    const dir = mkdtempSync(join(tmpdir(), "barnacle-biome-"));
+    try {
+      writeFileSync(
+        join(dir, "biome.json"),
+        JSON.stringify({
+          $schema: "https://biomejs.dev/schemas/2.3.11/schema.json",
+          formatter: { enabled: false },
+          assist: { enabled: false },
+          linter: {
+            enabled: true,
+            rules: {
+              recommended: false,
+              correctness: { noUnusedVariables: "error" },
+              style: { noNonNullAssertion: "error" },
+            },
+          },
+        })
+      );
+      const file = join(dir, "bugD.ts");
+      writeFileSync(
+        file,
+        `${preamble}\n${emitWithFold(bugDFoldChainProduceNameCollisionSteps(), BUG_D_FOLD_RETURN_SPEC)}\n}\nvoid executeHttp;\n`
+      );
+      expect(() =>
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, file], {
           cwd: dir,
           encoding: "utf8",
           stdio: "pipe",
