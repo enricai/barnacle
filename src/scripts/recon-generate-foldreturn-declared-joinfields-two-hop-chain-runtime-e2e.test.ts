@@ -228,7 +228,10 @@ describe("recon-generate foldReturn declared joinFields + 2-hop drill chain — 
     });
     writeFileSync(join(siteOutDir, "flows", "browser-flow.ts"), browserFlowCode);
 
-    tsconfigPath = join(REPO_ROOT, `tsconfig.foldreturn-joinfields-two-hop-chain.${process.pid}.json`);
+    tsconfigPath = join(
+      REPO_ROOT,
+      `tsconfig.foldreturn-joinfields-two-hop-chain.${process.pid}.json`
+    );
     writeFileSync(
       tsconfigPath,
       JSON.stringify({
