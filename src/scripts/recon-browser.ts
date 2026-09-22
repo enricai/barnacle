@@ -99,6 +99,7 @@ import {
   latestCaptureIndex,
   logBillingErrorIfPresent,
   parseFillStep,
+  parseFillValueIntent,
   probeLeafInvalidContainers,
   renderLeafInvalidFields,
   renderUnfocusedObserve,
@@ -989,10 +990,12 @@ export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedSt
  * An intervening navigation/panel-toggle can silently reset an earlier fill
  * without producing a failure of its own, so "already completed" does not
  * guarantee "still true" for fills. When `bodyHtmlAtFailure` is provided, a
- * completed step that parses as a fill (via `parseFillStep`) is excluded from
- * the trusted set unless its expected value is still present in that DOM —
- * so a reset fill is never treated as still-completed and a replan's fresh
- * re-fill for that field survives the filter.
+ * completed step that parses as a fill (via `parseFillStep`, falling back to
+ * `parseFillValueIntent` for the field-label phrasing drift `parseFillStep`
+ * is strict about) is excluded from the trusted set unless its expected
+ * value is still present in that DOM — so a reset fill is never treated as
+ * still-completed and a replan's fresh re-fill for that field survives the
+ * filter.
  */
 export function filterCompletedFromReplan(
   newSteps: readonly NormalizedStep[],
@@ -1002,9 +1005,9 @@ export function filterCompletedFromReplan(
 ): NormalizedStep[] {
   const isStaleFill = (step: string): boolean => {
     if (!bodyHtmlAtFailure) return false;
-    const parsed = parseFillStep(step);
-    if (!parsed) return false;
-    return !bodyHtmlAtFailure.includes(parsed.value);
+    const value = parseFillStep(step)?.value ?? parseFillValueIntent(step)?.value;
+    if (!value) return false;
+    return !bodyHtmlAtFailure.includes(value);
   };
   const completed = new Set(completedSteps.filter((s) => !isStaleFill(s)));
   return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));

@@ -185,4 +185,24 @@ describe("global-replan completedSteps trust regression (recon item 2, offline f
       );
     }
   });
+
+  it("re-fill proposal survives when the completed step's phrasing defeats parseFillStep (falls back to parseFillValueIntent)", () => {
+    // "field FOR WORK EXPERIENCE" inserts words between the field noun and
+    // "with", which parseFillStep's canonical `<label> field with '<value>'`
+    // regex does not match (returns null) — this phrasing is only recognized
+    // via parseFillValueIntent's looser value-only match.
+    const looseFillStep = "Fill in the Start Date field for work experience with '01/2020'";
+    const looseFailedStep = "Click the 'Continue' button";
+    const rawBridge = [mk(looseFillStep), mk(looseFailedStep)];
+    const bodyHtmlWithoutValue = "<div>the field was reset and no longer contains that date</div>";
+
+    const filtered = filterCompletedFromReplan(
+      rawBridge,
+      [looseFillStep],
+      looseFailedStep,
+      bodyHtmlWithoutValue
+    );
+
+    expect(filtered.map((s) => s.instruction)).toEqual([looseFillStep, looseFailedStep]);
+  });
 });
