@@ -3699,6 +3699,122 @@ describe("replanRemainingFlow — fill-step re-verification prompt (bugfix-003)"
   });
 });
 
+describe("replanRemainingFlow — still-required fields prompt directive (bugfix-004)", () => {
+  let tmpDir: string;
+  let dumpPath: string;
+
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        // Also fields the invalid-fields/error-messages Haiku judges
+        // `readFailureDumpEvidence` runs against a real dump file — return
+        // schema-shaped empty verdicts for those so they don't throw and
+        // silently swallow recentFailureReasons via the outer catch.
+        parse: vi.fn().mockImplementation(async ({ system }: { system: string }) => {
+          const parsed_output = system.includes("invalid-field detector")
+            ? { fields: [] }
+            : system.includes("error-message extractor")
+              ? { messages: [] }
+              : { outcome: "replan", steps: ["Click Submit"] };
+          return {
+            parsed_output,
+            content: [{ type: "text", text: "{}" }],
+            usage: { input_tokens: 100, output_tokens: 5 },
+          };
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makePageStub(): {
+    url: () => string;
+    title: () => Promise<string>;
+    evaluate: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      url: () => "https://example.com/checkout",
+      title: vi.fn().mockResolvedValue("Checkout"),
+      evaluate: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-replan-required-fields-"));
+    dumpPath = join(tmpDir, "step-failure.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("directs the LLM to fill named still-required fields when submit-judge rejection names them", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    writeFileSync(
+      dumpPath,
+      JSON.stringify({
+        bodyOuterHtml: null,
+        attempts: [
+          {
+            errorMessage:
+              "submit-judge-rejected: Form still displays validation errors (Shipping Method, Gift Wrap fields) with an 'Errors Found' section visible; no submission occurred",
+          },
+        ],
+      })
+    );
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Click Submit"],
+      completedSteps: [],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: dumpPath,
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).toContain("STILL-REQUIRED FIELDS");
+    expect(prompt).toContain("- Shipping Method");
+    expect(prompt).toContain("- Gift Wrap");
+    expect(prompt).toContain("your bridge MUST include one fill step per named field");
+  });
+
+  it("omits the still-required fields section when the diagnostic doesn't name fields", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    writeFileSync(
+      dumpPath,
+      JSON.stringify({
+        bodyOuterHtml: null,
+        attempts: [{ errorMessage: "observe returned no candidates" }],
+      })
+    );
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Click Submit"],
+      completedSteps: [],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: dumpPath,
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).not.toContain("STILL-REQUIRED FIELDS");
+    expect(prompt).toContain("WHY VERIFICATION FAILED");
+    expect(prompt).toContain("observe returned no candidates");
+  });
+});
+
 describe("replanRemainingFlow — bounded page.title() read (bugfix-004)", () => {
   function makeReplanClient(): Anthropic {
     return {

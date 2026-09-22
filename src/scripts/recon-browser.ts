@@ -1931,6 +1931,16 @@ async function replanRemainingFlow(params: {
     ? `STRUCTURAL BLOCK — Every cascade attempt on the failed step resolved NO element (observe found no candidate; nothing was clicked or filled). The step's target is not present-and-drivable on this page as described. Do NOT merely reword or paraphrase the same premise — it will fail identically. Either (a) propose a STRUCTURALLY DIFFERENT step targeting a control that actually exists in PAGE BODY HTML AT FAILURE / the observed candidates, or (b) if the required control genuinely isn't reachable, return outcome=impossible rather than a cosmetic rewrite.`
     : "";
 
+  // Submit-judge-named fields are the judge's own explicit statement of WHICH
+  // fields are still missing/invalid. Without a dedicated directive, that
+  // detail sits inside the generic WHY VERIFICATION FAILED prose and the LLM
+  // has re-proposed the identical just-failed step instead of acting on it.
+  const stillRequiredFields = extractSubmitJudgeRequiredFields(recentFailureReasons);
+  const stillRequiredFieldsCheck =
+    stillRequiredFields.length > 0
+      ? `STILL-REQUIRED FIELDS (per the site's own submit validator) — these fields were explicitly named by the submit-judge as still missing/invalid; your bridge MUST include one fill step per named field below instead of re-proposing the step that just failed:\n${stillRequiredFields.map((field) => `- ${field}`).join("\n")}`
+      : "";
+
   // An intervening navigation/panel-toggle can silently reset an earlier
   // fill's field (e.g. a Create-Account panel re-open clearing Email/Password
   // while only the freshly-filled verifyPassword survives). "Already
@@ -1969,7 +1979,7 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}${stillRequiredFieldsCheck ? `${stillRequiredFieldsCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
