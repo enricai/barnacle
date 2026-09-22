@@ -6982,7 +6982,7 @@ export function emitMultiStepExecuteHttp(
           // references (Biome noUnusedVariables).
           const isChainTerminal = chainIndex === target.chainTerminalIndex;
           const hasReferencedProduce = chainStep.produces.some(
-            (p) => p.kind !== "header" && referencedNames.has(p.name)
+            (p) => p.kind !== "header" && referencedNames.has(p.name) && !chainDeclared.has(p.name)
           );
           const bindsChainResponse = isChainTerminal || hasReferencedProduce;
           chainLines.push(

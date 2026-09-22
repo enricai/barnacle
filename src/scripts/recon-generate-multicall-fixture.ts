@@ -3434,3 +3434,48 @@ export function buildMulticallOrdersLineItemPromoEligibilityActionSteps(): Multi
     }),
   ];
 }
+
+const AVAILABLE_UNIT_LOOKUP_URL = "https://api.example.com/listings-avail-api/available-units/";
+
+/**
+ * A THREE-level nested primary (`products[].itineraries[].units[]`, a
+ * `products.*.itineraries.*.units`-shaped `resultsPath` carrying TWO
+ * {@link ARRAY_WILDCARD_SEGMENT} crossings) whose leaf unit item carries both
+ * `unitCode` (threaded into the drill lookup's own URL — the field the
+ * structural heuristic infers as its join key) and `unitId` (echoed only on
+ * the drill/primary RESPONSE, never on any request). A flow author declaring
+ * `foldReturn.joinFields: ["unitId"]` on this shape must still win as the
+ * emitted join key over the structural heuristic's own `unitCode` guess, even
+ * though resolving the plan requires flattening across two nested wildcard
+ * levels to find the matched leaf item at all.
+ */
+export function buildDoubleNestedWildcardDrillDownActionSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: AVAILABLE_PRODUCTS_URL,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        products: [
+          {
+            productId: "p1",
+            itineraries: [
+              {
+                itineraryId: "it-1",
+                units: [{ unitCode: "u-1", unitId: "unit-77" }],
+              },
+            ],
+          },
+        ],
+      },
+      timestamp: "2024-07-01T00:00:00Z",
+    }),
+    buildStep("r1", {
+      url: `${AVAILABLE_UNIT_LOOKUP_URL}u-1/`,
+      requestPostData: '{"lookup":true}',
+      responseBody: {
+        pricing: [{ unitCode: "u-1", unitId: "unit-77", price: 250 }],
+      },
+      timestamp: "2024-07-01T00:00:01Z",
+    }),
+  ];
+}
