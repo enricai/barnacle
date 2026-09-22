@@ -6,34 +6,21 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Pins bugfix-001 (recon-clickfilter-overlay-click-not-forwarded-to-hidden-
- * submit.md, "Requested item 1"): an accessibility-overlay pattern — an
- * interactive `role=button tabindex=0` div positioned exactly over an
- * `aria-hidden tabindex=-2` real control — forwards a genuine trusted
- * browser click to the real control's handler, but the handler ignores a
- * synthetic `PointerEvent`/`MouseEvent` construction + `el.click()`
- * dispatched from inside `page.evaluate()` (isTrusted=false by
- * construction). Stagehand's own `act()` never actually touches the DOM in
- * this fixture (mocked, matching every other offline acceptance test in this
- * suite) so the ONLY thing capable of producing a real DOM effect is the
- * n+16 fallback's click delivery — meaning this fixture only passes when
- * that delivery is a genuinely trusted gesture, not the synthetic dispatch.
- *
- * The fake `frameTarget`/`page.locator().first().click()` (the trusted-click
- * primitive n+16 now reuses from `trusted-click-retry`) marks a
- * `window.__n16TrustedGestureActive` flag before invoking the SAME
- * `overlay.click()` DOM call the synthetic evaluate() path also uses — the
- * overlay's own click listener only forwards the activation to the real
- * control when that flag is set, modeling a real browser's isTrusted gate
- * without needing a genuine CDP-level trusted event in this offline harness.
- * Before bugfix-001, n+16 always activated via the synthetic evaluate()
- * dispatch alone — the flag is never set — so the real control's handler
- * never fires and the step never heals. Site-agnostic fixture (generic
- * careers-application overlay button), not any real site or plugin.
+ * Pins bugfix-001's second requested item (recon-n16-trusted-click-fails-
+ * silently-falls-back-to-synthetic.md): when `attemptN16TrustedClick`'s
+ * top-window branch (`frameTarget.frame` absent) fails — here the watchdog-
+ * wrapped `locator().first().click()` rejects — the n+16 probe log line for
+ * that step+attempt must carry a non-empty failure reason
+ * (`trustedClickReason=`/`trustedClickError=`) alongside
+ * `delivery=synthetic-fallback`, not a bare delivery tag with zero
+ * diagnostic trace. The step still heals via the existing synthetic
+ * `evaluate()` dispatch (fired=true) exactly as before. Site-agnostic
+ * fixture (generic careers-application "Continue" control), not any real
+ * site or plugin.
  */
 
 const BASE_URL = "https://apply.example.com/step/1";
-const OVERLAY_STEP = "Click the 'Continue' button to advance";
+const CONTINUE_STEP = "Click the 'Continue' button to advance";
 
 const SILENT_LOGGER_CALLS = { info: [] as string[], warn: [] as string[] };
 const testLogger = {
@@ -83,38 +70,28 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
   return current;
 }
 
-describe("flow-runner n+16 fallback — click_filter overlay resolves via trusted click delivery (offline fixture, live happy-dom, no network)", () => {
-  it("heals a step whose overlay click_filter pair only forwards a genuinely trusted gesture to the real control", async () => {
+describe("flow-runner n+16 fallback — top-window trusted-click failure surfaces a captured reason (offline fixture, live happy-dom, no network)", () => {
+  it("logs a non-empty failure reason alongside delivery=synthetic-fallback when locator().first().click() rejects", async () => {
     const window = new Window({ url: BASE_URL });
     const document = window.document;
     document.body.innerHTML = `
       <div class="wizardFooter">
-        <button id="realControl" aria-hidden="true" tabindex="-2">Continue</button>
-        <div id="overlay" role="button" tabindex="0"></div>
+        <button id="realControl">Continue</button>
       </div>
     `;
 
-    const overlayEl = document.getElementById("overlay") as unknown as HappyDomElement;
     const realControlEl = document.getElementById("realControl") as unknown as HappyDomElement;
-    expect(overlayEl).not.toBeNull();
     expect(realControlEl).not.toBeNull();
 
-    const overlayXPath = absoluteXPathFor(overlayEl);
+    const realControlXPath = absoluteXPathFor(realControlEl);
 
-    let realControlActivations = 0;
+    let clickActivations = 0;
     (
-      overlayEl as unknown as {
+      realControlEl as unknown as {
         addEventListener: (type: string, cb: (ev: unknown) => void) => void;
       }
     ).addEventListener("click", () => {
-      // A real browser's accessibility-overlay pattern forwards a genuinely
-      // trusted user gesture through to the co-located real control's
-      // handler but ignores an untrusted (script-dispatched) one — modeled
-      // here via the flag the trusted-click primitive sets, since happy-dom
-      // (like jsdom) never marks a script-dispatched event `isTrusted`.
-      const win = window as unknown as { __n16TrustedGestureActive?: boolean };
-      if (!win.__n16TrustedGestureActive) return;
-      realControlActivations += 1;
+      clickActivations += 1;
       const marker = document.createElement("div");
       marker.setAttribute("data-activated", "true");
       marker.textContent = "x".repeat(8_000);
@@ -122,7 +99,7 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
     });
 
     const documentElement = document.documentElement as unknown as HappyDomElement;
-    const win = window as unknown as { XPathResult?: unknown; __n16TrustedGestureActive?: boolean };
+    const win = window as unknown as { XPathResult?: unknown };
     win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
     (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
       (expr: string) => {
@@ -142,22 +119,14 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
       },
       url: () => BASE_URL,
       title: async () => "Apply — Step 1",
-      // The trusted-click delivery primitive n+16 now reuses from
-      // `trusted-click-retry`: a REAL gesture arrives through here, never
-      // through `evaluate()`. Marks the flag the overlay's listener gates
-      // on, invokes the SAME element's native `.click()` (the DOM call
-      // itself is identical either way — only the flag distinguishes a
-      // trusted delivery from the synthetic evaluate() dispatch), then
-      // clears it.
+      // The top-window trusted-click delivery primitive: rejects, modeling
+      // a real Playwright actionability failure (e.g. an obscured control),
+      // so `attemptN16TrustedClick` falls through its outer catch with
+      // `reason: "not-actionable"`/`"threw"` instead of delivering.
       locator: () => ({
         first: () => ({
           click: async () => {
-            win.__n16TrustedGestureActive = true;
-            try {
-              (overlayEl as unknown as { click: () => void }).click();
-            } finally {
-              win.__n16TrustedGestureActive = false;
-            }
+            throw new Error("not actionable");
           },
           isChecked: async () => false,
           inputValue: async () => "",
@@ -170,16 +139,13 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
     } as unknown as Page;
 
     const stagehand: Stagehand = {
-      // Stagehand's own act() never touches the DOM in this fixture (as in
-      // every other offline acceptance fixture in this suite) — it only
-      // resolves the target selector. Only n+16's OWN click delivery can
-      // produce a real DOM effect, so this fixture only heals when that
-      // delivery is genuinely trusted.
       act: vi.fn().mockResolvedValue({
         success: true,
         message: "clicked",
-        actionDescription: OVERLAY_STEP,
-        actions: [{ selector: `xpath=${overlayXPath}`, description: "Continue", method: "click" }],
+        actionDescription: CONTINUE_STEP,
+        actions: [
+          { selector: `xpath=${realControlXPath}`, description: "Continue", method: "click" },
+        ],
       }),
       observe: vi
         .fn()
@@ -191,7 +157,7 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
     } as unknown as Stagehand;
 
     const STEPS: HealingFlowStep[] = [
-      { instruction: OVERLAY_STEP, optional: false, upload: false, submitStep: false },
+      { instruction: CONTINUE_STEP, optional: false, upload: false, submitStep: false },
     ];
 
     const result = await runHealingFlow({
@@ -205,10 +171,19 @@ describe("flow-runner n+16 fallback — click_filter overlay resolves via truste
     });
 
     expect(result.lastStepIndex).toBe(0);
-    expect(realControlActivations).toBe(1);
+    expect(clickActivations).toBe(1);
 
     const n16ProbeLines = SILENT_LOGGER_CALLS.info.filter((line) => line.includes("n+16 probe"));
-    expect(n16ProbeLines.some((line) => line.includes("delivery=trusted"))).toBe(true);
-    expect(n16ProbeLines.some((line) => line.includes("trustedClickError="))).toBe(false);
+    const deliveredViaFallback = n16ProbeLines.filter((line) =>
+      line.includes("delivery=synthetic-fallback")
+    );
+    expect(deliveredViaFallback.length).toBeGreaterThan(0);
+    expect(deliveredViaFallback.some((line) => line.includes("fired=true"))).toBe(true);
+    expect(
+      deliveredViaFallback.every((line) =>
+        /trustedClickReason=(timeout|no-candidate|not-actionable|threw)/.test(line)
+      )
+    ).toBe(true);
+    expect(deliveredViaFallback.every((line) => /trustedClickError=.+/.test(line))).toBe(true);
   });
 });

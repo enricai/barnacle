@@ -3384,6 +3384,76 @@ describe("replanRemainingFlow — trajectory prompt section", () => {
   });
 });
 
+describe("replanRemainingFlow — fill-step re-verification prompt (bugfix-003)", () => {
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        parse: vi.fn().mockResolvedValue({
+          parsed_output: { outcome: "replan", steps: ["Click Submit"] },
+          content: [{ type: "text", text: "{}" }],
+          usage: { input_tokens: 100, output_tokens: 5 },
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makePageStub(): { url: () => string; title: () => Promise<string> } {
+    return {
+      url: () => "https://example.com/apply",
+      title: vi.fn().mockResolvedValue("Application Form"),
+    };
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("instructs re-verification of fill-shaped completed steps against PAGE BODY HTML AT FAILURE", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Fill in the Email field with 'user@example.com'", "Click Continue"],
+      completedSteps: ["Fill in the Email field with 'user@example.com'"],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).toContain("FILL-STEP RE-VERIFICATION");
+    expect(prompt).toContain("Email: expected value 'user@example.com'");
+    expect(prompt).toContain("PAGE BODY HTML AT FAILURE");
+  });
+
+  it("omits the fill-step re-verification section when no completed step is fill-shaped", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Click Continue", "Click Submit"],
+      completedSteps: ["Click Continue"],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: "/tmp/nonexistent-dump.json",
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).not.toContain("FILL-STEP RE-VERIFICATION");
+    expect(prompt).toContain("do NOT re-emit any of them");
+  });
+});
+
 describe("replanRemainingFlow — bounded page.title() read (bugfix-004)", () => {
   function makeReplanClient(): Anthropic {
     return {
