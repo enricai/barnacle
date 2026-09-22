@@ -6970,15 +6970,32 @@ export function emitMultiStepExecuteHttp(
           ) {
             referencesItemVar = true;
           }
+          // Only bind this hop's response to a local when something actually
+          // reads it back: the chain terminal (consumed by
+          // emitFoldMatchAndMergeLines via `terminalStep.varName` below) or a
+          // non-header `produces` entry some later step's request threads
+          // (header threading goes through httpClient's own `bind` store, not
+          // a local — see the header branch below). A hop chained purely to
+          // unlock a later request (e.g. it sets server-side state via a
+          // header token) has no reader for its own response and must stay
+          // unbound, or the emitted loop declares a variable nothing
+          // references (Biome noUnusedVariables).
+          const isChainTerminal = chainIndex === target.chainTerminalIndex;
+          const hasReferencedProduce = chainStep.produces.some(
+            (p) => p.kind !== "header" && referencedNames.has(p.name)
+          );
+          const bindsChainResponse = isChainTerminal || hasReferencedProduce;
           chainLines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`,
+            bindsChainResponse
+              ? `      const ${chainStep.varName} = (await httpClient(\`${paramUrl}\`, {`
+              : `      await httpClient(\`${paramUrl}\`, {`,
             `        method: ${JSON.stringify(chainRendered.method)},`
           );
           const joined = [paramHeaders, paramBody].filter((s) => s !== "").join(" ");
           if (joined !== "") chainLines.push(`        ${joined}`);
+          chainLines.push(`        schema: ${chainRendered.schemaExpr},`);
           chainLines.push(
-            `        schema: ${chainRendered.schemaExpr},`,
-            `      })) as Record<string, unknown>;`
+            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
           for (const p of chainStep.produces) {
             if (p.kind === "header") {
@@ -11720,11 +11737,24 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               chainStep.capture.responseBody,
             ]),
           });
+          // This emitter never renders a per-hop `produces` accessor (unlike
+          // emitMultiStepExecuteHttp's identical chain loop) — only the
+          // chain terminal's response is ever read, via
+          // `terminalStep.varName` inside emitFoldMatchAndMergeLines below.
+          // A non-terminal hop chained purely to unlock a later request
+          // (e.g. it sets server-side state via a threaded header) has no
+          // reader for its own response, so binding it to a local declares a
+          // variable nothing references (Biome noUnusedVariables).
+          const bindsChainResponse = chainIndex === target.chainTerminalIndex;
           chainLines.push(
-            `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`,
+            bindsChainResponse
+              ? `      const ${chainStep.varName} = (await httpClient(\`${url}\`, {`
+              : `      await httpClient(\`${url}\`, {`,
             `        method: ${JSON.stringify(chainStep.capture.method)},`,
-            `        schema: ${schemaExpr},`,
-            `      })) as Record<string, unknown>;`
+            `        schema: ${schemaExpr},`
+          );
+          chainLines.push(
+            bindsChainResponse ? `      })) as Record<string, unknown>;` : `      });`
           );
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
