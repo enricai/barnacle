@@ -1580,18 +1580,21 @@ describe("resolveFoldPlan — large capture set performance regression", () => {
     const plan = resolveFoldPlan(steps, spec);
     const elapsedMs = Date.now() - started;
 
-    // The structural detector now collapses every drill of this SAME
-    // endpoint (each threaded from a different widget) into ONE target
-    // (see FoldPlan.absorbedIndices) instead of one target per raw capture
-    // — mergeSpecPlanOntoSamePrimary additionally keeps the declared spec's
-    // own freshest-occurrence target (drillStepIndex itemCount), so this
-    // resolves to 2 targets total, not one per item, with every other
-    // occurrence recorded as absorbed.
+    // The structural detector collapses every drill of this SAME endpoint
+    // (each threaded from a different widget) into ONE target (see
+    // FoldPlan.absorbedIndices) instead of one target per raw capture.
+    // mergeSpecPlanOntoSamePrimary matches the declared spec's own
+    // freshest-occurrence resolution onto that SAME target by drill
+    // endpoint identity (not raw drillStepIndex equality) and overrides its
+    // joinFields in place, rather than appending a second, redundant target
+    // for the same endpoint — so this still resolves to exactly one target,
+    // with every other occurrence (including the spec's own freshest one)
+    // recorded as absorbed.
     expect(plan).toHaveLength(1);
     expect(plan[0]?.primaryStepIndex).toBe(0);
-    expect(plan[0]?.targets).toHaveLength(2);
+    expect(plan[0]?.targets).toHaveLength(1);
     expect(plan[0]?.targets[0]?.drillStepIndex).toBe(1);
-    expect(plan[0]?.targets[1]?.drillStepIndex).toBe(itemCount);
+    expect(plan[0]?.targets[0]?.joinFields).toEqual(["widgetId"]);
     expect(plan[0]?.absorbedIndices).toHaveLength(itemCount - 1);
     expect(elapsedMs).toBeLessThan(5000);
   });
