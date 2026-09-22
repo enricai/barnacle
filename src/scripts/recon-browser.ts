@@ -98,6 +98,7 @@ import {
   GOTO_TIMEOUT_MS,
   latestCaptureIndex,
   logBillingErrorIfPresent,
+  parseFillStep,
   probeLeafInvalidContainers,
   renderLeafInvalidFields,
   renderUnfocusedObserve,
@@ -1779,6 +1780,26 @@ async function replanRemainingFlow(params: {
     ? `STRUCTURAL BLOCK — Every cascade attempt on the failed step resolved NO element (observe found no candidate; nothing was clicked or filled). The step's target is not present-and-drivable on this page as described. Do NOT merely reword or paraphrase the same premise — it will fail identically. Either (a) propose a STRUCTURALLY DIFFERENT step targeting a control that actually exists in PAGE BODY HTML AT FAILURE / the observed candidates, or (b) if the required control genuinely isn't reachable, return outcome=impossible rather than a cosmetic rewrite.`
     : "";
 
+  // An intervening navigation/panel-toggle can silently reset an earlier
+  // fill's field (e.g. a Create-Account panel re-open clearing Email/Password
+  // while only the freshly-filled verifyPassword survives). "Already
+  // completed" is not "still true" for fills, so call out fill-shaped
+  // completed steps specifically and ground the check in the failure-time DOM.
+  const completedFillSteps = completedSteps
+    .map((step) => ({ step, parsed: parseFillStep(step) }))
+    .filter(
+      (entry): entry is { step: string; parsed: { fieldLabel: string; value: string } } =>
+        entry.parsed !== null
+    );
+  const fillReverificationCheck =
+    completedFillSteps.length > 0
+      ? `FILL-STEP RE-VERIFICATION — Some of the STEPS ALREADY COMPLETED are fills (they wrote a specific value into a field). An intervening navigation or panel toggle can silently reset a filled field without producing a failure of its own, so "already completed" does NOT guarantee "still true" for fills. For each of these completed fill steps, check PAGE BODY HTML AT FAILURE for that field still showing the value it was filled with:\n${completedFillSteps
+          .map(({ parsed }) => `- ${parsed.fieldLabel}: expected value '${parsed.value}'`)
+          .join(
+            "\n"
+          )}\nIf a field's value is no longer present in PAGE BODY HTML AT FAILURE, include a fresh fill step for that field in your recovery bridge — do not assume it's still filled just because it appears in STEPS ALREADY COMPLETED.`
+      : "";
+
   const prompt = `You are helping a browser automation agent recover from a failed flow step.
 
 ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.length} executed, ${remainingSteps.length} remaining after the failed step. The completed-tail and remaining-head windows below give you the local context — that's the only flow context replan needs.
@@ -1786,6 +1807,7 @@ ORIGINAL FLOW SUMMARY: ${originalFlow.length} total steps; ${completedSteps.leng
 STEPS ALREADY COMPLETED (these succeeded — do NOT re-emit any of them; the head shows early fills like name/email so you don't repeat them):
 ${renderStepWindow(completedSteps, { head: 8, tail: 10 })}
 
+${fillReverificationCheck ? `${fillReverificationCheck}\n` : ""}
 THE STEP THAT JUST FAILED (after exhausting its per-step healing cascade):
 ${failedStep}
 
