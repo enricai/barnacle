@@ -76,6 +76,9 @@ importers:
       fastify-type-provider-zod:
         specifier: ^5.0.2
         version: 5.0.2(@fastify/swagger@9.8.1)(fastify@5.12.5)(zod@3.25.76)
+      happy-dom:
+        specifier: ^20.11.2
+        version: 20.14.3(bufferutil@4.1.0)
       http-status-codes:
         specifier: ^2.3.0
         version: 2.3.0
@@ -128,9 +131,6 @@ importers:
       dd-trace:
         specifier: ^6
         version: 6.15.0
-      happy-dom:
-        specifier: ^20.11.2
-        version: 20.14.3(bufferutil@4.1.0)
       hot-shots:
         specifier: ^17
         version: 17.1.0
