@@ -1112,6 +1112,29 @@ function extractQuotedLabels(instruction: string): string[] {
 }
 
 /**
+ * Extract the field names a submit-judge rejection explicitly names as
+ * still-required, e.g. from `submit-judge-rejected: Form still displays
+ * validation errors (Shipping Address, Payment Method fields) with an
+ * 'Errors Found' section visible; no submission occurred` this returns
+ * `["Shipping Address", "Payment Method"]`. The parenthetical shape is a
+ * convention of the judge's own prompt, not a schema guarantee, so any
+ * reason that doesn't match returns [] rather than throwing or guessing —
+ * this same array also carries structurally unrelated reasons (selector
+ * failures, timeouts, internal errors).
+ */
+export function extractSubmitJudgeRequiredFields(reasons: readonly string[]): string[] {
+  const pattern = /submit-judge-rejected:.*\(([^()]+?)\s+fields?\)/;
+  return reasons.flatMap((reason) => {
+    const match = pattern.exec(reason);
+    if (!match?.[1]) return [];
+    return match[1]
+      .split(/\s*,\s*|\s+and\s+/)
+      .map((field) => field.replace(/^and\s+/, "").trim())
+      .filter((field) => field.length > 0);
+  });
+}
+
+/**
  * Structural per-step signature for cycle detection: quoted UI-control
  * label(s) when present (sorted for stability), otherwise the normalized
  * instruction text. An LLM rewords a semantically-identical bridge proposal
@@ -1211,7 +1234,10 @@ export function applyFailedStepFlagsToResumingBridgeStep(
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,
-          submitStep: s.submitStep || failedStep.submitStep,
+          submitStep:
+            s.submitStep ||
+            (failedStep.submitStep &&
+              (failedStep.captchaGated || isSubmitShapedInstructionText(s.instruction))),
         }
       : s
   );
@@ -1366,6 +1392,32 @@ export function isReplanRegressingAcrossAuthBoundary(
     const norm = normalizeInstruction(s.instruction);
     return SIGN_IN_PATTERNS.some((p) => p.test(norm));
   });
+}
+
+/** Word-boundary phrase patterns identifying submit/finalize wording in a step's own instruction text. */
+const SUBMIT_SHAPED_INSTRUCTION_PATTERNS = [
+  /\bsubmit\b/,
+  /\bplace\s+(the\s+)?order\b/,
+  /\bcomplete\s+(the\s+)?(order|purchase|application|checkout)\b/,
+  /\bfinish\s+(and\s+)?(order|purchase|application|checkout)\b/,
+  /\bconfirm\s+(and\s+)?(order|purchase|application)\b/,
+  /\bsave\s+and\s+continue\b/,
+  /\bfinalize\b/,
+  /\bcheckout\b/,
+];
+
+/**
+ * Decide whether a step's own instruction text is submit/finalize-shaped,
+ * so callers can ask the step itself instead of trusting a flag carried
+ * forward from elsewhere in the flow (e.g. a stale `submitStep`/`isFinalStep`
+ * combination that no longer matches what this particular step does).
+ * Matches on word boundaries against normalized (lowercased, whitespace-
+ * collapsed) text, mirroring {@link SIGN_IN_PATTERNS}/{@link ACCOUNT_CREATION_PATTERNS},
+ * so a phrase like "commit the change" does not false-positive on "submit". Pure.
+ */
+export function isSubmitShapedInstructionText(instruction: string): boolean {
+  const norm = normalizeInstruction(instruction);
+  return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
 }
 
 /** Top-level keys `persistReplannedFlow` already threads explicitly (plus `steps`). */
@@ -1879,6 +1931,16 @@ async function replanRemainingFlow(params: {
     ? `STRUCTURAL BLOCK — Every cascade attempt on the failed step resolved NO element (observe found no candidate; nothing was clicked or filled). The step's target is not present-and-drivable on this page as described. Do NOT merely reword or paraphrase the same premise — it will fail identically. Either (a) propose a STRUCTURALLY DIFFERENT step targeting a control that actually exists in PAGE BODY HTML AT FAILURE / the observed candidates, or (b) if the required control genuinely isn't reachable, return outcome=impossible rather than a cosmetic rewrite.`
     : "";
 
+  // Submit-judge-named fields are the judge's own explicit statement of WHICH
+  // fields are still missing/invalid. Without a dedicated directive, that
+  // detail sits inside the generic WHY VERIFICATION FAILED prose and the LLM
+  // has re-proposed the identical just-failed step instead of acting on it.
+  const stillRequiredFields = extractSubmitJudgeRequiredFields(recentFailureReasons);
+  const stillRequiredFieldsCheck =
+    stillRequiredFields.length > 0
+      ? `STILL-REQUIRED FIELDS (per the site's own submit validator) — these fields were explicitly named by the submit-judge as still missing/invalid; your bridge MUST include one fill step per named field below instead of re-proposing the step that just failed:\n${stillRequiredFields.map((field) => `- ${field}`).join("\n")}`
+      : "";
+
   // An intervening navigation/panel-toggle can silently reset an earlier
   // fill's field (e.g. a Create-Account panel re-open clearing Email/Password
   // while only the freshly-filled verifyPassword survives). "Already
@@ -1917,7 +1979,7 @@ CURRENT BROWSER STATE:
 URL: ${page.url()}
 Title: ${pageTitle}
 
-${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
+${elementModelCheck ? `${elementModelCheck}\n\n` : ""}${structuralBlockCheck ? `${structuralBlockCheck}\n\n` : ""}${stillRequiredFieldsCheck ? `${stillRequiredFieldsCheck}\n\n` : ""}WHY VERIFICATION FAILED (latest attempt reasons from the cascade — read these carefully, they explain WHY the step is being declared failed):
 ${failureReasonList || "(none)"}
 
 PAGE TRANSITION + VALIDATOR TELEMETRY (parsed from Google Analytics Measurement Protocol beacons (POSTs to google-analytics.com/g/collect) captured during the failed step's attempt window — this is the SPA's own telemetry telling you what state it thinks it's in. Watch for: en=view_secondPage / en=view_thirdPage indicating the SPA advanced to a later form page WITHOUT firing Page.frameNavigated (so URL stays the same but questions changed); en=view_thankYouPage indicating the application SUBMITTED SUCCESSFULLY (a stronger success signal than network captures because the /integrated_apply POST is sometimes debounced); epn.validationErrorsCount=N indicating the site's own client validator counts N unfilled required fields. When validationErrorsCount > 0, prefer steps that target unfilled fields over re-clicking Submit/Continue. When view_thankYouPage appears, the application already submitted — do not propose more form-fill steps):
@@ -3245,7 +3307,11 @@ async function main(): Promise<void> {
                   {
                     ...resumeTarget,
                     captchaGated: resumeTarget.captchaGated || step.captchaGated,
-                    submitStep: resumeTarget.submitStep || step.submitStep,
+                    submitStep:
+                      resumeTarget.submitStep ||
+                      (step.submitStep &&
+                        (step.captchaGated ||
+                          isSubmitShapedInstructionText(resumeTarget.instruction))),
                   },
                   ...originalRemaining.slice(1),
                 ]

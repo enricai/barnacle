@@ -122,6 +122,7 @@ import {
   detectRejectionInResponseBody,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  extractSubmitJudgeRequiredFields,
   fillHtml5DateTimeInput,
   filterCompletedFromReplan,
   filterReplanDuplicatingNextAuthored,
@@ -142,6 +143,7 @@ import {
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
+  isSubmitShapedInstructionText,
   isUploadAffordanceLabel,
   isWizardExitAction,
   type LeafInvalidField,
@@ -1732,6 +1734,34 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[1]!.captchaGated).toBe(true);
     expect(out[1]!.submitStep).toBe(true);
   });
+
+  it("keeps submitStep on the bridge step that genuinely resumes the failed batch's submit-shaped last step", () => {
+    const failedStep = mk("Click the 'Place Order' button", { submitStep: true });
+    const newSteps = [mk("Click the 'Place Order' button to finish checkout")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("does NOT carry submitStep onto a plain field-fill bridge step merely because it resumes the failed step's control", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Fill in the Company Name field with 'Acme Inc' again")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+  });
+
+  it("does NOT carry submitStep onto a plain fallback (no label match) bridge step when neither it nor the failed step is captcha-gated", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Fill in the Shipping Address field with '1 Main St'")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+  });
+
+  it("DOES carry submitStep onto a genuinely submit-shaped fallback (no label match) bridge step", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Click 'Save and Continue' to proceed")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
@@ -1918,6 +1948,33 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
         ["Click 'Create Account'"]
       )
     ).toBe(false);
+  });
+});
+
+describe("recon-browser/isSubmitShapedInstructionText", () => {
+  it("returns true for submit/finalize-shaped instructions", () => {
+    expect(isSubmitShapedInstructionText("Click the Place Order button")).toBe(true);
+    expect(isSubmitShapedInstructionText("Click Save and Continue")).toBe(true);
+    expect(isSubmitShapedInstructionText("Click Submit")).toBe(true);
+    expect(isSubmitShapedInstructionText("Complete the purchase")).toBe(true);
+    expect(isSubmitShapedInstructionText("Finalize the order")).toBe(true);
+    expect(isSubmitShapedInstructionText("Proceed to checkout")).toBe(true);
+  });
+
+  it("returns false for plain field-fill/click instructions", () => {
+    expect(isSubmitShapedInstructionText("Fill in the Company Name field with Acme Inc")).toBe(
+      false
+    );
+    expect(isSubmitShapedInstructionText("Click Next")).toBe(false);
+    expect(isSubmitShapedInstructionText("Select the shipping method")).toBe(false);
+  });
+
+  it("matches case-insensitively and across whitespace variation", () => {
+    expect(isSubmitShapedInstructionText("  SUBMIT   the  application  ")).toBe(true);
+  });
+
+  it("does not false-positive on unrelated words containing the same substring", () => {
+    expect(isSubmitShapedInstructionText("Commit the change to the draft")).toBe(false);
   });
 });
 
@@ -2119,6 +2176,69 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
 
   it("skips missing capture files silently", () => {
     expect(extractSubmitFailureEvidence(["missing.json"], ownHosts, tmpDir)).toBe("");
+  });
+});
+
+describe("recon-browser/extractSubmitJudgeRequiredFields", () => {
+  it("extracts multiple field names from the parenthetical", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method fields) with an 'Errors Found' section visible; no submission occurred—the form is incomplete and requires corrections before it can be submitted.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+    ]);
+  });
+
+  it("extracts a single field name from the parenthetical", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Discount Code field) with an 'Errors Found' section visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Discount Code"]);
+  });
+
+  it("splits on 'and' as well as commas", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method and Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+      "Discount Code",
+    ]);
+  });
+
+  it("splits on 'and' with an Oxford comma", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method, and Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+      "Discount Code",
+    ]);
+  });
+
+  it("returns [] for reasons with no submit-judge-rejected parenthetical", () => {
+    const reasons = [
+      "structured-click: no checkable input reachable from prior selector",
+      "no observable effect (no network, url, or dom change)",
+      "An internal server error occurred",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([]);
+  });
+
+  it("returns [] for a submit-judge-rejected reason with no parenthetical field list", () => {
+    const reasons = ["submit-judge-rejected: The form could not be verified as submitted."];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([]);
+  });
+
+  it("collects fields across multiple reasons and ignores non-matching ones", () => {
+    const reasons = [
+      "timeout waiting for navigation",
+      "submit-judge-rejected: Form still displays validation errors (Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Discount Code"]);
   });
 });
 
@@ -3583,6 +3703,122 @@ describe("replanRemainingFlow — fill-step re-verification prompt (bugfix-003)"
     const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
     expect(prompt).not.toContain("FILL-STEP RE-VERIFICATION");
     expect(prompt).toContain("do NOT re-emit any of them");
+  });
+});
+
+describe("replanRemainingFlow — still-required fields prompt directive (bugfix-004)", () => {
+  let tmpDir: string;
+  let dumpPath: string;
+
+  function makeReplanClient(): Anthropic {
+    return {
+      messages: {
+        // Also fields the invalid-fields/error-messages Haiku judges
+        // `readFailureDumpEvidence` runs against a real dump file — return
+        // schema-shaped empty verdicts for those so they don't throw and
+        // silently swallow recentFailureReasons via the outer catch.
+        parse: vi.fn().mockImplementation(async ({ system }: { system: string }) => {
+          const parsed_output = system.includes("invalid-field detector")
+            ? { fields: [] }
+            : system.includes("error-message extractor")
+              ? { messages: [] }
+              : { outcome: "replan", steps: ["Click Submit"] };
+          return {
+            parsed_output,
+            content: [{ type: "text", text: "{}" }],
+            usage: { input_tokens: 100, output_tokens: 5 },
+          };
+        }),
+      },
+    } as unknown as Anthropic;
+  }
+
+  function makePageStub(): {
+    url: () => string;
+    title: () => Promise<string>;
+    evaluate: ReturnType<typeof vi.fn>;
+  } {
+    return {
+      url: () => "https://example.com/checkout",
+      title: vi.fn().mockResolvedValue("Checkout"),
+      evaluate: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  function makeStagehandStub(): { observe: ReturnType<typeof vi.fn> } {
+    return {
+      observe: vi.fn().mockResolvedValue([]),
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-replan-required-fields-"));
+    dumpPath = join(tmpDir, "step-failure.json");
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("directs the LLM to fill named still-required fields when submit-judge rejection names them", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    writeFileSync(
+      dumpPath,
+      JSON.stringify({
+        bodyOuterHtml: null,
+        attempts: [
+          {
+            errorMessage:
+              "submit-judge-rejected: Form still displays validation errors (Shipping Method, Gift Wrap fields) with an 'Errors Found' section visible; no submission occurred",
+          },
+        ],
+      })
+    );
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Click Submit"],
+      completedSteps: [],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: dumpPath,
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).toContain("STILL-REQUIRED FIELDS");
+    expect(prompt).toContain("- Shipping Method");
+    expect(prompt).toContain("- Gift Wrap");
+    expect(prompt).toContain("your bridge MUST include one fill step per named field");
+  });
+
+  it("omits the still-required fields section when the diagnostic doesn't name fields", async () => {
+    const client = makeReplanClient();
+    const { fn, calls } = makeCaptureFn();
+    writeFileSync(
+      dumpPath,
+      JSON.stringify({
+        bodyOuterHtml: null,
+        attempts: [{ errorMessage: "observe returned no candidates" }],
+      })
+    );
+    await replanRemainingFlow({
+      client,
+      originalFlow: ["Click Submit"],
+      completedSteps: [],
+      failedStep: "Click Submit",
+      remainingSteps: [],
+      failureDumpPath: dumpPath,
+      page: makePageStub() as never,
+      stagehand: makeStagehandStub() as never,
+      captureFn: fn,
+    });
+    const prompt = calls.find((c) => c.callType === CALL_TYPE_RECON_REPLAN)?.userContent ?? "";
+    expect(prompt).not.toContain("STILL-REQUIRED FIELDS");
+    expect(prompt).toContain("WHY VERIFICATION FAILED");
+    expect(prompt).toContain("observe returned no candidates");
   });
 });
 
