@@ -1112,6 +1112,29 @@ function extractQuotedLabels(instruction: string): string[] {
 }
 
 /**
+ * Extract the field names a submit-judge rejection explicitly names as
+ * still-required, e.g. from `submit-judge-rejected: Form still displays
+ * validation errors (Shipping Address, Payment Method fields) with an
+ * 'Errors Found' section visible; no submission occurred` this returns
+ * `["Shipping Address", "Payment Method"]`. The parenthetical shape is a
+ * convention of the judge's own prompt, not a schema guarantee, so any
+ * reason that doesn't match returns [] rather than throwing or guessing —
+ * this same array also carries structurally unrelated reasons (selector
+ * failures, timeouts, internal errors).
+ */
+export function extractSubmitJudgeRequiredFields(reasons: readonly string[]): string[] {
+  const pattern = /submit-judge-rejected:.*\(([^()]+?)\s+fields?\)/;
+  return reasons.flatMap((reason) => {
+    const match = pattern.exec(reason);
+    if (!match?.[1]) return [];
+    return match[1]
+      .split(/\s*,\s*|\s+and\s+/)
+      .map((field) => field.trim())
+      .filter((field) => field.length > 0);
+  });
+}
+
+/**
  * Structural per-step signature for cycle detection: quoted UI-control
  * label(s) when present (sorted for stability), otherwise the normalized
  * instruction text. An LLM rewords a semantically-identical bridge proposal

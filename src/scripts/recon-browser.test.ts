@@ -122,6 +122,7 @@ import {
   detectRejectionInResponseBody,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  extractSubmitJudgeRequiredFields,
   fillHtml5DateTimeInput,
   filterCompletedFromReplan,
   filterReplanDuplicatingNextAuthored,
@@ -2147,6 +2148,55 @@ describe("recon-browser/extractSubmitFailureEvidence", () => {
 
   it("skips missing capture files silently", () => {
     expect(extractSubmitFailureEvidence(["missing.json"], ownHosts, tmpDir)).toBe("");
+  });
+});
+
+describe("recon-browser/extractSubmitJudgeRequiredFields", () => {
+  it("extracts multiple field names from the parenthetical", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method fields) with an 'Errors Found' section visible; no submission occurred—the form is incomplete and requires corrections before it can be submitted.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Shipping Address", "Payment Method"]);
+  });
+
+  it("extracts a single field name from the parenthetical", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Discount Code field) with an 'Errors Found' section visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Discount Code"]);
+  });
+
+  it("splits on 'and' as well as commas", () => {
+    const reasons = [
+      "submit-judge-rejected: Form still displays validation errors (Shipping Address, Payment Method and Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([
+      "Shipping Address",
+      "Payment Method",
+      "Discount Code",
+    ]);
+  });
+
+  it("returns [] for reasons with no submit-judge-rejected parenthetical", () => {
+    const reasons = [
+      "structured-click: no checkable input reachable from prior selector",
+      "no observable effect (no network, url, or dom change)",
+      "An internal server error occurred",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([]);
+  });
+
+  it("returns [] for a submit-judge-rejected reason with no parenthetical field list", () => {
+    const reasons = ["submit-judge-rejected: The form could not be verified as submitted."];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual([]);
+  });
+
+  it("collects fields across multiple reasons and ignores non-matching ones", () => {
+    const reasons = [
+      "timeout waiting for navigation",
+      "submit-judge-rejected: Form still displays validation errors (Discount Code fields) visible; no submission occurred.",
+    ];
+    expect(extractSubmitJudgeRequiredFields(reasons)).toEqual(["Discount Code"]);
   });
 });
 
