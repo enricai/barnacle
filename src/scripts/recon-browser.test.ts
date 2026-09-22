@@ -1755,6 +1755,13 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
     expect(out[0]!.submitStep).toBe(false);
   });
+
+  it("DOES carry submitStep onto a genuinely submit-shaped fallback (no label match) bridge step", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Click 'Save and Continue' to proceed")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
