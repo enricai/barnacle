@@ -588,6 +588,182 @@ describe("emitContractTs — fold-merge chain loop emitted code is Biome-clean",
   });
 });
 
+const BUG_E_BASE = "https://api.example.com";
+
+const BUG_E_FOLD_RETURN_SPEC: FoldReturnSpec = {
+  endpointPattern: "/orders/hold",
+  resultsPath: "regions.*.stores.*.items",
+  joinFields: ["sku"],
+  drillParamBindings: {},
+};
+
+/**
+ * Bug E: the SAME non-terminal-chain-hop dead-binding risk Bug C guards
+ * (`bindsChainResponse = chainIndex === target.chainTerminalIndex` at
+ * recon-generate.ts's `emitContractTs` fold-chain loop) but with the
+ * primary results reached through TWO {@link ARRAY_WILDCARD_SEGMENT}
+ * crossings (`regions.*.stores.*.items`) instead of Bug C's single flat
+ * array — i.e. `ancestorVars.length === 2` (a region loop wrapping a store
+ * loop) rather than `0`. `bindsChainResponse` itself doesn't read
+ * `ancestorVars` at all, so nothing about the decision should change with
+ * nesting depth — this locks that the terminal-only binding still holds
+ * (and the `hold` hop's response, a genuine two-level-nested-per-item
+ * prerequisite call, is never bound to an unread local) once the chain
+ * fetch is spliced inside two nested ancestor loops instead of directly
+ * inside a single item loop.
+ */
+function bugENestedAncestorItemDrillSteps(): {
+  actionSteps: unknown[];
+  foldReturnSpec: FoldReturnSpec;
+  primaryResponseBody: unknown;
+} {
+  const search = {
+    capture: buildCapture({
+      url: `${BUG_E_BASE}/catalog/search/`,
+      requestPostData: '{"page":1}',
+      responseBody: {
+        regions: [
+          {
+            regionId: "region-1",
+            stores: [
+              {
+                storeId: "store-1",
+                items: [{ sku: "item-a" }, { sku: "item-b" }],
+              },
+            ],
+          },
+        ],
+      },
+      timestamp: "2026-02-01T00:00:01Z",
+    }),
+    varName: "r1",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  const hold = {
+    capture: buildCapture({
+      url: `${BUG_E_BASE}/orders/hold/`,
+      requestPostData: '{"sku":"item-a"}',
+      responseBody: { holdToken: "hold-token-item-a-abcdefgh" },
+      timestamp: "2026-02-01T00:00:02Z",
+    }),
+    varName: "r2",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  const detail = {
+    capture: buildCapture({
+      url: `${BUG_E_BASE}/orders/detail/`,
+      requestPostData: '{"holdToken":"hold-token-item-a-abcdefgh"}',
+      responseBody: { sku: "item-a", price: 42, holdToken: "hold-token-item-a-abcdefgh" },
+      timestamp: "2026-02-01T00:00:03Z",
+    }),
+    varName: "r3",
+    produces: [],
+    isMultipart: false,
+    isCrossDomain: false,
+  };
+  return {
+    actionSteps: [search, hold, detail],
+    foldReturnSpec: BUG_E_FOLD_RETURN_SPEC,
+    primaryResponseBody: search.capture.responseBody,
+  };
+}
+
+function emitBugEContract(): string {
+  const { actionSteps, foldReturnSpec, primaryResponseBody } = bugENestedAncestorItemDrillSteps();
+  return emitContractTs({
+    siteId: "bug-e-test-site",
+    pascal: "BugETestSite",
+    baseUrl: BUG_E_BASE,
+    baseHeaders: {},
+    minTime: 100,
+    safeRps: 10,
+    responseBody: primaryResponseBody,
+    gql: false,
+    gqlQuery: null,
+    endpointPath: "/catalog/search",
+    gqlOperationName: null,
+    gqlVariables: null,
+    auxFiles: [],
+    actionSteps: actionSteps as Parameters<typeof emitContractTs>[0]["actionSteps"],
+    foldReturnSpec,
+  });
+}
+
+describe("emitContractTs — fold-merge chain loop emitted code is Biome-clean with two-level nested ancestor loops (Bug E)", () => {
+  it("never binds the non-terminal chain hop's response to a variable when the primary array is reached through two nested ancestor loops", () => {
+    const contract = emitBugEContract();
+    const body = extractExecuteHttpBody(contract);
+
+    // The hold hop's call must still fire (it's a genuine prerequisite for
+    // the detail call) but must never be bound to a local — no `const rN =`
+    // immediately precedes its URL.
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold\/`/);
+    expect(body).not.toMatch(
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold\/`/
+    );
+
+    // The real terminal (detail) IS bound, since its response is what gets
+    // folded onto the primary item.
+    expect(body).toMatch(
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/detail\/`/
+    );
+
+    assertPatternsClean(body);
+  });
+
+  it("passes `biome lint` for the two-level nested ancestor drill fixture", () => {
+    if (!existsSync(BIOME_BIN)) {
+      throw new Error(`biome binary not found at ${BIOME_BIN} — run pnpm install`);
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), "barnacle-biome-"));
+    try {
+      writeFileSync(
+        join(dir, "biome.json"),
+        JSON.stringify({
+          $schema: "https://biomejs.dev/schemas/2.3.11/schema.json",
+          formatter: { enabled: false },
+          assist: { enabled: false },
+          linter: {
+            enabled: true,
+            rules: {
+              recommended: false,
+              correctness: { noUnusedVariables: "error" },
+              style: { noNonNullAssertion: "error" },
+            },
+          },
+        })
+      );
+
+      const bugEPreamble = [
+        "async function executeHttp(",
+        "  payload: Record<string, unknown>,",
+        "  context: { baseUrl: string },",
+        "): Promise<{ data: unknown }> {",
+        "  const httpClient = (_url: string, _init: unknown): Promise<unknown> => Promise.resolve({});",
+        "  const z = { object: (_: unknown) => ({}), string: () => ({}), boolean: () => ({}), number: () => ({}), array: (_: unknown) => ({}) };",
+        "  void z;",
+      ].join("\n");
+      const bugEBody = extractExecuteHttpBody(emitBugEContract());
+      const bugEFile = join(dir, "bugE.ts");
+      writeFileSync(bugEFile, `${bugEPreamble}\n${bugEBody}\n}\nvoid executeHttp;\n`);
+      expect(() =>
+        execFileSync(BIOME_BIN, ["lint", "--config-path", dir, bugEFile], {
+          cwd: dir,
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+      ).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * G2's own uncomment instruction claims the emitted `// const ... =
  * loadFixture(...)` line is valid JS once stripped of its leading `// `.
