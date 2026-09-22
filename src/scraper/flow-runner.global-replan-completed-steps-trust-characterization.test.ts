@@ -8,43 +8,33 @@ import {
 } from "@/scripts/recon-browser";
 
 /**
- * Characterization test for recon item 2 ("may already be intentional"):
- * does a global replan re-fill a form-fill step's fields after an
- * intervening step has reset them, or does it proceed trusting the stale
- * `completedSteps` record purely on instruction-string identity?
+ * Regression test for recon item 2: a global replan must re-fill a form-fill
+ * step's fields when an intervening step has reset them in the live DOM,
+ * rather than trusting the stale `completedSteps` record purely on
+ * instruction-string identity.
  *
  * **Scenario:** a step fills two Work-History fields and is credited
  * complete; an intervening "reopen the panel" step resets those two fields
- * in the live DOM (modeled here as a fact about the page, since
- * `completedSteps`/`filterCompletedFromReplan` never inspect DOM state —
- * see below); a later step fails and the LLM replanner proposes a bridge
- * that re-proposes filling those same two fields (worded identically to
- * the original authored steps, which is the LLM's natural behavior when
- * asked to "get the form back to a submittable state"). This test runs
- * that raw bridge through the exact splice-time filter pipeline `main()`
- * runs on `replanRemainingFlow`'s output (`filterCompletedFromReplan` ->
+ * in the live DOM; a later step fails and the LLM replanner proposes a
+ * bridge that re-proposes filling those same two fields (worded identically
+ * to the original authored steps, which is the LLM's natural behavior when
+ * asked to "get the form back to a submittable state"). This test runs that
+ * raw bridge through the exact splice-time filter pipeline `main()` runs on
+ * `replanRemainingFlow`'s output (`filterCompletedFromReplan` ->
  * `isReplanReproposingFailedStep` -> `filterReplanDuplicatingNextAuthored`,
- * mirrored from `recon-browser.destructive-replan-regression.test.ts`) and
- * asserts what actually happens today.
+ * mirrored from `recon-browser.destructive-replan-regression.test.ts`).
  *
- * `filterCompletedFromReplan` (`recon-browser.ts`) only compares
- * `newSteps[].instruction` against the `Set` of already-completed
- * instruction strings — it has no access to and performs no check of
- * current DOM/field state. So a replan bridge proposing to re-fill a
- * field that was reset behind the scenes is indistinguishable, at this
- * filter, from a replan bridge that is genuinely trying to redo already-
- * valid work: both get dropped as "already completed".
+ * `filterCompletedFromReplan` (`recon-browser.ts`) now accepts an optional
+ * `bodyHtmlAtFailure` snapshot of the failure-time DOM. A completed step
+ * that parses as a fill (`parseFillStep`) is only trusted as still-complete
+ * when its expected value is still present in that DOM — so a reset fill's
+ * re-fill proposal survives the filter instead of being dropped as
+ * "already completed", and the bridge is spliced in rather than the whole
+ * recovery being discarded via `isReplanReproposingFailedStep`.
  *
- * **What this actually shows (stronger than "the fields are silently
- * skipped"):** dropping the two re-fill proposals leaves only the
- * just-failed step itself in `newSteps`, which trips
- * `isReplanReproposingFailedStep` — `main()`'s very next guard after
- * `filterCompletedFromReplan` — so the ENTIRE replan bridge is discarded
- * as a "replan-cycle-detected" `StepVerificationError` and the run aborts,
- * rather than either re-filling the reset fields or proceeding past them
- * trusting the stale record. The completedSteps trust doesn't just risk a
- * stale-data pass-through; it can convert a valid, necessary recovery
- * bridge into an outright abort.
+ * A sibling case proves the still-valid-fill path is untouched: when the
+ * failure-time DOM still contains both fields' values, the re-fill
+ * proposals are dropped exactly as before.
  */
 
 const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
@@ -81,16 +71,30 @@ const RAW_REPLAN_BRIDGE: NormalizedStep[] = [COMPANY_NAME_STEP, JOB_TITLE_STEP, 
   (instruction) => mk(instruction)
 );
 
+/** Failure-time DOM after REOPEN_PANEL_STEP wiped the two reset fields. */
+const BODY_HTML_WITH_FIELDS_RESET =
+  "<body><input name='company' value=''><input name='title' value=''></body>";
+
+/** Failure-time DOM where both fields' values are still present (unchanged behavior). */
+const BODY_HTML_WITH_FIELDS_STILL_SET =
+  "<body><input name='company' value='General Hospital'><input name='title' value='Registered Nurse'></body>";
+
 /** Mirrors the splice-time pipeline `main()` runs on `replanRemainingFlow`'s raw output. */
 function applyReplanOutputFilters(params: {
   rawNewSteps: readonly NormalizedStep[];
   completedSteps: readonly string[];
   failedStep: string;
   originalRemaining: readonly NormalizedStep[];
+  bodyHtmlAtFailure?: string | null;
 }): NormalizedStep[] {
-  const { rawNewSteps, completedSteps, failedStep, originalRemaining } = params;
+  const { rawNewSteps, completedSteps, failedStep, originalRemaining, bodyHtmlAtFailure } = params;
 
-  const newSteps = filterCompletedFromReplan(rawNewSteps, completedSteps, failedStep);
+  const newSteps = filterCompletedFromReplan(
+    rawNewSteps,
+    completedSteps,
+    failedStep,
+    bodyHtmlAtFailure
+  );
   if (isReplanReproposingFailedStep(newSteps, failedStep)) {
     throw new StepVerificationError(
       "replan re-proposed only the just-failed step with no new bridge",
@@ -105,32 +109,63 @@ function applyReplanOutputFilters(params: {
   return [...taggedNewSteps, ...originalRemaining];
 }
 
-describe("global-replan completedSteps trust characterization (recon item 2, offline fixture)", () => {
-  it("first: filterCompletedFromReplan alone drops the two re-fill proposals purely on instruction-string identity, with no check of current DOM state", () => {
-    const filtered = filterCompletedFromReplan(RAW_REPLAN_BRIDGE, COMPLETED_STEPS, FAILED_STEP);
+describe("global-replan completedSteps trust regression (recon item 2, offline fixture)", () => {
+  it("re-fill proposals for fields reset in the failure-time DOM survive filterCompletedFromReplan", () => {
+    const filtered = filterCompletedFromReplan(
+      RAW_REPLAN_BRIDGE,
+      COMPLETED_STEPS,
+      FAILED_STEP,
+      BODY_HTML_WITH_FIELDS_RESET
+    );
     const instructions = filtered.map((s) => s.instruction);
 
-    // Current behavior: the re-fill proposals for the two fields the
-    // intervening reopen step actually reset are dropped as "already
-    // completed" — filterCompletedFromReplan has no visibility into DOM
-    // state, only instruction-string membership in completedSteps.
+    // Fixed behavior: the two fields the intervening reopen step actually
+    // reset are absent from the failure-time DOM, so their completed-fill
+    // record is no longer trusted and the replan's fresh re-fill survives.
+    expect(instructions).toContain(COMPANY_NAME_STEP);
+    expect(instructions).toContain(JOB_TITLE_STEP);
+    expect(instructions).toEqual([COMPANY_NAME_STEP, JOB_TITLE_STEP, FAILED_STEP]);
+  });
+
+  it("the recovery bridge splices the re-fill proposals ahead of SAVE_STEP instead of aborting", () => {
+    const result = applyReplanOutputFilters({
+      rawNewSteps: RAW_REPLAN_BRIDGE,
+      completedSteps: COMPLETED_STEPS,
+      failedStep: FAILED_STEP,
+      originalRemaining: ORIGINAL_REMAINING,
+      bodyHtmlAtFailure: BODY_HTML_WITH_FIELDS_RESET,
+    });
+
+    expect(result.map((s) => s.instruction)).toEqual([
+      COMPANY_NAME_STEP,
+      JOB_TITLE_STEP,
+      FAILED_STEP,
+      ...ORIGINAL_REMAINING.map((s) => s.instruction),
+    ]);
+  });
+
+  it("still drops the re-fill proposals when the failure-time DOM shows both fields still set (no regression)", () => {
+    const filtered = filterCompletedFromReplan(
+      RAW_REPLAN_BRIDGE,
+      COMPLETED_STEPS,
+      FAILED_STEP,
+      BODY_HTML_WITH_FIELDS_STILL_SET
+    );
+    const instructions = filtered.map((s) => s.instruction);
+
     expect(instructions).not.toContain(COMPANY_NAME_STEP);
     expect(instructions).not.toContain(JOB_TITLE_STEP);
     expect(instructions).toEqual([FAILED_STEP]);
   });
 
-  it("then: the whole recovery bridge is discarded (replan-cycle-detected abort), not silently spliced in without the reset fields", () => {
-    // Once the two re-fill steps are gone, `newSteps` is just [FAILED_STEP]
-    // — indistinguishable, to `isReplanReproposingFailedStep`, from a
-    // replanner that failed to produce any new bridge at all. `main()`'s
-    // very next guard after `filterCompletedFromReplan` throws on exactly
-    // this shape, aborting the run rather than proceeding on stale trust.
+  it("the whole recovery bridge is still discarded (replan-cycle-detected abort) when no fields actually need re-filling", () => {
     expect(() =>
       applyReplanOutputFilters({
         rawNewSteps: RAW_REPLAN_BRIDGE,
         completedSteps: COMPLETED_STEPS,
         failedStep: FAILED_STEP,
         originalRemaining: ORIGINAL_REMAINING,
+        bodyHtmlAtFailure: BODY_HTML_WITH_FIELDS_STILL_SET,
       })
     ).toThrow(StepVerificationError);
 
@@ -140,6 +175,7 @@ describe("global-replan completedSteps trust characterization (recon item 2, off
         completedSteps: COMPLETED_STEPS,
         failedStep: FAILED_STEP,
         originalRemaining: ORIGINAL_REMAINING,
+        bodyHtmlAtFailure: BODY_HTML_WITH_FIELDS_STILL_SET,
       });
       expect.unreachable("expected applyReplanOutputFilters to throw");
     } catch (error) {
