@@ -1234,7 +1234,10 @@ export function applyFailedStepFlagsToResumingBridgeStep(
       ? {
           ...s,
           captchaGated: s.captchaGated || failedStep.captchaGated,
-          submitStep: s.submitStep || failedStep.submitStep,
+          submitStep:
+            s.submitStep ||
+            (failedStep.submitStep &&
+              (failedStep.captchaGated || isSubmitShapedInstructionText(s.instruction))),
         }
       : s
   );
@@ -3294,7 +3297,11 @@ async function main(): Promise<void> {
                   {
                     ...resumeTarget,
                     captchaGated: resumeTarget.captchaGated || step.captchaGated,
-                    submitStep: resumeTarget.submitStep || step.submitStep,
+                    submitStep:
+                      resumeTarget.submitStep ||
+                      (step.submitStep &&
+                        (step.captchaGated ||
+                          isSubmitShapedInstructionText(resumeTarget.instruction))),
                   },
                   ...originalRemaining.slice(1),
                 ]

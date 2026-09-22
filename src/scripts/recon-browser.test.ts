@@ -1734,6 +1734,27 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[1]!.captchaGated).toBe(true);
     expect(out[1]!.submitStep).toBe(true);
   });
+
+  it("keeps submitStep on the bridge step that genuinely resumes the failed batch's submit-shaped last step", () => {
+    const failedStep = mk("Click the 'Place Order' button", { submitStep: true });
+    const newSteps = [mk("Click the 'Place Order' button to finish checkout")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("does NOT carry submitStep onto a plain field-fill bridge step merely because it resumes the failed step's control", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Fill in the Company Name field with 'Acme Inc' again")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+  });
+
+  it("does NOT carry submitStep onto a plain fallback (no label match) bridge step when neither it nor the failed step is captcha-gated", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Fill in the Shipping Address field with '1 Main St'")];
+    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+  });
 });
 
 describe("recon-browser/isReplanReproposingFailedStep", () => {
