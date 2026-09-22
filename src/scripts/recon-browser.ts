@@ -1080,12 +1080,13 @@ export function filterCompletedFromReplan(
 ): NormalizedStep[] {
   const isStaleFill = (step: string): boolean => {
     if (!bodyHtmlAtFailure) return false;
-    const fieldLabel = parseFillStep(step)?.fieldLabel;
-    if (fieldLabel) {
+    const parsedFill = parseFillStep(step);
+    const fieldLabel = parsedFill?.fieldLabel;
+    if (fieldLabel && parsedFill?.value) {
       const fieldValue = resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel);
-      if (fieldValue !== null) return !fieldValue;
+      if (fieldValue !== null) return fieldValue !== parsedFill.value;
     }
-    const value = parseFillStep(step)?.value ?? parseFillValueIntent(step)?.value;
+    const value = parsedFill?.value ?? parseFillValueIntent(step)?.value;
     if (!value) return false;
     return !bodyHtmlAtFailure.includes(value);
   };

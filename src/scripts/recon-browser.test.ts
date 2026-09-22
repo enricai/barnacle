@@ -1484,6 +1484,44 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     expect(out.map((s) => s.instruction)).toEqual(["Click NEXT"]);
   });
 
+  it("scopes the stale check to the fill's own field, not a sibling field that happens to share its value", () => {
+    const raw = [mk("Fill in the Password field with 'Secr3t!'"), mk("Click NEXT")];
+    const completed = ["Fill in the Password field with 'Secr3t!'"];
+    // "Confirm Password" still holds the value; "Password" itself was reset —
+    // a whole-body substring search would find exactly one match (Confirm Password's).
+    const bodyHtmlAtFailure =
+      "<body>" +
+      "<label for='pw'>Password</label><input id='pw' value=''>" +
+      "<label for='pw2'>Confirm Password</label><input id='pw2' value='Secr3t!'>" +
+      "</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Password field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
+
+  it("drops a re-proposed fill whose targeted element holds a DIFFERENT non-empty value (not just empty)", () => {
+    const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
+    const completed = ["Fill in the Email field with 'x@y.z'"];
+    const bodyHtmlAtFailure = "<body><input name='email' value='garbage'></body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Email field with 'x@y.z'",
+      "Click NEXT",
+    ]);
+  });
+
   it("never affects a still-completed non-fill step even when bodyHtmlAtFailure is provided", () => {
     const raw = [mk("Click the NEXT button to proceed"), mk("Click DONE")];
     const completed = ["Click the NEXT button to proceed"];
