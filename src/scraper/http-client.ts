@@ -485,13 +485,19 @@ export function createHttpClient<TResponse>(
               signal,
             });
           } catch (err) {
-            // Caller-triggered cancellation — propagate without retry. The
-            // outer p-retry's own `signal` option will also throwIfAborted
-            // on its retry-loop boundaries, but wrapping in AbortError here
-            // covers the window between fetch dispatch and the next signal
-            // check inside pRetry.
-            if (err instanceof Error && err.name === "AbortError") {
-              throw new AbortError(err);
+            // Caller-triggered cancellation ("AbortError") or a defaultTimeoutMs
+            // firing (AbortSignal.timeout rejects as "TimeoutError", not
+            // "AbortError") — either way the signal fired on purpose, so
+            // propagate without retry rather than burning the retry budget on
+            // a call that will only time out again. The outer p-retry's own
+            // `signal` option will also throwIfAborted on its retry-loop
+            // boundaries, but wrapping in AbortError here covers the window
+            // between fetch dispatch and the next signal check inside pRetry.
+            if (
+              err instanceof Error &&
+              (err.name === "AbortError" || err.name === "TimeoutError")
+            ) {
+              throw new AbortError(new UnknownScraperError(`http fetch aborted: ${err.message}`));
             }
             // Network-level failure (DNS, TCP reset, timeout) — retryable.
             throw new UnknownScraperError(`http fetch failed: ${String(err)}`);
