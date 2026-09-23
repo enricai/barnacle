@@ -5136,7 +5136,15 @@ function interpolateStateValues(
   isJsonBody = false,
   producerBoundaryBindings: ReadonlyMap<string, ProducerBoundaryBinding> = new Map(),
   stepIndex = -1,
-  topLevelPayloadKvValues: ReadonlySet<string> = new Set()
+  topLevelPayloadKvValues: ReadonlySet<string> = new Set(),
+  // A fold target's own join-field value (see `joinFieldValuesByStep` in
+  // `emitMultiStepExecuteHttp`) must stay a literal here — binding it to a
+  // prior step's produced state var (e.g. `${productId}`, always the FIRST
+  // primary item's value) freezes every per-item drill call onto that one
+  // item; the fold loop's own later `parameterize` pass is what rebinds the
+  // literal to `${item.<field>}` per iteration, but only if the literal
+  // text survives this pass untouched.
+  excludedJoinFieldValues: ReadonlySet<string> = new Set()
 ): string {
   const stateBindings = deriveStateVarByValue(priorSteps, targetCapture);
 
@@ -5151,6 +5159,7 @@ function interpolateStateValues(
     const isProducerStep = producerBoundaryBindings.get(value)?.producerIndex === stepIndex;
     if (payloadAccessorByValue.has(value) && !isProducerStep) continue;
     if (topLevelPayloadKvValues.has(value) && !isProducerStep) continue;
+    if (excludedJoinFieldValues.has(value) && !isProducerStep) continue;
     bindingByValue.set(value, `\${${binding.varName}}`);
     sourceNameByValue.set(value, binding.sourceName);
     if (binding.restricted) restrictedValues.add(value);
@@ -6300,7 +6309,9 @@ export function emitMultiStepExecuteHttp(
           payloadAccessorByValue,
           false,
           producerBoundaryBindings,
-          i
+          i,
+          new Set(),
+          joinFieldValuesByStep.get(i) ?? new Set()
         );
     // Form-schema substitution runs first on the raw recon body so its
     // field-id-anchored matches see the original JSON. State-threading and
@@ -6411,7 +6422,8 @@ export function emitMultiStepExecuteHttp(
             true,
             producerBoundaryBindings,
             i,
-            topLevelPayloadKvValues
+            topLevelPayloadKvValues,
+            joinFieldValuesByStep.get(i) ?? new Set()
           ),
           inputBody,
           additionalBodies,
