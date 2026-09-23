@@ -71,7 +71,7 @@ describe("resolveApplicableFoldPlans — single-primary getGql/httpClient path h
 
     expect(plans).toHaveLength(1);
     const [plan] = plans;
-    expect(plan!.targets.length).toBeGreaterThan(0);
+    expect(plan!.targets).toHaveLength(2);
     for (const target of plan!.targets) {
       expect(target.joinFields).toEqual(["sailingId"]);
     }
