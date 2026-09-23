@@ -9811,6 +9811,30 @@ function isDescendantArrayPath(candidate: readonly string[], base: readonly stri
  * spec's own drill indices look independent, so the heuristic's wrong-level
  * guess never survives alongside the corrected one.
  */
+/**
+ * The stable identity of the logical drill-down a {@link FoldTarget}
+ * resolves onto: the endpoint of its chain's TERMINAL call (the response
+ * actually folded — see {@link FoldTarget.chainTerminalIndex}) paired with
+ * the specific array read off that response (see
+ * {@link FoldTarget.chainArrayPath}). Neither piece alone is stable enough to
+ * compare two independently-resolved targets by: `drillStepIndex` (the
+ * chain's ENTRY point) can legitimately differ between the structural
+ * heuristic's own request-threading resolution and a spec's
+ * response-only/upstream-hop resolution even when both terminate at the same
+ * call (see {@link buildFoldPlanFromSpec}'s `entryIndex` docstring); and the
+ * terminal endpoint alone can collide when one response happens to carry TWO
+ * unrelated per-item arrays for two entirely different primaries (e.g. a
+ * combined status response naming both `entries` and `contracts`). Pairing
+ * the terminal's endpoint with the specific array it reads disambiguates
+ * both cases at once.
+ */
+function foldTargetDrillIdentity<T extends { capture: Capture }>(
+  actions: readonly T[],
+  target: FoldTarget
+): string {
+  return `${endpointKey(actions[target.chainTerminalIndex]!.capture.url)}\u0000${target.chainArrayPath.join(".")}`;
+}
+
 function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   structuralPlans: readonly FoldPlan[],
   actions: readonly T[],
@@ -9856,49 +9880,65 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     // but equally valid, occurrence of the SAME re-issued/paginated drill
     // endpoint — raw-index equality only happened to override when both
     // resolutions picked the identical occurrence, silently leaving every
-    // other occurrence's joinFields un-overridden.
-    const specTargetsByDrillEndpointKey = new Map(
-      specPlan.targets.map((target) => [
-        endpointKey(actions[target.drillStepIndex]!.capture.url),
-        target,
-      ])
+    // other occurrence's joinFields un-overridden. Keyed on each target's
+    // {@link foldTargetDrillIdentity} — the terminal endpoint paired with the
+    // specific array it reads — rather than `drillStepIndex`: a spec's
+    // declared join value often resolves only through an upstream entry hop
+    // (e.g. a header-threaded token) that isn't the endpointPattern-matched
+    // call itself, so its `drillStepIndex` (== that entry hop) can
+    // legitimately differ from the structural heuristic's own
+    // `drillStepIndex` (its own, possibly different, threading entry point)
+    // even when both chains terminate at the exact same logical drill-down
+    // call and array.
+    const specTargetsByDrillIdentity = new Map(
+      specPlan.targets.map((target) => [foldTargetDrillIdentity(actions, target), target])
     );
     return structuralPlans.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
       const mergedTargets = plan.targets.map((target) => {
-        const specTarget = specTargetsByDrillEndpointKey.get(
-          endpointKey(actions[target.drillStepIndex]!.capture.url)
-        );
+        const specTarget = specTargetsByDrillIdentity.get(foldTargetDrillIdentity(actions, target));
         return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
       });
-      const existingDrillEndpointKeys = new Set(
-        plan.targets.map((target) => endpointKey(actions[target.drillStepIndex]!.capture.url))
+      const existingDrillIdentities = new Set(
+        plan.targets.map((target) => foldTargetDrillIdentity(actions, target))
       );
       const newTargets = specPlan.targets.filter(
-        (target) =>
-          !existingDrillEndpointKeys.has(endpointKey(actions[target.drillStepIndex]!.capture.url))
+        (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
       );
       return { ...plan, targets: [...mergedTargets, ...newTargets] };
     });
   }
   // No exact (primaryStepIndex, primaryArrayPath) match, but a structural
   // plan on the SAME primaryStepIndex may still have independently detected
-  // a target at the SAME drillStepIndex a spec target names — just at the
-  // wrong array level (e.g. a shallower structural guess that happens to
-  // share the spec's drill-down call). That structural target's own
-  // primaryArrayPath/drillArrayPath/joinFields describe the heuristic's
-  // guess, not the flow author's declaration, so the spec target replaces
-  // it wholesale rather than being discarded by the mismatched-array-path
-  // branch below or partially merged as if the array level matched.
-  const specDrillStepIndices = new Set(specPlan.targets.map((target) => target.drillStepIndex));
+  // a target at the SAME drill ENDPOINT+array a spec target names — just at
+  // the wrong array level (e.g. a shallower structural guess that happens to
+  // share the spec's drill-down call). Matched by {@link
+  // foldTargetDrillIdentity} (see the samePrimaryPlan branch above for why
+  // the terminal+array, not the entry `drillStepIndex` alone, is the stable
+  // identity to compare on) — not raw drillStepIndex equality:
+  // buildFoldPlanFromSpec's own entryIndex resolution and the structural
+  // heuristic's request-threading scan can each land on a different, but
+  // equally valid, occurrence/hop of the SAME endpoint (or the same single
+  // occurrence reached via a different chain entry point), and raw-index
+  // equality only happens to hold when both resolutions pick the identical
+  // index. That structural target's own primaryArrayPath/drillArrayPath/
+  // joinFields describe the heuristic's guess, not the flow author's
+  // declaration, so the spec target replaces it wholesale rather than being
+  // discarded by the mismatched-array-path branch below or partially merged
+  // as if the array level matched.
+  const specDrillIdentities = new Set(
+    specPlan.targets.map((target) => foldTargetDrillIdentity(actions, target))
+  );
   const sharedDrillPlan = structuralPlans.find(
     (plan) =>
       endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
-      plan.targets.some((target) => specDrillStepIndices.has(target.drillStepIndex))
+      plan.targets.some((target) =>
+        specDrillIdentities.has(foldTargetDrillIdentity(actions, target))
+      )
   );
   if (sharedDrillPlan !== undefined) {
     const remainingTargets = sharedDrillPlan.targets.filter(
-      (target) => !specDrillStepIndices.has(target.drillStepIndex)
+      (target) => !specDrillIdentities.has(foldTargetDrillIdentity(actions, target))
     );
     const otherPlans = structuralPlans.filter((plan) => plan !== sharedDrillPlan);
     const keptStructuralPlans =
@@ -9960,13 +10000,24 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // (paginated primary), but its own target chains touch no index that plan
   // already depends on — this is the same identity, not a raw-index
   // coincidence, so union the spec's targets onto it rather than silently
-  // dropping a declaration the flow author explicitly wrote.
+  // dropping a declaration the flow author explicitly wrote. Membership in
+  // "already covered" is decided by {@link foldTargetDrillIdentity} (see the
+  // samePrimaryPlan branch above for why the terminal+array, not the entry
+  // `drillStepIndex` alone, is the stable identity) — not raw drillStepIndex
+  // equality. A spec target sharing a structural target's drill identity is
+  // a re-declaration of that SAME drill-down (handled as a wholesale replace
+  // by sharedDrillPlan above), not an independent one to union — so this
+  // only ever unions genuinely new endpoints onto an already-identified
+  // primary.
   const sameIdentityPlan = structuralPlans.find(
     (plan) =>
       endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath) &&
       specPlan.targets.every(
-        (target) => !plan.targets.some((t) => t.drillStepIndex === target.drillStepIndex)
+        (target) =>
+          !plan.targets.some(
+            (t) => foldTargetDrillIdentity(actions, t) === foldTargetDrillIdentity(actions, target)
+          )
       )
   );
   if (sameIdentityPlan === undefined) return [...structuralPlans];
