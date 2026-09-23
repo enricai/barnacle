@@ -9622,7 +9622,20 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   // mergeSpecPlanOntoSamePrimary to resolve a declared joinFields override
   // independently for EACH re-issued/paginated primary occurrence, since the
   // freshest-wins scan below only ever resolves the LAST occurrence.
-  exactPrimaryStepIndex: number | null = null
+  exactPrimaryStepIndex: number | null = null,
+  // When given, restricts the matching-drill scan below to candidates whose
+  // OWN endpoint (not a later chain hop) matches this key. A single primary
+  // occurrence can structurally resolve MULTIPLE independent per-item
+  // targets — one per distinct drill endpoint (e.g. a genuinely per-item
+  // drill loop where each item's own request lands on the SAME endpoint
+  // pattern but a distinct path/endpoint identity) — and this function's own
+  // freshest-first scan below `break`s after the FIRST endpoint it resolves,
+  // so an unrestricted call can only ever return an override for ONE of
+  // them. Used by mergeSpecPlanOntoSamePrimary to resolve the declared
+  // joinFields override independently for EACH structural target, keyed by
+  // its own drill endpoint, instead of only the one this function's
+  // freshest-first scan happens to land on first.
+  restrictToDrillEndpointKey: string | null = null
 ): FoldPlan | null {
   const primaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
@@ -9677,7 +9690,11 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       drillStepIndex < actions.length;
       drillStepIndex++
     ) {
-      if (matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture)) {
+      if (
+        matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture) &&
+        (restrictToDrillEndpointKey === null ||
+          endpointKey(actions[drillStepIndex]!.capture.url) === restrictToDrillEndpointKey)
+      ) {
         matchingDrillStepIndices.push(drillStepIndex);
       }
     }
@@ -9874,31 +9891,51 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // captures) produces one independent structural plan per occurrence; each
   // must get the declared override, not just the freshest one.
   const structuralPlansWithPerOccurrenceOverrides = structuralPlans.map((plan) => {
+    // Resolved once per structural TARGET (keyed on that target's own drill
+    // endpoint), not once for the whole primary occurrence: buildFoldPlanFromSpec's
+    // freshest-first scan `break`s after the first drill endpoint it resolves, so a
+    // single unrestricted call can only ever produce an override for ONE of a
+    // primary's structural targets even when it has several (e.g. a genuinely
+    // per-item drill loop resolving one independent target per item, each at its
+    // own endpoint). See buildFoldPlanFromSpec's restrictToDrillEndpointKey docstring.
+    const mergedTargets = plan.targets.map((target) => {
+      const ownSpecPlan = buildFoldPlanFromSpec(
+        actions,
+        foldReturnSpec,
+        primaryIdentityAnchor,
+        plan.primaryStepIndex,
+        endpointKey(actions[target.drillStepIndex]!.capture.url)
+      );
+      if (
+        ownSpecPlan === null ||
+        JSON.stringify(ownSpecPlan.primaryArrayPath) !== JSON.stringify(plan.primaryArrayPath)
+      ) {
+        return target;
+      }
+      const specTarget = ownSpecPlan.targets.find(
+        (t) => foldTargetDrillIdentity(actions, t) === foldTargetDrillIdentity(actions, target)
+      );
+      return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
+    });
+    // A spec-declared target the heuristic missed entirely (an independent
+    // drill-down at a NEW endpoint) is still found via the original
+    // unrestricted resolution, which is free to land on any endpoint.
     const ownSpecPlan = buildFoldPlanFromSpec(
       actions,
       foldReturnSpec,
       primaryIdentityAnchor,
       plan.primaryStepIndex
     );
-    if (
-      ownSpecPlan === null ||
-      JSON.stringify(ownSpecPlan.primaryArrayPath) !== JSON.stringify(plan.primaryArrayPath)
-    ) {
-      return plan;
-    }
-    const specTargetsByDrillIdentity = new Map(
-      ownSpecPlan.targets.map((target) => [foldTargetDrillIdentity(actions, target), target])
-    );
-    const mergedTargets = plan.targets.map((target) => {
-      const specTarget = specTargetsByDrillIdentity.get(foldTargetDrillIdentity(actions, target));
-      return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
-    });
     const existingDrillIdentities = new Set(
       plan.targets.map((target) => foldTargetDrillIdentity(actions, target))
     );
-    const newTargets = ownSpecPlan.targets.filter(
-      (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
-    );
+    const newTargets =
+      ownSpecPlan !== null &&
+      JSON.stringify(ownSpecPlan.primaryArrayPath) === JSON.stringify(plan.primaryArrayPath)
+        ? ownSpecPlan.targets.filter(
+            (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
+          )
+        : [];
     return { ...plan, targets: [...mergedTargets, ...newTargets] };
   });
   const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
