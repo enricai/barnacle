@@ -9604,7 +9604,13 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   spec: FoldReturnSpec,
   // See detectDrillDownFoldPlan's identical parameter — constrains this
   // function's own primaryStepIndex loop to the same anchor identity.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
+  // When given, restricts the loop to this ONE primaryStepIndex instead of
+  // scanning every occurrence and keeping only the freshest. Used by
+  // mergeSpecPlanOntoSamePrimary to resolve a declared joinFields override
+  // independently for EACH re-issued/paginated primary occurrence, since the
+  // freshest-wins scan below only ever resolves the LAST occurrence.
+  exactPrimaryStepIndex: number | null = null
 ): FoldPlan | null {
   const primaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
@@ -9616,6 +9622,9 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   const requestValueIndex = buildRequestValueIndex(actions);
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
+    if (exactPrimaryStepIndex !== null && primaryStepIndex !== exactPrimaryStepIndex) {
+      continue;
+    }
     if (
       primaryIdentityAnchor !== null &&
       operationGroupKey(actions[primaryStepIndex]!.capture) !== primaryIdentityAnchor
@@ -9846,8 +9855,42 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   primaryIdentityAnchor: string | null = null
 ): FoldPlan[] {
   if (foldReturnSpec === null) return [...structuralPlans];
+  // Override joinFields on EVERY structural primary occurrence the spec can
+  // independently resolve at its OWN primaryStepIndex — not just whichever
+  // single occurrence the freshest-wins `specPlan` resolution below happens
+  // to land on. A re-issued/paginated primary (same endpoint, multiple
+  // captures) produces one independent structural plan per occurrence; each
+  // must get the declared override, not just the freshest one.
+  const structuralPlansWithPerOccurrenceOverrides = structuralPlans.map((plan) => {
+    const ownSpecPlan = buildFoldPlanFromSpec(
+      actions,
+      foldReturnSpec,
+      primaryIdentityAnchor,
+      plan.primaryStepIndex
+    );
+    if (
+      ownSpecPlan === null ||
+      JSON.stringify(ownSpecPlan.primaryArrayPath) !== JSON.stringify(plan.primaryArrayPath)
+    ) {
+      return plan;
+    }
+    const specTargetsByDrillIdentity = new Map(
+      ownSpecPlan.targets.map((target) => [foldTargetDrillIdentity(actions, target), target])
+    );
+    const mergedTargets = plan.targets.map((target) => {
+      const specTarget = specTargetsByDrillIdentity.get(foldTargetDrillIdentity(actions, target));
+      return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
+    });
+    const existingDrillIdentities = new Set(
+      plan.targets.map((target) => foldTargetDrillIdentity(actions, target))
+    );
+    const newTargets = ownSpecPlan.targets.filter(
+      (target) => !existingDrillIdentities.has(foldTargetDrillIdentity(actions, target))
+    );
+    return { ...plan, targets: [...mergedTargets, ...newTargets] };
+  });
   const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
-  if (specPlan === null) return [...structuralPlans];
+  if (specPlan === null) return structuralPlansWithPerOccurrenceOverrides;
   const specPrimaryEndpointKey = endpointKey(actions[specPlan.primaryStepIndex]!.capture.url);
   // Deliberately keyed on the RAW primaryStepIndex (not endpoint identity):
   // this branch trusts the structural target's own chain/drillArrayPath and
@@ -9857,7 +9900,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // different index) may have matched a different item entirely, so it must
   // fall through to the wholesale-replace (sharedDrillPlan) or union
   // (consumedPrimarySteps) handling below instead of merging by identity.
-  const samePrimaryPlan = structuralPlans.find(
+  const samePrimaryPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
       plan.primaryStepIndex === specPlan.primaryStepIndex &&
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath)
@@ -9893,7 +9936,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     const specTargetsByDrillIdentity = new Map(
       specPlan.targets.map((target) => [foldTargetDrillIdentity(actions, target), target])
     );
-    return structuralPlans.map((plan) => {
+    return structuralPlansWithPerOccurrenceOverrides.map((plan) => {
       if (plan !== samePrimaryPlan) return plan;
       const mergedTargets = plan.targets.map((target) => {
         const specTarget = specTargetsByDrillIdentity.get(foldTargetDrillIdentity(actions, target));
@@ -9929,7 +9972,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   const specDrillIdentities = new Set(
     specPlan.targets.map((target) => foldTargetDrillIdentity(actions, target))
   );
-  const sharedDrillPlan = structuralPlans.find(
+  const sharedDrillPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
       endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
       plan.targets.some((target) =>
@@ -9940,7 +9983,9 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     const remainingTargets = sharedDrillPlan.targets.filter(
       (target) => !specDrillIdentities.has(foldTargetDrillIdentity(actions, target))
     );
-    const otherPlans = structuralPlans.filter((plan) => plan !== sharedDrillPlan);
+    const otherPlans = structuralPlansWithPerOccurrenceOverrides.filter(
+      (plan) => plan !== sharedDrillPlan
+    );
     const keptStructuralPlans =
       remainingTargets.length === 0
         ? otherPlans
@@ -9956,13 +10001,18 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // the independence guard below would otherwise do, since a
   // level-correcting spec's own drill indices can look entirely
   // independent) or silently dropped by the mismatched-array-path checks.
-  const supersededShallowerPlan = structuralPlans.find(
+  const supersededShallowerPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
       endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
       isDescendantArrayPath(specPlan.primaryArrayPath, plan.primaryArrayPath)
   );
   if (supersededShallowerPlan !== undefined) {
-    return [...structuralPlans.filter((plan) => plan !== supersededShallowerPlan), specPlan];
+    return [
+      ...structuralPlansWithPerOccurrenceOverrides.filter(
+        (plan) => plan !== supersededShallowerPlan
+      ),
+      specPlan,
+    ];
   }
   // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
   // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
@@ -9979,7 +10029,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // contends for.
   const consumedIndices = new Set<number>();
   const consumedPrimarySteps = new Set<string>();
-  for (const plan of structuralPlans) {
+  for (const plan of structuralPlansWithPerOccurrenceOverrides) {
     const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
     consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
     for (const target of plan.targets) {
@@ -9994,7 +10044,8 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     specPlan.targets.every((target) =>
       target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
     );
-  if (specConsumesOnlyItsOwnIndices) return [...structuralPlans, specPlan];
+  if (specConsumesOnlyItsOwnIndices)
+    return [...structuralPlansWithPerOccurrenceOverrides, specPlan];
   // The spec's primary endpoint/array is already consumed by a structural
   // plan on a DIFFERENT capture of the same re-issued primary operation
   // (paginated primary), but its own target chains touch no index that plan
@@ -10009,7 +10060,7 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
   // by sharedDrillPlan above), not an independent one to union — so this
   // only ever unions genuinely new endpoints onto an already-identified
   // primary.
-  const sameIdentityPlan = structuralPlans.find(
+  const sameIdentityPlan = structuralPlansWithPerOccurrenceOverrides.find(
     (plan) =>
       endpointKey(actions[plan.primaryStepIndex]!.capture.url) === specPrimaryEndpointKey &&
       JSON.stringify(plan.primaryArrayPath) === JSON.stringify(specPlan.primaryArrayPath) &&
@@ -10020,8 +10071,8 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
           )
       )
   );
-  if (sameIdentityPlan === undefined) return [...structuralPlans];
-  return structuralPlans.map((plan) =>
+  if (sameIdentityPlan === undefined) return [...structuralPlansWithPerOccurrenceOverrides];
+  return structuralPlansWithPerOccurrenceOverrides.map((plan) =>
     plan === sameIdentityPlan ? { ...plan, targets: [...plan.targets, ...specPlan.targets] } : plan
   );
 }

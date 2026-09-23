@@ -3,7 +3,7 @@ import { emitMultiStepExecuteHttp, type FoldReturnSpec } from "@/scripts/recon-g
 import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
- * ROOT CAUSE (diagnosis only — no production fix in this change):
+ * ROOT CAUSE (fixed):
  *
  * A search endpoint captured TWICE (a re-issued/paginated primary — `r0`
  * then `r2`, same endpoint identity, each returning a DIFFERENT item) each
@@ -16,36 +16,18 @@ import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-m
  * both thread the exact same `drillStepIndex`, which two independently
  * drilled items never do.
  *
- * `buildFoldPlanFromSpec` (src/scripts/recon-generate.ts:9602), by contrast,
- * returns AT MOST ONE `FoldPlan | null` — its `primaryStepIndex` loop
- * (src/scripts/recon-generate.ts:9613-9617) keeps unconditionally
- * overwriting a single `freshestPlan` variable (assigned at
- * src/scripts/recon-generate.ts:9749) with whichever primary occurrence it
- * resolves LAST, so only the freshest occurrence (`r2`, index 2) ever gets a
- * spec-resolved plan; the earlier occurrence (`r0`, index 0) has no spec
- * plan of its own at all.
+ * `buildFoldPlanFromSpec` (src/scripts/recon-generate.ts:9602) previously
+ * returned AT MOST ONE `FoldPlan | null` — its `primaryStepIndex` loop kept
+ * unconditionally overwriting a single `freshestPlan` variable with whichever
+ * primary occurrence it resolved LAST, so only the freshest occurrence
+ * (`r2`, index 2) ever got a spec-resolved plan.
  *
- * `mergeSpecPlanOntoSamePrimary` (src/scripts/recon-generate.ts:9838) then
- * merges this SINGLE `specPlan` against the structural plans via
- * `samePrimaryPlan` (src/scripts/recon-generate.ts:9860), found by exact
- * `primaryStepIndex` equality — it matches the `r2`-anchored structural
- * plan (index 2) only. The override happens inside
- * `structuralPlans.map(...)` (src/scripts/recon-generate.ts:9896-9897),
- * which touches ONLY the matched `samePrimaryPlan` entry and returns every
- * OTHER structural plan verbatim (`if (plan !== samePrimaryPlan) return
- * plan;`). The `r0`-anchored plan is therefore never even considered for
- * override — not because it falls through the `sameIdentityPlan` guard's
- * `return [...structuralPlans]` at line 10023 (that path is never reached
- * here; `samePrimaryPlan` is found), but because `mergeSpecPlanOntoSamePrimary`
- * only ever addresses the ONE structural plan matching the ONE spec plan
- * `buildFoldPlanFromSpec` chose to resolve, silently leaving every earlier
- * re-issued-primary occurrence's structurally-guessed `joinFields` intact.
- *
- * Confirmed by direct probe against this exact fixture shape: the FIRST
- * search occurrence's emitted fold-match (`foldMatch0`, folding `r1`) still
- * keys on the structural heuristic's own guessed `code`/`summary.currency`/
- * `summary.taxIncluded` fields; only the SECOND occurrence's fold-match
- * (`foldMatch1`, folding `r3`) keys on the declared `widgetId`.
+ * Fixed by giving `buildFoldPlanFromSpec` an optional `exactPrimaryStepIndex`
+ * parameter that restricts its scan to a single occurrence, and having
+ * `mergeSpecPlanOntoSamePrimary` (src/scripts/recon-generate.ts:9847) resolve
+ * and merge a declared-joinFields override onto EVERY structural plan at its
+ * own `primaryStepIndex`, independently, before the original
+ * freshest-occurrence-only merge logic runs.
  */
 function buildReissuedPrimaryActionSteps(): MulticallFixtureStep[] {
   return [
@@ -128,17 +110,10 @@ describe("recon-generate foldReturn declared joinFields — response-only field 
     );
 
     // The declared `widgetId` join must key BOTH re-issued occurrences' fold
-    // matches, not just the freshest one `buildFoldPlanFromSpec` happened to
-    // resolve last (src/scripts/recon-generate.ts:9613-9749).
+    // matches, not just the freshest one.
     expect(body.match(/m\["widgetId"\]/g)?.length).toBe(2);
     // The structural heuristic's own guessed fields must never survive as
-    // the emitted match key on EITHER occurrence — currently the earlier
-    // (`r0`-anchored) occurrence still keys on these, because
-    // `mergeSpecPlanOntoSamePrimary`'s `samePrimaryPlan` branch
-    // (src/scripts/recon-generate.ts:9860-9897) only overrides the ONE
-    // structural plan matching the single spec-resolved plan's
-    // `primaryStepIndex`, leaving every other re-issued occurrence's
-    // structural guess untouched.
+    // the emitted match key on EITHER occurrence.
     expect(body).not.toContain('m["code"]');
     expect(body).not.toContain('summary"] as Record<string, unknown>)?.["currency"]');
     expect(body).not.toContain('summary"] as Record<string, unknown>)?.["taxIncluded"]');
