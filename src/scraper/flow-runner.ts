@@ -11790,7 +11790,11 @@ export async function executeStepWithHealing(params: {
     // URL/title post-submit signal it will never produce) false-negatives
     // an already-genuine credit.
     const hasSubmitTransitionSignal = submitStep || networkIsRealAdvance || urlChanged;
-    if (verified && requireSubmitEndpoint && hasSubmitTransitionSignal) {
+    if (
+      verified &&
+      (requireSubmitEndpoint || resolvedElementIsSubmitShaped) &&
+      hasSubmitTransitionSignal
+    ) {
       // Cap the scan from preMetaLength so we don't accept a historical
       // submit-shaped capture from an earlier step as proof for this one.
       const tail = recentCaptureMeta.slice(preMetaLength);
@@ -12308,7 +12312,11 @@ export async function executeStepWithHealing(params: {
           // never produce.
           const retryHasSubmitTransitionSignal =
             submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
-          if (retryVerified && requireSubmitEndpoint && retryHasSubmitTransitionSignal) {
+          if (
+            retryVerified &&
+            (requireSubmitEndpoint || retryResolvedElementIsSubmitShaped) &&
+            retryHasSubmitTransitionSignal
+          ) {
             const tail = recentCaptureMeta.slice(preMetaLength);
 
             // DOM-state probe (deterministic).
