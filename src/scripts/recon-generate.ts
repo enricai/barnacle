@@ -9912,9 +9912,19 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       ) {
         return target;
       }
-      const specTarget = ownSpecPlan.targets.find(
-        (t) => foldTargetDrillIdentity(actions, t) === foldTargetDrillIdentity(actions, target)
-      );
+      // ownSpecPlan was resolved with restrictToDrillEndpointKey pinned to
+      // this target's OWN drill endpoint, so its single target (see
+      // buildFoldPlanFromSpec's `targets: [{...}]` literal — it never
+      // returns more than one) IS the spec's resolution of this restricted
+      // endpoint by construction. Matching it back to `target` via
+      // foldTargetDrillIdentity is not just redundant but actively wrong: a
+      // multi-hop drill chain can make the spec's forward walk
+      // (buildFoldPlanFromSpec's computeFoldChain resolution) land on a
+      // different chainTerminalIndex/chainArrayPath than the structural
+      // heuristic did for the exact same restricted endpoint, so the
+      // identity lookup misses and the declared joinFields override is
+      // silently dropped in favor of the heuristic's structural guess.
+      const specTarget = ownSpecPlan.targets[0];
       return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
     });
     // A spec-declared target the heuristic missed entirely (an independent
