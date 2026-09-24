@@ -9941,8 +9941,15 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       // structurally-resolved target, the declared joinFields must win over
       // the structural guess regardless of whether a representative item
       // could be picked.
+      // Test against the chain's TERMINAL capture (where the fold array —
+      // and thus the declared identifier field — actually lives), not the
+      // structural heuristic's threading-entry `drillStepIndex`: on a
+      // multi-hop chain the two can diverge (see foldTargetDrillIdentity's
+      // docstring above), and a declared endpointPattern names the call
+      // that holds the array, not whichever earlier hop some other field
+      // happened to be threaded into.
       const targetMatchesDeclaredEndpoint = matchesDeclaredEndpoint(
-        actions[target.drillStepIndex]!.capture
+        actions[target.chainTerminalIndex]!.capture
       );
       const primaryArrayPathMatchesSpec =
         JSON.stringify(declaredPrimaryArrayPath) === JSON.stringify(plan.primaryArrayPath);
