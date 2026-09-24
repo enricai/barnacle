@@ -12365,6 +12365,37 @@ export async function executeStepWithHealing(params: {
           // corroboration a submit-shaped click gets — an uncorroborated
           // strong signal from an unverified click target is exactly the
           // "credited as success" defect.
+          // An INFERRED-final step (no explicit `submitStep: true`) whose
+          // fallback click navigated the page always re-litigates through
+          // the judge, even when neither an endpoint pattern is known nor
+          // the resolved element's own DOM shape reads as a submit control
+          // — a bare url change on an unflagged bridge step is exactly the
+          // un-corroborated signal a wrong-destination click (a re-resolved
+          // xpath landing on an unrelated link) produces. Closes the gap
+          // retryResolvedElementIsSubmitShaped leaves: it reads the
+          // (possibly wrong) resolved element's OWN shape, which says
+          // nothing when that element isn't submit-shaped but the
+          // navigation itself is the only evidence of "success". Scoped to
+          // `!submitStep` only — an EXPLICITLY flagged submit step's bare
+          // url-change is the one strong signal its fallback accepts
+          // unconditionally (see
+          // flow-runner.overlay-hidden-target-trusted-click-acceptance.test.ts
+          // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
+          // both of which rely on that carve-out and must stay green).
+          const retryDestinationUnconfirmed =
+            isFinalStep && !submitStep && retryUrlChanged && !retryResolvedElementIsSubmitShaped;
+          if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {
+            // Veto directly rather than routing through the judge below: no
+            // endpoint pattern and no submit-shaped element means there is
+            // nothing here for the judge to corroborate against either, so
+            // skip straight to "not verified" instead of paying for an
+            // observe()/judge round trip that can only ever fall back to
+            // this same rejection.
+            retryVerified = false;
+            failureReasons.push(
+              "n+16 fallback: destination-unconfirmed: fallback click navigated on an unflagged, non-submit-shaped inferred-final step with no endpoint pattern to corroborate the destination"
+            );
+          }
           if (
             retryVerified &&
             (requireSubmitEndpoint ||
