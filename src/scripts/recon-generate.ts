@@ -9898,6 +9898,8 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     // primary's structural targets even when it has several (e.g. a genuinely
     // per-item drill loop resolving one independent target per item, each at its
     // own endpoint). See buildFoldPlanFromSpec's restrictToDrillEndpointKey docstring.
+    const matchesDeclaredEndpoint = compileFoldReturnEndpointMatcher(foldReturnSpec);
+    const declaredPrimaryArrayPath = foldReturnSpec.resultsPath.split(".");
     const mergedTargets = plan.targets.map((target) => {
       const ownSpecPlan = buildFoldPlanFromSpec(
         actions,
@@ -9907,25 +9909,46 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
         endpointKey(actions[target.drillStepIndex]!.capture.url)
       );
       if (
-        ownSpecPlan === null ||
-        JSON.stringify(ownSpecPlan.primaryArrayPath) !== JSON.stringify(plan.primaryArrayPath)
+        ownSpecPlan !== null &&
+        JSON.stringify(ownSpecPlan.primaryArrayPath) === JSON.stringify(plan.primaryArrayPath)
       ) {
-        return target;
+        // ownSpecPlan was resolved with restrictToDrillEndpointKey pinned to
+        // this target's OWN drill endpoint, so its single target (see
+        // buildFoldPlanFromSpec's `targets: [{...}]` literal — it never
+        // returns more than one) IS the spec's resolution of this restricted
+        // endpoint by construction. Matching it back to `target` via
+        // foldTargetDrillIdentity is not just redundant but actively wrong: a
+        // multi-hop drill chain can make the spec's forward walk
+        // (buildFoldPlanFromSpec's computeFoldChain resolution) land on a
+        // different chainTerminalIndex/chainArrayPath than the structural
+        // heuristic did for the exact same restricted endpoint, so the
+        // identity lookup misses and the declared joinFields override is
+        // silently dropped in favor of the heuristic's structural guess.
+        const specTarget = ownSpecPlan.targets[0];
+        return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
       }
-      // ownSpecPlan was resolved with restrictToDrillEndpointKey pinned to
-      // this target's OWN drill endpoint, so its single target (see
-      // buildFoldPlanFromSpec's `targets: [{...}]` literal — it never
-      // returns more than one) IS the spec's resolution of this restricted
-      // endpoint by construction. Matching it back to `target` via
-      // foldTargetDrillIdentity is not just redundant but actively wrong: a
-      // multi-hop drill chain can make the spec's forward walk
-      // (buildFoldPlanFromSpec's computeFoldChain resolution) land on a
-      // different chainTerminalIndex/chainArrayPath than the structural
-      // heuristic did for the exact same restricted endpoint, so the
-      // identity lookup misses and the declared joinFields override is
-      // silently dropped in favor of the heuristic's structural guess.
-      const specTarget = ownSpecPlan.targets[0];
-      return specTarget === undefined ? target : { ...target, joinFields: specTarget.joinFields };
+      // buildFoldPlanFromSpec came back null (or landed on a different
+      // primaryArrayPath) because it couldn't resolve a
+      // primaryMatchedItemIndex for this drill — the join value it names
+      // sits on the drill response but isn't discoverable at that same
+      // literal path on any primary item (a generation-time-only schema-
+      // inference concern; see resolveSpecMatchedPrimaryItemIndexFromResponse).
+      // That failure has nothing to do with whether the declared joinFields
+      // should be trusted at RUNTIME: emitFoldMatchAndMergeLines only ever
+      // reads target.joinFields (a field-name string), never
+      // primaryMatchedItemIndex. Once the declared spec's own endpoint
+      // pattern and resultsPath demonstrably match THIS already
+      // structurally-resolved target, the declared joinFields must win over
+      // the structural guess regardless of whether a representative item
+      // could be picked.
+      const targetMatchesDeclaredEndpoint = matchesDeclaredEndpoint(
+        actions[target.drillStepIndex]!.capture
+      );
+      const primaryArrayPathMatchesSpec =
+        JSON.stringify(declaredPrimaryArrayPath) === JSON.stringify(plan.primaryArrayPath);
+      return targetMatchesDeclaredEndpoint && primaryArrayPathMatchesSpec
+        ? { ...target, joinFields: foldReturnSpec.joinFields }
+        : target;
     });
     // A spec-declared target the heuristic missed entirely (an independent
     // drill-down at a NEW endpoint) is still found via the original
