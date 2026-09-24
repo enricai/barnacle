@@ -4130,22 +4130,72 @@ async function resolvedClickTargetStillPresent(
  * the element's own tag/type/form-ownership, which is the same shape on any
  * site. Returns `false` — never manufactures a submit-shape veto — on a
  * non-xpath selector, a miss, or an evaluate failure.
+ *
+ * `xpathTail` (optional): the n+16 fallback's own `xpathTailForRetarget`
+ * re-anchor. Its `clickExpr` resolves primary-xpath-then-tail before
+ * clicking, so a caller probing what that fallback is ABOUT to click must
+ * resolve the identical primary-or-tail node — passing this keeps the probe
+ * from going blind exactly when the primary xpath is unresolvable and the
+ * retarget is the only thing that finds the live element. The primary
+ * (Stagehand act()) call site never passes this — its resolved selector came
+ * from Stagehand's own successful resolution, so no retarget applies there.
  */
 async function resolvedClickTargetIsSubmitShaped(
   target: FrameTarget,
-  selector: string
+  selector: string,
+  xpathTail: string | null = null
 ): Promise<boolean> {
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
   const expr = `(() => {
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = r.singleNodeValue;
+    let el = r.singleNodeValue;
+    if (!el && ${JSON.stringify(xpathTail)}) {
+      const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      el = r2.singleNodeValue;
+    }
     if (!el || !el.tagName) return false;
     const tag = el.tagName.toUpperCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
     if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
     return false;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the primary (Stagehand-recorded) xpath is unresolvable and only
+ * `xpathTailForRetarget`'s loose tag+same-tag-sibling-position re-anchor
+ * finds a live node — i.e. the n+16 fallback's `clickExpr` is about to click
+ * whatever the tail heuristic happened to match, not the element Stagehand
+ * originally identified. That match ignores every attribute (id, class,
+ * type, form-ownership) above the leaf+parent tag pair, so it can land on a
+ * DIFFERENT live control that merely shares tag and position with the
+ * original (recon-trusted-click-throw-fallback-hits-wrong-element-credited-
+ * as-success.md: a "sign in" button positioned where a "create account"
+ * submit button used to resolve). Combined with the trusted-click delivery
+ * ALSO having failed to find the primary selector, this is the one n+16
+ * signal that flags "this click's target identity is genuinely uncertain" —
+ * used to require destination corroboration for an otherwise-unconditional
+ * strong signal (a real URL/network transition) instead of trusting it
+ * blindly, without touching the (already well-tested) weak DOM-signal path.
+ */
+async function resolvedClickUsedXpathTailRetarget(
+  target: FrameTarget,
+  selector: string,
+  xpathTail: string | null
+): Promise<boolean> {
+  if (!xpathTail) return false;
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    return r.singleNodeValue === null;
   })()`;
   try {
     return (await target.evaluate(expr)) === true;
@@ -11776,7 +11826,11 @@ export async function executeStepWithHealing(params: {
     // URL/title post-submit signal it will never produce) false-negatives
     // an already-genuine credit.
     const hasSubmitTransitionSignal = submitStep || networkIsRealAdvance || urlChanged;
-    if (verified && requireSubmitEndpoint && hasSubmitTransitionSignal) {
+    if (
+      verified &&
+      (requireSubmitEndpoint || resolvedElementIsSubmitShaped) &&
+      hasSubmitTransitionSignal
+    ) {
       // Cap the scan from preMetaLength so we don't accept a historical
       // submit-shaped capture from an earlier step as proof for this one.
       const tail = recentCaptureMeta.slice(preMetaLength);
@@ -11975,10 +12029,22 @@ export async function executeStepWithHealing(params: {
           // submit (or a full-page reset) can remove the clicked control from
           // the DOM entirely, so reading its shape AFTER the click would
           // silently blind this signal on exactly the cases it exists to
-          // catch. See resolvedClickTargetIsSubmitShaped's doc comment.
+          // catch. Passes `xpathTail` so this resolves the SAME primary-or-
+          // tail node `clickExpr` below is about to click, instead of only
+          // ever checking the (possibly unresolvable) primary xpath — see
+          // resolvedClickTargetIsSubmitShaped's doc comment.
           const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector
+            resolvedAction.selector,
+            xpathTail
+          );
+          // See resolvedClickUsedXpathTailRetarget's doc comment: flags that
+          // this click's target identity came only from the loose tail
+          // heuristic, not Stagehand's own resolved selector.
+          const retryClickUsedXpathTailRetarget = await resolvedClickUsedXpathTailRetarget(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector,
+            xpathTail
           );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
@@ -12290,7 +12356,53 @@ export async function executeStepWithHealing(params: {
           // never produce.
           const retryHasSubmitTransitionSignal =
             submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
-          if (retryVerified && requireSubmitEndpoint && retryHasSubmitTransitionSignal) {
+          // `retryClickUsedXpathTailRetarget` folds in the "wrong element"
+          // shape from recon-trusted-click-throw-fallback-hits-wrong-
+          // element-credited-as-success.md: even when the tail-resolved
+          // control is NOT submit-shaped, its identity was never confirmed
+          // against Stagehand's own resolution, so a real URL/network
+          // transition it produces still needs the same destination
+          // corroboration a submit-shaped click gets — an uncorroborated
+          // strong signal from an unverified click target is exactly the
+          // "credited as success" defect.
+          // An INFERRED-final step (no explicit `submitStep: true`) whose
+          // fallback click navigated the page always re-litigates through
+          // the judge, even when neither an endpoint pattern is known nor
+          // the resolved element's own DOM shape reads as a submit control
+          // — a bare url change on an unflagged bridge step is exactly the
+          // un-corroborated signal a wrong-destination click (a re-resolved
+          // xpath landing on an unrelated link) produces. Closes the gap
+          // retryResolvedElementIsSubmitShaped leaves: it reads the
+          // (possibly wrong) resolved element's OWN shape, which says
+          // nothing when that element isn't submit-shaped but the
+          // navigation itself is the only evidence of "success". Scoped to
+          // `!submitStep` only — an EXPLICITLY flagged submit step's bare
+          // url-change is the one strong signal its fallback accepts
+          // unconditionally (see
+          // flow-runner.overlay-hidden-target-trusted-click-acceptance.test.ts
+          // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
+          // both of which rely on that carve-out and must stay green).
+          const retryDestinationUnconfirmed =
+            isFinalStep && !submitStep && retryUrlChanged && !retryResolvedElementIsSubmitShaped;
+          if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {
+            // Veto directly rather than routing through the judge below: no
+            // endpoint pattern and no submit-shaped element means there is
+            // nothing here for the judge to corroborate against either, so
+            // skip straight to "not verified" instead of paying for an
+            // observe()/judge round trip that can only ever fall back to
+            // this same rejection.
+            retryVerified = false;
+            failureReasons.push(
+              "n+16 fallback: destination-unconfirmed: fallback click navigated on an unflagged, non-submit-shaped inferred-final step with no endpoint pattern to corroborate the destination"
+            );
+          }
+          if (
+            retryVerified &&
+            (requireSubmitEndpoint ||
+              retryResolvedElementIsSubmitShaped ||
+              retryClickUsedXpathTailRetarget) &&
+            retryHasSubmitTransitionSignal
+          ) {
             const tail = recentCaptureMeta.slice(preMetaLength);
 
             // DOM-state probe (deterministic).
