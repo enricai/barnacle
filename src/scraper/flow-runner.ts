@@ -4130,16 +4130,30 @@ async function resolvedClickTargetStillPresent(
  * the element's own tag/type/form-ownership, which is the same shape on any
  * site. Returns `false` — never manufactures a submit-shape veto — on a
  * non-xpath selector, a miss, or an evaluate failure.
+ *
+ * `xpathTail` (optional): the n+16 fallback's own `xpathTailForRetarget`
+ * re-anchor. Its `clickExpr` resolves primary-xpath-then-tail before
+ * clicking, so a caller probing what that fallback is ABOUT to click must
+ * resolve the identical primary-or-tail node — passing this keeps the probe
+ * from going blind exactly when the primary xpath is unresolvable and the
+ * retarget is the only thing that finds the live element. The primary
+ * (Stagehand act()) call site never passes this — its resolved selector came
+ * from Stagehand's own successful resolution, so no retarget applies there.
  */
 async function resolvedClickTargetIsSubmitShaped(
   target: FrameTarget,
-  selector: string
+  selector: string,
+  xpathTail: string | null = null
 ): Promise<boolean> {
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
   const expr = `(() => {
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = r.singleNodeValue;
+    let el = r.singleNodeValue;
+    if (!el && ${JSON.stringify(xpathTail)}) {
+      const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      el = r2.singleNodeValue;
+    }
     if (!el || !el.tagName) return false;
     const tag = el.tagName.toUpperCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
@@ -11975,10 +11989,14 @@ export async function executeStepWithHealing(params: {
           // submit (or a full-page reset) can remove the clicked control from
           // the DOM entirely, so reading its shape AFTER the click would
           // silently blind this signal on exactly the cases it exists to
-          // catch. See resolvedClickTargetIsSubmitShaped's doc comment.
+          // catch. Passes `xpathTail` so this resolves the SAME primary-or-
+          // tail node `clickExpr` below is about to click, instead of only
+          // ever checking the (possibly unresolvable) primary xpath — see
+          // resolvedClickTargetIsSubmitShaped's doc comment.
           const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector
+            resolvedAction.selector,
+            xpathTail
           );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
