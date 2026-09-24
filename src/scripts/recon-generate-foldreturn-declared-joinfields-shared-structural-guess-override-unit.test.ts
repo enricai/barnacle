@@ -5,84 +5,70 @@ import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-m
 const BASE = "https://api.example.com";
 
 /**
- * A search -> per-item drill-down pair where the drill endpoint is captured
- * TWICE (`r1`, a plain lookup; `r2`, a "refresh" re-query) at the SAME
- * endpoint identity. The structural heuristic threads the nested
- * `priceSummary.currency`/`priceSummary.taxIncluded` pair from the primary
- * item's own fields into both drill requests' query params, resolving its
- * OWN guessed `joinFields` to that compound pair. A declared
- * `foldReturn.joinFields: ["sessionId"]` names a field the heuristic could
- * never infer -- `sessionId` never threads into any request, appearing only
- * in the primary and drill response bodies -- so the declared field must
- * still win as the resolved target's `joinFields`, not be silently shadowed
- * by the heuristic's own inferred nested pair.
+ * Mirrors the fixture shape from
+ * recon-generate-foldreturn-declared-joinfields-single-primary-anchor-unit.test.ts,
+ * isolating resolveFoldPlan directly instead of going through
+ * resolveApplicableFoldPlans: a query-primary with two items, each driving
+ * its own per-item drill-down at a DISTINCT endpoint identity. Both drills
+ * coincidentally share the same `priceSummary.currency`/
+ * `priceSummary.taxIncluded` request query params (the structural
+ * heuristic's shared guess), while only the response-only, per-item-unique
+ * `sessionId` field is declared as the join. buildFoldPlanFromSpec's
+ * freshest-first scan resolves and `break`s on only ONE drill endpoint per
+ * call, so mergeSpecPlanOntoSamePrimary must resolve the declared override
+ * independently for EACH structural target -- keyed by its own drill
+ * endpoint -- or every target past the first keeps its structural guess.
  */
 function buildSharedStructuralGuessDrillDownSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
-      url: `${BASE}/listings/search/`,
-      requestPostData: '{"city":"nyc"}',
+      url: `${BASE}/sessions/search/`,
+      requestPostData: '{"track":"main"}',
       responseBody: {
-        listings: [
-          {
-            code: "hz-1",
-            priceSummary: { currency: "USD", taxIncluded: true },
-            sessionId: "sess-77",
-          },
+        sessions: [
+          { sessionId: "sess-1", priceSummary: { currency: "USD", taxIncluded: true } },
+          { sessionId: "sess-2", priceSummary: { currency: "USD", taxIncluded: true } },
         ],
       },
-      timestamp: "2026-01-01T00:00:00Z",
+      timestamp: "2024-06-01T00:00:00Z",
     }),
     buildStep("r1", {
-      url: `${BASE}/listings/details/hz-1/?currency=USD&taxIncluded=true`,
-      requestPostData: '{"lookup":true}',
+      url: `${BASE}/sessions/pricing/sess-1/?currency=USD&taxIncluded=true`,
+      requestPostData: null,
       responseBody: {
-        detail: [
-          {
-            code: "hz-1",
-            priceSummary: { currency: "USD", taxIncluded: true },
-            sessionId: "sess-77",
-            balance: 100,
-          },
-        ],
+        candidates: [{ sessionId: "sess-1", currency: "USD", taxIncluded: true, price: 100 }],
       },
-      timestamp: "2026-01-01T00:00:01Z",
+      timestamp: "2024-06-01T00:00:01Z",
     }),
     buildStep("r2", {
-      url: `${BASE}/listings/details/hz-1/?currency=USD&taxIncluded=true&refresh=true`,
-      requestPostData: '{"lookup":true,"refresh":true}',
+      url: `${BASE}/sessions/pricing/sess-2/?currency=USD&taxIncluded=true`,
+      requestPostData: null,
       responseBody: {
-        detail: [
-          {
-            code: "hz-1",
-            priceSummary: { currency: "USD", taxIncluded: true },
-            sessionId: "sess-77",
-            balance: 150,
-          },
-        ],
+        candidates: [{ sessionId: "sess-2", currency: "USD", taxIncluded: true, price: 200 }],
       },
-      timestamp: "2026-01-01T00:00:02Z",
+      timestamp: "2024-06-01T00:00:02Z",
     }),
   ];
 }
 
 const SPEC: FoldReturnSpec = {
-  endpointPattern: "/listings/details/",
-  resultsPath: "listings",
-  drillResultsPath: "detail",
+  endpointPattern: "/sessions/pricing/",
+  resultsPath: "sessions",
+  drillResultsPath: "candidates",
   joinFields: ["sessionId"],
 };
 
-describe("resolveFoldPlan — nested structural-guess pair vs declared joinFields override", () => {
-  it("resolves the single target's joinFields to the declared sessionId, not the priceSummary currency/taxIncluded structural guess", () => {
+describe("resolveFoldPlan — nested structural-guess pair vs declared joinFields override on every per-item target", () => {
+  it("resolves every per-item target's joinFields to the declared sessionId, not the shared priceSummary currency/taxIncluded structural guess", () => {
     const actionSteps = buildSharedStructuralGuessDrillDownSteps();
 
     const plans = resolveFoldPlan(actionSteps, SPEC, null);
 
     expect(plans).toHaveLength(1);
     const [plan] = plans;
-    expect(plan!.targets).toHaveLength(1);
-    const [target] = plan!.targets;
-    expect(target!.joinFields).toEqual(["sessionId"]);
+    expect(plan!.targets).toHaveLength(2);
+    for (const target of plan!.targets) {
+      expect(target.joinFields).toEqual(["sessionId"]);
+    }
   });
 });
