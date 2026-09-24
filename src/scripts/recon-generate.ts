@@ -9265,6 +9265,63 @@ function readValueAtPath(body: unknown, path: readonly string[]): unknown {
   }, body);
 }
 
+/**
+ * Turns a flow author's plain dot-separated {@link FoldReturnSpec.resultsPath}
+ * / `drillResultsPath` into the SAME {@link ARRAY_WILDCARD_SEGMENT}-bearing
+ * shape {@link findAllObjectArrayFields} would have discovered structurally,
+ * by walking `rawSegments` against a REAL `body` and inserting the sentinel
+ * wherever the path crosses an array the author's segment doesn't literally
+ * index into. A JSON dot-path is ordinary object-property notation; it has
+ * no convention of its own for "every element of this array" (that spelling
+ * is this module's internal detail), so an author naming a genuinely nested
+ * per-ancestor array — e.g. `"trips.legs"` for a response shaped
+ * `{ trips: [{ legs: [...] }] }` — always omits it. Left unresolved, that
+ * mismatch is silent and total: `objectItemsAtPath`'s plain (no-wildcard)
+ * branch reads a property straight off the array object, resolves to
+ * `undefined`, and the whole spec fails to match ANY primary — and even
+ * where a structural target already exists to fall back onto, every
+ * primaryArrayPath equality check the fold-join merge (
+ * {@link mergeSpecPlanOntoSamePrimary}) runs is a bare `JSON.stringify`
+ * comparison against the structural path's own always-wildcarded form, so a
+ * declared path that's semantically identical but spelled without the
+ * sentinel can never match it either — the structural guess silently wins
+ * regardless of how many per-target override branches are added. Normalizing
+ * at the one point every one of those comparisons ultimately reads from
+ * fixes them all at once, rather than teaching each comparison site its own
+ * tolerance.
+ *
+ * A literal numeric segment (see {@link ARRAY_INDEX_KEY_PATTERN}) is
+ * left as-is — an author who names one exact array element that way already
+ * resolves correctly via `readValueAtPath`'s ordinary bracket access, and
+ * rewriting it to the wildcard would silently widen "this one element" into
+ * "every element". Uses the array's own first object-array item as the
+ * representative to keep walking deeper (mirroring
+ * {@link findAllObjectArrayFieldsUncached}'s own DFS-first-match precedent);
+ * a path that turns out to disagree across sibling elements is exactly what
+ * {@link objectItemsAtPath}'s later wildcard-driven `.flatMap` — not this
+ * one-shot shape walk — is responsible for reconciling.
+ */
+function resolveDeclaredArrayPath(rawSegments: readonly string[], body: unknown): string[] {
+  const resolved: string[] = [];
+  let node: unknown = body;
+  for (const segment of rawSegments) {
+    if (
+      Array.isArray(node) &&
+      segment !== ARRAY_WILDCARD_SEGMENT &&
+      !ARRAY_INDEX_KEY_PATTERN.test(segment)
+    ) {
+      resolved.push(ARRAY_WILDCARD_SEGMENT);
+      node = node.find(isObjectArrayItem);
+    }
+    resolved.push(segment);
+    node =
+      node !== null && typeof node === "object"
+        ? (node as Record<string, unknown>)[segment]
+        : undefined;
+  }
+  return resolved;
+}
+
 /** The object items of the array at `path` — the same subset
  * {@link findObjectArrayField} exposes as `items`, but anchored to a
  * caller-supplied path instead of discovered by DFS. `null` when `path`
@@ -9607,8 +9664,12 @@ function compileFoldReturnResultsMatcher(
   spec: FoldReturnSpec | null
 ): (capture: Capture) => boolean {
   if (spec === null) return () => false;
-  const resultsPath = spec.resultsPath.split(".");
-  return (capture: Capture) => objectItemsAtPath(capture.responseBody, resultsPath) !== null;
+  const rawResultsPath = spec.resultsPath.split(".");
+  return (capture: Capture) =>
+    objectItemsAtPath(
+      capture.responseBody,
+      resolveDeclaredArrayPath(rawResultsPath, capture.responseBody)
+    ) !== null;
 }
 
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
@@ -9637,7 +9698,7 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   // freshest-first scan happens to land on first.
   restrictToDrillEndpointKey: string | null = null
 ): FoldPlan | null {
-  const primaryArrayPath = spec.resultsPath.split(".");
+  const rawPrimaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
   // Built once and shared across every primaryStepIndex — see
   // buildRequestValueIndex's docstring. Lets each primary immediately tell
@@ -9656,6 +9717,10 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     ) {
       continue;
     }
+    const primaryArrayPath = resolveDeclaredArrayPath(
+      rawPrimaryArrayPath,
+      actions[primaryStepIndex]!.capture.responseBody
+    );
     const primaryItems = objectItemsAtPath(
       actions[primaryStepIndex]!.capture.responseBody,
       primaryArrayPath
@@ -9769,7 +9834,10 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
         if (spec.drillResultsPath === undefined) {
           return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
         }
-        const path = spec.drillResultsPath.split(".");
+        const path = resolveDeclaredArrayPath(
+          spec.drillResultsPath.split("."),
+          drill.capture.responseBody
+        );
         return objectItemsAtPath(drill.capture.responseBody, path) ? path : null;
       })();
       const { chain, chainArrayPath, chainTerminalIndex } = computeFoldChain(
@@ -9899,7 +9967,10 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
     // per-item drill loop resolving one independent target per item, each at its
     // own endpoint). See buildFoldPlanFromSpec's restrictToDrillEndpointKey docstring.
     const matchesDeclaredEndpoint = compileFoldReturnEndpointMatcher(foldReturnSpec);
-    const declaredPrimaryArrayPath = foldReturnSpec.resultsPath.split(".");
+    const declaredPrimaryArrayPath = resolveDeclaredArrayPath(
+      foldReturnSpec.resultsPath.split("."),
+      actions[plan.primaryStepIndex]!.capture.responseBody
+    );
     const mergedTargets = plan.targets.map((target) => {
       const ownSpecPlan = buildFoldPlanFromSpec(
         actions,
