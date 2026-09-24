@@ -4169,6 +4169,42 @@ async function resolvedClickTargetIsSubmitShaped(
 }
 
 /**
+ * True when the primary (Stagehand-recorded) xpath is unresolvable and only
+ * `xpathTailForRetarget`'s loose tag+same-tag-sibling-position re-anchor
+ * finds a live node — i.e. the n+16 fallback's `clickExpr` is about to click
+ * whatever the tail heuristic happened to match, not the element Stagehand
+ * originally identified. That match ignores every attribute (id, class,
+ * type, form-ownership) above the leaf+parent tag pair, so it can land on a
+ * DIFFERENT live control that merely shares tag and position with the
+ * original (recon-trusted-click-throw-fallback-hits-wrong-element-credited-
+ * as-success.md: a "sign in" button positioned where a "create account"
+ * submit button used to resolve). Combined with the trusted-click delivery
+ * ALSO having failed to find the primary selector, this is the one n+16
+ * signal that flags "this click's target identity is genuinely uncertain" —
+ * used to require destination corroboration for an otherwise-unconditional
+ * strong signal (a real URL/network transition) instead of trusting it
+ * blindly, without touching the (already well-tested) weak DOM-signal path.
+ */
+async function resolvedClickUsedXpathTailRetarget(
+  target: FrameTarget,
+  selector: string,
+  xpathTail: string | null
+): Promise<boolean> {
+  if (!xpathTail) return false;
+  const xpath = xpathBodyForEvaluate(selector);
+  if (!xpath) return false;
+  const expr = `(() => {
+    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    return r.singleNodeValue === null;
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Element-scoped selection read-back for the case the clicked node's OWN
  * fingerprint can't credit: a design-system option that wraps its label in a
  * child element (Base Web `tag`, and the standard listbox/combobox idiom where
@@ -12002,6 +12038,14 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector,
             xpathTail
           );
+          // See resolvedClickUsedXpathTailRetarget's doc comment: flags that
+          // this click's target identity came only from the loose tail
+          // heuristic, not Stagehand's own resolved selector.
+          const retryClickUsedXpathTailRetarget = await resolvedClickUsedXpathTailRetarget(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector,
+            xpathTail
+          );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
           // delivery can suppress the synthetic `clickActivationExpr`
@@ -12312,9 +12356,20 @@ export async function executeStepWithHealing(params: {
           // never produce.
           const retryHasSubmitTransitionSignal =
             submitStep || retryNetworkIsRealAdvance || retryUrlChanged;
+          // `retryClickUsedXpathTailRetarget` folds in the "wrong element"
+          // shape from recon-trusted-click-throw-fallback-hits-wrong-
+          // element-credited-as-success.md: even when the tail-resolved
+          // control is NOT submit-shaped, its identity was never confirmed
+          // against Stagehand's own resolution, so a real URL/network
+          // transition it produces still needs the same destination
+          // corroboration a submit-shaped click gets — an uncorroborated
+          // strong signal from an unverified click target is exactly the
+          // "credited as success" defect.
           if (
             retryVerified &&
-            (requireSubmitEndpoint || retryResolvedElementIsSubmitShaped) &&
+            (requireSubmitEndpoint ||
+              retryResolvedElementIsSubmitShaped ||
+              retryClickUsedXpathTailRetarget) &&
             retryHasSubmitTransitionSignal
           ) {
             const tail = recentCaptureMeta.slice(preMetaLength);
