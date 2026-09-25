@@ -174,6 +174,7 @@ import {
   replanRemainingFlow,
   resetBillingErrorFlagForTests,
   resolveGotoWaitUntil,
+  seedSubmitStepFromOwnInstructionText,
   selectBodyExcerpt,
   selectRadioGroupOption,
   shouldSkipTechnique,
@@ -1975,6 +1976,42 @@ describe("recon-browser/isSubmitShapedInstructionText", () => {
 
   it("does not false-positive on unrelated words containing the same substring", () => {
     expect(isSubmitShapedInstructionText("Commit the change to the draft")).toBe(false);
+  });
+});
+
+describe("recon-browser/seedSubmitStepFromOwnInstructionText", () => {
+  const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+    ...extra,
+  });
+
+  it("sets submitStep: true on a step with no submitStep key and submit-shaped text", () => {
+    const steps = [mk("Click the Create Account button to submit the account creation form")];
+    const out = seedSubmitStepFromOwnInstructionText(steps);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("leaves a step already carrying submitStep: true as-is", () => {
+    const steps = [mk("Click Submit", { submitStep: true })];
+    const out = seedSubmitStepFromOwnInstructionText(steps);
+    expect(out[0]).toBe(steps[0]);
+  });
+
+  it("leaves a step with non-submit-shaped text without the flag", () => {
+    const steps = [mk("Click Next")];
+    const out = seedSubmitStepFromOwnInstructionText(steps);
+    expect(out[0]!.submitStep).toBeUndefined();
+    expect(out[0]).toBe(steps[0]);
+  });
+
+  it("does not read captchaGated as a submit signal", () => {
+    const steps = [mk("Click Next", { captchaGated: true })];
+    const out = seedSubmitStepFromOwnInstructionText(steps);
+    expect(out[0]!.submitStep).toBeUndefined();
+    expect(out[0]).toBe(steps[0]);
   });
 });
 

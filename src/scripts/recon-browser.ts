@@ -1420,6 +1420,25 @@ export function isSubmitShapedInstructionText(instruction: string): boolean {
   return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
 }
 
+/**
+ * Seed `submitStep: true` on freshly-authored steps purely from their own
+ * instruction text, closing the gap that {@link applyFailedStepFlagsToResumingBridgeStep}
+ * deliberately doesn't cover: that function only ever propagates the flag
+ * forward from a failed step that already had `submitStep` set, so a
+ * brand-new step with no submit-flagged ancestor anywhere in its lineage
+ * never gets classified, no matter how submit-shaped its own text reads.
+ * Leaves steps that already carry `submitStep: true` untouched rather than
+ * re-deriving them, and never reads `captchaGated` — that flag is orthogonal
+ * to what this function decides. Pure: same inputs, same output.
+ */
+export function seedSubmitStepFromOwnInstructionText(
+  steps: readonly NormalizedStep[]
+): NormalizedStep[] {
+  return steps.map((s) =>
+    s.submitStep || !isSubmitShapedInstructionText(s.instruction) ? s : { ...s, submitStep: true }
+  );
+}
+
 /** Top-level keys `persistReplannedFlow` already threads explicitly (plus `steps`). */
 const MANAGED_FLOW_FILE_KEYS = new Set([
   "steps",
