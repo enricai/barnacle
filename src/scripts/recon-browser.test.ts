@@ -1786,6 +1786,27 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
     expect(out[0]!.submitStep).toBe(true);
   });
+
+  it("self-seeds only the submit-shaped one of two freshly-authored bridge steps with no ancestor flags", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'");
+    const newSteps = [
+      mk("Fill in the Shipping Address field with '1 Main St'"),
+      mk("Click the Submit button to finalize the form"),
+    ];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+    expect(out[1]!.submitStep).toBe(true);
+  });
+
+  it("composes self-seeding with existing captchaGated propagation when failedStep is captchaGated but not submitStep", () => {
+    const failedStep = mk("Click the 'Continue' button", { captchaGated: true, submitStep: false });
+    const newSteps = [
+      mk("Solve the challenge, then click the 'Submit' button to finalize the order"),
+    ];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.captchaGated).toBe(true);
+    expect(out[0]!.submitStep).toBe(true);
+  });
 });
 
 describe("recon-browser/replan splice pipeline — seedSubmitStepFromOwnInstructionText wiring", () => {
