@@ -1731,6 +1731,22 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     expect(out[0]!.submitStep).toBeFalsy();
   });
 
+  it("inherits submitStep purely through label-match propagation when the fresh step's own text is not independently submit-shaped", () => {
+    const failedStep = mk("Click the 'Confirm Shipping Method' button", {
+      captchaGated: true,
+      submitStep: true,
+    });
+    const newSteps = [mk("Click the 'Confirm Shipping Method' button")];
+    expect(isSubmitShapedInstructionText(newSteps[0]!.instruction)).toBe(false);
+    const raw = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
+    expect(raw[0]!.captchaGated).toBe(true);
+    expect(raw[0]!.submitStep).toBe(true);
+    // Composing with the self-seed pass must not change the outcome — this
+    // step only qualifies via label-match propagation, never via self-seed.
+    const composed = spliceTag(newSteps, failedStep);
+    expect(composed).toEqual(raw);
+  });
+
   it("is deterministic across repeated calls with the same inputs", () => {
     const failedStep = mk("Click the 'Submit' button", { captchaGated: true });
     const newSteps = [mk("Click the 'Submit' button again after solving the challenge")];
