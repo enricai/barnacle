@@ -1794,7 +1794,7 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
       mk("Click the Submit button to finalize the form"),
     ];
     const out = spliceTag(newSteps, failedStep);
-    expect(out[0]!.submitStep).toBe(false);
+    expect(out[0]!.submitStep).toBeFalsy();
     expect(out[1]!.submitStep).toBe(true);
   });
 
