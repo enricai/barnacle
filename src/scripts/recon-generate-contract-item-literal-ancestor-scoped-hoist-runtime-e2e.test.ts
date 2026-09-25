@@ -213,7 +213,9 @@ describe("emitContractTs — item-literal-but-ancestor-scoped drill param still 
     expect(drillFetchCallIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(executeHttpBody).toContain("catalog/entries/details?code=${g0.code}");
+    expect(executeHttpBody).toContain(
+      "catalog/entries/details?code=${(g0 as Record<string, unknown>).code}"
+    );
     expect(executeHttpBody).not.toContain("catalog/entries/details?code=${item");
   });
 

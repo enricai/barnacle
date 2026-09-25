@@ -9,6 +9,7 @@ import type { ReconFormSchema } from "@/recon/form-schema";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import {
+  ancestorScopedAccessor,
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   collectHeaderBindings,
@@ -1112,6 +1113,90 @@ describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the L
   it("with no declared pattern, returns the whole sequence unchanged", () => {
     const kept = truncateActionSequenceAtSubmitPattern(sequence, null);
     expect(kept).toEqual(sequence);
+  });
+
+  describe("declared foldReturn drill fired AFTER the last submit match", () => {
+    const foldDrill = capture(`${BASE}/apply/detail-availability/x1`, "2024-01-01T00:00:05Z");
+    const withDrill = [...sequence, { capture: foldDrill, index: sequence.length }];
+    const foldReturnSpec = {
+      endpointPattern: "detail-availability",
+      resultsPath: "items",
+      joinFields: ["itemId"],
+    };
+
+    it("extends the boundary through the last fold-drill match so the declared drill stays visible", () => {
+      const kept = truncateActionSequenceAtSubmitPattern(
+        withDrill,
+        { endpoint: "/apply/submit$", body: null },
+        foldReturnSpec
+      ).map((a) => a.capture.url);
+      expect(kept).toEqual([
+        authMint.url,
+        pagedListing.url,
+        firstSubmitMatch.url,
+        trailingChrome.url,
+        secondSubmitMatch.url,
+        foldDrill.url,
+      ]);
+    });
+
+    it("still returns empty when nothing matches the submit pattern, even if the fold drill matches", () => {
+      const kept = truncateActionSequenceAtSubmitPattern(
+        withDrill,
+        { endpoint: "/no-such-endpoint$", body: null },
+        foldReturnSpec
+      );
+      expect(kept).toEqual([]);
+    });
+
+    it("without a declared spec, still truncates at the last submit match (unchanged behavior)", () => {
+      const kept = truncateActionSequenceAtSubmitPattern(withDrill, {
+        endpoint: "/apply/submit$",
+        body: null,
+      });
+      expect(kept[kept.length - 1]?.capture.url).toBe(secondSubmitMatch.url);
+    });
+  });
+});
+
+describe("ancestorScopedAccessor — plain access only where the primary-array assertion type reaches", () => {
+  // g0 bound at the first wildcard of `sections.*.groups.*.entries`, so its
+  // type declares `{ groups: ({ entries: Record<string, unknown>[] })[] }`.
+  const g0Remainder = ["groups", "*", "entries"];
+  // g1 bound at the second wildcard: `{ entries: Record<string, unknown>[] }`.
+  const g1Remainder = ["entries"];
+
+  it("keeps a plain chain that stays on the typed path without entering an array", () => {
+    expect(ancestorScopedAccessor("g0", "groups", g0Remainder)).toBe("g0.groups");
+    expect(ancestorScopedAccessor("g1", "entries", g1Remainder)).toBe("g1.entries");
+  });
+
+  it("casts a sibling field the assertion type never declares", () => {
+    expect(ancestorScopedAccessor("g1", "priceSummary.currency", g1Remainder)).toBe(
+      "((g1 as Record<string, unknown>).priceSummary as Record<string, unknown>).currency"
+    );
+    expect(ancestorScopedAccessor("g0", "code", g0Remainder)).toBe(
+      "(g0 as Record<string, unknown>).code"
+    );
+  });
+
+  it("casts any chain that crosses an array element, since an index hop is possibly-undefined under noUncheckedIndexedAccess", () => {
+    expect(ancestorScopedAccessor("g1", "entries.0.entryId", g1Remainder)).toBe(
+      '(((g1 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId'
+    );
+    expect(ancestorScopedAccessor("g0", "groups.0.entries", g0Remainder)).toBe(
+      '(((g0 as Record<string, unknown>).groups as Record<string, unknown>)["0"] as Record<string, unknown>).entries'
+    );
+    expect(ancestorScopedAccessor("g0", "groups.0.label", g0Remainder)).toContain(
+      "(g0 as Record<string, unknown>)"
+    );
+    expect(ancestorScopedAccessor("g1", "entries.length", g1Remainder)).toContain(
+      "(g1 as Record<string, unknown>)"
+    );
+  });
+
+  it("casts everything when no typed remainder is known for the var", () => {
+    expect(ancestorScopedAccessor("g0", "code", null)).toBe("(g0 as Record<string, unknown>).code");
   });
 });
 

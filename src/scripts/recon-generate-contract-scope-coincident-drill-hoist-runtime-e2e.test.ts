@@ -227,7 +227,9 @@ describe("emitContractTs — scope-coincident drill param still hoists to the an
     expect(drillFetchCallIndex).toBeGreaterThan(groupLoopIndex);
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(executeHttpBody).toContain("/listings/api/v1/details?code=${g0.code}");
+    expect(executeHttpBody).toContain(
+      "/listings/api/v1/details?code=${(g0 as Record<string, unknown>).code}"
+    );
     expect(executeHttpBody).not.toContain("/listings/api/v1/details?code=${item");
   });
 

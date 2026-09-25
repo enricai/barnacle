@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 /**
  * Proves the actual root-cause fix this subtask exists for: a drill param
  * that lives ONLY on the ancestor group object (`groupId`), never on the
- * leaf item, threads into the emitted drill URL as `${g0.groupId}` — not
+ * leaf item, threads into the emitted drill URL as `${(g0 as Record<string, unknown>).groupId}` — not
  * frozen as the first-captured literal `"g1"`. Every other fold test in this
  * suite either has no ancestor-only param to thread, or only proves the
  * nested-loop shape without a real ancestor field ever making it into a
@@ -125,7 +125,7 @@ describe("recon-generate drill-down fold — ancestor-only groupId threading run
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain("for (const g0 of");
-    expect(contract).toContain("g0.groupId");
+    expect(contract).toContain("(g0 as Record<string, unknown>).groupId");
     expect(contract).not.toContain("/groups/g1/");
   }, 30_000);
 });

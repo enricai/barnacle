@@ -123,7 +123,9 @@ describe("recon-generate fold-hoist — ancestor-scoped nested-field hoisted cal
     expect(occurrencesOutsideOwnLoop(body, "item")).toEqual([]);
 
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(body).toContain("catalog/entries/details?code=${g0.meta.summary.code}");
+    expect(body).toContain(
+      "catalog/entries/details?code=${(((g0 as Record<string, unknown>).meta as Record<string, unknown>).summary as Record<string, unknown>).code}"
+    );
     expect(body).not.toContain("catalog/entries/details?code=${item");
   });
 

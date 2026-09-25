@@ -303,7 +303,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     // The drill request is parameterized off the group-scoped `groupId`
     // field (never `item.*`), so it's spliced ABOVE the item loop — once
     // per ancestor group — instead of re-issued once per item.
-    expect(contract).toContain("$" + "{g0.groupId}");
+    expect(contract).toContain("${(g0 as Record<string, unknown>).groupId}");
     expect(fetchIndex).toBeGreaterThan(ancestorLoopIndex);
     expect(fetchIndex).toBeLessThan(itemLoopIndex);
     expect(

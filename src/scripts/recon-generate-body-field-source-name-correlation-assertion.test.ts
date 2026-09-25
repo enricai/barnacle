@@ -43,6 +43,42 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
     ).toThrow(/"currency".*"\$\{g0\.accountRegionCode\}"/);
   });
 
+  it("throws for an ancestor splice in the emitter's cast form — the wrapper is spelling, not a different accessor", () => {
+    const renderedBody =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
+      'body: `{"currency":${(g0 as Record<string, unknown>).accountRegionCode}}`,';
+    expect(() =>
+      assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
+    ).toThrow(/"currency".*accountRegionCode/);
+  });
+
+  it("throws for a nested cast-form ancestor splice whose leaf name doesn't correlate", () => {
+    const renderedBody =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
+      'body: `{"currency":"${((g1 as Record<string, unknown>).meta as Record<string, unknown>).regionCode}"}`,';
+    expect(() =>
+      assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
+    ).toThrow(/"currency".*regionCode/);
+  });
+
+  it("stays silent for a nested cast-form ancestor splice whose leaf name correlates", () => {
+    const renderedBody =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
+      'body: `{"currency":"${((g1 as Record<string, unknown>).priceSummary as Record<string, unknown>).currency}"}`,';
+    expect(() =>
+      assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
+    ).not.toThrow();
+  });
+
+  it("throws for a nested cast-form item splice whose leaf name doesn't correlate", () => {
+    const renderedBody =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
+      'body: `{"region":${(item.identifiers as Record<string, unknown>).sku}}`,';
+    expect(() =>
+      assertBodyFieldSourceNameCorrelates("emitMultiStepExecuteHttp", renderedBody)
+    ).toThrow(/"region".*sku/);
+  });
+
   it("stays silent when the item field's own name correlates with the JSON key (exact match)", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
     const renderedBody = 'body: `{"orderId":"${item.orderId}"}`,';

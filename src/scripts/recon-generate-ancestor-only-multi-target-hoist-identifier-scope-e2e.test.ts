@@ -112,9 +112,13 @@ describe("recon-generate fold-hoist — ancestor-only multi-target hoisted call 
     // Both drills must rebind through the ancestor's own nested array,
     // never through an `item`-rooted accessor.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(body).toContain('catalog/entries/details?code=${g0.entries["0"].entryId}');
+    expect(body).toContain(
+      'catalog/entries/details?code=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
+    );
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(body).toContain('catalog/entries/labels?tag=${g0.entries["0"].entryId}');
+    expect(body).toContain(
+      'catalog/entries/labels?tag=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
+    );
     expect(body).not.toContain("catalog/entries/details?code=${item");
     expect(body).not.toContain("catalog/entries/labels?tag=${item");
   });

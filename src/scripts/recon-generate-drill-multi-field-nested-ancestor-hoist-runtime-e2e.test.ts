@@ -256,7 +256,7 @@ describe("emitContractTs — paged primary + dual scope-coincident, multi-depth 
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
     expect(executeHttpBody).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      "/listings/api/v1/details?code=${g0.code}&flag=${g0.meta.flagship.code}"
+      "/listings/api/v1/details?code=${(g0 as Record<string, unknown>).code}&flag=${(((g0 as Record<string, unknown>).meta as Record<string, unknown>).flagship as Record<string, unknown>).code}"
     );
     expect(executeHttpBody).not.toContain("${item");
 

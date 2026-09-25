@@ -242,7 +242,7 @@ describe("emitContractTs — scope-coincident drill still hoists to the ancestor
       .match(/`[^`]*code=\$\{[^}]+\}[^`]*`/);
     expect(drillUrlLineMatch).not.toBeNull();
     const drillUrlTemplate = drillUrlLineMatch![0];
-    expect(drillUrlTemplate).toMatch(/\$\{g0\./);
+    expect(drillUrlTemplate).toMatch(/\$\{\(+g0 as Record<string, unknown>\)/);
     expect(drillUrlTemplate).not.toContain("${item.");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
