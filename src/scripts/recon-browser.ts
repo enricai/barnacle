@@ -3312,7 +3312,9 @@ async function main(): Promise<void> {
             newSteps.map((s) => ({ ...s, origin: "replan" as const })),
             originalRemaining
           );
-          const taggedNewSteps = applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step);
+          const taggedNewSteps = seedSubmitStepFromOwnInstructionText(
+            applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step)
+          );
           // If every bridge step duplicated the next authored step, the
           // filter above drops them all and originalRemaining[0] itself is
           // the step that resumes the failure point — re-apply the flags

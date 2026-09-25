@@ -1765,6 +1765,109 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
   });
 });
 
+describe("recon-browser/replan splice pipeline — seedSubmitStepFromOwnInstructionText wiring", () => {
+  const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+    ...extra,
+  });
+
+  // Mirrors the splice call site: taggedNewSteps =
+  // seedSubmitStepFromOwnInstructionText(applyFailedStepFlagsToResumingBridgeStep(survivingNewSteps, step))
+  const spliceTag = (newSteps: NormalizedStep[], failedStep: NormalizedStep): NormalizedStep[] =>
+    seedSubmitStepFromOwnInstructionText(
+      applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep)
+    );
+
+  it("seeds submitStep on a replan bridge step with submit-shaped text when the failed step never had submitStep/captchaGated set — the reported gap", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'");
+    const newSteps = [mk("Click the Submit button to finalize the form")];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("leaves a non-submit-shaped bridge step unflagged when the failed step never had submitStep/captchaGated set", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'");
+    const newSteps = [mk("Fill in the Shipping Address field with '1 Main St'")];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBeFalsy();
+  });
+
+  it("does not override a submitStep flag already set by applyFailedStepFlagsToResumingBridgeStep's propagation", () => {
+    const failedStep = mk("Click the 'Place Order' button", { submitStep: true });
+    const newSteps = [mk("Click the 'Place Order' button to finish checkout")];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("does not flag a plain field-fill bridge step propagated by applyFailedStepFlagsToResumingBridgeStep as non-submit", () => {
+    const failedStep = mk("Fill in the Company Name field with 'Acme Inc'", { submitStep: true });
+    const newSteps = [mk("Fill in the Company Name field with 'Acme Inc' again")];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(false);
+  });
+});
+
+describe("recon-browser/replan splice pipeline — resume-target carry-forward unaffected by seeding", () => {
+  const mk = (instruction: string, extra: Partial<NormalizedStep> = {}): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "original",
+    ...extra,
+  });
+
+  // Reproduces recon-browser.ts:3320-3337: the resume-target carry-forward
+  // branch only fires when taggedNewSteps.length === 0, so it is structurally
+  // disjoint from the new seeding pass and must stay gated on step.submitStep.
+  const patchResumeTarget = (
+    taggedNewSteps: NormalizedStep[],
+    originalRemaining: NormalizedStep[],
+    step: NormalizedStep
+  ): NormalizedStep[] => {
+    const resumeTarget = originalRemaining[0];
+    return taggedNewSteps.length === 0 &&
+      resumeTarget !== undefined &&
+      (step.captchaGated || step.submitStep)
+      ? [
+          {
+            ...resumeTarget,
+            captchaGated: resumeTarget.captchaGated || step.captchaGated,
+            submitStep:
+              resumeTarget.submitStep ||
+              (step.submitStep &&
+                (step.captchaGated || isSubmitShapedInstructionText(resumeTarget.instruction))),
+          },
+          ...originalRemaining.slice(1),
+        ]
+      : originalRemaining;
+  };
+
+  it("carries submitStep onto originalRemaining[0] when every bridge step is filtered out and the failed step was submitStep + submit-shaped resume target", () => {
+    const step = mk("Click the 'Confirm Shipping Method' button", { submitStep: true });
+    const originalRemaining = [mk("Click the 'Confirm Shipping Method' button to finalize")];
+    const out = patchResumeTarget([], originalRemaining, step);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("does NOT carry submitStep onto originalRemaining[0] when the failed step never had submitStep/captchaGated set", () => {
+    const step = mk("Click the 'Confirm Shipping Method' button");
+    const originalRemaining = [mk("Click the 'Confirm Shipping Method' button to finalize")];
+    const out = patchResumeTarget([], originalRemaining, step);
+    expect(out[0]!.submitStep).toBeFalsy();
+  });
+
+  it("leaves originalRemaining untouched when bridge steps survived (taggedNewSteps non-empty)", () => {
+    const step = mk("Click the 'Confirm Shipping Method' button", { submitStep: true });
+    const originalRemaining = [mk("Click the 'Confirm Shipping Method' button to finalize")];
+    const taggedNewSteps = [mk("Click Confirm again")];
+    const out = patchResumeTarget(taggedNewSteps, originalRemaining, step);
+    expect(out).toBe(originalRemaining);
+  });
+});
+
 describe("recon-browser/isReplanReproposingFailedStep", () => {
   const mk = (instruction: string): NormalizedStep => ({
     instruction,
