@@ -233,7 +233,7 @@ describe("emitContractTs — dual scope-coincident drill params both hoist to th
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
     expect(executeHttpBody).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      "/listings/api/v1/details?code=${g0.code}&flag=${g0.flagshipEntry.code}"
+      "/listings/api/v1/details?code=${(g0 as Record<string, unknown>).code}&flag=${((g0 as Record<string, unknown>).flagshipEntry as Record<string, unknown>).code}"
     );
     expect(executeHttpBody).not.toContain("${item");
   });

@@ -238,7 +238,7 @@ describe("emitContractTs — all-ancestor-scoped REST drill hoisted above the it
       .match(/`[^`]*groupId=\$\{[^}]+\}[^`]*`/);
     expect(drillUrlLineMatch).not.toBeNull();
     const drillUrlTemplate = drillUrlLineMatch![0];
-    expect(drillUrlTemplate).toMatch(/\$\{g0\./);
+    expect(drillUrlTemplate).toMatch(/\$\{\(+g0 as Record<string, unknown>\)/);
     expect(drillUrlTemplate).not.toContain("${item.");
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });

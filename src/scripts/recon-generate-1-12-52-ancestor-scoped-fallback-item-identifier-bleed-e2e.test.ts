@@ -127,7 +127,7 @@ describe("recon-generate fold-hoist — ancestor-scoped dual-threaded-field fall
     // ancestor's own nested array, never through an `item`-rooted accessor.
     expect(body).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      'catalog/entries/labels?code=${g0.entries["0"].entryId}&region=${g0.entries["0"].regionCode}'
+      'catalog/entries/labels?code=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}&region=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).regionCode}'
     );
     expect(body).not.toContain("catalog/entries/labels?code=${item");
     expect(body).not.toContain("region=${item");

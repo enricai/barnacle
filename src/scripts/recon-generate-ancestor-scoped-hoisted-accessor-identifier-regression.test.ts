@@ -131,7 +131,7 @@ describe("recon-generate fold-hoist — ancestor/item value-coincidence hoisted 
     // literal value for the matched item.
     const DRILL_URL_ACCESSOR =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      'catalog/entries/details?code=${g0.tags["0"].code}&zone=${g0.tags["0"].zone}';
+      'catalog/entries/details?code=${(((g0 as Record<string, unknown>).tags as Record<string, unknown>)["0"] as Record<string, unknown>).code}&zone=${(((g0 as Record<string, unknown>).tags as Record<string, unknown>)["0"] as Record<string, unknown>).zone}';
     expect(body).toContain(DRILL_URL_ACCESSOR);
     expect(body).not.toContain("catalog/entries/details?code=${item");
     expect(body).not.toContain("zone=${item");

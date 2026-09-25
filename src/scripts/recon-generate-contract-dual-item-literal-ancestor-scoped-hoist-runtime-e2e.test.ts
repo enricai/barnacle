@@ -254,7 +254,7 @@ describe("emitContractTs — dual item-literal drill params, each on a distinct 
     expect(drillFetchCallIndex).toBeLessThan(itemLoopIndex);
     expect(executeHttpBody).toContain(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      "catalog/entries/details?code=${g0.primaryVariant.code}&detail=${g0.cheapestVariant.detail.code}"
+      "catalog/entries/details?code=${((g0 as Record<string, unknown>).primaryVariant as Record<string, unknown>).code}&detail=${(((g0 as Record<string, unknown>).cheapestVariant as Record<string, unknown>).detail as Record<string, unknown>).code}"
     );
     expect(executeHttpBody).not.toContain("${item");
   });

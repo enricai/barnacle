@@ -228,14 +228,6 @@ function runGenerateAndTypecheck(
         noEmit: true,
         incremental: false,
         tsBuildInfoFile: null,
-        // The first-matched-entry array-index accessor
-        // (`findStructurallyCorrespondingAncestorField`'s array fallback,
-        // recon-generate.ts, a7bbd86) is a pre-existing, unrelated emitter
-        // behavior that always types as possibly-undefined under the root
-        // tsconfig's noUncheckedIndexedAccess — orthogonal to the identifier-
-        // scope-bleed claim this test pins. Disabled here only, so this
-        // test's tsc gate isolates that one claim.
-        noUncheckedIndexedAccess: false,
         paths: {
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
@@ -361,9 +353,13 @@ describe("recon-generate CLI — ancestor loop's own direct request bodies never
     // g0 loop, before any per-entry sub-loop — reached only by drilling into
     // the ancestor's own nested `entries` array, never a per-item accessor.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(ancestor.contract).toContain('catalog/entries/details?code=${g0.entries["0"].entryId}');
+    expect(ancestor.contract).toContain(
+      'catalog/entries/details?code=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
+    );
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-    expect(ancestor.contract).toContain('catalog/entries/labels?tag=${g0.entries["0"].entryId}');
+    expect(ancestor.contract).toContain(
+      'catalog/entries/labels?tag=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
+    );
     expect(ancestor.contract).not.toMatch(/entries\/(details|labels)\?(code|tag)=\$\{item/);
 
     // The regression: no `item` reference anywhere in the COMBINED

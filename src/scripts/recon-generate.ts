@@ -1746,19 +1746,36 @@ function restrictToSubmitPattern<T extends Capture>(
  * it. A pattern that names only the wizard's final step must not collapse a
  * multi-step chain (auth mint, paged listing, terminal submit) down to the
  * bare matching capture(s) — a hard filter would drop the earlier steps the
- * fold plan and state-threading depend on. When nothing matches, the result
- * is empty, matching what a hard filter would have produced.
+ * fold plan and state-threading depend on. When nothing matches the submit
+ * pattern, the result is empty, matching what a hard filter would have
+ * produced.
+ *
+ * A declared `foldReturn` drill-down that fires AFTER the last submit match
+ * (a detail-by-id call issued once the results call has answered) extends
+ * the boundary to its own last match: the flow author named that endpoint
+ * explicitly, and `buildFoldPlanFromSpec` can only resolve it if it survives
+ * here — otherwise the declared spec silently resolves nothing while a
+ * structural guess for an earlier drill still emits, so the loss is
+ * invisible in the output. The hops between the submit and the drill are
+ * kept for the same reason the pre-submit chain is: the drill's request may
+ * thread state minted by one of them. A fold match alone never resurrects a
+ * sequence the submit pattern rejected outright.
  */
 export function truncateActionSequenceAtSubmitPattern(
   sequence: ActionCapture[],
-  submitPatterns: SubmitPatterns | null
+  submitPatterns: SubmitPatterns | null,
+  foldReturnSpec: FoldReturnSpec | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
-  let lastMatchIndex = -1;
+  const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+  let lastSubmitIndex = -1;
+  let lastFoldIndex = -1;
   for (let i = 0; i < sequence.length; i++) {
-    if (matchesSubmit(sequence[i]!.capture)) lastMatchIndex = i;
+    if (matchesSubmit(sequence[i]!.capture)) lastSubmitIndex = i;
+    if (matchesFoldReturn(sequence[i]!.capture)) lastFoldIndex = i;
   }
-  return sequence.slice(0, lastMatchIndex + 1);
+  if (lastSubmitIndex === -1) return [];
+  return sequence.slice(0, Math.max(lastSubmitIndex, lastFoldIndex) + 1);
 }
 
 /**
@@ -2830,6 +2847,13 @@ const ARRAY_INDEX_VAR_PATTERN = /^(?:i|idx)\d*$/;
  * not a bug. */
 const FOLD_SCOPED_ROOT_PATTERN = /^(?:item\d*|g\d+)\./;
 
+/** The `as Record<string, unknown>` re-assertion {@link unknownValueAccessor}
+ * and {@link ancestorScopedAccessor} wrap around every non-leaf hop of an
+ * item/ancestor field path. Stripped (together with the parentheses that
+ * carry it) before a spliced accessor is name-checked, so the check sees the
+ * bare dotted path the wrapper encodes. */
+const EMITTER_RECORD_CAST = / as Record<string, unknown>/g;
+
 /**
  * Derives the "own name" a spliced `${...}` accessor carries for {@link
  * assertBodyFieldSourceNameCorrelates} to correlate against its enclosing
@@ -2839,10 +2863,14 @@ const FOLD_SCOPED_ROOT_PATTERN = /^(?:item\d*|g\d+)\./;
  * fold/drill per-item or ancestor binding (see {@link
  * FOLD_SCOPED_ROOT_PATTERN}'s docstring for why only those are in scope) or
  * that is otherwise legitimately name-free (see {@link
- * NAME_FREE_ACCESSOR_PATTERN} / {@link ARRAY_INDEX_VAR_PATTERN}).
+ * NAME_FREE_ACCESSOR_PATTERN} / {@link ARRAY_INDEX_VAR_PATTERN}). The
+ * emitter's own cast wrapper (see {@link EMITTER_RECORD_CAST}) is peeled off
+ * first: it is spelling, not structure, and leaving it in place would let
+ * every cast-form item/ancestor splice — the exact shape this gate exists to
+ * check — slip past the root-binding test as an "expression".
  */
 function deriveSplicedSourceName(accessor: string): string | null {
-  const trimmed = accessor.trim();
+  const trimmed = accessor.trim().replace(EMITTER_RECORD_CAST, "").replace(/[()]/g, "");
   if (NAME_FREE_ACCESSOR_PATTERN.test(trimmed) || ARRAY_INDEX_VAR_PATTERN.test(trimmed)) {
     return null;
   }
@@ -4417,6 +4445,76 @@ function unknownValueAccessor(varName: string, path: string[]): string {
 }
 
 /**
+ * Maps each ancestor loop var (`g0`, `g1`, ... as {@link pathToFoldLoopLines}
+ * binds them, one per {@link ARRAY_WILDCARD_SEGMENT}, outer to inner) to the
+ * remainder of the primary array path after its own wildcard. That remainder
+ * is exactly the shape {@link foldArrayAssertionType} declares on the
+ * ancestor's type — the only properties TypeScript knows on it; every
+ * sibling field is invisible to the type even though it is real response
+ * data at runtime.
+ */
+function ancestorTypedRemainders(
+  primaryArrayPath: readonly string[],
+  ancestorVars: readonly string[]
+): Map<string, readonly string[]> {
+  const wildcardPositions = primaryArrayPath.flatMap((segment, i) =>
+    segment === ARRAY_WILDCARD_SEGMENT ? [i] : []
+  );
+  return new Map(
+    wildcardPositions.flatMap((position, ancestorIndex) => {
+      const varName = ancestorVars[ancestorIndex];
+      return varName === undefined
+        ? []
+        : [[varName, primaryArrayPath.slice(position + 1)] as const];
+    })
+  );
+}
+
+/**
+ * Whether a threaded field read off an ancestor loop var stays inside the
+ * shape its assertion type declares, so a plain property chain typechecks
+ * under the repo's own strict settings. Each hop must follow the typed
+ * remainder segment for segment and must stop before the first typed
+ * wildcard: crossing an array means an index hop, which
+ * `noUncheckedIndexedAccess` types as possibly-undefined, so every further
+ * hop is a TS18048 in the generated contract — the cast form is the only
+ * spelling that survives it. A sibling step off the path is a TS2339 for
+ * the same reason.
+ */
+function isAncestorOnPathField(
+  fieldSegments: readonly string[],
+  typedRemainder: readonly string[]
+): boolean {
+  const firstWildcard = typedRemainder.indexOf(ARRAY_WILDCARD_SEGMENT);
+  const plainDepth = firstWildcard === -1 ? typedRemainder.length : firstWildcard;
+  return (
+    fieldSegments.length <= plainDepth &&
+    fieldSegments.every((segment, i) => segment === typedRemainder[i])
+  );
+}
+
+/**
+ * Accessor for a threaded field read off an ancestor loop var. An on-path
+ * chain (see {@link isAncestorOnPathField}) keeps the plain property access
+ * the assertion type already supports. Anything else (a per-group summary
+ * threaded into a drill body, any hop through an array element) does not
+ * typecheck as a plain access in the generated contract; the same cast form
+ * {@link unknownValueAccessor} uses for the item is the only way to read it.
+ * Exported for unit tests.
+ */
+export function ancestorScopedAccessor(
+  varName: string,
+  field: string,
+  typedRemainder: readonly string[] | null
+): string {
+  const segments = field.split(".");
+  if (typedRemainder !== null && isAncestorOnPathField(segments, typedRemainder)) {
+    return `${varName}${pathToAccessor(segments, { assertNonNull: false })}`;
+  }
+  return unknownValueAccessor(`(${varName} as Record<string, unknown>)`, segments);
+}
+
+/**
  * Builds a nested TypeScript assertion type matching a JSON path. e.g.
  *   ["Auth","Token"], "string" -> `{ Auth: { Token: string } }`
  *   ["Sections","Complete","0"], "boolean" -> `{ Sections: { Complete: { "0": boolean } } }`
@@ -4440,16 +4538,18 @@ function pathToAssertionType(path: string[], leafType: "string" | "number" | "bo
  * (the primary results array, or the drill-down's per-item match array). An
  * {@link ARRAY_WILDCARD_SEGMENT} segment types as an array of whatever the
  * rest of the path resolves to, matching the `.flatMap` accessor
- * {@link pathToFoldAccessorExpr} emits for the same segment.
+ * {@link pathToFoldAccessorExpr} emits for the same segment. `leaf` lets a
+ * caller type the terminal value as a single object instead — the flat
+ * one-item-collection case {@link emitFoldMatchAndMergeLines} wraps itself.
  */
-function foldArrayAssertionType(path: string[]): string {
-  if (path.length === 0) return "Record<string, unknown>[]";
+function foldArrayAssertionType(path: string[], leaf = "Record<string, unknown>[]"): string {
+  if (path.length === 0) return leaf;
   const segment = path[0]!;
   if (segment === ARRAY_WILDCARD_SEGMENT) {
-    return `(${foldArrayAssertionType(path.slice(1))})[]`;
+    return `(${foldArrayAssertionType(path.slice(1), leaf)})[]`;
   }
   const key = isValidJsIdentifier(segment) ? segment : JSON.stringify(segment);
-  return `{ ${key}: ${foldArrayAssertionType(path.slice(1))} }`;
+  return `{ ${key}: ${foldArrayAssertionType(path.slice(1), leaf)} }`;
 }
 
 /**
@@ -5914,7 +6014,7 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
  * two copies that could drift apart.
  */
 function emitFoldMatchAndMergeLines(
-  terminalStep: { varName: string },
+  terminalStep: { varName: string; capture: { responseBody: unknown } },
   target: FoldTarget,
   itemVar: string,
   suffix: string,
@@ -5933,10 +6033,25 @@ function emitFoldMatchAndMergeLines(
       `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
     ];
   }
-  const foldMatchesExpr = pathToFoldAccessorExpr(
-    `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
-    target.chainArrayPath
-  );
+  // A wildcard-free chainArrayPath can land on a flat object rather than an
+  // array — objectItemsAtPath resolves it as an implicit one-item
+  // collection at plan time (a declared `drillResultsPath` naming a
+  // detail-by-id sub-object does exactly this), so the emitted match must
+  // see the same one-item array at runtime instead of calling `.find` on a
+  // plain object. Decided from the captured terminal body, the same
+  // evidence plan resolution used, so the two never disagree.
+  const isFlatObjectAtPath =
+    !target.chainArrayPath.includes(ARRAY_WILDCARD_SEGMENT) &&
+    isObjectArrayItem(readValueAtPath(terminalStep.capture.responseBody, target.chainArrayPath));
+  const foldMatchesExpr = isFlatObjectAtPath
+    ? `[${pathToFoldAccessorExpr(
+        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
+        target.chainArrayPath
+      )}]`
+    : pathToFoldAccessorExpr(
+        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+        target.chainArrayPath
+      );
   const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
     const segments = f.split(".");
     // The drill-down response is a DIFFERENT payload than the
@@ -6740,14 +6855,18 @@ export function emitMultiStepExecuteHttp(
         // single-target case keeps the original unsuffixed names.
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         // Only `itemVar` (and fold-match candidates) are `Record<string,
-        // unknown>`-typed — ancestor loop vars keep the real response-derived
-        // type, so re-asserting THEIR intermediate hops would be both
-        // unnecessary and, worse, would replace a real property access with
-        // an opaque cast in the emitted URL/body text.
+        // unknown>`-typed; an ancestor loop var is typed by the primary-array
+        // assertion, which declares only the path below it — see
+        // ancestorScopedAccessor for why a field off that path needs the
+        // cast form while an on-path chain keeps the plain property access.
+        const typedRemainderByAncestor = ancestorTypedRemainders(
+          foldPlan.primaryArrayPath,
+          ancestorVars
+        );
         const scopedAccessor = (varName: string, field: string): string =>
           varName === itemVar
             ? unknownValueAccessor(varName, field.split("."))
-            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+            : ancestorScopedAccessor(varName, field, typedRemainderByAncestor.get(varName) ?? null);
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterize`
         // call: `actions` never changes across the url/headers/body calls a
@@ -11838,14 +11957,18 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         );
         const suffix = foldPlan.targets.length > 1 ? `${planSuffix}${targetIndex}` : planSuffix;
         // Only `itemVar` (and fold-match candidates) are `Record<string,
-        // unknown>`-typed — ancestor loop vars keep the real response-derived
-        // type, so re-asserting THEIR intermediate hops would be both
-        // unnecessary and, worse, would replace a real property access with
-        // an opaque cast in the emitted URL/body text.
+        // unknown>`-typed; an ancestor loop var is typed by the primary-array
+        // assertion, which declares only the path below it — see
+        // ancestorScopedAccessor for why a field off that path needs the
+        // cast form while an on-path chain keeps the plain property access.
+        // Keyed on the path the loop was actually built from: under
+        // itemsOverride the ancestor vars belong to residualPath's own
+        // wildcards, not to crossings the paginated merge already flattened.
+        const typedRemainderByAncestor = ancestorTypedRemainders(residualPath, ancestorVars);
         const scopedAccessor = (varName: string, field: string): string =>
           varName === itemVar
             ? unknownValueAccessor(varName, field.split("."))
-            : `${varName}${pathToAccessor(field.split("."), { assertNonNull: false })}`;
+            : ancestorScopedAccessor(varName, field, typedRemainderByAncestor.get(varName) ?? null);
         const joinAccessor = (field: string): string => scopedAccessor(itemVar, field);
         // Computed once per fold target instead of once per `parameterizeUrl`
         // call: `actionSteps` never changes across the calls this target's
@@ -13474,7 +13597,9 @@ async function main(): Promise<void> {
     // a manifest built from a single flow-declared submit step cannot represent
     // a wizard whose every section saves independently, so it is only trusted
     // when it isn't a strict undercount of what the same activeCaptures' own
-    // heuristic extraction finds.
+    // heuristic extraction finds — and, since it only ever records
+    // submit-pattern matches, only when it isn't missing a declared foldReturn
+    // drill-down the heuristic sequence found past the submit step.
     const unfilteredHeuristicActionCaptures = gql
       ? dedupRedundantSameOperationCaptures(graphqlActionSequence, primaryGraphQLOperation)
       : collapseRedundantSameEndpointCaptures(
@@ -13499,7 +13624,11 @@ async function main(): Promise<void> {
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
         ? unfilteredHeuristicActionCaptures
-        : truncateActionSequenceAtSubmitPattern(unfilteredHeuristicActionCaptures, submitPatterns);
+        : truncateActionSequenceAtSubmitPattern(
+            unfilteredHeuristicActionCaptures,
+            submitPatterns,
+            foldReturnSpec
+          );
     const patternUndercounts =
       patternedHeuristicActionCaptures.length < unfilteredHeuristicActionCaptures.length;
     if (patternUndercounts && requireSubmitEndpointMatch) {
@@ -13518,10 +13647,25 @@ async function main(): Promise<void> {
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
     const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
+    // A manifest only ever records submit-pattern matches, so it can never
+    // carry a declared foldReturn drill-down the heuristic sequence found
+    // past the submit step — and a manifest padded by re-fired submits can
+    // still out-count that sequence. Trusting it then would discard the
+    // author's declared drill exactly as the pre-fold truncation used to.
+    const matchesDeclaredFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
+    const manifestLacksDeclaredFoldDrill =
+      manifestActionCaptures !== null &&
+      heuristicActionCaptures.some((a) => matchesDeclaredFoldReturn(a.capture)) &&
+      !manifestActionCaptures.some((a) => matchesDeclaredFoldReturn(a.capture));
     const manifestUndercounts =
       manifestActionCaptures !== null &&
-      manifestActionCaptures.length < heuristicActionCaptures.length;
-    if (manifestActionCaptures !== null && manifestUndercounts) {
+      (manifestActionCaptures.length < heuristicActionCaptures.length ||
+        manifestLacksDeclaredFoldDrill);
+    if (manifestActionCaptures !== null && manifestLacksDeclaredFoldDrill) {
+      logger.info(
+        `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) because it lacks the declared foldReturn drill-down (endpointPattern: ${foldReturnSpec?.endpointPattern}) the heuristic action sequence (${heuristicActionCaptures.length} capture(s)) contains`
+      );
+    } else if (manifestActionCaptures !== null && manifestUndercounts) {
       logger.info(
         `submission selection: ignoring submit-manifest.json (${manifestActionCaptures.length} capture(s)) as an undercount of the heuristic action sequence (${heuristicActionCaptures.length} capture(s))`
       );
@@ -13799,6 +13943,25 @@ async function main(): Promise<void> {
     if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
+      );
+    }
+    // The quieter failure: structural plans resolved (so the count above is
+    // non-zero) but the DECLARED spec itself resolved nothing, so its
+    // joinFields never reached any emitted target and only heuristic join
+    // guesses were emitted. Without this the two cases are indistinguishable
+    // in the output. Anchored exactly as the emitted resolution above is, so
+    // the diagnostic never disagrees with what actually went into the file.
+    if (
+      foldReturnSpec !== null &&
+      effectiveFoldPlanCount > 0 &&
+      buildFoldPlanFromSpec(
+        actionSteps,
+        foldReturnSpec,
+        multiStepBody ? null : emittedPrimaryAnchor
+      ) === null
+    ) {
+      logger.warn(
+        `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but the declared spec resolved no fold plan — only structurally-detected fold plans (with their own guessed join fields) were emitted, so the declared joinFields were not applied; check that the endpointPattern names a capture in the action sequence and resultsPath resolves on the primary response`
       );
     }
 
