@@ -1701,11 +1701,34 @@ describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
     // once it becomes the step that actually resumes the failure point.
   });
 
-  it("is a no-op when the failed step carried neither flag", () => {
+  // applyFailedStepFlagsToResumingBridgeStep in isolation never reads a bridge
+  // step's own instruction text — it only propagates flags carried forward
+  // from failedStep, so calling it alone is always a no-op when failedStep
+  // has neither flag set, regardless of the bridge step's wording. Whether a
+  // freshly-authored bridge step ends up submitStep: true depends on the
+  // splice call site's seedSubmitStepFromOwnInstructionText(...) pass that
+  // runs on this function's output (recon-browser.ts:3315-3317), so these
+  // cases exercise that same composition rather than the raw function alone
+  // — the prior version of this test asserted a no-op through the raw
+  // function using a submit-shaped instruction, pinning a coincidence rather
+  // than the pipeline's actual, intended behavior.
+  const spliceTag = (newSteps: NormalizedStep[], failedStep: NormalizedStep): NormalizedStep[] =>
+    seedSubmitStepFromOwnInstructionText(
+      applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep)
+    );
+
+  it("seeds submitStep on a freshly-authored, submit-shaped bridge step even when the failed step carried neither flag", () => {
     const failedStep = mk("Click the 'Submit' button");
     const newSteps = [mk("Click the 'Submit' button once more")];
-    const out = applyFailedStepFlagsToResumingBridgeStep(newSteps, failedStep);
-    expect(out).toEqual(newSteps);
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBe(true);
+  });
+
+  it("leaves a genuinely non-submit-shaped bridge step unflagged when the failed step carried neither flag", () => {
+    const failedStep = mk("Click the 'Submit' button");
+    const newSteps = [mk("Click the 'Add Another Item' button")];
+    const out = spliceTag(newSteps, failedStep);
+    expect(out[0]!.submitStep).toBeFalsy();
   });
 
   it("is deterministic across repeated calls with the same inputs", () => {
