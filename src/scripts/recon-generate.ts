@@ -3978,29 +3978,32 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * ARRAY/OBJECT-wrapped join field represents.
  *
  * Site-agnostic: operates only on the recon body's own shape.
+ *
+ * A top-level-ARRAY-shaped body (e.g. a cruise-line multi-room search that
+ * batches per-room criteria as `[{...}, {...}]`) is walked element by
+ * element, applying this same envelope logic to each object element in
+ * textual order — otherwise a structured field living inside an array
+ * element would be invisible to this pass entirely.
  */
-function applyStructuredValuePayloadSubstitutions(
+/**
+ * Applies the envelope-object substitution pass for ONE object, searching the
+ * template for each key's span starting at `searchFrom` rather than from the
+ * start of the string. This offset is what lets the caller walk a
+ * top-level-ARRAY-shaped body element by element: each array element's own
+ * key spans sit textually after the previous element's, so anchoring the
+ * search there stops an earlier element's already-rewritten (or still-frozen)
+ * span from swallowing a later element's identically-named key.
+ */
+function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
-  parsedBody: unknown,
+  envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string> = new Set()
-): string {
-  if (parsedBody === null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
-    return template;
-  }
-  // Resolve the envelope object whose non-scalar children are caller structures.
-  const envelopePath = locateFormEnvelopePath(parsedBody);
-  let envelope: unknown = parsedBody;
-  for (const seg of envelopePath) {
-    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
-      envelope = (envelope as Record<string, unknown>)[seg];
-    }
-  }
-  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
-    return template;
-  }
+  priorStepStateValues: ReadonlySet<string>,
+  searchFrom: number
+): { result: string; nextSearchFrom: number } {
   let result = template;
-  for (const [key, value] of Object.entries(envelope as Record<string, unknown>)) {
+  let cursor = searchFrom;
+  for (const [key, value] of Object.entries(envelope)) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4015,7 +4018,7 @@ function applyStructuredValuePayloadSubstitutions(
       if (carriesThreadedValue) continue;
     }
     const keyMarker = `"${key}":`;
-    const markerIdx = result.indexOf(keyMarker);
+    const markerIdx = result.indexOf(keyMarker, searchFrom);
     if (markerIdx === -1) continue;
     const spanStart = markerIdx + keyMarker.length;
     const open = result[spanStart];
@@ -4046,10 +4049,86 @@ function applyStructuredValuePayloadSubstitutions(
     if (spanEnd === -1) continue;
     const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
+    cursor = Math.max(cursor, spanStart + replacement.length);
     if (!outStructuredKeys.has(key)) {
       outStructuredKeys.set(key, inferZodSchema(value));
     }
   }
+  return { result, nextSearchFrom: cursor };
+}
+
+/**
+ * Resolves the envelope object for a single object-shaped body (or array
+ * element) via {@link locateFormEnvelopePath} and applies the substitution
+ * pass to it. Shared by the top-level-object and top-level-array branches of
+ * {@link applyStructuredValuePayloadSubstitutions} below.
+ */
+function applyStructuredValuePayloadSubstitutionsForObjectBody(
+  template: string,
+  objectBody: Record<string, unknown>,
+  outStructuredKeys: Map<string, string>,
+  priorStepStateValues: ReadonlySet<string>,
+  searchFrom: number
+): { result: string; nextSearchFrom: number } {
+  const envelopePath = locateFormEnvelopePath(objectBody);
+  let envelope: unknown = objectBody;
+  for (const seg of envelopePath) {
+    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
+      envelope = (envelope as Record<string, unknown>)[seg];
+    }
+  }
+  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return { result: template, nextSearchFrom: searchFrom };
+  }
+  return applyStructuredValuePayloadSubstitutionsForEnvelope(
+    template,
+    envelope as Record<string, unknown>,
+    outStructuredKeys,
+    priorStepStateValues,
+    searchFrom
+  );
+}
+
+export function applyStructuredValuePayloadSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  outStructuredKeys: Map<string, string>,
+  priorStepStateValues: ReadonlySet<string> = new Set()
+): string {
+  if (parsedBody === null || typeof parsedBody !== "object") {
+    return template;
+  }
+  // A cruise-line-style multi-room/multi-guest search body commonly batches
+  // per-element criteria as a top-level JSON ARRAY rather than a single
+  // object. Walk each element in textual order (via the growing searchFrom
+  // cursor) instead of bailing out here — otherwise any structured field
+  // living inside an array element is invisible to this pass entirely, no
+  // matter how correctly a root-level object body would have handled it.
+  if (Array.isArray(parsedBody)) {
+    let result = template;
+    let cursor = 0;
+    for (const element of parsedBody) {
+      if (element === null || typeof element !== "object" || Array.isArray(element)) continue;
+      const { result: nextResult, nextSearchFrom } =
+        applyStructuredValuePayloadSubstitutionsForObjectBody(
+          result,
+          element as Record<string, unknown>,
+          outStructuredKeys,
+          priorStepStateValues,
+          cursor
+        );
+      result = nextResult;
+      cursor = nextSearchFrom;
+    }
+    return result;
+  }
+  const { result } = applyStructuredValuePayloadSubstitutionsForObjectBody(
+    template,
+    parsedBody as Record<string, unknown>,
+    outStructuredKeys,
+    priorStepStateValues,
+    0
+  );
   return result;
 }
 
@@ -5846,6 +5925,53 @@ function applyPayloadKeyValueSubstitutions(
 }
 
 /**
+ * REST-body counterpart to {@link renderGqlVariablesExpr}'s facet-splice
+ * branch: a top-level string leaf that packs `key:value` facet segments
+ * correlating (case-insensitively) with `payloadFieldNames` gets its
+ * correlated segments spliced with `payload.<field>` in place — via
+ * {@link spliceFacetsIntoStringVariable}, the SAME generic, site-agnostic
+ * function the GraphQL variables emitter already uses — instead of surviving
+ * as either a single opaque `payload.<key>` accessor (once
+ * {@link applyPayloadKeyValueSubstitutions} runs) or a frozen recon-time
+ * literal. Runs on the ORIGINAL captured JSON text, matching that function's
+ * own `"<key>":<JSON.stringify(value)>` target/replacement idiom, so the
+ * composite string's constituent fields — not just its own key name — become
+ * independently bindable. No-op when `payloadFieldNames` is empty (no flow
+ * steps declared any field to correlate against) or when a leaf's value has
+ * no `key:value` segment matching one of them.
+ */
+function applyFacetSplicePayloadSubstitutions(
+  template: string,
+  inputBody: unknown,
+  payloadFieldNames: ReadonlySet<string>,
+  optionalFieldNames: ReadonlySet<string>
+): string {
+  if (payloadFieldNames.size === 0) return template;
+  if (
+    inputBody === undefined ||
+    inputBody === null ||
+    typeof inputBody !== "object" ||
+    Array.isArray(inputBody)
+  ) {
+    return template;
+  }
+  const fields = [...payloadFieldNames];
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+    if (path.length !== 1) continue;
+    const key = path[0]!;
+    if (!isValidJsIdentifier(key)) continue;
+    if (typeof value !== "string") continue;
+    const spliced = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
+    if (spliced === null) continue;
+    const target = `"${key}":${JSON.stringify(value)}`;
+    const replacement = `"${key}":"\${${spliced}}"`;
+    result = result.split(target).join(replacement);
+  }
+  return result;
+}
+
+/**
  * Documented closed set of JSON-key-name fragments (matched case-insensitively)
  * that mark a value as a per-request TIMESTAMP the plugin must generate fresh at
  * call time, not replay from the capture. Closed set per the no-regex-on-open-
@@ -6130,7 +6256,16 @@ export function emitMultiStepExecuteHttp(
    * typecheck. `null` (the test-facing default) skips the cast, preserving
    * prior output for callers that don't exercise the full pipeline.
    */
-  pascalName: string | null = null
+  pascalName: string | null = null,
+  /** Flow steps + vocabulary the browser flow's own `payload.<field>` splices
+   * are correlated against (see {@link computeFlowPayloadFieldNames}) — threaded
+   * here so the REST body's own facet-packed string leaves (e.g. a `filters`
+   * field packing `category:widgets|priceRange:10~50`) correlate against the
+   * SAME declared field set {@link renderGqlVariablesExpr}'s GraphQL path
+   * already uses, instead of never being decomposed at all. Defaults preserve
+   * prior (no facet-splice) output for callers that don't pass a flow. */
+  flowSteps: FlowStepInput[] = [],
+  vocabulary: ReconVocabulary | undefined = undefined
 ): string {
   interface Rendered {
     url: string;
@@ -6152,6 +6287,15 @@ export function emitMultiStepExecuteHttp(
   // produce nonsense substitutions. Values below the threshold stay literal
   // in the emitted template — fine for short enum-like fields that rarely
   // need to vary at runtime.
+  // Declared payload fields the flow's OWN step instructions correlate to —
+  // the same set {@link emitBrowserFlowTs} derives for its `payload.<field>`
+  // splices, recomputed here (pure function of flowSteps/vocabulary, so it
+  // can never drift from the browser flow's own set) so the facet-splice pass
+  // below can correlate a REST body's facet-packed string leaves against it.
+  const {
+    payloadFieldNames: restPayloadFieldNames,
+    optionalPayloadFieldNames: restOptionalFieldNames,
+  } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
@@ -6467,6 +6611,24 @@ export function emitMultiStepExecuteHttp(
         return null;
       }
     })();
+    // Facet splice — a top-level string leaf packing `key:value` facet
+    // segments (e.g. `filters: "category:widgets|priceRange:10~50"`) gets its
+    // correlated segments spliced with `payload.<field>` here, BEFORE any
+    // other pass can freeze the whole string as one opaque `payload.filters`
+    // accessor (see applyPayloadKeyValueSubstitutions) or swallow it as an
+    // unparameterized structured value. Mirrors renderGqlVariablesExpr's own
+    // facet-splice branch for GraphQL variables — same correlation function,
+    // same declared field set, just applied to REST body text instead of a
+    // variables object literal.
+    const rawBodyWithFacetSplices =
+      parsedBody !== null
+        ? applyFacetSplicePayloadSubstitutions(
+            rawBodyWithFormSubs,
+            parsedBody,
+            restPayloadFieldNames,
+            restOptionalFieldNames
+          )
+        : rawBodyWithFormSubs;
     // Mechanism B — parameterize whole nested caller structures
     // (experienceData/educationData history, opaque eventData) BEFORE value
     // substitution reaches inside them: swallowing the entire array/object first
@@ -6479,7 +6641,7 @@ export function emitMultiStepExecuteHttp(
     const rawBodyWithStructuredSubs =
       parsedBody !== null
         ? applyStructuredValuePayloadSubstitutions(
-            rawBodyWithFormSubs,
+            rawBodyWithFacetSplices,
             parsedBody,
             outStructuredKeys,
             new Set([
@@ -6586,6 +6748,17 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
+      // A captured Cookie header must never freeze into a per-call literal —
+      // same reasoning IGNORE_REQUEST_HEADERS already applies to BASE_HEADERS
+      // derivation. A cookie jar routinely mixes an unrelated, coincidentally
+      // threadable fragment (e.g. a facet value) with session/analytics/JWT
+      // values that were never produced by a prior step; a partial match on
+      // that fragment would otherwise bake the whole jar in verbatim except
+      // for the substituted piece. The sanctioned path for a cookie value to
+      // reach a later request is the Set-Cookie-origin `bind` mechanism
+      // (see createHttpClient's `bind` option), which is untouched by this
+      // skip.
+      if (lower === "cookie") continue;
       const interpolated = interpolateStateValues(
         v,
         prior,
@@ -7228,6 +7401,11 @@ export function emitMultiStepExecuteHttp(
       const perCallHeaderEntries: string[] = [];
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
+        // See the matching skip in the non-multipart per-call header
+        // builder above: a captured Cookie header must never freeze into a
+        // per-call literal. The Set-Cookie-origin `bind` mechanism remains
+        // the only sanctioned path for a cookie value to thread.
+        if (lower === "cookie") continue;
         const interpolated = interpolateStateValues(
           v,
           actions.slice(0, i),
@@ -11751,8 +11929,22 @@ export function emitContractTs(opts: {
       : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
+  //
+  // A header value shaped like a UUID (e.g. a per-session correlation/
+  // conversation id captured during recon) is minted fresh per call rather
+  // than frozen as the recon capture's literal — the same volatility
+  // convention applyVolatileFieldSubstitutions already applies to UUID body
+  // leaves. The `${…}` fragment is assembled by concatenation, not a literal
+  // template-curly, so Biome's noTemplateCurlyInString doesn't flag THIS
+  // file's own source.
+  const headersUuidGen = `$${"{"}crypto.randomUUID()${"}"}`;
   const headersLiteral = Object.entries(baseHeaders)
-    .map(([k, v]) => `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${JSON.stringify(v)}`)
+    .map(
+      ([k, v]) =>
+        `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${
+          UUID_REGEX.test(v) ? `\`${headersUuidGen}\`` : JSON.stringify(v)
+        }`
+    )
     .join(",\n");
 
   const fixtureImport =
@@ -12684,6 +12876,67 @@ export function emitConfigManifest(opts: {
  * every `payload.<field>` the flow references also appears in the contract's
  * payload schema (both are driven by this same set).
  */
+/**
+ * Resolves the payload field (or composite persona field pair) each flow
+ * step's instruction correlates to — the same per-step correlation
+ * {@link emitBrowserFlowTs}'s step-literal pass performs to decide its own
+ * `payload.<field>` splices, factored out to a pure function of
+ * `flowSteps`/`vocabulary` so {@link emitMultiStepExecuteHttp}'s REST
+ * facet-splice pass can correlate against the exact same declared field set
+ * instead of re-deriving a second, potentially-drifting one.
+ */
+function computeFlowPayloadFieldNames(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary | undefined,
+  env: NodeJS.ProcessEnv
+): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
+  const payloadFieldNames = new Set<string>();
+  // Widest wins: a field is only optional if EVERY step that registers it
+  // does so as optional.
+  const optionalPayloadFieldNames = new Set<string>();
+  const requiredPayloadFieldNames = new Set<string>();
+  const registerFieldOptionality = (field: string, optional: boolean): void => {
+    if (optional && !requiredPayloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+    if (!optional) {
+      requiredPayloadFieldNames.add(field);
+      optionalPayloadFieldNames.delete(field);
+    }
+  };
+  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    // navigateTo/emailStep/password-token steps bypass field resolution
+    // entirely — see emitBrowserFlowTs's stepLiterals pass for why.
+    if (isObj && step.navigateTo !== undefined) continue;
+    if (isObj && step.emailStep === true) continue;
+    if (instruction.includes(RECON_PASSWORD_TOKEN)) continue;
+    const field = resolveStepPayloadField(
+      instruction,
+      isObj ? step.payloadField : undefined,
+      isObj ? step.payloadFieldNone : undefined,
+      vocabulary,
+      knownFieldValues
+    );
+    const composite =
+      field === null && !(isObj && step.payloadFieldNone)
+        ? resolveCompositePersonaFields(instruction, knownFieldValues)
+        : null;
+    const optional = isObj ? step.optional === true : false;
+    if (field !== null) {
+      payloadFieldNames.add(field);
+      registerFieldOptionality(field, optional);
+    }
+    if (composite !== null) {
+      payloadFieldNames.add(composite.fieldA);
+      payloadFieldNames.add(composite.fieldB);
+      registerFieldOptionality(composite.fieldA, optional);
+      registerFieldOptionality(composite.fieldB, optional);
+    }
+  }
+  return { payloadFieldNames, optionalPayloadFieldNames };
+}
+
 export function emitBrowserFlowTs(opts: {
   siteId: string;
   pascal: string;
@@ -12713,18 +12966,11 @@ export function emitBrowserFlowTs(opts: {
     env = process.env,
   } = opts;
 
-  const payloadFieldNames = new Set<string>();
-  // Widest wins, mirroring the request-surface precedent above: a field is
-  // only optional if EVERY step that registers it does so as optional.
-  const optionalPayloadFieldNames = new Set<string>();
-  const requiredPayloadFieldNames = new Set<string>();
-  const registerFieldOptionality = (field: string, optional: boolean): void => {
-    if (optional && !requiredPayloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
-    if (!optional) {
-      requiredPayloadFieldNames.add(field);
-      optionalPayloadFieldNames.delete(field);
-    }
-  };
+  const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
+    flowSteps,
+    vocabulary,
+    env
+  );
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
@@ -12781,16 +13027,6 @@ export function emitBrowserFlowTs(opts: {
         ? resolveCompositePersonaFields(instruction, knownFieldValues)
         : null;
     const optional = isObj ? step.optional === true : false;
-    if (field !== null) {
-      payloadFieldNames.add(field);
-      registerFieldOptionality(field, optional);
-    }
-    if (composite !== null) {
-      payloadFieldNames.add(composite.fieldA);
-      payloadFieldNames.add(composite.fieldB);
-      registerFieldOptionality(composite.fieldA, optional);
-      registerFieldOptionality(composite.fieldB, optional);
-    }
     const instructionExpr =
       composite !== null
         ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
@@ -13886,7 +14122,9 @@ async function main(): Promise<void> {
             discoveredStructuredKeys,
             rawCodeFields,
             foldReturnSpec,
-            pascal
+            pascal,
+            flowSteps,
+            vocabulary
           )
         : undefined;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
