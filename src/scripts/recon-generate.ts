@@ -5909,16 +5909,51 @@ function applyPayloadKeyValueSubstitutions(
     }
   }
   let result = template;
+  const exactlyBoundKeys = new Set<string>();
   for (const [key, value] of merged) {
     const accessor = `payload.${key}`;
     if (typeof value === "string") {
       const target = `"${key}":${JSON.stringify(value)}`;
       const replacement = `"${key}":"\${${accessor}}"`;
       result = result.split(target).join(replacement);
+      exactlyBoundKeys.add(key);
     } else if (typeof value === "boolean" || typeof value === "number") {
       const target = `"${key}":${JSON.stringify(value)}`;
       const replacement = `"${key}":\${${accessor}}`;
       result = result.split(target).join(replacement);
+      exactlyBoundKeys.add(key);
+    }
+  }
+  // A scalar facet field's captured value doesn't only ever surface as its
+  // OWN exact `"<field>":<value>` pair (handled above) — the same value can
+  // be packed inside an UNRELATED key's delimited facet string (e.g. a
+  // `filters`/`variables` blob shaped `ship:disney-wish|theme:merry`). This
+  // consults the SAME field↔captured-value correlation table just built
+  // (the scalar string entries of `merged`) via the identical case-
+  // insensitive splice {@link renderGqlVariablesExpr} already applies to the
+  // primary GQL operation's variables, so every body/variables template this
+  // function renders — not just that one call site — threads a facet field
+  // into `${payload.<field>}` wherever its value is actually load-bearing.
+  const scalarFieldNames = merged
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key]) => key);
+  if (scalarFieldNames.length > 0) {
+    const splicedStrings = new Set<string>();
+    for (const body of allBodies) {
+      if (body === undefined || body === null || typeof body !== "object") continue;
+      for (const { value, path } of walkAllPrimitiveLeaves(body)) {
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (splicedStrings.has(value)) continue;
+        // Already handled exactly above — don't double-bind the field's own
+        // top-level occurrence.
+        if (path.length === 1 && exactlyBoundKeys.has(path[0]!)) continue;
+        const spliced = spliceFacetsIntoStringVariable(value, scalarFieldNames);
+        if (spliced === null) continue;
+        const target = JSON.stringify(value);
+        if (!result.includes(target)) continue;
+        splicedStrings.add(value);
+        result = result.split(target).join(spliced);
+      }
     }
   }
   return result;
