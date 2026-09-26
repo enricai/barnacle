@@ -31,8 +31,16 @@ const OWN_BACKEND_HOST = "www.array-facet-payload-threading-fixture.example.com"
 const ATTENDEE_MIX = [{ adultCount: 2, childCount: 0, subAges: [], mixId: "0" }];
 const ATTENDEE_MIX_JSON = JSON.stringify(ATTENDEE_MIX);
 
-function bodyWithAttendeeMix(extra: Record<string, unknown>): string {
-  return JSON.stringify({ ...extra, attendeeMix: ATTENDEE_MIX });
+// The captured request body batches per-room criteria as a top-level JSON
+// ARRAY, mirroring the finding's own partyMix repro shape (a cruise-line
+// multi-room search): each room element carries its own `filters` (already
+// correctly spliced, per the finding's own working-mechanism proof) and its
+// own `attendeeMix`.
+function bodyWithAttendeeMix(step: number): string {
+  return JSON.stringify([
+    { roomIndex: 0, step, filters: ["adultsOnly", "balcony"], attendeeMix: ATTENDEE_MIX },
+    { roomIndex: 1, step, filters: ["oceanView"], attendeeMix: ATTENDEE_MIX },
+  ]);
 }
 
 function fixtureCaptures(): Capture[] {
@@ -47,7 +55,7 @@ function fixtureCaptures(): Capture[] {
   return urls.map((url, index) =>
     buildCapture({
       url,
-      requestPostData: bodyWithAttendeeMix({ step: index }),
+      requestPostData: bodyWithAttendeeMix(index),
       responseBody: { ok: true, index },
       timestamp: `2026-01-01T00:00:0${index}.000Z`,
     })
@@ -119,9 +127,11 @@ describe("recon-generate CLI — typed array-of-objects facet field threaded int
     expect(contract).toContain(`"attendeeMix":${expectedSub}`);
 
     // Every occurrence must be rewritten — a frozen literal for even one
-    // call site would silently submit a stale, capture-time party mix.
+    // call site, or even one room element within a call site, would
+    // silently submit a stale, capture-time party mix. Six request bodies,
+    // two room elements apiece.
     const spliceCount = contract.split(`"attendeeMix":${expectedSub}`).length - 1;
-    expect(spliceCount).toBe(6);
+    expect(spliceCount).toBe(12);
 
     // The captured literal itself must never survive inside any body:
     // template literal — grepping for its raw JSON text (once escaped for
