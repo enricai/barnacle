@@ -5075,6 +5075,27 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
   return [...byKey.values()];
 }
 
+/** Incremental variant of {@link collectHeaderBindings} for a caller that
+ * walks `actions` in increasing index order once: each call folds in only the
+ * steps added since the previous call instead of re-walking the whole prefix,
+ * so N calls across a loop of length N cost O(N) total rather than O(N^2). */
+function createIncrementalHeaderBindingsCollector(
+  actions: ActionStep[]
+): (uptoExclusive: number) => HeaderProduce[] {
+  const byKey = new Map<string, HeaderProduce>();
+  let foldedUpTo = 0;
+  return (uptoExclusive: number): HeaderProduce[] => {
+    for (; foldedUpTo < uptoExclusive; foldedUpTo++) {
+      for (const p of actions[foldedUpTo]!.produces) {
+        if (p.kind !== "header") continue;
+        const key = `${p.targetHeader.toLowerCase()}\0${p.cookieName ?? ""}`;
+        if (!byKey.has(key)) byKey.set(key, p);
+      }
+    }
+    return [...byKey.values()];
+  };
+}
+
 /**
  * Reads the concrete string a response-body produce points at, by walking the
  * capture's response body along the produce path. Returns null when any segment
@@ -6620,6 +6641,7 @@ export function emitMultiStepExecuteHttp(
 
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
+  const headerBindingsUpToPass1 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -6838,7 +6860,7 @@ export function emitMultiStepExecuteHttp(
       // with no real origin and is dropped rather than frozen.
       if (lower === "cookie") {
         const knownCookieNames = new Set(
-          collectHeaderBindings(prior)
+          headerBindingsUpToPass1(i)
             .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
             .map((b) => b.cookieName as string)
         );
@@ -7003,6 +7025,7 @@ export function emitMultiStepExecuteHttp(
       ...plan.absorbedIndices,
     ])
   );
+  const headerBindingsUpToPass2 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -7509,7 +7532,7 @@ export function emitMultiStepExecuteHttp(
         // substring match (most session-scoped IDs/JWTs) frozen verbatim.
         if (lower === "cookie") {
           const knownCookieNames = new Set(
-            collectHeaderBindings(multipartPrior)
+            headerBindingsUpToPass2(i)
               .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
               .map((b) => b.cookieName as string)
           );
