@@ -11929,8 +11929,22 @@ export function emitContractTs(opts: {
       : "";
   // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
   // the generated file on first lint:fix.
+  //
+  // A header value shaped like a UUID (e.g. a per-session correlation/
+  // conversation id captured during recon) is minted fresh per call rather
+  // than frozen as the recon capture's literal — the same volatility
+  // convention applyVolatileFieldSubstitutions already applies to UUID body
+  // leaves. The `${…}` fragment is assembled by concatenation, not a literal
+  // template-curly, so Biome's noTemplateCurlyInString doesn't flag THIS
+  // file's own source.
+  const headersUuidGen = `$${"{"}crypto.randomUUID()${"}"}`;
   const headersLiteral = Object.entries(baseHeaders)
-    .map(([k, v]) => `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${JSON.stringify(v)}`)
+    .map(
+      ([k, v]) =>
+        `  ${isValidJsIdentifier(k) ? k : JSON.stringify(k)}: ${
+          UUID_REGEX.test(v) ? `\`${headersUuidGen}\`` : JSON.stringify(v)
+        }`
+    )
     .join(",\n");
 
   const fixtureImport =

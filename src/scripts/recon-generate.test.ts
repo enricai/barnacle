@@ -102,6 +102,25 @@ describe("countSpliceableFacets", () => {
   });
 });
 
+describe("emitContractTs — BASE_HEADERS volatile value regeneration", () => {
+  const source = emitContractTs({
+    ...BASE_OPTS,
+    baseHeaders: {
+      "Content-Type": "application/json",
+      "X-Correlation-Id": "a1b2c3d4-e5f6-4789-a012-3456789abcde",
+    },
+  });
+
+  it("mints a fresh crypto.randomUUID() for a UUID-shaped captured header value instead of freezing the recon literal", () => {
+    expect(source).toContain(`"X-Correlation-Id": \`${interpRef("crypto.randomUUID()")}\``);
+    expect(source).not.toContain('"a1b2c3d4-e5f6-4789-a012-3456789abcde"');
+  });
+
+  it("leaves a genuinely static header as a plain JSON string literal", () => {
+    expect(source).toContain('"Content-Type": "application/json"');
+  });
+});
+
 describe("emitContractTs — multipart plugin", () => {
   const source = emitContractTs({
     ...BASE_OPTS,
