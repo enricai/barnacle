@@ -3977,6 +3977,13 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * value the request depends on, breaking the fold at exactly the case an
  * ARRAY/OBJECT-wrapped join field represents.
  *
+ * A body with no detected form envelope worth swallowing into (a facet/
+ * search body — all scalars, if any, sit directly at the root) still needs
+ * this treatment for its OWN top-level array/object fields: those are folded
+ * in as a second envelope candidate — the body root itself — deduplicated
+ * against the primary envelope's own children so a key is never visited (and
+ * never inferred/registered) twice.
+ *
  * Site-agnostic: operates only on the recon body's own shape.
  *
  * A top-level-ARRAY-shaped body (e.g. a cruise-line multi-room search that
@@ -3999,11 +4006,25 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
   priorStepStateValues: ReadonlySet<string>,
-  searchFrom: number
+  searchFrom: number,
+  envelopePath: string[],
+  rootBody: Record<string, unknown>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
-  for (const [key, value] of Object.entries(envelope)) {
+  // The body root's own entries are eligible too, whenever the located
+  // envelope isn't the root itself — a facet/search body's top-level
+  // array/object fields (e.g. a quantity/id breakdown) are otherwise never
+  // visited at all when some deeper, primitive-richer object (e.g. a
+  // pagination/sort block) outranks the root as the "form envelope". Root
+  // keys already present on the envelope are skipped so nothing is visited
+  // (or registered) twice.
+  const envelopeEntries = Object.entries(envelope);
+  const rootEntries =
+    envelopePath.length === 0
+      ? []
+      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope));
+  for (const [key, value] of [...envelopeEntries, ...rootEntries]) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4085,7 +4106,9 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     envelope as Record<string, unknown>,
     outStructuredKeys,
     priorStepStateValues,
-    searchFrom
+    searchFrom,
+    envelopePath,
+    objectBody
   );
 }
 
