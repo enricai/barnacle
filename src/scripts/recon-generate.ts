@@ -1211,6 +1211,22 @@ const IGNORE_REQUEST_HEADERS = new Set([
 ]);
 
 /**
+ * Documented closed set of header-name fragments (matched case-insensitively,
+ * same posture as {@link VOLATILE_TIMESTAMP_KEY_FRAGMENTS}) that mark a
+ * header's VALUE as a per-session id the site mints once and resends on
+ * every request — not a stable API-contract constant. A header whose name
+ * matches must never freeze into {@link deriveRequestHeaders}' BASE_HEADERS
+ * baseline: a frozen capture value would replay one recon session's id
+ * across every real invocation, indistinguishable from a stale auth token.
+ */
+const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
+
+function isVolatileHeaderName(headerName: string): boolean {
+  const lower = headerName.toLowerCase();
+  return VOLATILE_HEADER_NAME_FRAGMENTS.some((frag) => lower.includes(frag));
+}
+
+/**
  * Derives BASE_HEADERS from the request headers the browser actually sent
  * during recon, filtered to those present in every capture whose endpoint
  * replayed successfully. Always includes the standard Content-Type / Accept /
@@ -1223,8 +1239,13 @@ const IGNORE_REQUEST_HEADERS = new Set([
  * the submission-flow detector. This catches load-bearing site-specific
  * headers (a `X-CSRF-Token`, a `Job-Boards-API-Token`, an `API-ShortName`,
  * etc.) without the generator needing to know about any particular site.
+ *
+ * A {@link isVolatileHeaderName} match is excluded even when present on
+ * every capture with an identical value — that's the signature of a
+ * per-session id the site mints once and resends, not a stable constant.
+ * `emitMultiStepExecuteHttp` re-mints it at call time instead.
  */
-function deriveRequestHeaders(
+export function deriveRequestHeaders(
   captures: Capture[],
   replays: ReplayResult[],
   baseUrl: string,
@@ -1273,6 +1294,7 @@ function deriveRequestHeaders(
   // Add any request header present in all relevant captures, preserving original casing.
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length) continue;
+    if (isVolatileHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
     for (const c of relevantCaptures) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
@@ -6639,6 +6661,25 @@ export function emitMultiStepExecuteHttp(
     }
   }
 
+  // A per-session correlation id (see {@link isVolatileHeaderName}) must never
+  // freeze into a literal — every action re-issues it via the SAME hoisted
+  // `const`, mirroring `threadedTxnId` above: one mint, reused across the
+  // whole flow, not a fresh mint per step (a real per-session id, unlike the
+  // per-call volatile body UUIDs {@link applyVolatileFieldSubstitutions}
+  // regenerates). Keyed by lowercased header name so `Correlation-Id` and
+  // `X-Conversation-Id` each get their own hoisted local if a flow carries both.
+  const volatileHeaderVarNames = new Map<string, string>();
+  for (const { capture } of actions) {
+    for (const headerName of Object.keys(capture.requestHeaders)) {
+      const lower = headerName.toLowerCase();
+      if (!isVolatileHeaderName(lower) || volatileHeaderVarNames.has(lower)) continue;
+      volatileHeaderVarNames.set(
+        lower,
+        `${headerNameToPayloadFieldName(headerName).replace(/^./, (c) => c.toLowerCase())}Value`
+      );
+    }
+  }
+
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
   const headerBindingsUpToPass1 = createIncrementalHeaderBindingsCollector(actions);
@@ -6882,6 +6923,15 @@ export function emitMultiStepExecuteHttp(
         if (survivingPairs.length > 0) perCallHeaders[k] = survivingPairs.join("; ");
         continue;
       }
+      // A correlation/conversation-id-shaped header is never the captured
+      // literal, threaded state, or an interpolation target — it's re-issued
+      // per call from the flow-wide hoisted mint (see volatileHeaderVarNames
+      // above), regardless of what interpolateStateValues would otherwise do.
+      const volatileVarName = volatileHeaderVarNames.get(lower);
+      if (volatileVarName !== undefined) {
+        perCallHeaders[k] = `\${${volatileVarName}}`;
+        continue;
+      }
       const interpolated = interpolateStateValues(
         v,
         prior,
@@ -6992,6 +7042,14 @@ export function emitMultiStepExecuteHttp(
   // Emitted only when actually referenced (Biome noUnusedVariables).
   if (threadedTxnId !== null && referencedNames.has("txnId")) {
     lines.push(`    const txnId = crypto.randomUUID();`);
+    lines.push("");
+  }
+  // Mint each correlation/conversation-id-shaped header ONCE, same rationale
+  // as txnId above — a frozen capture value would replay one recon session's
+  // id across every real invocation. Emitted only when actually referenced.
+  for (const varName of new Set(volatileHeaderVarNames.values())) {
+    if (!referencedNames.has(varName)) continue;
+    lines.push(`    const ${varName} = crypto.randomUUID();`);
     lines.push("");
   }
   // Surface any captured literal that no pass could bind, so a reviewer knows
@@ -7554,6 +7612,13 @@ export function emitMultiStepExecuteHttp(
           if (survivingPairs.length > 0) {
             perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${survivingPairs.join("; ")}\``);
           }
+          continue;
+        }
+        // Mirrors the non-multipart per-call header builder above: re-issue
+        // from the flow-wide hoisted mint instead of the captured literal.
+        const volatileVarName = volatileHeaderVarNames.get(lower);
+        if (volatileVarName !== undefined) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`\${${volatileVarName}}\``);
           continue;
         }
         const interpolated = interpolateStateValues(
