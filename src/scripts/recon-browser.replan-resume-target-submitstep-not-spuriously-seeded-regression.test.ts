@@ -14,9 +14,11 @@
  * with a failed step that carries no `submitStep`/`captchaGated` flags, a
  * replan LLM response whose sole bridge step duplicates the quoted label of
  * `originalRemaining[0]` (so the filter drops it and the tagged bridge list
- * is empty), and `originalRemaining[0]`'s own instruction text is
- * submit-shaped. Asserts the `executeStepWithHealing` call for the resumed
- * `originalRemaining[0]` step still carries `submitStep: false`.
+ * is empty), and `originalRemaining[0]`'s own instruction text is NOT
+ * submit-shaped (so the unrelated load-time
+ * `seedSubmitStepFromOwnInstructionText()` call in `parseCli()` can't also
+ * explain a `true`). Asserts the `executeStepWithHealing` call for the
+ * resumed `originalRemaining[0]` step still carries `submitStep: false`.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -123,11 +125,15 @@ import { main } from "@/scripts/recon-browser";
 
 const BASE_URL = "https://portal.example.net/app/order";
 const FAILED_STEP = "Fill in the 'Discount Code' field with '10OFF'";
-const RESUME_TARGET_STEP = "Click 'Save and Continue' to proceed";
+// Deliberately NOT submit-shaped (no match against
+// SUBMIT_SHAPED_INSTRUCTION_PATTERNS) so the new load-time
+// seedSubmitStepFromOwnInstructionText() call in parseCli() leaves it
+// submitStep:false, isolating this test to the splice-site gate it targets.
+const RESUME_TARGET_STEP = "Click 'Next Page' to proceed";
 // Duplicates the resume target's quoted label so
 // filterReplanDuplicatingNextAuthored drops it, leaving the tagged bridge
 // list empty and originalRemaining[0] as the resume target.
-const DUPLICATE_BRIDGE_STEP = "Try 'Save and Continue' again now that the code is valid";
+const DUPLICATE_BRIDGE_STEP = "Try 'Next Page' again now that the code is valid";
 
 function flowArgv(): string[] {
   return [
@@ -242,9 +248,8 @@ describe("recon-browser/main — resume-target carry-forward stays gated on step
     )?.[0] as { step: string; submitStep: boolean } | undefined;
 
     expect(resumeCallArgs).toBeDefined();
-    // The resume target's own instruction text is submit-shaped, but the
-    // failed step never had submitStep/captchaGated set — this call site
-    // must NOT widen its gate to isSubmitShapedInstructionText.
+    // The failed step never had submitStep/captchaGated set — this splice
+    // call site must NOT widen its gate to isSubmitShapedInstructionText.
     expect(resumeCallArgs?.submitStep).toBe(false);
   });
 });
