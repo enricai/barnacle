@@ -59,7 +59,7 @@ function buildFacetFieldCaptures(): ReturnType<typeof buildCapture>[] {
 }
 
 describe("recon-generate emitMultiStepExecuteHttp — typed scalar facet fields interpolated into every request", () => {
-  it("splices a captured scalar facet field into ${payload.<field>} everywhere its value is load-bearing, including inside a differently-keyed facet-filter string on a later call", () => {
+  it("splices a captured scalar facet field into a payload accessor everywhere its value is load-bearing, including inside a differently-keyed facet-filter string on a later call", () => {
     const captures = buildFacetFieldCaptures();
     const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
 

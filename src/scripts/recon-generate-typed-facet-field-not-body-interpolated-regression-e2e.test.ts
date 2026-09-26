@@ -99,7 +99,7 @@ afterEach(() => {
 });
 
 describe("recon-generate CLI — flow-declared scalar facet payload field interpolated into every request body", () => {
-  it("emits ${payload.Region} for every occurrence of the captured facet value across all action-step bodies, never a frozen literal", () => {
+  it("emits a payload.Region accessor for every occurrence of the captured facet value across all action-step bodies, never a frozen literal", () => {
     workDir = mkdtempSync(
       join(tmpdir(), "barnacle-facet-field-not-body-interpolated-regression-e2e-")
     );
