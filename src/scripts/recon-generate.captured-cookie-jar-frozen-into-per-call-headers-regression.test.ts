@@ -73,9 +73,7 @@ describe("recon-generate emitMultiStepExecuteHttp — captured multi-cookie Cook
     );
 
     // The raw captured jar must never appear verbatim.
-    expect(body).not.toContain(
-      `authToken=${AUTH_TOKEN_COOKIE_VALUE}; itemIdEcho=${ITEM_ID_VALUE}`
-    );
+    expect(body).not.toContain(`authToken=${AUTH_TOKEN_COOKIE_VALUE}; itemIdEcho=${ITEM_ID_VALUE}`);
     // The unrecognized, session-scoped auth token never survives as a
     // static literal anywhere in the generated code.
     expect(body).not.toContain(AUTH_TOKEN_COOKIE_VALUE);
