@@ -2505,7 +2505,7 @@ function parseCli(): {
   }
   return {
     url,
-    flow: normalizeFlow(stepsRaw),
+    flow: seedSubmitStepFromOwnInstructionText(normalizeFlow(stepsRaw)),
     flowFile,
     provider,
     uploadFixturePath,
