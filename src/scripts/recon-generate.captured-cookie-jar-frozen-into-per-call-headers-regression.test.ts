@@ -78,6 +78,6 @@ describe("recon-generate emitMultiStepExecuteHttp — captured multi-cookie Cook
     // static literal anywhere in the generated code.
     expect(body).not.toContain(AUTH_TOKEN_COOKIE_VALUE);
     // The genuinely-threadable cookie DOES resolve to its accessor.
-    expect(body).toContain("itemIdEcho=${payload.itemId}");
+    expect(body).toContain("itemIdEcho=$" + "{payload.itemId}");
   });
 });

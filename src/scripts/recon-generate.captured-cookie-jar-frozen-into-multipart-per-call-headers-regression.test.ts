@@ -85,6 +85,6 @@ describe("emitMultiStepExecuteHttp — multipart upload never freezes a captured
   });
 
   it("threads the genuinely-threadable cookie to its accessor", () => {
-    expect(body).toContain("itemIdEcho=${payload.itemId}");
+    expect(body).toContain("itemIdEcho=$" + "{payload.itemId}");
   });
 });
