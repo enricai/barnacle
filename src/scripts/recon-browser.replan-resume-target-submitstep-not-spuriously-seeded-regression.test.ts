@@ -252,4 +252,37 @@ describe("recon-browser/main — resume-target carry-forward stays gated on step
     // call site must NOT widen its gate to isSubmitShapedInstructionText.
     expect(resumeCallArgs?.submitStep).toBe(false);
   });
+
+  it("seeds submitStep:true at load for a --flow step with submit-shaped text and no flag", async () => {
+    const { stagehand } = makeFakePage();
+    createBrowserSessionStub.mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    executeStepWithHealingStub.mockResolvedValue("completed");
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      BASE_URL,
+      "--flow",
+      JSON.stringify([{ step: "Click 'Save and Continue' to proceed" }]),
+    ];
+
+    await expect(main()).resolves.toBeUndefined();
+
+    expect(messagesParseStub).not.toHaveBeenCalled();
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(1);
+    const [callArgs] = executeStepWithHealingStub.mock.calls[0] as [{ submitStep: boolean }];
+    // parseCli() wraps normalizeFlow(stepsRaw) in
+    // seedSubmitStepFromOwnInstructionText() so a load-time step with no
+    // submitStep flag but submit-shaped instruction text is seeded true
+    // before main()'s execution loop runs.
+    expect(callArgs.submitStep).toBe(true);
+  });
 });
