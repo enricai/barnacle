@@ -7500,16 +7500,42 @@ export function emitMultiStepExecuteHttp(
       // Extract just the per-call header overrides (API-Token etc.) from the
       // rendered headers expression to merge with BASE_HEADERS.
       const perCallHeaderEntries: string[] = [];
+      const multipartPrior = actions.slice(0, i);
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
-        // See the matching skip in the non-multipart per-call header
-        // builder above: a captured Cookie header must never freeze into a
-        // per-call literal. The Set-Cookie-origin `bind` mechanism remains
-        // the only sanctioned path for a cookie value to thread.
-        if (lower === "cookie") continue;
+        // Same cookie-jar decomposition as the non-multipart per-call header
+        // builder above: a captured `Cookie` header packs several cookies
+        // onto one line, so interpolating it whole leaves any pair with no
+        // substring match (most session-scoped IDs/JWTs) frozen verbatim.
+        if (lower === "cookie") {
+          const knownCookieNames = new Set(
+            collectHeaderBindings(multipartPrior)
+              .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
+              .map((b) => b.cookieName as string)
+          );
+          const survivingPairs: string[] = [];
+          for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
+            if (knownCookieNames.has(cookieName)) continue;
+            const interpolatedValue = interpolateStateValues(
+              cookieValue,
+              multipartPrior,
+              cap,
+              payloadAccessorByValue,
+              false,
+              producerBoundaryBindings,
+              i
+            );
+            if (interpolatedValue === cookieValue) continue;
+            survivingPairs.push(`${cookieName}=${interpolatedValue}`);
+          }
+          if (survivingPairs.length > 0) {
+            perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${survivingPairs.join("; ")}\``);
+          }
+          continue;
+        }
         const interpolated = interpolateStateValues(
           v,
-          actions.slice(0, i),
+          multipartPrior,
           cap,
           payloadAccessorByValue,
           false,
