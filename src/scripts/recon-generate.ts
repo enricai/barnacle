@@ -6748,6 +6748,17 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
+      // A captured Cookie header must never freeze into a per-call literal —
+      // same reasoning IGNORE_REQUEST_HEADERS already applies to BASE_HEADERS
+      // derivation. A cookie jar routinely mixes an unrelated, coincidentally
+      // threadable fragment (e.g. a facet value) with session/analytics/JWT
+      // values that were never produced by a prior step; a partial match on
+      // that fragment would otherwise bake the whole jar in verbatim except
+      // for the substituted piece. The sanctioned path for a cookie value to
+      // reach a later request is the Set-Cookie-origin `bind` mechanism
+      // (see createHttpClient's `bind` option), which is untouched by this
+      // skip.
+      if (lower === "cookie") continue;
       const interpolated = interpolateStateValues(
         v,
         prior,
@@ -7390,6 +7401,11 @@ export function emitMultiStepExecuteHttp(
       const perCallHeaderEntries: string[] = [];
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
+        // See the matching skip in the non-multipart per-call header
+        // builder above: a captured Cookie header must never freeze into a
+        // per-call literal. The Set-Cookie-origin `bind` mechanism remains
+        // the only sanctioned path for a cookie value to thread.
+        if (lower === "cookie") continue;
         const interpolated = interpolateStateValues(
           v,
           actions.slice(0, i),
