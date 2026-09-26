@@ -3978,6 +3978,12 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * ARRAY/OBJECT-wrapped join field represents.
  *
  * Site-agnostic: operates only on the recon body's own shape.
+ *
+ * A top-level-ARRAY-shaped body (e.g. a cruise-line multi-room search that
+ * batches per-room criteria as `[{...}, {...}]`) is walked element by
+ * element, applying this same envelope logic to each object element in
+ * textual order — otherwise a structured field living inside an array
+ * element would be invisible to this pass entirely.
  */
 /**
  * Applies the envelope-object substitution pass for ONE object, searching the
