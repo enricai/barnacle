@@ -4201,6 +4201,24 @@ export function* walkSetCookiePairs(
   }
 }
 
+/** Splits a REQUEST `Cookie` header value ("a=1; b=2") into its individual
+ * name/value pairs. Unlike {@link walkSetCookiePairs} (which parses a RESPONSE
+ * `Set-Cookie` header — one cookie per newline, each with trailing
+ * attributes), a request's `Cookie` header packs every cookie onto ONE line
+ * separated by "; ", with no attributes at all. Exported so the per-call
+ * header emitter's per-cookie-pair handling is unit-testable in isolation. */
+export function* walkCookieHeaderPairs(
+  rawCookieHeader: string
+): Generator<{ name: string; value: string }> {
+  for (const pair of rawCookieHeader.split(";")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (name && value) yield { name, value };
+  }
+}
+
 /**
  * Walks every capture's response (including GETs — formHistoryId-style values
  * may originate in a state-load GET, not a POST). Indexes every string leaf
@@ -6806,17 +6824,42 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      // A captured Cookie header must never freeze into a per-call literal —
-      // same reasoning IGNORE_REQUEST_HEADERS already applies to BASE_HEADERS
-      // derivation. A cookie jar routinely mixes an unrelated, coincidentally
-      // threadable fragment (e.g. a facet value) with session/analytics/JWT
-      // values that were never produced by a prior step; a partial match on
-      // that fragment would otherwise bake the whole jar in verbatim except
-      // for the substituted piece. The sanctioned path for a cookie value to
-      // reach a later request is the Set-Cookie-origin `bind` mechanism
-      // (see createHttpClient's `bind` option), which is untouched by this
-      // skip.
-      if (lower === "cookie") continue;
+      // A captured `Cookie` header is a semicolon-delimited JAR, not one
+      // opaque value — interpolating it whole only ever recognizes the jar
+      // as a unit, so any cookie whose value doesn't happen to substring-
+      // match a known produced value (most of them: capture-session-scoped
+      // IDs/JWTs with no corresponding observed Set-Cookie) survived
+      // untouched inside the frozen literal. Decompose per cookie pair
+      // instead: a pair already threaded via `collectHeaderBindings`'s
+      // `bind` mechanism is dropped here (the runtime accumulates it into
+      // this same header on its own — re-emitting it would duplicate it);
+      // a pair whose value correlates to some OTHER produced state resolves
+      // to that accessor; anything left over is a recon-session literal
+      // with no real origin and is dropped rather than frozen.
+      if (lower === "cookie") {
+        const knownCookieNames = new Set(
+          collectHeaderBindings(prior)
+            .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
+            .map((b) => b.cookieName as string)
+        );
+        const survivingPairs: string[] = [];
+        for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
+          if (knownCookieNames.has(cookieName)) continue;
+          const interpolatedValue = interpolateStateValues(
+            cookieValue,
+            prior,
+            cap,
+            payloadAccessorByValue,
+            false,
+            producerBoundaryBindings,
+            i
+          );
+          if (interpolatedValue === cookieValue) continue;
+          survivingPairs.push(`${cookieName}=${interpolatedValue}`);
+        }
+        if (survivingPairs.length > 0) perCallHeaders[k] = survivingPairs.join("; ");
+        continue;
+      }
       const interpolated = interpolateStateValues(
         v,
         prior,
