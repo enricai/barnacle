@@ -3979,28 +3979,25 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  *
  * Site-agnostic: operates only on the recon body's own shape.
  */
-function applyStructuredValuePayloadSubstitutions(
+/**
+ * Applies the envelope-object substitution pass for ONE object, searching the
+ * template for each key's span starting at `searchFrom` rather than from the
+ * start of the string. This offset is what lets the caller walk a
+ * top-level-ARRAY-shaped body element by element: each array element's own
+ * key spans sit textually after the previous element's, so anchoring the
+ * search there stops an earlier element's already-rewritten (or still-frozen)
+ * span from swallowing a later element's identically-named key.
+ */
+function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
-  parsedBody: unknown,
+  envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string> = new Set()
-): string {
-  if (parsedBody === null || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
-    return template;
-  }
-  // Resolve the envelope object whose non-scalar children are caller structures.
-  const envelopePath = locateFormEnvelopePath(parsedBody);
-  let envelope: unknown = parsedBody;
-  for (const seg of envelopePath) {
-    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
-      envelope = (envelope as Record<string, unknown>)[seg];
-    }
-  }
-  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
-    return template;
-  }
+  priorStepStateValues: ReadonlySet<string>,
+  searchFrom: number
+): { result: string; nextSearchFrom: number } {
   let result = template;
-  for (const [key, value] of Object.entries(envelope as Record<string, unknown>)) {
+  let cursor = searchFrom;
+  for (const [key, value] of Object.entries(envelope)) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4015,7 +4012,7 @@ function applyStructuredValuePayloadSubstitutions(
       if (carriesThreadedValue) continue;
     }
     const keyMarker = `"${key}":`;
-    const markerIdx = result.indexOf(keyMarker);
+    const markerIdx = result.indexOf(keyMarker, searchFrom);
     if (markerIdx === -1) continue;
     const spanStart = markerIdx + keyMarker.length;
     const open = result[spanStart];
@@ -4046,10 +4043,86 @@ function applyStructuredValuePayloadSubstitutions(
     if (spanEnd === -1) continue;
     const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
+    cursor = Math.max(cursor, spanStart + replacement.length);
     if (!outStructuredKeys.has(key)) {
       outStructuredKeys.set(key, inferZodSchema(value));
     }
   }
+  return { result, nextSearchFrom: cursor };
+}
+
+/**
+ * Resolves the envelope object for a single object-shaped body (or array
+ * element) via {@link locateFormEnvelopePath} and applies the substitution
+ * pass to it. Shared by the top-level-object and top-level-array branches of
+ * {@link applyStructuredValuePayloadSubstitutions} below.
+ */
+function applyStructuredValuePayloadSubstitutionsForObjectBody(
+  template: string,
+  objectBody: Record<string, unknown>,
+  outStructuredKeys: Map<string, string>,
+  priorStepStateValues: ReadonlySet<string>,
+  searchFrom: number
+): { result: string; nextSearchFrom: number } {
+  const envelopePath = locateFormEnvelopePath(objectBody);
+  let envelope: unknown = objectBody;
+  for (const seg of envelopePath) {
+    if (envelope !== null && typeof envelope === "object" && !Array.isArray(envelope)) {
+      envelope = (envelope as Record<string, unknown>)[seg];
+    }
+  }
+  if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return { result: template, nextSearchFrom: searchFrom };
+  }
+  return applyStructuredValuePayloadSubstitutionsForEnvelope(
+    template,
+    envelope as Record<string, unknown>,
+    outStructuredKeys,
+    priorStepStateValues,
+    searchFrom
+  );
+}
+
+export function applyStructuredValuePayloadSubstitutions(
+  template: string,
+  parsedBody: unknown,
+  outStructuredKeys: Map<string, string>,
+  priorStepStateValues: ReadonlySet<string> = new Set()
+): string {
+  if (parsedBody === null || typeof parsedBody !== "object") {
+    return template;
+  }
+  // A cruise-line-style multi-room/multi-guest search body commonly batches
+  // per-element criteria as a top-level JSON ARRAY rather than a single
+  // object. Walk each element in textual order (via the growing searchFrom
+  // cursor) instead of bailing out here — otherwise any structured field
+  // living inside an array element is invisible to this pass entirely, no
+  // matter how correctly a root-level object body would have handled it.
+  if (Array.isArray(parsedBody)) {
+    let result = template;
+    let cursor = 0;
+    for (const element of parsedBody) {
+      if (element === null || typeof element !== "object" || Array.isArray(element)) continue;
+      const { result: nextResult, nextSearchFrom } =
+        applyStructuredValuePayloadSubstitutionsForObjectBody(
+          result,
+          element as Record<string, unknown>,
+          outStructuredKeys,
+          priorStepStateValues,
+          cursor
+        );
+      result = nextResult;
+      cursor = nextSearchFrom;
+    }
+    return result;
+  }
+  const { result } = applyStructuredValuePayloadSubstitutionsForObjectBody(
+    template,
+    parsedBody as Record<string, unknown>,
+    outStructuredKeys,
+    priorStepStateValues,
+    0
+  );
   return result;
 }
 
