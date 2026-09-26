@@ -31,10 +31,16 @@ describe("applyStructuredValuePayloadSubstitutions — top-level array-shaped bo
     const template = JSON.stringify(parsedBody);
     const outStructuredKeys = new Map<string, string>();
 
-    const result = applyStructuredValuePayloadSubstitutions(template, parsedBody, outStructuredKeys);
+    const result = applyStructuredValuePayloadSubstitutions(
+      template,
+      parsedBody,
+      outStructuredKeys
+    );
 
-    const expectedFiltersSub = '${JSON.stringify(payload.filters)}';
-    const expectedPartyMixSub = '${JSON.stringify(payload.partyMix)}';
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+    const expectedFiltersSub = "${JSON.stringify(payload.filters)}";
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+    const expectedPartyMixSub = "${JSON.stringify(payload.partyMix)}";
 
     expect(result).toContain(`"filters":${expectedFiltersSub}`);
     expect(result).toContain(`"partyMix":${expectedPartyMixSub}`);
@@ -57,7 +63,11 @@ describe("applyStructuredValuePayloadSubstitutions — top-level array-shaped bo
     const template = JSON.stringify(parsedBody);
     const outStructuredKeys = new Map<string, string>();
 
-    const result = applyStructuredValuePayloadSubstitutions(template, parsedBody, outStructuredKeys);
+    const result = applyStructuredValuePayloadSubstitutions(
+      template,
+      parsedBody,
+      outStructuredKeys
+    );
 
     expect(result).toBe(template);
     expect(outStructuredKeys.size).toBe(0);
