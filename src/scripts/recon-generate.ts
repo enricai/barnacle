@@ -1211,6 +1211,22 @@ const IGNORE_REQUEST_HEADERS = new Set([
 ]);
 
 /**
+ * Documented closed set of header-name fragments (matched case-insensitively,
+ * same posture as {@link VOLATILE_TIMESTAMP_KEY_FRAGMENTS}) that mark a
+ * header's VALUE as a per-session id the site mints once and resends on
+ * every request — not a stable API-contract constant. A header whose name
+ * matches must never freeze into {@link deriveRequestHeaders}' BASE_HEADERS
+ * baseline: a frozen capture value would replay one recon session's id
+ * across every real invocation, indistinguishable from a stale auth token.
+ */
+const VOLATILE_HEADER_NAME_FRAGMENTS = ["correlation-id", "conversation-id"];
+
+function isVolatileHeaderName(headerName: string): boolean {
+  const lower = headerName.toLowerCase();
+  return VOLATILE_HEADER_NAME_FRAGMENTS.some((frag) => lower.includes(frag));
+}
+
+/**
  * Derives BASE_HEADERS from the request headers the browser actually sent
  * during recon, filtered to those present in every capture whose endpoint
  * replayed successfully. Always includes the standard Content-Type / Accept /
@@ -1223,8 +1239,13 @@ const IGNORE_REQUEST_HEADERS = new Set([
  * the submission-flow detector. This catches load-bearing site-specific
  * headers (a `X-CSRF-Token`, a `Job-Boards-API-Token`, an `API-ShortName`,
  * etc.) without the generator needing to know about any particular site.
+ *
+ * A {@link isVolatileHeaderName} match is excluded even when present on
+ * every capture with an identical value — that's the signature of a
+ * per-session id the site mints once and resends, not a stable constant.
+ * `emitMultiStepExecuteHttp` re-mints it at call time instead.
  */
-function deriveRequestHeaders(
+export function deriveRequestHeaders(
   captures: Capture[],
   replays: ReplayResult[],
   baseUrl: string,
@@ -1273,6 +1294,7 @@ function deriveRequestHeaders(
   // Add any request header present in all relevant captures, preserving original casing.
   for (const [lower, count] of counts) {
     if (count < relevantCaptures.length) continue;
+    if (isVolatileHeaderName(lower)) continue;
     if (Object.keys(baseline).some((k) => k.toLowerCase() === lower)) continue;
     for (const c of relevantCaptures) {
       const original = Object.keys(c.requestHeaders).find((h) => h.toLowerCase() === lower);
@@ -3977,6 +3999,13 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * value the request depends on, breaking the fold at exactly the case an
  * ARRAY/OBJECT-wrapped join field represents.
  *
+ * A body with no detected form envelope worth swallowing into (a facet/
+ * search body — all scalars, if any, sit directly at the root) still needs
+ * this treatment for its OWN top-level array/object fields: those are folded
+ * in as a second envelope candidate — the body root itself — deduplicated
+ * against the primary envelope's own children so a key is never visited (and
+ * never inferred/registered) twice.
+ *
  * Site-agnostic: operates only on the recon body's own shape.
  *
  * A top-level-ARRAY-shaped body (e.g. a cruise-line multi-room search that
@@ -3999,11 +4028,25 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
   priorStepStateValues: ReadonlySet<string>,
-  searchFrom: number
+  searchFrom: number,
+  envelopePath: string[],
+  rootBody: Record<string, unknown>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
-  for (const [key, value] of Object.entries(envelope)) {
+  // The body root's own entries are eligible too, whenever the located
+  // envelope isn't the root itself — a facet/search body's top-level
+  // array/object fields (e.g. a quantity/id breakdown) are otherwise never
+  // visited at all when some deeper, primitive-richer object (e.g. a
+  // pagination/sort block) outranks the root as the "form envelope". Root
+  // keys already present on the envelope are skipped so nothing is visited
+  // (or registered) twice.
+  const envelopeEntries = Object.entries(envelope);
+  const rootEntries =
+    envelopePath.length === 0
+      ? []
+      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope));
+  for (const [key, value] of [...envelopeEntries, ...rootEntries]) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4085,7 +4128,9 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     envelope as Record<string, unknown>,
     outStructuredKeys,
     priorStepStateValues,
-    searchFrom
+    searchFrom,
+    envelopePath,
+    objectBody
   );
 }
 
@@ -4170,6 +4215,24 @@ export function* walkSetCookiePairs(
 ): Generator<{ name: string; value: string }> {
   for (const line of rawSetCookie.split("\n")) {
     const pair = line.split(";", 1)[0] ?? "";
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    const name = pair.slice(0, eq).trim();
+    const value = pair.slice(eq + 1).trim();
+    if (name && value) yield { name, value };
+  }
+}
+
+/** Splits a REQUEST `Cookie` header value ("a=1; b=2") into its individual
+ * name/value pairs. Unlike {@link walkSetCookiePairs} (which parses a RESPONSE
+ * `Set-Cookie` header — one cookie per newline, each with trailing
+ * attributes), a request's `Cookie` header packs every cookie onto ONE line
+ * separated by "; ", with no attributes at all. Exported so the per-call
+ * header emitter's per-cookie-pair handling is unit-testable in isolation. */
+export function* walkCookieHeaderPairs(
+  rawCookieHeader: string
+): Generator<{ name: string; value: string }> {
+  for (const pair of rawCookieHeader.split(";")) {
     const eq = pair.indexOf("=");
     if (eq === -1) continue;
     const name = pair.slice(0, eq).trim();
@@ -5032,6 +5095,27 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
     }
   }
   return [...byKey.values()];
+}
+
+/** Incremental variant of {@link collectHeaderBindings} for a caller that
+ * walks `actions` in increasing index order once: each call folds in only the
+ * steps added since the previous call instead of re-walking the whole prefix,
+ * so N calls across a loop of length N cost O(N) total rather than O(N^2). */
+function createIncrementalHeaderBindingsCollector(
+  actions: ActionStep[]
+): (uptoExclusive: number) => HeaderProduce[] {
+  const byKey = new Map<string, HeaderProduce>();
+  let foldedUpTo = 0;
+  return (uptoExclusive: number): HeaderProduce[] => {
+    for (; foldedUpTo < uptoExclusive; foldedUpTo++) {
+      for (const p of actions[foldedUpTo]!.produces) {
+        if (p.kind !== "header") continue;
+        const key = `${p.targetHeader.toLowerCase()}\0${p.cookieName ?? ""}`;
+        if (!byKey.has(key)) byKey.set(key, p);
+      }
+    }
+    return [...byKey.values()];
+  };
 }
 
 /**
@@ -5909,16 +5993,51 @@ function applyPayloadKeyValueSubstitutions(
     }
   }
   let result = template;
+  const exactlyBoundKeys = new Set<string>();
   for (const [key, value] of merged) {
     const accessor = `payload.${key}`;
     if (typeof value === "string") {
       const target = `"${key}":${JSON.stringify(value)}`;
       const replacement = `"${key}":"\${${accessor}}"`;
       result = result.split(target).join(replacement);
+      exactlyBoundKeys.add(key);
     } else if (typeof value === "boolean" || typeof value === "number") {
       const target = `"${key}":${JSON.stringify(value)}`;
       const replacement = `"${key}":\${${accessor}}`;
       result = result.split(target).join(replacement);
+      exactlyBoundKeys.add(key);
+    }
+  }
+  // A scalar facet field's captured value doesn't only ever surface as its
+  // OWN exact `"<field>":<value>` pair (handled above) — the same value can
+  // be packed inside an UNRELATED key's delimited facet string (e.g. a
+  // `filters`/`variables` blob shaped `ship:disney-wish|theme:merry`). This
+  // consults the SAME field↔captured-value correlation table just built
+  // (the scalar string entries of `merged`) via the identical case-
+  // insensitive splice {@link renderGqlVariablesExpr} already applies to the
+  // primary GQL operation's variables, so every body/variables template this
+  // function renders — not just that one call site — threads a facet field
+  // into `${payload.<field>}` wherever its value is actually load-bearing.
+  const scalarFieldNames = merged
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .map(([key]) => key);
+  if (scalarFieldNames.length > 0) {
+    const splicedStrings = new Set<string>();
+    for (const body of allBodies) {
+      if (body === undefined || body === null || typeof body !== "object") continue;
+      for (const { value, path } of walkAllPrimitiveLeaves(body)) {
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (splicedStrings.has(value)) continue;
+        // Already handled exactly above — don't double-bind the field's own
+        // top-level occurrence.
+        if (path.length === 1 && exactlyBoundKeys.has(path[0]!)) continue;
+        const spliced = spliceFacetsIntoStringVariable(value, scalarFieldNames);
+        if (spliced === null) continue;
+        const target = JSON.stringify(value);
+        if (!result.includes(target)) continue;
+        splicedStrings.add(value);
+        result = result.split(target).join(spliced);
+      }
     }
   }
   return result;
@@ -6542,8 +6661,28 @@ export function emitMultiStepExecuteHttp(
     }
   }
 
+  // A per-session correlation id (see {@link isVolatileHeaderName}) must never
+  // freeze into a literal — every action re-issues it via the SAME hoisted
+  // `const`, mirroring `threadedTxnId` above: one mint, reused across the
+  // whole flow, not a fresh mint per step (a real per-session id, unlike the
+  // per-call volatile body UUIDs {@link applyVolatileFieldSubstitutions}
+  // regenerates). Keyed by lowercased header name so `Correlation-Id` and
+  // `X-Conversation-Id` each get their own hoisted local if a flow carries both.
+  const volatileHeaderVarNames = new Map<string, string>();
+  for (const { capture } of actions) {
+    for (const headerName of Object.keys(capture.requestHeaders)) {
+      const lower = headerName.toLowerCase();
+      if (!isVolatileHeaderName(lower) || volatileHeaderVarNames.has(lower)) continue;
+      volatileHeaderVarNames.set(
+        lower,
+        `${headerNameToPayloadFieldName(headerName).replace(/^./, (c) => c.toLowerCase())}Value`
+      );
+    }
+  }
+
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
+  const headerBindingsUpToPass1 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -6748,17 +6887,51 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      // A captured Cookie header must never freeze into a per-call literal —
-      // same reasoning IGNORE_REQUEST_HEADERS already applies to BASE_HEADERS
-      // derivation. A cookie jar routinely mixes an unrelated, coincidentally
-      // threadable fragment (e.g. a facet value) with session/analytics/JWT
-      // values that were never produced by a prior step; a partial match on
-      // that fragment would otherwise bake the whole jar in verbatim except
-      // for the substituted piece. The sanctioned path for a cookie value to
-      // reach a later request is the Set-Cookie-origin `bind` mechanism
-      // (see createHttpClient's `bind` option), which is untouched by this
-      // skip.
-      if (lower === "cookie") continue;
+      // A captured `Cookie` header is a semicolon-delimited JAR, not one
+      // opaque value — interpolating it whole only ever recognizes the jar
+      // as a unit, so any cookie whose value doesn't happen to substring-
+      // match a known produced value (most of them: capture-session-scoped
+      // IDs/JWTs with no corresponding observed Set-Cookie) survived
+      // untouched inside the frozen literal. Decompose per cookie pair
+      // instead: a pair already threaded via `collectHeaderBindings`'s
+      // `bind` mechanism is dropped here (the runtime accumulates it into
+      // this same header on its own — re-emitting it would duplicate it);
+      // a pair whose value correlates to some OTHER produced state resolves
+      // to that accessor; anything left over is a recon-session literal
+      // with no real origin and is dropped rather than frozen.
+      if (lower === "cookie") {
+        const knownCookieNames = new Set(
+          headerBindingsUpToPass1(i)
+            .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
+            .map((b) => b.cookieName as string)
+        );
+        const survivingPairs: string[] = [];
+        for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
+          if (knownCookieNames.has(cookieName)) continue;
+          const interpolatedValue = interpolateStateValues(
+            cookieValue,
+            prior,
+            cap,
+            payloadAccessorByValue,
+            false,
+            producerBoundaryBindings,
+            i
+          );
+          if (interpolatedValue === cookieValue) continue;
+          survivingPairs.push(`${cookieName}=${interpolatedValue}`);
+        }
+        if (survivingPairs.length > 0) perCallHeaders[k] = survivingPairs.join("; ");
+        continue;
+      }
+      // A correlation/conversation-id-shaped header is never the captured
+      // literal, threaded state, or an interpolation target — it's re-issued
+      // per call from the flow-wide hoisted mint (see volatileHeaderVarNames
+      // above), regardless of what interpolateStateValues would otherwise do.
+      const volatileVarName = volatileHeaderVarNames.get(lower);
+      if (volatileVarName !== undefined) {
+        perCallHeaders[k] = `\${${volatileVarName}}`;
+        continue;
+      }
       const interpolated = interpolateStateValues(
         v,
         prior,
@@ -6871,6 +7044,14 @@ export function emitMultiStepExecuteHttp(
     lines.push(`    const txnId = crypto.randomUUID();`);
     lines.push("");
   }
+  // Mint each correlation/conversation-id-shaped header ONCE, same rationale
+  // as txnId above — a frozen capture value would replay one recon session's
+  // id across every real invocation. Emitted only when actually referenced.
+  for (const varName of new Set(volatileHeaderVarNames.values())) {
+    if (!referencedNames.has(varName)) continue;
+    lines.push(`    const ${varName} = crypto.randomUUID();`);
+    lines.push("");
+  }
   // Surface any captured literal that no pass could bind, so a reviewer knows
   // exactly which slots still carry recon data. Comment only — never blocks emit.
   if (unboundLiteralKeys.size > 0) {
@@ -6902,6 +7083,7 @@ export function emitMultiStepExecuteHttp(
       ...plan.absorbedIndices,
     ])
   );
+  const headerBindingsUpToPass2 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -7399,16 +7581,49 @@ export function emitMultiStepExecuteHttp(
       // Extract just the per-call header overrides (API-Token etc.) from the
       // rendered headers expression to merge with BASE_HEADERS.
       const perCallHeaderEntries: string[] = [];
+      const multipartPrior = actions.slice(0, i);
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
-        // See the matching skip in the non-multipart per-call header
-        // builder above: a captured Cookie header must never freeze into a
-        // per-call literal. The Set-Cookie-origin `bind` mechanism remains
-        // the only sanctioned path for a cookie value to thread.
-        if (lower === "cookie") continue;
+        // Same cookie-jar decomposition as the non-multipart per-call header
+        // builder above: a captured `Cookie` header packs several cookies
+        // onto one line, so interpolating it whole leaves any pair with no
+        // substring match (most session-scoped IDs/JWTs) frozen verbatim.
+        if (lower === "cookie") {
+          const knownCookieNames = new Set(
+            headerBindingsUpToPass2(i)
+              .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
+              .map((b) => b.cookieName as string)
+          );
+          const survivingPairs: string[] = [];
+          for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
+            if (knownCookieNames.has(cookieName)) continue;
+            const interpolatedValue = interpolateStateValues(
+              cookieValue,
+              multipartPrior,
+              cap,
+              payloadAccessorByValue,
+              false,
+              producerBoundaryBindings,
+              i
+            );
+            if (interpolatedValue === cookieValue) continue;
+            survivingPairs.push(`${cookieName}=${interpolatedValue}`);
+          }
+          if (survivingPairs.length > 0) {
+            perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${survivingPairs.join("; ")}\``);
+          }
+          continue;
+        }
+        // Mirrors the non-multipart per-call header builder above: re-issue
+        // from the flow-wide hoisted mint instead of the captured literal.
+        const volatileVarName = volatileHeaderVarNames.get(lower);
+        if (volatileVarName !== undefined) {
+          perCallHeaderEntries.push(`${JSON.stringify(k)}: \`\${${volatileVarName}}\``);
+          continue;
+        }
         const interpolated = interpolateStateValues(
           v,
-          actions.slice(0, i),
+          multipartPrior,
           cap,
           payloadAccessorByValue,
           false,
