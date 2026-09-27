@@ -127,6 +127,7 @@ describe("recon-browser/main — replan already-advanced short-circuit (bugfix-0
     executeStepWithHealingStub.mockReset();
     guardedObserveStub.mockReset();
     generateObjectStub.mockReset();
+    loggerStub.info.mockReset();
     vi.mocked(createBrowserSession).mockReset();
   });
 
@@ -290,6 +291,84 @@ describe("recon-browser/main — replan already-advanced short-circuit (bugfix-0
     // never changed.
     expect(guardedObserveStub).not.toHaveBeenCalled();
     expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining("verification failed but the page already advanced past this step")
+    );
+  });
+
+  it("does not short-circuit a submitStep: true step even when the URL advanced past it (bugfix-001)", async () => {
+    // Step 0 is flagged submitStep: true. It starts on step-1, fails
+    // verification, and the live URL has already moved to step-2 by the
+    // time the catch block reads it — the same bare origin/path signal the
+    // short-circuit above fires on. For a submit-shaped step the
+    // StepVerificationError already reflects the submit-destination judge's
+    // authoritative verdict, so the deterministic short-circuit must NOT
+    // resurrect false credit here; it must fall through to the replan
+    // dispatcher instead.
+    const urlSequence = [
+      "https://apply.example.com/wizard/step-1", // pre-step read for step 0
+      "https://apply.example.com/wizard/step-2", // post-failure read for step 0 (advanced)
+    ];
+    let urlIndex = 0;
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: (): string => {
+        const url = urlSequence[Math.min(urlIndex, urlSequence.length - 1)]!;
+        urlIndex += 1;
+        return url;
+      },
+      title: vi.fn().mockResolvedValue("Apply"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    executeStepWithHealingStub.mockImplementation(async () => {
+      throw new StepVerificationError("step 0 failed verification", "cascade-exhausted");
+    });
+    guardedObserveStub.mockResolvedValue([]);
+    generateObjectStub.mockResolvedValue({ object: { steps: [] } });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://apply.example.com/wizard/step-1",
+      "--flow",
+      JSON.stringify({
+        steps: [{ step: "Submit application", optional: false, upload: false, submitStep: true }],
+      }),
+    ];
+
+    // The replan dispatcher can't recover from an empty replanned flow, so
+    // the run ultimately rejects — what this test pins is that the replan
+    // dispatcher's LLM path was reached at all (proving the short-circuit
+    // was gated off), not that replan succeeds.
+    await expect(main()).rejects.toThrow();
+
+    expect(guardedObserveStub).toHaveBeenCalled();
+    expect(loggerStub.info).not.toHaveBeenCalledWith(
       expect.stringContaining("verification failed but the page already advanced past this step")
     );
   });
