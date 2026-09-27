@@ -4223,24 +4223,6 @@ export function* walkSetCookiePairs(
   }
 }
 
-/** Splits a REQUEST `Cookie` header value ("a=1; b=2") into its individual
- * name/value pairs. Unlike {@link walkSetCookiePairs} (which parses a RESPONSE
- * `Set-Cookie` header — one cookie per newline, each with trailing
- * attributes), a request's `Cookie` header packs every cookie onto ONE line
- * separated by "; ", with no attributes at all. Exported so the per-call
- * header emitter's per-cookie-pair handling is unit-testable in isolation. */
-export function* walkCookieHeaderPairs(
-  rawCookieHeader: string
-): Generator<{ name: string; value: string }> {
-  for (const pair of rawCookieHeader.split(";")) {
-    const eq = pair.indexOf("=");
-    if (eq === -1) continue;
-    const name = pair.slice(0, eq).trim();
-    const value = pair.slice(eq + 1).trim();
-    if (name && value) yield { name, value };
-  }
-}
-
 /**
  * Walks every capture's response (including GETs — formHistoryId-style values
  * may originate in a state-load GET, not a POST). Indexes every string leaf
@@ -5095,27 +5077,6 @@ export function collectHeaderBindings(actionSteps: ActionStep[]): HeaderProduce[
     }
   }
   return [...byKey.values()];
-}
-
-/** Incremental variant of {@link collectHeaderBindings} for a caller that
- * walks `actions` in increasing index order once: each call folds in only the
- * steps added since the previous call instead of re-walking the whole prefix,
- * so N calls across a loop of length N cost O(N) total rather than O(N^2). */
-function createIncrementalHeaderBindingsCollector(
-  actions: ActionStep[]
-): (uptoExclusive: number) => HeaderProduce[] {
-  const byKey = new Map<string, HeaderProduce>();
-  let foldedUpTo = 0;
-  return (uptoExclusive: number): HeaderProduce[] => {
-    for (; foldedUpTo < uptoExclusive; foldedUpTo++) {
-      for (const p of actions[foldedUpTo]!.produces) {
-        if (p.kind !== "header") continue;
-        const key = `${p.targetHeader.toLowerCase()}\0${p.cookieName ?? ""}`;
-        if (!byKey.has(key)) byKey.set(key, p);
-      }
-    }
-    return [...byKey.values()];
-  };
 }
 
 /**
@@ -6682,7 +6643,6 @@ export function emitMultiStepExecuteHttp(
 
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
-  const headerBindingsUpToPass1 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -6887,40 +6847,13 @@ export function emitMultiStepExecuteHttp(
     const perCallHeaders: Record<string, string> = {};
     for (const [k, v] of Object.entries(cap.requestHeaders)) {
       const lower = k.toLowerCase();
-      // A captured `Cookie` header is a semicolon-delimited JAR, not one
-      // opaque value — interpolating it whole only ever recognizes the jar
-      // as a unit, so any cookie whose value doesn't happen to substring-
-      // match a known produced value (most of them: capture-session-scoped
-      // IDs/JWTs with no corresponding observed Set-Cookie) survived
-      // untouched inside the frozen literal. Decompose per cookie pair
-      // instead: a pair already threaded via `collectHeaderBindings`'s
-      // `bind` mechanism is dropped here (the runtime accumulates it into
-      // this same header on its own — re-emitting it would duplicate it);
-      // a pair whose value correlates to some OTHER produced state resolves
-      // to that accessor; anything left over is a recon-session literal
-      // with no real origin and is dropped rather than frozen.
+      // A captured `Cookie` header is a session jar, not real request state —
+      // the only sanctioned path for a cookie value to reach a real request
+      // is `collectHeaderBindings`'s `bind` mechanism, driven by an actual
+      // Set-Cookie response. Never emit this header from the capture, even
+      // partially: any splice-and-keep logic here reintroduces a frozen
+      // recon-session literal at finer grain.
       if (lower === "cookie") {
-        const knownCookieNames = new Set(
-          headerBindingsUpToPass1(i)
-            .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
-            .map((b) => b.cookieName as string)
-        );
-        const survivingPairs: string[] = [];
-        for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
-          if (knownCookieNames.has(cookieName)) continue;
-          const interpolatedValue = interpolateStateValues(
-            cookieValue,
-            prior,
-            cap,
-            payloadAccessorByValue,
-            false,
-            producerBoundaryBindings,
-            i
-          );
-          if (interpolatedValue === cookieValue) continue;
-          survivingPairs.push(`${cookieName}=${interpolatedValue}`);
-        }
-        if (survivingPairs.length > 0) perCallHeaders[k] = survivingPairs.join("; ");
         continue;
       }
       // A correlation/conversation-id-shaped header is never the captured
@@ -7083,7 +7016,6 @@ export function emitMultiStepExecuteHttp(
       ...plan.absorbedIndices,
     ])
   );
-  const headerBindingsUpToPass2 = createIncrementalHeaderBindingsCollector(actions);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -7584,34 +7516,11 @@ export function emitMultiStepExecuteHttp(
       const multipartPrior = actions.slice(0, i);
       for (const [k, v] of Object.entries(cap.requestHeaders)) {
         const lower = k.toLowerCase();
-        // Same cookie-jar decomposition as the non-multipart per-call header
-        // builder above: a captured `Cookie` header packs several cookies
-        // onto one line, so interpolating it whole leaves any pair with no
-        // substring match (most session-scoped IDs/JWTs) frozen verbatim.
+        // Mirrors the non-multipart per-call header builder above: never
+        // emit a captured `Cookie` header, even partially. The only
+        // sanctioned path for a cookie to reach a real request is
+        // `collectHeaderBindings`'s `bind` mechanism.
         if (lower === "cookie") {
-          const knownCookieNames = new Set(
-            headerBindingsUpToPass2(i)
-              .filter((b) => b.cookieName !== undefined && b.targetHeader.toLowerCase() === lower)
-              .map((b) => b.cookieName as string)
-          );
-          const survivingPairs: string[] = [];
-          for (const { name: cookieName, value: cookieValue } of walkCookieHeaderPairs(v)) {
-            if (knownCookieNames.has(cookieName)) continue;
-            const interpolatedValue = interpolateStateValues(
-              cookieValue,
-              multipartPrior,
-              cap,
-              payloadAccessorByValue,
-              false,
-              producerBoundaryBindings,
-              i
-            );
-            if (interpolatedValue === cookieValue) continue;
-            survivingPairs.push(`${cookieName}=${interpolatedValue}`);
-          }
-          if (survivingPairs.length > 0) {
-            perCallHeaderEntries.push(`${JSON.stringify(k)}: \`${survivingPairs.join("; ")}\``);
-          }
           continue;
         }
         // Mirrors the non-multipart per-call header builder above: re-issue
