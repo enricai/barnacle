@@ -127,9 +127,17 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       on: (): void => {},
       off: (): void => {},
     };
+    // The page URL genuinely advances between step-start and post-failure —
+    // origin+path differ, so hasPageAlreadyAdvancedPastStep would read true —
+    // to prove the submitStep gate (not merely a same-URL no-op) is what
+    // keeps the trailing-grace path reachable for a submit-shaped step.
+    const pageUrl = vi
+      .fn()
+      .mockReturnValueOnce("https://orders.example.com/checkout/review")
+      .mockReturnValue("https://orders.example.com/checkout/confirm");
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      url: (): string => "https://orders.example.com/checkout/confirm",
+      url: pageUrl,
       title: vi.fn().mockResolvedValue("Order Confirmation"),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
@@ -171,7 +179,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       JSON.stringify({
         steps: [
           {
-            step: "Tap the redundant Continue button after the order was placed",
+            step: "Place the order",
             optional: true,
             upload: false,
           },
