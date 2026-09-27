@@ -9,9 +9,10 @@ const ITEM_ID_VALUE = "longitemidvalue12345";
  * upload branch of `emitMultiStepExecuteHttp` builds its per-call header
  * overrides through its own loop (it can't share the non-multipart one,
  * since multipart headers merge into `BASE_HEADERS` rather than into
- * `httpClient`'s per-call overrides), so the same jar-decomposition fix
+ * `httpClient`'s per-call overrides), so the same never-emit-Cookie fix
  * must be applied there too or a captured `Cookie` header still freezes
- * verbatim into the emitted multipart request.
+ * verbatim (or partially, splice-and-keep) into the emitted multipart
+ * request.
  */
 const LOGIN_ACTION_STEP = {
   capture: {
@@ -84,7 +85,7 @@ describe("emitMultiStepExecuteHttp — multipart upload never freezes a captured
     expect(body).not.toContain(AUTH_TOKEN_COOKIE_VALUE);
   });
 
-  it("threads the genuinely-threadable cookie to its accessor", () => {
-    expect(body).toContain("itemIdEcho=$" + "{payload.itemId}");
+  it("never emits the substring-recognizable pair either — the whole header is omitted", () => {
+    expect(body).not.toContain("itemIdEcho=");
   });
 });
