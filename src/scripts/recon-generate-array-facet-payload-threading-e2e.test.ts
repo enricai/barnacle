@@ -17,7 +17,10 @@ import type { Capture } from "@/scripts/recon-shared";
  * only proves `applyStructuredValuePayloadSubstitutions` in isolation — this
  * proves the same field also survives the full per-capture body pipeline
  * (form subs, facet splice, state threading, url-param binding) when it
- * recurs, byte-for-byte, across six separate request bodies in one flow.
+ * recurs, byte-for-byte, across six separate request bodies in one flow —
+ * including the submit body, which carries a slightly different
+ * array-item shape than the other five, mirroring the finding's own
+ * report of shape variance across a flow's request bodies.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -26,10 +29,21 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.array-facet-payload-threading-fixture.example.com";
 
-// The captured JSON literal repeated verbatim across all six request
+// The captured JSON literal repeated verbatim across five of the six request
 // bodies, mirroring the finding's own partyMix repro shape.
 const ATTENDEE_MIX = [{ adultCount: 2, childCount: 0, subAges: [], mixId: "0" }];
 const ATTENDEE_MIX_JSON = JSON.stringify(ATTENDEE_MIX);
+
+// The sixth body (index 5, the submit step) captures the same field with a
+// slightly different array-item shape — an extra `promoCode` member and no
+// `mixId` — mirroring the finding's report of one request body's array-item
+// shape diverging from the other five. Splicing is bracket-depth text
+// surgery keyed on the field name, not a shape comparison, so it must
+// rewrite this body identically to the uniform-shape ones.
+const ATTENDEE_MIX_VARIANT_SHAPE = [
+  { adultCount: 2, childCount: 0, subAges: [], promoCode: "SUMMER" },
+];
+const ATTENDEE_MIX_VARIANT_SHAPE_JSON = JSON.stringify(ATTENDEE_MIX_VARIANT_SHAPE);
 
 // The captured request body batches per-room criteria as a top-level JSON
 // ARRAY, mirroring the finding's own partyMix repro shape (a cruise-line
@@ -37,9 +51,10 @@ const ATTENDEE_MIX_JSON = JSON.stringify(ATTENDEE_MIX);
 // correctly spliced, per the finding's own working-mechanism proof) and its
 // own `attendeeMix`.
 function bodyWithAttendeeMix(step: number): string {
+  const mix = step === 5 ? ATTENDEE_MIX_VARIANT_SHAPE : ATTENDEE_MIX;
   return JSON.stringify([
-    { roomIndex: 0, step, filters: ["adultsOnly", "balcony"], attendeeMix: ATTENDEE_MIX },
-    { roomIndex: 1, step, filters: ["oceanView"], attendeeMix: ATTENDEE_MIX },
+    { roomIndex: 0, step, filters: ["adultsOnly", "balcony"], attendeeMix: mix },
+    { roomIndex: 1, step, filters: ["oceanView"], attendeeMix: mix },
   ]);
 }
 
@@ -141,6 +156,7 @@ describe("recon-generate CLI — typed array-of-objects facet field threaded int
     for (const body of bodyTemplates) {
       expect(body).not.toContain('"adultCount":2');
       expect(body).not.toContain(ATTENDEE_MIX_JSON);
+      expect(body).not.toContain(ATTENDEE_MIX_VARIANT_SHAPE_JSON);
     }
 
     // The payload schema declares attendeeMix as a required (non-optional)
