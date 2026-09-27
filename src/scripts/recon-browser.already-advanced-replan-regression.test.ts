@@ -135,6 +135,23 @@ function applyReplanOutputFilters(params: {
   return [...taggedNewSteps, ...originalRemaining];
 }
 
+/**
+ * Mirrors the exact gate at the submit failure catch site in `main()`
+ * (`recon-browser.ts`, `!step.submitStep && hasPageAlreadyAdvancedPastStep(...)`):
+ * a submit-shaped step's `StepVerificationError` already carries the
+ * submit-destination judge's authoritative rejection, so the deterministic
+ * URL-delta short-circuit must never override it (bugfix-001). Non-submit
+ * steps are ungated and fall straight through to the underlying predicate,
+ * preserving bugfix-005's original decision boundary.
+ */
+function shortCircuitFires(
+  step: NormalizedStep,
+  stepStartUrl: string,
+  currentUrl: string
+): boolean {
+  return !step.submitStep && hasPageAlreadyAdvancedPastStep(stepStartUrl, currentUrl);
+}
+
 describe("recon-browser already-advanced replan regression (offline fixture)", () => {
   it("detects the page already advanced past the failed step by the time verification fails", () => {
     expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, POST_FAILURE_URL)).toBe(true);
@@ -167,5 +184,24 @@ describe("recon-browser already-advanced replan regression (offline fixture)", (
 
   it("regression guard: hasPageAlreadyAdvancedPastStep returns false when the page has not moved, so the flow loop's existing replan path remains reachable", () => {
     expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, STEP_START_URL)).toBe(false);
+  });
+});
+
+describe("submit-step short-circuit gate (bugfix-001, decision boundary)", () => {
+  const submitStep: NormalizedStep = mk("Submit application", { submitStep: true });
+  const nonSubmitStep: NormalizedStep = mk("Click the 'Continue' button");
+
+  it("does not short-circuit a submit-shaped step even when the URL advanced to a non-success destination", () => {
+    expect(shortCircuitFires(submitStep, STEP_START_URL, POST_FAILURE_URL)).toBe(false);
+  });
+
+  it("still does not short-circuit a submit-shaped step when the URL advanced to what would otherwise read as a plain advancement (submitStep gates unconditionally, independent of destination)", () => {
+    expect(
+      shortCircuitFires(submitStep, STEP_START_URL, "https://forms.example.com/signup/thank-you")
+    ).toBe(false);
+  });
+
+  it("still short-circuits a non-submit-shaped step's plain origin/path delta, preserving bugfix-005's original behavior", () => {
+    expect(shortCircuitFires(nonSubmitStep, STEP_START_URL, POST_FAILURE_URL)).toBe(true);
   });
 });
