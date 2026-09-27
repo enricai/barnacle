@@ -10,13 +10,13 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
  * Pins the per-call header emitter's Cookie-jar handling: a later step's
  * request `Cookie` header is a semicolon-delimited jar of several cookies.
  * One (`itemIdEcho`) coincidentally repeats a value the recon input body
- * itself supplies — a REAL, genuinely-threadable value — so the pass has
- * something to recognize and thread as `${payload.itemId}`. The other
- * (`authToken`) is a session-scoped, capture-only value with no
- * corresponding produce at all: before this fix, `interpolateStateValues`
- * only ever saw the WHOLE jar as one opaque template, so recognizing ANY
- * one cookie's value inside it froze the entire remaining jar — including
- * the unrecognized `authToken` — verbatim into the per-call literal.
+ * itself supplies, the other (`authToken`) is a session-scoped, capture-only
+ * value with no corresponding produce at all. Earlier fixes tried to
+ * decompose the jar and splice-and-keep only the "recognized" pair — but a
+ * substring match on one facet fragment says nothing about the rest of the
+ * jar's provenance, so the sanctioned fix is to never emit a captured Cookie
+ * header from this per-call loop at all, recognized-looking pair or not; the
+ * only legitimate path for a cookie value is the `bind` mechanism.
  */
 
 const LOGIN_URL = "https://api.example.com/catalog/login/";
@@ -50,7 +50,7 @@ function buildCookieJarCaptures(): ReturnType<typeof buildCapture>[] {
 }
 
 describe("recon-generate emitMultiStepExecuteHttp — captured multi-cookie Cookie header never freezes verbatim", () => {
-  it("threads the recognized cookie pair to its accessor and never lets the unrecognized auth-token-shaped pair ride along frozen in the same literal", () => {
+  it("never emits the Cookie header at all, not even the pair that looks recognizable via substring match", () => {
     const captures = buildCookieJarCaptures();
     const inputBody = JSON.parse(captures[0]!.requestPostData ?? "null") as unknown;
     const actionCaptures = captures.map((capture, index) => ({ capture, index }));
@@ -77,7 +77,7 @@ describe("recon-generate emitMultiStepExecuteHttp — captured multi-cookie Cook
     // The unrecognized, session-scoped auth token never survives as a
     // static literal anywhere in the generated code.
     expect(body).not.toContain(AUTH_TOKEN_COOKIE_VALUE);
-    // The genuinely-threadable cookie DOES resolve to its accessor.
-    expect(body).toContain("itemIdEcho=$" + "{payload.itemId}");
+    // Nor does the substring-recognizable pair — the whole header is omitted.
+    expect(body).not.toContain("itemIdEcho=");
   });
 });
