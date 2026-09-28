@@ -12625,7 +12625,7 @@ export async function executeStepWithHealing(params: {
     // error text pattern with 3 distinct rejection messages.
     if (
       record.resolvedMethod === "click" &&
-      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
     ) {
       const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
@@ -12689,7 +12689,7 @@ export async function executeStepWithHealing(params: {
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
         const escalationTarget =
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
             ? "escalating attempt 2 to deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
@@ -12705,7 +12705,8 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        isFinalStep:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -12726,7 +12727,8 @@ export async function executeStepWithHealing(params: {
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),
-        isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        isFinalOrSubmit:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
         hasPattern: advanceTransitionBodyPattern !== null,
         clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
         networkFired,
