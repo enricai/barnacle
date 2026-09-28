@@ -17,8 +17,14 @@ import { clickActivationExpr } from "@/scraper/browser-click-expr";
 /**
  * Text/attribute predicate for "this element is submit-shaped": a native
  * `type="submit"` control, a `<button>` with no explicit `type` inside a
- * `<form>` (the HTML default is submit), or a button-role element whose
- * visible text/aria-label contains "submit". Kept as a standalone
+ * `<form>` (the HTML default is submit), a button-role element whose
+ * visible text/aria-label contains "submit" or a generic action verb
+ * (create/continue/next/confirm/proceed — the labels JS-handled action
+ * controls with an explicit `type="button"` commonly use instead of the
+ * literal word "submit"), or a button-role element that is the sole
+ * non-excluded actionable control inside its nearest form-like container.
+ * Back/Cancel/Close/Dismiss controls are excluded from every text-based
+ * and sole-control branch so they can never qualify. Kept as a standalone
  * expression (not a RegExp) so it can be interpolated into a browser-
  * context `page.evaluate` string, paralleling `INVALID_MARKER_EL_EXPR`.
  */
@@ -32,7 +38,21 @@ const SUBMIT_SHAPED_EL_EXPR = `((el) => {
   if (!isButtonLike) return false;
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const text = norm(el.getAttribute("aria-label") || el.textContent || "");
-  return /\\bsubmit\\b/.test(text);
+  const EXCLUDE_RE = /\\b(back|cancel|close|dismiss)\\b/;
+  if (EXCLUDE_RE.test(text)) return false;
+  if (/\\bsubmit\\b/.test(text)) return true;
+  if (/\\b(create|continue|next|confirm|proceed)\\b/.test(text)) return true;
+  const container = el.closest("form") || el.closest('[role="form"]');
+  if (!container) return false;
+  const isCandidate = (c) => {
+    const cTag = (c.tagName || "").toLowerCase();
+    const cRole = (c.getAttribute("role") || "").toLowerCase();
+    if (cTag !== "button" && cRole !== "button") return false;
+    const cText = norm(c.getAttribute("aria-label") || c.textContent || "");
+    return !EXCLUDE_RE.test(cText);
+  };
+  const candidates = Array.from(container.querySelectorAll("*")).filter(isCandidate);
+  return candidates.length === 1 && candidates[0] === el;
 })`;
 
 /**

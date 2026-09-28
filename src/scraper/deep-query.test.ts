@@ -231,4 +231,57 @@ describe("deep-query/buildDeepSubmitClickExpr", () => {
     expect(frameButton.clicked).toBe(true);
     expect(outerButton.clicked).toBe(false);
   });
+
+  it('finds and clicks a JS-handled type="button" control named with a generic action verb', () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("button", { type: "button" }, "Create Account"));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: true, clicked: true });
+  });
+
+  it("never matches a Back/Cancel/Close/Dismiss control, even as the sole control in a form", () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("button", { type: "button" }, "Cancel"));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: false, clicked: false });
+  });
+
+  it('finds a type="button" control with no submit-ish wording when it\'s the sole actionable control in its form', () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("button", { type: "button" }, "Go"));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: true, clicked: true });
+  });
+
+  it("does not match a decorative/ambiguous button when it's one of several candidates in its form", () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("button", { type: "button" }, "Go"));
+    appendChild(form, makeEl("button", { type: "button" }, "Help"));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: false, clicked: false });
+  });
 });
