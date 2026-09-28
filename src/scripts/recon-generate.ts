@@ -10146,6 +10146,78 @@ function compileFoldReturnResultsMatcher(
     ) !== null;
 }
 
+/** Response-side counterpart of {@link buildRequestValueIndex}, restricted to
+ * the endpoint-matching drill candidates: maps each response leaf value to the
+ * ascending drill indices carrying it, so the response-only fallback can find
+ * the drills a primary's join values could resolve against without testing
+ * every primary/drill pair. Built eagerly per call, like
+ * {@link buildRequestValueIndex}; the per-capture leaf sets it reads are
+ * memoized, so repeated calls only re-pay the indexing. */
+function buildDrillResponseValueIndex<T extends { capture: Capture }>(
+  actions: readonly T[],
+  drillStepIndices: readonly number[]
+): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+  for (const drillStepIndex of drillStepIndices) {
+    for (const value of collectResponseLeafValues(actions[drillStepIndex]!.capture)) {
+      const indices = index.get(value);
+      if (indices) indices.push(drillStepIndex);
+      else index.set(value, [drillStepIndex]);
+    }
+  }
+  return index;
+}
+
+/** Descending drill indices after a primary that can possibly resolve: a drill
+ * resolves only via a request-carried join value (some candidate entry index at
+ * or before it) or a response-carried one, so every other drill is skipped
+ * without changing which one wins. `unpruned` (no joinFields, where any drill
+ * trivially matches) keeps the full freshest-first scan. */
+function collectDrillStepIndicesWorthTrying(
+  allDrillStepIndices: readonly number[],
+  firstDrillOffset: number,
+  drillResponseValueIndex: ReadonlyMap<string, number[]>,
+  joinValues: ReadonlySet<string>,
+  candidateEntryIndicesDescending: readonly number[],
+  unpruned: boolean
+): number[] {
+  if (unpruned) return allDrillStepIndices.slice(firstDrillOffset).reverse();
+  const worthTrying = new Set<number>();
+  const earliestEntryIndex = candidateEntryIndicesDescending.at(-1);
+  if (earliestEntryIndex !== undefined) {
+    const requestStart = Math.max(
+      firstDrillOffset,
+      firstIndexGreaterThan(allDrillStepIndices, earliestEntryIndex - 1)
+    );
+    for (let i = requestStart; i < allDrillStepIndices.length; i++) {
+      worthTrying.add(allDrillStepIndices[i]!);
+    }
+  }
+  const firstEligibleDrillStepIndex = allDrillStepIndices[firstDrillOffset];
+  for (const value of joinValues) {
+    for (const drillStepIndex of drillResponseValueIndex.get(value) ?? []) {
+      if (
+        firstEligibleDrillStepIndex !== undefined &&
+        drillStepIndex >= firstEligibleDrillStepIndex
+      ) {
+        worthTrying.add(drillStepIndex);
+      }
+    }
+  }
+  return [...worthTrying].sort((a, b) => b - a);
+}
+
+function firstIndexGreaterThan(sortedAscending: readonly number[], value: number): number {
+  let low = 0;
+  let high = sortedAscending.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedAscending[mid]! <= value) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   actions: readonly T[],
   spec: FoldReturnSpec,
@@ -10180,6 +10252,19 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   // paying for anything else, instead of scanning its own drill candidates
   // one by one only to discover none of them can ever match.
   const requestValueIndex = buildRequestValueIndex(actions);
+  // Endpoint matching never depends on the primary, so it is evaluated once
+  // here; testing every later action per primary made the scan quadratic.
+  const allMatchingDrillStepIndices = actions.flatMap((action, index) =>
+    matchesFoldReturnEndpoint(action.capture) &&
+    (restrictToDrillEndpointKey === null ||
+      endpointKey(action.capture.url) === restrictToDrillEndpointKey)
+      ? [index]
+      : []
+  );
+  const drillResponseValueIndex = buildDrillResponseValueIndex(
+    actions,
+    allMatchingDrillStepIndices
+  );
   let freshestPlan: FoldPlan | null = null;
   for (let primaryStepIndex = 0; primaryStepIndex < actions.length; primaryStepIndex++) {
     if (exactPrimaryStepIndex !== null && primaryStepIndex !== exactPrimaryStepIndex) {
@@ -10206,48 +10291,41 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
       joinValues,
       primaryStepIndex
     );
-    // Cheap regex-only pass first: collects every endpointPattern-matching
-    // drillStepIndex without paying for the expensive backward-walk +
-    // computeFoldChain resolution below. Scanned from the freshest (highest)
-    // index down so the expensive resolution — tried only on the entries
-    // this loop actually visits — runs on the candidate that would win
-    // ties in the original last-write-wins scan first, falling through to
-    // the next-freshest only when a candidate fails to resolve, instead of
-    // resolving every earlier occurrence just to have it overwritten.
+    // Drills are tried from the freshest (highest) index down so the
+    // expensive backward-walk + computeFoldChain resolution runs on the
+    // candidate that would win ties in the original last-write-wins scan
+    // first, falling through to the next-freshest only when a candidate
+    // fails to resolve.
     //
-    // Computed even when `candidateEntryIndicesDescending` is empty (unlike
-    // the request-based path below, which bails immediately in that case):
-    // an endpointPattern match is a single regex test per action, O(actions)
-    // regardless — not the O(actions)-per-candidate backward walk the
-    // request-based prune exists to avoid — so it stays cheap even when no
-    // request anywhere carries this primary's join values, which is exactly
-    // the case {@link resolveSpecMatchedPrimaryItemIndexFromResponse}'s
-    // response-only fallback below exists to resolve.
-    const matchingDrillStepIndices: number[] = [];
-    for (
-      let drillStepIndex = primaryStepIndex + 1;
-      drillStepIndex < actions.length;
-      drillStepIndex++
+    // A primary with no request-carried join value must still reach
+    // {@link resolveSpecMatchedPrimaryItemIndexFromResponse}'s response-only
+    // fallback, so an empty `candidateEntryIndicesDescending` alone never
+    // skips it; the drills tried are instead pruned to those whose response
+    // carries one of this primary's join values (see
+    // {@link collectDrillStepIndicesWorthTrying}), because testing every
+    // primary/drill pair is quadratic in the capture count.
+    const firstDrillOffset = firstIndexGreaterThan(allMatchingDrillStepIndices, primaryStepIndex);
+    if (
+      candidateEntryIndicesDescending.length === 0 &&
+      firstDrillOffset === allMatchingDrillStepIndices.length
     ) {
-      if (
-        matchesFoldReturnEndpoint(actions[drillStepIndex]!.capture) &&
-        (restrictToDrillEndpointKey === null ||
-          endpointKey(actions[drillStepIndex]!.capture.url) === restrictToDrillEndpointKey)
-      ) {
-        matchingDrillStepIndices.push(drillStepIndex);
-      }
-    }
-    if (candidateEntryIndicesDescending.length === 0 && matchingDrillStepIndices.length === 0) {
       continue;
     }
+    const drillStepIndicesToTry = collectDrillStepIndicesWorthTrying(
+      allMatchingDrillStepIndices,
+      firstDrillOffset,
+      drillResponseValueIndex,
+      joinValues,
+      candidateEntryIndicesDescending,
+      spec.joinFields.length === 0
+    );
     // Shared across every matching-drill candidate tried below for THIS
     // primaryStepIndex — see resolveSpecMatchedPrimaryItemIndexAlongChain's
     // docstring on why a fresh cache per primary (not per drill candidate)
     // is what collapses the backward-walk from O(candidates * chain length)
     // to O(chain length).
     const matchedItemIndexCache = new Map<number, number | null>();
-    for (let i = matchingDrillStepIndices.length - 1; i >= 0; i--) {
-      const drillStepIndex = matchingDrillStepIndices[i]!;
+    for (const drillStepIndex of drillStepIndicesToTry) {
       const drill = actions[drillStepIndex]!;
       // Widened to a flat (non-array) object response the same way the
       // structural heuristic is (see findAllObjectArrayFieldsOrWholeObject):
