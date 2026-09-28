@@ -1421,8 +1421,11 @@ function computeEmittedPrimaryAnchor(
   gqlOperationName: string | null | undefined,
   gqlQuery: string | null
 ): string | null {
-  if (!gql) return null;
-  const name = gqlOperationName ?? parsedOperationName(gqlQuery ?? "") ?? "anonymous";
+  // Mirrors emitContractTs's own isGqlEmission gate: `gql` alone can be true
+  // with a null gqlQuery (see gqlQuery's `?? null` fallback), in which case
+  // emitContractTs falls through to REST emission — this anchor must agree.
+  if (!gql || gqlQuery === null) return null;
+  const name = gqlOperationName ?? parsedOperationName(gqlQuery) ?? "anonymous";
   return `${endpointPath}::${name}`;
 }
 
