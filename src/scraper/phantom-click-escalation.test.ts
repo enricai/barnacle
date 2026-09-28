@@ -7,7 +7,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     const decision = shouldSkipTechnique({
       technique: "observe-act",
       priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: true,
     });
 
@@ -23,7 +23,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
         { technique: "act-string", triedSelectors: ["#submit"], errorMessage: null },
         { technique: "deep-submit-locator", triedSelectors: [], errorMessage: null },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: true,
     });
 
@@ -35,7 +35,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     const decision = shouldSkipTechnique({
       technique: "structured-click",
       priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: true,
     });
 
@@ -43,11 +43,23 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     expect(decision.reason).toContain("phantom click");
   });
 
+  it("skips observe-act after an unresolved (zero-candidate) attempt 1 on a submit-shaped step, exactly as for a phantom click", () => {
+    const decision = shouldSkipTechnique({
+      technique: "observe-act",
+      priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
+      attempt1UnreachableViaLightDom: true,
+      submitShapedStep: true,
+    });
+
+    expect(decision.skip).toBe(true);
+    expect(decision.reason).toContain("deep submit-control locator");
+  });
+
   it("does not skip observe-act when attempt 1 was not a phantom click", () => {
     const decision = shouldSkipTechnique({
       technique: "observe-act",
       priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
-      phantomClickAfterAttempt1: false,
+      attempt1UnreachableViaLightDom: false,
       submitShapedStep: true,
     });
 
@@ -61,7 +73,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
         { technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null },
         { technique: "deep-submit-locator", triedSelectors: [], errorMessage: null },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: false,
     });
     const observeActExclude = shouldSkipTechnique({
@@ -70,7 +82,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
         { technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null },
         { technique: "observe-act", triedSelectors: ["#radio-no"], errorMessage: null },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: false,
     });
 
@@ -80,11 +92,44 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     expect(observeActExclude.reason).not.toContain("deep submit-control locator");
   });
 
+  it("does not skip observe-act, structured-click, or observe-act-exclude after an unresolved attempt 1 on a non-submit-shaped step (e.g. a checkout page's 'Save for later' toggle)", () => {
+    const priorAttempts = [
+      { technique: "act-string", triedSelectors: [], errorMessage: "act() found zero candidates" },
+    ];
+
+    const observeAct = shouldSkipTechnique({
+      technique: "observe-act",
+      priorAttempts,
+      attempt1UnreachableViaLightDom: true,
+      submitShapedStep: false,
+    });
+    const structuredClick = shouldSkipTechnique({
+      technique: "structured-click",
+      priorAttempts,
+      attempt1UnreachableViaLightDom: true,
+      submitShapedStep: false,
+    });
+    const observeActExclude = shouldSkipTechnique({
+      technique: "observe-act-exclude",
+      priorAttempts,
+      attempt1UnreachableViaLightDom: true,
+      submitShapedStep: false,
+    });
+
+    expect(observeAct.skip).toBe(false);
+    expect(observeAct.reason).not.toContain("deep submit-control locator");
+    // structured-click still skips here, but for the pre-existing "no xpath resolved"
+    // reason (triedSelectors is empty) — not the deep-submit-locator escalation.
+    expect(structuredClick.reason).not.toContain("deep submit-control locator");
+    expect(observeActExclude.skip).toBe(false);
+    expect(observeActExclude.reason).not.toContain("deep submit-control locator");
+  });
+
   it("never skips llm-rephrase after a phantom click, regardless of the submit-shaped gate", () => {
     const submitShaped = shouldSkipTechnique({
       technique: "llm-rephrase",
       priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: true,
     });
     const nonSubmitShaped = shouldSkipTechnique({
@@ -92,7 +137,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
       priorAttempts: [
         { technique: "act-string", triedSelectors: ["#radio-no"], errorMessage: null },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: false,
     });
 
@@ -106,7 +151,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
       priorAttempts: [
         { technique: "act-string", triedSelectors: ["#option-just-started"], errorMessage: null },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: false,
     });
 
@@ -117,7 +162,7 @@ describe("scraper/flow-runner shouldSkipTechnique phantom-click escalation", () 
     const decision = shouldSkipTechnique({
       technique: "structured-click",
       priorAttempts: [{ technique: "act-string", triedSelectors: [], errorMessage: null }],
-      phantomClickAfterAttempt1: false,
+      attempt1UnreachableViaLightDom: false,
     });
 
     expect(decision.skip).toBe(true);

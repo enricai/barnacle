@@ -1,5 +1,5 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { SubmitCandidate } from "@/scraper/submit-control";
@@ -81,6 +81,12 @@ describe("flow-runner/runHealingFlow — submit-flow phantom-click escalation st
     debug: vi.fn(),
   } as unknown as Logger;
 
+  beforeEach(() => {
+    infoMock.mockClear();
+    warnMock.mockClear();
+    errorMock.mockClear();
+  });
+
   it("still escalates a final-step phantom click to deep-submit-locator, skipping structured-click/observe-act-exclude, when the flow declares submit semantics via submitEndpointPattern (not submitStep)", async () => {
     const { page } = fakePage({
       url: "https://apply.acme.example/jobs/1/apply-portal/apply",
@@ -132,5 +138,84 @@ describe("flow-runner/runHealingFlow — submit-flow phantom-click escalation st
       .join("\n");
     expect(logged).toContain("deep-submit-locator");
     expect(logged).toContain("phantom click");
+  });
+
+  it("does not misroute a non-submit step's unresolved attempt 1 to trusted-click-retry — the normal ladder (observe-act) still runs", async () => {
+    const { page } = fakePage({
+      url: "https://portal.acme.example/dashboard/preferences",
+      bodyHtmlLength: 42000,
+    });
+    // Attempt 1 resolves a target (a non-empty `actions[]`, so the cascade's
+    // fast-skip for a totally-unresolved act() doesn't short-circuit before
+    // classifyPhantomClick runs) but reports success:false — this is what
+    // drives classifyPhantomClick's "unresolved" verdict
+    // (actResultSuccess !== true), distinct from a phantom click
+    // (success:true, zero effect).
+    const stagehandAct = vi.fn().mockResolvedValue(
+      actResult({
+        success: false,
+        actionDescription: "attempted toggle click",
+        actions: [
+          { selector: "#email-notifications-toggle", description: "toggle", method: "click" },
+        ],
+      })
+    );
+    // Non-empty so the pre-cascade presence probe (probeStepBeforeAttempts)
+    // reports "present" and hands off to the cascade instead of short-
+    // circuiting to a "probe-absent" replan — this test is about the
+    // cascade's technique routing, not the probe.
+    const stagehandObserve = vi.fn().mockResolvedValue([
+      {
+        selector: "#email-notifications-toggle",
+        description: "Email notifications switch",
+        method: "click",
+      },
+    ]);
+    const stagehand = {
+      act: stagehandAct,
+      observe: stagehandObserve,
+    } as unknown as Stagehand;
+
+    const steps: HealingFlowStep[] = [
+      {
+        instruction: "Toggle the 'Email notifications' switch",
+        optional: false,
+        upload: false,
+        submitStep: false,
+      },
+    ];
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      })
+    ).rejects.toMatchObject({
+      name: "StepVerificationError",
+      kind: "cascade-exhausted",
+    });
+
+    // trusted-click-retry needs attempt 1's resolved selector, which an
+    // "unresolved" verdict never has — a non-submit step must fall through
+    // to the ordinary ladder instead. Attempt 2 (observe-act) genuinely
+    // running — not skipped, not rerouted — is what proves that: it calls
+    // stagehand.observe(), which trusted-click-retry never would.
+    expect(stagehandObserve).toHaveBeenCalled();
+
+    const logged = [...infoMock.mock.calls, ...warnMock.mock.calls, ...errorMock.mock.calls]
+      .map((call) => String(call[0]))
+      .join("\n");
+    expect(logged).toContain("no candidates resolved (unresolved verdict)");
+    // The only "trusted-click-retry" mention allowed is the diagnostic that
+    // explains WHY it was skipped (no resolved selector) — it must never be
+    // dispatched as attempt 2's actual technique.
+    expect(logged).toContain("no resolved target for trusted-click-retry");
+    expect(logged).not.toContain("attempt 2 (trusted-click-retry)");
+    expect(logged).not.toContain("deep-submit-locator");
   });
 });

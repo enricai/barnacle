@@ -3206,7 +3206,7 @@ describe("recon-browser/shouldSkipTechnique", () => {
     const decision = shouldSkipTechnique({
       technique: "structured-click",
       priorAttempts: [{ technique: "act-string", triedSelectors: ["#submit"], errorMessage: null }],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: true,
     });
     expect(decision.skip).toBe(true);
@@ -3224,7 +3224,7 @@ describe("recon-browser/shouldSkipTechnique", () => {
           errorMessage: null,
         },
       ],
-      phantomClickAfterAttempt1: true,
+      attempt1UnreachableViaLightDom: true,
       submitShapedStep: false,
     });
     expect(decision.skip).toBe(false);
