@@ -23,10 +23,10 @@ const PRICING_URL = "https://api.example.com/catalog-listing-api/pricing/";
 const BASE_URL = "https://api.example.com";
 
 const ITEM_COUNT = 20;
-const FAILING_ITEM_IDS = new Set(["cruise-5", "cruise-13"]);
+const FAILING_ITEM_IDS = new Set(["voyage-5", "voyage-13"]);
 const HTML_404_BODY = "<html>Not Found</html>";
 
-const itemIds = Array.from({ length: ITEM_COUNT }, (_, i) => `cruise-${i}`);
+const itemIds = Array.from({ length: ITEM_COUNT }, (_, i) => `voyage-${i}`);
 const PRICE_FOR = (itemId: string): number => 100 + Number(itemId.split("-").pop());
 
 /**
@@ -43,7 +43,7 @@ function buildPagedListingDrillCaptures(): Capture[] {
     buildCapture({
       url: LISTING_URL,
       requestPostData: '{"page":1}',
-      responseBody: { totalPages: 1, cruises: itemIds.map((id) => ({ id })) },
+      responseBody: { totalPages: 1, voyages: itemIds.map((id) => ({ id })) },
       timestamp: "2024-09-01T00:00:00Z",
     }),
     buildCapture({
@@ -90,7 +90,7 @@ function stubPagedListingDrillFetch(): void {
         text: vi
           .fn()
           .mockResolvedValue(
-            JSON.stringify({ totalPages: 1, cruises: itemIds.map((id) => ({ id })) })
+            JSON.stringify({ totalPages: 1, voyages: itemIds.map((id) => ({ id })) })
           ),
         headers: new Headers(),
       });
@@ -139,8 +139,8 @@ describe("recon-generate — paginated-listing item drill: mixed non-JSON 4xx fa
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
         steps: [
-          { step: "browse paged cruise listing" },
-          { step: "drill into cruise pricing", submitStep: true },
+          { step: "browse paged voyage listing" },
+          { step: "drill into voyage pricing", submitStep: true },
         ],
       })
     );
@@ -165,10 +165,10 @@ describe("recon-generate — paginated-listing item drill: mixed non-JSON 4xx fa
 
     const executeHttp = evalExecuteHttpBody(body, httpClient, z);
     return executeHttp({ BaseUrl: BASE_URL, id: itemIds[0] }).then((result) => {
-      const data = result.data as { cruises?: Array<Record<string, unknown>> };
-      expect(data.cruises).toHaveLength(ITEM_COUNT);
+      const data = result.data as { voyages?: Array<Record<string, unknown>> };
+      expect(data.voyages).toHaveLength(ITEM_COUNT);
 
-      const byId = new Map((data.cruises ?? []).map((item) => [item.id as string, item]));
+      const byId = new Map((data.voyages ?? []).map((item) => [item.id as string, item]));
       let successCount = 0;
       for (const id of itemIds) {
         if (FAILING_ITEM_IDS.has(id)) {

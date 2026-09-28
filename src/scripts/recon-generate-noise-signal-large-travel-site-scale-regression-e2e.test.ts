@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe("recon noise admission at production scale: structurally-isolated same-origin widget with a fixed response repeating only 7 times", () => {
   it("emits the real search/drill endpoints and never the noise endpoint when the fixed-response widget fires only 7 times", () => {
-    const OWN_BACKEND_HOST = "www.noise-royalcaribbean-scale-fixture.example.com";
+    const OWN_BACKEND_HOST = "www.noise-large-travel-site-scale-fixture.example.com";
     const SEARCH_URL = `https://${OWN_BACKEND_HOST}/catalog-search/`;
     const DRILL_URL = `https://${OWN_BACKEND_HOST}/catalog-detail/`;
 
@@ -73,7 +73,7 @@ describe("recon noise admission at production scale: structurally-isolated same-
     // than the occurrence-count floor alone.
     const SAME_ORIGIN_NOISE_URL = `https://${OWN_BACKEND_HOST}/pulse/api/v1/urgency`;
 
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-noise-royalcaribbean-scale-"));
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-noise-large-travel-site-scale-"));
     const runRoot = join(workDir, "run");
 
     const search = buildCapture({
@@ -119,7 +119,7 @@ describe("recon noise admission at production scale: structurally-isolated same-
 
     writeRunDir(runRoot, allCaptures);
 
-    const siteId = `noise-royalcaribbean-scale-test-${process.pid}`;
+    const siteId = `noise-large-travel-site-scale-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(

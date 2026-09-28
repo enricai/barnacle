@@ -534,10 +534,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { results: [{ id: `item-${i}` }] },
       operationName,
     });
-    const first = buildOccurrence(0, "cruiseSearch_Cruises");
+    const first = buildOccurrence(0, "voyageSearch_Voyages");
     const occurrences = [
       first,
-      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "cruiseSearch_Cruises")),
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "voyageSearch_Voyages")),
       ...Array.from({ length: 40 }, (_, i) => buildOccurrence(i + 5, "typeahead")),
     ];
     expect(occurrences.length).toBe(45);
@@ -1060,14 +1060,14 @@ describe("isZeroVarianceRepeatCapture", () => {
       url: "https://apply.acme.example/api/search",
       requestPostData: '{"destination":"Bahamas","month":"2026-10"}',
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { results: [{ id: "cruise-1" }, { id: "cruise-2" }] },
+      responseBody: { results: [{ id: "voyage-1" }, { id: "voyage-2" }] },
     };
     const drillCapture = {
       method: "GET",
-      url: "https://apply.acme.example/api/search/details?id=cruise-1",
+      url: "https://apply.acme.example/api/search/details?id=voyage-1",
       requestPostData: null,
       responseHeaders: { "content-type": "application/json" },
-      responseBody: { id: "cruise-1", price: 899 },
+      responseBody: { id: "voyage-1", price: 899 },
     };
     const thirdPartyBeacon = Array.from({ length: 20 }, (_, i) => ({
       method: "GET",
@@ -1650,10 +1650,10 @@ describe("isZeroVarianceRepeatCapture", () => {
       responseBody: { results: [{ id: `item-${i}` }] },
       operationName,
     });
-    const first = buildOccurrence(0, "cruiseSearch_Cruises");
+    const first = buildOccurrence(0, "voyageSearch_Voyages");
     const occurrences = [
       first,
-      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "cruiseSearch_Cruises")),
+      ...Array.from({ length: 4 }, (_, i) => buildOccurrence(i + 1, "voyageSearch_Voyages")),
       ...Array.from({ length: 40 }, (_, i) => buildOccurrence(i + 5, "typeahead")),
     ];
     expect(occurrences.length).toBe(45);

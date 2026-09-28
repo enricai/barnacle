@@ -67,7 +67,7 @@ function baseParams(
 
 /**
  * Pins the network-signal confirmation gap identified in
- * recon-piedmont-captchagated-no-confirmed-transition-despite-clean-callback.md:
+ * recon-example-clinic-captchagated-no-confirmed-transition-despite-clean-callback.md:
  * a clean callback (callbackDiscovered=true, registryState=populated) whose
  * fallback-dispatched submit produces an observable, captured non-GET 2xx/3xx
  * response is a real advance even when the page's URL/origin never changes

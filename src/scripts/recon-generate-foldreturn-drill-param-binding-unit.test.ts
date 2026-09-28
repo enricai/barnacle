@@ -9,7 +9,7 @@ const UNRELATED_URL = "https://api.example.com/itinerary/api/v1/availability?adu
 function buildSpec(): FoldReturnSpec {
   return {
     endpointPattern: "itinerary/api/v1/sailings",
-    resultsPath: "data.cruises",
+    resultsPath: "data.voyages",
     joinFields: ["id"],
     drillParamBindings: {
       adults: { payloadField: "adults", type: "int", default: 2 },
@@ -48,7 +48,7 @@ describe("applyDrillParamBindings", () => {
   it("passes the text through unchanged when the spec declares no drillParamBindings", () => {
     const spec: FoldReturnSpec = {
       endpointPattern: "itinerary/api/v1/sailings",
-      resultsPath: "data.cruises",
+      resultsPath: "data.voyages",
       joinFields: ["id"],
     };
     const capture = buildCapture({
@@ -91,7 +91,7 @@ describe("applyDrillParamBindings", () => {
   it("treats a dotted param name as a literal, not a regex wildcard, so an unrelated param with one extra char isn't corrupted", () => {
     const spec: FoldReturnSpec = {
       endpointPattern: "itinerary/api/v1/sailings",
-      resultsPath: "data.cruises",
+      resultsPath: "data.voyages",
       joinFields: ["id"],
       drillParamBindings: {
         "filter.type": { payloadField: "filterType", type: "string", default: "cabin" },
