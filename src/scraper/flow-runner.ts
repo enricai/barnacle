@@ -9713,7 +9713,8 @@ export async function executeStepWithHealing(params: {
   // when no solver key is configured or the solve otherwise fails — that
   // propagates out of this function unchanged, so the step fails cleanly
   // instead of silently falling through as if unverified-but-passing.
-  const isSubmitOrFinalStep = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+  const isSubmitOrFinalStep =
+    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
