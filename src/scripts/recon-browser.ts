@@ -3041,7 +3041,7 @@ async function main(): Promise<void> {
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
-          if (hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
+          if (!step.submitStep && hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
             );
