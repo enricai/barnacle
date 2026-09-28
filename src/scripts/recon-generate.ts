@@ -10595,36 +10595,32 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       specPlan,
     ];
   }
-  // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
-  // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
-  // array on that step, not the whole step. A spec whose resultsPath names
-  // a second, structurally-undetected array on that exact same primary step
-  // has already been proven independent by the samePrimaryPlan lookup above
-  // (its primaryArrayPath differs from every structural plan's), so keying
-  // solely on the step index would wrongly treat it as already consumed and
-  // silently drop it. consumedIndices tracks only the steps a plan folds
-  // FROM (each target's drillStepIndex), not its whole replay chain — a
-  // target's chain threads through steps it depends on to reach per-item
-  // data, but only its drillStepIndex is the call it actually folds from,
-  // so sweeping the whole chain would falsely claim steps the spec never
-  // contends for.
-  const consumedIndices = new Set<number>();
+  // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not raw step
+  // indices: that pair is the only thing that identifies whether the spec
+  // describes a primary a structural plan ALREADY owns. A structural
+  // target's own `drillStepIndex` (or any index in its replay chain)
+  // coinciding with a step the spec's own resolution happens to touch is
+  // not, on its own, evidence of a real conflict — an unrelated,
+  // independent primary/drill pair can legitimately enter through (or
+  // replay) the exact same underlying capture the spec's chain does (e.g.
+  // a shared session/auth bootstrap call reused by two unrelated
+  // features), and both targets replaying it per their own items is
+  // exactly what {@link resolveSpecMatchedPrimaryItemIndexAlongChain}'s
+  // multi-hop resolution expects — see the shared-bootstrap-hop-noise
+  // regression test. Excluding on raw index overlap (as an earlier version
+  // of this check did, for BOTH the spec's `drillStepIndex` and its whole
+  // `chain`) silently dropped a real, resolvable declared join whenever
+  // some unrelated noisy structural plan merely touched the same index by
+  // coincidence, which is exactly the "declared fold rejected" failure
+  // mode this function exists to prevent.
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlansWithPerOccurrenceOverrides) {
     const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
     consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
-    for (const target of plan.targets) {
-      consumedIndices.add(target.drillStepIndex);
-    }
   }
-  const specConsumesOnlyItsOwnIndices =
-    !consumedIndices.has(specPlan.primaryStepIndex) &&
-    !consumedPrimarySteps.has(
-      `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
-    ) &&
-    specPlan.targets.every((target) =>
-      target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
-    );
+  const specConsumesOnlyItsOwnIndices = !consumedPrimarySteps.has(
+    `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
+  );
   if (specConsumesOnlyItsOwnIndices)
     return [...structuralPlansWithPerOccurrenceOverrides, specPlan];
   // The spec's primary endpoint/array is already consumed by a structural
