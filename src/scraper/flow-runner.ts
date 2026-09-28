@@ -1437,6 +1437,37 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
+ * SUBMIT a form — a final "Submit"/"Apply" click — as opposed to a field-answer
+ * or advance step. Matched against the step text, not a resolved element
+ * description. Deliberately narrow (the verb/button phrase itself, not the bare
+ * word "submit") so a field named e.g. "Submit Date" is never misclassified.
+ */
+const SUBMIT_INTENT_STEP_PHRASES: readonly string[] = [
+  "to submit the",
+  "click 'submit'",
+  "click \"submit\"",
+  "click the submit",
+  "click submit",
+  "submit button",
+];
+
+/**
+ * Is this flow step a submit click (the final "Submit"/"Apply" action), rather
+ * than a field-answer or advance step? Mirrors `isAdvanceStep` so a step that
+ * unambiguously names a submit action in its own instruction is recognized as
+ * submit-shaped even when the flow file has no explicit `submitStep` flag and
+ * the step isn't the flow's last one. Keyed on the ORIGINAL step instruction,
+ * same discipline as `isAdvanceStep`/`isCheckboxOrRadioIntentStep`. Pure;
+ * unit-testable seam paralleling both.
+ */
+export function isSubmitIntentStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const haystack = instruction.toLowerCase();
+  return SUBMIT_INTENT_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
  * Is this flow step's intent to check a checkbox or select a radio option?
  * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
  * from crediting a checkbox/radio-intent step: those signals move whenever ANY
