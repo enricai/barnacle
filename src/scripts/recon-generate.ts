@@ -1865,6 +1865,11 @@ export function resolveManifestActionSequence(
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
+ *
+ * `applyFinalAnchorNarrowing` lets a caller that will itself truncate the
+ * result via {@link truncateActionSequenceAtSubmitPattern} opt out of the
+ * final structural-relevance anchor pass, which can drop a genuine earlier
+ * chain step that shares no token with the terminal submit endpoint.
  */
 export function extractActionSequence(
   captures: Capture[],
