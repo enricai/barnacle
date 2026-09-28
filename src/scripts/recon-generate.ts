@@ -1871,7 +1871,20 @@ export function extractActionSequence(
   submitPatterns: SubmitPatterns | null = null,
   foldReturnSpec: FoldReturnSpec | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // The final structural-relevance anchor pass below (guarded on
+  // hasSubmitEndpointAnchor) is tuned for isolating a submission from
+  // same-URL incidental chrome, not for pruning a genuine multi-step chain:
+  // an earlier plain single-word step (e.g. `/lodging/hold/`) that shares no
+  // compound token with the terminal submit endpoint reads as "unrelated" to
+  // it and gets dropped, even though it's a real prior step whose body the
+  // caller still needs. truncateActionSequenceAtSubmitPattern's own
+  // index-slice already does the right, less-aggressive narrowing (keep
+  // everything up to and including the last submit/fold match) — so a caller
+  // that immediately truncates this result opts out with `false` to keep
+  // earlier chain steps intact while still getting the structural-isolation
+  // exemption above.
+  applyFinalAnchorNarrowing = true
 ): ActionCapture[] {
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -1991,7 +2004,7 @@ export function extractActionSequence(
   // authoritative reference, so this pass is a no-op — mirroring
   // compileSubmitMatcher's own null-pattern passthrough — rather than
   // guessing at a reference set.
-  if (!hasSubmitEndpointAnchor) return structurallyGated;
+  if (!hasSubmitEndpointAnchor || !applyFinalAnchorNarrowing) return structurallyGated;
 
   const referencePaths = structurallyGated
     .filter(({ capture }) => matchesDeclaredSubmitEndpoint(capture))
@@ -14031,7 +14044,8 @@ async function main(): Promise<void> {
               submitPatterns,
               foldReturnSpec,
               ownBackendHostnames,
-              fallbackDomain
+              fallbackDomain,
+              false
             )
           )
         );
