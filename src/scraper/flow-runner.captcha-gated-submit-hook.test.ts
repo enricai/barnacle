@@ -783,6 +783,35 @@ describe("flow-runner/executeStepWithHealing — captcha-gated submit hook", () 
     expect(submitCount.n).toBe(3);
   });
 
+  it("engages via isSubmitIntentStep alone: fires on a mid-flow, non-final, non-submitStep step whose instruction is submit-shaped", async () => {
+    solveCaptchaMock.mockResolvedValue({ token: "solved-token", provider: "2captcha", ms: 12 });
+    const { page, field, submitCount } = makeFakePage({ hasSitekey: true });
+    writeFileSync(
+      join(capturesDir, "001-submit-real.json"),
+      JSON.stringify({
+        requestPostData: "type=next&step=review",
+        variables: { input: { type: "next" } },
+      })
+    );
+    const stagehand = {} as Stagehand;
+
+    const result = await executeStepWithHealing({
+      ...baseParams(page, stagehand, {
+        captchaGated: true,
+        advanceTransitionBodyPattern: "type=next",
+      }),
+      step: "Click the submit button to send the application",
+      submitStep: false,
+      isFinalStep: false,
+      flowHasSubmitSemantics: false,
+    });
+
+    expect(result).toBe("completed");
+    expect(solveCaptchaMock).toHaveBeenCalledTimes(1);
+    expect(field.value).toBe("solved-token");
+    expect(submitCount.n).toBe(0);
+  });
+
   it("fails the step (never silently proceeds) when solveCaptcha rejects with the unavailable error", async () => {
     solveCaptchaMock.mockRejectedValue(new CaptchaSolverUnavailableError());
     const { page, submitCount } = makeFakePage({ hasSitekey: true });

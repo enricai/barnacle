@@ -109,6 +109,12 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
  *    as a distinct word alongside other text (e.g. "Submit Application"),
  *    with no negative verb present — covers Angular-style controls matched
  *    by role + text rather than by type.
+ * 4. Button/role="button" element with no submit wording at all and no
+ *    negative verb present (e.g. `<button type="button">Create Account</button>`)
+ *    — a generic action control the earlier tiers cannot recognize by
+ *    wording, kept weakest and evaluated last so it never outranks a tier
+ *    with real submit signal and only surfaces when nothing stronger is on
+ *    the page.
  */
 const RANK_TIERS_EXPR = `((el, name) => {
   const isNegative = ${NEGATIVE_TEXT_EXPR};
@@ -121,7 +127,7 @@ const RANK_TIERS_EXPR = `((el, name) => {
   if ((tag === "button" || tag === "input") && type === "submit") return 3;
   if (name === "submit") return 2;
   if (/\\bsubmit\\b/.test(name)) return 1;
-  return 0;
+  return 0.5;
 })`;
 
 /**
@@ -221,7 +227,7 @@ export function buildClickByDeepIndexExpr(deepIndex: number, root = "document"):
 }
 
 /** Confidence tier for a ranked submit candidate — higher is more confident. See {@link buildRankSubmitCandidatesExpr}. */
-export type SubmitCandidateTier = 1 | 2 | 3;
+export type SubmitCandidateTier = 0.5 | 1 | 2 | 3;
 
 /** One ranked candidate returned by {@link buildRankSubmitCandidatesExpr}'s `page.evaluate` call. */
 export interface SubmitCandidate {

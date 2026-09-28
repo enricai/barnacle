@@ -1437,6 +1437,37 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 }
 
 /**
+ * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
+ * SUBMIT a form — a final "Submit" click — as opposed to a field-answer
+ * or advance step. Matched against the step text, not a resolved element
+ * description. Deliberately narrow (a click-on-submit phrase, not the bare
+ * word "submit") so a field named e.g. "Submit Date" or a verification step
+ * that merely mentions the submit button is never misclassified.
+ */
+const SUBMIT_INTENT_STEP_PHRASES: readonly string[] = [
+  "to submit the",
+  "click 'submit'",
+  'click "submit"',
+  "click the submit",
+  "click submit",
+];
+
+/**
+ * Is this flow step a submit click (the final "Submit"/"Apply" action), rather
+ * than a field-answer or advance step? Mirrors `isAdvanceStep` so a step that
+ * unambiguously names a submit *click* in its own instruction is recognized as
+ * submit-shaped even when the flow file has no explicit `submitStep` flag and
+ * the step isn't the flow's last one. Keyed on the ORIGINAL step instruction,
+ * same discipline as `isAdvanceStep`/`isCheckboxOrRadioIntentStep`. Pure;
+ * unit-testable seam paralleling both.
+ */
+export function isSubmitIntentStep(instruction: string | null | undefined): boolean {
+  if (!instruction) return false;
+  const haystack = instruction.toLowerCase();
+  return SUBMIT_INTENT_STEP_PHRASES.some((p) => haystack.includes(p));
+}
+
+/**
  * Is this flow step's intent to check a checkbox or select a radio option?
  * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
  * from crediting a checkbox/radio-intent step: those signals move whenever ANY
@@ -9682,7 +9713,8 @@ export async function executeStepWithHealing(params: {
   // when no solver key is configured or the solve otherwise fails — that
   // propagates out of this function unchanged, so the step fails cleanly
   // instead of silently falling through as if unverified-but-passing.
-  const isSubmitOrFinalStep = submitStep || (isFinalStep && flowHasSubmitSemanticsFlag);
+  const isSubmitOrFinalStep =
+    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
@@ -10454,7 +10486,7 @@ export async function executeStepWithHealing(params: {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
           ? attempt1UnreachableViaLightDom &&
-            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
             ? "deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "trusted-click-retry"
@@ -10473,7 +10505,8 @@ export async function executeStepWithHealing(params: {
         })),
         advanceUnmovedAfterAttempt1,
         attempt1UnreachableViaLightDom,
-        submitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        submitShapedStep:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       });
       if (decision.skip) {
         logger.info(
@@ -10626,7 +10659,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         attempt1UnreachableViaLightDom &&
-        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
       ) {
         // Deep submit-control locator: attempt 1 either phantom-clicked
         // (Stagehand reported success but pre/post showed zero effect) or
@@ -10765,7 +10798,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         phantomClickAfterAttempt1 &&
-        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
       ) {
         // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
         // Stagehand reported success but pre/post showed zero effect. On a
@@ -11550,7 +11583,8 @@ export async function executeStepWithHealing(params: {
     // `advanceTransitionBodyPattern` are unaffected.
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
-      isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+      isFinalOrSubmit:
+        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       isAdvance: isAdvanceStep(step),
       domVerified,
       networkIsRealAdvance,
@@ -11654,7 +11688,8 @@ export async function executeStepWithHealing(params: {
       !(
         submitStep ||
         (isFinalStep && flowHasSubmitSemanticsFlag) ||
-        resolvedElementIsSubmitShaped
+        resolvedElementIsSubmitShaped ||
+        isSubmitIntentStep(step)
       ) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
@@ -11775,7 +11810,8 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       elementStateChanged: domVerified,
-      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+      isSubmitShapedStep:
+        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -11797,7 +11833,8 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerifiedForStep;
+      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)) &&
+      domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
@@ -12260,7 +12297,8 @@ export async function executeStepWithHealing(params: {
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
-            isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+            isFinalOrSubmit:
+              submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -12325,7 +12363,8 @@ export async function executeStepWithHealing(params: {
           const retrySubmitShaped =
             submitStep ||
             (isFinalStep && flowHasSubmitSemanticsFlag) ||
-            retryResolvedElementIsSubmitShaped;
+            retryResolvedElementIsSubmitShaped ||
+            isSubmitIntentStep(step);
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
@@ -12586,7 +12625,7 @@ export async function executeStepWithHealing(params: {
     // error text pattern with 3 distinct rejection messages.
     if (
       record.resolvedMethod === "click" &&
-      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
     ) {
       const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
@@ -12650,7 +12689,7 @@ export async function executeStepWithHealing(params: {
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
         const escalationTarget =
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
             ? "escalating attempt 2 to deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
@@ -12666,7 +12705,8 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        isFinalStep:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -12687,7 +12727,8 @@ export async function executeStepWithHealing(params: {
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),
-        isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        isFinalOrSubmit:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
         hasPattern: advanceTransitionBodyPattern !== null,
         clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
         networkFired,

@@ -13,6 +13,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   type HealingFlowStep,
+  isSubmitIntentStep,
   parseRadioStep,
   parseSelectStep,
   parseWidgetOptionClickStep,
@@ -1958,5 +1959,46 @@ describe("flow-runner/snapshotPage — post-action url read on a stale child fra
     expect(post.url).toBe(NEW_FRAME_URL);
     expect(post.url).not.toBe(TOP_WRAPPER_URL);
     expect(urlChanged).toBe(true);
+  });
+});
+
+describe("isSubmitIntentStep", () => {
+  it("is true for instructions naming a submit action, matching the report's step wording shape", () => {
+    expect(
+      isSubmitIntentStep(
+        "Click the 'Submit Application' button to submit the completed application form."
+      )
+    ).toBe(true);
+    expect(isSubmitIntentStep("Click 'submit' to finish")).toBe(true);
+    expect(isSubmitIntentStep("Click submit button at the bottom of the form")).toBe(true);
+  });
+
+  it("is false for text that merely contains 'submit' as part of an unrelated control name", () => {
+    expect(isSubmitIntentStep("Fill in the 'Submit Date' field with today's date")).toBe(false);
+    expect(isSubmitIntentStep("Select 'Submit Later' from the dropdown")).toBe(false);
+  });
+
+  it("is false for a verification step that merely mentions the submit button, without clicking it", () => {
+    expect(
+      isSubmitIntentStep("Verify the submit button is disabled until all fields are filled")
+    ).toBe(false);
+  });
+
+  it("is false for advance/'Next' steps recognized by isAdvanceStep", () => {
+    expect(isSubmitIntentStep("Click the 'Next' button to leave the Basic Information page.")).toBe(
+      false
+    );
+    expect(isSubmitIntentStep("Click 'Next' to continue to the next page")).toBe(false);
+  });
+
+  it("is false for field-answer steps (fill / select / radio)", () => {
+    expect(isSubmitIntentStep("Fill in the First Name field with 'Reginald'")).toBe(false);
+    expect(isSubmitIntentStep("Click the 'Yes' answer for the question 'Are you 18?'")).toBe(false);
+  });
+
+  it("is false for null/empty", () => {
+    expect(isSubmitIntentStep(null)).toBe(false);
+    expect(isSubmitIntentStep(undefined)).toBe(false);
+    expect(isSubmitIntentStep("")).toBe(false);
   });
 });
