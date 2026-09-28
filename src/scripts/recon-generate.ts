@@ -1308,9 +1308,22 @@ export function deriveRequestHeaders(
   return baseline;
 }
 
-function isGraphQL(captures: Capture[]): boolean {
+/**
+ * Classifies the flow as GraphQL only from own-backend-host traffic, so a
+ * third-party host (chat widget, analytics SDK) making real GraphQL calls
+ * never flips a plain REST/JSON backend's classification.
+ */
+function isGraphQL(
+  captures: Capture[],
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
+): boolean {
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   return captures.some(
-    (c) => c.operationName !== null || parsedOperationName(c.query ?? "") !== null
+    (c) =>
+      (!hasHostProvenance ||
+        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)) &&
+      (c.operationName !== null || parsedOperationName(c.query ?? "") !== null)
   );
 }
 
@@ -1421,8 +1434,11 @@ function computeEmittedPrimaryAnchor(
   gqlOperationName: string | null | undefined,
   gqlQuery: string | null
 ): string | null {
-  if (!gql) return null;
-  const name = gqlOperationName ?? parsedOperationName(gqlQuery ?? "") ?? "anonymous";
+  // Mirrors emitContractTs's own isGqlEmission gate: `gql` alone can be true
+  // with a null gqlQuery (see gqlQuery's `?? null` fallback), in which case
+  // emitContractTs falls through to REST emission — this anchor must agree.
+  if (!gql || gqlQuery === null) return null;
+  const name = gqlOperationName ?? parsedOperationName(gqlQuery) ?? "anonymous";
   return `${endpointPath}::${name}`;
 }
 
@@ -1865,13 +1881,31 @@ export function resolveManifestActionSequence(
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
+ *
+ * `applyFinalAnchorNarrowing` lets a caller that will itself truncate the
+ * result via {@link truncateActionSequenceAtSubmitPattern} opt out of the
+ * final structural-relevance anchor pass, which can drop a genuine earlier
+ * chain step that shares no token with the terminal submit endpoint.
  */
 export function extractActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
   foldReturnSpec: FoldReturnSpec | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // The final structural-relevance anchor pass below (guarded on
+  // hasSubmitEndpointAnchor) is tuned for isolating a submission from
+  // same-URL incidental chrome, not for pruning a genuine multi-step chain:
+  // an earlier plain single-word step (e.g. `/lodging/hold/`) that shares no
+  // compound token with the terminal submit endpoint reads as "unrelated" to
+  // it and gets dropped, even though it's a real prior step whose body the
+  // caller still needs. truncateActionSequenceAtSubmitPattern's own
+  // index-slice already does the right, less-aggressive narrowing (keep
+  // everything up to and including the last submit/fold match) — so a caller
+  // that immediately truncates this result opts out with `false` to keep
+  // earlier chain steps intact while still getting the structural-isolation
+  // exemption above.
+  applyFinalAnchorNarrowing = true
 ): ActionCapture[] {
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -1897,6 +1931,16 @@ export function extractActionSequence(
   const matchesSubmit = compileSubmitMatcher(
     hasSubmitEndpointAnchor ? { endpoint: null, body: submitPatterns!.body } : submitPatterns
   );
+  // Compiled once, ahead of structural isolation below, so a capture matching
+  // the flow's own declared submitEndpointPattern can be exempted there the
+  // same way a declared foldReturn endpointPattern already is — both are
+  // author-declared, both are authoritative by construction, so the isolation
+  // pass (which exists to catch INCIDENTAL same-host noise the flow never
+  // named) must not treat one differently from the other.
+  const declaredSubmitEndpointRx =
+    submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
+  const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
+    declaredSubmitEndpointRx?.test(capture.url) ?? false;
 
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
@@ -1919,9 +1963,14 @@ export function extractActionSequence(
   // (e.g. a marketing/promotions endpoint fired incidentally by a page load,
   // admitted above because it too is a 2xx own-backend POST). Drop a
   // structurally-isolated member of the pool first — a compound-path capture
-  // (e.g. `/site-banner`) sharing no token with anything else host-gated in,
-  // regardless of whether a submitEndpointPattern is declared. Guarded to
-  // pools of 3+: a real chain's own steps are usually plain single-word
+  // (e.g. `/site-banner`) sharing no token with anything else host-gated in
+  // — unless it matches the flow's own declared submitEndpointPattern (see
+  // the exemption below): a densely-tokenized real submission path (e.g.
+  // `available-sailings`) can look exactly as isolated as incidental noise
+  // by path shape alone, and dropping it here would strip it out before the
+  // structural-relevance anchor pass further down ever gets to treat it as
+  // authoritative. Guarded to pools of 3+: a real chain's own steps are
+  // usually plain single-word
   // paths with no tokens of their own (never flagged, see
   // isStructurallyIsolatedCapture), so this only ever removes a capture that
   // is BOTH compound-path AND unrelated to every other admitted capture —
@@ -1956,11 +2005,16 @@ export function extractActionSequence(
             )
             .map((h) => safeUrlPathname(h.capture.url));
           // A capture admitted via the flow's own declared foldReturnSpec
-          // endpointPattern (the drill-down target) is authoritative by
-          // construction — the flow author named it explicitly — so it is
+          // endpointPattern (the drill-down target), or matching the flow's
+          // own declared submitEndpointPattern, is authoritative by
+          // construction — the flow author named it explicitly — so both are
           // exempt from token-overlap isolation, which exists to catch
           // INCIDENTAL same-host captures the flow never declared.
-          return matchesFoldReturn(capture) || !isStructurallyIsolatedCapture(path, otherPaths);
+          return (
+            matchesFoldReturn(capture) ||
+            matchesDeclaredSubmitEndpoint(capture) ||
+            !isStructurallyIsolatedCapture(path, otherPaths)
+          );
         })
       : hostGated;
 
@@ -1971,17 +2025,16 @@ export function extractActionSequence(
   // authoritative reference, so this pass is a no-op — mirroring
   // compileSubmitMatcher's own null-pattern passthrough — rather than
   // guessing at a reference set.
-  if (!hasSubmitEndpointAnchor) return structurallyGated;
+  if (!hasSubmitEndpointAnchor || !applyFinalAnchorNarrowing) return structurallyGated;
 
-  const endpointRx = new RegExp(submitPatterns!.endpoint!);
   const referencePaths = structurallyGated
-    .filter(({ capture }) => endpointRx.test(capture.url))
+    .filter(({ capture }) => matchesDeclaredSubmitEndpoint(capture))
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return structurallyGated;
 
   return structurallyGated.filter(
     ({ capture }) =>
-      endpointRx.test(capture.url) ||
+      matchesDeclaredSubmitEndpoint(capture) ||
       isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
   );
 }
@@ -10595,36 +10648,32 @@ function mergeSpecPlanOntoSamePrimary<T extends { capture: Capture }>(
       specPlan,
     ];
   }
-  // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not
-  // primaryStepIndex alone — a structural plan only ever consumed ITS OWN
-  // array on that step, not the whole step. A spec whose resultsPath names
-  // a second, structurally-undetected array on that exact same primary step
-  // has already been proven independent by the samePrimaryPlan lookup above
-  // (its primaryArrayPath differs from every structural plan's), so keying
-  // solely on the step index would wrongly treat it as already consumed and
-  // silently drop it. consumedIndices tracks only the steps a plan folds
-  // FROM (each target's drillStepIndex), not its whole replay chain — a
-  // target's chain threads through steps it depends on to reach per-item
-  // data, but only its drillStepIndex is the call it actually folds from,
-  // so sweeping the whole chain would falsely claim steps the spec never
-  // contends for.
-  const consumedIndices = new Set<number>();
+  // Keyed by the (primaryStepIndex, primaryArrayPath) pair, not raw step
+  // indices: that pair is the only thing that identifies whether the spec
+  // describes a primary a structural plan ALREADY owns. A structural
+  // target's own `drillStepIndex` (or any index in its replay chain)
+  // coinciding with a step the spec's own resolution happens to touch is
+  // not, on its own, evidence of a real conflict — an unrelated,
+  // independent primary/drill pair can legitimately enter through (or
+  // replay) the exact same underlying capture the spec's chain does (e.g.
+  // a shared session/auth bootstrap call reused by two unrelated
+  // features), and both targets replaying it per their own items is
+  // exactly what {@link resolveSpecMatchedPrimaryItemIndexAlongChain}'s
+  // multi-hop resolution expects — see the shared-bootstrap-hop-noise
+  // regression test. Excluding on raw index overlap (as an earlier version
+  // of this check did, for BOTH the spec's `drillStepIndex` and its whole
+  // `chain`) silently dropped a real, resolvable declared join whenever
+  // some unrelated noisy structural plan merely touched the same index by
+  // coincidence, which is exactly the "declared fold rejected" failure
+  // mode this function exists to prevent.
   const consumedPrimarySteps = new Set<string>();
   for (const plan of structuralPlansWithPerOccurrenceOverrides) {
     const planPrimaryEndpointKey = endpointKey(actions[plan.primaryStepIndex]!.capture.url);
     consumedPrimarySteps.add(`${planPrimaryEndpointKey}:${JSON.stringify(plan.primaryArrayPath)}`);
-    for (const target of plan.targets) {
-      consumedIndices.add(target.drillStepIndex);
-    }
   }
-  const specConsumesOnlyItsOwnIndices =
-    !consumedIndices.has(specPlan.primaryStepIndex) &&
-    !consumedPrimarySteps.has(
-      `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
-    ) &&
-    specPlan.targets.every((target) =>
-      target.chain.every((chainIndex) => !consumedIndices.has(chainIndex))
-    );
+  const specConsumesOnlyItsOwnIndices = !consumedPrimarySteps.has(
+    `${specPrimaryEndpointKey}:${JSON.stringify(specPlan.primaryArrayPath)}`
+  );
   if (specConsumesOnlyItsOwnIndices)
     return [...structuralPlansWithPerOccurrenceOverrides, specPlan];
   // The spec's primary endpoint/array is already consumed by a structural
@@ -11567,6 +11616,11 @@ export function emitContractTs(opts: {
   } = opts;
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
+  /** Single source of truth for every GraphQL-emission decision below
+   * (clientImport, gqlCacheBlock, queryConst, and both executeHttpBody
+   * fetch-call sites) — `gql` alone can be true with a null `gqlQuery`,
+   * which would emit a `${PASCAL}_QUERY` reference with no declaration. */
+  const isGqlEmission = gql && gqlQuery !== null;
   /** Rendered `meta.browserFallbackGate` literal: `false` verbatim, a
    * list-derived arrow-function predicate matching against `error.name`, or
    * "" (omitted) when the flow declared no gate — preserving byte-identical
@@ -12080,18 +12134,18 @@ export function emitContractTs(opts: {
   // `noUnusedVariables`.
   const clientImport = omitExecuteHttp
     ? ""
-    : gql
+    : isGqlEmission
       ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
       : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
-    !omitExecuteHttp && gql && gqlQuery
-      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
+    !omitExecuteHttp && isGqlEmission
+      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery!.trim()}\`;\n`
       : "";
 
   const gqlCacheBlock = omitExecuteHttp
     ? ""
-    : gql
+    : isGqlEmission
       ? `
 type GqlFn = (operationName: string, query: string, variables: Record<string, unknown>) => Promise<${pascal}Response>;
 
@@ -12515,7 +12569,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           signal: paginationSignal,
           foldMergeLines: paginatedFoldMergeLines,
           valueConstraints,
-          fetchCall: gql
+          fetchCall: isGqlEmission
             ? {
                 kind: "gql",
                 gqlOperationNameExpr,
@@ -12523,7 +12577,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               }
             : { kind: "rest", endpointPath },
         })
-      : gql
+      : isGqlEmission
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
         : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
@@ -13864,7 +13918,7 @@ async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures);
+    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
@@ -13981,11 +14035,47 @@ async function main(): Promise<void> {
     // keeps that whole chain; the gap between this and the unfiltered
     // sequence is logged below for visibility, but the declared pattern is
     // never overridden by the richer unfiltered sequence.
+    //
+    // Truncated against a pool RE-EXTRACTED with the declared pattern passed
+    // through (not against unfilteredHeuristicActionCaptures, which is built
+    // with submitPatterns forced to null purely to get an unbiased baseline
+    // for the disagreement check below). extractActionSequence's own
+    // noise/structural-isolation passes have no visibility into the declared
+    // pattern when it's withheld, so on an archive noisy enough to make a
+    // genuine submission capture look structurally isolated, that capture
+    // can be dropped before truncation ever sees it — a real match then
+    // reads as "0 captures" even though the archive contains plenty. Passing
+    // submitPatterns through lets extractActionSequence's own submit-anchor
+    // narrowing (REST) / per-capture submit match (GraphQL) keep the
+    // genuine captures amid that noise, so truncation has them to find.
+    const patternedExtractedActionCaptures = gql
+      ? dedupRedundantSameOperationCaptures(
+          extractGraphQLActionSequence(
+            activeCaptures,
+            submitPatterns,
+            foldReturnSpec,
+            ownBackendHostnames,
+            fallbackDomain
+          ),
+          primaryGraphQLOperation
+        )
+      : collapseRedundantSameEndpointCaptures(
+          collapseRedundantPatches(
+            extractActionSequence(
+              activeCaptures,
+              submitPatterns,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain,
+              false
+            )
+          )
+        );
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
         ? unfilteredHeuristicActionCaptures
         : truncateActionSequenceAtSubmitPattern(
-            unfilteredHeuristicActionCaptures,
+            patternedExtractedActionCaptures,
             submitPatterns,
             foldReturnSpec
           );

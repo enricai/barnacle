@@ -42,4 +42,19 @@ describe("emitContractTs — getGql() call-site coherence with the selected capt
     );
     expect(source).toContain(`endpoint: \`\${baseUrl}/graphql\``);
   });
+
+  it("falls through to the REST emission path when gql is true but gqlQuery is null, never referencing an undeclared QUERY const", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: null,
+      payloadFieldNames: new Set(["query"]),
+    });
+
+    expect(source).not.toContain("_QUERY");
+    expect(source).not.toContain("createGraphqlClient");
+    expect(source).not.toContain("getGql");
+    expect(source).toContain("createHttpClient");
+    expect(source).toContain(`httpClient(\`\${context.baseUrl}/graphql\``);
+  });
 });

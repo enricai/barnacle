@@ -874,6 +874,66 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     expect(kept).toEqual([productAvail.url, promoBanner.url]);
   });
 
+  it("keeps a densely-tokenized declared submitEndpointPattern match even when it shares no token with any other host-gated capture", () => {
+    // Mirrors the reported regression: the genuine submission capture's path
+    // is compound and token-unique among a noisy archive's unrelated same-host
+    // captures, so isStructurallyIsolatedCapture alone would flag it as
+    // incidental noise and drop it BEFORE the submitEndpointPattern anchor
+    // pass ever gets a chance to treat it as authoritative — collapsing a
+    // real match down to zero.
+    const genuineSubmit = capture(
+      "https://api.tenant.example.com/dcl-apps-productavail-vas/available-sailings/",
+      "{}"
+    );
+    const widgetNoise = capture("https://api.tenant.example.com/widget-loader/api/config", "{}");
+    const chatNoise = capture("https://api.tenant.example.com/chat-bot/session/start", "{}");
+
+    const kept = extractActionSequence(
+      [genuineSubmit, widgetNoise, chatNoise],
+      { endpoint: "available-sailings", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(kept).toContain(genuineSubmit.url);
+  });
+
+  it("applyFinalAnchorNarrowing=false keeps an earlier plain single-word chain step the final anchor pass would otherwise drop", () => {
+    // Mirrors the reported regression: `hold` shares no compound token with
+    // the terminal `submit` endpoint, so the final structural-relevance
+    // anchor pass (default applyFinalAnchorNarrowing=true) drops it as
+    // "unrelated" even though it's a genuine earlier step in the same chain.
+    // Passing applyFinalAnchorNarrowing=false opts a caller (that will
+    // itself truncate via truncateActionSequenceAtSubmitPattern) out of that
+    // over-aggressive narrowing while still keeping the earlier
+    // structural-isolation exemption for the declared submit match.
+    const hold = capture("https://api.tenant.example.com/lodging/hold/", "{}");
+    const submit = capture("https://api.tenant.example.com/lodging/submit/", "{}");
+
+    const narrowed = extractActionSequence(
+      [hold, submit],
+      { endpoint: "submit", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null
+    ).map((a) => a.capture.url);
+
+    expect(narrowed).not.toContain(hold.url);
+
+    const unnarrowed = extractActionSequence(
+      [hold, submit],
+      { endpoint: "submit", body: null },
+      null,
+      ["api.tenant.example.com"],
+      null,
+      false
+    ).map((a) => a.capture.url);
+
+    expect(unnarrowed).toContain(hold.url);
+    expect(unnarrowed).toContain(submit.url);
+  });
+
   // (#bugfix-003 attempted to exclude every same-pathname repeat from a
   // candidate's own structural-isolation evidence set, so N identical
   // repeats of a same-host endpoint could no longer trivially "vouch" for
