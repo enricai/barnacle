@@ -10,7 +10,7 @@ import type { Capture } from "@/scripts/recon-shared";
 /**
  * End-to-end proof, through the real CLI, for Finding 1's array-facet half:
  * a typed array-of-objects payload field (structurally identical to the
- * reported `partyMix` — an array of `{count, subCount, ages, id}`-shaped
+ * reported `attendeeMix` — an array of `{count, subCount, ages, id}`-shaped
  * records) must get spliced into EVERY request body it appears in as
  * `${JSON.stringify(payload.<field>)}`, never survive as a frozen literal.
  * Distinct from `recon-generate-structured-value-array-body.test.ts`, which
@@ -30,7 +30,7 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const OWN_BACKEND_HOST = "www.array-facet-payload-threading-fixture.example.com";
 
 // The captured JSON literal repeated verbatim across five of the six request
-// bodies, mirroring the finding's own partyMix repro shape.
+// bodies, mirroring the finding's own attendeeMix repro shape.
 const ATTENDEE_MIX = [{ adultCount: 2, childCount: 0, subAges: [], mixId: "0" }];
 const ATTENDEE_MIX_JSON = JSON.stringify(ATTENDEE_MIX);
 
@@ -46,7 +46,7 @@ const ATTENDEE_MIX_VARIANT_SHAPE = [
 const ATTENDEE_MIX_VARIANT_SHAPE_JSON = JSON.stringify(ATTENDEE_MIX_VARIANT_SHAPE);
 
 // The captured request body batches per-room criteria as a top-level JSON
-// ARRAY, mirroring the finding's own partyMix repro shape (a cruise-line
+// ARRAY, mirroring the finding's own attendeeMix repro shape (a travel-brand
 // multi-room search): each room element carries its own `filters` (already
 // correctly spliced, per the finding's own working-mechanism proof) and its
 // own `attendeeMix`.

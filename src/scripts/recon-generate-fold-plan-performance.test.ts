@@ -56,8 +56,8 @@ describe("resolveFoldPlan at scale", () => {
 });
 
 // Wildcard-resultsPath counterpart to the above: the incident doc reports the
-// hang reproduced under both a wildcard resultsPath ('data.cruiseSearch.
-// results.cruises.*.sailings') and a flat one as separately-isolated
+// hang reproduced under both a wildcard resultsPath ('data.voyageSearch.
+// results.voyages.*.sailings') and a flat one as separately-isolated
 // configurations, but the fix's linear scaling was only proven above for a
 // flat resultsPath. objectItemsAtPath's ARRAY_WILDCARD_SEGMENT flatMap branch
 // (recon-generate.ts:6156) is exercised here instead, at the same 2500-action
