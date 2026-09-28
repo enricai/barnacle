@@ -9,8 +9,8 @@ import type { Capture } from "@/scripts/recon-shared";
 
 /**
  * Covers required-item 1's "other genuinely varying body fields like
- * partyMix" clause: a top-level captured key whose value is an array of
- * objects (structurally like the reported `partyMix`) must be declared on
+ * groupMix" clause: a top-level captured key whose value is an array of
+ * objects (structurally like the reported `groupMix`) must be declared on
  * PayloadSchema and spliced as a `payload.<field>`-driven expression, not
  * frozen as a recon-time literal, when its CONTENT genuinely differs across
  * the run's own captures (not merely its item shape, which

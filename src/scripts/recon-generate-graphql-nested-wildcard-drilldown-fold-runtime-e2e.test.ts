@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 /**
  * Mirrors recon-generate-drilldown-fold-return-graphql-get-drill-runtime-e2e.test.ts
  * but gives the GraphQL query-primary a two-level nested array
- * (`search.groups.*.items`), matching the doc's reported `cruises.*.sailings`
+ * (`search.groups.*.items`), matching the doc's reported `voyages.*.sailings`
  * shape. Proves the fix resolves a fold plan through a nested wildcard
  * resultsPath declared on a single-primary GraphQL flow — not just the flat
  * resultsPath case, and not just the structural-heuristic multi-step path

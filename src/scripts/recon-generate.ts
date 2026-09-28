@@ -4570,7 +4570,7 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  *
  * Site-agnostic: operates only on the recon body's own shape.
  *
- * A top-level-ARRAY-shaped body (e.g. a cruise-line multi-room search that
+ * A top-level-ARRAY-shaped body (e.g. a travel-brand multi-room search that
  * batches per-room criteria as `[{...}, {...}]`) is walked element by
  * element, applying this same envelope logic to each object element in
  * textual order — otherwise a structured field living inside an array
@@ -4837,7 +4837,7 @@ export function applyStructuredValuePayloadSubstitutions(
           [...payloadAccessorExcludeValues.keys()].sort((a, b) => b.length - a.length)
         )
       : null;
-  // A cruise-line-style multi-room/multi-guest search body commonly batches
+  // A travel-brand-style multi-room/multi-guest search body commonly batches
   // per-element criteria as a top-level JSON ARRAY rather than a single
   // object. Walk each element in textual order (via the growing searchFrom
   // cursor) instead of bailing out here — otherwise any structured field
@@ -9404,7 +9404,7 @@ function isExplainedByCorrelatedSiblingField(
  * iteration's request, exactly the defect described in
  * docs/recon-generate-nested-fold-flatmaps-away-the-parent-so-drill-params-freeze.md
  * (a `packageCode`/`groupId`/`sailDate` triple that provably varies per
- * cruise, silently frozen because no threaded field explained it). Path
+ * voyage, silently frozen because no threaded field explained it). Path
  * segments are deliberately not checked: {@link endpointKey} requires an
  * identical pathname to group two captures at all, so no path segment can
  * ever be observed to vary within a matched group.

@@ -23,13 +23,13 @@ const PRICING_URL = "https://api.example.com/catalog-listing-api/pricing/";
 const BASE_URL = "https://api.example.com";
 
 const ITEM_COUNT = 10;
-const FAILING_ITEM_ID = "cruise-5";
+const FAILING_ITEM_ID = "voyage-5";
 // Long enough that a genuinely sequential loop could never observe more than
 // one pricing fetch in flight at once inside its window, short enough to
 // keep the test fast.
 const CALL_LATENCY_MS = 20;
 
-const itemIds = Array.from({ length: ITEM_COUNT }, (_, i) => `cruise-${i}`);
+const itemIds = Array.from({ length: ITEM_COUNT }, (_, i) => `voyage-${i}`);
 const PRICE_FOR = (itemId: string): number => 100 + Number(itemId.split("-").pop());
 
 /**
@@ -54,7 +54,7 @@ function buildPagedListingDrillCaptures(): Capture[] {
     buildCapture({
       url: LISTING_URL,
       requestPostData: '{"page":1}',
-      responseBody: { totalPages: 1, cruises: itemIds.map((id) => ({ id })) },
+      responseBody: { totalPages: 1, voyages: itemIds.map((id) => ({ id })) },
       timestamp: "2024-09-01T00:00:00Z",
     }),
     buildCapture({
@@ -105,7 +105,7 @@ function stubPagedListingDrillFetch(maxInFlight: { value: number }): void {
         text: vi
           .fn()
           .mockResolvedValue(
-            JSON.stringify({ totalPages: 1, cruises: itemIds.map((id) => ({ id })) })
+            JSON.stringify({ totalPages: 1, voyages: itemIds.map((id) => ({ id })) })
           ),
         headers: new Headers(),
       });
@@ -163,8 +163,8 @@ describe("recon-generate — paginated-listing item drill: parallel dispatch wit
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
         steps: [
-          { step: "browse paged cruise listing" },
-          { step: "drill into cruise pricing", submitStep: true },
+          { step: "browse paged voyage listing" },
+          { step: "drill into voyage pricing", submitStep: true },
         ],
       })
     );
@@ -198,10 +198,10 @@ describe("recon-generate — paginated-listing item drill: parallel dispatch wit
 
     const executeHttp = evalExecuteHttpBody(body, httpClient, z);
     return executeHttp({ BaseUrl: BASE_URL, id: itemIds[0] }).then((result) => {
-      const data = result.data as { cruises?: Array<Record<string, unknown>> };
-      expect(data.cruises).toHaveLength(ITEM_COUNT);
+      const data = result.data as { voyages?: Array<Record<string, unknown>> };
+      expect(data.voyages).toHaveLength(ITEM_COUNT);
 
-      const byId = new Map((data.cruises ?? []).map((item) => [item.id as string, item]));
+      const byId = new Map((data.voyages ?? []).map((item) => [item.id as string, item]));
       for (const id of itemIds) {
         if (id === FAILING_ITEM_ID) {
           // The failing item is neither omitted nor able to abort the

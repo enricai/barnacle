@@ -67,7 +67,7 @@ function writeRunDir(root: string): void {
     JSON.stringify(
       restCapture({
         timestamp: "2026-02-01T00:00:00Z",
-        url: "https://api.cruise-fixture.example.com/products/search/",
+        url: "https://api.travel-fixture.example.com/products/search/",
         responseBody: {
           products: [
             {
@@ -94,7 +94,7 @@ function writeRunDir(root: string): void {
       restCapture({
         timestamp: "2026-02-01T00:00:01Z",
         method: "GET",
-        url: "https://api.cruise-fixture.example.com/products/prod-1/itineraries/itin-1/availability/",
+        url: "https://api.travel-fixture.example.com/products/prod-1/itineraries/itin-1/availability/",
         requestPostData: null,
         responseBody: { availability: [{ sailingId: "sail-1", price: 199 }] },
       })
@@ -118,7 +118,7 @@ function writeRunDir(root: string): void {
         restCapture({
           timestamp: `2026-02-01T00:02:${String(i).padStart(2, "0")}Z`,
           method: "GET",
-          url: `https://login.cruise-fixture.example.com/session/refresh/${i}/`,
+          url: `https://login.travel-fixture.example.com/session/refresh/${i}/`,
           requestPostData: null,
           responseBody: { sessionToken: `tok-${i}` },
         })
