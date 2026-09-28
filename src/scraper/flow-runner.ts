@@ -12297,7 +12297,8 @@ export async function executeStepWithHealing(params: {
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
-            isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+            isFinalOrSubmit:
+              submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -12362,7 +12363,8 @@ export async function executeStepWithHealing(params: {
           const retrySubmitShaped =
             submitStep ||
             (isFinalStep && flowHasSubmitSemanticsFlag) ||
-            retryResolvedElementIsSubmitShaped;
+            retryResolvedElementIsSubmitShaped ||
+            isSubmitIntentStep(step);
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
