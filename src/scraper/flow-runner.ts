@@ -11583,7 +11583,8 @@ export async function executeStepWithHealing(params: {
     // `advanceTransitionBodyPattern` are unaffected.
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
-      isFinalOrSubmit: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+      isFinalOrSubmit:
+        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       isAdvance: isAdvanceStep(step),
       domVerified,
       networkIsRealAdvance,
@@ -11687,7 +11688,8 @@ export async function executeStepWithHealing(params: {
       !(
         submitStep ||
         (isFinalStep && flowHasSubmitSemanticsFlag) ||
-        resolvedElementIsSubmitShaped
+        resolvedElementIsSubmitShaped ||
+        isSubmitIntentStep(step)
       ) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
@@ -11808,7 +11810,8 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       elementStateChanged: domVerified,
-      isSubmitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+      isSubmitShapedStep:
+        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -11830,7 +11833,8 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag)) && domVerifiedForStep;
+      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)) &&
+      domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
