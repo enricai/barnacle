@@ -1978,6 +1978,12 @@ describe("isSubmitIntentStep", () => {
     expect(isSubmitIntentStep("Select 'Submit Later' from the dropdown")).toBe(false);
   });
 
+  it("is false for a verification step that merely mentions the submit button, without clicking it", () => {
+    expect(
+      isSubmitIntentStep("Verify the submit button is disabled until all fields are filled")
+    ).toBe(false);
+  });
+
   it("is false for advance/'Next' steps recognized by isAdvanceStep", () => {
     expect(isSubmitIntentStep("Click the 'Next' button to leave the Basic Information page.")).toBe(
       false

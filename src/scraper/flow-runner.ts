@@ -1438,10 +1438,11 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 
 /**
  * Phrases (in the ORIGINAL flow instruction) that mark a step whose intent is to
- * SUBMIT a form — a final "Submit"/"Apply" click — as opposed to a field-answer
+ * SUBMIT a form — a final "Submit" click — as opposed to a field-answer
  * or advance step. Matched against the step text, not a resolved element
- * description. Deliberately narrow (the verb/button phrase itself, not the bare
- * word "submit") so a field named e.g. "Submit Date" is never misclassified.
+ * description. Deliberately narrow (a click-on-submit phrase, not the bare
+ * word "submit") so a field named e.g. "Submit Date" or a verification step
+ * that merely mentions the submit button is never misclassified.
  */
 const SUBMIT_INTENT_STEP_PHRASES: readonly string[] = [
   "to submit the",
@@ -1449,13 +1450,12 @@ const SUBMIT_INTENT_STEP_PHRASES: readonly string[] = [
   'click "submit"',
   "click the submit",
   "click submit",
-  "submit button",
 ];
 
 /**
  * Is this flow step a submit click (the final "Submit"/"Apply" action), rather
  * than a field-answer or advance step? Mirrors `isAdvanceStep` so a step that
- * unambiguously names a submit action in its own instruction is recognized as
+ * unambiguously names a submit *click* in its own instruction is recognized as
  * submit-shaped even when the flow file has no explicit `submitStep` flag and
  * the step isn't the flow's last one. Keyed on the ORIGINAL step instruction,
  * same discipline as `isAdvanceStep`/`isCheckboxOrRadioIntentStep`. Pure;
