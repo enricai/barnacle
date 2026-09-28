@@ -11567,6 +11567,11 @@ export function emitContractTs(opts: {
   } = opts;
 
   const { browserFallbackGate, httpTimeoutMs } = fallbackGateSpec;
+  /** Single source of truth for every GraphQL-emission decision below
+   * (clientImport, gqlCacheBlock, queryConst, and both executeHttpBody
+   * fetch-call sites) — `gql` alone can be true with a null `gqlQuery`,
+   * which would emit a `${PASCAL}_QUERY` reference with no declaration. */
+  const isGqlEmission = gql && gqlQuery !== null;
   /** Rendered `meta.browserFallbackGate` literal: `false` verbatim, a
    * list-derived arrow-function predicate matching against `error.name`, or
    * "" (omitted) when the flow declared no gate — preserving byte-identical
@@ -12080,18 +12085,18 @@ export function emitContractTs(opts: {
   // `noUnusedVariables`.
   const clientImport = omitExecuteHttp
     ? ""
-    : gql
+    : isGqlEmission
       ? `import { createGraphqlClient } from "${ENGINE_PKG}/scraper/graphql-client";${needsFoldHttpClient ? `\nimport { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";` : ""}`
       : `import { createHttpClient } from "${ENGINE_PKG}/scraper/http-client";`;
 
   const queryConst =
-    !omitExecuteHttp && gql && gqlQuery
-      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery.trim()}\`;\n`
+    !omitExecuteHttp && isGqlEmission
+      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery!.trim()}\`;\n`
       : "";
 
   const gqlCacheBlock = omitExecuteHttp
     ? ""
-    : gql
+    : isGqlEmission
       ? `
 type GqlFn = (operationName: string, query: string, variables: Record<string, unknown>) => Promise<${pascal}Response>;
 
@@ -12515,7 +12520,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           signal: paginationSignal,
           foldMergeLines: paginatedFoldMergeLines,
           valueConstraints,
-          fetchCall: gql
+          fetchCall: isGqlEmission
             ? {
                 kind: "gql",
                 gqlOperationNameExpr,
@@ -12523,7 +12528,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
               }
             : { kind: "rest", endpointPath },
         })
-      : gql
+      : isGqlEmission
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
         : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
