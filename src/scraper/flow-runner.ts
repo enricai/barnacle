@@ -1446,7 +1446,7 @@ export function isAdvanceStep(instruction: string | null | undefined): boolean {
 const SUBMIT_INTENT_STEP_PHRASES: readonly string[] = [
   "to submit the",
   "click 'submit'",
-  "click \"submit\"",
+  'click "submit"',
   "click the submit",
   "click submit",
   "submit button",

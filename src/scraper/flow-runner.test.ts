@@ -13,13 +13,13 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   type HealingFlowStep,
+  isSubmitIntentStep,
   parseRadioStep,
   parseSelectStep,
   parseWidgetOptionClickStep,
   pollEnumerate,
   prepareFailureDumpBody,
   resolveDumpPageIdentity,
-  isSubmitIntentStep,
   runHealingFlow,
   selectionCountFromSignature,
   shouldCaptureSelectionState,
@@ -1979,17 +1979,15 @@ describe("isSubmitIntentStep", () => {
   });
 
   it("is false for advance/'Next' steps recognized by isAdvanceStep", () => {
-    expect(
-      isSubmitIntentStep("Click the 'Next' button to leave the Basic Information page.")
-    ).toBe(false);
+    expect(isSubmitIntentStep("Click the 'Next' button to leave the Basic Information page.")).toBe(
+      false
+    );
     expect(isSubmitIntentStep("Click 'Next' to continue to the next page")).toBe(false);
   });
 
   it("is false for field-answer steps (fill / select / radio)", () => {
     expect(isSubmitIntentStep("Fill in the First Name field with 'Reginald'")).toBe(false);
-    expect(isSubmitIntentStep("Click the 'Yes' answer for the question 'Are you 18?'")).toBe(
-      false
-    );
+    expect(isSubmitIntentStep("Click the 'Yes' answer for the question 'Are you 18?'")).toBe(false);
   });
 
   it("is false for null/empty", () => {
