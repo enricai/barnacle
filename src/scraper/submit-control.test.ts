@@ -470,9 +470,78 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.tier).toBe(3);
   });
+
+  it('ranks a type="button" control with a generic action name ("Create Account") above zero but below submit-worded tiers', () => {
+    const genericAction = makeEl("button", { type: "button" }, "Create Account");
+    const nativeSubmit = makeEl("button", { type: "submit" }, "Submit");
+    const submitWorded = makeEl("div", { role: "button" }, "Submit Application");
+    const document = makeRoot([genericAction, nativeSubmit, submitWorded]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(3);
+    const generic = result.find((c) => c.accessibleName === "create account");
+    expect(generic?.tier).toBe(0.5);
+    expect(generic?.tier as number).toBeGreaterThan(0);
+    // Ordered strictly by tier desc: native submit (3), submit-worded (1), then generic (0.5).
+    expect(result.map((c) => c.accessibleName)).toEqual([
+      "submit",
+      "submit application",
+      "create account",
+    ]);
+  });
+
+  it('ranks a role="button" control with a generic action name as tier 0.5, same as a type="button" control', () => {
+    const genericAction = makeEl("div", { role: "button" }, "Create Account");
+    const document = makeRoot([genericAction]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.accessibleName).toBe("create account");
+  });
+
+  it('excludes a generic-named button whose text is a negative verb (e.g. "Back") even though it is button-like', () => {
+    const back = makeEl("button", { type: "button" }, "Back");
+    const document = makeRoot([back]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
+  it('clicks a type="button" control ranked at tier 0.5 correctly via its deepIndex', () => {
+    const genericAction = makeEl("button", { type: "button" }, "Create Account");
+    const document = makeRoot([genericAction]);
+
+    const ranked = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.tier).toBe(0.5);
+
+    const clickResult = evaluateInFakePage(
+      buildClickByDeepIndexExpr(ranked[0]?.deepIndex as number),
+      document
+    ) as { clicked: boolean };
+
+    expect(clickResult).toEqual({ clicked: true });
+    expect(genericAction.clicked).toBe(true);
+  });
+
   it("clicks the candidate at the given deep index, nested inside a shadow root", () => {
     const shadowSubmit = makeEl("button", { type: "submit" }, "Submit");
     const shadowRoot = makeRoot([shadowSubmit]);
