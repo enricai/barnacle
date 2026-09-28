@@ -245,6 +245,37 @@ describe("deep-query/buildDeepSubmitClickExpr", () => {
     expect(result).toEqual({ found: true, clicked: true });
   });
 
+  it('finds and clicks a JS-handled type="button" control named with a generic action verb behind an open shadow root', () => {
+    const innerButton = makeEl("button", { type: "button" }, "Create Account");
+    const innerForm = makeEl("form");
+    appendChild(innerForm, innerButton);
+    const shadowRoot = makeRoot([innerForm]);
+    const host = makeEl("app-create-account-button");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: true, clicked: true });
+    expect(innerButton.clicked).toBe(true);
+  });
+
+  it('finds and clicks a role="button" control named with a generic action verb outside any form', () => {
+    const button = makeEl("div", { role: "button" }, "Continue");
+    const document = makeRoot([button]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: true, clicked: true });
+    expect(button.clicked).toBe(true);
+  });
+
   it("never matches a Back/Cancel/Close/Dismiss control, even as the sole control in a form", () => {
     const form = makeEl("form");
     appendChild(form, makeEl("button", { type: "button" }, "Cancel"));
