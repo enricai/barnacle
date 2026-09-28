@@ -302,6 +302,22 @@ describe("deep-query/buildDeepSubmitClickExpr", () => {
     expect(result).toEqual({ found: true, clicked: true });
   });
 
+  it.each(["Cancel", "Back", "Save draft"])(
+    'never matches a lone type="button" "%s" control, even as the sole control in its form',
+    (label) => {
+      const form = makeEl("form");
+      appendChild(form, makeEl("button", { type: "button" }, label));
+      const document = makeRoot([form]);
+
+      const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+        found: boolean;
+        clicked: boolean;
+      };
+
+      expect(result).toEqual({ found: false, clicked: false });
+    }
+  );
+
   it("does not match a decorative/ambiguous button when it's one of several candidates in its form", () => {
     const form = makeEl("form");
     appendChild(form, makeEl("button", { type: "button" }, "Go"));

@@ -519,6 +519,56 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
 
     expect(result).toEqual([]);
   });
+
+  it.each(["Cancel", "Back", "Save draft"])(
+    'excludes a lone type="button" "%s" control from ranking entirely (tier 0)',
+    (label) => {
+      const control = makeEl("button", { type: "button" }, label);
+      const document = makeRoot([control]);
+
+      const result = evaluateInFakePage(
+        buildRankSubmitCandidatesExpr(),
+        document
+      ) as SubmitCandidate[];
+
+      expect(result).toEqual([]);
+    }
+  );
+
+  it('excludes a disabled type="button" "Create Account"-shaped control while ranking an enabled sibling normally', () => {
+    const disabledGeneric = makeEl("button", { type: "button" }, "Create Account", {
+      disabled: true,
+    });
+    const enabledGeneric = makeEl("button", { type: "button" }, "Create Account");
+    const document = makeRoot([disabledGeneric, enabledGeneric]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes a 0x0/display:none type="button" "Create Account"-shaped control while ranking an enabled sibling normally', () => {
+    const hiddenGeneric = makeEl("button", { type: "button" }, "Create Account", {
+      rect: { width: 0, height: 0 },
+      computedStyle: { display: "none", visibility: "visible" },
+    });
+    const visibleGeneric = makeEl("button", { type: "button" }, "Create Account");
+    const document = makeRoot([hiddenGeneric, visibleGeneric]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {

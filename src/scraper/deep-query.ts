@@ -23,8 +23,10 @@ import { clickActivationExpr } from "@/scraper/browser-click-expr";
  * controls with an explicit `type="button"` commonly use instead of the
  * literal word "submit"), or a button-role element that is the sole
  * non-excluded actionable control inside its nearest form-like container.
- * Back/Cancel/Close/Dismiss controls are excluded from every text-based
- * and sole-control branch so they can never qualify. Kept as a standalone
+ * Back/Cancel/Close/Dismiss/Save draft/Save for later/Previous controls are
+ * excluded from every text-based and sole-control branch — the same
+ * negative list `submit-control.ts`'s `NEGATIVE_TEXT_EXPR` ranks out — so
+ * they can never qualify. Kept as a standalone
  * expression (not a RegExp) so it can be interpolated into a browser-
  * context `page.evaluate` string, paralleling `INVALID_MARKER_EL_EXPR`.
  */
@@ -38,8 +40,11 @@ const SUBMIT_SHAPED_EL_EXPR = `((el) => {
   if (!isButtonLike) return false;
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const text = norm(el.getAttribute("aria-label") || el.textContent || "");
-  const EXCLUDE_RE = /\\b(back|cancel|close|dismiss)\\b/;
-  if (EXCLUDE_RE.test(text)) return false;
+  const isNegative = (t) => {
+    const negatives = ["back", "cancel", "close", "dismiss", "save draft", "save for later", "previous"];
+    return negatives.some((n) => t === n || t.startsWith(n + " ") || t.endsWith(" " + n));
+  };
+  if (isNegative(text)) return false;
   if (/\\bsubmit\\b/.test(text)) return true;
   if (/\\b(create|continue|next|confirm|proceed)\\b/.test(text)) return true;
   const container = el.closest("form") || el.closest('[role="form"]');
@@ -49,7 +54,7 @@ const SUBMIT_SHAPED_EL_EXPR = `((el) => {
     const cRole = (c.getAttribute("role") || "").toLowerCase();
     if (cTag !== "button" && cRole !== "button") return false;
     const cText = norm(c.getAttribute("aria-label") || c.textContent || "");
-    return !EXCLUDE_RE.test(cText);
+    return !isNegative(cText);
   };
   const candidates = Array.from(container.querySelectorAll("*")).filter(isCandidate);
   return candidates.length === 1 && candidates[0] === el;
