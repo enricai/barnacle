@@ -1308,9 +1308,22 @@ export function deriveRequestHeaders(
   return baseline;
 }
 
-function isGraphQL(captures: Capture[]): boolean {
+/**
+ * Classifies the flow as GraphQL only from own-backend-host traffic, so a
+ * third-party host (chat widget, analytics SDK) making real GraphQL calls
+ * never flips a plain REST/JSON backend's classification.
+ */
+function isGraphQL(
+  captures: Capture[],
+  ownBackendHostnames: string[] = [],
+  fallbackDomain: string | null = null
+): boolean {
+  const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   return captures.some(
-    (c) => c.operationName !== null || parsedOperationName(c.query ?? "") !== null
+    (c) =>
+      (!hasHostProvenance ||
+        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)) &&
+      (c.operationName !== null || parsedOperationName(c.query ?? "") !== null)
   );
 }
 
@@ -13864,7 +13877,7 @@ async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures);
+    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
