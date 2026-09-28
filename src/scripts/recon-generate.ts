@@ -1881,13 +1881,31 @@ export function resolveManifestActionSequence(
  * Exported for tests: this predicate decides what a generated plugin will POST
  * at a live site, and it is the only gate between a browser's incidental
  * chatter and the emitted hot path.
+ *
+ * `applyFinalAnchorNarrowing` lets a caller that will itself truncate the
+ * result via {@link truncateActionSequenceAtSubmitPattern} opt out of the
+ * final structural-relevance anchor pass, which can drop a genuine earlier
+ * chain step that shares no token with the terminal submit endpoint.
  */
 export function extractActionSequence(
   captures: Capture[],
   submitPatterns: SubmitPatterns | null = null,
   foldReturnSpec: FoldReturnSpec | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // The final structural-relevance anchor pass below (guarded on
+  // hasSubmitEndpointAnchor) is tuned for isolating a submission from
+  // same-URL incidental chrome, not for pruning a genuine multi-step chain:
+  // an earlier plain single-word step (e.g. `/lodging/hold/`) that shares no
+  // compound token with the terminal submit endpoint reads as "unrelated" to
+  // it and gets dropped, even though it's a real prior step whose body the
+  // caller still needs. truncateActionSequenceAtSubmitPattern's own
+  // index-slice already does the right, less-aggressive narrowing (keep
+  // everything up to and including the last submit/fold match) — so a caller
+  // that immediately truncates this result opts out with `false` to keep
+  // earlier chain steps intact while still getting the structural-isolation
+  // exemption above.
+  applyFinalAnchorNarrowing = true
 ): ActionCapture[] {
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -1913,6 +1931,16 @@ export function extractActionSequence(
   const matchesSubmit = compileSubmitMatcher(
     hasSubmitEndpointAnchor ? { endpoint: null, body: submitPatterns!.body } : submitPatterns
   );
+  // Compiled once, ahead of structural isolation below, so a capture matching
+  // the flow's own declared submitEndpointPattern can be exempted there the
+  // same way a declared foldReturn endpointPattern already is — both are
+  // author-declared, both are authoritative by construction, so the isolation
+  // pass (which exists to catch INCIDENTAL same-host noise the flow never
+  // named) must not treat one differently from the other.
+  const declaredSubmitEndpointRx =
+    submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
+  const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
+    declaredSubmitEndpointRx?.test(capture.url) ?? false;
 
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
@@ -1935,9 +1963,14 @@ export function extractActionSequence(
   // (e.g. a marketing/promotions endpoint fired incidentally by a page load,
   // admitted above because it too is a 2xx own-backend POST). Drop a
   // structurally-isolated member of the pool first — a compound-path capture
-  // (e.g. `/site-banner`) sharing no token with anything else host-gated in,
-  // regardless of whether a submitEndpointPattern is declared. Guarded to
-  // pools of 3+: a real chain's own steps are usually plain single-word
+  // (e.g. `/site-banner`) sharing no token with anything else host-gated in
+  // — unless it matches the flow's own declared submitEndpointPattern (see
+  // the exemption below): a densely-tokenized real submission path (e.g.
+  // `available-sailings`) can look exactly as isolated as incidental noise
+  // by path shape alone, and dropping it here would strip it out before the
+  // structural-relevance anchor pass further down ever gets to treat it as
+  // authoritative. Guarded to pools of 3+: a real chain's own steps are
+  // usually plain single-word
   // paths with no tokens of their own (never flagged, see
   // isStructurallyIsolatedCapture), so this only ever removes a capture that
   // is BOTH compound-path AND unrelated to every other admitted capture —
@@ -1972,11 +2005,16 @@ export function extractActionSequence(
             )
             .map((h) => safeUrlPathname(h.capture.url));
           // A capture admitted via the flow's own declared foldReturnSpec
-          // endpointPattern (the drill-down target) is authoritative by
-          // construction — the flow author named it explicitly — so it is
+          // endpointPattern (the drill-down target), or matching the flow's
+          // own declared submitEndpointPattern, is authoritative by
+          // construction — the flow author named it explicitly — so both are
           // exempt from token-overlap isolation, which exists to catch
           // INCIDENTAL same-host captures the flow never declared.
-          return matchesFoldReturn(capture) || !isStructurallyIsolatedCapture(path, otherPaths);
+          return (
+            matchesFoldReturn(capture) ||
+            matchesDeclaredSubmitEndpoint(capture) ||
+            !isStructurallyIsolatedCapture(path, otherPaths)
+          );
         })
       : hostGated;
 
@@ -1987,17 +2025,16 @@ export function extractActionSequence(
   // authoritative reference, so this pass is a no-op — mirroring
   // compileSubmitMatcher's own null-pattern passthrough — rather than
   // guessing at a reference set.
-  if (!hasSubmitEndpointAnchor) return structurallyGated;
+  if (!hasSubmitEndpointAnchor || !applyFinalAnchorNarrowing) return structurallyGated;
 
-  const endpointRx = new RegExp(submitPatterns!.endpoint!);
   const referencePaths = structurallyGated
-    .filter(({ capture }) => endpointRx.test(capture.url))
+    .filter(({ capture }) => matchesDeclaredSubmitEndpoint(capture))
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return structurallyGated;
 
   return structurallyGated.filter(
     ({ capture }) =>
-      endpointRx.test(capture.url) ||
+      matchesDeclaredSubmitEndpoint(capture) ||
       isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
   );
 }
@@ -14002,11 +14039,47 @@ async function main(): Promise<void> {
     // keeps that whole chain; the gap between this and the unfiltered
     // sequence is logged below for visibility, but the declared pattern is
     // never overridden by the richer unfiltered sequence.
+    //
+    // Truncated against a pool RE-EXTRACTED with the declared pattern passed
+    // through (not against unfilteredHeuristicActionCaptures, which is built
+    // with submitPatterns forced to null purely to get an unbiased baseline
+    // for the disagreement check below). extractActionSequence's own
+    // noise/structural-isolation passes have no visibility into the declared
+    // pattern when it's withheld, so on an archive noisy enough to make a
+    // genuine submission capture look structurally isolated, that capture
+    // can be dropped before truncation ever sees it — a real match then
+    // reads as "0 captures" even though the archive contains plenty. Passing
+    // submitPatterns through lets extractActionSequence's own submit-anchor
+    // narrowing (REST) / per-capture submit match (GraphQL) keep the
+    // genuine captures amid that noise, so truncation has them to find.
+    const patternedExtractedActionCaptures = gql
+      ? dedupRedundantSameOperationCaptures(
+          extractGraphQLActionSequence(
+            activeCaptures,
+            submitPatterns,
+            foldReturnSpec,
+            ownBackendHostnames,
+            fallbackDomain
+          ),
+          primaryGraphQLOperation
+        )
+      : collapseRedundantSameEndpointCaptures(
+          collapseRedundantPatches(
+            extractActionSequence(
+              activeCaptures,
+              submitPatterns,
+              foldReturnSpec,
+              ownBackendHostnames,
+              fallbackDomain,
+              false
+            )
+          )
+        );
     const patternedHeuristicActionCaptures =
       submitPatterns.endpoint === null && submitPatterns.body === null
         ? unfilteredHeuristicActionCaptures
         : truncateActionSequenceAtSubmitPattern(
-            unfilteredHeuristicActionCaptures,
+            patternedExtractedActionCaptures,
             submitPatterns,
             foldReturnSpec
           );
