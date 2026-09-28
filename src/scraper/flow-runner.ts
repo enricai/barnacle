@@ -10486,7 +10486,7 @@ export async function executeStepWithHealing(params: {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
           ? attempt1UnreachableViaLightDom &&
-            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
             ? "deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "trusted-click-retry"
@@ -10505,7 +10505,8 @@ export async function executeStepWithHealing(params: {
         })),
         advanceUnmovedAfterAttempt1,
         attempt1UnreachableViaLightDom,
-        submitShapedStep: submitStep || (isFinalStep && flowHasSubmitSemanticsFlag),
+        submitShapedStep:
+          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       });
       if (decision.skip) {
         logger.info(
@@ -10658,7 +10659,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         attempt1UnreachableViaLightDom &&
-        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
       ) {
         // Deep submit-control locator: attempt 1 either phantom-clicked
         // (Stagehand reported success but pre/post showed zero effect) or
@@ -10797,7 +10798,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         phantomClickAfterAttempt1 &&
-        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag))
+        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
       ) {
         // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
         // Stagehand reported success but pre/post showed zero effect. On a
