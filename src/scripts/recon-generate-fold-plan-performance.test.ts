@@ -7,6 +7,19 @@ import {
   FOLD_RETURN_WILDCARD_SCALABLE_SPEC,
 } from "@/scripts/recon-generate-multicall-fixture";
 
+function medianElapsedMs(
+  steps: ReturnType<typeof buildFoldReturnScalableActionSequence>,
+  runs: number
+): number {
+  resolveFoldPlan(steps, FOLD_RETURN_SCALABLE_SPEC);
+  const samples = Array.from({ length: runs }, () => {
+    const start = performance.now();
+    resolveFoldPlan(steps, FOLD_RETURN_SCALABLE_SPEC);
+    return performance.now() - start;
+  }).sort((a, b) => a - b);
+  return samples[Math.floor(runs / 2)] ?? 0;
+}
+
 // Reproduces the incident's 2146-capture, >11-minute hang
 // (docs/recon-generate-foldreturn-hangs-fold-plan-computation-on-large-capture-set.md
 // lines 5-9, 25-27): a foldReturn declared over a large capture set where the
@@ -38,16 +51,11 @@ describe("resolveFoldPlan at scale", () => {
   // time if resolveFoldPlan is linear. A quadratic-or-worse regression would
   // produce a ~16x+ growth, so a 10x ratio bound catches the regression on
   // both fast and slow CI hardware without relying on an absolute threshold.
+  // Each size is warmed up and measured as a median of several runs because a
+  // single few-ms sample is dominated by JIT/GC noise in a loaded parallel suite.
   it("scales roughly linearly, not quadratically, as the capture count grows", () => {
-    const smallSteps = buildFoldReturnScalableActionSequence(500);
-    const smallStart = performance.now();
-    resolveFoldPlan(smallSteps, FOLD_RETURN_SCALABLE_SPEC);
-    const smallElapsedMs = performance.now() - smallStart;
-
-    const largeSteps = buildFoldReturnScalableActionSequence(2000);
-    const largeStart = performance.now();
-    resolveFoldPlan(largeSteps, FOLD_RETURN_SCALABLE_SPEC);
-    const largeElapsedMs = performance.now() - largeStart;
+    const smallElapsedMs = medianElapsedMs(buildFoldReturnScalableActionSequence(500), 5);
+    const largeElapsedMs = medianElapsedMs(buildFoldReturnScalableActionSequence(2000), 5);
 
     const ratio = largeElapsedMs / Math.max(smallElapsedMs, 1);
 
