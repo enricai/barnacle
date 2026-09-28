@@ -164,15 +164,13 @@ describe("flow-runner/runHealingFlow — submit-flow phantom-click escalation st
     // reports "present" and hands off to the cascade instead of short-
     // circuiting to a "probe-absent" replan — this test is about the
     // cascade's technique routing, not the probe.
-    const stagehandObserve = vi
-      .fn()
-      .mockResolvedValue([
-        {
-          selector: "#email-notifications-toggle",
-          description: "Email notifications switch",
-          method: "click",
-        },
-      ]);
+    const stagehandObserve = vi.fn().mockResolvedValue([
+      {
+        selector: "#email-notifications-toggle",
+        description: "Email notifications switch",
+        method: "click",
+      },
+    ]);
     const stagehand = {
       act: stagehandAct,
       observe: stagehandObserve,
