@@ -15,7 +15,11 @@ import type { Page } from "@browserbasehq/stagehand";
 
 import { getLogger } from "@/lib/logging";
 import type { FrameTarget } from "@/scraper/frame-target";
-import { buildRankSubmitCandidatesExpr, type SubmitCandidateTier } from "@/scraper/submit-control";
+import {
+  buildRankSubmitCandidatesExpr,
+  type SubmitCandidate,
+  type SubmitCandidateTier,
+} from "@/scraper/submit-control";
 
 const logger = getLogger({ name: "scraper/target-resolution-diagnostic" });
 
@@ -135,17 +139,26 @@ function buildCandidateDetailExpr(root: string, deepIndices: readonly number[]):
  * mirroring the existing `bodyOuterHtml.catch(() => null)` convention at
  * both call sites, since this is diagnostic-only code and must never be
  * the reason a failure path itself fails.
+ *
+ * `precomputedRanked`, when given, is used in place of a fresh
+ * `buildRankSubmitCandidatesExpr` round trip — the deep-submit-locator
+ * cascade attempt already ranks the same submit-shaped candidates against
+ * the same DOM moments earlier, so re-ranking here would just be a second,
+ * redundant `page.evaluate` call reporting the same thing.
  */
 export async function captureTargetResolutionDiagnosticSnapshot(
   target: FrameTarget | undefined,
-  page: Page
+  page: Page,
+  precomputedRanked?: SubmitCandidate[] | null
 ): Promise<TargetResolutionDiagnosticSnapshot | null> {
   try {
     const evaluator = target ?? page;
     const root = "document";
-    const ranked = await evaluator.evaluate<
-      { deepIndex: number; tier: SubmitCandidateTier; tag: string; accessibleName: string }[]
-    >(buildRankSubmitCandidatesExpr(root));
+    const ranked =
+      precomputedRanked ??
+      (await evaluator.evaluate<
+        { deepIndex: number; tier: SubmitCandidateTier; tag: string; accessibleName: string }[]
+      >(buildRankSubmitCandidatesExpr(root)));
     const bounded = ranked.slice(0, MAX_SNAPSHOT_CANDIDATES);
     const detail = await evaluator.evaluate<{
       details: { role: string; visible: boolean; disabled: boolean }[];

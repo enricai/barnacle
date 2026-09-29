@@ -10332,10 +10332,10 @@ export async function executeStepWithHealing(params: {
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
-    const targetResolutionDiagnostic = await captureTargetResolutionDiagnosticSnapshot(
-      frameTarget,
-      page
-    );
+    const targetResolutionDiagnostic =
+      submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
+        ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
+        : null;
     const dumpPath =
       onStepFailure?.({
         stepIndex,
@@ -10668,6 +10668,12 @@ export async function executeStepWithHealing(params: {
   };
   let phantomClickAfterAttempt1 = false;
   let attempt1UnreachableViaLightDom = false;
+  // Last candidate list the deep-submit-locator itself ranked this step, if
+  // any — reused by the cascade-exhausted diagnostic snapshot below so it
+  // doesn't re-run buildRankSubmitCandidatesExpr (and inflate the rank-call
+  // count the phantom-click-escalation tests assert on) when the cascade
+  // already has an up-to-date ranking to report from.
+  let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -10886,6 +10892,7 @@ export async function executeStepWithHealing(params: {
             record.errorMessage = `deep-submit-locator: rank evaluate threw ${toErrorMessage(err)}`;
             break;
           }
+          lastRankedSubmitCandidates = ranked;
           if (ranked.length === 0) {
             record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
             break;
@@ -12995,10 +13002,14 @@ export async function executeStepWithHealing(params: {
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
-  const targetResolutionDiagnostic = await captureTargetResolutionDiagnosticSnapshot(
-    frameTarget,
-    page
-  );
+  const targetResolutionDiagnostic =
+    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
+      ? await captureTargetResolutionDiagnosticSnapshot(
+          frameTarget,
+          page,
+          lastRankedSubmitCandidates
+        )
+      : null;
   const dumpPath =
     onStepFailure?.({
       stepIndex,
