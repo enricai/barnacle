@@ -1802,3 +1802,42 @@ describe("isZeroVarianceRepeatCapture — index cache isolation across distinct 
     expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
   });
 });
+
+describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", () => {
+  function buildScaleArchive(size: number) {
+    return Array.from({ length: size }, (_, i) => ({
+      method: "GET",
+      url: `https://svc.example.test/catalog/item-${i % 200}?sessionId=fixed&page=${i}`,
+      requestPostData: null,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { id: `item-${i % 200}` },
+    }));
+  }
+
+  function timeFullPassMs(archive: ReturnType<typeof buildScaleArchive>): number {
+    const start = performance.now();
+    for (const candidate of archive) isZeroVarianceRepeatCapture(candidate, archive);
+    return performance.now() - start;
+  }
+
+  it("keeps a full pass over 4x the archive size well under a quadratic (16x) time blowup", () => {
+    const N = 1000;
+    const smallArchive = buildScaleArchive(N);
+    const largeArchive = buildScaleArchive(N * 4);
+
+    // Warm up both index caches once outside the timed region so what's
+    // measured is per-candidate lookup cost, not one-time index construction.
+    timeFullPassMs(smallArchive);
+    timeFullPassMs(largeArchive);
+
+    const smallElapsedMs = Math.max(timeFullPassMs(smallArchive), 1);
+    const largeElapsedMs = timeFullPassMs(largeArchive);
+
+    // An O(n^2) full rescan per candidate would make the 4x-larger archive
+    // take roughly 16x as long; a linear (index-backed) scan makes it take
+    // roughly 4x as long. The 8x bound sits between the two, with generous
+    // slack for wall-clock noise, so it fails on a reintroduced full rescan
+    // while tolerating normal timing jitter on the linear implementation.
+    expect(largeElapsedMs / smallElapsedMs).toBeLessThan(8);
+  });
+});
