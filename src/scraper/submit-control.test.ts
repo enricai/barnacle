@@ -746,6 +746,50 @@ describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier brea
     expect(result).toEqual([]);
   });
 
+  it("ranks a roleless, textless <div> at tier 0.5 when it is the sole actionable control inside a form-like container", () => {
+    const form = makeEl("form");
+    const control = appendChild(form, makeEl("div", {}, ""));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+    expect(control.attrs.role).toBeUndefined();
+  });
+
+  it("excludes a roleless, textless <div> from the sole-candidate fallback when a sibling button also qualifies", () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("div", {}, ""));
+    appendChild(form, makeEl("button", {}, ""));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tag).toBe("button");
+  });
+
+  it("excludes a roleless, textless <div> from the sole-candidate fallback when it has no form-like ancestor", () => {
+    const wrapper = makeEl("section");
+    appendChild(wrapper, makeEl("div", {}, ""));
+    const document = makeRoot([wrapper]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
   it.each(["Back", "Cancel", "Save draft"])(
     'excludes a roleless <div> "%s" control from ranking entirely even though it carries no tag/role gate',
     (label) => {

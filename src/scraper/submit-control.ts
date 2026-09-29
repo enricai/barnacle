@@ -132,12 +132,13 @@ export const SUBMIT_SHAPE_FALLBACK_EXPR = `((el, name, isNegative) => {
   if (!container) return false;
   const accessibleName = ${ACCESSIBLE_NAME_EXPR};
   const isCandidate = (c) => {
+    if (c === el) return true;
     const cTag = (c.tagName || "").toLowerCase();
     const cRole = (c.getAttribute("role") || "").toLowerCase();
     if (cTag !== "button" && cTag !== "input" && cRole !== "button") return false;
     return !isNegative(accessibleName(c));
   };
-  const candidates = container.querySelectorAll("*").filter(isCandidate);
+  const candidates = Array.from(container.querySelectorAll("*")).filter(isCandidate);
   return candidates.length === 1 && candidates[0] === el;
 })`;
 
