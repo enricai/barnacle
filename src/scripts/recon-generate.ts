@@ -1320,18 +1320,30 @@ export function deriveRequestHeaders(
  * Automatic-Persisted-Query re-issue looks like too, so it's evidence of
  * nothing on its own. It only counts once a genuine document has already
  * established the classification from elsewhere in the same host-scoped set.
+ *
+ * When the flow declares MORE THAN ONE own-backend host (e.g. a legitimate
+ * mid-session redirect to an auth subdomain), evidence is further narrowed
+ * to `primaryHost` — the same host {@link deriveBaseUrl} already resolved
+ * the generated client's base URL from — so a thin trickle of genuine
+ * GraphQL traffic against a minority own-backend host can never flip a
+ * REST-majority flow's classification. A single declared own-backend host
+ * has no "minority host" to guard against, so `primaryHost` is a no-op
+ * there by construction.
  */
 function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  primaryHost: string | null = null
 ): boolean {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const scoped = captures.filter(
-    (c) =>
-      !hasHostProvenance ||
-      isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
-  );
+  const scoped = captures.filter((c) => {
+    if (hasHostProvenance && !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+      return false;
+    if (ownBackendHostnames.length > 1 && primaryHost !== null && captureHostname(c.url) !== primaryHost)
+      return false;
+    return true;
+  });
   return scoped.some((c) => parsedOperationName(c.query ?? "") !== null);
 }
 
@@ -1657,12 +1669,20 @@ export function selectPrimaryGraphQLOperation(
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
+ *
+ * `primaryHost` narrows the pool the same way {@link isGraphQL} narrows its
+ * own evidence when the flow declares MORE THAN ONE own-backend host: a
+ * minority own-backend host's capture (a redirect target with its own,
+ * unrelated POST) must never win the REST hot path's endpoint over the
+ * primary host's own GET/POST traffic just because it happens to be the
+ * only non-GET capture in the archive.
  */
 export function firstEndpointCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): Capture | null {
   // Callers with no host-provenance data (unit tests exercising the
   // chronological-first fallback in isolation) pass neither argument -- in
@@ -1670,9 +1690,16 @@ export function firstEndpointCapture(
   // gate only applies once the caller has actually resolved a notion of
   // "own backend" to check against. Mirrors selectPrimaryGraphQLOperation.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const allowed = (c: Capture): boolean =>
-    !hasHostProvenance ||
-    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain);
+  const allowed = (c: Capture): boolean => {
+    if (
+      hasHostProvenance &&
+      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
+    )
+      return false;
+    if (ownBackendHostnames.length > 1 && primaryHost !== null && captureHostname(c.url) !== primaryHost)
+      return false;
+    return true;
+  };
   const nonGetCaptures = restrictToSubmitPattern(
     captures.filter((c) => c.method !== "GET" && allowed(c)),
     submitPatterns
@@ -1708,14 +1735,16 @@ export function firstEndpointPath(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): string {
   try {
     const capture = firstEndpointCapture(
       captures,
       ownBackendHostnames,
       fallbackDomain,
-      submitPatterns
+      submitPatterns,
+      primaryHost
     );
     return capture ? new URL(capture.url).pathname : "/api/search";
   } catch {
@@ -1944,11 +1973,22 @@ export function extractActionSequence(
   // same way a declared foldReturn endpointPattern already is — both are
   // author-declared, both are authoritative by construction, so the isolation
   // pass (which exists to catch INCIDENTAL same-host noise the flow never
-  // named) must not treat one differently from the other.
+  // named) must not treat one differently from the other. A declared
+  // submitBodyPattern is exempted the same way when there is no declared
+  // submitEndpointPattern to already cover it: a flow that only declares a
+  // body pattern (no endpoint pattern) is just as author-declared and
+  // authoritative, so its genuine matches must not be dropped as
+  // "structurally isolated" once same-host noise outnumbers them.
   const declaredSubmitEndpointRx =
     submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
   const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
     declaredSubmitEndpointRx?.test(capture.url) ?? false;
+  const declaredSubmitBodyRx =
+    submitPatterns?.endpoint == null && submitPatterns?.body != null
+      ? new RegExp(submitPatterns.body)
+      : null;
+  const matchesDeclaredSubmitBody = (capture: Capture): boolean =>
+    declaredSubmitBodyRx?.test(capture.requestPostData ?? "") ?? false;
 
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
@@ -2021,6 +2061,7 @@ export function extractActionSequence(
           return (
             matchesFoldReturn(capture) ||
             matchesDeclaredSubmitEndpoint(capture) ||
+            matchesDeclaredSubmitBody(capture) ||
             !isStructurallyIsolatedCapture(path, otherPaths)
           );
         })
@@ -14006,7 +14047,8 @@ async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain);
+    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
+    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
@@ -14066,7 +14108,13 @@ async function main(): Promise<void> {
       primaryGraphQLOperation?.endpointPath ??
       (fallbackGraphQLCapture
         ? safeUrlPathname(fallbackGraphQLCapture.url)
-        : firstEndpointPath(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns));
+        : firstEndpointPath(
+            activeCaptures,
+            ownBackendHostnames,
+            fallbackDomain,
+            submitPatterns,
+            primaryHost
+          ));
     // Derived from the primary operation's own Phase-1 capture, never from
     // replay array order -- a replay's body reflects whichever endpoint fired
     // first, not necessarily the primary operation, and only exists once
@@ -14074,7 +14122,13 @@ async function main(): Promise<void> {
     const winningCapture =
       primaryGraphQLOperation?.capture ??
       fallbackGraphQLCapture ??
-      firstEndpointCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns);
+      firstEndpointCapture(
+        activeCaptures,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      );
     const responseBody = winningCapture?.responseBody ?? null;
     // Every 2xx capture sharing the winning capture's operation identity, not
     // just the one that happened to win selection -- a paginated/re-filtered
