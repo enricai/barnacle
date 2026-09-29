@@ -96,6 +96,10 @@ import {
   NEGATIVE_TEXT_EXPR,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
+import {
+  captureTargetResolutionDiagnosticSnapshot,
+  type TargetResolutionDiagnosticSnapshot,
+} from "@/scraper/target-resolution-diagnostic";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
@@ -9464,6 +9468,12 @@ export async function executeStepWithHealing(params: {
     recentCaptures: string[];
     bodyOuterHtml: string | null;
     unfocusedObserve: Action[];
+    /**
+     * Bounded snapshot of the submit-shaped candidate ranking at the moment
+     * this technique gave up, or `null` when the capture itself failed on
+     * the already-failing page. See {@link captureTargetResolutionDiagnosticSnapshot}.
+     */
+    targetResolutionDiagnostic: TargetResolutionDiagnosticSnapshot | null;
   }) => string | null;
   /**
    * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
@@ -10322,6 +10332,10 @@ export async function executeStepWithHealing(params: {
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
+    const targetResolutionDiagnostic = await captureTargetResolutionDiagnosticSnapshot(
+      frameTarget,
+      page
+    );
     const dumpPath =
       onStepFailure?.({
         stepIndex,
@@ -10334,6 +10348,7 @@ export async function executeStepWithHealing(params: {
         recentCaptures,
         bodyOuterHtml,
         unfocusedObserve,
+        targetResolutionDiagnostic,
       }) ?? null;
     throw new StepVerificationError(
       `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
@@ -12980,6 +12995,10 @@ export async function executeStepWithHealing(params: {
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
+  const targetResolutionDiagnostic = await captureTargetResolutionDiagnosticSnapshot(
+    frameTarget,
+    page
+  );
   const dumpPath =
     onStepFailure?.({
       stepIndex,
@@ -12992,6 +13011,7 @@ export async function executeStepWithHealing(params: {
       recentCaptures,
       bodyOuterHtml,
       unfocusedObserve,
+      targetResolutionDiagnostic,
     }) ?? null;
   if (dumpPath !== null) {
     logger.error(
