@@ -1,3 +1,4 @@
+import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
@@ -8,7 +9,8 @@ import {
 } from "@/scraper/deep-locator-fake";
 import type { FrameCandidateScanResult } from "@/scraper/deep-locator-scan";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
-import { runHealingFlow } from "@/scraper/flow-runner";
+import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import type { SubmitCandidate } from "@/scraper/submit-control";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -330,5 +332,145 @@ describe("flow-runner/executeStepWithHealing — field-label fill/select branch 
     expect(result.lastStepIndex).toBe(0);
     expect(deepLocatorFrame.get(SCOPED_HOP_SELECTOR)?.elements[0]?.filledWith).toBe("Reginald");
     expect(deepLocatorFrame.get(WIDENED_HOP_SELECTOR)?.elements[0]?.filledWith).toBeNull();
+  });
+});
+
+describe("flow-runner/executeStepWithHealing — deep-submit-locator re-rank recovers a stale widened-tier candidate (bugfix-006)", () => {
+  const STEP = "Click the 'Place Order' button to submit the order";
+  const CHECKOUT_URL = "https://shop.example.com/checkout";
+  const CONFIRMATION_URL = "https://shop.example.com/checkout/confirmation";
+
+  /**
+   * A `div`-tagged, role-less "Place Order" candidate — bugfix-001's tier-0.5
+   * tag/role-agnostic fallback, NOT a native `button`/`role="button"` — that
+   * sits at `deepIndex` 4 on the first rank pass. Between the rank and the
+   * click round trip, a sibling is inserted earlier in document order (e.g. a
+   * newly rendered promo banner), so the SAME element re-ranks at `deepIndex`
+   * 5 on the second pass. `clickedIndex` records whichever index the click
+   * expression actually targets, so the test can assert the stale first
+   * click (index 4) is a no-op and only the re-ranked index (5) lands.
+   */
+  function fakePage(): { page: Page; clickedIndices: number[] } {
+    const clickedIndices: number[] = [];
+    let rankCallCount = 0;
+    const staleCandidate: SubmitCandidate = {
+      deepIndex: 4,
+      tier: 0.5,
+      tag: "div",
+      accessibleName: "place order",
+    };
+    const freshCandidate: SubmitCandidate = {
+      deepIndex: 5,
+      tier: 0.5,
+      tag: "div",
+      accessibleName: "place order",
+    };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) {
+        rankCallCount += 1;
+        return [rankCallCount === 1 ? staleCandidate : freshCandidate];
+      }
+      const clickMatch = /all\[(\d+)\]/.exec(src);
+      if (clickMatch) {
+        const targetIndex = Number(clickMatch[1]);
+        // Only the fresh (post-re-rank) index is present in the current DOM —
+        // the stale index's element has shifted away from that slot, so a
+        // click against it must miss, exactly like the real generated
+        // expression's `if (!el) return { clicked: false }` guard.
+        if (targetIndex !== freshCandidate.deepIndex) return { clicked: false };
+        clickedIndices.push(targetIndex);
+        return { clicked: true };
+      }
+      if (src.includes("outerHTML")) return { html: 42000, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => (clickedIndices.length > 0 ? CONFIRMATION_URL : CHECKOUT_URL),
+      title: vi.fn().mockResolvedValue("Checkout"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    return { page, clickedIndices };
+  }
+
+  const infoMock = vi.fn();
+  const warnMock = vi.fn();
+  const errorMock = vi.fn();
+  const testLogger = {
+    info: infoMock,
+    warn: warnMock,
+    error: errorMock,
+    debug: vi.fn(),
+  } as unknown as Logger;
+
+  it("re-ranks once and clicks the fresh deepIndex when a widened-tier candidate's position shifts between rank and click", async () => {
+    vi.clearAllMocks();
+    const { page, clickedIndices } = fakePage();
+
+    // Attempt 1: Stagehand's own act() resolves zero candidates ("unresolved"
+    // verdict) so the cascade escalates straight to deep-submit-locator,
+    // same routing as bugfix-001's acceptance test.
+    const unresolvedResult: ActResult = {
+      success: false,
+      message: "no actionable element found",
+      actionDescription: "could not resolve Place Order",
+      actions: [
+        {
+          selector: "div.place-order-tile",
+          description: "could not resolve Place Order",
+          method: "click",
+        },
+      ],
+    };
+    const stagehandAct = vi.fn().mockResolvedValue(unresolvedResult);
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "div.place-order-tile", description: "Place Order", method: "click" },
+        ]),
+    } as unknown as Stagehand;
+
+    const steps: HealingFlowStep[] = [
+      { instruction: STEP, optional: false, upload: false, submitStep: true },
+    ];
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.submitVerified).toBe(true);
+    expect(result.submitStepSkipped).toBe(false);
+
+    // The stale deepIndex 4 never clicked (it "vanished"); only the
+    // re-ranked deepIndex 5 landed, and exactly once — proving the re-rank-
+    // once path resolves and clicks the correct LIVE element rather than a
+    // stale index or falling through to the wrong candidate, and that this
+    // generalizes to a tag/role-agnostic (tier-0.5) candidate, not just the
+    // native button/role tiers.
+    expect(clickedIndices).toEqual([5]);
+
+    const logged = [...infoMock.mock.calls, ...warnMock.mock.calls, ...errorMock.mock.calls]
+      .map((call) => String(call[0]))
+      .join("\n");
+    expect(logged).toContain("deepIndex stale on first click, re-ranking once");
   });
 });
