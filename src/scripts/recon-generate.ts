@@ -1312,19 +1312,46 @@ export function deriveRequestHeaders(
  * Classifies the flow as GraphQL only from own-backend-host traffic, so a
  * third-party host (chat widget, analytics SDK) making real GraphQL calls
  * never flips a plain REST/JSON backend's classification.
+ *
+ * Founding evidence must be an actual query/mutation document — a REST/JSON
+ * backend can plausibly send its own unrelated body field literally named
+ * `operationName` (or a `query` field holding a plain search string), and a
+ * bare `operationName` with no GraphQL-shaped `query` is exactly what an
+ * Automatic-Persisted-Query re-issue looks like too, so it's evidence of
+ * nothing on its own. It only counts once a genuine document has already
+ * established the classification from elsewhere in the same host-scoped set.
+ *
+ * When the flow declares MORE THAN ONE own-backend host (e.g. a legitimate
+ * mid-session redirect to an auth subdomain), evidence is further narrowed
+ * to `primaryHost` — the same host {@link deriveBaseUrl} already resolved
+ * the generated client's base URL from — so a thin trickle of genuine
+ * GraphQL traffic against a minority own-backend host can never flip a
+ * REST-majority flow's classification. A single declared own-backend host
+ * has no "minority host" to guard against, so `primaryHost` is a no-op
+ * there by construction.
  */
 function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  primaryHost: string | null = null
 ): boolean {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  return captures.some(
-    (c) =>
-      (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)) &&
-      (c.operationName !== null || parsedOperationName(c.query ?? "") !== null)
-  );
+  const scoped = captures.filter((c) => {
+    if (
+      hasHostProvenance &&
+      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
+    )
+      return false;
+    if (
+      ownBackendHostnames.length > 1 &&
+      primaryHost !== null &&
+      captureHostname(c.url) !== primaryHost
+    )
+      return false;
+    return true;
+  });
+  return scoped.some((c) => parsedOperationName(c.query ?? "") !== null);
 }
 
 /**
@@ -1649,12 +1676,20 @@ export function selectPrimaryGraphQLOperation(
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
+ *
+ * `primaryHost` narrows the pool the same way {@link isGraphQL} narrows its
+ * own evidence when the flow declares MORE THAN ONE own-backend host: a
+ * minority own-backend host's capture (a redirect target with its own,
+ * unrelated POST) must never win the REST hot path's endpoint over the
+ * primary host's own GET/POST traffic just because it happens to be the
+ * only non-GET capture in the archive.
  */
 export function firstEndpointCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): Capture | null {
   // Callers with no host-provenance data (unit tests exercising the
   // chronological-first fallback in isolation) pass neither argument -- in
@@ -1662,9 +1697,20 @@ export function firstEndpointCapture(
   // gate only applies once the caller has actually resolved a notion of
   // "own backend" to check against. Mirrors selectPrimaryGraphQLOperation.
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  const allowed = (c: Capture): boolean =>
-    !hasHostProvenance ||
-    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain);
+  const allowed = (c: Capture): boolean => {
+    if (
+      hasHostProvenance &&
+      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
+    )
+      return false;
+    if (
+      ownBackendHostnames.length > 1 &&
+      primaryHost !== null &&
+      captureHostname(c.url) !== primaryHost
+    )
+      return false;
+    return true;
+  };
   const nonGetCaptures = restrictToSubmitPattern(
     captures.filter((c) => c.method !== "GET" && allowed(c)),
     submitPatterns
@@ -1700,14 +1746,16 @@ export function firstEndpointPath(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): string {
   try {
     const capture = firstEndpointCapture(
       captures,
       ownBackendHostnames,
       fallbackDomain,
-      submitPatterns
+      submitPatterns,
+      primaryHost
     );
     return capture ? new URL(capture.url).pathname : "/api/search";
   } catch {
@@ -1936,11 +1984,22 @@ export function extractActionSequence(
   // same way a declared foldReturn endpointPattern already is — both are
   // author-declared, both are authoritative by construction, so the isolation
   // pass (which exists to catch INCIDENTAL same-host noise the flow never
-  // named) must not treat one differently from the other.
+  // named) must not treat one differently from the other. A declared
+  // submitBodyPattern is exempted the same way when there is no declared
+  // submitEndpointPattern to already cover it: a flow that only declares a
+  // body pattern (no endpoint pattern) is just as author-declared and
+  // authoritative, so its genuine matches must not be dropped as
+  // "structurally isolated" once same-host noise outnumbers them.
   const declaredSubmitEndpointRx =
     submitPatterns?.endpoint != null ? new RegExp(submitPatterns.endpoint) : null;
   const matchesDeclaredSubmitEndpoint = (capture: Capture): boolean =>
     declaredSubmitEndpointRx?.test(capture.url) ?? false;
+  const declaredSubmitBodyRx =
+    submitPatterns?.endpoint == null && submitPatterns?.body != null
+      ? new RegExp(submitPatterns.body)
+      : null;
+  const matchesDeclaredSubmitBody = (capture: Capture): boolean =>
+    declaredSubmitBodyRx?.test(capture.requestPostData ?? "") ?? false;
 
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
@@ -2013,6 +2072,7 @@ export function extractActionSequence(
           return (
             matchesFoldReturn(capture) ||
             matchesDeclaredSubmitEndpoint(capture) ||
+            matchesDeclaredSubmitBody(capture) ||
             !isStructurallyIsolatedCapture(path, otherPaths)
           );
         })
@@ -13998,7 +14058,8 @@ async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain);
+    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
+    const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
     // extractor twice. Computed unfiltered (submitPatterns: null) — a
@@ -14058,7 +14119,13 @@ async function main(): Promise<void> {
       primaryGraphQLOperation?.endpointPath ??
       (fallbackGraphQLCapture
         ? safeUrlPathname(fallbackGraphQLCapture.url)
-        : firstEndpointPath(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns));
+        : firstEndpointPath(
+            activeCaptures,
+            ownBackendHostnames,
+            fallbackDomain,
+            submitPatterns,
+            primaryHost
+          ));
     // Derived from the primary operation's own Phase-1 capture, never from
     // replay array order -- a replay's body reflects whichever endpoint fired
     // first, not necessarily the primary operation, and only exists once
@@ -14066,7 +14133,13 @@ async function main(): Promise<void> {
     const winningCapture =
       primaryGraphQLOperation?.capture ??
       fallbackGraphQLCapture ??
-      firstEndpointCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns);
+      firstEndpointCapture(
+        activeCaptures,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      );
     const responseBody = winningCapture?.responseBody ?? null;
     // Every 2xx capture sharing the winning capture's operation identity, not
     // just the one that happened to win selection -- a paginated/re-filtered
@@ -14468,30 +14541,45 @@ async function main(): Promise<void> {
     // diagnostic must consult the SAME resolution each path actually applies,
     // or it falsely reports "no fold plan resolved" for every multi-step flow
     // with a working foldReturn.
-    const effectiveFoldPlanCount = multiStepBody
-      ? resolveFoldPlan(actionSteps, foldReturnSpec).length
-      : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody, emittedPrimaryAnchor)
-          .length;
+    const effectiveFoldPlans = multiStepBody
+      ? resolveFoldPlan(actionSteps, foldReturnSpec)
+      : resolveApplicableFoldPlans(
+          actionSteps,
+          foldReturnSpec,
+          multiStepBody,
+          emittedPrimaryAnchor
+        );
+    const effectiveFoldPlanCount = effectiveFoldPlans.length;
     if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
       );
     }
     // The quieter failure: structural plans resolved (so the count above is
-    // non-zero) but the DECLARED spec itself resolved nothing, so its
-    // joinFields never reached any emitted target and only heuristic join
-    // guesses were emitted. Without this the two cases are indistinguishable
-    // in the output. Anchored exactly as the emitted resolution above is, so
-    // the diagnostic never disagrees with what actually went into the file.
-    if (
+    // non-zero) but none of their targets ended up carrying the DECLARED
+    // joinFields, so only heuristic join guesses were emitted. Read straight
+    // off `effectiveFoldPlans` — the exact plans/targets that actually made
+    // it into the emitted output — rather than re-deriving success via a
+    // second, independent, unrestricted `buildFoldPlanFromSpec` call: that
+    // call re-scans every primary/drill occurrence from scratch with none of
+    // `mergeSpecPlanOntoSamePrimary`'s per-occurrence, per-target override
+    // robustness (see its own docstring), so under a noisy archive with
+    // several occurrences of the same re-issued/paginated primary it can
+    // legitimately resolve to `null` even while the declared joinFields WERE
+    // already applied onto the actual emitted target via that per-occurrence
+    // override — producing this exact false "declared spec resolved no fold
+    // plan" warning despite the declared field being the one genuinely
+    // emitted. Comparing against what was actually resolved can never
+    // disagree with what went into the file, by construction.
+    const declaredJoinFieldsApplied =
       foldReturnSpec !== null &&
-      effectiveFoldPlanCount > 0 &&
-      buildFoldPlanFromSpec(
-        actionSteps,
-        foldReturnSpec,
-        multiStepBody ? null : emittedPrimaryAnchor
-      ) === null
-    ) {
+      effectiveFoldPlans.some((plan) =>
+        plan.targets.some(
+          (target) =>
+            JSON.stringify(target.joinFields) === JSON.stringify(foldReturnSpec.joinFields)
+        )
+      );
+    if (foldReturnSpec !== null && effectiveFoldPlanCount > 0 && !declaredJoinFieldsApplied) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but the declared spec resolved no fold plan — only structurally-detected fold plans (with their own guessed join fields) were emitted, so the declared joinFields were not applied; check that the endpointPattern names a capture in the action sequence and resultsPath resolves on the primary response`
       );
