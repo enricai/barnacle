@@ -1312,6 +1312,14 @@ export function deriveRequestHeaders(
  * Classifies the flow as GraphQL only from own-backend-host traffic, so a
  * third-party host (chat widget, analytics SDK) making real GraphQL calls
  * never flips a plain REST/JSON backend's classification.
+ *
+ * Founding evidence must be an actual query/mutation document — a REST/JSON
+ * backend can plausibly send its own unrelated body field literally named
+ * `operationName` (or a `query` field holding a plain search string), and a
+ * bare `operationName` with no GraphQL-shaped `query` is exactly what an
+ * Automatic-Persisted-Query re-issue looks like too, so it's evidence of
+ * nothing on its own. It only counts once a genuine document has already
+ * established the classification from elsewhere in the same host-scoped set.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1319,12 +1327,12 @@ function isGraphQL(
   fallbackDomain: string | null = null
 ): boolean {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
-  return captures.some(
+  const scoped = captures.filter(
     (c) =>
-      (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)) &&
-      (c.operationName !== null || parsedOperationName(c.query ?? "") !== null)
+      !hasHostProvenance ||
+      isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
   );
+  return scoped.some((c) => parsedOperationName(c.query ?? "") !== null);
 }
 
 /**
