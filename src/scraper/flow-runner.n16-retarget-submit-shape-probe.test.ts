@@ -132,6 +132,13 @@ function buildFixture(params: {
   controlTag: string;
   controlAttrs: string;
   wrapInForm: boolean;
+  // Defaults to "Continue" (the original hardcoded label) — overridden by
+  // the widened-submit-shape-predicate regression case below so its
+  // genuinely-non-submit control isn't accidentally caught by
+  // SUBMIT_SHAPE_FALLBACK_EXPR's generic-action-verb tier ("continue" is in
+  // that tier's word list), which would misrepresent an unrelated fixture
+  // collision as a real behavior regression.
+  label?: string;
   clickHandler: (document: {
     getElementById: (id: string) => HappyDomElement | null;
     createElement: (tag: string) => HappyDomElement;
@@ -146,13 +153,14 @@ function buildFixture(params: {
 } {
   const window = new Window({ url: BASE_URL });
   const document = window.document;
+  const label = params.label ?? "Continue";
   const formOpenTag = params.wrapInForm ? '<form id="theForm">' : "<div>";
   const formCloseTag = params.wrapInForm ? "</form>" : "</div>";
   document.body.innerHTML = `
     <div class="page">
       <div class="wizardFooter">
         ${formOpenTag}
-          <${params.controlTag} id="theControl" ${params.controlAttrs}>Continue</${params.controlTag}>
+          <${params.controlTag} id="theControl" ${params.controlAttrs}>${label}</${params.controlTag}>
         ${formCloseTag}
         <a id="detailsLink" href="#details">Details</a>
       </div>
@@ -316,11 +324,56 @@ describe("flow-runner n+16 fallback — submit-shape probe reflects the xpathTai
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
   });
 
+  it("does NOT credit an UNFLAGGED, non-final step on the weak DOM signal alone when the xpathTail-retargeted control is a non-native, role-less, generic-action-labeled submit-shaped control", async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
+      controlTag: "div",
+      controlAttrs: "",
+      // Wraps in a `<form>` (not the plain `<div>` the `wrapInForm: false`
+      // path would use) purely to avoid a same-tag collision with the
+      // control's own `div` tag confusing the tail-xpath resolver in this
+      // fixture — the form wrapper plays no role in the predicate itself,
+      // which recognizes this control from its generic-action accessible
+      // name alone, independent of any form ancestor.
+      wrapInForm: true,
+      label: "Confirm",
+      clickHandler: (document) => {
+        const control = document.getElementById("theControl");
+        if (control) {
+          const marker = document.createElement("div");
+          marker.setAttribute("data-confirmed", "x".repeat(2000));
+          control.appendChild(marker);
+        }
+      },
+    });
+
+    try {
+      const result = await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+      // Same weak-signal-veto contract as the native `type="submit"` case
+      // above: a non-native, role-less control whose accessible name reads a
+      // generic action verb ("Confirm") must be recognized as submit-shaped
+      // by resolvedClickTargetIsSubmitShaped, so it too must NOT be credited
+      // from the weak DOM-only signal alone.
+      expect(result.lastStepIndex).toBeLessThan(1);
+    } catch {
+      // Expected: step 0 never verifies, so the (non-optional) step throws.
+    }
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+  });
+
   it("still verifies the SAME weak-signal shape when the xpathTail-retargeted control is NOT submit-shaped (no regression)", async () => {
     const { page, stagehand, steps } = buildFixture({
       controlTag: "span",
       controlAttrs: 'role="button" tabindex="0"',
       wrapInForm: false,
+      label: "Expand details",
       clickHandler: (document) => {
         const control = document.getElementById("theControl");
         if (control) {

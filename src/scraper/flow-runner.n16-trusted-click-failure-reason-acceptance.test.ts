@@ -74,9 +74,13 @@ describe("flow-runner n+16 fallback — top-window trusted-click failure surface
   it("logs a non-empty failure reason alongside delivery=synthetic-fallback when locator().first().click() rejects", async () => {
     const window = new Window({ url: BASE_URL });
     const document = window.document;
+    // Label deliberately avoids "Continue"/"Next"/etc — those are the
+    // generic-action-verb tier resolvedClickTargetIsSubmitShaped now applies
+    // (bugfix-003), which would turn this into a submit-shaped step and
+    // change the verification path this test isn't exercising.
     document.body.innerHTML = `
       <div class="wizardFooter">
-        <button id="realControl">Continue</button>
+        <button id="realControl">View job details</button>
       </div>
     `;
 

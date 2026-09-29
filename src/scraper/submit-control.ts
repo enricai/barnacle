@@ -1,6 +1,6 @@
 /**
  * Submit-control locator: ranks every submit-shaped candidate the deep
- * resolver (`deep-query.ts`) can reach — piercing open shadow roots — so
+ * resolver can reach — piercing open shadow roots — so
  * the cascade can act on the best-ranked candidate and retry the runner-up
  * if the first click phantoms. A false-positive submit click on a real run
  * (e.g. clicking "Save draft") is worse than the current failure, since it
@@ -28,9 +28,7 @@ export const NEGATIVE_TEXT_EXPR = `((text) => {
 
 /**
  * Normalizes an element's accessible name to lowercase, whitespace-collapsed
- * text, preferring `aria-label` over visible `textContent` (parallels
- * `SUBMIT_SHAPED_EL_EXPR`'s own normalization in deep-query.ts so both
- * modules treat the same DOM the same way).
+ * text, preferring `aria-label` over visible `textContent`.
  */
 const ACCESSIBLE_NAME_EXPR = `((el) => {
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -80,10 +78,9 @@ const IS_DISABLED_EXPR = `((el) => {
 })`;
 
 /**
- * Recursive open-shadow-root walker, identical in shape to `deep-query.ts`'s
- * private `DEEP_ELEMENTS_EXPR` (duplicated rather than imported because both
- * are browser-context expression strings composed by string interpolation,
- * not runtime code that can share a module import).
+ * Recursive open-shadow-root walker, composed as a browser-context
+ * expression string via string interpolation rather than runtime code that
+ * could share a module import.
  */
 const DEEP_ELEMENTS_EXPR = `((root) => {
   const out = [];
@@ -96,6 +93,49 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
   };
   walk(root);
   return out;
+})`;
+
+/**
+ * Tag/role-agnostic tier-0.5 fallback: a generic-action-verb accessible name
+ * (create/continue/next/confirm/proceed — the labels a JS-handled action
+ * control with an explicit `type="button"`, or a plain `<div>`/`<a>`/custom-
+ * element with a click handler, commonly uses instead of the literal word
+ * "submit") qualifies regardless of tag/role, or — when the candidate carries
+ * no text signal of its own at all — it is the sole non-excluded button/
+ * role="button" control inside its nearest form-like (`<form>` /
+ * `[role="form"]`) ancestor. Kept as a
+ * separate export (rather than folded into {@link RANK_TIERS_EXPR} inline) so
+ * `flow-runner.ts`'s independent hand-rolled submit-shape predicates can
+ * import and apply the identical widened signal instead of re-diverging.
+ * Deliberately does NOT relax the isButtonLike gate itself — that would
+ * accept any div/input regardless of text, exactly the "arbitrary structural
+ * divs" false-positive this module's docblock warns against.
+ */
+export const SUBMIT_SHAPE_FALLBACK_EXPR = `((el, name, isNegative) => {
+  if (/\\b(create|continue|next|confirm|proceed)\\b/.test(name)) return true;
+  if (name !== "") return false;
+  const isFormLike = (node) =>
+    (node.tagName || "").toLowerCase() === "form" ||
+    (node.getAttribute && (node.getAttribute("role") || "").toLowerCase() === "form");
+  const findFormContainer = (node) => {
+    for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
+      if (isFormLike(node)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  };
+  const container = findFormContainer(el.parentElement);
+  if (!container) return false;
+  const accessibleName = ${ACCESSIBLE_NAME_EXPR};
+  const isCandidate = (c) => {
+    if (c === el) return true;
+    const cTag = (c.tagName || "").toLowerCase();
+    const cRole = (c.getAttribute("role") || "").toLowerCase();
+    if (cTag !== "button" && cTag !== "input" && cRole !== "button") return false;
+    return !isNegative(accessibleName(c));
+  };
+  const candidates = Array.from(container.querySelectorAll("*")).filter(isCandidate);
+  return candidates.length === 1 && candidates[0] === el;
 })`;
 
 /**
@@ -117,13 +157,15 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
  *    covers any element matched by text alone rather than by tag/type/role,
  *    including a checkout form's non-button submit control.
  * 4. Button/role="button" element with no submit wording at all and no
- *    negative verb present (e.g. `<button type="button">Create Account</button>`)
- *    — a generic action control the earlier tiers cannot recognize by
- *    wording, kept weakest and evaluated last so it never outranks a tier
- *    with real submit signal and only surfaces when nothing stronger is on
- *    the page. This tier keeps the tag/role requirement because it has no
- *    other signal to rank on, so dropping it would start matching arbitrary
- *    structural divs.
+ *    negative verb present (e.g. `<button type="button">Create Account</button>`),
+ *    OR — regardless of tag/role — an accessible name carrying a generic
+ *    action verb (e.g. a `<div>`/`<a>`'s "Create Account"), OR a candidate
+ *    with no text signal at all that is the sole non-excluded actionable
+ *    control inside its nearest form-like container (see
+ *    {@link SUBMIT_SHAPE_FALLBACK_EXPR}) — a generic action control the
+ *    earlier tiers cannot recognize by submit-specific wording, kept weakest
+ *    and evaluated last so it never outranks a tier with real submit signal
+ *    and only surfaces when nothing stronger is on the page.
  */
 const RANK_TIERS_EXPR = `((el, name) => {
   const isNegative = ${NEGATIVE_TEXT_EXPR};
@@ -136,6 +178,8 @@ const RANK_TIERS_EXPR = `((el, name) => {
   if (name === "submit") return 2;
   if (/\\bsubmit\\b/.test(name)) return 1;
   if (isButtonLike) return 0.5;
+  const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
+  if (isFallbackShaped(el, name, isNegative)) return 0.5;
   return 0;
 })`;
 

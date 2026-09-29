@@ -12,10 +12,10 @@ import {
  * expressions touch (`tagName`, `getAttribute`, `textContent`,
  * `querySelectorAll`, `shadowRoot`, `focus`, `dispatchEvent`,
  * `getBoundingClientRect`) plus a `computedStyle` bag the fake global
- * `getComputedStyle` reads from. Matches the fixture in `deep-query.test.ts`
- * and `deep-locator-scan.test.ts`'s visibility shape so all three modules
- * exercise the real generated expression strings against a hand-built tree
- * rather than a re-implementation of the traversal.
+ * `getComputedStyle` reads from. Matches `deep-locator-scan.test.ts`'s
+ * visibility shape so both modules exercise the real generated expression
+ * strings against a hand-built tree rather than a re-implementation of the
+ * traversal.
  */
 interface FakeEl {
   tagName: string;
@@ -322,9 +322,23 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tag).toBe("div");
   });
 
-  it("still excludes a non-button-like element with no submit wording at all", () => {
+  it("ranks a non-button-like element with a generic action name (no submit wording) at tier 0.5", () => {
     const div = makeEl("div", {}, "Create Account");
     const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it("still scores 0 for an arbitrary structural div with unrelated, non-actionable text", () => {
+    const status = makeEl("div", {}, "Step 2 of 4");
+    const document = makeRoot([status]);
 
     const result = evaluateInFakePage(
       buildRankSubmitCandidatesExpr(),
@@ -675,6 +689,30 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tier).toBeGreaterThan(0);
     expect(result[0]?.tag).toBe("div");
   });
+
+  // Same rule-out as above, but for the widened tier-0.5 (tag/role-agnostic)
+  // gate specifically: a generic-action-labeled control with no submit
+  // wording, no button tag, and no button-ish role, nested inside an OPEN
+  // shadow root. The evidence above predates the tier-0.5 widening and only
+  // exercised tier-1/tier-3 (submit-worded) candidates, so this closes that
+  // gap for the newly-widened tier rather than re-testing what tier-1/3
+  // already proved.
+  it("finds a widened-tier (0.5), tag/role-agnostic div nested in an OPEN shadow root via the deep traversal (rules out the shadow-root candidate mechanism for the widened gate)", () => {
+    const shadowGenericAction = makeEl("div", {}, "Create Account");
+    const shadowRoot = makeRoot([shadowGenericAction]);
+    const host = makeEl("app-account-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+  });
 });
 
 describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier breadth", () => {
@@ -706,9 +744,67 @@ describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier brea
     expect(result[0]?.tag).toBe("span");
   });
 
-  it("excludes a roleless <a> with a generic action name and no submit wording (tier 0.5 still requires button/input tag or role)", () => {
+  it("ranks a roleless <a> with a generic action name and no submit wording at tier 0.5 (tag/role-agnostic gate)", () => {
     const control = makeEl("a", {}, "Create Account");
     const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("a");
+  });
+
+  it('excludes a roleless <a> with a generic action name whose text is a negative verb (e.g. "Cancel")', () => {
+    const control = makeEl("a", {}, "Cancel");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
+  it("ranks a roleless, textless <div> at tier 0.5 when it is the sole actionable control inside a form-like container", () => {
+    const form = makeEl("form");
+    const control = appendChild(form, makeEl("div", {}, ""));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+    expect(control.attrs.role).toBeUndefined();
+  });
+
+  it("excludes a roleless, textless <div> from the sole-candidate fallback when a sibling button also qualifies", () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("div", {}, ""));
+    appendChild(form, makeEl("button", {}, ""));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tag).toBe("button");
+  });
+
+  it("excludes a roleless, textless <div> from the sole-candidate fallback when it has no form-like ancestor", () => {
+    const wrapper = makeEl("section");
+    appendChild(wrapper, makeEl("div", {}, ""));
+    const document = makeRoot([wrapper]);
 
     const result = evaluateInFakePage(
       buildRankSubmitCandidatesExpr(),
@@ -917,8 +1013,7 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
 });
 
 // Regression coverage: append-order sanity so `appendChild` stays exercised
-// (matches deep-query.test.ts's fixture shape) even though most cases above
-// build flat trees directly via makeRoot.
+// even though most cases above build flat trees directly via makeRoot.
 describe("submit-control fixture sanity", () => {
   it("flattens nested children via appendChild in document order", () => {
     const form = makeEl("form");

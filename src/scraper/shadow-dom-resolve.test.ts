@@ -12,7 +12,7 @@ import {
  * anchor scenario: a light DOM with no `type="submit"` and no literal
  * "Submit" text, because the actual control is rendered inside a web
  * component's shadow root (Angular Elements / Stencil). Matches the fake-DOM
- * fixture shape from `submit-control.test.ts` and `deep-query.test.ts`
+ * fixture shape from `submit-control.test.ts`
  * (including the `getBoundingClientRect`/`getComputedStyle` surface the
  * visibility check reads) so these tests execute the real generated
  * expression strings, not a re-implementation of the traversal.

@@ -1,8 +1,7 @@
 /**
- * Shared browser-context click-activation snippet. Three primitives —
- * `buildClickFrameCandidateExpr` (`deep-locator-scan.ts`),
- * `buildDeepSubmitClickExpr` (`deep-query.ts`), and `buildClickByDeepIndexExpr`
- * (`submit-control.ts`) — each need to activate a resolved element from inside
+ * Shared browser-context click-activation snippet. Two primitives —
+ * `buildClickFrameCandidateExpr` (`deep-locator-scan.ts`) and
+ * `buildClickByDeepIndexExpr` (`submit-control.ts`) — each need to activate a resolved element from inside
  * a `page.evaluate`/`Frame.evaluate` string. They used to dispatch bare
  * `new Event("mousedown"/"mouseup"/"click", { bubbles: true })`, which BUBBLES
  * (so analytics/telemetry listeners fire) but is NOT a `MouseEvent`/`PointerEvent`
