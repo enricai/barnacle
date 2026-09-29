@@ -108,10 +108,7 @@ function writeRunDir(root: string): void {
     query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
     responseBody: { data: { sessionRefresh: { ok: true } } },
   });
-  writeFileSync(
-    join(root, "graphql", "100-home-noise.json"),
-    JSON.stringify(secondaryHostGraphQL)
-  );
+  writeFileSync(join(root, "graphql", "100-home-noise.json"), JSON.stringify(secondaryHostGraphQL));
 }
 
 let workDir: string | null = null;
@@ -178,7 +175,10 @@ describe("recon-generate CLI — own-backend-provenance minority GraphQL host mu
     // Uniquely named and removed in afterEach so it never collides with the
     // real tsconfig, mirroring recon-generate-tsc-clean-emit-e2e.test.ts's
     // own throwaway-tsconfig pattern.
-    tsconfigPath = join(REPO_ROOT, `tsconfig.recon-ownbackend-minority-graphql.${process.pid}.json`);
+    tsconfigPath = join(
+      REPO_ROOT,
+      `tsconfig.recon-ownbackend-minority-graphql.${process.pid}.json`
+    );
     writeFileSync(
       tsconfigPath,
       JSON.stringify({
