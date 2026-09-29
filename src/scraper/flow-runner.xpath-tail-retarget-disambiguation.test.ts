@@ -229,6 +229,146 @@ describe("flow-runner n+16 fallback — xpath tail-retarget disambiguation on mu
     expect(decoyClicked).toBe(false);
   });
 
+  it("prefers a non-native, role-less generic-action control over the document-order-first decoy when the loose tail xpath matches two same-tag elements", async () => {
+    const window = new Window({ url: BASE_URL });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="page">
+        <section>
+          <div><div class="control">Cancel</div></div>
+        </section>
+        <section>
+          <div><div class="control">Confirm Reservation</div></div>
+        </section>
+      </div>
+    `;
+
+    const decoyDiv = document.querySelector(
+      "section:nth-of-type(1) .control"
+    ) as unknown as HappyDomElement;
+    const targetDiv = document.querySelector(
+      "section:nth-of-type(2) .control"
+    ) as unknown as HappyDomElement;
+    if (!decoyDiv || !targetDiv) throw new Error("fixture setup failed");
+
+    let decoyClicked = false;
+    let targetClicked = false;
+    (
+      decoyDiv as unknown as { addEventListener: (t: string, cb: () => void) => void }
+    ).addEventListener("click", () => {
+      decoyClicked = true;
+    });
+    (
+      targetDiv as unknown as { addEventListener: (t: string, cb: () => void) => void }
+    ).addEventListener("click", () => {
+      targetClicked = true;
+    });
+
+    const documentElement = document.documentElement as unknown as HappyDomElement;
+    // A stale primary xpath whose last two steps ("div[1]/div[1]") are the
+    // tail xpathTailForRetarget derives, but whose FULL absolute path never
+    // resolves (an extra, nonexistent ancestor level) — forcing every
+    // attempt through the tail-retarget branch.
+    const staleXPath = "/html[1]/body[1]/div[1]/div[1]/div[1]/div[1]";
+
+    const win = window as unknown as { XPathResult?: unknown };
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 };
+    (
+      document as unknown as {
+        evaluate: (
+          expr: string,
+          ctx: unknown,
+          ns: unknown,
+          type: number
+        ) => {
+          singleNodeValue?: unknown;
+          snapshotLength?: number;
+          snapshotItem?: (i: number) => unknown;
+        };
+      }
+    ).evaluate = (expr: string, _ctx: unknown, _ns: unknown, type: number) => {
+      if (expr.startsWith("//") && type === 7) {
+        const matches = resolveTailXPathAll(documentElement, expr.slice(2));
+        return { snapshotLength: matches.length, snapshotItem: (i: number) => matches[i] ?? null };
+      }
+      const node = expr.startsWith("//")
+        ? (resolveTailXPathAll(documentElement, expr.slice(2))[0] ?? null)
+        : resolveAbsoluteXPath(documentElement, expr);
+      return { singleNodeValue: node };
+    };
+
+    const session = { on: () => {}, off: () => {} };
+    const page: Page = {
+      evaluate: async (expr: unknown): Promise<unknown> => {
+        const src = String(expr);
+        const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
+          d: unknown,
+          x: unknown
+        ) => unknown;
+        return fn(document, win.XPathResult);
+      },
+      url: () => (targetClicked ? "https://apply.example.com/confirmed" : BASE_URL),
+      title: async () => (targetClicked ? "Confirmed" : "Apply — Step 1"),
+      // A real Playwright `.locator(xpath)` only resolves the PRIMARY
+      // (stale) xpath — it has no knowledge of the tail retarget — so the
+      // trusted-click delivery attempt fails, falling through to the
+      // synthetic `clickExpr` fallback under test.
+      locator: () => ({
+        first: () => ({
+          click: async () => {
+            throw new Error("no node found for selector");
+          },
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+
+    const stagehand: Stagehand = {
+      act: vi.fn().mockImplementation(async () => ({
+        success: true,
+        message: "clicked",
+        actionDescription: "clicked",
+        actions: [{ selector: `xpath=${staleXPath}`, description: "control", method: "click" }],
+      })),
+      observe: vi
+        .fn()
+        .mockImplementation(async (instruction?: unknown) =>
+          typeof instruction === "string"
+            ? []
+            : [{ selector: "xpath=//probe-presence", description: "probe-presence" }]
+        ),
+    } as unknown as Stagehand;
+
+    const steps: HealingFlowStep[] = [
+      { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
+      { instruction: "Click the 'Details' link", optional: true, upload: false, submitStep: false },
+    ];
+    const { logger } = makeLogger();
+
+    try {
+      await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+    } catch {
+      // The step may or may not verify depending on weak-signal scoring —
+      // irrelevant here. What matters is WHICH element the fallback clicked.
+    }
+
+    expect(targetClicked).toBe(true);
+    expect(decoyClicked).toBe(false);
+  });
+
   it("clicks the single tail match unchanged when the loose tail xpath resolves to exactly one element", async () => {
     const window = new Window({ url: BASE_URL });
     const document = window.document;
