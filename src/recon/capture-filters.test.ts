@@ -1686,3 +1686,84 @@ describe("ERROR_SINK_PATH_SEGMENT", () => {
     expect(ERROR_SINK_PATH_SEGMENT.test("/error-codes")).toBe(false);
   });
 });
+
+describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () => {
+  it("amortizes URL-parsing to one pass per array reference: repeat calls cost far less than the first", () => {
+    // Queryless, small same-endpoint bucket (< MIN_DENSE) so each call also
+    // exercises otherEndpointPaths/poolPathLooksNoiseShaped via
+    // isCorroboratedByStructuralIsolation — the other two scan sites this
+    // subtask replaces, not just isZeroVarianceRepeatCapture's own sameEndpoint scan.
+    const otherEndpoints = 400;
+    const candidates = Array.from({ length: 5 }, (_, i) => ({
+      method: "GET",
+      url: `https://apply.acme.example/listing-avail-vas/results?i=${i}`,
+      requestPostData: JSON.stringify({ fixed: true }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+    })).map((c) => ({ ...c, url: "https://apply.acme.example/listing-avail-vas/results" }));
+    const archive = [
+      ...candidates,
+      ...Array.from({ length: otherEndpoints }, (_, i) => ({
+        method: "GET",
+        url: `https://apply.acme.example/user/profile-${i}/edit`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { profileId: `p-${i}` },
+      })),
+    ];
+    const RealURL = URL;
+    let constructions = 0;
+    // biome-ignore lint/suspicious/noExplicitAny: test-only global constructor shim
+    (globalThis as any).URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof RealURL>) {
+        super(...args);
+        constructions += 1;
+      }
+    };
+    let firstCallConstructions = 0;
+    let subsequentCallsConstructions = 0;
+    try {
+      // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (candidates has 5 entries)
+      isZeroVarianceRepeatCapture(archive[0]!, archive);
+      firstCallConstructions = constructions;
+      constructions = 0;
+      const repeatCalls = 20;
+      for (let i = 0; i < repeatCalls; i += 1) {
+        // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (modulo candidates.length)
+        isZeroVarianceRepeatCapture(archive[i % candidates.length]!, archive);
+      }
+      subsequentCallsConstructions = constructions;
+    } finally {
+      // biome-ignore lint/suspicious/noExplicitAny: test-only global constructor shim
+      (globalThis as any).URL = RealURL;
+    }
+    // A per-candidate full re-scan/re-parse of the ~405-entry archive would
+    // make 20 repeat calls cost roughly 20x the first call; the shared,
+    // reference-keyed index instead makes each repeat call O(1)-amortized.
+    expect(subsequentCallsConstructions).toBeLessThan(firstCallConstructions);
+  });
+
+  it("returns byte-identical verdicts across repeated calls against the same array reference", () => {
+    const archive = [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        method: "GET",
+        url: `https://apply.acme.example/listing-avail-vas/results?sessionId=fixed&i=${i}`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}` }] },
+      })),
+      {
+        method: "GET",
+        url: "https://apply.acme.example/user/profile/edit",
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { profileId: "p-1" },
+      },
+    ];
+    // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
+    const first = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
+    const second = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    expect(second).toBe(first);
+  });
+});
