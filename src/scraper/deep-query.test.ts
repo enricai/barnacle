@@ -276,6 +276,32 @@ describe("deep-query/buildDeepSubmitClickExpr", () => {
     expect(button.clicked).toBe(true);
   });
 
+  it("finds and clicks a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
+    const div = makeEl("div", {}, "Submit Application");
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: true, clicked: true });
+    expect(div.clicked).toBe(true);
+  });
+
+  it("still excludes a non-button-like element with no submit-ish wording at all, even as the sole control in its form", () => {
+    const form = makeEl("form");
+    appendChild(form, makeEl("div", {}, "Go"));
+    const document = makeRoot([form]);
+
+    const result = evaluateInFakePage(buildDeepSubmitClickExpr(), document) as {
+      found: boolean;
+      clicked: boolean;
+    };
+
+    expect(result).toEqual({ found: false, clicked: false });
+  });
+
   it("never matches a Back/Cancel/Close/Dismiss control, even as the sole control in a form", () => {
     const form = makeEl("form");
     appendChild(form, makeEl("button", { type: "button" }, "Cancel"));
