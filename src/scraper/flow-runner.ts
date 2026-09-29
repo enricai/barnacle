@@ -94,7 +94,7 @@ import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
   NEGATIVE_TEXT_EXPR,
-  SUBMIT_SHAPE_FALLBACK_EXPR,
+  SUBMIT_SHAPE_EXPR,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
 import {
@@ -1885,9 +1885,10 @@ export function isClickViewSwapVerified(params: {
   // a real network/URL transition, leaving it structurally unverifiable.
   // `resolvedElementIsSubmitShaped` closes the same gap from the OTHER
   // direction: a step the flow never flagged `submitStep` can still resolve
-  // onto an objectively submit-shaped control (an HTML `type="submit"`
-  // affordance, or an unmarked `<button>` owned by a `<form>`, whose default
-  // type IS submit) — that control needs the same real-transition proof
+  // onto an objectively submit-shaped control per submit-control.ts's
+  // SUBMIT_SHAPE_EXPR (an explicit `type="submit"` affordance, or a
+  // non-native control that clears the same name/negative-text
+  // corroboration bar) — that control needs the same real-transition proof
   // regardless of flow authoring, so a byte-positive form reset can't be
   // mistaken for a byte-positive real submit.
   if (submitStep || resolvedElementIsSubmitShaped) return false;
@@ -3874,12 +3875,11 @@ function xpathTailForRetarget(xpath: string): string | null {
  * resolve) `FIRST_ORDERED_NODE_TYPE` silently accepts whichever one happens
  * to come first in document order — not necessarily the element the primary
  * xpath was tracking. Snapshotting every match and preferring one that is
- * objectively submit-shaped — native `type="submit"`/`type="image"`/
- * form-owned button, or (reusing submit-control.ts's exported
- * {@link SUBMIT_SHAPE_FALLBACK_EXPR}) a tag/role-agnostic generic-action
- * control — and not negative-text (reuses submit-control.ts's own
- * {@link NEGATIVE_TEXT_EXPR} vocabulary rather than a second copy) recovers
- * the plausible candidate instead of an arbitrary one.
+ * objectively submit-shaped — reusing submit-control.ts's exported
+ * {@link SUBMIT_SHAPE_EXPR}, the single site-agnostic predicate every submit-
+ * shape consumer now shares — and not negative-text (reuses submit-
+ * control.ts's own {@link NEGATIVE_TEXT_EXPR} vocabulary rather than a
+ * second copy) recovers the plausible candidate instead of an arbitrary one.
  * Falls back to the first document-order match when no candidate clears that
  * bar, preserving the previous behavior for every single-match (the common)
  * case.
@@ -3888,15 +3888,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
-    const isSubmitShaped = (el) => {
-      if (!el || !el.tagName) return false;
-      const tag = el.tagName.toUpperCase();
-      const type = (el.getAttribute("type") || "").toLowerCase();
-      if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
-      if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
-      return isFallbackShaped(el, accessibleName(el), isNegative);
-    };
+    const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
     const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     const nodes = [];
     for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
@@ -4207,15 +4199,20 @@ async function resolvedClickTargetStillPresent(
  * Site-agnostic submit-shape signal read directly from the resolved click
  * target — the counterpart to the flow-authored `submitStep` flag. A step
  * the flow never flagged can still resolve onto an objectively submit-shaped
- * control: `<input type="submit">` / `<input type="image">`, a `<button>`
- * with no `type` (or `type="submit"`) owned by a `<form>` — per the HTML
- * spec a button's default type IS submit, so an unmarked in-form button
- * commits the form exactly like an explicit `type="submit"` one — or, via
- * {@link SUBMIT_SHAPE_FALLBACK_EXPR}, a tag/role-agnostic control (e.g. a
- * `<div>`/`<a>`) whose accessible name reads a generic action verb, or is the
- * sole actionable control in its form. Reuses submit-control.ts's own
- * widened predicate instead of a narrower, hand-duplicated tag/type-only
- * check, so a legitimately-clicked non-native submit control is not
+ * control, per submit-control.ts's exported {@link SUBMIT_SHAPE_EXPR}: an
+ * `<input type="submit">` / `<input type="image">`, a `<button>`/`<input>`
+ * carrying an EXPLICIT `type="submit"` attribute, or — the same
+ * corroboration-requiring path a non-native control must clear — a
+ * tag/role-agnostic control (e.g. a `<div>`/`<a>`) whose accessible name
+ * reads a generic action verb, or is the sole actionable control in its
+ * form. A default-type `<button>` merely owned by a `<form>` no longer
+ * earns unconditional credit from that structural fact alone: the HTML
+ * spec makes a button's default type submit, but structure alone is not
+ * proof of submit intent (e.g. a "Show contact form" reveal toggle a page
+ * happens to nest inside a `<form>`), so it must clear the same
+ * corroboration bar as a non-native control. Reuses submit-control.ts's
+ * own single predicate instead of a hand-duplicated tag/type-only check,
+ * so a legitimately-clicked non-native submit control is not
  * mis-classified as "not submit-shaped" here. Returns `false` — never
  * manufactures a submit-shape veto — on a non-xpath selector, a miss, or an
  * evaluate failure.
@@ -4242,18 +4239,8 @@ async function resolvedClickTargetIsSubmitShaped(
     if (!el && ${JSON.stringify(xpathTail)}) {
       el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
     }
-    if (!el || !el.tagName) return false;
-    const tag = el.tagName.toUpperCase();
-    const type = (el.getAttribute("type") || "").toLowerCase();
-    if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
-    if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
-    const isNegative = ${NEGATIVE_TEXT_EXPR};
-    const accessibleName = (node) =>
-      (node.getAttribute("aria-label") || node.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
-    const name = accessibleName(el);
-    if (isNegative(name)) return false;
-    return isFallbackShaped(el, name, isNegative);
+    const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
+    return isSubmitShaped(el);
   })()`;
   try {
     return (await target.evaluate(expr)) === true;

@@ -139,6 +139,40 @@ export const SUBMIT_SHAPE_FALLBACK_EXPR = `((el, name, isNegative) => {
 })`;
 
 /**
+ * Single site-agnostic submit-shape predicate: `(el) => boolean`, composing
+ * {@link NEGATIVE_TEXT_EXPR}, {@link ACCESSIBLE_NAME_EXPR}, and
+ * {@link SUBMIT_SHAPE_FALLBACK_EXPR} so every caller shares one decision
+ * boundary instead of hand-rolling a divergent copy. Only an `<input
+ * type="submit">`/`<input type="image">`, or a `<button>`/`<input>` carrying
+ * an EXPLICIT `type="submit"` attribute, earns the unconditional structural
+ * credit — per the HTML spec a `<button>`'s default type IS submit, but that
+ * structural fact alone is not enough signal: a default-type `<button>`
+ * inside a `<form>` (e.g. a "Show contact form" reveal toggle a page happens
+ * to nest inside a `<form>` for layout reasons, with no submit intent at
+ * all) must earn its credit through the SAME corroboration path as a
+ * non-native `<div>`/`<a>`/custom-element action control —
+ * {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s generic-action-verb accessible name,
+ * or sole-actionable-candidate-in-form when it carries no text. Exported so
+ * every submit-shape consumer (the deep submit-control locator's own
+ * {@link RANK_TIERS_EXPR}, and `flow-runner.ts`'s
+ * `resolvedClickTargetIsSubmitShaped` / `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC`)
+ * shares this one producer instead of re-diverging.
+ */
+export const SUBMIT_SHAPE_EXPR = `((el) => {
+  if (!el || !el.tagName) return false;
+  const tag = el.tagName.toUpperCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
+  if ((tag === "BUTTON" || tag === "INPUT") && type === "submit") return true;
+  const isNegative = ${NEGATIVE_TEXT_EXPR};
+  const accessibleName = ${ACCESSIBLE_NAME_EXPR};
+  const name = accessibleName(el);
+  if (isNegative(name)) return false;
+  const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
+  return isFallbackShaped(el, name, isNegative);
+})`;
+
+/**
  * Ranking tiers, most confident first. Each tier's `test` receives the
  * element plus its precomputed accessible name and reports whether it
  * belongs in that tier — the first matching tier wins, so an element that
