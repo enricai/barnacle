@@ -583,6 +583,98 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tier).toBe(0.5);
     expect(result[0]?.deepIndex).toBe(1);
   });
+
+  it('ranks a `role="none"` div carrying submit-shaped text (checkout-domain example) nonzero, with no button tag or button-ish role at all', () => {
+    const checkoutSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const document = makeRoot([checkoutSubmit]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBeGreaterThan(0);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it.each(["Cancel", "Save draft"])(
+    'excludes a `role="none"` div labeled "%s" from ranking entirely (no tag/role gate regression)',
+    (label) => {
+      const control = makeEl("div", { role: "none" }, label);
+      const document = makeRoot([control]);
+
+      const result = evaluateInFakePage(
+        buildRankSubmitCandidatesExpr(),
+        document
+      ) as SubmitCandidate[];
+
+      expect(result).toEqual([]);
+    }
+  );
+
+  it('excludes a hidden `role="none"` div-shaped submit control (checkout-domain example) while ranking a rendered sibling normally', () => {
+    const hiddenDivSubmit = makeEl("div", { role: "none" }, "Submit Order", {
+      rect: { width: 0, height: 0 },
+    });
+    const renderedFallback = makeEl("div", { role: "none" }, "Submit Order Now");
+    const document = makeRoot([hiddenDivSubmit, renderedFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes an `aria-disabled="true"` `role="none"` div-shaped submit control (checkout-domain example) while ranking an enabled sibling normally', () => {
+    const disabledDivSubmit = makeEl(
+      "div",
+      { role: "none", "aria-disabled": "true" },
+      "Submit Order"
+    );
+    const enabledFallback = makeEl("div", { role: "none" }, "Submit Order Now");
+    const document = makeRoot([disabledDivSubmit, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  // Rules out the shadow-root candidate mechanism for a tag/role-agnostic
+  // (div-shaped) submit control specifically, not just the button-shaped
+  // shadow-root cases already covered above: the deep traversal pierces
+  // OPEN shadow roots regardless of what's inside them, so a div-shaped
+  // control nested in one is found exactly like a top-level one. A CLOSED
+  // shadow root is not exercised here (or anywhere in this suite) because
+  // it is categorically unreachable from page script by browser design —
+  // `attachShadow({ mode: "closed" })` does not expose `.shadowRoot` on the
+  // host element at all, so no traversal, deep or otherwise, running in
+  // page-script context (as this module's generated expressions do) can
+  // ever see inside one. That is a platform boundary, not a bug this
+  // module could fix, so it is ruled out by design rather than by test.
+  it("finds a submit-shaped div nested in an OPEN shadow root via the deep traversal (rules out the shadow-root candidate mechanism)", () => {
+    const shadowDivSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const shadowRoot = makeRoot([shadowDivSubmit]);
+    const host = makeEl("app-checkout-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBeGreaterThan(0);
+    expect(result[0]?.tag).toBe("div");
+  });
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
