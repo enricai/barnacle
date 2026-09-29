@@ -78,12 +78,16 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
  * n+16 fallback's PRIMARY xpath (never staled, so the tail-retarget branch is
  * never reached) against `controlTag`/`controlAttrs`/label text, mirroring
  * flow-runner.submit-shaped-weak-signal-veto-acceptance.test.ts's fixture
- * shape.
+ * shape. `wrapInForm` defaults to false (preserving the original fixture
+ * shape); the bugfix-003 sole-candidate/explicit-submit cases below opt in
+ * since SUBMIT_SHAPE_FALLBACK_EXPR's no-text branch requires a form-like
+ * ancestor to search for sibling candidates.
  */
 function buildFixture(params: {
   controlTag: string;
   controlAttrs: string;
   label: string;
+  wrapInForm?: boolean;
   clickHandler: (document: {
     getElementById: (id: string) => HappyDomElement | null;
     createElement: (tag: string) => HappyDomElement;
@@ -98,11 +102,13 @@ function buildFixture(params: {
 } {
   const window = new Window({ url: BASE_URL });
   const document = window.document;
+  const containerOpenTag = params.wrapInForm ? '<form id="theForm">' : "<div>";
+  const containerCloseTag = params.wrapInForm ? "</form>" : "</div>";
   document.body.innerHTML = `
     <div class="wizardFooter">
-      <div>
+      ${containerOpenTag}
         <${params.controlTag} id="theControl" ${params.controlAttrs}>${params.label}</${params.controlTag}>
-      </div>
+      ${containerCloseTag}
       <a id="detailsLink" href="#details">Details</a>
     </div>
   `;
@@ -252,5 +258,63 @@ describe("flow-runner resolvedClickTargetIsSubmitShaped — primary-xpath-hit br
 
     expect(result.lastStepIndex).toBe(1);
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+  });
+
+  it('classifies a BUTTON with an explicit type="submit" attribute inside a form as submit-shaped (bugfix-001 non-regression: bug #10\'s explicit-type case)', async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
+      controlTag: "button",
+      controlAttrs: 'type="submit"',
+      label: "Continue",
+      wrapInForm: true,
+      clickHandler: (document) => {
+        const form = document.getElementById("theForm");
+        if (form) form.innerHTML = `<div data-reset="${"x".repeat(2000)}"></div>`;
+      },
+    });
+
+    try {
+      const result = await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+      expect(result.lastStepIndex).toBeLessThan(1);
+    } catch {
+      // Expected: step 0 never verifies from the weak DOM-only signal alone.
+    }
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+  });
+
+  it("classifies a no-text control that is the sole actionable candidate in its form as submit-shaped (bugfix-001 non-regression: bug #10's sole-candidate case)", async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
+      controlTag: "div",
+      controlAttrs: 'role="button" tabindex="0" aria-label=""',
+      label: "",
+      wrapInForm: true,
+      clickHandler: (document) => {
+        const form = document.getElementById("theForm");
+        if (form) form.innerHTML = `<div data-reset="${"x".repeat(2000)}"></div>`;
+      },
+    });
+
+    try {
+      const result = await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+      expect(result.lastStepIndex).toBeLessThan(1);
+    } catch {
+      // Expected: step 0 never verifies from the weak DOM-only signal alone.
+    }
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
   });
 });

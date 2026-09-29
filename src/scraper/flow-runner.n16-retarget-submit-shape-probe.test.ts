@@ -368,6 +368,35 @@ describe("flow-runner n+16 fallback — submit-shape probe reflects the xpathTai
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
   });
 
+  it("does NOT credit an UNFLAGGED, non-final step on the weak DOM signal alone when the xpathTail-retargeted control is a no-text control that is the sole actionable candidate in its form (bugfix-001 non-regression: bug #10's sole-candidate case)", async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
+      controlTag: "div",
+      controlAttrs: 'role="button" tabindex="0" aria-label=""',
+      wrapInForm: true,
+      label: "",
+      clickHandler: (document) => {
+        const form = document.getElementById("theForm");
+        if (form) form.innerHTML = `<div data-reset="${"x".repeat(2000)}"></div>`;
+      },
+    });
+
+    try {
+      const result = await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+      expect(result.lastStepIndex).toBeLessThan(1);
+    } catch {
+      // Expected: step 0 never verifies, so the (non-optional) step throws.
+    }
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+  });
+
   it("still verifies the SAME weak-signal shape when the xpathTail-retargeted control is NOT submit-shaped (no regression)", async () => {
     const { page, stagehand, steps } = buildFixture({
       controlTag: "span",
