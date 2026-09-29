@@ -1686,3 +1686,174 @@ describe("ERROR_SINK_PATH_SEGMENT", () => {
     expect(ERROR_SINK_PATH_SEGMENT.test("/error-codes")).toBe(false);
   });
 });
+
+describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () => {
+  it("amortizes URL-parsing to one pass per array reference: repeat calls cost far less than the first", () => {
+    // Queryless, small same-endpoint bucket (< MIN_DENSE) so each call also
+    // exercises otherEndpointPaths/poolPathLooksNoiseShaped via
+    // isCorroboratedByStructuralIsolation — the other two scan sites this
+    // subtask replaces, not just isZeroVarianceRepeatCapture's own sameEndpoint scan.
+    const otherEndpoints = 400;
+    const candidates = Array.from({ length: 5 }, (_, i) => ({
+      method: "GET",
+      url: `https://apply.acme.example/listing-avail-vas/results?i=${i}`,
+      requestPostData: JSON.stringify({ fixed: true }),
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: { results: [{ id: `item-${i}` }] },
+    })).map((c) => ({ ...c, url: "https://apply.acme.example/listing-avail-vas/results" }));
+    const archive = [
+      ...candidates,
+      ...Array.from({ length: otherEndpoints }, (_, i) => ({
+        method: "GET",
+        url: `https://apply.acme.example/user/profile-${i}/edit`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { profileId: `p-${i}` },
+      })),
+    ];
+    const RealURL = URL;
+    let constructions = 0;
+    // biome-ignore lint/suspicious/noExplicitAny: test-only global constructor shim
+    (globalThis as any).URL = class extends RealURL {
+      constructor(...args: ConstructorParameters<typeof RealURL>) {
+        super(...args);
+        constructions += 1;
+      }
+    };
+    let firstCallConstructions = 0;
+    let subsequentCallsConstructions = 0;
+    try {
+      // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (candidates has 5 entries)
+      isZeroVarianceRepeatCapture(archive[0]!, archive);
+      firstCallConstructions = constructions;
+      constructions = 0;
+      const repeatCalls = 20;
+      for (let i = 0; i < repeatCalls; i += 1) {
+        // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds (modulo candidates.length)
+        isZeroVarianceRepeatCapture(archive[i % candidates.length]!, archive);
+      }
+      subsequentCallsConstructions = constructions;
+    } finally {
+      // biome-ignore lint/suspicious/noExplicitAny: test-only global constructor shim
+      (globalThis as any).URL = RealURL;
+    }
+    // A per-candidate full re-scan/re-parse of the ~405-entry archive would
+    // make 20 repeat calls cost roughly 20x the first call; the shared,
+    // reference-keyed index instead makes each repeat call O(1)-amortized.
+    expect(subsequentCallsConstructions).toBeLessThan(firstCallConstructions);
+  });
+
+  it("returns byte-identical verdicts across repeated calls against the same array reference", () => {
+    const archive = [
+      ...Array.from({ length: 12 }, (_, i) => ({
+        method: "GET",
+        url: `https://apply.acme.example/listing-avail-vas/results?sessionId=fixed&i=${i}`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { results: [{ id: `item-${i}` }] },
+      })),
+      {
+        method: "GET",
+        url: "https://apply.acme.example/user/profile/edit",
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { profileId: "p-1" },
+      },
+    ];
+    // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
+    const first = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    // biome-ignore lint/style/noNonNullAssertion: index is provably in-bounds
+    const second = isZeroVarianceRepeatCapture(archive[0]!, archive);
+    expect(second).toBe(first);
+  });
+});
+
+describe("isZeroVarianceRepeatCapture — index cache isolation across distinct array references", () => {
+  // A and B share the exact same method+endpoint identity, so a cache keyed
+  // by that identity instead of the array reference itself would let B reuse
+  // A's index (or vice versa) and leak a stale verdict across archives.
+  const sharedUrl = "https://apply.acme.example/telemetry/beacon";
+  const sharedMethod = "GET";
+
+  const noStateCapture = {
+    method: sharedMethod,
+    url: sharedUrl,
+    requestPostData: null,
+  };
+  // Queryless, no response metadata: hasNoBusinessRelevantResponseState
+  // defaults to true, so this reads as noise unconditionally.
+  const archiveA = [noStateCapture, noStateCapture, noStateCapture];
+
+  const businessStateCapture = {
+    method: sharedMethod,
+    url: sharedUrl,
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { token: "secret123" },
+  };
+  // Same identity and body shape as A's captures, but a business-relevant
+  // response with no other endpoint in the archive to corroborate isolation:
+  // this reads as a real repeated call, not noise.
+  const archiveB = [businessStateCapture, businessStateCapture, businessStateCapture];
+
+  it("never leaks a verdict from one array reference to another sharing the same method+endpoint identity", () => {
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(businessStateCapture, archiveB)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
+  });
+});
+
+describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", () => {
+  // A fixed occurrence count per distinct endpoint, with the endpoint count
+  // itself growing to reach `size` — the shape a larger real archive
+  // actually has (more distinct captured endpoints, not more repeats of the
+  // same few). Growing size by adding repeats to a fixed endpoint count
+  // would grow the post-fix per-endpoint group scan along with it, which
+  // isn't the quadratic-vs-linear distinction this test is guarding.
+  const OCCURRENCES_PER_ENDPOINT = 10;
+
+  function buildScaleArchive(size: number) {
+    const endpointCount = Math.ceil(size / OCCURRENCES_PER_ENDPOINT);
+    return Array.from({ length: endpointCount }, (_, g) =>
+      Array.from({ length: OCCURRENCES_PER_ENDPOINT }, (_, p) => ({
+        method: "GET",
+        url: `https://svc.example.test/catalog/item-${g}?sessionId=fixed&page=${p + 1}`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { id: `item-${g}` },
+      }))
+    ).flat();
+  }
+
+  function timeFullPassMs(archive: ReturnType<typeof buildScaleArchive>): number {
+    const start = performance.now();
+    for (const candidate of archive) isZeroVarianceRepeatCapture(candidate, archive);
+    return performance.now() - start;
+  }
+
+  /** Best-of-N timing to damp scheduler/GC noise on a single sample. */
+  function bestOfMs(archive: ReturnType<typeof buildScaleArchive>, runs: number): number {
+    return Math.min(...Array.from({ length: runs }, () => timeFullPassMs(archive)));
+  }
+
+  it("keeps a full pass over 4x the archive size well under a quadratic (16x) time blowup", () => {
+    const N = 4000;
+    const smallArchive = buildScaleArchive(N);
+    const largeArchive = buildScaleArchive(N * 4);
+
+    // Warm up both index caches once outside the timed region so what's
+    // measured is per-candidate lookup cost, not one-time index construction.
+    timeFullPassMs(smallArchive);
+    timeFullPassMs(largeArchive);
+
+    const smallElapsedMs = Math.max(bestOfMs(smallArchive, 5), 1);
+    const largeElapsedMs = bestOfMs(largeArchive, 5);
+
+    // An O(n^2) full rescan per candidate would make the 4x-larger archive
+    // take roughly 16x as long; a linear (index-backed) scan makes it take
+    // roughly 4x as long. The 8x bound sits between the two, with generous
+    // slack for wall-clock noise, so it fails on a reintroduced full rescan
+    // while tolerating normal timing jitter on the linear implementation.
+    expect(largeElapsedMs / smallElapsedMs).toBeLessThan(8);
+  });
+});

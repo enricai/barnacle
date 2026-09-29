@@ -471,6 +471,88 @@ function endpointOrigin(url: string): string | null {
 }
 
 /**
+ * The widest capture shape any of {@link isZeroVarianceRepeatCapture},
+ * {@link otherEndpointPaths}, or {@link poolPathLooksNoiseShaped} reads —
+ * all three are always invoked with the SAME `allCaptures` array reference
+ * from within one {@link isZeroVarianceRepeatCapture} call, which is what
+ * lets {@link captureEndpointIndexFor} key a single shared index off that
+ * reference.
+ */
+type IndexedCapture = {
+  method: string;
+  url: string;
+  requestPostData: string | null;
+  responseHeaders?: Record<string, string>;
+  responseBody?: unknown;
+  operationName?: string | null;
+  query?: string | null;
+};
+
+/**
+ * Per-`allCaptures`-reference indices replacing the repeated full-array
+ * scans/`new URL()` re-parses: `byMethodEndpoint` serves
+ * {@link isZeroVarianceRepeatCapture}'s own same-endpoint lookup,
+ * `byPathname` (each entry annotated with its own already-parsed
+ * `endpointOrigin`, computed once) serves both {@link otherEndpointPaths}
+ * and {@link poolPathLooksNoiseShaped}'s pool-path lookup.
+ */
+interface CaptureEndpointIndex {
+  byMethodEndpoint: Map<string, IndexedCapture[]>;
+  byPathname: Map<string, { endpoint: string | null; capture: IndexedCapture }[]>;
+}
+
+/**
+ * Lazily-built, reference-keyed cache: the first call for a given
+ * `allCaptures` array builds its index once; every subsequent call against
+ * the SAME reference (the common case — one archive re-checked once per
+ * candidate) reuses it instead of re-scanning/re-parsing. A `WeakMap` lets
+ * an array that falls out of scope be collected instead of pinning every
+ * archive this process has ever indexed.
+ */
+const captureEndpointIndexCache = new WeakMap<readonly IndexedCapture[], CaptureEndpointIndex>();
+
+function buildCaptureEndpointIndex(allCaptures: readonly IndexedCapture[]): CaptureEndpointIndex {
+  const byMethodEndpoint = new Map<string, IndexedCapture[]>();
+  const byPathname = new Map<string, { endpoint: string | null; capture: IndexedCapture }[]>();
+  for (const capture of allCaptures) {
+    const endpoint = endpointOrigin(capture.url);
+    if (endpoint !== null) {
+      const key = `${capture.method}::${endpoint}`;
+      const bucket = byMethodEndpoint.get(key);
+      if (bucket) {
+        bucket.push(capture);
+      } else {
+        byMethodEndpoint.set(key, [capture]);
+      }
+    }
+    const pathname = (() => {
+      try {
+        return new URL(capture.url).pathname;
+      } catch {
+        return null;
+      }
+    })();
+    if (pathname === null) continue;
+    const pathnameBucket = byPathname.get(pathname);
+    const entry = { endpoint, capture };
+    if (pathnameBucket) {
+      pathnameBucket.push(entry);
+    } else {
+      byPathname.set(pathname, [entry]);
+    }
+  }
+  return { byMethodEndpoint, byPathname };
+}
+
+function captureEndpointIndexFor(allCaptures: readonly IndexedCapture[]): CaptureEndpointIndex {
+  const cached = captureEndpointIndexCache.get(allCaptures);
+  if (cached) return cached;
+  const built = buildCaptureEndpointIndex(allCaptures);
+  captureEndpointIndexCache.set(allCaptures, built);
+  return built;
+}
+
+/**
  * True when `candidate` carries at least one query key whose value stays
  * identical across every occurrence of the same endpoint in `allCaptures`,
  * and recurs at least once elsewhere at the same method and endpoint
@@ -626,16 +708,12 @@ const MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL = 10;
  */
 function otherEndpointPaths(
   candidateEndpoint: string,
-  allCaptures: readonly { url: string }[]
+  allCaptures: readonly IndexedCapture[]
 ): string[] {
+  const { byPathname } = captureEndpointIndexFor(allCaptures);
   const paths = new Set<string>();
-  for (const capture of allCaptures) {
-    if (endpointOrigin(capture.url) === candidateEndpoint) continue;
-    try {
-      paths.add(new URL(capture.url).pathname);
-    } catch {
-      // unparsable URL contributes no comparison path
-    }
+  for (const [pathname, entries] of byPathname) {
+    if (entries.some((entry) => entry.endpoint !== candidateEndpoint)) paths.add(pathname);
   }
   return [...paths];
 }
@@ -708,22 +786,12 @@ function poolPathLooksNoiseShaped(
   poolPath: string,
   candidateEndpoint: string,
   candidateSignal: WeakNoiseSignal,
-  allCaptures: readonly {
-    method: string;
-    url: string;
-    requestPostData: string | null;
-    responseHeaders?: Record<string, string>;
-    responseBody?: unknown;
-  }[]
+  allCaptures: readonly IndexedCapture[]
 ): boolean {
-  const atPoolPath = allCaptures.filter((capture) => {
-    if (endpointOrigin(capture.url) === candidateEndpoint) return false;
-    try {
-      return new URL(capture.url).pathname === poolPath;
-    } catch {
-      return false;
-    }
-  });
+  const { byPathname } = captureEndpointIndexFor(allCaptures);
+  const atPoolPath = (byPathname.get(poolPath) ?? [])
+    .filter((entry) => entry.endpoint !== candidateEndpoint)
+    .map((entry) => entry.capture);
   const withBody = atPoolPath.filter((capture) => capture.responseBody !== undefined);
   const representative = withBody[0];
   if (representative === undefined) return false;
@@ -748,13 +816,7 @@ function poolPathLooksNoiseShaped(
 function nonNoiseOtherEndpointPaths(
   candidateEndpoint: string,
   candidateSameEndpoint: readonly { responseBody?: unknown }[],
-  allCaptures: readonly {
-    method: string;
-    url: string;
-    requestPostData: string | null;
-    responseHeaders?: Record<string, string>;
-    responseBody?: unknown;
-  }[]
+  allCaptures: readonly IndexedCapture[]
 ): string[] {
   const candidateSignal = weakNoiseSignalFor(candidateSameEndpoint);
   return otherEndpointPaths(candidateEndpoint, allCaptures).filter(
@@ -1085,9 +1147,10 @@ export function isZeroVarianceRepeatCapture(
   const candidateEndpoint = endpointOrigin(candidate.url);
   if (candidateEndpoint === null) return false;
   const candidateKeys = [...candidateUrl.searchParams.keys()];
-  const sameEndpoint = allCaptures.filter(
-    (c) => c.method === candidate.method && endpointOrigin(c.url) === candidateEndpoint
-  );
+  const sameEndpoint =
+    captureEndpointIndexFor(allCaptures).byMethodEndpoint.get(
+      `${candidate.method}::${candidateEndpoint}`
+    ) ?? [];
   if (candidateKeys.length === 0) {
     if (sameEndpoint.length < MIN_QUERYLESS_REPEAT_COUNT) return false;
     const queryLessBodyIdentical = sameEndpoint.every(
