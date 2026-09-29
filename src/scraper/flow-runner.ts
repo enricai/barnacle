@@ -4210,15 +4210,11 @@ async function resolvedClickTargetStillPresent(
  * submit-shaped control: `<input type="submit">` / `<input type="image">`, or
  * a `<button>` with no `type` (or `type="submit"`) owned by a `<form>` — per
  * the HTML spec a button's default type IS submit, so an unmarked in-form
- * button commits the form exactly like an explicit `type="submit"` one. Also
- * accepts submit-control.ts's exported {@link SUBMIT_SHAPE_FALLBACK_EXPR}
- * tag/role-agnostic generic-action shape, mirroring the same widening
- * `xpathTailForRetarget`'s own `isSubmitShaped` applies — otherwise this probe
- * would disagree with what the tail-retarget click path actually resolved and
- * clicked as submit-shaped. Deliberately NOT a CTA-wording word list (fragile,
- * and site-specific) — only the element's own tag/type/form-ownership/role,
- * which is the same shape on any site. Returns `false` — never manufactures a
- * submit-shape veto — on a non-xpath selector, a miss, or an evaluate failure.
+ * button commits the form exactly like an explicit `type="submit"` one.
+ * Deliberately NOT a CTA-wording word list (fragile, and site-specific) — only
+ * the element's own tag/type/form-ownership, which is the same shape on any
+ * site. Returns `false` — never manufactures a submit-shape veto — on a
+ * non-xpath selector, a miss, or an evaluate failure.
  *
  * `xpathTail` (optional): the n+16 fallback's own `xpathTailForRetarget`
  * re-anchor. Its `clickExpr` resolves primary-xpath-then-tail before
@@ -4247,11 +4243,6 @@ async function resolvedClickTargetIsSubmitShaped(
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
     if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
-    const isNegative = ${NEGATIVE_TEXT_EXPR};
-    const accessibleName = (el) =>
-      (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
-    if (isFallbackShaped(el, accessibleName(el), isNegative)) return true;
     return false;
   })()`;
   try {
