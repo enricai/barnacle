@@ -97,6 +97,13 @@ function buildFixture(params: {
   controlTag: string;
   controlAttrs: string;
   wrapInForm: boolean;
+  // Defaults to "Continue" (the original hardcoded label) — overridden by
+  // the widened-submit-shape-predicate regression case below so its
+  // genuinely-non-submit control isn't accidentally caught by
+  // SUBMIT_SHAPE_FALLBACK_EXPR's generic-action-verb tier ("continue" is in
+  // that tier's word list), which would misrepresent an unrelated fixture
+  // collision as a real behavior regression.
+  label?: string;
   clickHandler: (document: {
     getElementById: (id: string) => HappyDomElement | null;
     createElement: (tag: string) => HappyDomElement;
@@ -111,12 +118,13 @@ function buildFixture(params: {
 } {
   const window = new Window({ url: BASE_URL });
   const document = window.document;
+  const label = params.label ?? "Continue";
   const formOpenTag = params.wrapInForm ? '<form id="theForm">' : "<div>";
   const formCloseTag = params.wrapInForm ? "</form>" : "</div>";
   document.body.innerHTML = `
     <div class="wizardFooter">
       ${formOpenTag}
-        <${params.controlTag} id="theControl" ${params.controlAttrs}>Continue</${params.controlTag}>
+        <${params.controlTag} id="theControl" ${params.controlAttrs}>${label}</${params.controlTag}>
       ${formCloseTag}
       <a id="detailsLink" href="#details">Details</a>
     </div>
@@ -390,6 +398,7 @@ describe("flow-runner n+16 fallback — submit-shaped weak-signal veto (offline 
       controlTag: "div",
       controlAttrs: 'role="button" tabindex="0"',
       wrapInForm: false,
+      label: "Expand details",
       clickHandler: (document) => {
         const control = document.getElementById("theControl");
         if (control) {

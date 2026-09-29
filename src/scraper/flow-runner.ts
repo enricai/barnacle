@@ -4204,17 +4204,21 @@ async function resolvedClickTargetStillPresent(
 }
 
 /**
- * Site-agnostic, attribute-based submit-shape signal read directly from the
- * resolved click target — the counterpart to the flow-authored `submitStep`
- * flag. A step the flow never flagged can still resolve onto an objectively
- * submit-shaped control: `<input type="submit">` / `<input type="image">`, or
- * a `<button>` with no `type` (or `type="submit"`) owned by a `<form>` — per
- * the HTML spec a button's default type IS submit, so an unmarked in-form
- * button commits the form exactly like an explicit `type="submit"` one.
- * Deliberately NOT a CTA-wording word list (fragile, and site-specific) — only
- * the element's own tag/type/form-ownership, which is the same shape on any
- * site. Returns `false` — never manufactures a submit-shape veto — on a
- * non-xpath selector, a miss, or an evaluate failure.
+ * Site-agnostic submit-shape signal read directly from the resolved click
+ * target — the counterpart to the flow-authored `submitStep` flag. A step
+ * the flow never flagged can still resolve onto an objectively submit-shaped
+ * control: `<input type="submit">` / `<input type="image">`, a `<button>`
+ * with no `type` (or `type="submit"`) owned by a `<form>` — per the HTML
+ * spec a button's default type IS submit, so an unmarked in-form button
+ * commits the form exactly like an explicit `type="submit"` one — or, via
+ * {@link SUBMIT_SHAPE_FALLBACK_EXPR}, a tag/role-agnostic control (e.g. a
+ * `<div>`/`<a>`) whose accessible name reads a generic action verb, or is the
+ * sole actionable control in its form. Reuses submit-control.ts's own
+ * widened predicate instead of a narrower, hand-duplicated tag/type-only
+ * check, so a legitimately-clicked non-native submit control is not
+ * mis-classified as "not submit-shaped" here. Returns `false` — never
+ * manufactures a submit-shape veto — on a non-xpath selector, a miss, or an
+ * evaluate failure.
  *
  * `xpathTail` (optional): the n+16 fallback's own `xpathTailForRetarget`
  * re-anchor. Its `clickExpr` resolves primary-xpath-then-tail before
@@ -4243,7 +4247,13 @@ async function resolvedClickTargetIsSubmitShaped(
     const type = (el.getAttribute("type") || "").toLowerCase();
     if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
     if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
-    return false;
+    const isNegative = ${NEGATIVE_TEXT_EXPR};
+    const accessibleName = (node) =>
+      (node.getAttribute("aria-label") || node.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
+    const name = accessibleName(el);
+    if (isNegative(name)) return false;
+    return isFallbackShaped(el, name, isNegative);
   })()`;
   try {
     return (await target.evaluate(expr)) === true;
