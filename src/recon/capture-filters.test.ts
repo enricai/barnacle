@@ -30,9 +30,9 @@ describe("isAllowedFixtureHost — primaryHost narrowing", () => {
   });
 
   it("rejects a minority host sharing the fallback domain but not the primary host", () => {
-    expect(
-      isAllowedFixtureHost("checkout.example.com", [], "example.com", "api.example.com")
-    ).toBe(false);
+    expect(isAllowedFixtureHost("checkout.example.com", [], "example.com", "api.example.com")).toBe(
+      false
+    );
   });
 
   it("exact-hostname branch honors primaryHost narrowing", () => {
