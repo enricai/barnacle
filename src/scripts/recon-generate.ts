@@ -14476,30 +14476,45 @@ async function main(): Promise<void> {
     // diagnostic must consult the SAME resolution each path actually applies,
     // or it falsely reports "no fold plan resolved" for every multi-step flow
     // with a working foldReturn.
-    const effectiveFoldPlanCount = multiStepBody
-      ? resolveFoldPlan(actionSteps, foldReturnSpec).length
-      : resolveApplicableFoldPlans(actionSteps, foldReturnSpec, multiStepBody, emittedPrimaryAnchor)
-          .length;
+    const effectiveFoldPlans = multiStepBody
+      ? resolveFoldPlan(actionSteps, foldReturnSpec)
+      : resolveApplicableFoldPlans(
+          actionSteps,
+          foldReturnSpec,
+          multiStepBody,
+          emittedPrimaryAnchor
+        );
+    const effectiveFoldPlanCount = effectiveFoldPlans.length;
     if (foldReturnSpec !== null && effectiveFoldPlanCount === 0) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but no fold plan resolved — no later capture matched the endpoint pattern, resultsPath resolved to no object array, or the matched drill-down is multipart; the drill-down's response will not be folded`
       );
     }
     // The quieter failure: structural plans resolved (so the count above is
-    // non-zero) but the DECLARED spec itself resolved nothing, so its
-    // joinFields never reached any emitted target and only heuristic join
-    // guesses were emitted. Without this the two cases are indistinguishable
-    // in the output. Anchored exactly as the emitted resolution above is, so
-    // the diagnostic never disagrees with what actually went into the file.
-    if (
+    // non-zero) but none of their targets ended up carrying the DECLARED
+    // joinFields, so only heuristic join guesses were emitted. Read straight
+    // off `effectiveFoldPlans` — the exact plans/targets that actually made
+    // it into the emitted output — rather than re-deriving success via a
+    // second, independent, unrestricted `buildFoldPlanFromSpec` call: that
+    // call re-scans every primary/drill occurrence from scratch with none of
+    // `mergeSpecPlanOntoSamePrimary`'s per-occurrence, per-target override
+    // robustness (see its own docstring), so under a noisy archive with
+    // several occurrences of the same re-issued/paginated primary it can
+    // legitimately resolve to `null` even while the declared joinFields WERE
+    // already applied onto the actual emitted target via that per-occurrence
+    // override — producing this exact false "declared spec resolved no fold
+    // plan" warning despite the declared field being the one genuinely
+    // emitted. Comparing against what was actually resolved can never
+    // disagree with what went into the file, by construction.
+    const declaredJoinFieldsApplied =
       foldReturnSpec !== null &&
-      effectiveFoldPlanCount > 0 &&
-      buildFoldPlanFromSpec(
-        actionSteps,
-        foldReturnSpec,
-        multiStepBody ? null : emittedPrimaryAnchor
-      ) === null
-    ) {
+      effectiveFoldPlans.some((plan) =>
+        plan.targets.some(
+          (target) =>
+            JSON.stringify(target.joinFields) === JSON.stringify(foldReturnSpec.joinFields)
+        )
+      );
+    if (foldReturnSpec !== null && effectiveFoldPlanCount > 0 && !declaredJoinFieldsApplied) {
       logger.warn(
         `flow declares foldReturn (endpointPattern: ${foldReturnSpec.endpointPattern}, resultsPath: ${foldReturnSpec.resultsPath}, joinFields: ${foldReturnSpec.joinFields.join(", ")}) but the declared spec resolved no fold plan — only structurally-detected fold plans (with their own guessed join fields) were emitted, so the declared joinFields were not applied; check that the endpointPattern names a capture in the action sequence and resultsPath resolves on the primary response`
       );
