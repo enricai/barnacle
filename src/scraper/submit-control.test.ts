@@ -689,6 +689,30 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tier).toBeGreaterThan(0);
     expect(result[0]?.tag).toBe("div");
   });
+
+  // Same rule-out as above, but for the widened tier-0.5 (tag/role-agnostic)
+  // gate specifically: a generic-action-labeled control with no submit
+  // wording, no button tag, and no button-ish role, nested inside an OPEN
+  // shadow root. The evidence above predates the tier-0.5 widening and only
+  // exercised tier-1/tier-3 (submit-worded) candidates, so this closes that
+  // gap for the newly-widened tier rather than re-testing what tier-1/3
+  // already proved.
+  it("finds a widened-tier (0.5), tag/role-agnostic div nested in an OPEN shadow root via the deep traversal (rules out the shadow-root candidate mechanism for the widened gate)", () => {
+    const shadowGenericAction = makeEl("div", {}, "Create Account");
+    const shadowRoot = makeRoot([shadowGenericAction]);
+    const host = makeEl("app-account-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+  });
 });
 
 describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier breadth", () => {

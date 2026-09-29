@@ -143,6 +143,37 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
     return { evaluate, childUrl };
   }
 
+  /**
+   * Same-origin child frame carrying exactly one widened-tier (0.5),
+   * tag/role-agnostic candidate — a generic-action-labeled `<div>` with no
+   * submit wording, no button tag, and no button-ish role — the same shape
+   * bugfix-001 widened `isButtonLike`/tier ranking to accept. Proves the
+   * fallback's own logic (picking `ranked[0]` and clicking by `deepIndex`)
+   * never gates on a specific tier value, so a tier-0.5 candidate recovers
+   * exactly like the tier-3 one in {@link makeRecoverableChildFrame} above.
+   */
+  function makeWidenedTierRecoverableChildFrame() {
+    const childUrl = { current: CHILD_FRAME_URL_BEFORE };
+    const candidate: SubmitCandidate = {
+      deepIndex: 2,
+      tier: 0.5,
+      tag: "div",
+      accessibleName: "create account",
+    };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (expr === "location.href") return childUrl.current;
+      const src = String(expr);
+      if (isRankExpr(src)) return [candidate];
+      if (isClickExpr(src)) {
+        childUrl.current = CHILD_FRAME_URL_AFTER;
+        return { clicked: true };
+      }
+      if (src.includes("outerHTML")) return { html: 4096, text: "0:" };
+      return null;
+    });
+    return { evaluate, childUrl };
+  }
+
   /** Same-origin child frame with no submit-shaped candidate at all — origin-probed but never clicked. */
   function makeEmptyChildFrame() {
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
@@ -202,6 +233,26 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
     expect(logged).toContain(
       "cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate"
     );
+  });
+
+  it("recovers via the same-origin child-iframe fallback for a widened-tier (0.5), tag/role-agnostic candidate (rules out the same-origin-iframe candidate mechanism for the widened gate)", async () => {
+    const childFrame = makeWidenedTierRecoverableChildFrame();
+    const page = fakePage({ childFrame });
+    const stagehand = unresolvedStagehand();
+    const logger = makeTestLogger();
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps: [step()],
+      logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result).toMatchObject({ lastStepIndex: 0 });
+    expect(childFrame.childUrl.current).toBe(CHILD_FRAME_URL_AFTER);
   });
 
   it("still throws cascade-exhausted, byte-for-byte as before, when no child frame is attached at all (no-iframe regression guard)", async () => {
