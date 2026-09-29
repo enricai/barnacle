@@ -345,4 +345,70 @@ describe("flow-runner n+16 fallback — submit-shape probe reflects the xpathTai
     expect(result.lastStepIndex).toBe(1);
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
   });
+
+  /**
+   * Pins the report's own attempt-1 (act-string) evidence: `triedSelectors:
+   * []` — Stagehand's act() resolved no candidate at all, so
+   * `resolvedAction` stays null and attempt 1 fast-skips before the n+16
+   * fallback block is ever reached (the fallback is gated on
+   * `resolvedAction?.selector`, see flow-runner.ts's n+16 probe). No xpath
+   * exists to pass into `xpathTailForRetarget`, so the tail-retarget
+   * heuristic is ruled out as this failure's cause — it was never
+   * reachable, not merely unsuccessful. When every subsequent technique
+   * also resolves nothing, the cascade must fail cleanly (a
+   * StepVerificationError) rather than fabricating a tail xpath from
+   * nothing or throwing an unrelated error.
+   */
+  it("proceeds without a usable xpathTail (no fabrication, no throw) when the prior attempt's triedSelectors is empty", async () => {
+    const { page, stagehand, steps } = buildFixture({
+      controlTag: "button",
+      controlAttrs: 'type="submit"',
+      wrapInForm: true,
+      clickHandler: () => {},
+    });
+    const { logger, info, warn } = makeLogger();
+
+    // Every technique in the cascade resolves nothing, mirroring the
+    // report's diagnostic bundle: act-string returns no candidate at all
+    // (triedSelectors: []), and observe likewise returns no candidates for
+    // both the focused and unfocused calls, so no attempt ever produces a
+    // selector for the n+16 fallback to re-anchor.
+    stagehand.act = vi.fn().mockResolvedValue({
+      success: false,
+      message: "no candidate resolved",
+      actionDescription: "no candidate resolved",
+      actions: [],
+    });
+    stagehand.observe = vi.fn().mockResolvedValue([]);
+
+    const evaluateCalls: string[] = [];
+    const originalEvaluate = page.evaluate.bind(page) as (expr: unknown) => Promise<unknown>;
+    (page as unknown as { evaluate: (expr: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ) => {
+      evaluateCalls.push(String(expr));
+      return originalEvaluate(expr);
+    };
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      })
+    ).rejects.toMatchObject({ name: "StepVerificationError" });
+
+    // The n+16 fallback's clickExpr probe (the only call site that composes
+    // an `XPathResult`-based document.evaluate expression) was never
+    // dispatched — there was no resolved selector to gate it open, so
+    // xpathTailForRetarget was never invoked, let alone fed a fabricated
+    // xpath.
+    expect(evaluateCalls.some((call) => call.includes("XPathResult"))).toBe(false);
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+    expect(warn.some((line) => line.toLowerCase().includes("unhandled"))).toBe(false);
+  });
 });
