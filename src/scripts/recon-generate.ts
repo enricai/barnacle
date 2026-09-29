@@ -1338,9 +1338,16 @@ function isGraphQL(
 ): boolean {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const scoped = captures.filter((c) => {
-    if (hasHostProvenance && !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+    if (
+      hasHostProvenance &&
+      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
+    )
       return false;
-    if (ownBackendHostnames.length > 1 && primaryHost !== null && captureHostname(c.url) !== primaryHost)
+    if (
+      ownBackendHostnames.length > 1 &&
+      primaryHost !== null &&
+      captureHostname(c.url) !== primaryHost
+    )
       return false;
     return true;
   });
@@ -1696,7 +1703,11 @@ export function firstEndpointCapture(
       !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
     )
       return false;
-    if (ownBackendHostnames.length > 1 && primaryHost !== null && captureHostname(c.url) !== primaryHost)
+    if (
+      ownBackendHostnames.length > 1 &&
+      primaryHost !== null &&
+      captureHostname(c.url) !== primaryHost
+    )
       return false;
     return true;
   };
