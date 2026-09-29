@@ -1681,14 +1681,17 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
     }
   });
 
-  it("never resolves or touches a child frame when frameSelector is omitted — every evaluate call lands on the page", async () => {
+  it("never resolves or touches a child frame for a non-submit-shaped step, even with frameSelector omitted and a same-origin child frame attached", async () => {
     const childFrameEvaluate = vi.fn();
     const page = fakeFlowPageWithFrame({
       // A real iframe exists on the page and a real matching frame is
       // attached, but frameSelector is never passed to runHealingFlow — so
-      // resolveFrameTarget(page, undefined) must short-circuit to the
-      // main-frame target WITHOUT ever probing for the iframe or reading
-      // page.frames().
+      // resolveFrameTarget(page, undefined) short-circuits to the main-frame
+      // target for the whole cascade. The bounded same-origin child-iframe
+      // fallback (bugfix-003) only ever activates for a submit-shaped step
+      // (matching every other buildRankSubmitCandidatesExpr call site's
+      // guard in this file) — this step is a radio-answer click, not a
+      // submit, so the fallback must never even origin-probe this frame.
       iframeSrc: "https://apply.example.com/application/abc-123",
       childFrameEvaluate,
     });
@@ -1722,6 +1725,47 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       const options = call.at(-1) as { selector?: string } | undefined;
       expect(options?.selector).toBeUndefined();
     }
+  });
+
+  it("clicks a submit-shaped candidate in a same-origin child frame via the bounded fallback when frameSelector is omitted and the step is submit-shaped", async () => {
+    const childFrameEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (expr === "location.href") return "https://careers.example.org/embedded-apply";
+      const src = String(expr);
+      if (src.includes("rankSubmitCandidates") || src.includes("deepIndex")) return null;
+      return null;
+    });
+    const page = fakeFlowPageWithFrame({
+      // Same-origin child frame (careers.example.org, matching page.url()'s
+      // origin) so the fallback's origin check passes and it proceeds to
+      // rank — this test only needs to prove the guard now LETS a
+      // submit-shaped step reach the child frame at all; the actual
+      // ranking/click mechanics are exercised by probeChildFrameSubmitFallback's
+      // own coverage above (childFrameEvaluate here never matches a rank
+      // expression it recognizes, so ranking legitimately comes back empty
+      // and the step still throws — the point is that it's now PROBED).
+      iframeSrc: "https://careers.example.org/embedded-apply",
+      childFrameEvaluate,
+    });
+    const stagehand = unhealableStagehand();
+
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps: [step({ instruction: "Click the 'Submit application' button", submitStep: true })],
+        logger: testLogger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+        // frameSelector omitted
+      })
+    ).rejects.toMatchObject({ name: "StepVerificationError" });
+
+    // Unlike the non-submit-step case above, a submit-shaped step DOES reach
+    // the bounded fallback and origin-probes the attached same-origin child
+    // frame via `location.href`.
+    const originProbes = childFrameEvaluate.mock.calls.filter(([expr]) => expr === "location.href");
+    expect(originProbes.length).toBeGreaterThan(0);
   });
 
   it("falls back to the main frame and still completes (never throws) when frameSelector matches no live frame", async () => {

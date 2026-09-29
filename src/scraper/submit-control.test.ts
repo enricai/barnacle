@@ -308,8 +308,22 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tag).toBe("input");
   });
 
-  it("excludes a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
+  it("ranks a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
     const div = makeEl("div", {}, "Submit Application");
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it("still excludes a non-button-like element with no submit wording at all", () => {
+    const div = makeEl("div", {}, "Create Account");
     const document = makeRoot([div]);
 
     const result = evaluateInFakePage(
@@ -569,6 +583,155 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tier).toBe(0.5);
     expect(result[0]?.deepIndex).toBe(1);
   });
+
+  it('ranks a `role="none"` div carrying submit-shaped text (checkout-domain example) nonzero, with no button tag or button-ish role at all', () => {
+    const checkoutSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const document = makeRoot([checkoutSubmit]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBeGreaterThan(0);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it.each(["Cancel", "Save draft"])(
+    'excludes a `role="none"` div labeled "%s" from ranking entirely (no tag/role gate regression)',
+    (label) => {
+      const control = makeEl("div", { role: "none" }, label);
+      const document = makeRoot([control]);
+
+      const result = evaluateInFakePage(
+        buildRankSubmitCandidatesExpr(),
+        document
+      ) as SubmitCandidate[];
+
+      expect(result).toEqual([]);
+    }
+  );
+
+  it('excludes a hidden `role="none"` div-shaped submit control (checkout-domain example) while ranking a rendered sibling normally', () => {
+    const hiddenDivSubmit = makeEl("div", { role: "none" }, "Submit Order", {
+      rect: { width: 0, height: 0 },
+    });
+    const renderedFallback = makeEl("div", { role: "none" }, "Submit Order Now");
+    const document = makeRoot([hiddenDivSubmit, renderedFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  it('excludes an `aria-disabled="true"` `role="none"` div-shaped submit control (checkout-domain example) while ranking an enabled sibling normally', () => {
+    const disabledDivSubmit = makeEl(
+      "div",
+      { role: "none", "aria-disabled": "true" },
+      "Submit Order"
+    );
+    const enabledFallback = makeEl("div", { role: "none" }, "Submit Order Now");
+    const document = makeRoot([disabledDivSubmit, enabledFallback]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deepIndex).toBe(1);
+  });
+
+  // Rules out the shadow-root candidate mechanism for a tag/role-agnostic
+  // (div-shaped) submit control specifically, not just the button-shaped
+  // shadow-root cases already covered above: the deep traversal pierces
+  // OPEN shadow roots regardless of what's inside them, so a div-shaped
+  // control nested in one is found exactly like a top-level one. A CLOSED
+  // shadow root is not exercised here (or anywhere in this suite) because
+  // it is categorically unreachable from page script by browser design —
+  // `attachShadow({ mode: "closed" })` does not expose `.shadowRoot` on the
+  // host element at all, so no traversal, deep or otherwise, running in
+  // page-script context (as this module's generated expressions do) can
+  // ever see inside one. That is a platform boundary, not a bug this
+  // module could fix, so it is ruled out by design rather than by test.
+  it("finds a submit-shaped div nested in an OPEN shadow root via the deep traversal (rules out the shadow-root candidate mechanism)", () => {
+    const shadowDivSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const shadowRoot = makeRoot([shadowDivSubmit]);
+    const host = makeEl("app-checkout-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBeGreaterThan(0);
+    expect(result[0]?.tag).toBe("div");
+  });
+});
+
+describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier breadth", () => {
+  it('ranks a roleless custom-element with accessible name exactly "submit" as tier 2', () => {
+    const control = makeEl("app-submit-action", {}, "Submit");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(2);
+    expect(result[0]?.tag).toBe("app-submit-action");
+  });
+
+  it('ranks a roleless <span> whose text contains "submit" as a distinct word as tier 1', () => {
+    const control = makeEl("span", {}, "Please Submit Now");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.tag).toBe("span");
+  });
+
+  it("excludes a roleless <a> with a generic action name and no submit wording (tier 0.5 still requires button/input tag or role)", () => {
+    const control = makeEl("a", {}, "Create Account");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
+  it.each(["Back", "Cancel", "Save draft"])(
+    'excludes a roleless <div> "%s" control from ranking entirely even though it carries no tag/role gate',
+    (label) => {
+      const control = makeEl("div", {}, label);
+      const document = makeRoot([control]);
+
+      const result = evaluateInFakePage(
+        buildRankSubmitCandidatesExpr(),
+        document
+      ) as SubmitCandidate[];
+
+      expect(result).toEqual([]);
+    }
+  );
 });
 
 describe("submit-control/buildClickByDeepIndexExpr", () => {
@@ -612,6 +775,39 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
 
     expect(clickResult).toEqual({ clicked: true });
     expect(shadowSubmit.clicked).toBe(true);
+  });
+
+  // Combines the two gaps the report treated as separate: a non-button-like,
+  // roleless element (submit-shaped by text alone) that is ALSO only
+  // reachable via the shadow-root deep traversal. The rank-only shadow-root
+  // div test above proves ranking; the click-only shadow-root test above
+  // proves clicking a button-tagged shadow child. Neither proves the two
+  // combine, which is exactly the gap a custom-element host's roleless
+  // shadow child (e.g. a `<div>Submit Order</div>` inside `<app-widget>`'s
+  // open shadow root) would fall into before the isButtonLike tier-0 gate
+  // was relaxed to rank by accessible name.
+  it("ranks and clicks a roleless, non-button-tagged div nested in an OPEN shadow root via its deepIndex", () => {
+    const shadowDivSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const shadowRoot = makeRoot([shadowDivSubmit]);
+    const host = makeEl("app-widget-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const ranked = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.tier).toBeGreaterThan(0);
+    expect(ranked[0]?.tag).toBe("div");
+
+    const clickResult = evaluateInFakePage(
+      buildClickByDeepIndexExpr(ranked[0]?.deepIndex as number),
+      document
+    ) as { clicked: boolean };
+
+    expect(clickResult).toEqual({ clicked: true });
+    expect(shadowDivSubmit.clicked).toBe(true);
   });
 
   // Module-contract test, not a caller-behavior test: buildClickByDeepIndexExpr

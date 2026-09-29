@@ -129,7 +129,7 @@ function evaluateAbsolute(root: FakeElement, xp: string): FakeElement | null {
 }
 
 /** Relative descendant-chain resolution for the "//tail" re-anchor the fix adds. */
-function evaluateTail(root: FakeElement, tail: string): FakeElement | null {
+function evaluateTailAll(root: FakeElement, tail: string): FakeElement[] {
   const steps = parseXPathSteps(tail);
   const all: FakeElement[] = [];
   const collect = (node: FakeElement): void => {
@@ -147,7 +147,7 @@ function evaluateTail(root: FakeElement, tail: string): FakeElement | null {
     }
     return true;
   };
-  return all.find(matchesChain) ?? null;
+  return all.filter(matchesChain);
 }
 
 /**
@@ -190,7 +190,7 @@ function buildLiveTree(): { htmlRoot: FakeElement; checkbox: FakeElement } {
  * (absolute positional matching) plus the fix's "//tail" re-anchor path.
  */
 function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
-  const XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+  const XPathResult = { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 };
   class FakeEvent {
     type: string;
     constructor(type: string, _opts?: unknown) {
@@ -198,9 +198,16 @@ function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
     }
   }
   const fakeDocument = {
-    evaluate(xp: string) {
+    evaluate(xp: string, _ctx: unknown, _ns: unknown, type: number) {
+      if (xp.startsWith("//") && type === XPathResult.ORDERED_NODE_SNAPSHOT_TYPE) {
+        const matches = evaluateTailAll(htmlRoot, xp.slice(2));
+        return {
+          snapshotLength: matches.length,
+          snapshotItem: (i: number) => matches[i] ?? null,
+        };
+      }
       const node = xp.startsWith("//")
-        ? evaluateTail(htmlRoot, xp.slice(2))
+        ? (evaluateTailAll(htmlRoot, xp.slice(2))[0] ?? null)
         : evaluateAbsolute(htmlRoot, xp);
       return { singleNodeValue: node };
     },

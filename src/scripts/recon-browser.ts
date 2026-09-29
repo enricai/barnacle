@@ -121,6 +121,7 @@ import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
+import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
@@ -2238,6 +2239,13 @@ function dumpStepFailure(params: {
    * page unprompted. Complements `finalObserve` (which is observe-with-step).
    */
   unfocusedObserve: Action[];
+  /**
+   * Bounded snapshot of the submit-shaped candidate ranking at the moment
+   * resolution gave up, or `null` when the capture itself failed on the
+   * already-failing page. Persisted verbatim so a triager can see exactly
+   * which candidates the cascade ranked without another guessing round.
+   */
+  targetResolutionDiagnostic: TargetResolutionDiagnosticSnapshot | null;
 }): string {
   const { stepFailuresDir } = resolveReconRunDir();
   const idx = String(params.stepIndex).padStart(3, "0");
@@ -2254,6 +2262,7 @@ function dumpStepFailure(params: {
     unfocusedObserve: params.unfocusedObserve,
     bodyOuterHtml: params.bodyOuterHtml,
     recentCaptures: params.recentCaptures.slice(-5),
+    targetResolutionDiagnostic: params.targetResolutionDiagnostic,
   };
   const target = join(stepFailuresDir, filename);
   writeFileSync(target, JSON.stringify(bundle, null, 2));
@@ -3591,6 +3600,7 @@ export type { NormalizedStep, ReplanEvent };
 // mocked browser session cannot trigger a real recon run.
 export {
   denormalizeStep,
+  dumpStepFailure,
   main,
   normalizeFlow,
   parseCli,

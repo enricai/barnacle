@@ -77,6 +77,7 @@ import {
   StepVerificationError,
 } from "@/scraper/errors";
 import {
+  childFrameTarget,
   type FrameTarget,
   mainFrameTarget,
   probeAttachedFrameTarget,
@@ -92,8 +93,13 @@ import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
+  NEGATIVE_TEXT_EXPR,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
+import {
+  captureTargetResolutionDiagnosticSnapshot,
+  type TargetResolutionDiagnosticSnapshot,
+} from "@/scraper/target-resolution-diagnostic";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
@@ -3858,6 +3864,44 @@ function xpathTailForRetarget(xpath: string): string | null {
 }
 
 /**
+ * In-page source for `(tail) => Element | null`: resolves
+ * {@link xpathTailForRetarget}'s loose `//`+tail re-anchor against the live
+ * DOM, disambiguating when the loose pattern matches more than one element.
+ * The tail deliberately drops every attribute above the leaf+parent tag
+ * pair, so on a page with several same-tag-shaped siblings (e.g. a repeated
+ * "sign in" control sitting where a "create account" submit button used to
+ * resolve) `FIRST_ORDERED_NODE_TYPE` silently accepts whichever one happens
+ * to come first in document order — not necessarily the element the primary
+ * xpath was tracking. Snapshotting every match and preferring one that is
+ * objectively submit-shaped (mirrors {@link resolvedClickTargetIsSubmitShaped}'s
+ * tag/type/form-ownership predicate) and not negative-text (reuses
+ * submit-control.ts's own {@link NEGATIVE_TEXT_EXPR} vocabulary rather than a
+ * second copy) recovers the plausible candidate instead of an arbitrary one.
+ * Falls back to the first document-order match when no candidate clears that
+ * bar, preserving the previous behavior for every single-match (the common)
+ * case.
+ */
+const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
+    const isNegative = ${NEGATIVE_TEXT_EXPR};
+    const isSubmitShaped = (el) => {
+      if (!el || !el.tagName) return false;
+      const tag = el.tagName.toUpperCase();
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
+      if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
+      return false;
+    };
+    const accessibleName = (el) =>
+      (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const nodes = [];
+    for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
+    if (nodes.length <= 1) return nodes[0] || null;
+    const preferred = nodes.find((el) => isSubmitShaped(el) && !isNegative(accessibleName(el)));
+    return preferred || nodes[0];
+  })`;
+
+/**
  * Resolve any selector a caller might hold into a bare XPath body for
  * `document.evaluate`. `verifyFillReadback` is shared across call sites that
  * carry different selector forms — Stagehand's `xpath=…` (act path), an
@@ -4188,8 +4232,7 @@ async function resolvedClickTargetIsSubmitShaped(
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     let el = r.singleNodeValue;
     if (!el && ${JSON.stringify(xpathTail)}) {
-      const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      el = r2.singleNodeValue;
+      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
     }
     if (!el || !el.tagName) return false;
     const tag = el.tagName.toUpperCase();
@@ -9093,6 +9136,121 @@ function redactIfSensitive(text: string, sensitiveValue?: string): string {
   return sensitiveValue && text === sensitiveValue ? "[redacted]" : text;
 }
 
+/**
+ * Last-resort escalation for the cascade-exhaustion path: when every
+ * resolution technique has already failed against the resolved (declared-or-
+ * main) frame and no `frameSelector` was declared for this step, probe every
+ * same-origin CHILD frame Stagehand's CDP layer has attached to
+ * (`page.frames()`) for a submit-shaped candidate, using the same
+ * tag/role-agnostic ranking (`buildRankSubmitCandidatesExpr`) and click
+ * primitive (`buildClickByDeepIndexExpr`) the declared-frame cascade already
+ * trusts. This closes the "target lives inside an undeclared iframe" gap for
+ * the ONE case that's safe to probe blindly: a same-origin child, where
+ * `location.href` is readable and its origin can be compared directly against
+ * the top document's. A cross-origin child (e.g. a checkout iframe payment
+ * widget) is excluded on purpose — CDP's `Runtime.evaluate` can still reach a
+ * cross-origin OOPIF's document, so an origin check (not a thrown evaluate)
+ * is the only thing that would stop this function from guessing which
+ * cross-origin iframe hosts the target with no declared selector to anchor
+ * on. That guess is exactly what `frameSelector` exists so a flow author
+ * never has to make; this fallback stays within the same-origin case the
+ * gap report calls out and leaves cross-origin as the flow author's declared
+ * `frameSelector` responsibility, unchanged.
+ *
+ * Every candidate frame is ranked and, on a hit, clicked and verified through
+ * the SAME `snapshotPage`/`classifyPhantomClick` pre/post pair the cascade's
+ * own `deep-submit-locator` escalation uses (including the single runner-up
+ * retry on a phantom top pick) — there is no new unverified success path,
+ * only a new place to look for the candidate before giving up.
+ *
+ * Returns the clicked `FrameTarget` on a verified (non-phantom) click, or
+ * `null` if no same-origin child frame yielded a submit-shaped candidate, no
+ * candidate was actually clickable, or every click phantomed.
+ */
+async function probeChildFrameSubmitFallback(params: {
+  page: Page;
+  signalCounter: { n: number };
+}): Promise<FrameTarget | null> {
+  const { page, signalCounter } = params;
+  // `page.mainFrameId`/`page.frames` are read defensively: some call sites
+  // (and their test fakes) model a `Page` that never attaches child frames at
+  // all and doesn't implement this pair, which is indistinguishable here from
+  // "no child frames exist" — either way there is nothing for this fallback
+  // to probe, so it degrades to its normal "nothing found" return rather than
+  // throwing out of an otherwise-best-effort escalation.
+  let candidateFrames: ReturnType<Page["frames"]>;
+  try {
+    const mainFrameId = page.mainFrameId();
+    candidateFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  } catch {
+    return null;
+  }
+  if (candidateFrames.length === 0) return null;
+
+  const pageOrigin = (() => {
+    try {
+      return new URL(page.url()).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (!pageOrigin) return null;
+
+  for (const frame of candidateFrames) {
+    const frameUrl = await Promise.resolve(frame.evaluate<string>("location.href")).catch(
+      () => null
+    );
+    if (!frameUrl) continue;
+    const frameOrigin = (() => {
+      try {
+        return new URL(frameUrl).origin;
+      } catch {
+        return null;
+      }
+    })();
+    // Cross-origin: documented rule-out, not a code defect. See docblock.
+    if (frameOrigin !== pageOrigin) continue;
+
+    const target = childFrameTarget(page, frame, "(auto-discovered same-origin iframe)");
+    const rankResult = await Promise.resolve(
+      target.evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
+    ).catch(() => null);
+    const ranked: SubmitCandidate[] = Array.isArray(rankResult) ? rankResult : [];
+    if (ranked.length === 0) continue;
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
+    const top = ranked[0]!;
+    const pre = await snapshotPage(target, signalCounter, page);
+    const clickResult = (await Promise.resolve(
+      target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+    ).catch(() => ({ clicked: false }))) as { clicked: boolean };
+    if (!clickResult.clicked) continue;
+    const post = await snapshotPage(target, signalCounter, page);
+    const verdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre,
+      post,
+      isSubmitShapedStep: true,
+    });
+    if (verdict !== "phantom") return target;
+
+    const runnerUp = ranked[1];
+    if (!runnerUp) continue;
+    const runnerUpClickResult = (await Promise.resolve(
+      target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+    ).catch(() => ({ clicked: false }))) as { clicked: boolean };
+    if (!runnerUpClickResult.clicked) continue;
+    const runnerUpPost = await snapshotPage(target, signalCounter, page);
+    const runnerUpVerdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre,
+      post: runnerUpPost,
+      isSubmitShapedStep: true,
+    });
+    if (runnerUpVerdict !== "phantom") return target;
+  }
+  return null;
+}
+
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -9310,6 +9468,12 @@ export async function executeStepWithHealing(params: {
     recentCaptures: string[];
     bodyOuterHtml: string | null;
     unfocusedObserve: Action[];
+    /**
+     * Bounded snapshot of the submit-shaped candidate ranking at the moment
+     * this technique gave up, or `null` when the capture itself failed on
+     * the already-failing page. See {@link captureTargetResolutionDiagnosticSnapshot}.
+     */
+    targetResolutionDiagnostic: TargetResolutionDiagnosticSnapshot | null;
   }) => string | null;
   /**
    * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
@@ -10115,6 +10279,29 @@ export async function executeStepWithHealing(params: {
         "backend-error-unrecoverable"
       );
     }
+    // Bounded same-origin child-iframe fallback: the probe above only ever
+    // looked at the resolved (declared-or-main) frame's own light+shadow DOM,
+    // so a target genuinely inside an undeclared same-origin iframe is
+    // invisible to it. Only tried when this step never declared its own
+    // frameSelector — a declared-and-used frame means the flow author already
+    // told us where to look, and guessing elsewhere would second-guess that —
+    // and only when this step is itself submit-shaped, since the probe ranks
+    // for a submit-shaped candidate and firing it on a non-submit step (e.g.
+    // a radio/select answer) could complete the step by clicking an unrelated
+    // submit control in an unrelated same-origin child iframe.
+    if (
+      !frameTarget?.declaredFrameSelector &&
+      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+    ) {
+      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+      if (fallbackTarget) {
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
+        );
+        trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        return "completed";
+      }
+    }
     // Capture diagnostics + write a failure dump BEFORE throwing so the
     // global replan path's `readFailureDumpEvidence` can populate the
     // prompt's CURRENTLY VISIBLE / UNFOCUSED OBSERVE / PAGE BODY HTML
@@ -10145,6 +10332,10 @@ export async function executeStepWithHealing(params: {
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
+    const targetResolutionDiagnostic =
+      submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
+        ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
+        : null;
     const dumpPath =
       onStepFailure?.({
         stepIndex,
@@ -10157,6 +10348,7 @@ export async function executeStepWithHealing(params: {
         recentCaptures,
         bodyOuterHtml,
         unfocusedObserve,
+        targetResolutionDiagnostic,
       }) ?? null;
     throw new StepVerificationError(
       `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
@@ -10476,6 +10668,12 @@ export async function executeStepWithHealing(params: {
   };
   let phantomClickAfterAttempt1 = false;
   let attempt1UnreachableViaLightDom = false;
+  // Last candidate list the deep-submit-locator itself ranked this step, if
+  // any — reused by the cascade-exhausted diagnostic snapshot below so it
+  // doesn't re-run buildRankSubmitCandidatesExpr (and inflate the rank-call
+  // count the phantom-click-escalation tests assert on) when the cascade
+  // already has an up-to-date ranking to report from.
+  let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
@@ -10694,6 +10892,7 @@ export async function executeStepWithHealing(params: {
             record.errorMessage = `deep-submit-locator: rank evaluate threw ${toErrorMessage(err)}`;
             break;
           }
+          lastRankedSubmitCandidates = ranked;
           if (ranked.length === 0) {
             record.errorMessage = "deep-submit-locator: no submit-shaped candidate found";
             break;
@@ -12124,7 +12323,7 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -12147,8 +12346,7 @@ export async function executeStepWithHealing(params: {
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node && ${JSON.stringify(xpathTail)}) {
-                const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                node = r2.singleNodeValue;
+                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
               }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
@@ -12252,8 +12450,7 @@ export async function executeStepWithHealing(params: {
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                 let el = r.singleNodeValue;
                 if (!el && ${JSON.stringify(xpathTail)}) {
-                  const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                  el = r2.singleNodeValue;
+                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
                 }
                 return el ? isDisabled(el) : false;
               })()`;
@@ -12744,6 +12941,31 @@ export async function executeStepWithHealing(params: {
     }
   }
 
+  // Bounded same-origin child-iframe fallback: every attempt above only ever
+  // operated against the resolved (declared-or-main) frame, so a target
+  // genuinely inside an undeclared same-origin iframe was invisible to all of
+  // them. Only tried when this step never declared its own frameSelector — a
+  // declared-and-used frame means the flow author already told us where to
+  // look, so this can only ever fire on a case that today always fails
+  // (no regression risk to any currently-passing path) — and only when this
+  // step is itself submit-shaped, matching every other
+  // buildRankSubmitCandidatesExpr call site's guard in this file, since
+  // firing on a non-submit step could complete it by clicking an unrelated
+  // submit control in an unrelated same-origin child iframe.
+  if (
+    !frameTarget?.declaredFrameSelector &&
+    (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+  ) {
+    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+    if (fallbackTarget) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
+      );
+      trajectory?.push({ stepIndex, verifiedBy: "dom" });
+      return "completed";
+    }
+  }
+
   const cascadeExhaustObservedFinal = await guardedObserve(
     stagehand,
     step,
@@ -12780,6 +13002,14 @@ export async function executeStepWithHealing(params: {
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
+  const targetResolutionDiagnostic =
+    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
+      ? await captureTargetResolutionDiagnosticSnapshot(
+          frameTarget,
+          page,
+          lastRankedSubmitCandidates
+        )
+      : null;
   const dumpPath =
     onStepFailure?.({
       stepIndex,
@@ -12792,6 +13022,7 @@ export async function executeStepWithHealing(params: {
       recentCaptures,
       bodyOuterHtml,
       unfocusedObserve,
+      targetResolutionDiagnostic,
     }) ?? null;
   if (dumpPath !== null) {
     logger.error(

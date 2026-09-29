@@ -28,6 +28,7 @@ import {
   makeFakeFrameScan,
   registerDeepLocatorHopElements,
 } from "@/scraper/deep-locator-fake";
+import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
 
 /**
  * Builds a `FrameTarget` whose `evaluate` resolves against `frame`'s
@@ -582,6 +583,74 @@ describe("resolveDeepLocatorCandidates batched frame-scoped scan", () => {
 
     // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
     const candidates = await resolveDeepLocatorCandidates(page as any, null, "button[type=submit]");
+
+    expect(candidates.map((c) => c.accessibleText)).toEqual(["Submit"]);
+  });
+});
+
+/**
+ * Locks the iframe candidate mechanism's ruled-out boundary as a checkable
+ * regression: a target inside a DECLARED `frameSelector` is resolvable
+ * (this describe's first case), while an UNDECLARED iframe is never probed
+ * by any code path (the second case, plus the sibling coverage it cites).
+ * This is the recorded evidence for the report's iframe hypothesis being
+ * ruled out as a structural bypass rather than fixed — see
+ * `resolveScanFrameTarget` (`deep-locator-candidates.ts`), whose very first
+ * line is `if (!frameSelector) return null`, so an undeclared frame can
+ * never reach `probeAttachedFrameTarget`. No auto-detection is added here;
+ * that would be new scope beyond ruling this out.
+ */
+describe("resolveDeepLocatorCandidates: declared-frameSelector iframe boundary", () => {
+  it("resolves a submit-shaped candidate inside a declared, resolved frameSelector, scoped to INTERACTIVE_CANDIDATE_SELECTOR", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR}`, [
+      { text: "Submit Application", visible: true },
+    ]);
+    const { frameTarget } = makeFakeFrameTarget(
+      frame,
+      `#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR}`
+    );
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#apply_frame",
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      null,
+      { frameTarget }
+    );
+
+    expect(candidates).toEqual([
+      {
+        index: 0,
+        selector: `deeplocator=#apply_frame >> ${INTERACTIVE_CANDIDATE_SELECTOR} >> nth=0`,
+        accessibleText: "Submit Application",
+        isNav: false,
+      },
+    ]);
+  });
+
+  it("never probes an undeclared iframe: resolveScanFrameTarget short-circuits to null before any frame-attach attempt when frameSelector is unset", async () => {
+    // Documents the same boundary already exercised end to end by
+    // "falls back to the legacy per-candidate loop when no frameTarget is
+    // supplied and frameSelector is null" above, and by every case in
+    // `deep-locator-candidates.internal-frame-resolution.test.ts` (which
+    // only ever probes a frame reachable via an explicit `frameSelector`
+    // argument). A `Page` surface with no `evaluate`/`frames` proves no
+    // iframe-attach probe is even attempted: the call still resolves via
+    // the legacy `deepLocator()` loop instead of throwing on a missing
+    // frame-probing surface.
+    const delegate = makeFakeDelegate({ count: 1, texts: ["Submit"] });
+    const page = { deepLocator: vi.fn().mockReturnValue(delegate) };
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      null,
+      INTERACTIVE_CANDIDATE_SELECTOR,
+      null
+    );
 
     expect(candidates.map((c) => c.accessibleText)).toEqual(["Submit"]);
   });

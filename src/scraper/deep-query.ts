@@ -17,12 +17,15 @@ import { clickActivationExpr } from "@/scraper/browser-click-expr";
 /**
  * Text/attribute predicate for "this element is submit-shaped": a native
  * `type="submit"` control, a `<button>` with no explicit `type` inside a
- * `<form>` (the HTML default is submit), a button-role element whose
- * visible text/aria-label contains "submit" or a generic action verb
+ * `<form>` (the HTML default is submit), any element whose visible
+ * text/aria-label contains "submit" or a generic action verb
  * (create/continue/next/confirm/proceed — the labels JS-handled action
  * controls with an explicit `type="button"` commonly use instead of the
- * literal word "submit"), or a button-role element that is the sole
- * non-excluded actionable control inside its nearest form-like container.
+ * literal word "submit") regardless of tag/role — a checkout form's
+ * click-handled `<div>`/`<span>`/custom-element control carries the same
+ * signal a `<button>` would — or a button-role element that is the sole
+ * non-excluded actionable control inside its nearest form-like container
+ * (kept tag/role-gated since it has no text signal of its own to rank on).
  * Back/Cancel/Close/Dismiss/Save draft/Save for later/Previous controls are
  * excluded from every text-based and sole-control branch — the same
  * negative list `submit-control.ts`'s `NEGATIVE_TEXT_EXPR` ranks out — so
@@ -37,7 +40,6 @@ const SUBMIT_SHAPED_EL_EXPR = `((el) => {
   if (tag === "button" && !el.getAttribute("type") && el.closest("form")) return true;
   const role = (el.getAttribute("role") || "").toLowerCase();
   const isButtonLike = tag === "button" || role === "button";
-  if (!isButtonLike) return false;
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
   const text = norm(el.getAttribute("aria-label") || el.textContent || "");
   const isNegative = (t) => {
@@ -47,6 +49,7 @@ const SUBMIT_SHAPED_EL_EXPR = `((el) => {
   if (isNegative(text)) return false;
   if (/\\bsubmit\\b/.test(text)) return true;
   if (/\\b(create|continue|next|confirm|proceed)\\b/.test(text)) return true;
+  if (!isButtonLike) return false;
   const container = el.closest("form") || el.closest('[role="form"]');
   if (!container) return false;
   const isCandidate = (c) => {

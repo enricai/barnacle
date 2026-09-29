@@ -16,9 +16,12 @@ import { clickActivationExpr, MAX_SELECTION_ANCESTOR_DEPTH } from "@/scraper/bro
  * button-shaped and reachable. Checked before any positive tier so a
  * button whose text merely contains "submit" as a substring of a longer
  * negative phrase (unlikely in practice, but the exclusion is what makes
- * the ranking conservative) cannot slip through.
+ * the ranking conservative) cannot slip through. Exported so other
+ * submit-shape consumers (e.g. flow-runner.ts's xpath tail-retarget
+ * disambiguation) apply the identical negative-verb vocabulary instead of a
+ * second, driftable copy.
  */
-const NEGATIVE_TEXT_EXPR = `((text) => {
+export const NEGATIVE_TEXT_EXPR = `((text) => {
   const negatives = ["back", "cancel", "save draft", "save for later", "previous", "close"];
   return negatives.some((n) => text === n || text.startsWith(n + " ") || text.endsWith(" " + n));
 })`;
@@ -101,20 +104,26 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
  * belongs in that tier — the first matching tier wins, so an element that
  * qualifies for tier 1 is never re-evaluated against tier 2/3.
  *
- * 1. Explicit `type="submit"` — unambiguous native semantics.
- * 2. Accessible name is exactly (or is dominated by) "submit" — covers the
- *    shadow-root button whose text is "Submit" but carries no type
- *    attribute (Stencil/web-component controls often omit it).
- * 3. Button/role="button" element whose accessible name contains "submit"
- *    as a distinct word alongside other text (e.g. "Submit Application"),
- *    with no negative verb present — covers Angular-style controls matched
- *    by role + text rather than by type.
+ * 1. Explicit `type="submit"` — unambiguous native semantics. `type` is only
+ *    meaningful on button/input elements, so this tier alone still requires
+ *    one of those tags.
+ * 2. Accessible name is exactly (or is dominated by) "submit" — covers a
+ *    `<div>`/`<span>`/custom-element control (e.g. a newsletter form's
+ *    click-handled `<span>Submit</span>`) whose text is "Submit" but carries
+ *    no native tag, type attribute, or explicit role (Stencil/web-component
+ *    controls often omit all three).
+ * 3. Accessible name contains "submit" as a distinct word alongside other
+ *    text (e.g. "Submit Application"), with no negative verb present —
+ *    covers any element matched by text alone rather than by tag/type/role,
+ *    including a checkout form's non-button submit control.
  * 4. Button/role="button" element with no submit wording at all and no
  *    negative verb present (e.g. `<button type="button">Create Account</button>`)
  *    — a generic action control the earlier tiers cannot recognize by
  *    wording, kept weakest and evaluated last so it never outranks a tier
  *    with real submit signal and only surfaces when nothing stronger is on
- *    the page.
+ *    the page. This tier keeps the tag/role requirement because it has no
+ *    other signal to rank on, so dropping it would start matching arbitrary
+ *    structural divs.
  */
 const RANK_TIERS_EXPR = `((el, name) => {
   const isNegative = ${NEGATIVE_TEXT_EXPR};
@@ -123,11 +132,11 @@ const RANK_TIERS_EXPR = `((el, name) => {
   const type = (el.getAttribute("type") || "").toLowerCase();
   const role = (el.getAttribute("role") || "").toLowerCase();
   const isButtonLike = tag === "button" || tag === "input" || role === "button";
-  if (!isButtonLike) return 0;
   if ((tag === "button" || tag === "input") && type === "submit") return 3;
   if (name === "submit") return 2;
   if (/\\bsubmit\\b/.test(name)) return 1;
-  return 0.5;
+  if (isButtonLike) return 0.5;
+  return 0;
 })`;
 
 /**
