@@ -1804,14 +1804,25 @@ describe("isZeroVarianceRepeatCapture — index cache isolation across distinct 
 });
 
 describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", () => {
+  // A fixed occurrence count per distinct endpoint, with the endpoint count
+  // itself growing to reach `size` — the shape a larger real archive
+  // actually has (more distinct captured endpoints, not more repeats of the
+  // same few). Growing size by adding repeats to a fixed endpoint count
+  // would grow the post-fix per-endpoint group scan along with it, which
+  // isn't the quadratic-vs-linear distinction this test is guarding.
+  const OCCURRENCES_PER_ENDPOINT = 10;
+
   function buildScaleArchive(size: number) {
-    return Array.from({ length: size }, (_, i) => ({
-      method: "GET",
-      url: `https://svc.example.test/catalog/item-${i % 200}?sessionId=fixed&page=${i}`,
-      requestPostData: null,
-      responseHeaders: { "content-type": "application/json" },
-      responseBody: { id: `item-${i % 200}` },
-    }));
+    const endpointCount = Math.ceil(size / OCCURRENCES_PER_ENDPOINT);
+    return Array.from({ length: endpointCount }, (_, g) =>
+      Array.from({ length: OCCURRENCES_PER_ENDPOINT }, (_, p) => ({
+        method: "GET",
+        url: `https://svc.example.test/catalog/item-${g}?sessionId=fixed&page=${p + 1}`,
+        requestPostData: null,
+        responseHeaders: { "content-type": "application/json" },
+        responseBody: { id: `item-${g}` },
+      }))
+    ).flat();
   }
 
   function timeFullPassMs(archive: ReturnType<typeof buildScaleArchive>): number {
@@ -1820,8 +1831,13 @@ describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", 
     return performance.now() - start;
   }
 
+  /** Best-of-N timing to damp scheduler/GC noise on a single sample. */
+  function bestOfMs(archive: ReturnType<typeof buildScaleArchive>, runs: number): number {
+    return Math.min(...Array.from({ length: runs }, () => timeFullPassMs(archive)));
+  }
+
   it("keeps a full pass over 4x the archive size well under a quadratic (16x) time blowup", () => {
-    const N = 1000;
+    const N = 4000;
     const smallArchive = buildScaleArchive(N);
     const largeArchive = buildScaleArchive(N * 4);
 
@@ -1830,8 +1846,8 @@ describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", 
     timeFullPassMs(smallArchive);
     timeFullPassMs(largeArchive);
 
-    const smallElapsedMs = Math.max(timeFullPassMs(smallArchive), 1);
-    const largeElapsedMs = timeFullPassMs(largeArchive);
+    const smallElapsedMs = Math.max(bestOfMs(smallArchive, 5), 1);
+    const largeElapsedMs = bestOfMs(largeArchive, 5);
 
     // An O(n^2) full rescan per candidate would make the 4x-larger archive
     // take roughly 16x as long; a linear (index-backed) scan makes it take
