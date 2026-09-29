@@ -6696,6 +6696,11 @@ export function emitMultiStepExecuteHttp(
 
   // Pass 1: render every step's emitted strings; collect referenced var names.
   const rendered: Rendered[] = [];
+  // Computed once for the whole loop instead of once per iteration: `actions`
+  // never changes across iterations, so re-deriving this array inside the
+  // loop defeats isZeroVarianceRepeatCapture's reference-keyed cache (see the
+  // identical hoist and rationale at lines 7216 and 12427).
+  const allCaptures = actions.map((a) => a.capture);
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
@@ -6708,10 +6713,7 @@ export function emitMultiStepExecuteHttp(
     // isGet UUID-only floor) and for the fold/drill per-item pass. Rendering
     // its exact literal URL makes this hold even when a value's own
     // length/chain-eligibility scoping doesn't happen to catch the coincidence.
-    const url = isZeroVarianceRepeatCapture(
-      cap,
-      actions.map((a) => a.capture)
-    )
+    const url = isZeroVarianceRepeatCapture(cap, allCaptures)
       ? cap.url
       : interpolateStateValues(
           cap.url,
