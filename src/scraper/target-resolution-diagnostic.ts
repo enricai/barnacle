@@ -14,8 +14,8 @@
 import type { Page } from "@browserbasehq/stagehand";
 
 import { getLogger } from "@/lib/logging";
-import { buildRankSubmitCandidatesExpr, type SubmitCandidateTier } from "@/scraper/submit-control";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { buildRankSubmitCandidatesExpr, type SubmitCandidateTier } from "@/scraper/submit-control";
 
 const logger = getLogger({ name: "scraper/target-resolution-diagnostic" });
 
@@ -150,7 +150,12 @@ export async function captureTargetResolutionDiagnosticSnapshot(
     const detail = await evaluator.evaluate<{
       details: { role: string; visible: boolean; disabled: boolean }[];
       excerpt: string | null;
-    }>(buildCandidateDetailExpr(root, bounded.map((c) => c.deepIndex)));
+    }>(
+      buildCandidateDetailExpr(
+        root,
+        bounded.map((c) => c.deepIndex)
+      )
+    );
     const candidates: DiagnosticSnapshotCandidate[] = bounded.map((c, i) => ({
       tag: c.tag,
       accessibleName: c.accessibleName,
