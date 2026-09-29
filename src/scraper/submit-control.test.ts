@@ -322,9 +322,23 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tag).toBe("div");
   });
 
-  it("still excludes a non-button-like element with no submit wording at all", () => {
+  it("ranks a non-button-like element with a generic action name (no submit wording) at tier 0.5", () => {
     const div = makeEl("div", {}, "Create Account");
     const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it("still scores 0 for an arbitrary structural div with unrelated, non-actionable text", () => {
+    const status = makeEl("div", {}, "Step 2 of 4");
+    const document = makeRoot([status]);
 
     const result = evaluateInFakePage(
       buildRankSubmitCandidatesExpr(),
@@ -706,8 +720,22 @@ describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier brea
     expect(result[0]?.tag).toBe("span");
   });
 
-  it("excludes a roleless <a> with a generic action name and no submit wording (tier 0.5 still requires button/input tag or role)", () => {
+  it("ranks a roleless <a> with a generic action name and no submit wording at tier 0.5 (tag/role-agnostic gate)", () => {
     const control = makeEl("a", {}, "Create Account");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(0.5);
+    expect(result[0]?.tag).toBe("a");
+  });
+
+  it('excludes a roleless <a> with a generic action name whose text is a negative verb (e.g. "Cancel")', () => {
+    const control = makeEl("a", {}, "Cancel");
     const document = makeRoot([control]);
 
     const result = evaluateInFakePage(
