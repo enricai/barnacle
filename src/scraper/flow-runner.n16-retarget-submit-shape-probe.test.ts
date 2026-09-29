@@ -324,6 +324,50 @@ describe("flow-runner n+16 fallback — submit-shape probe reflects the xpathTai
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
   });
 
+  it("does NOT credit an UNFLAGGED, non-final step on the weak DOM signal alone when the xpathTail-retargeted control is a non-native, role-less, generic-action-labeled submit-shaped control", async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
+      controlTag: "div",
+      controlAttrs: "",
+      // Wraps in a `<form>` (not the plain `<div>` the `wrapInForm: false`
+      // path would use) purely to avoid a same-tag collision with the
+      // control's own `div` tag confusing the tail-xpath resolver in this
+      // fixture — the form wrapper plays no role in the predicate itself,
+      // which recognizes this control from its generic-action accessible
+      // name alone, independent of any form ancestor.
+      wrapInForm: true,
+      label: "Confirm",
+      clickHandler: (document) => {
+        const control = document.getElementById("theControl");
+        if (control) {
+          const marker = document.createElement("div");
+          marker.setAttribute("data-confirmed", "x".repeat(2000));
+          control.appendChild(marker);
+        }
+      },
+    });
+
+    try {
+      const result = await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+      // Same weak-signal-veto contract as the native `type="submit"` case
+      // above: a non-native, role-less control whose accessible name reads a
+      // generic action verb ("Confirm") must be recognized as submit-shaped
+      // by resolvedClickTargetIsSubmitShaped, so it too must NOT be credited
+      // from the weak DOM-only signal alone.
+      expect(result.lastStepIndex).toBeLessThan(1);
+    } catch {
+      // Expected: step 0 never verifies, so the (non-optional) step throws.
+    }
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+  });
+
   it("still verifies the SAME weak-signal shape when the xpathTail-retargeted control is NOT submit-shaped (no regression)", async () => {
     const { page, stagehand, steps } = buildFixture({
       controlTag: "span",
