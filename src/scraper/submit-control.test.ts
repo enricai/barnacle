@@ -777,6 +777,39 @@ describe("submit-control/buildClickByDeepIndexExpr", () => {
     expect(shadowSubmit.clicked).toBe(true);
   });
 
+  // Combines the two gaps the report treated as separate: a non-button-like,
+  // roleless element (submit-shaped by text alone) that is ALSO only
+  // reachable via the shadow-root deep traversal. The rank-only shadow-root
+  // div test above proves ranking; the click-only shadow-root test above
+  // proves clicking a button-tagged shadow child. Neither proves the two
+  // combine, which is exactly the gap a custom-element host's roleless
+  // shadow child (e.g. a `<div>Submit Order</div>` inside `<app-widget>`'s
+  // open shadow root) would fall into before the isButtonLike tier-0 gate
+  // was relaxed to rank by accessible name.
+  it("ranks and clicks a roleless, non-button-tagged div nested in an OPEN shadow root via its deepIndex", () => {
+    const shadowDivSubmit = makeEl("div", { role: "none" }, "Submit Order");
+    const shadowRoot = makeRoot([shadowDivSubmit]);
+    const host = makeEl("app-widget-actions");
+    host.shadowRoot = shadowRoot;
+    const document = makeRoot([host]);
+
+    const ranked = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.tier).toBeGreaterThan(0);
+    expect(ranked[0]?.tag).toBe("div");
+
+    const clickResult = evaluateInFakePage(
+      buildClickByDeepIndexExpr(ranked[0]?.deepIndex as number),
+      document
+    ) as { clicked: boolean };
+
+    expect(clickResult).toEqual({ clicked: true });
+    expect(shadowDivSubmit.clicked).toBe(true);
+  });
+
   // Module-contract test, not a caller-behavior test: buildClickByDeepIndexExpr
   // can click ANY ranked candidate by its deepIndex, including one that isn't
   // the top pick. flow-runner.ts's deep-submit-locator branch exercises this
