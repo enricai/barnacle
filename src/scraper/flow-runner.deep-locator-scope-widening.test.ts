@@ -474,3 +474,142 @@ describe("flow-runner/executeStepWithHealing — deep-submit-locator re-rank rec
     expect(logged).toContain("deepIndex stale on first click, re-ranking once");
   });
 });
+
+describe("flow-runner/executeStepWithHealing — deep-submit-locator re-rank recovers a textless sole-candidate fallback", () => {
+  const STEP = "Complete the newsletter signup";
+  const SIGNUP_URL = "https://news.example.org/signup";
+  const CONFIRMATION_URL = "https://news.example.org/signup/confirmation";
+
+  /**
+   * A `span`-tagged, role-less, textless control — `SUBMIT_SHAPE_FALLBACK_EXPR`'s
+   * "no text signal at all, sole non-excluded actionable control in its
+   * nearest form-like container" branch (submit-control.ts:114-139), NOT the
+   * generic-action-verb branch bugfix-006's fixture above exercises — that
+   * sits at `deepIndex` 2 on the first rank pass. Between the rank and click
+   * round trip a sibling is inserted earlier in document order (e.g. a newly
+   * rendered inline validation message), so the SAME element re-ranks at
+   * `deepIndex` 3 on the second pass.
+   */
+  function fakePage(): { page: Page; clickedIndices: number[] } {
+    const clickedIndices: number[] = [];
+    let rankCallCount = 0;
+    const staleCandidate: SubmitCandidate = {
+      deepIndex: 2,
+      tier: 0.5,
+      tag: "span",
+      accessibleName: "",
+    };
+    const freshCandidate: SubmitCandidate = {
+      deepIndex: 3,
+      tier: 0.5,
+      tag: "span",
+      accessibleName: "",
+    };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort")) {
+        rankCallCount += 1;
+        return [rankCallCount === 1 ? staleCandidate : freshCandidate];
+      }
+      const clickMatch = /all\[(\d+)\]/.exec(src);
+      if (clickMatch) {
+        const targetIndex = Number(clickMatch[1]);
+        // Only the fresh (post-re-rank) index is present in the current DOM —
+        // the stale index's element has shifted away from that slot, so a
+        // click against it must miss, exactly like the real generated
+        // expression's `if (!el) return { clicked: false }` guard.
+        if (targetIndex !== freshCandidate.deepIndex) return { clicked: false };
+        clickedIndices.push(targetIndex);
+        return { clicked: true };
+      }
+      if (src.includes("outerHTML")) return { html: 42000, text: "0:" };
+      if (src.includes("isInvalid(el)")) return 0;
+      return null;
+    });
+    const page = {
+      evaluate,
+      url: () => (clickedIndices.length > 0 ? CONFIRMATION_URL : SIGNUP_URL),
+      title: vi.fn().mockResolvedValue("Newsletter"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+    return { page, clickedIndices };
+  }
+
+  const infoMock = vi.fn();
+  const warnMock = vi.fn();
+  const errorMock = vi.fn();
+  const testLogger = {
+    info: infoMock,
+    warn: warnMock,
+    error: errorMock,
+    debug: vi.fn(),
+  } as unknown as Logger;
+
+  it("re-ranks once and clicks the fresh deepIndex for a textless sole-candidate fallback whose position shifts between rank and click", async () => {
+    vi.clearAllMocks();
+    const { page, clickedIndices } = fakePage();
+
+    // Attempt 1: Stagehand's own act() resolves zero candidates ("unresolved"
+    // verdict) so the cascade escalates straight to deep-submit-locator,
+    // same routing as bugfix-006's acceptance test above.
+    const unresolvedResult: ActResult = {
+      success: false,
+      message: "no actionable element found",
+      actionDescription: "could not resolve signup control",
+      actions: [
+        {
+          selector: "span.signup-tile",
+          description: "could not resolve signup control",
+          method: "click",
+        },
+      ],
+    };
+    const stagehandAct = vi.fn().mockResolvedValue(unresolvedResult);
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi
+        .fn()
+        .mockResolvedValue([
+          { selector: "span.signup-tile", description: "Sign up", method: "click" },
+        ]),
+    } as unknown as Stagehand;
+
+    const steps: HealingFlowStep[] = [
+      { instruction: STEP, optional: false, upload: false, submitStep: true },
+    ];
+
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.submitVerified).toBe(true);
+    expect(result.submitStepSkipped).toBe(false);
+
+    // The stale deepIndex 2 never clicked (it "vanished"); only the
+    // re-ranked deepIndex 3 landed, and exactly once — proving the
+    // sole-actionable-candidate fallback (textless, tag/role-agnostic) is
+    // still resolved and clicked via the capped one-retry re-rank, not just
+    // the generic-action-verb tier-0.5 shape bugfix-006 covers above.
+    expect(clickedIndices).toEqual([3]);
+
+    const logged = [...infoMock.mock.calls, ...warnMock.mock.calls, ...errorMock.mock.calls]
+      .map((call) => String(call[0]))
+      .join("\n");
+    expect(logged).toContain("deepIndex stale on first click, re-ranking once");
+  });
+});
