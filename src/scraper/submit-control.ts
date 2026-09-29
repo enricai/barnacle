@@ -153,10 +153,12 @@ export const SUBMIT_SHAPE_FALLBACK_EXPR = `((el, name, isNegative) => {
  * non-native `<div>`/`<a>`/custom-element action control —
  * {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s generic-action-verb accessible name,
  * or sole-actionable-candidate-in-form when it carries no text. Exported so
- * every submit-shape consumer (the deep submit-control locator's own
- * {@link RANK_TIERS_EXPR}, and `flow-runner.ts`'s
- * `resolvedClickTargetIsSubmitShaped` / `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC`)
- * shares this one producer instead of re-diverging.
+ * `flow-runner.ts`'s `resolvedClickTargetIsSubmitShaped` /
+ * `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC` share this one boolean producer
+ * instead of re-diverging. {@link RANK_TIERS_EXPR} independently applies the
+ * same narrowed explicit-`type="submit"` rule for its own graduated (not
+ * boolean) tiering, since it needs to distinguish confidence levels this
+ * predicate collapses to a single true/false.
  */
 export const SUBMIT_SHAPE_EXPR = `((el) => {
   if (!el || !el.tagName) return false;
