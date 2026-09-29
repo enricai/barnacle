@@ -308,8 +308,22 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
     expect(result[0]?.tag).toBe("input");
   });
 
-  it("excludes a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
+  it("ranks a non-button-like element (no button/input tag, no role) carrying submit-shaped text", () => {
     const div = makeEl("div", {}, "Submit Application");
+    const document = makeRoot([div]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.tag).toBe("div");
+  });
+
+  it("still excludes a non-button-like element with no submit wording at all", () => {
+    const div = makeEl("div", {}, "Create Account");
     const document = makeRoot([div]);
 
     const result = evaluateInFakePage(
