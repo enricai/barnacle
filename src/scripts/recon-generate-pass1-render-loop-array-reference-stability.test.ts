@@ -14,17 +14,16 @@ import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 const BASE = "https://api.example.com";
 
+// Response bodies deliberately carry no multi-item array — a fold-eligible
+// shape would trigger the SEPARATE per-fold-target hoist (recon-generate.ts
+// ~L7218), which has its own `allCaptures` array and is out of scope for
+// this assertion; this fixture isolates the Pass 1 render loop's own hoist.
 function buildChainActions(): [unknown, unknown, unknown] {
   const search = {
     capture: buildCapture({
       url: `${BASE}/catalog/search/`,
       requestPostData: '{"page":1}',
-      responseBody: {
-        results: [
-          { sku: "item-a", tag: "g0" },
-          { sku: "item-b", tag: "g1" },
-        ],
-      },
+      responseBody: { note: "ok" },
       timestamp: "2026-01-01T00:00:01Z",
     }),
     varName: "r1",
