@@ -44,15 +44,13 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
   function unresolvedStagehand(): Stagehand {
     return {
       act: vi.fn().mockResolvedValue(unresolvedActResult()),
-      observe: vi
-        .fn()
-        .mockResolvedValue([
-          {
-            selector: "button#complete-purchase",
-            description: "Complete purchase",
-            method: "click",
-          },
-        ]),
+      observe: vi.fn().mockResolvedValue([
+        {
+          selector: "button#complete-purchase",
+          description: "Complete purchase",
+          method: "click",
+        },
+      ]),
     } as unknown as Stagehand;
   }
 
