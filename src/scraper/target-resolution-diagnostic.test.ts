@@ -15,7 +15,7 @@ function fakePage(candidates: SubmitCandidate[]): {
     if (src.includes("ranked.sort")) return candidates;
     return {
       details: candidates.map(() => ({ role: "button", visible: true, disabled: false })),
-      excerpt: "Submit application",
+      excerpt: candidates.length > 0 ? "Submit application" : null,
     };
   });
   return { page: { evaluate } as unknown as Page, evaluate };
@@ -78,6 +78,14 @@ describe("captureTargetResolutionDiagnosticSnapshot", () => {
     const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
 
     expect(snapshot).toBeNull();
+  });
+
+  it("does not throw on an empty/minimal tree with no candidates found", async () => {
+    const { page } = fakePage([]);
+
+    const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
+
+    expect(snapshot).toMatchObject({ candidates: [], accessibilityExcerpt: null });
   });
 
   it("bounds the candidate list to MAX_SNAPSHOT_CANDIDATES", async () => {
