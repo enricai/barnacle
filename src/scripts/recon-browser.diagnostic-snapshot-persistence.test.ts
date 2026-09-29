@@ -23,8 +23,8 @@ describe("recon-browser/dumpStepFailure — target-resolution diagnostic snapsho
     process.env.RECON_OUT_DIR = outDir;
     process.env.RECON_RUN_ID = "diag-snapshot-round-trip";
 
-    const { dumpStepFailure } = await import("@/scripts/recon-browser");
-    const { stepFailuresDir } = (await import("@/scripts/recon-shared")).resolveReconRunDir();
+    const { dumpStepFailure } = await import("@/scripts/recon-browser.js");
+    const { stepFailuresDir } = (await import("@/scripts/recon-shared.js")).resolveReconRunDir();
 
     const snapshot = {
       candidates: [
@@ -63,7 +63,7 @@ describe("recon-browser/dumpStepFailure — target-resolution diagnostic snapsho
     process.env.RECON_OUT_DIR = outDir;
     process.env.RECON_RUN_ID = "diag-snapshot-null";
 
-    const { dumpStepFailure } = await import("@/scripts/recon-browser");
+    const { dumpStepFailure } = await import("@/scripts/recon-browser.js");
 
     const target = dumpStepFailure({
       stepIndex: 1,
