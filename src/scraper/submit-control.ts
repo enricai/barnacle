@@ -28,11 +28,18 @@ export const NEGATIVE_TEXT_EXPR = `((text) => {
 
 /**
  * Normalizes an element's accessible name to lowercase, whitespace-collapsed
- * text, preferring `aria-label` over visible `textContent`.
+ * text, preferring `aria-label` over visible `textContent`, falling back to
+ * `value` for an `<input>` (which never has text-node children, so its
+ * accessible name comes from its `value` attribute per native AccName
+ * semantics — without this, an `<input type="submit" value="Create
+ * Account">` normalizes to an empty name and cannot earn corroboration
+ * through {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s generic-action-verb check).
  */
 const ACCESSIBLE_NAME_EXPR = `((el) => {
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-  return norm(el.getAttribute("aria-label") || el.textContent || "");
+  const tag = (el.tagName || "").toLowerCase();
+  const fallback = tag === "input" ? el.value : el.textContent;
+  return norm(el.getAttribute("aria-label") || fallback || "");
 })`;
 
 /**
