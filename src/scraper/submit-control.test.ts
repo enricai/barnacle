@@ -677,6 +677,63 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
   });
 });
 
+describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier breadth", () => {
+  it('ranks a roleless custom-element with accessible name exactly "submit" as tier 2', () => {
+    const control = makeEl("app-submit-action", {}, "Submit");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(2);
+    expect(result[0]?.tag).toBe("app-submit-action");
+  });
+
+  it('ranks a roleless <span> whose text contains "submit" as a distinct word as tier 1', () => {
+    const control = makeEl("span", {}, "Please Submit Now");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(1);
+    expect(result[0]?.tag).toBe("span");
+  });
+
+  it("excludes a roleless <a> with a generic action name and no submit wording (tier 0.5 still requires button/input tag or role)", () => {
+    const control = makeEl("a", {}, "Create Account");
+    const document = makeRoot([control]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toEqual([]);
+  });
+
+  it.each(["Back", "Cancel", "Save draft"])(
+    'excludes a roleless <div> "%s" control from ranking entirely even though it carries no tag/role gate',
+    (label) => {
+      const control = makeEl("div", {}, label);
+      const document = makeRoot([control]);
+
+      const result = evaluateInFakePage(
+        buildRankSubmitCandidatesExpr(),
+        document
+      ) as SubmitCandidate[];
+
+      expect(result).toEqual([]);
+    }
+  );
+});
+
 describe("submit-control/buildClickByDeepIndexExpr", () => {
   it('clicks a type="button" control ranked at tier 0.5 correctly via its deepIndex', () => {
     const genericAction = makeEl("button", { type: "button" }, "Create Account");
