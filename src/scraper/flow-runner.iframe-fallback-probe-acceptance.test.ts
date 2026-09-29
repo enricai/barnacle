@@ -47,7 +47,11 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
       observe: vi
         .fn()
         .mockResolvedValue([
-          { selector: "button#complete-purchase", description: "Complete purchase", method: "click" },
+          {
+            selector: "button#complete-purchase",
+            description: "Complete purchase",
+            method: "click",
+          },
         ]),
     } as unknown as Stagehand;
   }
@@ -244,7 +248,9 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
       kind: "cascade-exhausted",
     });
 
-    const originProbes = childFrame.evaluate.mock.calls.filter(([expr]) => expr === "location.href");
+    const originProbes = childFrame.evaluate.mock.calls.filter(
+      ([expr]) => expr === "location.href"
+    );
     expect(originProbes.length).toBeGreaterThan(0);
   });
 
