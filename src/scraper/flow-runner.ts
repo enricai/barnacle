@@ -9168,8 +9168,19 @@ async function probeChildFrameSubmitFallback(params: {
   signalCounter: { n: number };
 }): Promise<FrameTarget | null> {
   const { page, signalCounter } = params;
-  const mainFrameId = page.mainFrameId();
-  const candidateFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  // `page.mainFrameId`/`page.frames` are read defensively: some call sites
+  // (and their test fakes) model a `Page` that never attaches child frames at
+  // all and doesn't implement this pair, which is indistinguishable here from
+  // "no child frames exist" — either way there is nothing for this fallback
+  // to probe, so it degrades to its normal "nothing found" return rather than
+  // throwing out of an otherwise-best-effort escalation.
+  let candidateFrames: ReturnType<Page["frames"]>;
+  try {
+    const mainFrameId = page.mainFrameId();
+    candidateFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  } catch {
+    return null;
+  }
   if (candidateFrames.length === 0) return null;
 
   const pageOrigin = (() => {
