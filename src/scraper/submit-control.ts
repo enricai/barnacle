@@ -1,6 +1,6 @@
 /**
  * Submit-control locator: ranks every submit-shaped candidate the deep
- * resolver (`deep-query.ts`) can reach — piercing open shadow roots — so
+ * resolver can reach — piercing open shadow roots — so
  * the cascade can act on the best-ranked candidate and retry the runner-up
  * if the first click phantoms. A false-positive submit click on a real run
  * (e.g. clicking "Save draft") is worse than the current failure, since it
@@ -28,9 +28,7 @@ export const NEGATIVE_TEXT_EXPR = `((text) => {
 
 /**
  * Normalizes an element's accessible name to lowercase, whitespace-collapsed
- * text, preferring `aria-label` over visible `textContent` (parallels
- * `SUBMIT_SHAPED_EL_EXPR`'s own normalization in deep-query.ts so both
- * modules treat the same DOM the same way).
+ * text, preferring `aria-label` over visible `textContent`.
  */
 const ACCESSIBLE_NAME_EXPR = `((el) => {
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -80,10 +78,9 @@ const IS_DISABLED_EXPR = `((el) => {
 })`;
 
 /**
- * Recursive open-shadow-root walker, identical in shape to `deep-query.ts`'s
- * private `DEEP_ELEMENTS_EXPR` (duplicated rather than imported because both
- * are browser-context expression strings composed by string interpolation,
- * not runtime code that can share a module import).
+ * Recursive open-shadow-root walker, composed as a browser-context
+ * expression string via string interpolation rather than runtime code that
+ * could share a module import.
  */
 const DEEP_ELEMENTS_EXPR = `((root) => {
   const out = [];
@@ -106,8 +103,7 @@ const DEEP_ELEMENTS_EXPR = `((root) => {
  * "submit") qualifies regardless of tag/role, or — when the candidate carries
  * no text signal of its own at all — it is the sole non-excluded button/
  * role="button" control inside its nearest form-like (`<form>` /
- * `[role="form"]`) ancestor. Ported from `deep-query.ts`'s
- * `SUBMIT_SHAPED_EL_EXPR`, which worked out this exact shape first; kept as a
+ * `[role="form"]`) ancestor. Kept as a
  * separate export (rather than folded into {@link RANK_TIERS_EXPR} inline) so
  * `flow-runner.ts`'s independent hand-rolled submit-shape predicates can
  * import and apply the identical widened signal instead of re-diverging.
