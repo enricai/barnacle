@@ -210,4 +210,27 @@ describe("captureTargetResolutionDiagnosticSnapshot against a real generated exp
       tier: 0.5,
     });
   });
+
+  // Rules out this module's own duplicated DEEP_ELEMENTS_EXPR (see the
+  // docblock on buildCandidateDetailExpr) for a closed shadow root
+  // specifically -- a separate code path from submit-control.ts's copy,
+  // which already has this rule-out at ~line 671 of submit-control.test.ts.
+  // `attachShadow({ mode: "closed" })` never exposes `.shadowRoot` on the
+  // host element, so no page-script traversal, this module's included, can
+  // walk into it; a fully-exhausted cascade legitimately produces a non-null
+  // snapshot with an empty candidate list here, not an error and not a bug
+  // to "fix" by trying to pierce the closed root.
+  it("captures a non-null, empty-candidate snapshot when the only submit control sits behind a closed shadow root", async () => {
+    // The submit button lives inside a `mode: "closed"` shadow root, which
+    // by design never appears on `host.shadowRoot` -- there is no fixture
+    // field to attach it to, which is the point: page-script cannot see it.
+    const host = makeFakeEl("app-checkout-actions");
+    const document = makeFakeRoot([host]);
+    const page = fakePageEvaluatingRealExpr(document);
+
+    const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.candidates).toEqual([]);
+  });
 });
