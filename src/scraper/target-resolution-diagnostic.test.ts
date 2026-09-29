@@ -1,3 +1,5 @@
+import { runInNewContext } from "node:vm";
+
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
@@ -100,5 +102,112 @@ describe("captureTargetResolutionDiagnosticSnapshot", () => {
     const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
 
     expect(snapshot?.candidates.length).toBeLessThanOrEqual(25);
+  });
+});
+
+/**
+ * Minimal fake DOM element supporting exactly the surface
+ * `buildRankSubmitCandidatesExpr`/`buildCandidateDetailExpr` touch
+ * (`tagName`, `getAttribute`, `textContent`, `querySelectorAll`,
+ * `shadowRoot`, `getBoundingClientRect`, `closest`, `parentElement`),
+ * mirroring `submit-control.test.ts`'s fixture so both modules exercise the
+ * real generated expression strings rather than a re-implementation.
+ */
+interface FakeEl {
+  tagName: string;
+  attrs: Record<string, string>;
+  textContent: string;
+  children: FakeEl[];
+  shadowRoot: FakeRoot | null;
+  rect: { width: number; height: number };
+  computedStyle: { display: string; visibility: string };
+  disabled: boolean;
+  parentElement: FakeEl | null;
+  getAttribute(name: string): string | null;
+  querySelectorAll(selector: "*"): FakeEl[];
+  getBoundingClientRect(): { width: number; height: number };
+  closest(selector: string): FakeEl | null;
+}
+
+interface FakeRoot {
+  querySelectorAll(selector: "*"): FakeEl[];
+}
+
+function makeFakeEl(tagName: string, attrs: Record<string, string> = {}, textContent = ""): FakeEl {
+  const el: FakeEl = {
+    tagName: tagName.toUpperCase(),
+    attrs,
+    textContent,
+    children: [],
+    shadowRoot: null,
+    rect: { width: 100, height: 20 },
+    computedStyle: { display: "block", visibility: "visible" },
+    disabled: false,
+    parentElement: null,
+    getAttribute(name) {
+      return Object.hasOwn(attrs, name) ? (attrs[name] ?? null) : null;
+    },
+    querySelectorAll() {
+      return flattenFakeDescendants(el.children);
+    },
+    getBoundingClientRect() {
+      return el.rect;
+    },
+    closest() {
+      return null;
+    },
+  };
+  return el;
+}
+
+function flattenFakeDescendants(children: FakeEl[]): FakeEl[] {
+  const out: FakeEl[] = [];
+  for (const child of children) {
+    out.push(child);
+    out.push(...flattenFakeDescendants(child.children));
+  }
+  return out;
+}
+
+function makeFakeRoot(topLevel: FakeEl[]): FakeRoot {
+  return {
+    querySelectorAll() {
+      return flattenFakeDescendants(topLevel);
+    },
+  };
+}
+
+/**
+ * `page.evaluate` fake that actually runs the generated expression string
+ * against `document` via `node:vm`, instead of stubbing a canned response —
+ * proving the snapshot reflects what `buildRankSubmitCandidatesExpr` and
+ * `buildCandidateDetailExpr` genuinely compute for a given DOM, not a
+ * hand-authored assertion of what they should compute.
+ */
+function fakePageEvaluatingRealExpr(document: FakeRoot): Page {
+  const evaluate = vi.fn().mockImplementation(async (expr: unknown) =>
+    runInNewContext(String(expr), {
+      document,
+      getComputedStyle: (el: FakeEl) => el.computedStyle,
+      console,
+    })
+  );
+  return { evaluate } as unknown as Page;
+}
+
+describe("captureTargetResolutionDiagnosticSnapshot against a real generated expression", () => {
+  it("surfaces a widened-tier, tag/role-agnostic generic-action candidate that pre-widening ranking would have missed", async () => {
+    const genericAction = makeFakeEl("div", {}, "Create Account");
+    const document = makeFakeRoot([genericAction]);
+    const page = fakePageEvaluatingRealExpr(document);
+
+    const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
+
+    expect(snapshot?.candidates).toHaveLength(1);
+    expect(snapshot?.candidates[0]).toMatchObject({
+      tag: "div",
+      accessibleName: "create account",
+      tier: 0.5,
+    });
   });
 });
