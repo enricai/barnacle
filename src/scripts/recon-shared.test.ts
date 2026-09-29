@@ -122,6 +122,19 @@ describe("resolveReconRunDir", () => {
     expect(second).toBe(first);
     expect(second.root).toBe(first.root);
   });
+
+  it("creates and exposes stepFailuresDir identically across repeated calls, the sink the target-resolution diagnostic snapshot is persisted under", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-shared-test-"));
+    process.env.RECON_OUT_DIR = tmpDir;
+
+    const { resolveReconRunDir } = await loadResolver();
+    const first = resolveReconRunDir();
+    const second = resolveReconRunDir();
+
+    expect(first.stepFailuresDir).toBe(join(first.root, "step-failures"));
+    expect(existsSync(first.stepFailuresDir)).toBe(true);
+    expect(second.stepFailuresDir).toBe(first.stepFailuresDir);
+  });
 });
 
 describe("resolveLatestReconRunRoot", () => {
