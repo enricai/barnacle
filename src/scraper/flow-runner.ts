@@ -9193,7 +9193,9 @@ async function probeChildFrameSubmitFallback(params: {
   if (!pageOrigin) return null;
 
   for (const frame of candidateFrames) {
-    const frameUrl = await frame.evaluate<string>("location.href").catch(() => null);
+    const frameUrl = await Promise.resolve(frame.evaluate<string>("location.href")).catch(
+      () => null
+    );
     if (!frameUrl) continue;
     const frameOrigin = (() => {
       try {
@@ -9206,16 +9208,16 @@ async function probeChildFrameSubmitFallback(params: {
     if (frameOrigin !== pageOrigin) continue;
 
     const target = childFrameTarget(page, frame, "(auto-discovered same-origin iframe)");
-    const ranked = (await target
-      .evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
-      .catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
+    const ranked = (await Promise.resolve(
+      target.evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
+    ).catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
     if (ranked.length === 0) continue;
     // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
     const top = ranked[0]!;
     const pre = await snapshotPage(target, signalCounter, page);
-    const clickResult = (await target
-      .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
-      .catch(() => ({ clicked: false }))) as { clicked: boolean };
+    const clickResult = (await Promise.resolve(
+      target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+    ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
@@ -9228,9 +9230,9 @@ async function probeChildFrameSubmitFallback(params: {
 
     const runnerUp = ranked[1];
     if (!runnerUp) continue;
-    const runnerUpClickResult = (await target
-      .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
-      .catch(() => ({ clicked: false }))) as { clicked: boolean };
+    const runnerUpClickResult = (await Promise.resolve(
+      target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+    ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({

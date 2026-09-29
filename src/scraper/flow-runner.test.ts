@@ -1681,14 +1681,17 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
     }
   });
 
-  it("never resolves or touches a child frame when frameSelector is omitted — every evaluate call lands on the page", async () => {
+  it("resolves the declared/main-frame cascade untouched, and only origin-probes (never clicks) the child frame via the bounded same-origin fallback, when frameSelector is omitted", async () => {
     const childFrameEvaluate = vi.fn();
     const page = fakeFlowPageWithFrame({
       // A real iframe exists on the page and a real matching frame is
       // attached, but frameSelector is never passed to runHealingFlow — so
-      // resolveFrameTarget(page, undefined) must short-circuit to the
-      // main-frame target WITHOUT ever probing for the iframe or reading
-      // page.frames().
+      // resolveFrameTarget(page, undefined) short-circuits to the main-frame
+      // target for the whole cascade. The bounded same-origin child-iframe
+      // fallback (bugfix-003) still origin-probes this attached frame once
+      // cascade/probe-absent is reached, but the frame never implements
+      // outerHTML ranking here, so no submit-shaped candidate is ever found
+      // and the child frame is never clicked.
       iframeSrc: "https://apply.example.com/application/abc-123",
       childFrameEvaluate,
     });
@@ -1708,7 +1711,13 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
       })
     ).rejects.toMatchObject({ name: "StepVerificationError" });
 
-    expect(childFrameEvaluate).not.toHaveBeenCalled();
+    // The only calls the child frame ever sees are same-origin probes
+    // (`location.href`) from the bounded fallback — never a ranking or click
+    // expression, since a hit there would resolve the step instead of
+    // throwing.
+    for (const call of childFrameEvaluate.mock.calls) {
+      expect(call[0]).toBe("location.href");
+    }
     const pageBodyReads = pageEvaluate.mock.calls.filter(([expr]) =>
       String(expr).includes("document.body ? document.body.outerHTML : null")
     );
