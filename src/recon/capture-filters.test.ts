@@ -1767,3 +1767,38 @@ describe("isZeroVarianceRepeatCapture — per-array-reference index cache", () =
     expect(second).toBe(first);
   });
 });
+
+describe("isZeroVarianceRepeatCapture — index cache isolation across distinct array references", () => {
+  // A and B share the exact same method+endpoint identity, so a cache keyed
+  // by that identity instead of the array reference itself would let B reuse
+  // A's index (or vice versa) and leak a stale verdict across archives.
+  const sharedUrl = "https://apply.acme.example/telemetry/beacon";
+  const sharedMethod = "GET";
+
+  const noStateCapture = {
+    method: sharedMethod,
+    url: sharedUrl,
+    requestPostData: null,
+  };
+  // Queryless, no response metadata: hasNoBusinessRelevantResponseState
+  // defaults to true, so this reads as noise unconditionally.
+  const archiveA = [noStateCapture, noStateCapture, noStateCapture];
+
+  const businessStateCapture = {
+    method: sharedMethod,
+    url: sharedUrl,
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { token: "secret123" },
+  };
+  // Same identity and body shape as A's captures, but a business-relevant
+  // response with no other endpoint in the archive to corroborate isolation:
+  // this reads as a real repeated call, not noise.
+  const archiveB = [businessStateCapture, businessStateCapture, businessStateCapture];
+
+  it("never leaks a verdict from one array reference to another sharing the same method+endpoint identity", () => {
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
+    expect(isZeroVarianceRepeatCapture(businessStateCapture, archiveB)).toBe(false);
+    expect(isZeroVarianceRepeatCapture(noStateCapture, archiveA)).toBe(true);
+  });
+});
