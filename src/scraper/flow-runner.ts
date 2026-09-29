@@ -77,6 +77,7 @@ import {
   StepVerificationError,
 } from "@/scraper/errors";
 import {
+  childFrameTarget,
   type FrameTarget,
   mainFrameTarget,
   probeAttachedFrameTarget,
@@ -9131,6 +9132,107 @@ function redactIfSensitive(text: string, sensitiveValue?: string): string {
   return sensitiveValue && text === sensitiveValue ? "[redacted]" : text;
 }
 
+/**
+ * Last-resort escalation for the cascade-exhaustion path: when every
+ * resolution technique has already failed against the resolved (declared-or-
+ * main) frame and no `frameSelector` was declared for this step, probe every
+ * same-origin CHILD frame Stagehand's CDP layer has attached to
+ * (`page.frames()`) for a submit-shaped candidate, using the same
+ * tag/role-agnostic ranking (`buildRankSubmitCandidatesExpr`) and click
+ * primitive (`buildClickByDeepIndexExpr`) the declared-frame cascade already
+ * trusts. This closes the "target lives inside an undeclared iframe" gap for
+ * the ONE case that's safe to probe blindly: a same-origin child, where
+ * `location.href` is readable and its origin can be compared directly against
+ * the top document's. A cross-origin child (e.g. a checkout iframe payment
+ * widget) is excluded on purpose — CDP's `Runtime.evaluate` can still reach a
+ * cross-origin OOPIF's document, so an origin check (not a thrown evaluate)
+ * is the only thing that would stop this function from guessing which
+ * cross-origin iframe hosts the target with no declared selector to anchor
+ * on. That guess is exactly what `frameSelector` exists so a flow author
+ * never has to make; this fallback stays within the same-origin case the
+ * gap report calls out and leaves cross-origin as the flow author's declared
+ * `frameSelector` responsibility, unchanged.
+ *
+ * Every candidate frame is ranked and, on a hit, clicked and verified through
+ * the SAME `snapshotPage`/`classifyPhantomClick` pre/post pair the cascade's
+ * own `deep-submit-locator` escalation uses (including the single runner-up
+ * retry on a phantom top pick) — there is no new unverified success path,
+ * only a new place to look for the candidate before giving up.
+ *
+ * Returns the clicked `FrameTarget` on a verified (non-phantom) click, or
+ * `null` if no same-origin child frame yielded a submit-shaped candidate, no
+ * candidate was actually clickable, or every click phantomed.
+ */
+async function probeChildFrameSubmitFallback(params: {
+  page: Page;
+  signalCounter: { n: number };
+}): Promise<FrameTarget | null> {
+  const { page, signalCounter } = params;
+  const mainFrameId = page.mainFrameId();
+  const candidateFrames = page.frames().filter((frame) => frame.frameId !== mainFrameId);
+  if (candidateFrames.length === 0) return null;
+
+  const pageOrigin = (() => {
+    try {
+      return new URL(page.url()).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (!pageOrigin) return null;
+
+  for (const frame of candidateFrames) {
+    const frameUrl = await frame.evaluate<string>("location.href").catch(() => null);
+    if (!frameUrl) continue;
+    const frameOrigin = (() => {
+      try {
+        return new URL(frameUrl).origin;
+      } catch {
+        return null;
+      }
+    })();
+    // Cross-origin: documented rule-out, not a code defect. See docblock.
+    if (frameOrigin !== pageOrigin) continue;
+
+    const target = childFrameTarget(page, frame, "(auto-discovered same-origin iframe)");
+    const ranked = (await target
+      .evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
+      .catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
+    if (ranked.length === 0) continue;
+    // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
+    const top = ranked[0]!;
+    const pre = await snapshotPage(target, signalCounter, page);
+    const clickResult = (await target
+      .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
+      .catch(() => ({ clicked: false }))) as { clicked: boolean };
+    if (!clickResult.clicked) continue;
+    const post = await snapshotPage(target, signalCounter, page);
+    const verdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre,
+      post,
+      isSubmitShapedStep: true,
+    });
+    if (verdict !== "phantom") return target;
+
+    const runnerUp = ranked[1];
+    if (!runnerUp) continue;
+    const runnerUpClickResult = (await target
+      .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
+      .catch(() => ({ clicked: false }))) as { clicked: boolean };
+    if (!runnerUpClickResult.clicked) continue;
+    const runnerUpPost = await snapshotPage(target, signalCounter, page);
+    const runnerUpVerdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre,
+      post: runnerUpPost,
+      isSubmitShapedStep: true,
+    });
+    if (runnerUpVerdict !== "phantom") return target;
+  }
+  return null;
+}
+
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -10152,6 +10254,22 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
         "backend-error-unrecoverable"
       );
+    }
+    // Bounded same-origin child-iframe fallback: the probe above only ever
+    // looked at the resolved (declared-or-main) frame's own light+shadow DOM,
+    // so a target genuinely inside an undeclared same-origin iframe is
+    // invisible to it. Only tried when this step never declared its own
+    // frameSelector — a declared-and-used frame means the flow author already
+    // told us where to look, and guessing elsewhere would second-guess that.
+    if (!frameTarget?.declaredFrameSelector) {
+      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+      if (fallbackTarget) {
+        logger.info(
+          `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
+        );
+        trajectory?.push({ stepIndex, verifiedBy: "dom" });
+        return "completed";
+      }
     }
     // Capture diagnostics + write a failure dump BEFORE throwing so the
     // global replan path's `readFailureDumpEvidence` can populate the
@@ -12777,6 +12895,24 @@ export async function executeStepWithHealing(params: {
         logger.warn(`${formatStepPrefix(stepIndex, totalSteps)} ${exitReason}`);
         break;
       }
+    }
+  }
+
+  // Bounded same-origin child-iframe fallback: every attempt above only ever
+  // operated against the resolved (declared-or-main) frame, so a target
+  // genuinely inside an undeclared same-origin iframe was invisible to all of
+  // them. Only tried when this step never declared its own frameSelector — a
+  // declared-and-used frame means the flow author already told us where to
+  // look, so this can only ever fire on a case that today always fails
+  // (no regression risk to any currently-passing path).
+  if (!frameTarget?.declaredFrameSelector) {
+    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+    if (fallbackTarget) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
+      );
+      trajectory?.push({ stepIndex, verifiedBy: "dom" });
+      return "completed";
     }
   }
 

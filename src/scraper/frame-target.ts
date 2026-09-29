@@ -106,7 +106,7 @@ export function mainFrameTarget(
  * watchdog as `mainFrameTarget` (`locator` stays unwrapped — it's
  * synchronous, building a `Locator` handle rather than making a CDP call).
  */
-function childFrameTarget(
+export function childFrameTarget(
   page: Page,
   frame: StagehandFrame,
   frameSelector: string,
