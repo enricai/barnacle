@@ -1222,14 +1222,26 @@ export function isZeroVarianceRepeatCapture(
  * `recon-http.ts`'s write-time filter and `recon-generate.ts`'s copy-time
  * filter so which hosts count as "the site's own backend" cannot drift
  * between capture and emission.
+ *
+ * `primaryHost`, when given, is a second independent check: once a host
+ * clears own-backend membership, it must also equal the flow's dominant
+ * own-backend host, so a minority-host capture can never pass alongside the
+ * primary host and flip a flow's classification. Callers that run before
+ * generation-time has any notion of "primary" (capture/write-time filters)
+ * must leave it unset — that is the default, and it is a no-op.
  */
 export function isAllowedFixtureHost(
   hostname: string,
   ownBackendHostnames: string[],
-  fallbackDomain: string | null
+  fallbackDomain: string | null,
+  primaryHost: string | null = null
 ): boolean {
   const host = hostname.toLowerCase();
   const allowedHostnames = new Set(ownBackendHostnames.map((h) => h.toLowerCase()));
-  if (allowedHostnames.size > 0) return allowedHostnames.has(host);
-  return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  const allowed =
+    allowedHostnames.size > 0
+      ? allowedHostnames.has(host)
+      : fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  if (!allowed) return false;
+  return primaryHost === null || host === primaryHost.toLowerCase();
 }
