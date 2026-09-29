@@ -9208,9 +9208,10 @@ async function probeChildFrameSubmitFallback(params: {
     if (frameOrigin !== pageOrigin) continue;
 
     const target = childFrameTarget(page, frame, "(auto-discovered same-origin iframe)");
-    const ranked = (await Promise.resolve(
+    const rankResult = await Promise.resolve(
       target.evaluate<SubmitCandidate[]>(buildRankSubmitCandidatesExpr())
-    ).catch(() => [] as SubmitCandidate[])) as SubmitCandidate[];
+    ).catch(() => null);
+    const ranked: SubmitCandidate[] = Array.isArray(rankResult) ? rankResult : [];
     if (ranked.length === 0) continue;
     // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
     const top = ranked[0]!;
@@ -10273,8 +10274,15 @@ export async function executeStepWithHealing(params: {
     // so a target genuinely inside an undeclared same-origin iframe is
     // invisible to it. Only tried when this step never declared its own
     // frameSelector — a declared-and-used frame means the flow author already
-    // told us where to look, and guessing elsewhere would second-guess that.
-    if (!frameTarget?.declaredFrameSelector) {
+    // told us where to look, and guessing elsewhere would second-guess that —
+    // and only when this step is itself submit-shaped, since the probe ranks
+    // for a submit-shaped candidate and firing it on a non-submit step (e.g.
+    // a radio/select answer) could complete the step by clicking an unrelated
+    // submit control in an unrelated same-origin child iframe.
+    if (
+      !frameTarget?.declaredFrameSelector &&
+      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+    ) {
       const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
       if (fallbackTarget) {
         logger.info(
@@ -12917,8 +12925,15 @@ export async function executeStepWithHealing(params: {
   // them. Only tried when this step never declared its own frameSelector — a
   // declared-and-used frame means the flow author already told us where to
   // look, so this can only ever fire on a case that today always fails
-  // (no regression risk to any currently-passing path).
-  if (!frameTarget?.declaredFrameSelector) {
+  // (no regression risk to any currently-passing path) — and only when this
+  // step is itself submit-shaped, matching every other
+  // buildRankSubmitCandidatesExpr call site's guard in this file, since
+  // firing on a non-submit step could complete it by clicking an unrelated
+  // submit control in an unrelated same-origin child iframe.
+  if (
+    !frameTarget?.declaredFrameSelector &&
+    (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+  ) {
     const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
     if (fallbackTarget) {
       logger.info(
