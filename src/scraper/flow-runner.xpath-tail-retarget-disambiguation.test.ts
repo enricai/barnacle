@@ -228,4 +228,120 @@ describe("flow-runner n+16 fallback — xpath tail-retarget disambiguation on mu
     expect(submitClicked).toBe(true);
     expect(decoyClicked).toBe(false);
   });
+
+  it("clicks the single tail match unchanged when the loose tail xpath resolves to exactly one element", async () => {
+    const window = new Window({ url: BASE_URL });
+    const document = window.document;
+    document.body.innerHTML = `
+      <div class="page">
+        <section>
+          <div><input type="submit" value="Confirm Order" /></div>
+        </section>
+      </div>
+    `;
+
+    const submitInput = document.querySelector("section input") as unknown as HappyDomElement;
+    if (!submitInput) throw new Error("fixture setup failed");
+
+    let submitClicked = false;
+    (
+      submitInput as unknown as { addEventListener: (t: string, cb: () => void) => void }
+    ).addEventListener("click", () => {
+      submitClicked = true;
+    });
+
+    const documentElement = document.documentElement as unknown as HappyDomElement;
+    const staleXPath = "/html[1]/body[1]/div[1]/div[1]/div[1]/input[1]";
+
+    const win = window as unknown as { XPathResult?: unknown };
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 };
+    (
+      document as unknown as {
+        evaluate: (
+          expr: string,
+          ctx: unknown,
+          ns: unknown,
+          type: number
+        ) => {
+          singleNodeValue?: unknown;
+          snapshotLength?: number;
+          snapshotItem?: (i: number) => unknown;
+        };
+      }
+    ).evaluate = (expr: string, _ctx: unknown, _ns: unknown, type: number) => {
+      if (expr.startsWith("//") && type === 7) {
+        const matches = resolveTailXPathAll(documentElement, expr.slice(2));
+        return { snapshotLength: matches.length, snapshotItem: (i: number) => matches[i] ?? null };
+      }
+      const node = expr.startsWith("//")
+        ? (resolveTailXPathAll(documentElement, expr.slice(2))[0] ?? null)
+        : resolveAbsoluteXPath(documentElement, expr);
+      return { singleNodeValue: node };
+    };
+
+    const session = { on: () => {}, off: () => {} };
+    const page: Page = {
+      evaluate: async (expr: unknown): Promise<unknown> => {
+        const src = String(expr);
+        const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
+          d: unknown,
+          x: unknown
+        ) => unknown;
+        return fn(document, win.XPathResult);
+      },
+      url: () => (submitClicked ? "https://checkout.example.com/confirmed" : BASE_URL),
+      title: async () => (submitClicked ? "Confirmed" : "Checkout — Step 1"),
+      locator: () => ({
+        first: () => ({
+          click: async () => {
+            throw new Error("no node found for selector");
+          },
+          isChecked: async () => false,
+          inputValue: async () => "",
+        }),
+      }),
+      waitForTimeout: async () => {},
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+    } as unknown as Page;
+
+    const stagehand: Stagehand = {
+      act: vi.fn().mockImplementation(async () => ({
+        success: true,
+        message: "clicked",
+        actionDescription: "clicked",
+        actions: [{ selector: `xpath=${staleXPath}`, description: "control", method: "click" }],
+      })),
+      observe: vi
+        .fn()
+        .mockImplementation(async (instruction?: unknown) =>
+          typeof instruction === "string"
+            ? []
+            : [{ selector: "xpath=//probe-presence", description: "probe-presence" }]
+        ),
+    } as unknown as Stagehand;
+
+    const steps: HealingFlowStep[] = [
+      { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
+      { instruction: "Click the 'Details' link", optional: true, upload: false, submitStep: false },
+    ];
+    const { logger } = makeLogger();
+
+    try {
+      await runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      });
+    } catch {
+      // Same caveat as above: verification outcome is irrelevant, only the click target matters.
+    }
+
+    expect(submitClicked).toBe(true);
+  });
 });
