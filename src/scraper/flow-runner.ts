@@ -92,6 +92,7 @@ import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
+  NEGATIVE_TEXT_EXPR,
   type SubmitCandidate,
 } from "@/scraper/submit-control";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
@@ -3858,6 +3859,44 @@ function xpathTailForRetarget(xpath: string): string | null {
 }
 
 /**
+ * In-page source for `(tail) => Element | null`: resolves
+ * {@link xpathTailForRetarget}'s loose `//`+tail re-anchor against the live
+ * DOM, disambiguating when the loose pattern matches more than one element.
+ * The tail deliberately drops every attribute above the leaf+parent tag
+ * pair, so on a page with several same-tag-shaped siblings (e.g. a repeated
+ * "sign in" control sitting where a "create account" submit button used to
+ * resolve) `FIRST_ORDERED_NODE_TYPE` silently accepts whichever one happens
+ * to come first in document order — not necessarily the element the primary
+ * xpath was tracking. Snapshotting every match and preferring one that is
+ * objectively submit-shaped (mirrors {@link resolvedClickTargetIsSubmitShaped}'s
+ * tag/type/form-ownership predicate) and not negative-text (reuses
+ * submit-control.ts's own {@link NEGATIVE_TEXT_EXPR} vocabulary rather than a
+ * second copy) recovers the plausible candidate instead of an arbitrary one.
+ * Falls back to the first document-order match when no candidate clears that
+ * bar, preserving the previous behavior for every single-match (the common)
+ * case.
+ */
+const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
+    const isNegative = ${NEGATIVE_TEXT_EXPR};
+    const isSubmitShaped = (el) => {
+      if (!el || !el.tagName) return false;
+      const tag = el.tagName.toUpperCase();
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (tag === "INPUT" && (type === "submit" || type === "image")) return true;
+      if (tag === "BUTTON" && (type === "submit" || type === "") && el.closest("form")) return true;
+      return false;
+    };
+    const accessibleName = (el) =>
+      (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const nodes = [];
+    for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
+    if (nodes.length <= 1) return nodes[0] || null;
+    const preferred = nodes.find((el) => isSubmitShaped(el) && !isNegative(accessibleName(el)));
+    return preferred || nodes[0];
+  })`;
+
+/**
  * Resolve any selector a caller might hold into a bare XPath body for
  * `document.evaluate`. `verifyFillReadback` is shared across call sites that
  * carry different selector forms — Stagehand's `xpath=…` (act path), an
@@ -4188,8 +4227,7 @@ async function resolvedClickTargetIsSubmitShaped(
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     let el = r.singleNodeValue;
     if (!el && ${JSON.stringify(xpathTail)}) {
-      const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      el = r2.singleNodeValue;
+      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
     }
     if (!el || !el.tagName) return false;
     const tag = el.tagName.toUpperCase();
@@ -12124,7 +12162,7 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); el = r2.singleNodeValue; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -12147,8 +12185,7 @@ export async function executeStepWithHealing(params: {
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node && ${JSON.stringify(xpathTail)}) {
-                const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                node = r2.singleNodeValue;
+                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
               }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
@@ -12252,8 +12289,7 @@ export async function executeStepWithHealing(params: {
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                 let el = r.singleNodeValue;
                 if (!el && ${JSON.stringify(xpathTail)}) {
-                  const r2 = document.evaluate("//" + ${JSON.stringify(xpathTail)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                  el = r2.singleNodeValue;
+                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
                 }
                 return el ? isDisabled(el) : false;
               })()`;

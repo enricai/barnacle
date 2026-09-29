@@ -16,9 +16,12 @@ import { clickActivationExpr, MAX_SELECTION_ANCESTOR_DEPTH } from "@/scraper/bro
  * button-shaped and reachable. Checked before any positive tier so a
  * button whose text merely contains "submit" as a substring of a longer
  * negative phrase (unlikely in practice, but the exclusion is what makes
- * the ranking conservative) cannot slip through.
+ * the ranking conservative) cannot slip through. Exported so other
+ * submit-shape consumers (e.g. flow-runner.ts's xpath tail-retarget
+ * disambiguation) apply the identical negative-verb vocabulary instead of a
+ * second, driftable copy.
  */
-const NEGATIVE_TEXT_EXPR = `((text) => {
+export const NEGATIVE_TEXT_EXPR = `((text) => {
   const negatives = ["back", "cancel", "save draft", "save for later", "previous", "close"];
   return negatives.some((n) => text === n || text.startsWith(n + " ") || text.endsWith(" " + n));
 })`;

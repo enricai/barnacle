@@ -158,14 +158,31 @@ describe("flow-runner n+16 fallback — correct-destination credit regression (n
 
     const documentElement = document.documentElement as unknown as HappyDomElement;
     const win = window as unknown as { XPathResult?: unknown };
-    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
-    (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
-      (expr: string) => {
-        const node = expr.startsWith("//")
-          ? resolveTailXPath(documentElement, expr.slice(2))
-          : resolveAbsoluteXPath(documentElement, expr);
-        return { singleNodeValue: node };
-      };
+    win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9, ORDERED_NODE_SNAPSHOT_TYPE: 7 };
+    (
+      document as unknown as {
+        evaluate: (
+          expr: string,
+          ctx: unknown,
+          ns: unknown,
+          type: number
+        ) => {
+          singleNodeValue?: unknown;
+          snapshotLength?: number;
+          snapshotItem?: (i: number) => unknown;
+        };
+      }
+    ).evaluate = (expr: string, _ctx: unknown, _ns: unknown, type: number) => {
+      if (expr.startsWith("//") && type === 7) {
+        const node = resolveTailXPath(documentElement, expr.slice(2));
+        const matches = node ? [node] : [];
+        return { snapshotLength: matches.length, snapshotItem: (i: number) => matches[i] ?? null };
+      }
+      const node = expr.startsWith("//")
+        ? resolveTailXPath(documentElement, expr.slice(2))
+        : resolveAbsoluteXPath(documentElement, expr);
+      return { singleNodeValue: node };
+    };
 
     const session = { on: () => {}, off: () => {} };
     const page: Page = {
