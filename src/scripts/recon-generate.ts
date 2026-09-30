@@ -1356,7 +1356,12 @@ function isGraphQL(
   const scoped = captures.filter((c) => {
     if (
       hasHostProvenance &&
-      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain, primaryHost)
+      !isAllowedFixtureHost(
+        captureHostname(c.url),
+        ownBackendHostnames,
+        fallbackDomain,
+        primaryHost
+      )
     )
       return false;
     return true;
