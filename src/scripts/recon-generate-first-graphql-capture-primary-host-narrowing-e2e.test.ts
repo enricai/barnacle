@@ -114,7 +114,9 @@ afterEach(() => {
 
 describe("recon-generate CLI — firstGraphQLCapture primaryHost narrowing with no declared ownBackendHostnames/submitEndpointPattern", () => {
   it("resolves query/endpoint/operationName to the dominant primary-host capture, excluding the undeclared minority subdomain's earlier-sorting capture on the same registrable domain", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-first-graphql-capture-primary-host-narrowing-e2e-"));
+    workDir = mkdtempSync(
+      join(tmpdir(), "barnacle-first-graphql-capture-primary-host-narrowing-e2e-")
+    );
     const runRoot = join(workDir, "run");
     const capturesDir = join(runRoot, "graphql");
     mkdirSync(capturesDir, { recursive: true });
