@@ -352,9 +352,7 @@ describe("recon-generate CLI — production-scale noisy REST archive with an 18-
     expect(contract).toContain("fleet-availability");
 
     // Symptom #4 regression guard (does NOT reproduce at this scale, or any
-    // scale tested so far — verified independently twice: directly here,
-    // and by a sibling investigation's live CLI run, see
-    // `recon-generate-mixed-graphql-primary-rest-fold-contract-compiles-e2e.test.ts`).
+    // scale tested so far, including this run's live CLI invocation above).
     // `emitContractTs`'s `isGqlEmission = gql && gqlQuery !== null` gate
     // (recon-generate.ts) already keys EVERY GraphQL-emission decision
     // (client import, query-const declaration, AND both call sites that
