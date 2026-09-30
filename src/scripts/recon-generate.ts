@@ -1158,6 +1158,48 @@ function isHtmlNavigationCapture(capture: Capture): boolean {
 }
 
 /**
+ * Vocabulary for a host label DEDICATED to authentication/identity, generic
+ * across sites (no vendor names) -- e.g. `login.example.com`, `sso.example.net`.
+ * A path segment like `/api/login` on the real backend does not match, since
+ * this only inspects the host's first label, not the path.
+ */
+const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|account|accounts)$/i;
+
+/**
+ * A same-company authentication/identity redirect (a login/SSO bounce) is
+ * never itself the flow's own backend, even though it routinely lands on a
+ * different registrable domain than the flow's real traffic and can complete
+ * first due to async timing (e.g. a mid-session re-auth bounce that resolves
+ * before the in-flight primary request does). Left in the "first non-noise
+ * capture" candidate pool, such a capture anchors `baseUrl`/`primaryHost` on
+ * the wrong eTLD+1 -- and because {@link deriveBaseUrl}'s same-domain
+ * GraphQL-dominance vote is scoped to THAT anchor's own registrable domain,
+ * nothing downstream ever gets a chance to correct onto the real backend.
+ * Matched on the host's first label only (see {@link AUTH_HOST_LABEL}), the
+ * same structural, content-based precedent as {@link isHtmlNavigationCapture}
+ * rather than a count/percentage threshold tuned to any one archive.
+ *
+ * A host label alone can't tell a one-off bounce apart from a genuine
+ * own-backend host that happens to be named `login.`/`accounts.` (real APIs
+ * are named that too). So this only flags the capture as a redirect when its
+ * host is NOT the pool's most-represented host -- a real backend, named
+ * `login.` or not, always racks up the most captures; a bounce that merely
+ * sorts first never does.
+ */
+function isAuthRedirectCapture(capture: Capture, pool: Capture[]): boolean {
+  const host = captureHostname(capture.url);
+  const firstLabel = host.split(".")[0] ?? "";
+  if (!AUTH_HOST_LABEL.test(firstLabel)) return false;
+  const hostCounts = new Map<string, number>();
+  for (const c of pool) {
+    const h = captureHostname(c.url);
+    hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1);
+  }
+  const maxCount = Math.max(...hostCounts.values());
+  return hostCounts.get(host) !== maxCount;
+}
+
+/**
  * Groups captures by exact host and returns the origin of the group with the
  * most captures, so a minority host's capture landing earlier in array order
  * (e.g. a redirect completing before the dominant host's traffic due to async
@@ -1191,6 +1233,14 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
  * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
+ * Same-company auth/identity redirects (see {@link isAuthRedirectCapture}) are
+ * excluded from the ANCHOR pick specifically -- such a redirect is never
+ * itself the flow's own backend, no matter which registrable domain it lands
+ * on or how many captures it racks up completing an SSO bounce -- but they
+ * stay in the wider `pool` once a real anchor domain is chosen, so a genuine
+ * own-backend host whose label happens to match {@link AUTH_HOST_LABEL} (e.g.
+ * an `accounts.` subdomain that is itself the real API, not a bounce) can
+ * still win the same-domain dominance vote below.
  * `baseUrl` doubles as `primaryHost`'s source once resolved, so an
  * array-order artifact (e.g. a genuine minority-subdomain GraphQL capture
  * sorting before the flow's dominant GraphQL backend traffic, on a sibling
@@ -1209,22 +1259,59 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * subdomains -- and even then the vote counts every same-domain capture
  * (GraphQL and REST alike), not just the GraphQL-shaped ones, so it can't be
  * hijacked by an unrelated cross-domain GraphQL noise source that happens to
- * outnumber the real flow. Absent same-domain GraphQL traffic, the first
- * non-noise, non-navigation capture wins exactly as before.
+ * outnumber the real flow. Absent same-domain GraphQL traffic OR a declared
+ * submit pattern (see below), the first non-noise, non-navigation capture
+ * wins exactly as before.
+ *
+ * A flow's own declared `submitEndpointPattern`/`submitBodyPattern` is a
+ * second, independent trigger for the same cross-host dominance vote: when
+ * the anchor's own registrable-domain group contains no capture matching the
+ * declared pattern, but a DIFFERENT registrable domain in the pool does, that
+ * other domain is the flow's real backend -- the flow author declared this
+ * pattern specifically to name its own submission traffic, so a match
+ * elsewhere in the pool outranks whichever host merely happened to capture
+ * first. This is strictly narrower than a raw capture-count vote (the kind
+ * #bugfix-005 deliberately rejected as a general rule -- see
+ * "does not let a chatty host outvote the first non-noise capture" in
+ * recon-generate.test.ts, where NO pattern is declared and the first capture
+ * must still win over a larger, unrelated cross-domain group): it only ever
+ * fires when the flow explicitly named the traffic shape it's after, and even
+ * then only switches domain, never host -- {@link dominantHostOrigin} still
+ * picks the exact host by count within that now-confirmed domain.
  */
-export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+export function deriveBaseUrl(
+  captures: Capture[],
+  ownBackendHostnames: string[],
+  submitPatterns: SubmitPatterns | null = null
+): string {
   if (ownBackendHostnames.length === 0) {
     const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorHost = captureHostname(firstCaptureOrigin(pool));
+    const anchorPool = pool.filter((c) => !isAuthRedirectCapture(c, pool));
+    const anchorSource = anchorPool.length > 0 ? anchorPool : pool;
+    const anchorHost = captureHostname(firstCaptureOrigin(anchorSource));
     const anchorDomain = registrableDomain(anchorHost);
     const sameDomainCandidates = pool.filter(
       (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
     );
+    const hasDeclaredSubmitPattern =
+      submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+    const matchesSubmit = compileSubmitMatcher(submitPatterns);
+    const crossDomainSubmitMatch =
+      hasDeclaredSubmitPattern && !sameDomainCandidates.some(matchesSubmit)
+        ? pool.find(matchesSubmit)
+        : undefined;
+    if (crossDomainSubmitMatch !== undefined) {
+      const submitDomain = registrableDomain(captureHostname(crossDomainSubmitMatch.url));
+      const submitDomainCandidates = pool.filter(
+        (c) => registrableDomain(captureHostname(c.url)) === submitDomain
+      );
+      return dominantHostOrigin(submitDomainCandidates);
+    }
     const sameDomainHasGraphql = sameDomainCandidates.some(
       (c) => parsedOperationName(c.query ?? "") !== null
     );
-    if (!sameDomainHasGraphql) return firstCaptureOrigin(pool);
+    if (!sameDomainHasGraphql) return firstCaptureOrigin(anchorSource);
     return dominantHostOrigin(sameDomainCandidates);
   }
   const candidates = captures.filter((c) =>
@@ -1431,7 +1518,19 @@ export function deriveRequestHeaders(
  * exclude as noise, not real REST traffic — admitting it to the vote would
  * let sheer beacon volume dilute a genuinely GraphQL-dominant flow. A
  * same-origin GET capture {@link isZeroVarianceRepeatCapture} proves is a
- * request-invariant repeat is excluded from the pool for the same reason.
+ * request-invariant repeat is reduced to at most one representative per
+ * endpoint rather than counted for every occurrence — repeat volume alone
+ * must never inflate the anti-vote, the same reason a chatty query-bearing
+ * client isn't allowed to inflate the pro-vote — but that representative is
+ * only dropped from the pool entirely when
+ * {@link hasNoBusinessRelevantResponseState} shows the repeat carries no
+ * data of its own (a beacon/heartbeat). A REST endpoint whose real response
+ * is simply the same value every time it's called (a static category list,
+ * a site-config fetch) is still genuine own-backend evidence and must not be
+ * erased down to zero just because it happens not to vary — that would let
+ * a host whose only queryable traffic is a handful of genuinely-parsed
+ * GraphQL documents win by default the moment its REST traffic is
+ * repetitive, independent of the REST traffic's actual share of the flow.
  * Bare-`operationName`/APQ-reissue-shaped captures (`operationName` set,
  * `query` falsy) are excluded from the pool regardless of method: per the
  * corroboration rule above they carry no signal of their own, so diluting
@@ -1445,7 +1544,7 @@ export function deriveRequestHeaders(
  * REST evidence, not a coincidental parse — it must not by itself veto a
  * flow that has no other own-backend traffic at all.
  */
-function isGraphQL(
+export function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
@@ -1465,11 +1564,19 @@ function isGraphQL(
       return false;
     return true;
   });
-  const votingPool = scoped.filter((c) => {
-    if (c.query) return true;
-    if (c.operationName !== null || c.method !== "GET") return false;
-    return !isZeroVarianceRepeatCapture(c, scoped);
+  const restAntiVoteCandidates = scoped.filter(
+    (c) => !c.query && c.operationName === null && c.method === "GET"
+  );
+  const rescuedInvariantEndpoints = new Set<string>();
+  const restAntiVotes = restAntiVoteCandidates.filter((c) => {
+    if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+    if (hasNoBusinessRelevantResponseState(c)) return false;
+    const key = endpointKey(c.url);
+    if (rescuedInvariantEndpoints.has(key)) return false;
+    rescuedInvariantEndpoints.add(key);
+    return true;
   });
+  const votingPool = [...scoped.filter((c) => c.query), ...restAntiVotes];
   const parsedCount = votingPool.reduce(
     (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
     0
@@ -11693,13 +11800,18 @@ ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const tr
 export function buildContractChecklist(opts: {
   pascal: string;
   gql: boolean;
+  gqlQuery: string | null;
   omitExecuteHttp?: boolean;
   multiStepBody?: string;
 }): string[] {
-  const { pascal, gql, omitExecuteHttp, multiStepBody } = opts;
+  const { pascal, gql, gqlQuery, omitExecuteHttp, multiStepBody } = opts;
+  // Same isGqlEmission decision emitContractTs treats as the single source of
+  // truth for every GraphQL-emission decision — `gql` alone can be true with
+  // a null `gqlQuery`, which must not produce a QUERY checklist line either.
+  const isGqlEmission = gql && gqlQuery !== null;
 
   const queryChecklistLine =
-    !omitExecuteHttp && gql
+    !omitExecuteHttp && isGqlEmission
       ? `Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
       : "";
 
@@ -14165,7 +14277,7 @@ async function main(): Promise<void> {
    * already written its output and there is nothing left for main() to do.
    */
   function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
-    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames);
+    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
     // Gate on the flow's declared own-backend hosts (or the registrable-domain
     // fallback of baseUrl) via the same predicate recon-http.ts applies at
     // write time, so a stale aux/ directory from before that filter existed

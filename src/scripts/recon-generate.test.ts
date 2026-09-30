@@ -29,6 +29,7 @@ import {
   identifyNoiseCapturesForFields,
   indexStateValues,
   inferZodSchemaFromSamples,
+  isGraphQL,
   resolveFoldPlan,
   resolveManifestActionSequence,
   resolveStepPayloadField,
@@ -2091,6 +2092,59 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
     );
 
     expect(primary?.capture).toBe(primaryHostCapture);
+  });
+});
+
+describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant host with a minority of genuine GraphQL captures", () => {
+  const BASE = "https://api.example.com";
+  const ENDPOINTS = ["categories", "nav-config", "store-locations", "site-flags", "promotions"];
+
+  const restCapture = (i: number) => {
+    const endpoint = ENDPOINTS[i % ENDPOINTS.length];
+    return {
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "GET",
+      url: `${BASE}/${endpoint}`,
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: { "Content-Type": "application/json" },
+      responseBody: { data: [`value-for-${endpoint}-42`] },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    };
+  };
+
+  const gqlCapture = (i: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"query":"query Foo${i} { foo }"}`,
+    responseHeaders: {},
+    responseBody: { data: { foo: i } },
+    operationName: `Foo${i}`,
+    query: `query Foo${i} { foo }`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("returns false for a scoped host whose real REST traffic is a repeated, identical-response fetch of a handful of static endpoints and only two genuine GraphQL documents exist", () => {
+    // Each of the 5 REST endpoints repeats with a byte-identical response,
+    // mirroring a real site's static config/nav/category fetches — real
+    // own-backend evidence, not beacon noise, even though it never varies.
+    const captures = [
+      ...Array.from({ length: 50 }, (_, i) => restCapture(i)),
+      gqlCapture(1),
+      gqlCapture(2),
+    ];
+
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
   });
 });
 
@@ -4861,6 +4915,26 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     const baseUrl = deriveBaseUrl([first, second], []);
 
     expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("resolves to the dominant own-backend host when a same-company auth redirect on a different registrable domain sorts first", () => {
+    const authRedirect = capture("https://login.example-id.com/bounce", "2024-01-01T00:00:00Z");
+    const backend = Array.from({ length: 4 }, (_, i) =>
+      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([authRedirect, ...backend], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("does not exclude a genuine own-backend host from the anchor pick just because its label matches the auth vocabulary", () => {
+    const real = capture("https://login.example.com/a", "2024-01-01T00:00:00Z");
+    const other = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([real, other], []);
+
+    expect(baseUrl).toBe("https://login.example.com");
   });
 
   it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {

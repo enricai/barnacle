@@ -71,6 +71,7 @@ describe("emitContractTs — G2 checklist/enforcement coherence (multi-call hete
   const checklist = buildContractChecklist({
     pascal: BASE_OPTS.pascal,
     gql: BASE_OPTS.gql,
+    gqlQuery: BASE_OPTS.gqlQuery,
     multiStepBody,
   });
 
@@ -128,6 +129,7 @@ describe("emitContractTs — single-endpoint plugin (positive control)", () => {
   const checklist = buildContractChecklist({
     pascal: BASE_OPTS.pascal,
     gql: BASE_OPTS.gql,
+    gqlQuery: BASE_OPTS.gqlQuery,
   });
 
   it("still emits its inferred schema as the client schema, unchanged", () => {
