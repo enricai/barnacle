@@ -6143,7 +6143,7 @@ function applyPayloadKeyValueSubstitutions(
   // A scalar facet field's captured value doesn't only ever surface as its
   // OWN exact `"<field>":<value>` pair (handled above) — the same value can
   // be packed inside an UNRELATED key's delimited facet string (e.g. a
-  // `filters`/`variables` blob shaped `ship:disney-wish|theme:merry`). This
+  // `filters`/`variables` blob shaped `color:midnight-blue|size:large`). This
   // consults the SAME field↔captured-value correlation table just built
   // (the scalar string entries of `merged`) via the identical case-
   // insensitive splice {@link renderGqlVariablesExpr} already applies to the
