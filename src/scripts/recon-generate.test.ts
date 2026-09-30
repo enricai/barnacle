@@ -15,6 +15,7 @@ import {
   collectHeaderBindings,
   compileActionSteps,
   countSpliceableFacets,
+  deriveBaseUrl,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
   emitConfigManifest,
@@ -4663,5 +4664,55 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
     expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
       /required URL field.*TrackingUrl/
     );
+  });
+});
+
+describe("deriveBaseUrl — resolves the dominant own-backend host, not the first-array-order match (#bugfix-005)", () => {
+  const capture = (url: string, timestamp: string) => ({
+    timestamp,
+    phase: "action" as const,
+    method: "GET",
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("resolves to the dominant host by capture count even when a minority host's capture appears first", () => {
+    const minorityFirst = capture("https://redirect.example.com/init", "2024-01-01T00:00:00Z");
+    const dominant1 = capture("https://api.example.com/a", "2024-01-01T00:00:01Z");
+    const dominant2 = capture("https://api.example.com/b", "2024-01-01T00:00:02Z");
+    const dominant3 = capture("https://api.example.com/c", "2024-01-01T00:00:03Z");
+
+    const baseUrl = deriveBaseUrl(
+      [minorityFirst, dominant1, dominant2, dominant3],
+      ["redirect.example.com", "api.example.com"]
+    );
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("resolves identically to today for a single declared own-backend host (dominance vote over one candidate group degenerates to first-match)", () => {
+    const first = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const second = capture("https://api.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([first, second], ["api.example.com"]);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("resolves identically to today with no host provenance declared (first non-noise capture)", () => {
+    const first = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const second = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([first, second], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
   });
 });

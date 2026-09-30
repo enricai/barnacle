@@ -1150,14 +1150,34 @@ function capturePathname(url: string): string {
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
  */
-function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
   const candidates = captures.filter((c) => {
     if (ownBackendHostnames.length > 0) {
       return isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null);
     }
     return !isNoiseUrl(c.url);
   });
+  // Group by host and pick the group with the most captures, so a minority
+  // host's capture landing earlier in array order (e.g. a redirect completing
+  // before the dominant host's traffic due to async ordering) can never win
+  // over the flow's genuinely dominant own-backend host. Ties keep the
+  // first-encountered group's order to stay deterministic.
+  const groups = new Map<string, Capture[]>();
+  const groupOrder: string[] = [];
   for (const c of candidates) {
+    const host = captureHostname(c.url);
+    if (!groups.has(host)) {
+      groups.set(host, []);
+      groupOrder.push(host);
+    }
+    groups.get(host)!.push(c);
+  }
+  const dominantHost = groupOrder.reduce<string | null>((best, host) => {
+    if (best === null) return host;
+    return groups.get(host)!.length > groups.get(best)!.length ? host : best;
+  }, null);
+  const dominantGroup = dominantHost !== null ? groups.get(dominantHost)! : [];
+  for (const c of dominantGroup) {
     try {
       const u = new URL(c.url);
       return `${u.protocol}//${u.host}`;
@@ -14016,6 +14036,7 @@ async function main(): Promise<void> {
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
     const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
+    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
         const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
@@ -14058,7 +14079,6 @@ async function main(): Promise<void> {
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
