@@ -14077,7 +14077,12 @@ async function main(): Promise<void> {
     const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
-        const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
+        const allowed = isAllowedFixtureHost(
+          entry.hostname,
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        );
         if (!allowed) {
           logger.warn(
             `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
