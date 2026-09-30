@@ -426,6 +426,17 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
         buildPrimaryXPathFixture({ controlTag: "button", controlAttrs: 'type="submit"' })
       );
     });
+
+    it('still vetoes a NAMED explicit <button type="submit"> that is not the sole candidate in its form on DOM-delta-only verification', async () => {
+      await expectStillVetoed(
+        buildPrimaryXPathFixture({
+          controlTag: "button",
+          controlAttrs: 'type="submit"',
+          controlText: "Pay now",
+          siblingHtml: '<button id="siblingControl" type="button">Manage cart</button>',
+        })
+      );
+    });
   });
 
   describe("XPATH_TAIL_RETARGET_RESOLVE_FN_SRC tail-retarget branch", () => {
@@ -443,6 +454,17 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
         buildTailRetargetFixture({
           controlTag: "input",
           controlAttrs: 'type="image" src="go.png" alt="Go"',
+        })
+      );
+    });
+
+    it('still vetoes a NAMED explicit <button type="submit"> that is not the sole candidate in its form, reached via xpathTail retarget', async () => {
+      await expectStillVetoed(
+        buildTailRetargetFixture({
+          controlTag: "button",
+          controlAttrs: 'type="submit"',
+          controlText: "Pay now",
+          siblingHtml: '<button id="siblingControl" type="button">Manage cart</button>',
         })
       );
     });
