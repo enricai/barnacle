@@ -1143,13 +1143,45 @@ function capturePathname(url: string): string {
 }
 
 /**
- * Groups captures by exact host and returns the origin of the group with the
- * most captures, so a minority host's capture landing earlier in array order
- * (e.g. a redirect completing before the dominant host's traffic due to async
- * ordering) can never win over the group that genuinely dominates by count.
- * Ties keep the first-encountered group's order to stay deterministic.
+ * A page-navigation response (an HTML document, not JSON/API traffic) is
+ * never itself the flow's backend -- it is where the flow's real API calls
+ * happen to start from. Array order routinely puts the landing navigation
+ * first, so leaving it in the "first non-noise capture" candidate pool lets
+ * an incidental cross-host landing page win `baseUrl`/`primaryHost` over the
+ * flow's genuine, JSON-responding backend traffic.
  */
-function dominantHostOrigin(candidates: Capture[]): string {
+function isHtmlNavigationCapture(capture: Capture): boolean {
+  const contentType = Object.entries(capture.responseHeaders).find(
+    ([k]) => k.toLowerCase() === "content-type"
+  )?.[1];
+  return typeof contentType === "string" && contentType.toLowerCase().includes("text/html");
+}
+
+/**
+ * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
+ * derived FROM, so at this point in generation the registrable-domain gate
+ * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
+ * best available signal is {@link isNoiseUrl}'s conservative exclusion of
+ * known third-party asset/tracking hosts (the same fallback
+ * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
+ * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
+ * Capture count can't distinguish an own-backend host from a chatty third
+ * party, so the dominance vote only runs over declared hosts; with none
+ * declared the first non-noise, non-navigation capture wins.
+ */
+export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+  if (ownBackendHostnames.length === 0) {
+    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
+    return firstCaptureOrigin(nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url)));
+  }
+  const candidates = captures.filter((c) =>
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
+  );
+  // Group by host and pick the group with the most captures, so a minority
+  // host's capture landing earlier in array order (e.g. a redirect completing
+  // before the dominant host's traffic due to async ordering) can never win
+  // over the flow's genuinely dominant own-backend host. Ties keep the
+  // first-encountered group's order to stay deterministic.
   const groups = new Map<string, Capture[]>();
   const groupOrder: string[] = [];
   for (const c of candidates) {
@@ -1166,40 +1198,6 @@ function dominantHostOrigin(candidates: Capture[]): string {
   }, null);
   const dominantGroup = dominantHost !== null ? groups.get(dominantHost)! : [];
   return firstCaptureOrigin(dominantGroup);
-}
-
-/**
- * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
- * derived FROM, so at this point in generation the registrable-domain gate
- * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
- * best available signal is {@link isNoiseUrl}'s conservative exclusion of
- * known third-party asset/tracking hosts (the same fallback
- * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
- * `baseUrl` doubles as `primaryHost`'s source once resolved, so the
- * dominance vote must still run for the undeclared case -- otherwise an
- * array-order artifact (e.g. a landing-page GET sorting before the flow's
- * dominant backend traffic) starves every downstream `primaryHost`
- * narrowing of its real target. But capture count alone can't distinguish
- * an own-backend host from a chatty unrelated third party, so the vote is
- * anchored to the first non-noise capture's registrable domain: only hosts
- * sharing that domain (the flow's own subdomains) compete for dominance:
- * a third party on a wholly different domain is excluded before the count
- * ever runs, not merely outvoted.
- */
-export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
-  if (ownBackendHostnames.length === 0) {
-    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorHost = captureHostname(firstCaptureOrigin(nonNoise));
-    const anchorDomain = registrableDomain(anchorHost);
-    const sameDomainCandidates = nonNoise.filter(
-      (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
-    );
-    return dominantHostOrigin(sameDomainCandidates);
-  }
-  const candidates = captures.filter((c) =>
-    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
-  );
-  return dominantHostOrigin(candidates);
 }
 
 function firstCaptureOrigin(captures: Capture[]): string {
