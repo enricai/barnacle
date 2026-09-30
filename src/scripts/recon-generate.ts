@@ -1391,14 +1391,20 @@ function firstGraphQLCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): Capture | null {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const ownBackendCandidates = captures.filter(
     (c) =>
       c.query &&
       (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+        isAllowedFixtureHost(
+          captureHostname(c.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        ))
   );
   if (
     submitPatterns === null ||
@@ -1552,7 +1558,8 @@ export function selectPrimaryGraphQLOperation(
   env: NodeJS.ProcessEnv = process.env,
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): PrimaryGraphQLOperation | null {
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -1567,7 +1574,12 @@ export function selectPrimaryGraphQLOperation(
       c.query !== null &&
       !/^\s*mutation\b/.test(c.query) &&
       (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+        isAllowedFixtureHost(
+          captureHostname(c.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        ))
   );
   // A declared submitEndpointPattern is authoritative for single-endpoint
   // primary selection too: it must not be silently ignored just because
@@ -14105,7 +14117,8 @@ async function main(): Promise<void> {
             process.env,
             ownBackendHostnames,
             fallbackDomain,
-            submitPatterns
+            submitPatterns,
+            primaryHost
           )
         : null;
     if (
@@ -14124,7 +14137,13 @@ async function main(): Promise<void> {
     // capture could otherwise win the endpoint/body fallback while an
     // unrelated capture supplies the query text.
     const fallbackGraphQLCapture = gql
-      ? firstGraphQLCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns)
+      ? firstGraphQLCapture(
+          activeCaptures,
+          ownBackendHostnames,
+          fallbackDomain,
+          submitPatterns,
+          primaryHost
+        )
       : null;
     const gqlQuery =
       primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;

@@ -1995,6 +1995,60 @@ describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks resp
   });
 });
 
+describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend selection", () => {
+  const BASE = "https://catalog.example.com";
+  const MINORITY_BASE = "https://cdn.example.com";
+  const QUERY = `query SearchProducts($filters: String) {
+  searchProducts(filters: $filters) { category priceRange }
+}`;
+
+  const searchCapture = (url: string, filters: string, paddingLength: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"query":"SearchProducts","variables":{"filters":"${filters}"}}`,
+    responseHeaders: {},
+    responseBody:
+      paddingLength > 0
+        ? { data: { products: [{ id: "1", padding: "x".repeat(paddingLength) }] } }
+        : { data: { products: [{ id: "1" }] } },
+    operationName: "SearchProducts",
+    query: QUERY,
+    variables: { filters },
+    decodedParams: null,
+  });
+
+  const flowSteps = [
+    { step: "irrelevant instruction one", payloadField: "category" },
+    { step: "irrelevant instruction two", payloadField: "priceRange" },
+  ];
+
+  it("excludes a minority-host operation that would otherwise out-score the primary host's capture", () => {
+    const primaryHostCapture = searchCapture(`${BASE}/graphql`, "category:widgets", 0);
+    const minorityHostCapture = searchCapture(
+      `${MINORITY_BASE}/graphql`,
+      "category:widgets|priceRange:10~50",
+      0
+    );
+
+    const primary = selectPrimaryGraphQLOperation(
+      [primaryHostCapture, minorityHostCapture],
+      flowSteps,
+      EMPTY_VOCABULARY,
+      {},
+      [new URL(BASE).hostname, new URL(MINORITY_BASE).hostname],
+      null,
+      null,
+      new URL(BASE).hostname
+    );
+
+    expect(primary?.capture).toBe(primaryHostCapture);
+  });
+});
+
 describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
   const UUID_A = "11111111-1111-1111-1111-111111111111";
   const UUID_B = "22222222-2222-2222-2222-222222222222";
