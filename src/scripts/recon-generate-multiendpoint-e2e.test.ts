@@ -163,15 +163,19 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
     // stub just because the real captures live off the landing page's host.
     expect(contract).not.toContain("query: payload.query");
 
-    // The real multi-call sequence must be emitted with the actual captured
-    // tenant-API absolute URLs — never dropped by an exact-host filter.
+    // The real multi-call sequence must be emitted against the actual
+    // captured tenant-API host -- never dropped by an exact-host filter.
+    // The dominant tenant-API host (8 captures) correctly wins `baseUrl`
+    // over the single-capture landing page, so the emitter templates it as
+    // `payload.BaseUrl` rather than embedding the literal origin per call.
     expect(contract).toContain("executeHttp(");
-    expect(contract).toContain("https://api.example.com/applications");
-    expect(contract).toContain("https://api.example.com/applicant");
-    expect(contract).toContain("https://api.example.com/address");
-    expect(contract).toContain("https://api.example.com/contact");
-    expect(contract).toContain("https://api.example.com/employment");
-    expect(contract).toContain("https://api.example.com/attachments");
-    expect(contract).toContain("https://api.example.com/validate");
+    expect(contract).toContain('defaultBaseUrl: "https://api.example.com"');
+    expect(contract).toContain("/applications");
+    expect(contract).toContain("/applicant");
+    expect(contract).toContain("/address");
+    expect(contract).toContain("/contact");
+    expect(contract).toContain("/employment");
+    expect(contract).toContain("/attachments");
+    expect(contract).toContain("/validate");
   }, 30_000);
 });

@@ -1143,28 +1143,28 @@ function capturePathname(url: string): string {
 }
 
 /**
- * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
- * derived FROM, so at this point in generation the registrable-domain gate
- * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
- * best available signal is {@link isNoiseUrl}'s conservative exclusion of
- * known third-party asset/tracking hosts (the same fallback
- * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
- * Capture count can't distinguish an own-backend host from a chatty third
- * party, so the dominance vote only runs over declared hosts; with none
- * declared the first non-noise capture wins.
+ * A page-navigation response (an HTML document, not JSON/API traffic) is
+ * never itself the flow's backend -- it is where the flow's real API calls
+ * happen to start from. Array order routinely puts the landing navigation
+ * first, so leaving it in the "first non-noise capture" candidate pool lets
+ * an incidental cross-host landing page win `baseUrl`/`primaryHost` over the
+ * flow's genuine, JSON-responding backend traffic.
  */
-export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
-  if (ownBackendHostnames.length === 0) {
-    return firstCaptureOrigin(captures.filter((c) => !isNoiseUrl(c.url)));
-  }
-  const candidates = captures.filter((c) =>
-    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
-  );
-  // Group by host and pick the group with the most captures, so a minority
-  // host's capture landing earlier in array order (e.g. a redirect completing
-  // before the dominant host's traffic due to async ordering) can never win
-  // over the flow's genuinely dominant own-backend host. Ties keep the
-  // first-encountered group's order to stay deterministic.
+function isHtmlNavigationCapture(capture: Capture): boolean {
+  const contentType = Object.entries(capture.responseHeaders).find(
+    ([k]) => k.toLowerCase() === "content-type"
+  )?.[1];
+  return typeof contentType === "string" && contentType.toLowerCase().includes("text/html");
+}
+
+/**
+ * Groups captures by exact host and returns the origin of the group with the
+ * most captures, so a minority host's capture landing earlier in array order
+ * (e.g. a redirect completing before the dominant host's traffic due to async
+ * ordering) can never win over the group that genuinely dominates by count.
+ * Ties keep the first-encountered group's order to stay deterministic.
+ */
+function dominantHostOrigin(candidates: Capture[]): string {
   const groups = new Map<string, Capture[]>();
   const groupOrder: string[] = [];
   for (const c of candidates) {
@@ -1181,6 +1181,55 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
   }, null);
   const dominantGroup = dominantHost !== null ? groups.get(dominantHost)! : [];
   return firstCaptureOrigin(dominantGroup);
+}
+
+/**
+ * `baseUrl` itself is what {@link registrableDomain}'s fallback would be
+ * derived FROM, so at this point in generation the registrable-domain gate
+ * doesn't exist yet: when the flow declares no `ownBackendHostnames`, the
+ * best available signal is {@link isNoiseUrl}'s conservative exclusion of
+ * known third-party asset/tracking hosts (the same fallback
+ * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
+ * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
+ * `baseUrl` doubles as `primaryHost`'s source once resolved, so an
+ * array-order artifact (e.g. a genuine minority-subdomain GraphQL capture
+ * sorting before the flow's dominant GraphQL backend traffic, on a sibling
+ * subdomain of the same registrable domain) would starve every downstream
+ * `primaryHost` narrowing of its real target if the first non-noise capture
+ * always won outright. But capture count alone can't distinguish an
+ * own-backend host from a chatty unrelated one -- #bugfix-005 pins
+ * first-non-noise-capture-wins for the general case, since a same-domain
+ * trailing noise batch (e.g. session-refresh redirects, or a third-party
+ * GraphQL telemetry beacon on an unrelated domain) can vastly outnumber a
+ * real, already-complete primary flow. The dominance vote therefore only
+ * ever runs when the first non-noise capture's OWN registrable-domain group
+ * itself contains GraphQL-shaped traffic (a `query`-bearing capture) --
+ * exactly the #493 scenario, a genuine own-domain GraphQL host split across
+ * subdomains -- and even then the vote counts every same-domain capture
+ * (GraphQL and REST alike), not just the GraphQL-shaped ones, so it can't be
+ * hijacked by an unrelated cross-domain GraphQL noise source that happens to
+ * outnumber the real flow. Absent same-domain GraphQL traffic, the first
+ * non-noise, non-navigation capture wins exactly as before.
+ */
+export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+  if (ownBackendHostnames.length === 0) {
+    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
+    const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
+    const anchorHost = captureHostname(firstCaptureOrigin(pool));
+    const anchorDomain = registrableDomain(anchorHost);
+    const sameDomainCandidates = pool.filter(
+      (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
+    );
+    const sameDomainHasGraphql = sameDomainCandidates.some(
+      (c) => typeof c.query === "string" && c.query.length > 0
+    );
+    if (!sameDomainHasGraphql) return firstCaptureOrigin(pool);
+    return dominantHostOrigin(sameDomainCandidates);
+  }
+  const candidates = captures.filter((c) =>
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
+  );
+  return dominantHostOrigin(candidates);
 }
 
 function firstCaptureOrigin(captures: Capture[]): string {
@@ -14081,8 +14130,7 @@ async function main(): Promise<void> {
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
     const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
-    const primaryHost =
-      baseUrl.length > 0 && ownBackendHostnames.length > 0 ? new URL(baseUrl).hostname : null;
+    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
         const allowed = isAllowedFixtureHost(
