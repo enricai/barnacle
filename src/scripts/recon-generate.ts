@@ -11745,13 +11745,18 @@ ${foldMergeLines.length > 0 ? `${foldMergeLines.join("\n")}\n` : ""}    const tr
 export function buildContractChecklist(opts: {
   pascal: string;
   gql: boolean;
+  gqlQuery: string | null;
   omitExecuteHttp?: boolean;
   multiStepBody?: string;
 }): string[] {
-  const { pascal, gql, omitExecuteHttp, multiStepBody } = opts;
+  const { pascal, gql, gqlQuery, omitExecuteHttp, multiStepBody } = opts;
+  // Same isGqlEmission decision emitContractTs treats as the single source of
+  // truth for every GraphQL-emission decision — `gql` alone can be true with
+  // a null `gqlQuery`, which must not produce a QUERY checklist line either.
+  const isGqlEmission = gql && gqlQuery !== null;
 
   const queryChecklistLine =
-    !omitExecuteHttp && gql
+    !omitExecuteHttp && isGqlEmission
       ? `Trim UI-only fields from ${pascal.toUpperCase()}_QUERY (keep only fields you need)`
       : "";
 

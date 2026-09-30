@@ -202,17 +202,27 @@ describe("emitContractTs — review checklist moved out of the shipped file head
   });
 
   it("gql query trimming line is included only when the plugin has a live executeHttp GraphQL query", () => {
-    const gqlChecklist = buildContractChecklist({ ...BASE_OPTS, gql: true });
+    const gqlChecklist = buildContractChecklist({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "query { viewer { id } }",
+    });
     expect(gqlChecklist.some((line) => line.includes("Trim UI-only fields"))).toBe(true);
 
     const browserOnlyGqlChecklist = buildContractChecklist({
       ...BASE_OPTS,
       gql: true,
+      gqlQuery: "query { viewer { id } }",
       omitExecuteHttp: true,
     });
     expect(browserOnlyGqlChecklist.some((line) => line.includes("Trim UI-only fields"))).toBe(
       false
     );
+  });
+
+  it("gql query trimming line is absent when gql is true but gqlQuery never resolved (isGqlEmission false)", () => {
+    const gqlChecklist = buildContractChecklist({ ...BASE_OPTS, gql: true });
+    expect(gqlChecklist.some((line) => line.includes("Trim UI-only fields"))).toBe(false);
   });
 });
 
