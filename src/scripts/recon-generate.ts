@@ -1505,20 +1505,24 @@ export function deriveRequestHeaders(
  * at least half of the host-scoped voting pool — mirroring
  * {@link dominantHostOrigin}'s count-based idiom — so one coincidental match
  * can never outvote a REST-majority flow. The voting pool is no longer just
- * the query-bearing subset: a genuine own-backend REST anti-vote — a plain
- * GET request keyed by its URL, not a body, carrying neither `query` nor
+ * the query-bearing subset: a genuine own-backend REST anti-vote — a
+ * request keyed by its URL, not a body, carrying neither `query` nor
  * `operationName` — now joins the pool too, so one recurring endpoint whose
  * body coincidentally (or even genuinely) uses a `query`-shaped field can no
  * longer become a trivial majority of a tiny query-only subset while
- * remaining a small minority of the site's real own-backend GET/REST
- * traffic. Anti-vote eligibility is deliberately narrowed to GET requests:
- * `captures` here is the raw, pre-noise-filter capture set, and a same-
- * origin POST body (an analytics beacon, a heartbeat ping) is exactly the
- * shape {@link isNoiseUrl}/structural-relevance filtering downstream would
- * exclude as noise, not real REST traffic — admitting it to the vote would
- * let sheer beacon volume dilute a genuinely GraphQL-dominant flow. A
- * same-origin GET capture {@link isZeroVarianceRepeatCapture} proves is a
- * request-invariant repeat is reduced to at most one representative per
+ * remaining a small minority of the site's real own-backend REST traffic.
+ * Anti-vote eligibility spans every HTTP method, not just GET: a catalog/
+ * order site's real own-backend evidence is often POST/PUT/PATCH submissions
+ * (an order-status update, a cart PATCH) with no parsed GraphQL document and
+ * no `operationName`, and restricting the pool to GET alone would make that
+ * evidence invisible no matter how many such captures exist. `captures`
+ * here is the raw, pre-noise-filter capture set, so {@link isNoiseUrl} gates
+ * eligibility directly: a same-origin POST body (an analytics beacon, a
+ * heartbeat ping) is exactly the shape isNoiseUrl excludes as noise, not
+ * real REST traffic — admitting it to the vote would let sheer beacon
+ * volume dilute a genuinely GraphQL-dominant flow. A same-origin capture
+ * {@link isZeroVarianceRepeatCapture} proves is a request-invariant repeat
+ * is reduced to at most one representative per
  * endpoint rather than counted for every occurrence — repeat volume alone
  * must never inflate the anti-vote, the same reason a chatty query-bearing
  * client isn't allowed to inflate the pro-vote — but that representative is
@@ -1565,7 +1569,7 @@ export function isGraphQL(
     return true;
   });
   const restAntiVoteCandidates = scoped.filter(
-    (c) => !c.query && c.operationName === null && c.method === "GET"
+    (c) => !c.query && c.operationName === null && !isNoiseUrl(c.url)
   );
   const rescuedInvariantEndpoints = new Set<string>();
   const restAntiVotes = restAntiVoteCandidates.filter((c) => {
