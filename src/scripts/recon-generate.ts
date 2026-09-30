@@ -1178,11 +1178,25 @@ const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|acco
  * Matched on the host's first label only (see {@link AUTH_HOST_LABEL}), the
  * same structural, content-based precedent as {@link isHtmlNavigationCapture}
  * rather than a count/percentage threshold tuned to any one archive.
+ *
+ * A host label alone can't tell a one-off bounce apart from a genuine
+ * own-backend host that happens to be named `login.`/`accounts.` (real APIs
+ * are named that too). So this only flags the capture as a redirect when its
+ * host is NOT the pool's most-represented host -- a real backend, named
+ * `login.` or not, always racks up the most captures; a bounce that merely
+ * sorts first never does.
  */
-function isAuthRedirectCapture(capture: Capture): boolean {
+function isAuthRedirectCapture(capture: Capture, pool: Capture[]): boolean {
   const host = captureHostname(capture.url);
   const firstLabel = host.split(".")[0] ?? "";
-  return AUTH_HOST_LABEL.test(firstLabel);
+  if (!AUTH_HOST_LABEL.test(firstLabel)) return false;
+  const hostCounts = new Map<string, number>();
+  for (const c of pool) {
+    const h = captureHostname(c.url);
+    hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1);
+  }
+  const maxCount = Math.max(...hostCounts.values());
+  return hostCounts.get(host) !== maxCount;
 }
 
 /**
@@ -1252,7 +1266,7 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
   if (ownBackendHostnames.length === 0) {
     const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorPool = pool.filter((c) => !isAuthRedirectCapture(c));
+    const anchorPool = pool.filter((c) => !isAuthRedirectCapture(c, pool));
     const anchorSource = anchorPool.length > 0 ? anchorPool : pool;
     const anchorHost = captureHostname(firstCaptureOrigin(anchorSource));
     const anchorDomain = registrableDomain(anchorHost);
