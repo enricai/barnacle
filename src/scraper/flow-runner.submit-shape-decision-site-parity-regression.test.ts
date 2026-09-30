@@ -58,7 +58,11 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: "native input type=submit",
-    html: '<form><input id="target" type="submit" value="Go" /></form>',
+    // No `value` attribute: an <input>'s accessible name is sourced from
+    // `value` (see ACCESSIBLE_NAME_EXPR), so an unlabeled input carries an
+    // empty name and earns credit via the sole-candidate tier, same as
+    // "native input type=image" below.
+    html: '<form><input id="target" type="submit" /></form>',
     expected: true,
   },
   {
