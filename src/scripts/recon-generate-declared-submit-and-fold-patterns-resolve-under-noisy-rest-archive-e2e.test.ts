@@ -66,7 +66,10 @@ function fixtureCaptures(): Capture[] {
     url: `https://${OWN_BACKEND_HOST}/api/catalog/`,
     requestPostData: null,
     responseBody: null,
-    responseHeaders: { "content-type": "text/html", location: `https://${OWN_BACKEND_HOST}/api/catalog/home` },
+    responseHeaders: {
+      "content-type": "text/html",
+      location: `https://${OWN_BACKEND_HOST}/api/catalog/home`,
+    },
     timestamp: "2026-08-18T10:02:00.000Z",
   });
 
