@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ERROR_SINK_PATH_SEGMENT,
+  isAllowedFixtureHost,
   isNoiseUrl,
   isSamePathFamily,
   isStructurallyIsolatedCapture,
@@ -15,6 +16,85 @@ const originalTelemetryEnv = process.env.RECON_TELEMETRY_URL_PATTERNS;
 afterEach(() => {
   if (originalTelemetryEnv === undefined) delete process.env.RECON_TELEMETRY_URL_PATTERNS;
   else process.env.RECON_TELEMETRY_URL_PATTERNS = originalTelemetryEnv;
+});
+
+describe("isAllowedFixtureHost — primaryHost narrowing", () => {
+  it("returns false with no provenance regardless of primaryHost", () => {
+    expect(isAllowedFixtureHost("api.example.com", [], null)).toBe(false);
+  });
+
+  it("single-host declaration with matching primaryHost is a no-op", () => {
+    expect(
+      isAllowedFixtureHost("api.example.com", ["api.example.com"], null, "api.example.com")
+    ).toBe(true);
+  });
+
+  it("rejects a minority host sharing the fallback domain but not the primary host", () => {
+    expect(isAllowedFixtureHost("checkout.example.com", [], "example.com", "api.example.com")).toBe(
+      false
+    );
+  });
+
+  it("exact-hostname branch honors primaryHost narrowing", () => {
+    expect(
+      isAllowedFixtureHost(
+        "checkout.example.com",
+        ["api.example.com", "checkout.example.com"],
+        null,
+        "api.example.com"
+      )
+    ).toBe(false);
+  });
+});
+
+describe("isAllowedFixtureHost — chokepoint narrowing branches", () => {
+  it("excludes a non-primary host among 2+ declared exact hostnames", () => {
+    expect(
+      isAllowedFixtureHost(
+        "auth.example.com",
+        ["api.example.com", "auth.example.com"],
+        null,
+        "api.example.com"
+      )
+    ).toBe(false);
+  });
+
+  it("includes the primary host among 2+ declared exact hostnames", () => {
+    expect(
+      isAllowedFixtureHost(
+        "api.example.com",
+        ["api.example.com", "auth.example.com"],
+        null,
+        "api.example.com"
+      )
+    ).toBe(true);
+  });
+
+  it("excludes an undeclared same-registrable-domain subdomain that differs from primaryHost, even though the ownBackendHostnames.length > 1 gate is structurally false here", () => {
+    expect(isAllowedFixtureHost("auth.example.com", [], "example.com", "api.example.com")).toBe(
+      false
+    );
+  });
+
+  it("includes an undeclared same-registrable-domain subdomain that equals primaryHost", () => {
+    expect(isAllowedFixtureHost("api.example.com", [], "example.com", "api.example.com")).toBe(
+      true
+    );
+  });
+
+  it("omitting primaryHost reproduces today's unnarrowed exact-hostname behavior byte-for-byte", () => {
+    expect(
+      isAllowedFixtureHost("auth.example.com", ["api.example.com", "auth.example.com"], null)
+    ).toBe(true);
+    expect(
+      isAllowedFixtureHost("api.example.com", ["api.example.com", "auth.example.com"], null)
+    ).toBe(true);
+  });
+
+  it("passing primaryHost=null reproduces today's unnarrowed fallback-domain behavior byte-for-byte", () => {
+    expect(isAllowedFixtureHost("auth.example.com", [], "example.com", null)).toBe(true);
+    expect(isAllowedFixtureHost("api.example.com", [], "example.com", null)).toBe(true);
+  });
 });
 
 describe("isNoiseUrl — third-party asset/telemetry hosts", () => {

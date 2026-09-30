@@ -33,9 +33,7 @@ function extractBetween(src: string, startMarker: string, endMarker: string): st
 
 function evalSubmitShape(el: HappyDomElement): boolean {
   const window = new Window();
-  const fn = new window.Function("return (" + SUBMIT_SHAPE_EXPR + ")") as () => (
-    el: unknown
-  ) => boolean;
+  const fn = new window.Function(`return (${SUBMIT_SHAPE_EXPR})`) as () => (el: unknown) => boolean;
   return fn()(el as unknown);
 }
 

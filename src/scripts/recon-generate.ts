@@ -1149,15 +1149,42 @@ function capturePathname(url: string): string {
  * best available signal is {@link isNoiseUrl}'s conservative exclusion of
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
+ * Capture count can't distinguish an own-backend host from a chatty third
+ * party, so the dominance vote only runs over declared hosts; with none
+ * declared the first non-noise capture wins.
  */
-function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
-  const candidates = captures.filter((c) => {
-    if (ownBackendHostnames.length > 0) {
-      return isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null);
-    }
-    return !isNoiseUrl(c.url);
-  });
+export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+  if (ownBackendHostnames.length === 0) {
+    return firstCaptureOrigin(captures.filter((c) => !isNoiseUrl(c.url)));
+  }
+  const candidates = captures.filter((c) =>
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
+  );
+  // Group by host and pick the group with the most captures, so a minority
+  // host's capture landing earlier in array order (e.g. a redirect completing
+  // before the dominant host's traffic due to async ordering) can never win
+  // over the flow's genuinely dominant own-backend host. Ties keep the
+  // first-encountered group's order to stay deterministic.
+  const groups = new Map<string, Capture[]>();
+  const groupOrder: string[] = [];
   for (const c of candidates) {
+    const host = captureHostname(c.url);
+    if (!groups.has(host)) {
+      groups.set(host, []);
+      groupOrder.push(host);
+    }
+    groups.get(host)!.push(c);
+  }
+  const dominantHost = groupOrder.reduce<string | null>((best, host) => {
+    if (best === null) return host;
+    return groups.get(host)!.length > groups.get(best)!.length ? host : best;
+  }, null);
+  const dominantGroup = dominantHost !== null ? groups.get(dominantHost)! : [];
+  return firstCaptureOrigin(dominantGroup);
+}
+
+function firstCaptureOrigin(captures: Capture[]): string {
+  for (const c of captures) {
     try {
       const u = new URL(c.url);
       return `${u.protocol}//${u.host}`;
@@ -1251,7 +1278,13 @@ export function deriveRequestHeaders(
   baseUrl: string,
   submitPatterns: SubmitPatterns | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // Threaded into extractActionSequence below so its action-capture header
+  // source is narrowed to the flow's dominant own-backend host the same way
+  // every other extractActionSequence caller already is — otherwise the
+  // header baseline could be derived from a minority-host capture's headers
+  // instead of the primary host's.
+  primaryHost: string | null = null
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
@@ -1267,7 +1300,9 @@ export function deriveRequestHeaders(
     submitPatterns,
     null,
     ownBackendHostnames,
-    fallbackDomain
+    fallbackDomain,
+    true,
+    primaryHost
   ).map((a) => a.capture);
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
@@ -1321,14 +1356,10 @@ export function deriveRequestHeaders(
  * nothing on its own. It only counts once a genuine document has already
  * established the classification from elsewhere in the same host-scoped set.
  *
- * When the flow declares MORE THAN ONE own-backend host (e.g. a legitimate
- * mid-session redirect to an auth subdomain), evidence is further narrowed
- * to `primaryHost` — the same host {@link deriveBaseUrl} already resolved
- * the generated client's base URL from — so a thin trickle of genuine
- * GraphQL traffic against a minority own-backend host can never flip a
- * REST-majority flow's classification. A single declared own-backend host
- * has no "minority host" to guard against, so `primaryHost` is a no-op
- * there by construction.
+ * Evidence is further narrowed to `primaryHost` — the same host
+ * {@link deriveBaseUrl} already resolved the generated client's base URL
+ * from — so a thin trickle of genuine GraphQL traffic against a minority
+ * own-backend host can never flip a REST-majority flow's classification.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1340,13 +1371,12 @@ function isGraphQL(
   const scoped = captures.filter((c) => {
     if (
       hasHostProvenance &&
-      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
-    )
-      return false;
-    if (
-      ownBackendHostnames.length > 1 &&
-      primaryHost !== null &&
-      captureHostname(c.url) !== primaryHost
+      !isAllowedFixtureHost(
+        captureHostname(c.url),
+        ownBackendHostnames,
+        fallbackDomain,
+        primaryHost
+      )
     )
       return false;
     return true;
@@ -1376,14 +1406,20 @@ function firstGraphQLCapture(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): Capture | null {
   const hasHostProvenance = ownBackendHostnames.length > 0 || fallbackDomain !== null;
   const ownBackendCandidates = captures.filter(
     (c) =>
       c.query &&
       (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+        isAllowedFixtureHost(
+          captureHostname(c.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        ))
   );
   if (
     submitPatterns === null ||
@@ -1529,6 +1565,10 @@ function isPopulatedVariableValue(value: unknown): boolean {
  * {@link buildKnownFieldValues}'s known-value guard applied, so an operational
  * Select answer (e.g. a device-type dropdown) never contributes a spurious
  * facet match to the ranking.
+ *
+ * `primaryHost`, when given, further narrows candidates to the flow's
+ * dominant own-backend host — see {@link isAllowedFixtureHost} — so a
+ * minority own-backend host's query can never outrank the primary host's.
  */
 export function selectPrimaryGraphQLOperation(
   captures: Capture[],
@@ -1537,7 +1577,8 @@ export function selectPrimaryGraphQLOperation(
   env: NodeJS.ProcessEnv = process.env,
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
-  submitPatterns: SubmitPatterns | null = null
+  submitPatterns: SubmitPatterns | null = null,
+  primaryHost: string | null = null
 ): PrimaryGraphQLOperation | null {
   // Callers with no host-provenance data (the exported function's unit
   // tests) pass neither ownBackendHostnames nor fallbackDomain — in that
@@ -1552,7 +1593,12 @@ export function selectPrimaryGraphQLOperation(
       c.query !== null &&
       !/^\s*mutation\b/.test(c.query) &&
       (!hasHostProvenance ||
-        isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain))
+        isAllowedFixtureHost(
+          captureHostname(c.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        ))
   );
   // A declared submitEndpointPattern is authoritative for single-endpoint
   // primary selection too: it must not be silently ignored just because
@@ -1678,11 +1724,10 @@ export function selectPrimaryGraphQLOperation(
  * capture's own `.responseBody` instead of an array-order-first replay.
  *
  * `primaryHost` narrows the pool the same way {@link isGraphQL} narrows its
- * own evidence when the flow declares MORE THAN ONE own-backend host: a
- * minority own-backend host's capture (a redirect target with its own,
- * unrelated POST) must never win the REST hot path's endpoint over the
- * primary host's own GET/POST traffic just because it happens to be the
- * only non-GET capture in the archive.
+ * own evidence: a minority own-backend host's capture (a redirect target
+ * with its own, unrelated POST) must never win the REST hot path's endpoint
+ * over the primary host's own GET/POST traffic just because it happens to
+ * be the only non-GET capture in the archive.
  */
 export function firstEndpointCapture(
   captures: Capture[],
@@ -1700,13 +1745,12 @@ export function firstEndpointCapture(
   const allowed = (c: Capture): boolean => {
     if (
       hasHostProvenance &&
-      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
-    )
-      return false;
-    if (
-      ownBackendHostnames.length > 1 &&
-      primaryHost !== null &&
-      captureHostname(c.url) !== primaryHost
+      !isAllowedFixtureHost(
+        captureHostname(c.url),
+        ownBackendHostnames,
+        fallbackDomain,
+        primaryHost
+      )
     )
       return false;
     return true;
@@ -1953,7 +1997,14 @@ export function extractActionSequence(
   // that immediately truncates this result opts out with `false` to keep
   // earlier chain steps intact while still getting the structural-isolation
   // exemption above.
-  applyFinalAnchorNarrowing = true
+  applyFinalAnchorNarrowing = true,
+  // Threaded straight into isAllowedFixtureHost the same way isGraphQL and
+  // deriveBaseUrl already narrow to the flow's dominant own-backend host —
+  // without it, a minority-host capture that happens to match the declared
+  // submitEndpointPattern can survive host-gating alongside the primary
+  // host's genuine matches and starve out the submission this sequence is
+  // meant to isolate.
+  primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -2011,7 +2062,12 @@ export function extractActionSequence(
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
-        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+        !isAllowedFixtureHost(
+          captureHostname(capture.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        )
       )
         return false;
       return true;
@@ -2172,7 +2228,11 @@ export function extractGraphQLActionSequence(
   submitPatterns: SubmitPatterns | null = null,
   foldReturnSpec: FoldReturnSpec | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // See extractActionSequence's matching param: narrows host-gating to the
+  // flow's dominant own-backend host so a minority-host capture can never
+  // pass alongside it.
+  primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
@@ -2194,7 +2254,12 @@ export function extractGraphQLActionSequence(
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
-        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+        !isAllowedFixtureHost(
+          captureHostname(capture.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        )
       )
         return false;
       if (isMutation(capture)) return true;
@@ -6085,7 +6150,7 @@ function applyPayloadKeyValueSubstitutions(
   // A scalar facet field's captured value doesn't only ever surface as its
   // OWN exact `"<field>":<value>` pair (handled above) — the same value can
   // be packed inside an UNRELATED key's delimited facet string (e.g. a
-  // `filters`/`variables` blob shaped `ship:disney-wish|theme:merry`). This
+  // `filters`/`variables` blob shaped `color:midnight-blue|size:large`). This
   // consults the SAME field↔captured-value correlation table just built
   // (the scalar string entries of `merged`) via the identical case-
   // insensitive splice {@link renderGqlVariablesExpr} already applies to the
@@ -14016,9 +14081,16 @@ async function main(): Promise<void> {
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
     const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
+    const primaryHost =
+      baseUrl.length > 0 && ownBackendHostnames.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
-        const allowed = isAllowedFixtureHost(entry.hostname, ownBackendHostnames, fallbackDomain);
+        const allowed = isAllowedFixtureHost(
+          entry.hostname,
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        );
         if (!allowed) {
           logger.warn(
             `excluding aux fixture '${entry.filename}' — host '${entry.hostname}' is not an own-backend host`
@@ -14052,13 +14124,13 @@ async function main(): Promise<void> {
       baseUrl,
       submitPatterns,
       ownBackendHostnames,
-      fallbackDomain
+      fallbackDomain,
+      primaryHost
     );
     const minTime = deriveMinTime(rateLimits);
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
     const safeRps =
       rateLimits.find((f) => f.safeRps !== null)?.safeRps ?? Math.floor(1000 / minTime);
-    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const gql = isGraphQL(activeCaptures, ownBackendHostnames, fallbackDomain, primaryHost);
     // Hoisted so both the primary-operation gate below and rawActionCaptures
     // (further down) read the same computed sequence instead of calling the
@@ -14071,7 +14143,8 @@ async function main(): Promise<void> {
           null,
           foldReturnSpec,
           ownBackendHostnames,
-          fallbackDomain
+          fallbackDomain,
+          primaryHost
         )
       : [];
     // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
@@ -14092,7 +14165,8 @@ async function main(): Promise<void> {
             process.env,
             ownBackendHostnames,
             fallbackDomain,
-            submitPatterns
+            submitPatterns,
+            primaryHost
           )
         : null;
     if (
@@ -14111,7 +14185,13 @@ async function main(): Promise<void> {
     // capture could otherwise win the endpoint/body fallback while an
     // unrelated capture supplies the query text.
     const fallbackGraphQLCapture = gql
-      ? firstGraphQLCapture(activeCaptures, ownBackendHostnames, fallbackDomain, submitPatterns)
+      ? firstGraphQLCapture(
+          activeCaptures,
+          ownBackendHostnames,
+          fallbackDomain,
+          submitPatterns,
+          primaryHost
+        )
       : null;
     const gqlQuery =
       primaryGraphQLOperation?.capture.query ?? fallbackGraphQLCapture?.query ?? null;
@@ -14176,7 +14256,9 @@ async function main(): Promise<void> {
               null,
               foldReturnSpec,
               ownBackendHostnames,
-              fallbackDomain
+              fallbackDomain,
+              true,
+              primaryHost
             )
           )
         );
@@ -14208,7 +14290,8 @@ async function main(): Promise<void> {
             submitPatterns,
             foldReturnSpec,
             ownBackendHostnames,
-            fallbackDomain
+            fallbackDomain,
+            primaryHost
           ),
           primaryGraphQLOperation
         )
@@ -14220,7 +14303,8 @@ async function main(): Promise<void> {
               foldReturnSpec,
               ownBackendHostnames,
               fallbackDomain,
-              false
+              false,
+              primaryHost
             )
           )
         );

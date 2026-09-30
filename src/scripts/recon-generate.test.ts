@@ -15,6 +15,7 @@ import {
   collectHeaderBindings,
   compileActionSteps,
   countSpliceableFacets,
+  deriveBaseUrl,
   detectFormSchemaFieldNames,
   emitBrowserFlowTs,
   emitConfigManifest,
@@ -783,6 +784,51 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       "https://www.example-corp.com/apply",
       "https://api.tenant.example.com/submit",
     ]);
+  });
+
+  it("drops a minority-host capture that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {
+    // A minority auth subdomain fires an unrelated call whose URL happens to
+    // match the flow's declared submitEndpointPattern by coincidence — with
+    // primaryHost set, only the dominant host's own genuine submit survives.
+    const minorityHostCoincidentalMatch = capture(
+      "https://auth.tenant.example.com/submit-token-refresh",
+      "{}"
+    );
+    const primarySubmit = capture("https://api.tenant.example.com/submit", "{}");
+
+    const kept = extractActionSequence(
+      [minorityHostCoincidentalMatch, primarySubmit],
+      { endpoint: "submit", body: null },
+      null,
+      ["api.tenant.example.com", "auth.tenant.example.com"],
+      null,
+      true,
+      "api.tenant.example.com"
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([primarySubmit.url]);
+  });
+
+  it("keeps the primary host's genuine matching captures undiminished when primaryHost narrows the pool", () => {
+    const primaryAccountCreate = capture("https://api.tenant.example.com/account/create", "{}");
+    const primarySectionName = capture(
+      "https://api.tenant.example.com/sections/name",
+      '{"name":"x"}'
+    );
+    const primarySubmit = capture("https://api.tenant.example.com/submit", "{}");
+    const minorityHostNoise = capture("https://auth.tenant.example.com/refresh", "{}");
+
+    const kept = extractActionSequence(
+      [primaryAccountCreate, primarySectionName, primarySubmit, minorityHostNoise],
+      null,
+      null,
+      ["api.tenant.example.com", "auth.tenant.example.com"],
+      null,
+      true,
+      "api.tenant.example.com"
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual([primaryAccountCreate.url, primarySectionName.url, primarySubmit.url]);
   });
 });
 
@@ -1991,6 +2037,60 @@ describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks resp
     );
 
     expect(primary?.capture).toBe(twoFacetCapture);
+  });
+});
+
+describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend selection", () => {
+  const BASE = "https://catalog.example.com";
+  const MINORITY_BASE = "https://cdn.example.com";
+  const QUERY = `query SearchProducts($filters: String) {
+  searchProducts(filters: $filters) { category priceRange }
+}`;
+
+  const searchCapture = (url: string, filters: string, paddingLength: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"query":"SearchProducts","variables":{"filters":"${filters}"}}`,
+    responseHeaders: {},
+    responseBody:
+      paddingLength > 0
+        ? { data: { products: [{ id: "1", padding: "x".repeat(paddingLength) }] } }
+        : { data: { products: [{ id: "1" }] } },
+    operationName: "SearchProducts",
+    query: QUERY,
+    variables: { filters },
+    decodedParams: null,
+  });
+
+  const flowSteps = [
+    { step: "irrelevant instruction one", payloadField: "category" },
+    { step: "irrelevant instruction two", payloadField: "priceRange" },
+  ];
+
+  it("excludes a minority-host operation that would otherwise out-score the primary host's capture", () => {
+    const primaryHostCapture = searchCapture(`${BASE}/graphql`, "category:widgets", 0);
+    const minorityHostCapture = searchCapture(
+      `${MINORITY_BASE}/graphql`,
+      "category:widgets|priceRange:10~50",
+      0
+    );
+
+    const primary = selectPrimaryGraphQLOperation(
+      [primaryHostCapture, minorityHostCapture],
+      flowSteps,
+      EMPTY_VOCABULARY,
+      {},
+      [new URL(BASE).hostname, new URL(MINORITY_BASE).hostname],
+      null,
+      null,
+      new URL(BASE).hostname
+    );
+
+    expect(primary?.capture).toBe(primaryHostCapture);
   });
 });
 
@@ -4653,6 +4753,54 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
 
     expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
   });
+
+  it("drops a minority own-backend host's mutation that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {
+    const MINORITY_HOST = "auth.example.com";
+    const minorityMutation = gqlCapture(
+      `https://${MINORITY_HOST}/graphql`,
+      "SubmitTokenRefresh",
+      "mutation",
+      { refreshed: true }
+    );
+    const primaryMutation = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
+
+    const kept = extractGraphQLActionSequence(
+      [minorityMutation, primaryMutation],
+      { endpoint: "graphql", body: null },
+      null,
+      [OWN_BACKEND, MINORITY_HOST],
+      null,
+      OWN_BACKEND
+    );
+
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
+  });
+
+  it("keeps the primary host's genuine mutation undiminished when primaryHost narrows the pool", () => {
+    const MINORITY_HOST = "auth.example.com";
+    const minorityNoise = gqlCapture(
+      `https://${MINORITY_HOST}/graphql`,
+      "RefreshToken",
+      "mutation",
+      { refreshed: true }
+    );
+    const primaryMutation = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
+
+    const kept = extractGraphQLActionSequence(
+      [minorityNoise, primaryMutation],
+      null,
+      null,
+      [OWN_BACKEND, MINORITY_HOST],
+      null,
+      OWN_BACKEND
+    );
+
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
+  });
 });
 
 describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated violation still hard-fails", () => {
@@ -4663,5 +4811,66 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
     expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
       /required URL field.*TrackingUrl/
     );
+  });
+});
+
+describe("deriveBaseUrl — resolves the dominant own-backend host, not the first-array-order match (#bugfix-005)", () => {
+  const capture = (url: string, timestamp: string) => ({
+    timestamp,
+    phase: "action" as const,
+    method: "GET",
+    url,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("resolves to the dominant host by capture count even when a minority host's capture appears first", () => {
+    const minorityFirst = capture("https://redirect.example.com/init", "2024-01-01T00:00:00Z");
+    const dominant1 = capture("https://api.example.com/a", "2024-01-01T00:00:01Z");
+    const dominant2 = capture("https://api.example.com/b", "2024-01-01T00:00:02Z");
+    const dominant3 = capture("https://api.example.com/c", "2024-01-01T00:00:03Z");
+
+    const baseUrl = deriveBaseUrl(
+      [minorityFirst, dominant1, dominant2, dominant3],
+      ["redirect.example.com", "api.example.com"]
+    );
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("resolves identically to today for a single declared own-backend host (dominance vote over one candidate group degenerates to first-match)", () => {
+    const first = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const second = capture("https://api.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([first, second], ["api.example.com"]);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("resolves identically to today with no host provenance declared (first non-noise capture)", () => {
+    const first = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const second = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([first, second], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {
+    const real = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const chatty = Array.from({ length: 5 }, (_, i) =>
+      capture(`https://chatty.example.net/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([real, ...chatty], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
   });
 });
