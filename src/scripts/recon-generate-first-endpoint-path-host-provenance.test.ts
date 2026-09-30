@@ -58,6 +58,29 @@ describe("firstEndpointPath host provenance gate", () => {
 
     expect(firstEndpointPath([first, second])).toBe("/track");
   });
+
+  it("never returns a numerically-dominant same-registrable-domain minority own-backend host over the primary host", () => {
+    const minorityHostCaptures = Array.from({ length: 5 }, (_, i) =>
+      makeCapture({
+        method: "POST",
+        url: `https://checkout.example.com/redirect/${i}`,
+      })
+    );
+    const primary = makeCapture({
+      method: "POST",
+      url: "https://api.example.com/api/submit",
+    });
+
+    const endpointPath = firstEndpointPath(
+      [...minorityHostCaptures, primary],
+      ["api.example.com", "checkout.example.com"],
+      null,
+      null,
+      "api.example.com"
+    );
+
+    expect(endpointPath).toBe("/api/submit");
+  });
 });
 
 describe("firstEndpointCapture host provenance gate", () => {
@@ -87,5 +110,28 @@ describe("firstEndpointCapture host provenance gate", () => {
     const second = makeCapture({ method: "POST", url: "https://api.example.com/api/submit" });
 
     expect(firstEndpointCapture([first, second])).toBe(first);
+  });
+
+  it("never returns a numerically-dominant same-registrable-domain minority own-backend host over the primary host", () => {
+    const primary = makeCapture({
+      method: "POST",
+      url: "https://api.example.com/api/submit",
+    });
+    const minorityHostCaptures = Array.from({ length: 5 }, (_, i) =>
+      makeCapture({
+        method: "POST",
+        url: `https://checkout.example.com/redirect/${i}`,
+      })
+    );
+
+    const result = firstEndpointCapture(
+      [...minorityHostCaptures, primary],
+      ["api.example.com", "checkout.example.com"],
+      null,
+      null,
+      "api.example.com"
+    );
+
+    expect(result).toBe(primary);
   });
 });
