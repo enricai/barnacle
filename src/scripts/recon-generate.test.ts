@@ -2203,6 +2203,87 @@ describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant h
   });
 });
 
+describe("isGraphQL — zero-variance-repeat and business-relevant-state safeguards apply to non-GET anti-vote candidates", () => {
+  const BASE = "https://api.example.com";
+
+  const gqlCapture = (i: number) => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action" as const,
+    method: "POST",
+    url: `${BASE}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: `{"query":"query Foo${i} { foo }"}`,
+    responseHeaders: {},
+    responseBody: { data: { foo: i } },
+    operationName: `Foo${i}`,
+    query: `query Foo${i} { foo }`,
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("drops a repeated, no-business-relevant-response POST beacon from the anti-vote pool entirely rather than counting it per-occurrence", () => {
+    // Byte-identical request/response on every repeat (zero-variance) and no
+    // JSON content-type on the response — hasNoBusinessRelevantResponseState
+    // reads this as a beacon/heartbeat, not real own-backend evidence. If the
+    // widened non-GET pool counted each repeat instead of dropping the whole
+    // endpoint, these 50 captures would swamp the single genuine GraphQL
+    // document into a REST-majority pool.
+    const heartbeatCapture = () => ({
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url: `${BASE}/heartbeat`,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData: `{"alive":true}`,
+      responseHeaders: {},
+      responseBody: { ok: true },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    });
+
+    const captures = [...Array.from({ length: 50 }, () => heartbeatCapture()), gqlCapture(1)];
+
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(true);
+  });
+
+  it("retains a repeated, business-relevant POST endpoint as exactly one anti-vote representative rather than erasing it to zero", () => {
+    // Two distinct static-response POST endpoints, each zero-variance but
+    // carrying real data the caller could not already derive from the
+    // request — hasNoBusinessRelevantResponseState is false for both, so
+    // each collapses to exactly one representative (not zero, not 20). With
+    // a single genuine GraphQL document, 2 anti-votes to 1 pro-vote fails the
+    // half-or-more threshold: if either representative were erased to zero
+    // instead of retained, the pool would flip to GraphQL-majority.
+    const staticCapture = (endpoint: string) => ({
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "action" as const,
+      method: "POST",
+      url: `${BASE}/${endpoint}`,
+      status: 200,
+      requestHeaders: { "Content-Type": "application/json" },
+      requestPostData: `{"refresh":true}`,
+      responseHeaders: { "Content-Type": "application/json" },
+      responseBody: { data: [`value-for-${endpoint}-config`] },
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    });
+
+    const captures = [
+      ...Array.from({ length: 20 }, () => staticCapture("categories")),
+      ...Array.from({ length: 20 }, () => staticCapture("site-flags")),
+      gqlCapture(1),
+    ];
+
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
+  });
+});
+
 describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
   const UUID_A = "11111111-1111-1111-1111-111111111111";
   const UUID_B = "22222222-2222-2222-2222-222222222222";
