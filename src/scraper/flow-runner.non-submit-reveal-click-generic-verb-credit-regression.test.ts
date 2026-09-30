@@ -6,25 +6,26 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Pins bug #10's non-regression at `resolvedClickTargetIsSubmitShaped`'s
- * decision site (submit-control.ts's `SUBMIT_SHAPE_EXPR`): an explicit
- * `type="submit"` control earns unconditional structural credit as
- * submit-shaped regardless of its accessible name or sibling candidates —
- * the browser's own native submit signal, not `SUBMIT_SHAPE_FALLBACK_EXPR`'s
- * generic-verb/sole-candidate corroboration tiers — so even a JS-intercepted
- * click (calls `preventDefault()` and only toggles hidden fields — never
- * actually submits or navigates) on a real, non-empty, non-generic-verb,
- * non-negative accessible name ("Reveal contact form" / "Sign in with
- * account") is still swept into the stricter network/URL-only submit veto.
- * Each fixture gives the control multiple actionable sibling controls in its
- * `<form>` so neither the generic-action-verb nor the sole-actionable-
- * candidate corroboration fallback could account for the veto by
- * coincidence — it is the unconditional `type="submit"` credit alone.
- * Covers both `resolvedClickTargetIsSubmitShaped` resolution paths: this
- * file's first case resolves the control via the primary xpath (mirroring
- * flow-runner.resolved-click-target-widened-submit-shape.test.ts's fixture
- * shape); the second resolves it via the xpathTail-retarget (n+16 fallback)
- * path after staling the primary xpath (mirroring
+ * Pins the report's exact failure shape at `resolvedClickTargetIsSubmitShaped`'s
+ * decision site (submit-control.ts's `SUBMIT_SHAPE_EXPR`, fixed by "Require
+ * corroboration for explicit type=submit controls in SUBMIT_SHAPE_EXPR"): a
+ * `<button type="submit">` whose click handler is JS-intercepted (calls
+ * `preventDefault()` and only toggles hidden fields — never actually submits
+ * or navigates) but carries a real, non-empty, non-generic-verb, non-negative
+ * accessible name ("Reveal contact form" / "Sign in with account") must still
+ * verify from ordinary htmlDelta/textChanged/formValueChanged signals alone,
+ * instead of being swept into the stricter network/URL-only submit veto
+ * merely because it structurally resembles a submit control. Each fixture
+ * gives the control multiple actionable sibling controls in its `<form>` so
+ * neither the generic-action-verb nor the sole-actionable-candidate
+ * corroboration fallback could rescue the assertion by coincidence — the
+ * control must be credited because `SUBMIT_SHAPE_EXPR` no longer grants
+ * unconditional structural credit to an explicit `type="submit"`, not because
+ * of an unrelated fallback branch. Covers both `resolvedClickTargetIsSubmitShaped`
+ * resolution paths: this file's first case resolves the control via the
+ * primary xpath (mirroring flow-runner.resolved-click-target-widened-submit-shape.test.ts's
+ * fixture shape); the second resolves it via the xpathTail-retarget (n+16
+ * fallback) path after staling the primary xpath (mirroring
  * flow-runner.n16-retarget-submit-shape-probe.test.ts's fixture shape). A
  * fictitious example domain/company throughout — never the real reported site.
  */
@@ -290,44 +291,46 @@ function buildFixture(params: { baseUrl: string; label: string; staleprimary: bo
   return { page, stagehand, steps, logger, info, warn };
 }
 
-describe("flow-runner resolvedClickTargetIsSubmitShaped — explicit type=submit retains its unconditional submit-shape credit (bug #10)", () => {
-  it('still vetoes, via the primary-xpath resolution path, a NAMED <button type="submit">Reveal contact form</button> that is not the sole candidate in its form, on DOM-delta-only verification', async () => {
-    const { page, stagehand, steps, logger } = buildFixture({
+describe("flow-runner resolvedClickTargetIsSubmitShaped — explicit type=submit, JS-intercepted reveal control is not phantom-vetoed", () => {
+  it('verifies, via the primary-xpath resolution path, a <button type="submit">Reveal contact form</button> whose click only toggles hidden fields, from DOM-delta alone', async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
       baseUrl: "https://accounts.example.com/create",
       label: "Reveal contact form",
       staleprimary: false,
     });
 
-    await expect(
-      runHealingFlow({
-        stagehand,
-        page,
-        steps,
-        logger,
-        anthropic: null,
-        rephraseModel: null,
-        uploadFixture: null,
-      })
-    ).rejects.toThrow(/failed verification/);
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.lastStepIndex).toBe(1);
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
   });
 
-  it('still vetoes, via the xpathTail-retarget (n+16 fallback) resolution path, a NAMED <button type="submit">Sign in with account</button> that is not the sole candidate in its form, on DOM-delta-only verification', async () => {
-    const { page, stagehand, steps, logger } = buildFixture({
+  it('verifies, via the xpathTail-retarget (n+16 fallback) resolution path, a <button type="submit">Sign in with account</button> whose click only toggles hidden fields, from DOM-delta alone', async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture({
       baseUrl: "https://apply.example.com/step/1",
       label: "Sign in with account",
       staleprimary: true,
     });
 
-    await expect(
-      runHealingFlow({
-        stagehand,
-        page,
-        steps,
-        logger,
-        anthropic: null,
-        rephraseModel: null,
-        uploadFixture: null,
-      })
-    ).rejects.toThrow(/failed verification/);
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result.lastStepIndex).toBe(1);
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
   });
 });

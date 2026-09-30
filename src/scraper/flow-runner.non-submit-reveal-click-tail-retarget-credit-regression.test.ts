@@ -6,21 +6,26 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * Pins bug #10's non-regression for the xpathTail-retarget decision site
+ * Pins the fix for the xpathTail-retarget decision site
  * (`XPATH_TAIL_RETARGET_RESOLVE_FN_SRC`'s inline `isSubmitShaped`, composed
  * from `submit-control.ts`'s shared {@link SUBMIT_SHAPE_EXPR}): an explicit
- * `type="submit"` control earns unconditional structural credit as
- * submit-shaped regardless of accessible name or sibling candidates — the
- * browser's own native submit signal, not `SUBMIT_SHAPE_FALLBACK_EXPR`'s
- * generic-verb/sole-candidate corroboration tiers. Exercises the report's
- * exact resolution mechanism: the recorded primary xpath is unresolvable
- * (`document.evaluate` returns no `singleNodeValue`), forcing the n+16
- * fallback's `clickExpr` through `xpathTailForRetarget`'s loose tail
- * re-anchor, which then resolves the live element via a synthetic
- * `el.click()`. The resulting real (DOM-only) `htmlDelta` is still vetoed as
- * a weak signal, and the step fails verification. Companion to
- * `flow-runner.submit-shape-veto-preserved-for-genuine-submit-regression.test.ts`
- * for the same decision site.
+ * `type="submit"` control that only JS-intercepts a click (no navigation, no
+ * real form submission) — carrying a real, non-empty accessible name that is
+ * neither a negative verb ("back"/"cancel"/...) nor a generic action verb
+ * ("create"/"continue"/"next"/"confirm"/"proceed") and NOT the sole
+ * actionable control in its form — must not be credited as submit-shaped
+ * from `type="submit"` alone. Mirrors the report's exact failure mechanism:
+ * the recorded primary xpath is unresolvable (`document.evaluate` returns no
+ * `singleNodeValue`), forcing the n+16 fallback's `clickExpr` through
+ * `xpathTailForRetarget`'s loose tail re-anchor, which then resolves the
+ * live element via a synthetic `el.click()`. Before the fix, that inline
+ * predicate credited any explicit `type="submit"` control as submit-shaped
+ * unconditionally, so the resulting real (DOM-only) `htmlDelta` was vetoed
+ * as a weak signal and the step wrongly failed to verify. After the fix, the
+ * same click must be accepted as a normal (non-submit-shaped) step and the
+ * step must verify. Companion to
+ * `flow-runner.non-submit-form-button-tail-retarget-credit-regression.test.ts`
+ * (default-type `<button>` case) for the same decision site.
  */
 
 const BASE_URL = "https://apply.example.com/step/1";
@@ -272,24 +277,25 @@ function buildFixture(): {
   return { page, stagehand, steps, logger, info, warn };
 }
 
-describe('flow-runner n+16 fallback — explicit type="submit" control retains its unconditional submit-shape credit (bug #10)', () => {
-  it('still vetoes an xpathTail-retargeted click landing on an explicit type="submit" control with a non-generic label and a sibling actionable control, on DOM-delta-only verification', async () => {
-    const { page, stagehand, steps, logger } = buildFixture();
+describe('flow-runner n+16 fallback — JS-intercepted type="submit" reveal control is not phantom-vetoed as submit-shaped', () => {
+  it('verifies a step whose xpathTail-retargeted click lands on an explicit type="submit" control with a non-generic label and a sibling actionable control (no regression)', async () => {
+    const { page, stagehand, steps, logger, info } = buildFixture();
 
-    // Explicit type="submit" earns unconditional structural credit (bug
-    // #10) regardless of accessible name or sibling candidates, so the
-    // step's real (DOM-only) htmlDelta alone is not sufficient — the
-    // phantom-click veto still fires and the cascade exhausts.
-    await expect(
-      runHealingFlow({
-        stagehand,
-        page,
-        steps,
-        logger,
-        anthropic: null,
-        rephraseModel: null,
-        uploadFixture: null,
-      })
-    ).rejects.toThrow(/failed verification/);
+    const result = await runHealingFlow({
+      stagehand,
+      page,
+      steps,
+      logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    // The type="submit" control must not be credited as submit-shaped from
+    // its type attribute alone, so the step's real (DOM-only) htmlDelta is
+    // accepted as sufficient — the step verifies and the flow advances to
+    // the harmless second step instead of exhausting the cascade.
+    expect(result.lastStepIndex).toBe(1);
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
   });
 });
