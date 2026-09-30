@@ -31,7 +31,11 @@ function genuineGraphQLCapture(index: number) {
     url: `https://${OWN_BACKEND_HOST}/graphql`,
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: JSON.stringify({ operationName, query, variables: { filter: `page-${index}` } }),
+    requestPostData: JSON.stringify({
+      operationName,
+      query,
+      variables: { filter: `page-${index}` },
+    }),
     responseHeaders: {},
     responseBody: { searchListings: [{ id: `L${index}`, name: "Unit A" }] },
     operationName,
