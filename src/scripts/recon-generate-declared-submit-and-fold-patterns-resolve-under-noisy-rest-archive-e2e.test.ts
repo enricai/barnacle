@@ -29,12 +29,42 @@ const OWN_BACKEND_HOST = "www.declared-submit-fold-archive-fixture.example.com";
 
 const GENUINE_SUBMIT_COUNT = 24;
 
+/**
+ * Mirrors flow-runner.ts's real extraction: `operationName`/`query` are
+ * populated off ANY parsed JSON request body that happens to carry fields
+ * with those names, regardless of whether the traffic is GraphQL. A REST
+ * body's own `query`/`operationName`-named fields are captured the same way
+ * as a real GraphQL query document, which is what makes the coincidental
+ * collision genuine rather than merely asserted.
+ */
+function restCaptureWithParsedFields(overrides: {
+  method?: string;
+  url: string;
+  requestPostData: string | null;
+  responseBody: unknown;
+  timestamp: string;
+}): Capture {
+  const base = buildCapture(overrides);
+  const parsed = overrides.requestPostData !== null ? JSON.parse(overrides.requestPostData) : null;
+  const operationName =
+    parsed && typeof parsed.operationName === "string" ? parsed.operationName : null;
+  const query = parsed && typeof parsed.query === "string" ? parsed.query : null;
+  return {
+    ...base,
+    operationName,
+    query,
+    variables: parsed?.variables ?? null,
+    decodedParams: parsed,
+  };
+}
+
 function fixtureCaptures(): Capture[] {
   // The list step: an ordinary own-backend REST call whose body carries a
   // field literally named `query` (holding a plain search-term string, not a
   // GraphQL document) — the coincidental shape flow-runner.ts's real capture
-  // pipeline produces off any JSON POST body.
-  const searchStep = buildCapture({
+  // pipeline produces off any JSON POST body, populating `capture.query`
+  // exactly like a genuine GraphQL document would.
+  const searchStep = restCaptureWithParsedFields({
     url: `https://${OWN_BACKEND_HOST}/api/catalog/search`,
     requestPostData: JSON.stringify({ query: "catalog-term", page: 0 }),
     responseBody: {
