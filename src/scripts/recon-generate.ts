@@ -1271,7 +1271,13 @@ export function deriveRequestHeaders(
   baseUrl: string,
   submitPatterns: SubmitPatterns | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // Threaded into extractActionSequence below so its action-capture header
+  // source is narrowed to the flow's dominant own-backend host the same way
+  // every other extractActionSequence caller already is — otherwise the
+  // header baseline could be derived from a minority-host capture's headers
+  // instead of the primary host's.
+  primaryHost: string | null = null
 ): Record<string, string> {
   const successfulUrls = new Set(replays.filter((r) => r.success).map((r) => endpointKey(r.url)));
 
@@ -1287,7 +1293,9 @@ export function deriveRequestHeaders(
     submitPatterns,
     null,
     ownBackendHostnames,
-    fallbackDomain
+    fallbackDomain,
+    true,
+    primaryHost
   ).map((a) => a.capture);
   const replayMatchedCaptures = captures.filter((c) => successfulUrls.has(endpointKey(c.url)));
 
@@ -1982,7 +1990,14 @@ export function extractActionSequence(
   // that immediately truncates this result opts out with `false` to keep
   // earlier chain steps intact while still getting the structural-isolation
   // exemption above.
-  applyFinalAnchorNarrowing = true
+  applyFinalAnchorNarrowing = true,
+  // Threaded straight into isAllowedFixtureHost the same way isGraphQL and
+  // deriveBaseUrl already narrow to the flow's dominant own-backend host —
+  // without it, a minority-host capture that happens to match the declared
+  // submitEndpointPattern can survive host-gating alongside the primary
+  // host's genuine matches and starve out the submission this sequence is
+  // meant to isolate.
+  primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
   // Callers with no host-provenance data (the exported function's unit
@@ -2040,7 +2055,12 @@ export function extractActionSequence(
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
-        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+        !isAllowedFixtureHost(
+          captureHostname(capture.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        )
       )
         return false;
       return true;
@@ -2201,7 +2221,11 @@ export function extractGraphQLActionSequence(
   submitPatterns: SubmitPatterns | null = null,
   foldReturnSpec: FoldReturnSpec | null = null,
   ownBackendHostnames: string[] = [],
-  fallbackDomain: string | null = null
+  fallbackDomain: string | null = null,
+  // See extractActionSequence's matching param: narrows host-gating to the
+  // flow's dominant own-backend host so a minority-host capture can never
+  // pass alongside it.
+  primaryHost: string | null = null
 ): ActionCapture[] {
   const matchesSubmit = compileSubmitMatcher(submitPatterns);
   const matchesFoldReturn = compileFoldReturnEndpointMatcher(foldReturnSpec);
@@ -2223,7 +2247,12 @@ export function extractGraphQLActionSequence(
       if (!matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
-        !isAllowedFixtureHost(captureHostname(capture.url), ownBackendHostnames, fallbackDomain)
+        !isAllowedFixtureHost(
+          captureHostname(capture.url),
+          ownBackendHostnames,
+          fallbackDomain,
+          primaryHost
+        )
       )
         return false;
       if (isMutation(capture)) return true;
@@ -14082,7 +14111,8 @@ async function main(): Promise<void> {
       baseUrl,
       submitPatterns,
       ownBackendHostnames,
-      fallbackDomain
+      fallbackDomain,
+      primaryHost
     );
     const minTime = deriveMinTime(rateLimits);
     const hasRateLimitProbeData = rateLimits.some((f) => f.safeRps !== null);
@@ -14100,7 +14130,8 @@ async function main(): Promise<void> {
           null,
           foldReturnSpec,
           ownBackendHostnames,
-          fallbackDomain
+          fallbackDomain,
+          primaryHost
         )
       : [];
     // A foldReturn-admitted read/drill capture (see extractGraphQLActionSequence's
@@ -14212,7 +14243,9 @@ async function main(): Promise<void> {
               null,
               foldReturnSpec,
               ownBackendHostnames,
-              fallbackDomain
+              fallbackDomain,
+              true,
+              primaryHost
             )
           )
         );
@@ -14244,7 +14277,8 @@ async function main(): Promise<void> {
             submitPatterns,
             foldReturnSpec,
             ownBackendHostnames,
-            fallbackDomain
+            fallbackDomain,
+            primaryHost
           ),
           primaryGraphQLOperation
         )
@@ -14256,7 +14290,8 @@ async function main(): Promise<void> {
               foldReturnSpec,
               ownBackendHostnames,
               fallbackDomain,
-              false
+              false,
+              primaryHost
             )
           )
         );
