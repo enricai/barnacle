@@ -221,7 +221,11 @@ describe("recon-generate CLI — a cross-registrable-domain minority host that s
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     expect(result.status, combinedOutput).toBe(0);
-    expect(result.stdout).toContain(`generating plugin for ${siteId} (submission flow,`);
+    // Only the declared submit step ("confirm item") resolves to an actual
+    // capture -- "check availability" has no endpointPattern of its own, so
+    // the generator legitimately treats this as a single-endpoint REST flow
+    // (actionSteps.length === 1), not a multi-step submission flow.
+    expect(result.stdout).toContain(`generating plugin for ${siteId} (single-endpoint REST,`);
 
     const contractPath = join(siteOutDir, "contract.ts");
     const contract = readFileSync(contractPath, "utf8");
