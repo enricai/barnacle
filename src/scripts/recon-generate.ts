@@ -1550,6 +1550,10 @@ function isPopulatedVariableValue(value: unknown): boolean {
  * {@link buildKnownFieldValues}'s known-value guard applied, so an operational
  * Select answer (e.g. a device-type dropdown) never contributes a spurious
  * facet match to the ranking.
+ *
+ * `primaryHost`, when given, further narrows candidates to the flow's
+ * dominant own-backend host — see {@link isAllowedFixtureHost} — so a
+ * minority own-backend host's query can never outrank the primary host's.
  */
 export function selectPrimaryGraphQLOperation(
   captures: Capture[],
