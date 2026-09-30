@@ -4887,4 +4887,18 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
     expect(baseUrl).toBe("https://api.example.com");
   });
+
+  it("runs the dominance vote when the anchor host's own same-domain group has a genuine GraphQL operation in `query`", () => {
+    const anchor = {
+      ...capture("https://minority.example.com/graphql", "2024-01-01T00:00:00Z"),
+      query: "query GetWidgets { widgets { id } }",
+    };
+    const sameRegistrableDomainMajority = Array.from({ length: 5 }, (_, i) =>
+      capture(`https://dominant.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([anchor, ...sameRegistrableDomainMajority], []);
+
+    expect(baseUrl).toBe("https://dominant.example.com");
+  });
 });
