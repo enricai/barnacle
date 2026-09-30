@@ -1203,7 +1203,8 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * GraphQL telemetry beacon on an unrelated domain) can vastly outnumber a
  * real, already-complete primary flow. The dominance vote therefore only
  * ever runs when the first non-noise capture's OWN registrable-domain group
- * itself contains GraphQL-shaped traffic (a `query`-bearing capture) --
+ * itself contains GraphQL-shaped traffic (a capture whose `query` parses as
+ * a GraphQL operation) --
  * exactly the #493 scenario, a genuine own-domain GraphQL host split across
  * subdomains -- and even then the vote counts every same-domain capture
  * (GraphQL and REST alike), not just the GraphQL-shaped ones, so it can't be
@@ -1221,7 +1222,7 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
       (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
     );
     const sameDomainHasGraphql = sameDomainCandidates.some(
-      (c) => typeof c.query === "string" && c.query.length > 0
+      (c) => parsedOperationName(c.query ?? "") !== null
     );
     if (!sameDomainHasGraphql) return firstCaptureOrigin(pool);
     return dominantHostOrigin(sameDomainCandidates);
