@@ -4862,4 +4862,15 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
     expect(baseUrl).toBe("https://api.example.com");
   });
+
+  it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {
+    const real = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
+    const chatty = Array.from({ length: 5 }, (_, i) =>
+      capture(`https://chatty.example.net/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([real, ...chatty], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
 });

@@ -40,7 +40,8 @@ describe("selectPrimaryGraphQLOperation primaryHost narrowing", () => {
     const minorityCapture = makeCapture({
       url: `https://${MINORITY_HOST}/graphql`,
       operationName: "MinorityWidgets",
-      query: "query MinorityWidgets($filters: String) { minorityWidgets(filters: $filters) { id } }",
+      query:
+        "query MinorityWidgets($filters: String) { minorityWidgets(filters: $filters) { id } }",
       variables: { filters: "category:widgets" },
       responseBody: {
         minorityWidgets: Array.from({ length: 200 }, (_, i) => ({ id: i })),

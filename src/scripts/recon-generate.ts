@@ -1149,14 +1149,17 @@ function capturePathname(url: string): string {
  * best available signal is {@link isNoiseUrl}'s conservative exclusion of
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data).
+ * Capture count can't distinguish an own-backend host from a chatty third
+ * party, so the dominance vote only runs over declared hosts; with none
+ * declared the first non-noise capture wins.
  */
 export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
-  const candidates = captures.filter((c) => {
-    if (ownBackendHostnames.length > 0) {
-      return isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null);
-    }
-    return !isNoiseUrl(c.url);
-  });
+  if (ownBackendHostnames.length === 0) {
+    return firstCaptureOrigin(captures.filter((c) => !isNoiseUrl(c.url)));
+  }
+  const candidates = captures.filter((c) =>
+    isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
+  );
   // Group by host and pick the group with the most captures, so a minority
   // host's capture landing earlier in array order (e.g. a redirect completing
   // before the dominant host's traffic due to async ordering) can never win
@@ -1177,7 +1180,11 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
     return groups.get(host)!.length > groups.get(best)!.length ? host : best;
   }, null);
   const dominantGroup = dominantHost !== null ? groups.get(dominantHost)! : [];
-  for (const c of dominantGroup) {
+  return firstCaptureOrigin(dominantGroup);
+}
+
+function firstCaptureOrigin(captures: Capture[]): string {
+  for (const c of captures) {
     try {
       const u = new URL(c.url);
       return `${u.protocol}//${u.host}`;
@@ -14074,7 +14081,8 @@ async function main(): Promise<void> {
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
     const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
-    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
+    const primaryHost =
+      baseUrl.length > 0 && ownBackendHostnames.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
         const allowed = isAllowedFixtureHost(
