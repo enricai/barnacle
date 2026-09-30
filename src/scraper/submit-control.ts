@@ -149,20 +149,27 @@ export const SUBMIT_SHAPE_FALLBACK_EXPR = `((el, name, isNegative) => {
  * Single site-agnostic submit-shape predicate: `(el) => boolean`, composing
  * {@link NEGATIVE_TEXT_EXPR}, {@link ACCESSIBLE_NAME_EXPR}, and
  * {@link SUBMIT_SHAPE_FALLBACK_EXPR} so every caller shares one decision
- * boundary instead of hand-rolling a divergent copy. No tag or `type`
- * attribute — not even `<input type="submit">`/`type="image">`, nor an
- * explicit `type="submit"` on a `<button>`/`<input>` — earns unconditional
- * structural credit: a native submit-typed control that click-intercepts
- * rather than actually submitting (e.g. a "Show contact form" reveal toggle
- * a page happens to mark up as `<button type="submit">` for layout reasons,
- * with no submit intent at all) must earn its credit through the SAME
- * corroboration path as a non-native `<div>`/`<a>`/custom-element action
- * control — {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s generic-action-verb
- * accessible name, or sole-actionable-candidate-in-form when it carries no
- * text. Exported so `flow-runner.ts`'s `resolvedClickTargetIsSubmitShaped` /
- * `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC` share this one boolean producer
- * instead of re-diverging. {@link RANK_TIERS_EXPR} independently retains the
- * unconditional explicit-`type="submit"` credit for its own graduated (not
+ * boundary instead of hand-rolling a divergent copy. An `<input
+ * type="submit">`/`<input type="image">`, or a `<button>`/`<input>` carrying
+ * an EXPLICIT `type="submit"` attribute, earns unconditional structural
+ * credit (bug #10: a native submit-typed control with a real, non-generic,
+ * non-sole-candidate accessible name — e.g. a checkout's `<button
+ * type="submit">Pay now</button>` sitting beside other form controls — must
+ * still be read as submit-shaped, since that native type is the browser's
+ * own unconditional submit signal and {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s
+ * generic-verb/sole-candidate tiers alone do not cover it). A default-type
+ * `<button>` merely owned by a `<form>` still earns NO unconditional credit
+ * from that structural fact alone — the HTML spec makes its default type
+ * submit, but structure alone is not proof of submit intent (e.g. a "Show
+ * contact form" reveal toggle a page happens to nest inside a `<form>`) — so
+ * it must clear the same corroboration bar as a non-native `<div>`/`<a>`/
+ * custom-element action control: {@link SUBMIT_SHAPE_FALLBACK_EXPR}'s
+ * generic-action-verb accessible name, or sole-actionable-candidate-in-form
+ * when it carries no text. Exported so `flow-runner.ts`'s
+ * `resolvedClickTargetIsSubmitShaped` / `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC`
+ * share this one boolean producer instead of re-diverging.
+ * {@link RANK_TIERS_EXPR} independently applies the identical explicit-
+ * `type="submit"` unconditional-credit rule for its own graduated (not
  * boolean) tiering — a separate producer used for candidate
  * ranking/disambiguation, not this verification veto.
  */
@@ -172,6 +179,10 @@ export const SUBMIT_SHAPE_EXPR = `((el) => {
   const accessibleName = ${ACCESSIBLE_NAME_EXPR};
   const name = accessibleName(el);
   if (isNegative(name)) return false;
+  const tag = (el.tagName || "").toLowerCase();
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  if (tag === "input" && (type === "submit" || type === "image")) return true;
+  if ((tag === "button" || tag === "input") && type === "submit") return true;
   const isFallbackShaped = ${SUBMIT_SHAPE_FALLBACK_EXPR};
   return isFallbackShaped(el, name, isNegative);
 })`;
