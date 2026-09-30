@@ -1483,7 +1483,19 @@ export function deriveRequestHeaders(
  * exclude as noise, not real REST traffic — admitting it to the vote would
  * let sheer beacon volume dilute a genuinely GraphQL-dominant flow. A
  * same-origin GET capture {@link isZeroVarianceRepeatCapture} proves is a
- * request-invariant repeat is excluded from the pool for the same reason.
+ * request-invariant repeat is reduced to at most one representative per
+ * endpoint rather than counted for every occurrence — repeat volume alone
+ * must never inflate the anti-vote, the same reason a chatty query-bearing
+ * client isn't allowed to inflate the pro-vote — but that representative is
+ * only dropped from the pool entirely when
+ * {@link hasNoBusinessRelevantResponseState} shows the repeat carries no
+ * data of its own (a beacon/heartbeat). A REST endpoint whose real response
+ * is simply the same value every time it's called (a static category list,
+ * a site-config fetch) is still genuine own-backend evidence and must not be
+ * erased down to zero just because it happens not to vary — that would let
+ * a host whose only queryable traffic is a handful of genuinely-parsed
+ * GraphQL documents win by default the moment its REST traffic is
+ * repetitive, independent of the REST traffic's actual share of the flow.
  * Bare-`operationName`/APQ-reissue-shaped captures (`operationName` set,
  * `query` falsy) are excluded from the pool regardless of method: per the
  * corroboration rule above they carry no signal of their own, so diluting
@@ -1497,7 +1509,7 @@ export function deriveRequestHeaders(
  * REST evidence, not a coincidental parse — it must not by itself veto a
  * flow that has no other own-backend traffic at all.
  */
-function isGraphQL(
+export function isGraphQL(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
   fallbackDomain: string | null = null,
@@ -1517,11 +1529,19 @@ function isGraphQL(
       return false;
     return true;
   });
-  const votingPool = scoped.filter((c) => {
-    if (c.query) return true;
-    if (c.operationName !== null || c.method !== "GET") return false;
-    return !isZeroVarianceRepeatCapture(c, scoped);
+  const restAntiVoteCandidates = scoped.filter(
+    (c) => !c.query && c.operationName === null && c.method === "GET"
+  );
+  const rescuedInvariantEndpoints = new Set<string>();
+  const restAntiVotes = restAntiVoteCandidates.filter((c) => {
+    if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+    if (hasNoBusinessRelevantResponseState(c)) return false;
+    const key = endpointKey(c.url);
+    if (rescuedInvariantEndpoints.has(key)) return false;
+    rescuedInvariantEndpoints.add(key);
+    return true;
   });
+  const votingPool = [...scoped.filter((c) => c.query), ...restAntiVotes];
   const parsedCount = votingPool.reduce(
     (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
     0
