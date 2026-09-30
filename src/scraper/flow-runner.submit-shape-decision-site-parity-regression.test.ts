@@ -91,24 +91,26 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: "named non-generic-verb explicit type=submit, multi-candidate form",
-    // "Pay now" has a text signal that matches neither NEGATIVE_TEXT_EXPR nor
-    // SUBMIT_SHAPE_FALLBACK_EXPR's generic-action-verb wording, but explicit
-    // type="submit" earns unconditional structural credit regardless (bug
-    // #10: a checkout's `<button type="submit">Pay now</button>` beside other
-    // form controls must still read as submit-shaped -- the fallback tiers
-    // are only consulted for non-native-submit-typed controls).
+    // "Pay now" has a text signal but matches neither NEGATIVE_TEXT_EXPR nor
+    // SUBMIT_SHAPE_FALLBACK_EXPR's generic-action-verb wording, so it must
+    // fall through to the sole-candidate tier -- which is gated on carrying
+    // NO text at all. A named element never reaches that tier, so an
+    // explicit type="submit" earns no unconditional credit here regardless
+    // of sibling candidates.
     html: '<form><button id="target" type="submit">Pay now</button><button>Edit cart</button></form>',
-    expected: true,
+    expected: false,
   },
   {
     name: "named non-generic-verb explicit type=submit, sole candidate in form",
     // Same accessible name as the row above, now the only actionable
-    // control in its form. Still true, and for the same reason: the
-    // unconditional type="submit" credit does not depend on sole-candidacy
-    // or on SUBMIT_SHAPE_FALLBACK_EXPR's empty-name-only sole-candidate tier
-    // at all.
+    // control in its form. Still false: SUBMIT_SHAPE_FALLBACK_EXPR's
+    // sole-candidate tier only rescues candidates with an EMPTY accessible
+    // name (see submit-control.ts's `if (name !== "") return false;` guard,
+    // which runs before the sole-candidacy check). Proves the narrowing
+    // does not grant explicit type="submit" a divergent, candidacy-count-based
+    // exemption from that guard.
     html: '<form><button id="target" type="submit">Pay now</button></form>',
-    expected: true,
+    expected: false,
   },
   {
     name: "generic-verb explicit type=submit, sole candidate in form",
