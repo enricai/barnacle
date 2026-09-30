@@ -1409,6 +1409,19 @@ export function deriveRequestHeaders(
  * {@link deriveBaseUrl} already resolved the generated client's base URL
  * from — so a thin trickle of genuine GraphQL traffic against a minority
  * own-backend host can never flip a REST-majority flow's classification.
+ *
+ * Existence of a single parseable document isn't enough either: a REST body
+ * field literally named `query` can coincidentally satisfy
+ * {@link parsedOperationName}'s regex once out of many unrelated REST
+ * captures. The parsed-document count must be a strict majority of the
+ * host-scoped voting pool — mirroring {@link dominantHostOrigin}'s
+ * count-based idiom — so one coincidental match can never outvote a
+ * REST-majority flow. Bare-`operationName`/APQ-reissue-shaped captures
+ * (`operationName` set, `query` falsy) are excluded from the voting pool
+ * rather than counted as REST votes: per the corroboration rule above they
+ * carry no signal of their own, so diluting the pool with them would let a
+ * chatty APQ client's re-issue traffic swamp its own genuine originating
+ * document out of the majority.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1430,7 +1443,12 @@ function isGraphQL(
       return false;
     return true;
   });
-  return scoped.some((c) => parsedOperationName(c.query ?? "") !== null);
+  const votingPool = scoped.filter((c) => !(c.operationName && !c.query));
+  const parsedCount = votingPool.reduce(
+    (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
+    0
+  );
+  return parsedCount > 0 && parsedCount * 2 > votingPool.length;
 }
 
 /**
