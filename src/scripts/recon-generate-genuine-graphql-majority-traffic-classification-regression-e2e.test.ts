@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
- * `isGraphQL()`'s corroboration vote now weighs its dominance ratio against
- * ALL own-backend traffic, not just the has-query subset -- so a genuinely
- * GraphQL site whose own-backend host also carries a few zero-query-field
- * captures (a health check, an asset ping) must still classify as GraphQL:
- * those captures widen the denominator but must not be able to outvote real
- * parsed GraphQL documents that already dominate the host's traffic.
+ * `isGraphQL()`'s majority threshold was relaxed from a strict majority
+ * (`parsedCount * 2 > votingPool.length`) to half-or-more (`>=`) so the
+ * single-primary + single-GET-drill-down shape every foldReturn flow
+ * produces still resolves to GraphQL. This pins the exact-half boundary
+ * that relaxation exists for: genuinely-parsed GraphQL documents split
+ * evenly against query-bearing own-backend captures that never parse as a
+ * GraphQL operation (a REST endpoint whose request body happens to use a
+ * `query` field name) must still classify as GraphQL, even though the
+ * pre-fix strict-majority formula would have voted REST at that exact
+ * split.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -45,18 +49,24 @@ function genuineGraphQLCapture(index: number) {
   };
 }
 
-function zeroQueryFieldCapture(index: number) {
+/** A REST endpoint whose request body coincidentally uses a `query` field
+ * name (e.g. a search-box passthrough) -- truthy `.query`, so it enters
+ * the voting pool under both the pre-fix and post-fix formulas, but its
+ * text never parses as a GraphQL operation document, so it's an anti-vote
+ * either way. */
+function coincidentalQueryFieldRestCapture(index: number) {
   return {
     timestamp: "2026-08-18T10:23:04.000Z",
     phase: "search-listings",
     method: "POST",
-    url: `https://${OWN_BACKEND_HOST}/health`,
+    url: `https://${OWN_BACKEND_HOST}/api/search`,
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData: JSON.stringify({ ping: index }),
+    requestPostData: JSON.stringify({ query: `unit ${index}` }),
     responseHeaders: {},
-    responseBody: { ok: true },
+    responseBody: { results: [] },
     operationName: null,
+    query: `unit ${index}`,
     variables: null,
     decodedParams: null,
   };
@@ -93,8 +103,11 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("isGraphQL() — genuinely GraphQL-majority own-backend traffic with zero-query-field noise mixed in", () => {
-  it("classifies as GraphQL when genuine GraphQL captures dominate own-backend traffic even with a few zero-query-field captures on the same host", () => {
+const GENUINE_GRAPHQL_CAPTURE_COUNT = 10;
+const COINCIDENTAL_QUERY_FIELD_REST_CAPTURE_COUNT = 10;
+
+describe("isGraphQL() — exact-half genuine GraphQL vs. coincidental-query-field REST own-backend traffic", () => {
+  it("classifies as GraphQL when genuinely-parsed GraphQL captures are exactly half of the query-bearing own-backend voting pool", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-genuine-graphql-majority-traffic-e2e-"));
     const runRoot = join(workDir, "run");
     mkdirSync(join(runRoot, "graphql"), { recursive: true });
@@ -102,16 +115,16 @@ describe("isGraphQL() — genuinely GraphQL-majority own-backend traffic with ze
     mkdirSync(join(runRoot, "aux"), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
 
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < GENUINE_GRAPHQL_CAPTURE_COUNT; i++) {
       writeFileSync(
         join(runRoot, "graphql", `000-search-listings-${String(i).padStart(2, "0")}.json`),
         JSON.stringify(genuineGraphQLCapture(i))
       );
     }
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < COINCIDENTAL_QUERY_FIELD_REST_CAPTURE_COUNT; i++) {
       writeFileSync(
-        join(runRoot, "graphql", `999-search-listings-health-${i}.json`),
-        JSON.stringify(zeroQueryFieldCapture(i))
+        join(runRoot, "graphql", `999-search-listings-noise-${i}.json`),
+        JSON.stringify(coincidentalQueryFieldRestCapture(i))
       );
     }
 
