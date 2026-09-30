@@ -1218,10 +1218,15 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * best available signal is {@link isNoiseUrl}'s conservative exclusion of
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
- * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture})
- * and same-company auth/identity redirects (see {@link isAuthRedirectCapture}) --
- * neither is ever the flow's own backend, no matter which registrable domain
- * it lands on or how many captures it racks up completing an SSO bounce.
+ * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
+ * Same-company auth/identity redirects (see {@link isAuthRedirectCapture}) are
+ * excluded from the ANCHOR pick specifically -- such a redirect is never
+ * itself the flow's own backend, no matter which registrable domain it lands
+ * on or how many captures it racks up completing an SSO bounce -- but they
+ * stay in the wider `pool` once a real anchor domain is chosen, so a genuine
+ * own-backend host whose label happens to match {@link AUTH_HOST_LABEL} (e.g.
+ * an `accounts.` subdomain that is itself the real API, not a bounce) can
+ * still win the same-domain dominance vote below.
  * `baseUrl` doubles as `primaryHost`'s source once resolved, so an
  * array-order artifact (e.g. a genuine minority-subdomain GraphQL capture
  * sorting before the flow's dominant GraphQL backend traffic, on a sibling
@@ -1245,11 +1250,11 @@ function dominantHostOrigin(candidates: Capture[]): string {
  */
 export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
   if (ownBackendHostnames.length === 0) {
-    const nonNoise = captures.filter(
-      (c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c) && !isAuthRedirectCapture(c)
-    );
+    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorHost = captureHostname(firstCaptureOrigin(pool));
+    const anchorPool = pool.filter((c) => !isAuthRedirectCapture(c));
+    const anchorSource = anchorPool.length > 0 ? anchorPool : pool;
+    const anchorHost = captureHostname(firstCaptureOrigin(anchorSource));
     const anchorDomain = registrableDomain(anchorHost);
     const sameDomainCandidates = pool.filter(
       (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
@@ -1257,7 +1262,7 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
     const sameDomainHasGraphql = sameDomainCandidates.some(
       (c) => parsedOperationName(c.query ?? "") !== null
     );
-    if (!sameDomainHasGraphql) return firstCaptureOrigin(pool);
+    if (!sameDomainHasGraphql) return firstCaptureOrigin(anchorSource);
     return dominantHostOrigin(sameDomainCandidates);
   }
   const candidates = captures.filter((c) =>
