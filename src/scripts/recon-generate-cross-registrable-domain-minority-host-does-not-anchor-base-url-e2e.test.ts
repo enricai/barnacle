@@ -221,11 +221,17 @@ describe("recon-generate CLI — a cross-registrable-domain minority host that s
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
     expect(result.status, combinedOutput).toBe(0);
-    // Only the declared submit step ("confirm item") resolves to an actual
-    // capture -- "check availability" has no endpointPattern of its own, so
-    // the generator legitimately treats this as a single-endpoint REST flow
-    // (actionSteps.length === 1), not a multi-step submission flow.
-    expect(result.stdout).toContain(`generating plugin for ${siteId} (single-endpoint REST,`);
+    // Once baseUrl correctly anchors to the dominant host, the declared
+    // submitEndpointPattern/foldReturn genuinely resolve against real
+    // captures -- list -> confirm -> detail-drill -- so the generator's
+    // structural heuristic legitimately classifies this as a multi-step
+    // submission flow, not a single-endpoint REST call. (An anchor mistakenly
+    // pinned to the minority host would instead starve these captures
+    // entirely, which the degenerate-output guards below rule out.) The
+    // baseUrl in this same log line is the actual regression assertion: it
+    // must resolve to the dominant host, never the minority one.
+    expect(result.stdout).toContain(`generating plugin for ${siteId} (submission flow,`);
+    expect(result.stdout).toContain(`baseUrl: https://${DOMINANT_HOST})`);
 
     const contractPath = join(siteOutDir, "contract.ts");
     const contract = readFileSync(contractPath, "utf8");
