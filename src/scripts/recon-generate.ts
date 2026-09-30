@@ -1158,6 +1158,34 @@ function isHtmlNavigationCapture(capture: Capture): boolean {
 }
 
 /**
+ * Vocabulary for a host label DEDICATED to authentication/identity, generic
+ * across sites (no vendor names) -- e.g. `login.example.com`, `sso.example.net`.
+ * A path segment like `/api/login` on the real backend does not match, since
+ * this only inspects the host's first label, not the path.
+ */
+const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|account|accounts)$/i;
+
+/**
+ * A same-company authentication/identity redirect (a login/SSO bounce) is
+ * never itself the flow's own backend, even though it routinely lands on a
+ * different registrable domain than the flow's real traffic and can complete
+ * first due to async timing (e.g. a mid-session re-auth bounce that resolves
+ * before the in-flight primary request does). Left in the "first non-noise
+ * capture" candidate pool, such a capture anchors `baseUrl`/`primaryHost` on
+ * the wrong eTLD+1 -- and because {@link deriveBaseUrl}'s same-domain
+ * GraphQL-dominance vote is scoped to THAT anchor's own registrable domain,
+ * nothing downstream ever gets a chance to correct onto the real backend.
+ * Matched on the host's first label only (see {@link AUTH_HOST_LABEL}), the
+ * same structural, content-based precedent as {@link isHtmlNavigationCapture}
+ * rather than a count/percentage threshold tuned to any one archive.
+ */
+function isAuthRedirectCapture(capture: Capture): boolean {
+  const host = captureHostname(capture.url);
+  const firstLabel = host.split(".")[0] ?? "";
+  return AUTH_HOST_LABEL.test(firstLabel);
+}
+
+/**
  * Groups captures by exact host and returns the origin of the group with the
  * most captures, so a minority host's capture landing earlier in array order
  * (e.g. a redirect completing before the dominant host's traffic due to async
@@ -1190,7 +1218,10 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * best available signal is {@link isNoiseUrl}'s conservative exclusion of
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
- * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
+ * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture})
+ * and same-company auth/identity redirects (see {@link isAuthRedirectCapture}) --
+ * neither is ever the flow's own backend, no matter which registrable domain
+ * it lands on or how many captures it racks up completing an SSO bounce.
  * `baseUrl` doubles as `primaryHost`'s source once resolved, so an
  * array-order artifact (e.g. a genuine minority-subdomain GraphQL capture
  * sorting before the flow's dominant GraphQL backend traffic, on a sibling
@@ -1214,7 +1245,9 @@ function dominantHostOrigin(candidates: Capture[]): string {
  */
 export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
   if (ownBackendHostnames.length === 0) {
-    const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
+    const nonNoise = captures.filter(
+      (c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c) && !isAuthRedirectCapture(c)
+    );
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
     const anchorHost = captureHostname(firstCaptureOrigin(pool));
     const anchorDomain = registrableDomain(anchorHost);
