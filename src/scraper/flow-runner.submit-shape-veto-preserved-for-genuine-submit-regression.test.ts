@@ -121,7 +121,12 @@ function resolveTailXPath(root: HappyDomElement, tailXp: string): HappyDomElemen
  * n+16 fallback's PRIMARY xpath (never staled), exercising
  * `resolvedClickTargetIsSubmitShaped`'s primary-xpath-hit branch only.
  */
-function buildPrimaryXPathFixture(params: { controlTag: string; controlAttrs: string }): {
+function buildPrimaryXPathFixture(params: {
+  controlTag: string;
+  controlAttrs: string;
+  controlText?: string;
+  siblingHtml?: string;
+}): {
   page: Page;
   stagehand: Stagehand;
   steps: HealingFlowStep[];
@@ -134,7 +139,8 @@ function buildPrimaryXPathFixture(params: { controlTag: string; controlAttrs: st
   document.body.innerHTML = `
     <form id="theForm">
       <div class="wizardFooter">
-        <${params.controlTag} id="theControl" ${params.controlAttrs}></${params.controlTag}>
+        ${params.siblingHtml ?? ""}
+        <${params.controlTag} id="theControl" ${params.controlAttrs}>${params.controlText ?? ""}</${params.controlTag}>
         <a id="detailsLink" href="#details">Details</a>
       </div>
     </form>
@@ -231,7 +237,12 @@ function buildPrimaryXPathFixture(params: { controlTag: string; controlAttrs: st
  * the control's container, forcing every attempt through
  * `XPATH_TAIL_RETARGET_RESOLVE_FN_SRC`'s tail-retarget branch.
  */
-function buildTailRetargetFixture(params: { controlTag: string; controlAttrs: string }): {
+function buildTailRetargetFixture(params: {
+  controlTag: string;
+  controlAttrs: string;
+  controlText?: string;
+  siblingHtml?: string;
+}): {
   page: Page;
   stagehand: Stagehand;
   steps: HealingFlowStep[];
@@ -245,7 +256,8 @@ function buildTailRetargetFixture(params: { controlTag: string; controlAttrs: st
     <div class="page">
       <div class="wizardFooter">
         <form id="theForm">
-          <${params.controlTag} id="theControl" ${params.controlAttrs}></${params.controlTag}>
+          ${params.siblingHtml ?? ""}
+          <${params.controlTag} id="theControl" ${params.controlAttrs}>${params.controlText ?? ""}</${params.controlTag}>
         </form>
         <a id="detailsLink" href="#details">Details</a>
       </div>
