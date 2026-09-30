@@ -1203,7 +1203,8 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * GraphQL telemetry beacon on an unrelated domain) can vastly outnumber a
  * real, already-complete primary flow. The dominance vote therefore only
  * ever runs when the first non-noise capture's OWN registrable-domain group
- * itself contains GraphQL-shaped traffic (a `query`-bearing capture) --
+ * itself contains GraphQL-shaped traffic (a capture whose `query` parses as
+ * a GraphQL operation) --
  * exactly the #493 scenario, a genuine own-domain GraphQL host split across
  * subdomains -- and even then the vote counts every same-domain capture
  * (GraphQL and REST alike), not just the GraphQL-shaped ones, so it can't be
@@ -1221,7 +1222,7 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
       (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
     );
     const sameDomainHasGraphql = sameDomainCandidates.some(
-      (c) => typeof c.query === "string" && c.query.length > 0
+      (c) => parsedOperationName(c.query ?? "") !== null
     );
     if (!sameDomainHasGraphql) return firstCaptureOrigin(pool);
     return dominantHostOrigin(sameDomainCandidates);
@@ -1409,6 +1410,23 @@ export function deriveRequestHeaders(
  * {@link deriveBaseUrl} already resolved the generated client's base URL
  * from — so a thin trickle of genuine GraphQL traffic against a minority
  * own-backend host can never flip a REST-majority flow's classification.
+ *
+ * Existence of a single parseable document isn't enough either: a REST body
+ * field literally named `query` can coincidentally satisfy
+ * {@link parsedOperationName}'s regex once out of many unrelated REST
+ * captures sharing that same field name. The parsed-document count must be a
+ * strict majority of the host-scoped voting pool — mirroring
+ * {@link dominantHostOrigin}'s count-based idiom — so one coincidental match
+ * can never outvote a REST-majority flow. The voting pool itself is scoped
+ * to captures that carry a truthy `query` — plain GET/no-body captures (a
+ * REST drill-down keyed by URL, not a body) have no `query` field to be
+ * coincidental about and would otherwise dilute the pool with irrelevant
+ * anti-votes. Bare-`operationName`/APQ-reissue-shaped captures
+ * (`operationName` set, `query` falsy) fall out of the pool for the same
+ * reason: per the corroboration rule above they carry no signal of their
+ * own, so diluting the pool with them would let a chatty APQ client's
+ * re-issue traffic swamp its own genuine originating document out of the
+ * majority.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1430,7 +1448,12 @@ function isGraphQL(
       return false;
     return true;
   });
-  return scoped.some((c) => parsedOperationName(c.query ?? "") !== null);
+  const votingPool = scoped.filter((c) => Boolean(c.query));
+  const parsedCount = votingPool.reduce(
+    (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
+    0
+  );
+  return parsedCount > 0 && parsedCount * 2 > votingPool.length;
 }
 
 /**
