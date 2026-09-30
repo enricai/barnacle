@@ -53,3 +53,27 @@ describe("buildContractChecklist — surfaces the same review items via a non-sh
     }
   });
 });
+
+describe("buildContractChecklist — REST-fallback-after-gql-true is gated on isGqlEmission, not gql alone", () => {
+  // `gql: true` with `gqlQuery: null` is the REST-fallback shape: the flow
+  // classified as GraphQL, but no capture supplied resolvable query text, so
+  // emitContractTs falls through to REST emission and declares no
+  // `_QUERY` const. buildContractChecklist must agree, or its stdout
+  // checklist references a const the shipped file never declares.
+  const REST_FALLBACK_OPTS = { ...BASE_OPTS, gql: true, gqlQuery: null };
+
+  it("omits the QUERY checklist line", () => {
+    const checklist = buildContractChecklist(REST_FALLBACK_OPTS);
+    expect(checklist.some((line) => line.includes("_QUERY"))).toBe(false);
+  });
+
+  it("matches emitContractTs's own isGqlEmission-gated decision for the same opts", () => {
+    const shippedSource = emitContractTs(REST_FALLBACK_OPTS);
+    const shippedDeclaresQuery = /\bconst\s+[A-Z][A-Z0-9_]*_QUERY\s*=/.test(shippedSource);
+    const checklistMentionsQuery = buildContractChecklist(REST_FALLBACK_OPTS).some((line) =>
+      line.includes("_QUERY")
+    );
+    expect(checklistMentionsQuery).toBe(shippedDeclaresQuery);
+    expect(shippedDeclaresQuery).toBe(false);
+  });
+});
