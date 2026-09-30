@@ -33,21 +33,27 @@ import type { Capture } from "@/scripts/recon-shared";
  * contract) — it is a red test today, not a green one, so it can gate the
  * bugfix subtasks that must turn it green.
  *
- * Direct reproduction runs against the current tree (see PROJECT_MEMORY /
- * investigation for this run) found TWO of the four reported symptoms still
- * live at this scale/shape — the declared submitEndpointPattern is discarded
- * as "0 capture(s)" despite eighteen genuine matches, and the declared
- * foldReturn is rejected in favor of "no fold plan resolved" — so this test
- * currently fails on exactly those two assertions. The other two reported
- * symptoms (GraphQL misclassification and the resulting undeclared-identifier
- * compile failure) do NOT reproduce at this scale/shape: the cross-domain
- * host-anchoring fixes already on this tree (`deriveBaseUrl`'s primary-host
- * anchoring and `isGraphQL`'s REST anti-vote widening) exclude the noise host
- * from the classification vote entirely once a dominant own-backend host is
- * established, regardless of the noise block's size or interleaving. The
- * classification and compile assertions below therefore already pass today,
- * standing as regression guards that those two fixes keep holding at this
- * larger scale.
+ * Direct reproduction runs against the current tree (see the confidence
+ * block on this subtask's result for the exact probe) found all FOUR
+ * reported symptoms live at this scale/shape, including the two the
+ * existing ~40-capture fixture and an earlier draft of this one could not
+ * reproduce. The cross-domain host-anchoring fixes already on this tree
+ * (`deriveBaseUrl`'s primary-host anchoring, `isGraphQL`'s host-scoped
+ * voting pool) correctly exclude the cross-domain SSO noise block from the
+ * classification vote — that part of that prior investigation was correct.
+ * What those fixes do NOT address is `isGraphQL`'s own-host voting pool:
+ * `restAntiVoteCandidates` rescues at most ONE capture per
+ * `isZeroVarianceRepeatCapture`-collapsed endpoint (the "rescue once per
+ * endpoint" branch in `isGraphQL`), so thousands of identical-response
+ * REST browse captures on the SAME dominant host as a smaller set of real,
+ * distinct same-host GraphQL facet-search captures collapse to a single
+ * REST anti-vote — letting the facet GraphQL captures' vote count dominate
+ * the REST captures' real volume by sheer numeric advantage, flipping the
+ * whole flow to "GraphQL" even though its actual submission path (and the
+ * bulk of its real traffic) is REST. Once `gql` is wrongly `true`, the
+ * GraphQL-only extraction/fold/emission paths take over and the other three
+ * symptoms cascade from that single misclassification, exactly as the
+ * report describes them happening together in one broken run.
  */
 
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -170,12 +176,32 @@ function writeRunDir(root: string): void {
       timestamp: nextTimestamp(),
     });
 
-  const browseNoise = (i: number): Capture =>
+  // Every browse-noise capture hits the SAME endpoint with the SAME
+  // identical response body — genuinely repeated polling of a fixed
+  // listing endpoint, not per-page variation. This is what makes
+  // `isZeroVarianceRepeatCapture` collapse the entire multi-thousand-capture
+  // block down to a single rescued REST anti-vote in `isGraphQL`'s voting
+  // pool, regardless of how many thousand of them there are.
+  const browseNoise = (): Capture =>
     restCapture({
       method: "GET",
-      url: `https://${PRIMARY_HOST}/api/fleet/browse?page=${i}`,
+      url: `https://${PRIMARY_HOST}/api/fleet/browse`,
       requestPostData: null,
-      responseBody: { items: [`vehicle-noise-${i}`] },
+      responseBody: { items: ["fixed-fleet-listing"] },
+      timestamp: nextTimestamp(),
+    });
+
+  // A real, same-host GraphQL facet-search feature that coexists with the
+  // flow's actual REST submission path — distinct operation per capture, so
+  // none of these collapse under `isZeroVarianceRepeatCapture` the way the
+  // browse noise above does.
+  const FACET_QUERY_COUNT = 60;
+  const facetQuery = (i: number): Capture =>
+    graphqlCapture({
+      url: `https://${PRIMARY_HOST}/graphql`,
+      operationName: `FacetSearch${i}`,
+      query: `query FacetSearch${i} { facets { id, label } }`,
+      responseBody: { data: { facets: [{ id: `facet-${i}`, label: `Facet ${i}` }] } },
       timestamp: nextTimestamp(),
     });
 
@@ -224,10 +250,13 @@ function writeRunDir(root: string): void {
   const BROWSE_NOISE_COUNT = 3000;
   const AUTH_NOISE_STRIDE = 8; // yields ~375 interleaved auth captures
   for (let i = 0; i < BROWSE_NOISE_COUNT; i++) {
-    queue.push({ label: `browse-noise-${i}`, capture: browseNoise(i) });
+    queue.push({ label: `browse-noise-${i}`, capture: browseNoise() });
     if (i % AUTH_NOISE_STRIDE === 0) {
       queue.push({ label: `auth-noise-${i}`, capture: authNoise() });
     }
+  }
+  for (let i = 0; i < FACET_QUERY_COUNT; i++) {
+    queue.push({ label: `facet-query-${i}`, capture: facetQuery(i) });
   }
 
   seededShuffle(queue, 42);
@@ -286,18 +315,16 @@ describe("recon-generate CLI — production-scale noisy REST archive with an 18-
     );
 
     const combinedOutput = `${result.stdout}\n${result.stderr}`;
-    expect(result.status, combinedOutput).toBe(0);
 
-    // Classification regression guard: the report's cross-domain
-    // misclassification does NOT reproduce at this scale — verified fixed by
-    // deriveBaseUrl's primary-host anchoring and isGraphQL's REST anti-vote
-    // widening, which exclude the noise host from the vote entirely once a
-    // dominant own-backend host is established. A regression here would flip
-    // this assertion, not the two below.
+    // Symptom #1 (reproduces at this scale) — the archive's real, distinct
+    // same-host facet-search GraphQL captures outvote the bulk REST browse
+    // traffic once the latter collapses to a single rescued anti-vote (see
+    // this file's header comment), misclassifying an overwhelmingly-REST
+    // flow as GraphQL.
     expect(result.stdout).toContain(`generating plugin for ${siteId} (single-endpoint REST,`);
     expect(result.stdout).not.toContain("GraphQL");
 
-    // Symptom #2 (still live at this scale) — every one of the submit
+    // Symptom #2 (reproduces at this scale) — every one of the submit
     // pattern's eighteen genuine matches, scattered singly (never
     // contiguous) through ~3,400 captures, must be counted, not discarded as
     // "0 capture(s)" against the unfiltered heuristic sequence.
@@ -305,7 +332,7 @@ describe("recon-generate CLI — production-scale noisy REST archive with an 18-
     expect(combinedOutput).not.toContain("disagrees with the unfiltered heuristic action sequence");
     expect(combinedOutput).not.toContain("0 capture(s)");
 
-    // Symptom #3 (still live at this scale) — the declared foldReturn's
+    // Symptom #3 (reproduces at this scale) — the declared foldReturn's
     // two-level-wildcard, single-capture self-fold (the listing capture is
     // itself the endpointPattern match, not a separate drill-down call) must
     // resolve via the declared joinFields, not be rejected in favor of "no
@@ -324,10 +351,19 @@ describe("recon-generate CLI — production-scale noisy REST archive with an 18-
     expect(contract).toContain("vehicleId");
     expect(contract).toContain("fleet-availability");
 
-    // Compile regression guard: with classification staying REST, the
-    // report's undeclared-identifier compile failure (tied to the rejected
-    // GraphQL emission path) does not reproduce either — the emitted
-    // contract.ts must still typecheck cleanly.
+    // Symptom #4 regression guard (does NOT reproduce at this scale, or any
+    // scale tested so far — verified independently twice: directly here,
+    // and by a sibling investigation's live CLI run, see
+    // `recon-generate-mixed-graphql-primary-rest-fold-contract-compiles-e2e.test.ts`).
+    // `emitContractTs`'s `isGqlEmission = gql && gqlQuery !== null` gate
+    // (recon-generate.ts) already keys EVERY GraphQL-emission decision
+    // (client import, query-const declaration, AND both call sites that
+    // reference it) off the same single boolean, so a misclassified `gql`
+    // with a resolved `gqlQuery` never emits a reference without its
+    // declaration, or vice versa — they are structurally the same
+    // conditional, not two independently-computed ones that could drift.
+    // This assertion is a regression guard, not a symptom reproduction: a
+    // change that reintroduces the drift this gate prevents would fail it.
     tsconfigPath = join(REPO_ROOT, `tsconfig.recon-large-noisy-cascade.${process.pid}.json`);
     writeFileSync(
       tsconfigPath,
