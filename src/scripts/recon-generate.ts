@@ -1341,14 +1341,10 @@ export function deriveRequestHeaders(
  * nothing on its own. It only counts once a genuine document has already
  * established the classification from elsewhere in the same host-scoped set.
  *
- * When the flow declares MORE THAN ONE own-backend host (e.g. a legitimate
- * mid-session redirect to an auth subdomain), evidence is further narrowed
- * to `primaryHost` — the same host {@link deriveBaseUrl} already resolved
- * the generated client's base URL from — so a thin trickle of genuine
- * GraphQL traffic against a minority own-backend host can never flip a
- * REST-majority flow's classification. A single declared own-backend host
- * has no "minority host" to guard against, so `primaryHost` is a no-op
- * there by construction.
+ * Evidence is further narrowed to `primaryHost` — the same host
+ * {@link deriveBaseUrl} already resolved the generated client's base URL
+ * from — so a thin trickle of genuine GraphQL traffic against a minority
+ * own-backend host can never flip a REST-majority flow's classification.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1360,13 +1356,7 @@ function isGraphQL(
   const scoped = captures.filter((c) => {
     if (
       hasHostProvenance &&
-      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
-    )
-      return false;
-    if (
-      ownBackendHostnames.length > 1 &&
-      primaryHost !== null &&
-      captureHostname(c.url) !== primaryHost
+      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain, primaryHost)
     )
       return false;
     return true;
@@ -1698,11 +1688,10 @@ export function selectPrimaryGraphQLOperation(
  * capture's own `.responseBody` instead of an array-order-first replay.
  *
  * `primaryHost` narrows the pool the same way {@link isGraphQL} narrows its
- * own evidence when the flow declares MORE THAN ONE own-backend host: a
- * minority own-backend host's capture (a redirect target with its own,
- * unrelated POST) must never win the REST hot path's endpoint over the
- * primary host's own GET/POST traffic just because it happens to be the
- * only non-GET capture in the archive.
+ * own evidence: a minority own-backend host's capture (a redirect target
+ * with its own, unrelated POST) must never win the REST hot path's endpoint
+ * over the primary host's own GET/POST traffic just because it happens to
+ * be the only non-GET capture in the archive.
  */
 export function firstEndpointCapture(
   captures: Capture[],
@@ -1720,13 +1709,12 @@ export function firstEndpointCapture(
   const allowed = (c: Capture): boolean => {
     if (
       hasHostProvenance &&
-      !isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, fallbackDomain)
-    )
-      return false;
-    if (
-      ownBackendHostnames.length > 1 &&
-      primaryHost !== null &&
-      captureHostname(c.url) !== primaryHost
+      !isAllowedFixtureHost(
+        captureHostname(c.url),
+        ownBackendHostnames,
+        fallbackDomain,
+        primaryHost
+      )
     )
       return false;
     return true;
