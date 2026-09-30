@@ -1259,10 +1259,31 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * subdomains -- and even then the vote counts every same-domain capture
  * (GraphQL and REST alike), not just the GraphQL-shaped ones, so it can't be
  * hijacked by an unrelated cross-domain GraphQL noise source that happens to
- * outnumber the real flow. Absent same-domain GraphQL traffic, the first
- * non-noise, non-navigation capture wins exactly as before.
+ * outnumber the real flow. Absent same-domain GraphQL traffic OR a declared
+ * submit pattern (see below), the first non-noise, non-navigation capture
+ * wins exactly as before.
+ *
+ * A flow's own declared `submitEndpointPattern`/`submitBodyPattern` is a
+ * second, independent trigger for the same cross-host dominance vote: when
+ * the anchor's own registrable-domain group contains no capture matching the
+ * declared pattern, but a DIFFERENT registrable domain in the pool does, that
+ * other domain is the flow's real backend -- the flow author declared this
+ * pattern specifically to name its own submission traffic, so a match
+ * elsewhere in the pool outranks whichever host merely happened to capture
+ * first. This is strictly narrower than a raw capture-count vote (the kind
+ * #bugfix-005 deliberately rejected as a general rule -- see
+ * "does not let a chatty host outvote the first non-noise capture" in
+ * recon-generate.test.ts, where NO pattern is declared and the first capture
+ * must still win over a larger, unrelated cross-domain group): it only ever
+ * fires when the flow explicitly named the traffic shape it's after, and even
+ * then only switches domain, never host -- {@link dominantHostOrigin} still
+ * picks the exact host by count within that now-confirmed domain.
  */
-export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]): string {
+export function deriveBaseUrl(
+  captures: Capture[],
+  ownBackendHostnames: string[],
+  submitPatterns: SubmitPatterns | null = null
+): string {
   if (ownBackendHostnames.length === 0) {
     const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
@@ -1273,6 +1294,20 @@ export function deriveBaseUrl(captures: Capture[], ownBackendHostnames: string[]
     const sameDomainCandidates = pool.filter(
       (c) => registrableDomain(captureHostname(c.url)) === anchorDomain
     );
+    const hasDeclaredSubmitPattern =
+      submitPatterns !== null && (submitPatterns.endpoint !== null || submitPatterns.body !== null);
+    const matchesSubmit = compileSubmitMatcher(submitPatterns);
+    const crossDomainSubmitMatch =
+      hasDeclaredSubmitPattern && !sameDomainCandidates.some(matchesSubmit)
+        ? pool.find(matchesSubmit)
+        : undefined;
+    if (crossDomainSubmitMatch !== undefined) {
+      const submitDomain = registrableDomain(captureHostname(crossDomainSubmitMatch.url));
+      const submitDomainCandidates = pool.filter(
+        (c) => registrableDomain(captureHostname(c.url)) === submitDomain
+      );
+      return dominantHostOrigin(submitDomainCandidates);
+    }
     const sameDomainHasGraphql = sameDomainCandidates.some(
       (c) => parsedOperationName(c.query ?? "") !== null
     );
@@ -14242,7 +14277,7 @@ async function main(): Promise<void> {
    * already written its output and there is nothing left for main() to do.
    */
   function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
-    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames);
+    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
     // Gate on the flow's declared own-backend hosts (or the registrable-domain
     // fallback of baseUrl) via the same predicate recon-http.ts applies at
     // write time, so a stale aux/ directory from before that filter existed
