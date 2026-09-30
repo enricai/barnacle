@@ -1414,19 +1414,36 @@ export function deriveRequestHeaders(
  * Existence of a single parseable document isn't enough either: a REST body
  * field literally named `query` can coincidentally satisfy
  * {@link parsedOperationName}'s regex once out of many unrelated REST
- * captures sharing that same field name. The parsed-document count must be a
- * strict majority of the host-scoped voting pool — mirroring
+ * captures sharing that same field name. The parsed-document count must be
+ * at least half of the host-scoped voting pool — mirroring
  * {@link dominantHostOrigin}'s count-based idiom — so one coincidental match
- * can never outvote a REST-majority flow. The voting pool itself is scoped
- * to captures that carry a truthy `query` — plain GET/no-body captures (a
- * REST drill-down keyed by URL, not a body) have no `query` field to be
- * coincidental about and would otherwise dilute the pool with irrelevant
- * anti-votes. Bare-`operationName`/APQ-reissue-shaped captures
- * (`operationName` set, `query` falsy) fall out of the pool for the same
- * reason: per the corroboration rule above they carry no signal of their
- * own, so diluting the pool with them would let a chatty APQ client's
- * re-issue traffic swamp its own genuine originating document out of the
- * majority.
+ * can never outvote a REST-majority flow. The voting pool is no longer just
+ * the query-bearing subset: a genuine own-backend REST anti-vote — a plain
+ * GET request keyed by its URL, not a body, carrying neither `query` nor
+ * `operationName` — now joins the pool too, so one recurring endpoint whose
+ * body coincidentally (or even genuinely) uses a `query`-shaped field can no
+ * longer become a trivial majority of a tiny query-only subset while
+ * remaining a small minority of the site's real own-backend GET/REST
+ * traffic. Anti-vote eligibility is deliberately narrowed to GET requests:
+ * `captures` here is the raw, pre-noise-filter capture set, and a same-
+ * origin POST body (an analytics beacon, a heartbeat ping) is exactly the
+ * shape {@link isNoiseUrl}/structural-relevance filtering downstream would
+ * exclude as noise, not real REST traffic — admitting it to the vote would
+ * let sheer beacon volume dilute a genuinely GraphQL-dominant flow. A
+ * same-origin GET capture {@link isZeroVarianceRepeatCapture} proves is a
+ * request-invariant repeat is excluded from the pool for the same reason.
+ * Bare-`operationName`/APQ-reissue-shaped captures (`operationName` set,
+ * `query` falsy) are excluded from the pool regardless of method: per the
+ * corroboration rule above they carry no signal of their own, so diluting
+ * the pool with a chatty APQ client's re-issue traffic would swamp its own
+ * genuine originating document out of the majority.
+ *
+ * The half-or-more threshold (rather than a strict majority) matters for the
+ * single-primary + single-drill-down shape every foldReturn flow produces:
+ * one genuine GraphQL document paired with exactly one GET REST drill-down
+ * capture is a 1-to-1 pool, and that drill-down capture is real corroborated
+ * REST evidence, not a coincidental parse — it must not by itself veto a
+ * flow that has no other own-backend traffic at all.
  */
 function isGraphQL(
   captures: Capture[],
@@ -1448,12 +1465,16 @@ function isGraphQL(
       return false;
     return true;
   });
-  const votingPool = scoped.filter((c) => Boolean(c.query));
+  const votingPool = scoped.filter((c) => {
+    if (c.query) return true;
+    if (c.operationName !== null || c.method !== "GET") return false;
+    return !isZeroVarianceRepeatCapture(c, scoped);
+  });
   const parsedCount = votingPool.reduce(
     (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
     0
   );
-  return parsedCount > 0 && parsedCount * 2 > votingPool.length;
+  return parsedCount > 0 && parsedCount * 2 >= votingPool.length;
 }
 
 /**
