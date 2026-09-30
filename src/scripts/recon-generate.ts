@@ -14081,8 +14081,7 @@ async function main(): Promise<void> {
     // manifest entry is unverifiable provenance, not proven safe, so it is
     // excluded rather than assumed to have passed the write-time filter.
     const fallbackDomain = baseUrl.length > 0 ? registrableDomain(new URL(baseUrl).hostname) : null;
-    const primaryHost =
-      baseUrl.length > 0 && ownBackendHostnames.length > 0 ? new URL(baseUrl).hostname : null;
+    const primaryHost = baseUrl.length > 0 ? new URL(baseUrl).hostname : null;
     const auxFiles = auxManifest
       .filter((entry) => {
         const allowed = isAllowedFixtureHost(
