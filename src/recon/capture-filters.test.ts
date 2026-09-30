@@ -47,6 +47,56 @@ describe("isAllowedFixtureHost — primaryHost narrowing", () => {
   });
 });
 
+describe("isAllowedFixtureHost — chokepoint narrowing branches", () => {
+  it("excludes a non-primary host among 2+ declared exact hostnames", () => {
+    expect(
+      isAllowedFixtureHost(
+        "auth.example.com",
+        ["api.example.com", "auth.example.com"],
+        null,
+        "api.example.com"
+      )
+    ).toBe(false);
+  });
+
+  it("includes the primary host among 2+ declared exact hostnames", () => {
+    expect(
+      isAllowedFixtureHost(
+        "api.example.com",
+        ["api.example.com", "auth.example.com"],
+        null,
+        "api.example.com"
+      )
+    ).toBe(true);
+  });
+
+  it("excludes an undeclared same-registrable-domain subdomain that differs from primaryHost, even though the ownBackendHostnames.length > 1 gate is structurally false here", () => {
+    expect(isAllowedFixtureHost("auth.example.com", [], "example.com", "api.example.com")).toBe(
+      false
+    );
+  });
+
+  it("includes an undeclared same-registrable-domain subdomain that equals primaryHost", () => {
+    expect(isAllowedFixtureHost("api.example.com", [], "example.com", "api.example.com")).toBe(
+      true
+    );
+  });
+
+  it("omitting primaryHost reproduces today's unnarrowed exact-hostname behavior byte-for-byte", () => {
+    expect(
+      isAllowedFixtureHost("auth.example.com", ["api.example.com", "auth.example.com"], null)
+    ).toBe(true);
+    expect(
+      isAllowedFixtureHost("api.example.com", ["api.example.com", "auth.example.com"], null)
+    ).toBe(true);
+  });
+
+  it("passing primaryHost=null reproduces today's unnarrowed fallback-domain behavior byte-for-byte", () => {
+    expect(isAllowedFixtureHost("auth.example.com", [], "example.com", null)).toBe(true);
+    expect(isAllowedFixtureHost("api.example.com", [], "example.com", null)).toBe(true);
+  });
+});
+
 describe("isNoiseUrl — third-party asset/telemetry hosts", () => {
   it("skips the ad-tech and session-replay hosts recon wastes time on", () => {
     expect(isNoiseUrl("https://x.clicktale.net/collect")).toBe(true);
