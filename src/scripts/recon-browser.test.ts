@@ -3399,6 +3399,23 @@ describe("recon-browser/isReplanCycle", () => {
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
   });
 
+  it("does NOT cycle when consecutive replans fill different fields that happen to share a value", () => {
+    const priors = [
+      makeEvent(1, ["Fill in the First Name field with 'N/A'"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill in the Middle Name field with 'N/A'"], { url, htmlLength: 50010 }),
+      makeEvent(3, ["Fill in the Suffix field with 'N/A'"], { url, htmlLength: 50020 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Fill in the Nickname field with 'N/A'",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(false);
+  });
+
   it("returns false when HTML length changed beyond tolerance (page advanced)", () => {
     const proposals = ["Fill phone"];
     const priors = [
