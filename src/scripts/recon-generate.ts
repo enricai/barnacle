@@ -8831,21 +8831,6 @@ interface FrozenVaryingDrillParam {
 }
 
 /**
- * Finds every query param or JSON body leaf on `capture`'s own request that
- * (a) was left as a literal in `renderedText` — never swapped for a
- * `${...}` accessor by the threading pass above — and (b) took a different
- * value on some OTHER capture matching the exact same endpoint (same
- * origin+pathname, via {@link endpointKey}) anywhere in the run. Freezing
- * such a value bakes ONE capture's drill parameter into every fold
- * iteration's request, exactly the defect described in
- * docs/recon-generate-nested-fold-flatmaps-away-the-parent-so-drill-params-freeze.md
- * (a `packageCode`/`groupId`/`sailDate` triple that provably varies per
- * cruise, silently frozen because no threaded field explained it). Path
- * segments are deliberately not checked: {@link endpointKey} requires an
- * identical pathname to group two captures at all, so no path segment can
- * ever be observed to vary within a matched group.
- */
-/**
  * True when a varying body leaf's apparent ambiguity is actually explained
  * by another field in the same request bodies: some sibling leaf path's
  * value determines the target field's value as a true function (each
@@ -8902,6 +8887,21 @@ function isExplainedByCorrelatedSiblingField(
   return false;
 }
 
+/**
+ * Finds every query param or JSON body leaf on `capture`'s own request that
+ * (a) was left as a literal in `renderedText` — never swapped for a
+ * `${...}` accessor by the threading pass above — and (b) took a different
+ * value on some OTHER capture matching the exact same endpoint (same
+ * origin+pathname, via {@link endpointKey}) anywhere in the run. Freezing
+ * such a value bakes ONE capture's drill parameter into every fold
+ * iteration's request, exactly the defect described in
+ * docs/recon-generate-nested-fold-flatmaps-away-the-parent-so-drill-params-freeze.md
+ * (a `packageCode`/`groupId`/`sailDate` triple that provably varies per
+ * cruise, silently frozen because no threaded field explained it). Path
+ * segments are deliberately not checked: {@link endpointKey} requires an
+ * identical pathname to group two captures at all, so no path segment can
+ * ever be observed to vary within a matched group.
+ */
 function findFrozenVaryingDrillParams(
   capture: Capture,
   renderedText: string,

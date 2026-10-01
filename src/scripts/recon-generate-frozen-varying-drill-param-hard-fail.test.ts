@@ -75,6 +75,67 @@ function buildFrozenConstantRegionActionSteps(): MulticallFixtureStep[] {
   ];
 }
 
+/** Same shape as {@link buildFrozenVaryingRegionActionSteps}, but the
+ * varying part moves into the JSON body as a `pageSize` field, and a
+ * `tier` sibling field in the same bodies is a true function of it
+ * (`"standard"` always pairs with `25`, `"premium"` always pairs with
+ * `100`) — the correlated-sibling-field exception should explain this
+ * ambiguity instead of treating it as an unexplained frozen-varying bug. */
+function buildCorrelatedSiblingBodyFieldSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+      method: "GET",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-a",
+      requestPostData: '{"tier":"standard","pageSize":25}',
+      responseBody: { results: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      method: "GET",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-b",
+      requestPostData: '{"tier":"premium","pageSize":100}',
+      responseBody: { results: [{ sku: "sku-b", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      method: "GET",
+    }),
+  ];
+}
+
+/** Same shape, but `pageSize` varies with no sibling field that explains
+ * it (`tier` is identical on both captures) — the hard-fail guard must
+ * still throw. */
+function buildUnexplainedVaryingBodyFieldSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+      timestamp: "2024-04-01T00:00:00Z",
+      method: "GET",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-a",
+      requestPostData: '{"tier":"standard","pageSize":25}',
+      responseBody: { results: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      method: "GET",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-b",
+      requestPostData: '{"tier":"standard","pageSize":100}',
+      responseBody: { results: [{ sku: "sku-b", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      method: "GET",
+    }),
+  ];
+}
+
 function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | null): string {
   return emitMultiStepExecuteHttp(
     steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
@@ -109,5 +170,13 @@ describe("emitMultiStepExecuteHttp — frozen-but-varying drill param hard fail"
     expect(() => emit(buildFrozenConstantRegionActionSteps(), SPEC)).not.toThrow();
     const body = emit(buildFrozenConstantRegionActionSteps(), SPEC);
     expect(body).toContain("region=us");
+  });
+
+  it("does not throw when a varying body field is a deterministic function of a correlated sibling field", () => {
+    expect(() => emit(buildCorrelatedSiblingBodyFieldSteps(), SPEC)).not.toThrow();
+  });
+
+  it("still throws naming the body field when no sibling field explains why it varies", () => {
+    expect(() => emit(buildUnexplainedVaryingBodyFieldSteps(), SPEC)).toThrow(/pageSize/);
   });
 });
