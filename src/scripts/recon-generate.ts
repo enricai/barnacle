@@ -12704,7 +12704,7 @@ export function emitContractTs(opts: {
 
   const queryConst =
     !omitExecuteHttp && isGqlEmission
-      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${gqlQuery!.trim()}\`;\n`
+      ? `\n// Lifted verbatim from recon capture. The adjacent response schema is drift-tolerant by construction (dropped __typename, .loose() objects), so this query text is not hand-trimmed.\nconst ${pascal.toUpperCase()}_QUERY = \`${escapeForTemplateLiteral(gqlQuery!.trim())}\`;\n`
       : "";
 
   const gqlCacheBlock = omitExecuteHttp
