@@ -8845,6 +8845,63 @@ interface FrozenVaryingDrillParam {
  * identical pathname to group two captures at all, so no path segment can
  * ever be observed to vary within a matched group.
  */
+/**
+ * True when a varying body leaf's apparent ambiguity is actually explained
+ * by another field in the same request bodies: some sibling leaf path's
+ * value determines the target field's value as a true function (each
+ * distinct sibling value maps to exactly one distinct field value) across
+ * `capture` plus every same-endpoint capture. A page-size field that always
+ * reads 25 when `tier` is `"standard"` and 100 when `tier` is `"premium"`
+ * is not an unexplained ambiguity — `tier` explains it.
+ */
+function isExplainedByCorrelatedSiblingField(
+  path: readonly string[],
+  parsedBody: unknown,
+  sameEndpointCaptures: readonly Capture[]
+): boolean {
+  const targetPath = path.join(".");
+  const otherBodies = sameEndpointCaptures
+    .map((c) => {
+      try {
+        return typeof c.requestPostData === "string" && c.requestPostData.length > 0
+          ? JSON.parse(c.requestPostData)
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((b): b is unknown => b !== undefined);
+  const allBodies = [parsedBody, ...otherBodies];
+  const siblingPaths = new Set<string>();
+  for (const { path: siblingPath } of walkAllPrimitiveLeaves(parsedBody)) {
+    const joined = siblingPath.join(".");
+    if (joined !== targetPath) siblingPaths.add(joined);
+  }
+  for (const siblingPath of siblingPaths) {
+    const pathSegments = siblingPath.split(".");
+    const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
+    for (const body of allBodies) {
+      const siblingRaw = readValueAtPath(body, pathSegments);
+      const fieldRaw = readValueAtPath(body, path);
+      if (siblingRaw === undefined || fieldRaw === undefined) continue;
+      pairs.push({ siblingValue: String(siblingRaw), fieldValue: String(fieldRaw) });
+    }
+    const distinctSiblingValues = new Set(pairs.map((p) => p.siblingValue));
+    if (distinctSiblingValues.size < 2) continue;
+    const siblingToField = new Map<string, string>();
+    const isFunction = pairs.every(({ siblingValue, fieldValue }) => {
+      const existing = siblingToField.get(siblingValue);
+      if (existing === undefined) {
+        siblingToField.set(siblingValue, fieldValue);
+        return true;
+      }
+      return existing === fieldValue;
+    });
+    if (isFunction && siblingToField.size === distinctSiblingValues.size) return true;
+  }
+  return false;
+}
+
 function findFrozenVaryingDrillParams(
   capture: Capture,
   renderedText: string,
@@ -8912,7 +8969,10 @@ function findFrozenVaryingDrillParams(
           }
         })
         .find((v) => v !== undefined && String(v) !== stringValue);
-      if (differing !== undefined) {
+      if (
+        differing !== undefined &&
+        !isExplainedByCorrelatedSiblingField(path, parsedBody, sameEndpointCaptures)
+      ) {
         frozen.push({
           location: "body field",
           key: fieldPath,
