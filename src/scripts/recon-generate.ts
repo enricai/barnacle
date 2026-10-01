@@ -1188,30 +1188,43 @@ function isHtmlNavigationCapture(capture: Capture): boolean {
 const AUTH_HOST_LABEL = /^(login|signin|sign-in|logon|auth|oauth|sso|idp|id|account|accounts)$/i;
 
 /**
- * A same-company authentication/identity redirect (a login/SSO bounce) is
- * never itself the flow's own backend, even though it routinely lands on a
- * different registrable domain than the flow's real traffic and can complete
- * first due to async timing (e.g. a mid-session re-auth bounce that resolves
- * before the in-flight primary request does). Left in the "first non-noise
- * capture" candidate pool, such a capture anchors `baseUrl`/`primaryHost` on
- * the wrong eTLD+1 -- and because {@link deriveBaseUrl}'s same-domain
- * GraphQL-dominance vote is scoped to THAT anchor's own registrable domain,
- * nothing downstream ever gets a chance to correct onto the real backend.
- * Matched on the host's first label only (see {@link AUTH_HOST_LABEL}), the
+ * Vocabulary for a host label DEDICATED to marketing/landing/redirect
+ * bounces, generic across sites (no vendor names) -- e.g. `www.example.com`,
+ * `landing.example.net`, `go.example.org`. Same structural role as
+ * {@link AUTH_HOST_LABEL}: a same-company host whose label names it as a
+ * marketing/redirect surface rather than an API backend, never itself the
+ * flow's own backend even when it is not also auth/login-labeled.
+ */
+const MARKETING_HOST_LABEL = /^(www|home|landing|marketing|promo|redirect|link|go)$/i;
+
+/**
+ * A same-company redirect -- an authentication/identity bounce (see
+ * {@link AUTH_HOST_LABEL}) OR a marketing/landing bounce (see
+ * {@link MARKETING_HOST_LABEL}) -- is never itself the flow's own backend,
+ * even though it routinely lands on a different registrable domain than the
+ * flow's real traffic and can complete first due to async timing (e.g. a
+ * mid-session re-auth bounce, or a same-company marketing redirect, that
+ * resolves before the in-flight primary request does). Left in the "first
+ * non-noise capture" candidate pool, such a capture anchors
+ * `baseUrl`/`primaryHost` on the wrong eTLD+1 -- and because
+ * {@link deriveBaseUrl}'s same-domain GraphQL-dominance vote is scoped to
+ * THAT anchor's own registrable domain, nothing downstream ever gets a
+ * chance to correct onto the real backend. Matched on the host's first label
+ * only (see {@link AUTH_HOST_LABEL} and {@link MARKETING_HOST_LABEL}), the
  * same structural, content-based precedent as {@link isHtmlNavigationCapture}
  * rather than a count/percentage threshold tuned to any one archive.
  *
  * A host label alone can't tell a one-off bounce apart from a genuine
- * own-backend host that happens to be named `login.`/`accounts.` (real APIs
- * are named that too). So this only flags the capture as a redirect when its
+ * own-backend host that happens to be named `login.`/`www.` (real APIs are
+ * named that too). So this only flags the capture as a redirect when its
  * host is NOT the pool's most-represented host -- a real backend, named
- * `login.` or not, always racks up the most captures; a bounce that merely
- * sorts first never does.
+ * `login.`/`www.` or not, always racks up the most captures; a bounce that
+ * merely sorts first never does.
  */
-function isAuthRedirectCapture(capture: Capture, pool: Capture[]): boolean {
+function isSameCompanyRedirectCapture(capture: Capture, pool: Capture[]): boolean {
   const host = captureHostname(capture.url);
   const firstLabel = host.split(".")[0] ?? "";
-  if (!AUTH_HOST_LABEL.test(firstLabel)) return false;
+  if (!AUTH_HOST_LABEL.test(firstLabel) && !MARKETING_HOST_LABEL.test(firstLabel)) return false;
   const hostCounts = new Map<string, number>();
   for (const c of pool) {
     const h = captureHostname(c.url);
@@ -1255,14 +1268,16 @@ function dominantHostOrigin(candidates: Capture[]): string {
  * known third-party asset/tracking hosts (the same fallback
  * `selectAuxFixtureCandidates` uses regardless of host-provenance data), plus
  * excluding HTML page-navigation responses (see {@link isHtmlNavigationCapture}).
- * Same-company auth/identity redirects (see {@link isAuthRedirectCapture}) are
- * excluded from the ANCHOR pick specifically -- such a redirect is never
- * itself the flow's own backend, no matter which registrable domain it lands
- * on or how many captures it racks up completing an SSO bounce -- but they
- * stay in the wider `pool` once a real anchor domain is chosen, so a genuine
- * own-backend host whose label happens to match {@link AUTH_HOST_LABEL} (e.g.
- * an `accounts.` subdomain that is itself the real API, not a bounce) can
- * still win the same-domain dominance vote below.
+ * Same-company auth/identity and marketing/landing redirects (see
+ * {@link isSameCompanyRedirectCapture}) are excluded from the ANCHOR pick
+ * specifically -- such a redirect is never itself the flow's own backend, no
+ * matter which registrable domain it lands on or how many captures it racks
+ * up completing an SSO or marketing bounce -- but they stay in the wider
+ * `pool` once a real anchor domain is chosen, so a genuine own-backend host
+ * whose label happens to match {@link AUTH_HOST_LABEL} or
+ * {@link MARKETING_HOST_LABEL} (e.g. an `accounts.` or `www.` subdomain that
+ * is itself the real API, not a bounce) can still win the same-domain
+ * dominance vote below.
  * `baseUrl` doubles as `primaryHost`'s source once resolved, so an
  * array-order artifact (e.g. a genuine minority-subdomain GraphQL capture
  * sorting before the flow's dominant GraphQL backend traffic, on a sibling
@@ -1309,7 +1324,7 @@ export function deriveBaseUrl(
   if (ownBackendHostnames.length === 0) {
     const nonNoise = captures.filter((c) => !isNoiseUrl(c.url) && !isHtmlNavigationCapture(c));
     const pool = nonNoise.length > 0 ? nonNoise : captures.filter((c) => !isNoiseUrl(c.url));
-    const anchorPool = pool.filter((c) => !isAuthRedirectCapture(c, pool));
+    const anchorPool = pool.filter((c) => !isSameCompanyRedirectCapture(c, pool));
     const anchorSource = anchorPool.length > 0 ? anchorPool : pool;
     const anchorHost = captureHostname(firstCaptureOrigin(anchorSource));
     const anchorDomain = registrableDomain(anchorHost);
