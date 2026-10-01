@@ -1644,7 +1644,8 @@ describe("recon-browser/filterCompletedFromReplan", () => {
   it("still treats a field as stale when neither the live capture nor the static DOM resolves it", () => {
     const raw = [mk("Fill in the Nickname field with 'Secr3t!'"), mk("Click NEXT")];
     const completed = ["Fill in the Nickname field with 'Secr3t!'"];
-    const bodyHtmlAtFailure = "<body><label for='cs'>Callsign</label><input id='cs' value=''></body>";
+    const bodyHtmlAtFailure =
+      "<body><label for='cs'>Callsign</label><input id='cs' value=''></body>";
     const fieldValuesAtFailure: FieldValueAtFailure[] = [{ label: "Callsign", value: "" }];
     const out = filterCompletedFromReplan(
       raw,

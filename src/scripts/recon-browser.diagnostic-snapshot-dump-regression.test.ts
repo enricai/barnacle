@@ -51,6 +51,7 @@ describe("recon-browser/dumpStepFailure — target-resolution diagnostic snapsho
       recentCaptures: [],
       bodyOuterHtml: "<body></body>",
       unfocusedObserve: [],
+      fieldValuesAtFailure: null,
       targetResolutionDiagnostic: snapshot,
     });
 
@@ -80,6 +81,7 @@ describe("recon-browser/dumpStepFailure — target-resolution diagnostic snapsho
       recentCaptures: [],
       bodyOuterHtml: null,
       unfocusedObserve: [],
+      fieldValuesAtFailure: null,
       targetResolutionDiagnostic: null,
     });
 
