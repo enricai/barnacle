@@ -1178,11 +1178,30 @@ export function isZeroVarianceRepeatCapture(
     if (hasResponseFullyExplainedByOwnRequestPerOccurrence(sameEndpoint)) return false;
     if (hasNoBusinessRelevantResponseState(candidate)) return true;
     if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
+    // Unlike the identical-request branch above (where a fixed/degenerate
+    // request can never explain response variance, so the dense-repeat floor
+    // is a safe shortcut past corroboration), a request that ALSO varies
+    // every call can genuinely explain high response cardinality — a
+    // reservation/order submission loop produces as many distinct responses
+    // as distinct requests, at any volume. Gating this corroboration check
+    // purely on `MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL` let a real
+    // submission endpoint with a structurally related sibling (sharing a
+    // token with another declared/active endpoint, e.g. "fleet" in both
+    // "reserve-vehicle" and "fleet-availability") get misread as a noise
+    // beacon purely because it recurred ten-plus times — exactly the volume a
+    // real production archive produces. The dense-count bypass is kept only
+    // for the degenerate case this run has NO other endpoint at all to
+    // corroborate against ({@link isCorroboratedByStructuralIsolation}'s own
+    // `otherPaths.length === 0` default reads as "not corroborated," which
+    // would otherwise force every endpoint in a single-endpoint fixture to
+    // read as "has a sibling" when it has none to compare against).
+    const otherPaths = otherEndpointPaths(candidateEndpoint, allCaptures);
     if (
-      sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL &&
+      (sameEndpoint.length < MIN_DENSE_REPEAT_FOR_RESPONSE_VARIANCE_SIGNAL ||
+        otherPaths.length > 0) &&
       !isCorroboratedByStructuralIsolation(
         candidateUrl.pathname,
-        otherEndpointPaths(candidateEndpoint, allCaptures),
+        otherPaths,
         nonNoiseOtherEndpointPaths(candidateEndpoint, sameEndpoint, allCaptures)
       )
     ) {
