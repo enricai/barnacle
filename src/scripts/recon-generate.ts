@@ -12313,7 +12313,7 @@ export function emitContractTs(opts: {
   // A GraphQL primary with a resolved drill-down fold has no other REST
   // client to issue the drill request(s) with — getGql only ever speaks
   // GraphQL to the primary endpoint.
-  const needsFoldHttpClient = gql && singlePrimaryFoldPlans.length > 0;
+  const needsFoldHttpClient = isGqlEmission && singlePrimaryFoldPlans.length > 0;
   // Every field source below (the base extend's own keys, form-schema
   // discovery, browser-flow splicing, option/raw-option enums, additional
   // body keys, and structured keys) is merged into a SINGLE `.extend({...})`
