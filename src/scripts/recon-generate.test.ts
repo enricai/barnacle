@@ -5073,6 +5073,29 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     expect(baseUrl).toBe("https://login.example.com");
   });
 
+  it("resolves to the dominant own-backend host when a same-company marketing redirect on a different registrable domain sorts first", () => {
+    const marketingRedirect = capture(
+      "https://www.example-landing.com/bounce",
+      "2024-01-01T00:00:00Z"
+    );
+    const backend = Array.from({ length: 4 }, (_, i) =>
+      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([marketingRedirect, ...backend], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("does not exclude a genuine own-backend host from the anchor pick just because its label matches the marketing vocabulary", () => {
+    const real = capture("https://www.example.com/a", "2024-01-01T00:00:00Z");
+    const other = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([real, other], []);
+
+    expect(baseUrl).toBe("https://www.example.com");
+  });
+
   it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {
     const real = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
     const chatty = Array.from({ length: 5 }, (_, i) =>
