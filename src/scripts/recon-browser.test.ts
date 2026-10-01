@@ -1665,6 +1665,13 @@ describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
     const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
     expect(out).toEqual(newSteps);
   });
+
+  it("does not drop a Confirm Password fill step as a duplicate of a Password fill step sharing the same value (bugfix-002)", () => {
+    const newSteps = [mk("Fill in the Confirm Password field with 'Secr3t!'")];
+    const originalRemaining = [mk("Fill in the Password field with 'Secr3t!'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
+  });
 });
 
 describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
@@ -3374,6 +3381,23 @@ describe("recon-browser/isReplanCycle", () => {
     const newSteps: NormalizedStep[] = [
       { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
       { instruction: "Click submit", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+
+  it("never conflates a Password fill step with a Confirm Password fill step sharing the same quoted value (bugfix-002)", () => {
+    const priors = [
+      makeEvent(1, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+      makeEvent(3, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Fill in the Confirm Password field with 'Secr3t!'",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
     ];
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
   });

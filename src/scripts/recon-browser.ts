@@ -1111,8 +1111,17 @@ function normalizeInstruction(instruction: string): string {
  * Quoted phrases are the strongest, lowest-noise signal a flow author or the
  * replanner gives for "which control": comparing these directly avoids false
  * positives from prose that merely mentions the same page section.
+ *
+ * For a fill-shaped instruction (`parseFillStep` matches), the only quoted
+ * substring is the VALUE being typed, not the field's identity — two sibling
+ * fields sharing one value (e.g. a password and its confirmation) would
+ * otherwise extract identical "labels" and collide in every consumer that
+ * keys off this function. In that case the field label itself is returned
+ * instead of the raw quoted match.
  */
 function extractQuotedLabels(instruction: string): string[] {
+  const fieldLabel = parseFillStep(instruction)?.fieldLabel;
+  if (fieldLabel) return [normalizeInstruction(fieldLabel)];
   const matches = instruction.matchAll(/['"]([^'"]{2,80})['"]/g);
   return [...matches].map((m) => normalizeInstruction(m[1]!));
 }
