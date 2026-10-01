@@ -2284,6 +2284,68 @@ describe("isGraphQL — zero-variance-repeat and business-relevant-state safegua
   });
 });
 
+describe("isGraphQL — composes with deriveBaseUrl's cross-eTLD+1 noise-anchor fix to classify REST correctly", () => {
+  // Mirrors the archive shape from the deriveBaseUrl cross-eTLD+1 regression:
+  // an own-backend REST majority plus GraphQL-shaped noise on an unrelated
+  // registrable domain, with the noise host sorting first in array order so
+  // a naive "first non-noise capture wins" anchor would have picked it.
+  const PRIMARY_HOST = "www.catalog-fixture.example.org";
+  const NOISE_HOST = "login.auth-fixture.example.net";
+
+  const restCapture = (i: number): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: `https://${PRIMARY_HOST}/api/orders/availability`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { slots: [`slot-${i}`] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const authNoiseCapture = (): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "home",
+    method: "POST",
+    url: `https://${NOISE_HOST}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({
+      operationName: "SessionRefresh",
+      query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+    }),
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { data: { sessionRefresh: { ok: true } } },
+    operationName: "SessionRefresh",
+    query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("classifies REST — not GraphQL — once primaryHost resolves to the real backend despite cross-eTLD+1 GraphQL-shaped noise sorting first", () => {
+    // Noise captures sort BEFORE the own-backend REST captures, the exact
+    // array-order shape that used to make the noise host win the anchor.
+    const captures = [
+      ...Array.from({ length: 5 }, () => authNoiseCapture()),
+      ...Array.from({ length: 50 }, (_, i) => restCapture(i)),
+    ];
+
+    const baseUrl = deriveBaseUrl(captures, []);
+    expect(baseUrl).toBe(`https://${PRIMARY_HOST}`);
+    const primaryHost = new URL(baseUrl).hostname;
+
+    // fallbackDomain mirrors recon-generate.ts's own derivation
+    // (`registrableDomain(new URL(baseUrl).hostname)`) so the scoping gate
+    // isGraphQL actually exercises matches what the real caller computes.
+    expect(isGraphQL(captures, [], "catalog-fixture.example.org", primaryHost)).toBe(false);
+  });
+});
+
 describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () => {
   const UUID_A = "11111111-1111-1111-1111-111111111111";
   const UUID_B = "22222222-2222-2222-2222-222222222222";
