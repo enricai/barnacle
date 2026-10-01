@@ -831,6 +831,43 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
 
     expect(kept).toEqual([primaryAccountCreate.url, primarySectionName.url, primarySubmit.url]);
   });
+
+  it("includes the dominant backend's own submitEndpointPattern-matching captures once a same-company redirect no longer mis-anchors primaryHost", () => {
+    // Reproduces the reported "0 capture(s) disagrees with N capture(s)" log
+    // symptom: a same-company marketing redirect on a different registrable
+    // domain used to win deriveBaseUrl's anchor pick by sorting first, so
+    // primaryHost narrowed extractActionSequence's host gate to the redirect
+    // host instead of the dominant backend — excluding every genuine
+    // submitEndpointPattern match. With deriveBaseUrl's redirect exclusion
+    // fixed, primaryHost resolves to the dominant backend and all of its
+    // matching captures survive.
+    const marketingRedirect = {
+      ...capture("https://www.tenant-landing.com/bounce", "{}"),
+      timestamp: "2024-01-01T00:00:00Z",
+    };
+    const matchingSubmits = Array.from({ length: 5 }, (_, i) => ({
+      ...capture(`https://api.tenant.example.com/submit/${i}`, "{}"),
+      timestamp: `2024-01-01T00:00:0${i + 1}Z`,
+    }));
+
+    const primaryHost = deriveBaseUrl([marketingRedirect, ...matchingSubmits], [])?.replace(
+      /^https?:\/\//,
+      ""
+    );
+    expect(primaryHost).toBe("api.tenant.example.com");
+
+    const kept = extractActionSequence(
+      [marketingRedirect, ...matchingSubmits],
+      { endpoint: "submit", body: null },
+      null,
+      ["www.tenant-landing.com", "api.tenant.example.com"],
+      null,
+      true,
+      primaryHost
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual(matchingSubmits.map((c) => c.url));
+  });
 });
 
 describe("extractActionSequence — structural relevance narrows the host-gated pool", () => {
