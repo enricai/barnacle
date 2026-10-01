@@ -5251,4 +5251,29 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
     expect(baseUrl).toBe("https://dominant.example.com");
   });
+
+  it("still lets a same-company auth-redirect-labeled host win when it is the pool's dominant host by capture count", () => {
+    const authDominant = Array.from({ length: 5 }, (_, i) =>
+      capture(`https://login.example-id.com/${i}`, `2024-01-01T00:00:0${i}Z`)
+    );
+    const minorityOther = capture("https://other.example.com/x", "2024-01-01T00:00:05Z");
+
+    const baseUrl = deriveBaseUrl([...authDominant, minorityOther], []);
+
+    expect(baseUrl).toBe("https://login.example-id.com");
+  });
+
+  it("lets a genuine own-backend host labeled like an auth bounce win the same-domain GraphQL dominance vote when it is the dominant host by count", () => {
+    const loginBackendMajority = Array.from({ length: 5 }, (_, i) => ({
+      ...capture(`https://login.example.com/${i}`, `2024-01-01T00:00:0${i}Z`),
+      query: i === 0 ? "query GetWidgets { widgets { id } }" : null,
+    }));
+    const siblingSubdomainMinority = Array.from({ length: 2 }, (_, i) =>
+      capture(`https://sub.example.com/${i}`, `2024-01-01T00:00:0${i + 5}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([...loginBackendMajority, ...siblingSubdomainMinority], []);
+
+    expect(baseUrl).toBe("https://login.example.com");
+  });
 });
