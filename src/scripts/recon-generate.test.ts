@@ -5264,15 +5264,16 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   });
 
   it("lets a genuine own-backend host labeled like an auth bounce win the same-domain GraphQL dominance vote when it is the dominant host by count", () => {
+    const siblingSubdomainMinority = capture(
+      "https://sub.example.com/0",
+      "2024-01-01T00:00:00Z"
+    );
     const loginBackendMajority = Array.from({ length: 5 }, (_, i) => ({
-      ...capture(`https://login.example.com/${i}`, `2024-01-01T00:00:0${i}Z`),
+      ...capture(`https://login.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
       query: i === 0 ? "query GetWidgets { widgets { id } }" : null,
     }));
-    const siblingSubdomainMinority = Array.from({ length: 2 }, (_, i) =>
-      capture(`https://sub.example.com/${i}`, `2024-01-01T00:00:0${i + 5}Z`)
-    );
 
-    const baseUrl = deriveBaseUrl([...loginBackendMajority, ...siblingSubdomainMinority], []);
+    const baseUrl = deriveBaseUrl([siblingSubdomainMinority, ...loginBackendMajority], []);
 
     expect(baseUrl).toBe("https://login.example.com");
   });
