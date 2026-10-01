@@ -1621,7 +1621,26 @@ export function isGraphQL(
     rescuedInvariantEndpoints.add(key);
     return true;
   });
-  const votingPool = [...scoped.filter((c) => c.query), ...restAntiVotes];
+  // Mirrors the restAntiVotes rescue above: a query-bearing endpoint called
+  // thousands of times is reduced to at most one representative per
+  // isZeroVarianceRepeatCapture-collapsed endpoint, the same way REST's
+  // anti-vote side already is. Without this, a REST archive's dominant,
+  // repetitive own-backend traffic collapses to a handful of anti-votes
+  // while a smaller set of genuinely-varying query-bearing captures on the
+  // same endpoint keeps full per-capture weight, letting raw operation
+  // count — not real traffic share — decide the classification.
+  const rescuedInvariantQueryEndpoints = new Set<string>();
+  const proVotes = scoped
+    .filter((c) => c.query)
+    .filter((c) => {
+      if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+      if (hasNoBusinessRelevantResponseState(c)) return false;
+      const key = endpointKey(c.url);
+      if (rescuedInvariantQueryEndpoints.has(key)) return false;
+      rescuedInvariantQueryEndpoints.add(key);
+      return true;
+    });
+  const votingPool = [...proVotes, ...restAntiVotes];
   const parsedCount = votingPool.reduce(
     (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
     0
