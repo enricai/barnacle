@@ -8510,7 +8510,8 @@ export interface InvalidFormControl {
  * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
  * `data-id`, and `name`.
  */
-const FORM_VALIDITY_PROBE_EXPR = `(() => {
+export function formValidityProbeExpr(): string {
+  return `(() => {
   const INVALID_CLASS_RX = /(${INVALID_MARKER_CLASS_SOURCE})/;
   const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "Mui-error", "ng-touched", "ng-dirty"];
   function fire(el, ev) {
@@ -8696,6 +8697,7 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
   // Strip the DOM reference before serialization.
   return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked, autoFilled: e.autoFilled }));
 })()`;
+}
 
 /**
  * Runs ONLY on the cascade's final step when a submitEndpointPattern is
@@ -8775,7 +8777,7 @@ async function probeFormValidityBeforeSubmit(params: {
 }): Promise<InvalidFormControl[]> {
   const { target, stepIndex, totalSteps, logger } = params;
   try {
-    const raw = await target.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    const raw = await target.evaluate(formValidityProbeExpr());
     if (!Array.isArray(raw)) return [];
     const out: InvalidFormControl[] = [];
     for (const entry of raw) {
