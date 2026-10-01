@@ -1712,6 +1712,20 @@ describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
     const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
     expect(out).toEqual(newSteps);
   });
+
+  it("keeps a bridge fill step whose field differs from the next authored fill step even though both quote the same value", () => {
+    const newSteps = [mk("Fill in the Email field with '12-34'")];
+    const originalRemaining = [mk("Fill in the Confirm Email field with '12-34'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("drops a bridge fill step that re-targets the SAME field as the next authored fill step, reworded", () => {
+    const newSteps = [mk("Fill in the Email field with '56-78'")];
+    const originalRemaining = [mk("Fill in the Email field with '12-34'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual([]);
+  });
 });
 
 describe("recon-browser/applyFailedStepFlagsToResumingBridgeStep", () => {
