@@ -320,8 +320,12 @@ describe("recon-generate CLI — production-scale noisy REST archive with an 18-
     // same-host facet-search GraphQL captures outvote the bulk REST browse
     // traffic once the latter collapses to a single rescued anti-vote (see
     // this file's header comment), misclassifying an overwhelmingly-REST
-    // flow as GraphQL.
-    expect(result.stdout).toContain(`generating plugin for ${siteId} (single-endpoint REST,`);
+    // flow as GraphQL. (With symptom #2's undercount fixed, the eighteen
+    // genuine reservation submissions are now correctly counted as action
+    // captures, so this archive's real shape is a multi-step submission
+    // flow, not a single-endpoint one — but it must still land on REST,
+    // never GraphQL.)
+    expect(result.stdout).toContain(`generating plugin for ${siteId} (submission flow,`);
     expect(result.stdout).not.toContain("GraphQL");
 
     // Symptom #2 (reproduces at this scale) — every one of the submit
