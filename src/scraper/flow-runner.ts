@@ -5517,9 +5517,12 @@ function parseFieldLabelTarget(step: string): FieldLabelTarget | null {
  * Name"); otherwise a substring match either direction (a `fieldLabel` of
  * "Acme Non-Employee ID" against an accessible name of "Non-Employee ID", or
  * the reverse) so minor phrasing drift between the flow's field noun and the
- * control's own label still resolves. Returns `null` — never a guess — when
- * no candidate's accessible name relates to `fieldLabel` at all, so the
- * caller can refuse to act rather than fill/click the wrong control.
+ * control's own label still resolves; when multiple candidates qualify via
+ * substring, the one whose length is closest to `fieldLabel`'s (the most
+ * specific match) wins, not whichever happened to come first. Returns
+ * `null` — never a guess — when no candidate's accessible name relates to
+ * `fieldLabel` at all, so the caller can refuse to act rather than
+ * fill/click the wrong control.
  */
 function findDeepLocatorCandidateByFieldLabel(
   candidates: readonly DeepLocatorCandidate[],
@@ -5532,10 +5535,16 @@ function findDeepLocatorCandidateByFieldLabel(
     .filter((entry) => entry.text.length > 0);
   const exact = named.find((entry) => entry.text === normalizedLabel);
   if (exact) return exact.candidate;
-  const partial = named.find(
+  const partials = named.filter(
     (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
   );
-  return partial?.candidate ?? null;
+  const mostSpecific = partials.reduce<(typeof partials)[number] | null>((closest, entry) => {
+    if (!closest) return entry;
+    const entryDistance = Math.abs(entry.text.length - normalizedLabel.length);
+    const closestDistance = Math.abs(closest.text.length - normalizedLabel.length);
+    return entryDistance < closestDistance ? entry : closest;
+  }, null);
+  return mostSpecific?.candidate ?? null;
 }
 
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
