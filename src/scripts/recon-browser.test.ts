@@ -2084,6 +2084,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
       )
     ).toBe(true);
   });
+
+  it("does not fire when the bridge fills a DIFFERENT field with the same value as the just-failed fill step", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill in the Confirm Password field with 'X1!'")],
+        "Fill in the Password field with 'X1!'"
+      )
+    ).toBe(false);
+  });
 });
 
 describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
