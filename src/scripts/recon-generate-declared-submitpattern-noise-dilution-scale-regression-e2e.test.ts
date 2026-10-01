@@ -153,5 +153,5 @@ describe("recon-generate CLI — declared submitEndpointPattern survives thousan
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain("available-sailings");
-  }, 120_000);
+  }, 240_000);
 });

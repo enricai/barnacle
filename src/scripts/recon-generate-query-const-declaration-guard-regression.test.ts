@@ -6,9 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emitContractTs } from "@/scripts/recon-generate";
 
 /**
- * Pins the general invariant behind the reported `DISNEYCRUISE_QUERY`
- * failure as a site-agnostic contract on `emitContractTs` itself, independent
- * of any one archive shape: whenever `gql` is true but no concrete GraphQL
+ * Pins the general invariant behind a reported `const` identifier
+ * naming failure as a site-agnostic contract on `emitContractTs` itself,
+ * independent of any one archive shape: whenever `gql` is true but no concrete GraphQL
  * query text was ever resolved (`gqlQuery === null`), `isGqlEmission` must be
  * false everywhere the emitted source decides whether to reference a
  * `PASCAL_QUERY` identifier — so the output never names a `const` it never
