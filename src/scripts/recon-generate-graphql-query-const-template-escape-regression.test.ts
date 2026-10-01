@@ -6,7 +6,7 @@ import { emitContractTs } from "@/scripts/recon-generate";
  * per that file's own fixture convention. */
 const BASE_OPTS = {
   siteId: "test-site",
-  pascal: "DisneyCruise",
+  pascal: "AcmeJobs",
   baseUrl: "https://example.com",
   baseHeaders: { "Content-Type": "application/json" },
   minTime: 100,
@@ -24,7 +24,7 @@ describe("emitContractTs queryConst — backtick/${} escaping regression", () =>
       gqlQuery: "query { field(label: `weird`) }",
     });
 
-    expect(contract).toContain("const DISNEYCRUISE_QUERY = `query { field(label: \\`weird\\`) }`;");
+    expect(contract).toContain("const ACMEJOBS_QUERY = `query { field(label: \\`weird\\`) }`;");
   });
 
   it("escapes a ${...} interpolation start in the resolved query text so it is not reinterpreted as a splice", () => {
@@ -35,7 +35,7 @@ describe("emitContractTs queryConst — backtick/${} escaping regression", () =>
     });
 
     expect(contract).toContain(
-      "const DISNEYCRUISE_QUERY = `query { field(id: \\${maliciousSplice}) }`;"
+      "const ACMEJOBS_QUERY = `query { field(id: \\${maliciousSplice}) }`;"
     );
   });
 });
