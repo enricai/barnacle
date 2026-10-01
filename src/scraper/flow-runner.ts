@@ -8682,7 +8682,7 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (out.some((e) => e._el === ctrl || (e._el && e._el.contains(ctrl)))) continue;
     const valueMissing = ctrl.validity ? ctrl.validity.valueMissing : !ctrl.value;
     if (!valueMissing) continue;
-    const byFor = ctrl.id && document.querySelector ? document.querySelector('label[for="' + ctrl.id + '"]') : null;
+    const byFor = ctrl.id && document.querySelector ? document.querySelector("label[for=\\"" + ctrl.id + "\\"]") : null;
     let label = byFor && byFor.textContent ? byFor.textContent.trim() : "";
     let scan = ctrl;
     for (let i = 0; i < 4 && scan && !label; i++) {
