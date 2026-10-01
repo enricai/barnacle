@@ -997,10 +997,11 @@ export function dedupeReplanStepsByTarget(steps: NormalizedStep[]): NormalizedSt
  * named still holds its expected value — resolved by parsing
  * `bodyHtmlAtFailure` into a DOM and matching the step's field label to a
  * control's accessible name, the same field-label-first resolution the live
- * page cascade uses. A step that only parses via the looser
- * `parseFillValueIntent` fallback (no field label available) has no element
- * to resolve, so it falls back to the old whole-body value search — the one
- * case where that coarser signal remains the best available evidence.
+ * page cascade uses. When the field's identity can't be resolved to a
+ * specific control — no field label parses, or no control's accessible name
+ * relates to it — the step is treated as stale (kept) rather than falling
+ * back to a whole-body value search, which is unsound whenever sibling
+ * fields are designed to share a value (e.g. password + confirm password).
  */
 /** Whitespace-collapsed, lowercased comparison key, mirroring `flow-runner.ts`'s `normalizeFieldLabel`. */
 function normalizeStaleFillLabel(text: string): string {
@@ -1083,13 +1084,17 @@ export function filterCompletedFromReplan(
     if (!bodyHtmlAtFailure) return false;
     const parsedFill = parseFillStep(step);
     const fieldLabel = parsedFill?.fieldLabel;
-    if (fieldLabel && parsedFill?.value) {
-      const fieldValue = resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel);
-      if (fieldValue !== null) return fieldValue !== parsedFill.value;
-    }
     const value = parsedFill?.value ?? parseFillValueIntent(step)?.value;
     if (!value) return false;
-    return !bodyHtmlAtFailure.includes(value);
+    if (fieldLabel) {
+      const fieldValue = resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel);
+      if (fieldValue !== null) return fieldValue !== value;
+    }
+    // The step's field identity couldn't be resolved to a specific control in the
+    // failure-time DOM; a whole-body value search is unsound when sibling fields
+    // (e.g. password + confirm password) share the same value, so treat the step
+    // as stale rather than risk wrongly dropping a still-required field.
+    return true;
   };
   const completed = new Set(completedSteps.filter((s) => !isStaleFill(s)));
   return newSteps.filter((s) => s.instruction === failedStep || !completed.has(s.instruction));

@@ -1589,6 +1589,36 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     );
     expect(out.map((s) => s.instruction)).toEqual(["Click DONE"]);
   });
+
+  it("keeps a re-proposed fill when its own field can't be resolved at all, even though an unrelated control still holds the shared value (no whole-body value search)", () => {
+    const raw = [
+      mk("Fill in the Nickname field with 'Secr3t!'"),
+      mk("Fill in the Callsign field with 'Secr3t!'"),
+      mk("Click NEXT"),
+    ];
+    const completed = [
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Fill in the Callsign field with 'Secr3t!'",
+    ];
+    // Nickname's own control is gone from the DOM entirely — no label/name/id
+    // relates to it even as a substring — so resolveFieldElementValue returns
+    // null; only Callsign's control, which happens to hold the same value,
+    // remains in the body.
+    const bodyHtmlAtFailure =
+      "<body>" + "<label for='cs'>Callsign</label><input id='cs' value='Secr3t!'>" + "</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    // Nickname is kept because its field identity can't be resolved (treated as
+    // stale); Callsign is still dropped because ITS OWN control resolves and matches.
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
 });
 
 describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
