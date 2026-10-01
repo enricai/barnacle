@@ -1173,6 +1173,63 @@ export function prepareFailureDumpBody(raw: unknown): string | null {
  */
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
 
+/** One form control's live accessible-name/value pair at step-failure time. */
+export interface FieldValueAtFailure {
+  label: string;
+  value: string;
+}
+
+/** Caps mirroring {@link DOM_SNAPSHOT_EXPR}'s truncation so a pathological page can't bloat the failure bundle. */
+const FIELD_VALUES_AT_FAILURE_MAX_CONTROLS = 200;
+const FIELD_VALUES_AT_FAILURE_MAX_VALUE_LENGTH = 500;
+
+/**
+ * Browser-side expression source returning `{label, value}[]` for every
+ * visible input/textarea/select, read via the live `.value`/`.checked`
+ * property rather than the serialized attribute. Exists because every
+ * DOM-direct fill path sets a control's value with `el.value = value` (the
+ * JS property), which is never reflected back into the `value=` content
+ * attribute `document.body.outerHTML` serializes — so a reparsed HTML
+ * snapshot can structurally never prove what a text field currently holds.
+ * The accessible-name resolution (`aria-labelledby`, then `aria-label`, then
+ * `label[for]`/wrapping `label`, then `name`/`id`/`placeholder`) mirrors
+ * `recon-browser.ts`'s `accessibleNameForControl` so the label a step
+ * targets and the label this capture keys on agree.
+ */
+export function fieldValuesAtFailureExpr(): string {
+  return `(() => {
+    const b = document.body;
+    if (!b) return [];
+    const accessibleName = (el) => {
+      const labelledBy = el.getAttribute("aria-labelledby");
+      if (labelledBy) {
+        const text = labelledBy.split(/\\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ").trim();
+        if (text) return text;
+      }
+      const ariaLabel = el.getAttribute("aria-label");
+      if (ariaLabel && ariaLabel.trim()) return ariaLabel;
+      const id = el.getAttribute("id");
+      if (id) {
+        const label = document.querySelector("label[for=\\"" + CSS.escape(id) + "\\"]");
+        if (label && label.textContent && label.textContent.trim()) return label.textContent;
+      }
+      const wrappingLabel = el.closest("label");
+      if (wrappingLabel && wrappingLabel.textContent && wrappingLabel.textContent.trim()) return wrappingLabel.textContent;
+      return el.getAttribute("name") || id || el.getAttribute("placeholder") || "";
+    };
+    const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null);
+    const out = [];
+    for (const el of controls) {
+      if (out.length >= ${FIELD_VALUES_AT_FAILURE_MAX_CONTROLS}) break;
+      const label = accessibleName(el).trim();
+      if (!label) continue;
+      const value = (el.type === "checkbox" || el.type === "radio") ? (el.checked ? "1" : "0") : (el.value || "");
+      out.push({ label: label.slice(0, 200), value: String(value).slice(0, ${FIELD_VALUES_AT_FAILURE_MAX_VALUE_LENGTH}) });
+    }
+    return out;
+  })()`;
+}
+
 /**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
  * Accepts the optional `page` so a resolved child `FrameTarget` whose
@@ -9475,6 +9532,13 @@ export async function executeStepWithHealing(params: {
      * the already-failing page. See {@link captureTargetResolutionDiagnosticSnapshot}.
      */
     targetResolutionDiagnostic: TargetResolutionDiagnosticSnapshot | null;
+    /**
+     * Live label-keyed field values at failure time (see
+     * {@link fieldValuesAtFailureExpr}) — the signal `bodyOuterHtml` cannot
+     * carry, since a DOM-direct `.value =` fill never reaches the serialized
+     * `value=` attribute. `null` when the capture itself failed.
+     */
+    fieldValuesAtFailure: FieldValueAtFailure[] | null;
   }) => string | null;
   /**
    * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
@@ -10316,6 +10380,9 @@ export async function executeStepWithHealing(params: {
       .evaluate("document.body ? document.body.outerHTML : null")
       .catch(() => null);
     const bodyOuterHtml = prepareFailureDumpBody(bodyOuterHtmlRaw);
+    const fieldValuesAtFailure = await (frameTarget ?? page)
+      .evaluate<FieldValueAtFailure[]>(fieldValuesAtFailureExpr())
+      .catch(() => null);
     const probeAbsentObservedUnfocused = await guardedObserve(
       stagehand,
       undefined,
@@ -10350,6 +10417,7 @@ export async function executeStepWithHealing(params: {
         bodyOuterHtml,
         unfocusedObserve,
         targetResolutionDiagnostic,
+        fieldValuesAtFailure,
       }) ?? null;
     throw new StepVerificationError(
       `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
@@ -12992,6 +13060,9 @@ export async function executeStepWithHealing(params: {
     .evaluate("document.body ? document.body.outerHTML : null")
     .catch(() => null);
   const bodyOuterHtml = prepareFailureDumpBody(bodyOuterHtmlRaw);
+  const fieldValuesAtFailure = await (frameTarget ?? mainFrameTarget(page))
+    .evaluate<FieldValueAtFailure[]>(fieldValuesAtFailureExpr())
+    .catch(() => null);
   const cascadeExhaustObservedUnfocused = await guardedObserve(
     stagehand,
     undefined,
@@ -13024,6 +13095,7 @@ export async function executeStepWithHealing(params: {
       bodyOuterHtml,
       unfocusedObserve,
       targetResolutionDiagnostic,
+      fieldValuesAtFailure,
     }) ?? null;
   if (dumpPath !== null) {
     logger.error(
