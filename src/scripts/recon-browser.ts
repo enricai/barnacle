@@ -94,6 +94,7 @@ import {
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
+  type FieldValueAtFailure,
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
@@ -1041,6 +1042,25 @@ function accessibleNameForControl(el: Element, window: Window): string {
 }
 
 /**
+ * Exact-then-substring normalized-label match shared by {@link resolveFieldElementValue}
+ * (parsed-DOM entries) and {@link resolveFieldValueFromCapture} (live-capture
+ * entries), mirroring `flow-runner.ts`'s `findDeepLocatorCandidateByFieldLabel`.
+ */
+function matchByNormalizedLabel<T>(
+  entries: readonly { text: string; value: T }[],
+  normalizedLabel: string
+): T | null {
+  const named = entries.filter((entry) => entry.text.length > 0);
+  const exact = named.find((entry) => entry.text === normalizedLabel);
+  const partial =
+    exact ??
+    named.find(
+      (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
+    );
+  return partial?.value ?? null;
+}
+
+/**
  * Resolves the specific input/textarea/select `bodyHtmlAtFailure` contains
  * for the named field, using the same exact-then-substring normalized-label
  * matching semantics as `flow-runner.ts`'s
@@ -1055,39 +1075,67 @@ function resolveFieldElementValue(bodyHtmlAtFailure: string, fieldLabel: string)
   try {
     window.document.body.innerHTML = bodyHtmlAtFailure;
     const controls = Array.from(window.document.querySelectorAll("input,textarea,select"));
-    const named = controls
-      .map((control) => ({
-        control,
-        text: normalizeStaleFillLabel(accessibleNameForControl(control, window)),
-      }))
-      .filter((entry) => entry.text.length > 0);
-    const exact = named.find((entry) => entry.text === normalizedLabel);
-    const partial =
-      exact ??
-      named.find(
-        (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
-      );
-    if (!partial) return null;
-    return (partial.control as HTMLInputElement | HTMLTextAreaElement).value;
+    const entries = controls.map((control) => ({
+      text: normalizeStaleFillLabel(accessibleNameForControl(control, window)),
+      value: (control as HTMLInputElement | HTMLTextAreaElement).value,
+    }));
+    return matchByNormalizedLabel(entries, normalizedLabel);
   } finally {
     window.close();
   }
+}
+
+/**
+ * Resolves a field's VALUE from the live label-keyed capture taken at
+ * step-failure time (see `flow-runner.ts`'s `fieldValuesAtFailureExpr`),
+ * using the same normalized-label matching as `resolveFieldElementValue`.
+ * This is the authoritative value source: the capture reads each control's
+ * live `.value`/`.checked` property, which a DOM-direct fill sets without
+ * ever touching the serialized `value=` attribute `bodyOuterHtml` reflects —
+ * so a reparsed HTML snapshot can structurally never prove what a text field
+ * currently holds. Returns `null` — never a guess — when no captured
+ * field's label relates to `fieldLabel` at all.
+ */
+function resolveFieldValueFromCapture(
+  fieldValuesAtFailure: readonly FieldValueAtFailure[],
+  fieldLabel: string
+): string | null {
+  const normalizedLabel = normalizeStaleFillLabel(fieldLabel);
+  if (!normalizedLabel) return null;
+  const entries = fieldValuesAtFailure.map((field) => ({
+    text: normalizeStaleFillLabel(field.label),
+    value: field.value,
+  }));
+  return matchByNormalizedLabel(entries, normalizedLabel);
 }
 
 export function filterCompletedFromReplan(
   newSteps: readonly NormalizedStep[],
   completedSteps: readonly string[],
   failedStep: string,
-  bodyHtmlAtFailure?: string | null
+  bodyHtmlAtFailure?: string | null,
+  fieldValuesAtFailure?: readonly FieldValueAtFailure[] | null
 ): NormalizedStep[] {
   const isStaleFill = (step: string): boolean => {
-    if (!bodyHtmlAtFailure) return false;
+    if (!bodyHtmlAtFailure && !fieldValuesAtFailure) return false;
     const parsedFill = parseFillStep(step);
     const fieldLabel = parsedFill?.fieldLabel;
     const value = parsedFill?.value ?? parseFillValueIntent(step)?.value;
     if (!value) return false;
     if (fieldLabel) {
-      const fieldValue = resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel);
+      // Live-captured value is authoritative when present — it can prove a
+      // DOM-direct fill survived even though the field's static attribute
+      // shows empty (see resolveFieldValueFromCapture). Only fall back to
+      // the structural bodyHtmlAtFailure re-parse when the capture has no
+      // entry for this field (e.g. capture itself failed, or this call site
+      // predates it).
+      const liveValue = fieldValuesAtFailure
+        ? resolveFieldValueFromCapture(fieldValuesAtFailure, fieldLabel)
+        : null;
+      if (liveValue !== null) return liveValue !== value;
+      const fieldValue = bodyHtmlAtFailure
+        ? resolveFieldElementValue(bodyHtmlAtFailure, fieldLabel)
+        : null;
       if (fieldValue !== null) return fieldValue !== value;
     }
     // The step's field identity couldn't be resolved to a specific control in the
@@ -2254,6 +2302,14 @@ function dumpStepFailure(params: {
    */
   unfocusedObserve: Action[];
   /**
+   * Live label-keyed field values at failure time (see
+   * {@link fieldValuesAtFailureExpr}) — persisted so {@link filterCompletedFromReplan}'s
+   * resume-from-failure check can source a fill's VALUE from a signal that
+   * can actually reflect a DOM-direct `.value =` write, which `bodyOuterHtml`
+   * structurally cannot. `null` when the capture itself failed.
+   */
+  fieldValuesAtFailure: FieldValueAtFailure[] | null;
+  /**
    * Bounded snapshot of the submit-shaped candidate ranking at the moment
    * resolution gave up, or `null` when the capture itself failed on the
    * already-failing page. Persisted verbatim so a triager can see exactly
@@ -2275,6 +2331,7 @@ function dumpStepFailure(params: {
     finalObserve: params.finalObserve,
     unfocusedObserve: params.unfocusedObserve,
     bodyOuterHtml: params.bodyOuterHtml,
+    fieldValuesAtFailure: params.fieldValuesAtFailure,
     recentCaptures: params.recentCaptures.slice(-5),
     targetResolutionDiagnostic: params.targetResolutionDiagnostic,
   };
@@ -3200,21 +3257,26 @@ async function main(): Promise<void> {
           // failed step's re-emission. originalRemaining is re-appended below.
           // The untruncated failure-time DOM re-verifies completed fills so a
           // silently-reset field isn't trusted as still-completed.
-          const bodyHtmlAtFailure = (() => {
+          const { bodyHtmlAtFailure, fieldValuesAtFailure } = (() => {
             try {
               const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
                 bodyOuterHtml?: string | null;
+                fieldValuesAtFailure?: FieldValueAtFailure[] | null;
               };
-              return dump.bodyOuterHtml ?? null;
+              return {
+                bodyHtmlAtFailure: dump.bodyOuterHtml ?? null,
+                fieldValuesAtFailure: dump.fieldValuesAtFailure ?? null,
+              };
             } catch {
-              return null;
+              return { bodyHtmlAtFailure: null, fieldValuesAtFailure: null };
             }
           })();
           const newSteps = filterCompletedFromReplan(
             rawNewSteps,
             completedSteps,
             step.instruction,
-            bodyHtmlAtFailure
+            bodyHtmlAtFailure,
+            fieldValuesAtFailure
           );
           const droppedCompleted = rawNewSteps.length - newSteps.length;
           if (droppedCompleted > 0) {

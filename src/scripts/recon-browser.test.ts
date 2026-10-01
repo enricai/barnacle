@@ -107,7 +107,11 @@ import {
   SessionTimeoutError,
   StepVerificationError,
 } from "@/scraper/errors";
-import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import {
+  type FieldValueAtFailure,
+  type HealingFlowStep,
+  runHealingFlow,
+} from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
   applyFailedStepFlagsToResumingBridgeStep,
@@ -1614,6 +1618,41 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     );
     // Nickname is kept because its field identity can't be resolved (treated as
     // stale); Callsign is still dropped because ITS OWN control resolves and matches.
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
+
+  it("credits a field as not-stale from the live capture even though the static outerHTML attribute shows empty", () => {
+    const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
+    const completed = ["Fill in the Email field with 'x@y.z'"];
+    // A DOM-direct `.value =` fill never reaches the serialized `value=`
+    // attribute, so the static snapshot wrongly looks empty here.
+    const bodyHtmlAtFailure = "<body><label for='em'>Email</label><input id='em' value=''></body>";
+    const fieldValuesAtFailure: FieldValueAtFailure[] = [{ label: "Email", value: "x@y.z" }];
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure,
+      fieldValuesAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual(["Click NEXT"]);
+  });
+
+  it("still treats a field as stale when neither the live capture nor the static DOM resolves it", () => {
+    const raw = [mk("Fill in the Nickname field with 'Secr3t!'"), mk("Click NEXT")];
+    const completed = ["Fill in the Nickname field with 'Secr3t!'"];
+    const bodyHtmlAtFailure = "<body><label for='cs'>Callsign</label><input id='cs' value=''></body>";
+    const fieldValuesAtFailure: FieldValueAtFailure[] = [{ label: "Callsign", value: "" }];
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure,
+      fieldValuesAtFailure
+    );
     expect(out.map((s) => s.instruction)).toEqual([
       "Fill in the Nickname field with 'Secr3t!'",
       "Click NEXT",
