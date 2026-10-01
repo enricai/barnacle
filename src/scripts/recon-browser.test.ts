@@ -107,7 +107,11 @@ import {
   SessionTimeoutError,
   StepVerificationError,
 } from "@/scraper/errors";
-import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import {
+  type FieldValueAtFailure,
+  type HealingFlowStep,
+  runHealingFlow,
+} from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
   applyFailedStepFlagsToResumingBridgeStep,
@@ -1589,6 +1593,72 @@ describe("recon-browser/filterCompletedFromReplan", () => {
     );
     expect(out.map((s) => s.instruction)).toEqual(["Click DONE"]);
   });
+
+  it("keeps a re-proposed fill when its own field can't be resolved at all, even though an unrelated control still holds the shared value (no whole-body value search)", () => {
+    const raw = [
+      mk("Fill in the Nickname field with 'Secr3t!'"),
+      mk("Fill in the Callsign field with 'Secr3t!'"),
+      mk("Click NEXT"),
+    ];
+    const completed = [
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Fill in the Callsign field with 'Secr3t!'",
+    ];
+    // Nickname's own control is gone from the DOM entirely — no label/name/id
+    // relates to it even as a substring — so resolveFieldElementValue returns
+    // null; only Callsign's control, which happens to hold the same value,
+    // remains in the body.
+    const bodyHtmlAtFailure =
+      "<body>" + "<label for='cs'>Callsign</label><input id='cs' value='Secr3t!'>" + "</body>";
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+    // Nickname is kept because its field identity can't be resolved (treated as
+    // stale); Callsign is still dropped because ITS OWN control resolves and matches.
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
+
+  it("credits a field as not-stale from the live capture even though the static outerHTML attribute shows empty", () => {
+    const raw = [mk("Fill in the Email field with 'x@y.z'"), mk("Click NEXT")];
+    const completed = ["Fill in the Email field with 'x@y.z'"];
+    // A DOM-direct `.value =` fill never reaches the serialized `value=`
+    // attribute, so the static snapshot wrongly looks empty here.
+    const bodyHtmlAtFailure = "<body><label for='em'>Email</label><input id='em' value=''></body>";
+    const fieldValuesAtFailure: FieldValueAtFailure[] = [{ label: "Email", value: "x@y.z" }];
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure,
+      fieldValuesAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual(["Click NEXT"]);
+  });
+
+  it("still treats a field as stale when neither the live capture nor the static DOM resolves it", () => {
+    const raw = [mk("Fill in the Nickname field with 'Secr3t!'"), mk("Click NEXT")];
+    const completed = ["Fill in the Nickname field with 'Secr3t!'"];
+    const bodyHtmlAtFailure =
+      "<body><label for='cs'>Callsign</label><input id='cs' value=''></body>";
+    const fieldValuesAtFailure: FieldValueAtFailure[] = [{ label: "Callsign", value: "" }];
+    const out = filterCompletedFromReplan(
+      raw,
+      completed,
+      "Some other failed step",
+      bodyHtmlAtFailure,
+      fieldValuesAtFailure
+    );
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Nickname field with 'Secr3t!'",
+      "Click NEXT",
+    ]);
+  });
 });
 
 describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
@@ -1634,6 +1704,27 @@ describe("recon-browser/filterReplanDuplicatingNextAuthored", () => {
     const originalRemaining = [mk("Click the 'Add New Work History' button")];
     const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
     expect(out).toEqual(newSteps);
+  });
+
+  it("does not drop a Confirm Password fill step as a duplicate of a Password fill step sharing the same value (bugfix-002)", () => {
+    const newSteps = [mk("Fill in the Confirm Password field with 'Secr3t!'")];
+    const originalRemaining = [mk("Fill in the Password field with 'Secr3t!'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("keeps a bridge fill step whose field differs from the next authored fill step even though both quote the same value", () => {
+    const newSteps = [mk("Fill in the Email field with '12-34'")];
+    const originalRemaining = [mk("Fill in the Confirm Email field with '12-34'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual(newSteps);
+  });
+
+  it("drops a bridge fill step that re-targets the SAME field as the next authored fill step, reworded", () => {
+    const newSteps = [mk("Fill in the Email field with '56-78'")];
+    const originalRemaining = [mk("Fill in the Email field with '12-34'")];
+    const out = filterReplanDuplicatingNextAuthored(newSteps, originalRemaining);
+    expect(out).toEqual([]);
   });
 });
 
@@ -1992,6 +2083,15 @@ describe("recon-browser/isReplanReproposingFailedStep", () => {
         "Fill in the 'Last Name' field with 'Smith, John'"
       )
     ).toBe(true);
+  });
+
+  it("does not fire when the bridge fills a DIFFERENT field with the same value as the just-failed fill step", () => {
+    expect(
+      isReplanReproposingFailedStep(
+        [mk("Fill in the Confirm Password field with 'X1!'")],
+        "Fill in the Password field with 'X1!'"
+      )
+    ).toBe(false);
   });
 });
 
@@ -3299,6 +3399,23 @@ describe("recon-browser/isReplanCycle", () => {
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
   });
 
+  it("does NOT cycle when consecutive replans fill different fields that happen to share a value", () => {
+    const priors = [
+      makeEvent(1, ["Fill in the First Name field with 'N/A'"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill in the Middle Name field with 'N/A'"], { url, htmlLength: 50010 }),
+      makeEvent(3, ["Fill in the Suffix field with 'N/A'"], { url, htmlLength: 50020 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Fill in the Nickname field with 'N/A'",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50030 })).toBe(false);
+  });
+
   it("returns false when HTML length changed beyond tolerance (page advanced)", () => {
     const proposals = ["Fill phone"];
     const priors = [
@@ -3344,6 +3461,23 @@ describe("recon-browser/isReplanCycle", () => {
     const newSteps: NormalizedStep[] = [
       { instruction: "Fill phone", optional: false, upload: false, origin: "original" },
       { instruction: "Click submit", optional: false, upload: false, origin: "original" },
+    ];
+    expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
+  });
+
+  it("never conflates a Password fill step with a Confirm Password fill step sharing the same quoted value (bugfix-002)", () => {
+    const priors = [
+      makeEvent(1, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+      makeEvent(2, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+      makeEvent(3, ["Fill in the Password field with 'Secr3t!'"], { url, htmlLength: 50000 }),
+    ];
+    const newSteps: NormalizedStep[] = [
+      {
+        instruction: "Fill in the Confirm Password field with 'Secr3t!'",
+        optional: false,
+        upload: false,
+        origin: "original",
+      },
     ];
     expect(isReplanCycle(priors, newSteps, { url, htmlLength: 50000 })).toBe(false);
   });

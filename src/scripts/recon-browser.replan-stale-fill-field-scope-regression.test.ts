@@ -47,4 +47,33 @@ describe("recon-browser/filterCompletedFromReplan field-scoped value collision",
       "Click NEXT",
     ]);
   });
+
+  it("keeps the completed step when its own field can't be resolved, even though a sibling field still holds the identical value", () => {
+    const raw = [
+      mk("Fill in the Email Address field with 'user@example.com'"),
+      mk("Fill in the Confirm Email field with 'user@example.com'"),
+      mk("Click NEXT"),
+    ];
+    const completedSteps = [
+      "Fill in the Email Address field with 'user@example.com'",
+      "Fill in the Confirm Email field with 'user@example.com'",
+    ];
+    const bodyHtmlAtFailure =
+      "<body>" +
+      "<input type='email' value=''>" +
+      "<label for='confirmEmail'>Confirm Email</label><input id='confirmEmail' value='user@example.com'>" +
+      "</body>";
+
+    const out = filterCompletedFromReplan(
+      raw,
+      completedSteps,
+      "Some other failed step",
+      bodyHtmlAtFailure
+    );
+
+    expect(out.map((s) => s.instruction)).toEqual([
+      "Fill in the Email Address field with 'user@example.com'",
+      "Click NEXT",
+    ]);
+  });
 });
