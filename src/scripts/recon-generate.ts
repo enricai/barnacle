@@ -8842,26 +8842,10 @@ interface FrozenVaryingDrillParam {
 function isExplainedByCorrelatedSiblingField(
   path: readonly string[],
   parsedBody: unknown,
-  sameEndpointCaptures: readonly Capture[]
+  otherBodies: readonly unknown[],
+  siblingPaths: ReadonlySet<string>
 ): boolean {
-  const targetPath = path.join(".");
-  const otherBodies = sameEndpointCaptures
-    .map((c) => {
-      try {
-        return typeof c.requestPostData === "string" && c.requestPostData.length > 0
-          ? JSON.parse(c.requestPostData)
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((b): b is unknown => b !== undefined);
   const allBodies = [parsedBody, ...otherBodies];
-  const siblingPaths = new Set<string>();
-  for (const { path: siblingPath } of walkAllPrimitiveLeaves(parsedBody)) {
-    const joined = siblingPath.join(".");
-    if (joined !== targetPath) siblingPaths.add(joined);
-  }
   for (const siblingPath of siblingPaths) {
     const pathSegments = siblingPath.split(".");
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
@@ -8950,28 +8934,37 @@ function findFrozenVaryingDrillParams(
     }
   })();
   if (parsedBody !== undefined) {
+    const otherBodies = sameEndpointCaptures
+      .map((c) => {
+        try {
+          return typeof c.requestPostData === "string" && c.requestPostData.length > 0
+            ? JSON.parse(c.requestPostData)
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((b): b is unknown => b !== undefined);
+    const allPaths = Array.from(walkAllPrimitiveLeaves(parsedBody)).map(({ path }) =>
+      path.join(".")
+    );
     for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
       if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
         continue;
       const stringValue = String(value);
       if (!isFrozenLiteral(stringValue)) continue;
       const fieldPath = path.join(".");
-      const differing = sameEndpointCaptures
-        .map((c) => {
-          try {
-            const otherBody =
-              typeof c.requestPostData === "string" && c.requestPostData.length > 0
-                ? JSON.parse(c.requestPostData)
-                : undefined;
-            return otherBody === undefined ? undefined : readValueAtPath(otherBody, path);
-          } catch {
-            return undefined;
-          }
-        })
+      const differing = otherBodies
+        .map((otherBody) => readValueAtPath(otherBody, path))
         .find((v) => v !== undefined && String(v) !== stringValue);
       if (
         differing !== undefined &&
-        !isExplainedByCorrelatedSiblingField(path, parsedBody, sameEndpointCaptures)
+        !isExplainedByCorrelatedSiblingField(
+          path,
+          parsedBody,
+          otherBodies,
+          new Set(allPaths.filter((p) => p !== fieldPath))
+        )
       ) {
         frozen.push({
           location: "body field",
