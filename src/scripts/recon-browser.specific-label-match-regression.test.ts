@@ -20,10 +20,7 @@ describe("recon-browser/filterCompletedFromReplan specificity-ranked label match
   });
 
   it("resolves to the long/specific entry, not the short/generic entry listed first in the DOM", () => {
-    const raw = [
-      mk("Fill in the Confirm Password field with 'X1!'"),
-      mk("Click NEXT"),
-    ];
+    const raw = [mk("Fill in the Confirm Password field with 'X1!'"), mk("Click NEXT")];
     const completedSteps = ["Fill in the Confirm Password field with 'X1!'"];
     const bodyHtmlAtFailure =
       "<body>" +
