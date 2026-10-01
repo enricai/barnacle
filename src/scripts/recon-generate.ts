@@ -10639,7 +10639,20 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
   // joinFields override independently for EACH structural target, keyed by
   // its own drill endpoint, instead of only the one this function's
   // freshest-first scan happens to land on first.
-  restrictToDrillEndpointKey: string | null = null
+  restrictToDrillEndpointKey: string | null = null,
+  // When true, a capture that is BOTH the primary (resultsPath resolves on
+  // its own response) AND its own endpointPattern match is accepted as a
+  // self-fold — no separate later drill-down call exists at all, the
+  // flow's whole per-item collection already lives in one response. Only
+  // ever set by resolveFoldPlan's bare (no-structural-competition) call:
+  // mergeSpecPlanOntoSamePrimary's calls deliberately leave this `false`,
+  // since there a structurally-detected plan ALREADY anchors a different,
+  // real primary/drill pair — allowing self-fold there would let an
+  // unrelated capture that merely echoes `resultsPath`'s key name on its
+  // OWN response (e.g. a per-item drill-down's "details" array, matched
+  // purely by coincidental naming) hijack or append onto that plan instead
+  // of being correctly left unmerged.
+  allowSelfFold: boolean = false
 ): FoldPlan | null {
   const rawPrimaryArrayPath = spec.resultsPath.split(".");
   const matchesFoldReturnEndpoint = compileFoldReturnEndpointMatcher(spec);
@@ -10701,7 +10714,18 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
     // carries one of this primary's join values (see
     // {@link collectDrillStepIndicesWorthTrying}), because testing every
     // primary/drill pair is quadratic in the capture count.
-    const firstDrillOffset = firstIndexGreaterThan(allMatchingDrillStepIndices, primaryStepIndex);
+    //
+    // `primaryStepIndex - 1` (not `primaryStepIndex`) when `allowSelfFold`,
+    // so a capture that is BOTH the primary and its own endpointPattern
+    // match is still admitted — a self-fold, where `resultsPath` nests
+    // entirely inside the SAME capture's response and there is no separate
+    // later drill-down call at all. `firstIndexGreaterThan` finds the first
+    // index strictly greater than its argument, so subtracting 1 widens the
+    // admitted range to include `primaryStepIndex` itself.
+    const firstDrillOffset = firstIndexGreaterThan(
+      allMatchingDrillStepIndices,
+      allowSelfFold ? primaryStepIndex - 1 : primaryStepIndex
+    );
     if (
       candidateEntryIndicesDescending.length === 0 &&
       firstDrillOffset === allMatchingDrillStepIndices.length
@@ -10781,7 +10805,18 @@ function buildFoldPlanFromSpec<T extends { capture: Capture }>(
           );
         }
         if (spec.drillResultsPath === undefined) {
-          return findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null;
+          // Self-fold: the matched "drill" IS the primary capture itself
+          // (entryIndex === drillStepIndex === primaryStepIndex), so the
+          // array to fold is the already-resolved `primaryArrayPath` —
+          // reusing it is the only way to land on the author's declared
+          // (possibly multi-wildcard-level) nested array; re-deriving it via
+          // `findObjectArrayFieldOrWholeObject`'s first-DFS-match would
+          // instead land on whichever object-array field happens to come
+          // first in key order (e.g. a shallower ancestor array), silently
+          // discarding the declared `resultsPath`'s own nesting depth.
+          return drillStepIndex === primaryStepIndex
+            ? primaryArrayPath
+            : (findObjectArrayFieldOrWholeObject(drill.capture.responseBody)?.path ?? null);
         }
         const path = resolveDeclaredArrayPath(
           spec.drillResultsPath.split("."),
@@ -11436,7 +11471,20 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
         )
       : ((): FoldPlan[] => {
           if (foldReturnSpec === null) return [];
-          const specPlan = buildFoldPlanFromSpec(actions, foldReturnSpec, primaryIdentityAnchor);
+          // No structural plan exists anywhere in the action sequence to
+          // compete with, so a capture that is both its own endpointPattern
+          // match AND the resolved resultsPath primary is unambiguously a
+          // self-fold — allowed only here, never from
+          // mergeSpecPlanOntoSamePrimary (see buildFoldPlanFromSpec's
+          // `allowSelfFold` docstring).
+          const specPlan = buildFoldPlanFromSpec(
+            actions,
+            foldReturnSpec,
+            primaryIdentityAnchor,
+            null,
+            null,
+            true
+          );
           return specPlan === null ? [] : [specPlan];
         })();
   return plans.flatMap((plan) => {
