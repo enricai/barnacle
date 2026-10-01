@@ -7529,7 +7529,17 @@ export function emitMultiStepExecuteHttp(
           planSuffix
         );
 
-      lines.push(...ancestorOpenLines);
+      // A target whose chain starts at the primary step itself is a
+      // self-fold (resultsPath nests entirely inside the primary's own
+      // response — see the `allowSelfFold` branch above): its "chain fetch"
+      // below is the primary's OWN `const ${primaryStep.varName} = await
+      // httpClient(...)` call, which `ancestorOpenLines` already reads via
+      // `primaryStep.varName` in its very loop expression. That fetch must
+      // run BEFORE `ancestorOpenLines` is pushed below, not spliced inside
+      // it the way a genuine ancestor-scoped drill fetch (a DIFFERENT, later
+      // endpoint) is — otherwise the emitted loop reads `primaryStep.varName`
+      // before its own declaration.
+      const selfFoldFetchLines: string[] = [];
       // Chain fetches for targets whose params + joinFields never reference
       // itemVar are spliced here, above the item loop but inside the
       // ancestor loop(s) — fetched once per ancestor tuple and reused by
@@ -7897,12 +7907,17 @@ export function emitMultiStepExecuteHttp(
           itemScopedLines.push(...chainLines, ...matchLines);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
+        } else if (target.chain[0] === foldPlan.primaryStepIndex) {
+          selfFoldFetchLines.push(...chainLines);
+          itemScopedLines.push(...matchLines);
         } else {
           hoistedChainLines.push(...chainLines);
           itemScopedLines.push(...matchLines);
         }
       }
       lines.push(
+        ...selfFoldFetchLines,
+        ...ancestorOpenLines,
         ...hoistedChainLines,
         ...emitItemLoopLines(
           itemOpenLines,
