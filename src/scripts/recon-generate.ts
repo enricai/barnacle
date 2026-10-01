@@ -2325,7 +2325,13 @@ export function extractActionSequence(
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
     .filter(({ capture }) => {
-      if (capture.method === "GET" && !matchesFoldReturn(capture)) return false;
+      if (
+        capture.method === "GET" &&
+        !matchesFoldReturn(capture) &&
+        !matchesDeclaredSubmitEndpoint(capture) &&
+        !matchesDeclaredSubmitBody(capture)
+      )
+        return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
       if (isZeroVarianceRepeatCapture(capture, captures)) return false;
