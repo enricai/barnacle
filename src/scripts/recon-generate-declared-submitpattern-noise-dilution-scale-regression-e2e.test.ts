@@ -136,6 +136,21 @@ describe("recon-generate CLI — declared submitEndpointPattern survives thousan
       "declared submitEndpointPattern/submitBodyPattern (0 capture(s))"
     );
 
+    // Pin the actual patternedHeuristicActionCaptures count surfaced in the
+    // "submission selection" log line, not just the absence of the literal
+    // "(0 capture(s))" string — a log-format change could otherwise mask a
+    // real 0-count regression while still passing the string-exclusion check.
+    const submissionSelectionLine = combinedOutput
+      .split("\n")
+      .find((line) => line.includes("submission selection:"));
+    expect(submissionSelectionLine, combinedOutput).toBeDefined();
+    const capturedCountMatch = submissionSelectionLine?.match(
+      /submitEndpointPattern\/submitBodyPattern \((\d+) capture\(s\)\)/
+    );
+    expect(capturedCountMatch, submissionSelectionLine).not.toBeNull();
+    const patternedHeuristicActionCaptures = Number(capturedCountMatch?.[1]);
+    expect(patternedHeuristicActionCaptures).toBeGreaterThan(0);
+
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain("available-sailings");
   }, 120_000);
