@@ -4015,6 +4015,24 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
   });
 });
 
+describe("emitContractTs — queryConst escapes hazardous template-literal sequences in the resolved query text", () => {
+  it("escapes a literal backtick and a ${...} sequence rather than splicing them raw", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: '{ widget(label: `starred`) { id note(format: "${RAW_EXPR}") } }',
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const queryConstMatch = source.match(/const TESTSITE_QUERY = `([\s\S]*?)`;\n/);
+    expect(queryConstMatch).not.toBeNull();
+    const queryConstBody = queryConstMatch?.[1] ?? "";
+    expect(queryConstBody).toContain("\\`starred\\`");
+    expect(queryConstBody).toContain("\\${RAW_EXPR}");
+    expect(queryConstBody).not.toMatch(/[^\\]`starred`/);
+    expect(queryConstBody).not.toMatch(/[^\\]\$\{RAW_EXPR\}/);
+  });
+});
+
 describe("query-constant comment", () => {
   it("no longer promises a trim the generator never performs", () => {
     const source = emitContractTs({
