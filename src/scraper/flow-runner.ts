@@ -8509,6 +8509,10 @@ export interface InvalidFormControl {
  *
  * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
  * `data-id`, and `name`.
+ *
+ * Exported (mirroring {@link fieldValuesAtFailureExpr}) so the real
+ * native-validity-fallback logic can be exercised against a genuine DOM in
+ * unit tests, rather than only through a mocked `evaluate`.
  */
 export function formValidityProbeExpr(): string {
   return `(() => {
