@@ -1621,7 +1621,32 @@ export function isGraphQL(
     rescuedInvariantEndpoints.add(key);
     return true;
   });
-  const votingPool = [...scoped.filter((c) => c.query), ...restAntiVotes];
+  // Mirrors the restAntiVotes rescue above: a query-bearing endpoint called
+  // thousands of times is reduced to at most one representative per
+  // isZeroVarianceRepeatCapture-collapsed endpoint, the same way REST's
+  // anti-vote side already is. Without this, a REST archive's dominant,
+  // repetitive own-backend traffic collapses to a handful of anti-votes
+  // while a smaller set of genuinely-varying query-bearing captures on the
+  // same endpoint keeps full per-capture weight, letting raw operation
+  // count — not real traffic share — decide the classification. Unlike the
+  // REST side, a rescued representative is never dropped entirely via
+  // {@link hasNoBusinessRelevantResponseState}: that check exists to tell a
+  // beacon/heartbeat (no self-declared identity) apart from real REST
+  // evidence, but a query-bearing capture already carries an intentional,
+  // structured document — it is evidence of a GraphQL-shaped endpoint
+  // existing even when its response happens to echo back only values the
+  // request itself supplied.
+  const rescuedInvariantQueryEndpoints = new Set<string>();
+  const proVotes = scoped
+    .filter((c) => c.query)
+    .filter((c) => {
+      if (!isZeroVarianceRepeatCapture(c, scoped)) return true;
+      const key = endpointKey(c.url);
+      if (rescuedInvariantQueryEndpoints.has(key)) return false;
+      rescuedInvariantQueryEndpoints.add(key);
+      return true;
+    });
+  const votingPool = [...proVotes, ...restAntiVotes];
   const parsedCount = votingPool.reduce(
     (count, c) => (parsedOperationName(c.query ?? "") !== null ? count + 1 : count),
     0
