@@ -831,6 +831,43 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
 
     expect(kept).toEqual([primaryAccountCreate.url, primarySectionName.url, primarySubmit.url]);
   });
+
+  it("includes the dominant backend's own submitEndpointPattern-matching captures once a same-company redirect no longer mis-anchors primaryHost", () => {
+    // Reproduces the reported "0 capture(s) disagrees with N capture(s)" log
+    // symptom: a same-company marketing redirect on a different registrable
+    // domain used to win deriveBaseUrl's anchor pick by sorting first, so
+    // primaryHost narrowed extractActionSequence's host gate to the redirect
+    // host instead of the dominant backend — excluding every genuine
+    // submitEndpointPattern match. With deriveBaseUrl's redirect exclusion
+    // fixed, primaryHost resolves to the dominant backend and all of its
+    // matching captures survive.
+    const marketingRedirect = {
+      ...capture("https://www.tenant-landing.com/bounce", "{}"),
+      timestamp: "2024-01-01T00:00:00Z",
+    };
+    const matchingSubmits = Array.from({ length: 5 }, (_, i) => ({
+      ...capture(`https://api.tenant.example.com/submit/${i}`, "{}"),
+      timestamp: `2024-01-01T00:00:0${i + 1}Z`,
+    }));
+
+    const primaryHost = deriveBaseUrl([marketingRedirect, ...matchingSubmits], [])?.replace(
+      /^https?:\/\//,
+      ""
+    );
+    expect(primaryHost).toBe("api.tenant.example.com");
+
+    const kept = extractActionSequence(
+      [marketingRedirect, ...matchingSubmits],
+      { endpoint: "submit", body: null },
+      null,
+      ["www.tenant-landing.com", "api.tenant.example.com"],
+      null,
+      true,
+      primaryHost
+    ).map((a) => a.capture.url);
+
+    expect(kept).toEqual(matchingSubmits.map((c) => c.url));
+  });
 });
 
 describe("extractActionSequence — structural relevance narrows the host-gated pool", () => {
@@ -2281,6 +2318,68 @@ describe("isGraphQL — zero-variance-repeat and business-relevant-state safegua
     ];
 
     expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
+  });
+});
+
+describe("isGraphQL — composes with deriveBaseUrl's cross-eTLD+1 noise-anchor fix to classify REST correctly", () => {
+  // Mirrors the archive shape from the deriveBaseUrl cross-eTLD+1 regression:
+  // an own-backend REST majority plus GraphQL-shaped noise on an unrelated
+  // registrable domain, with the noise host sorting first in array order so
+  // a naive "first non-noise capture wins" anchor would have picked it.
+  const PRIMARY_HOST = "www.catalog-fixture.example.org";
+  const NOISE_HOST = "login.auth-fixture.example.net";
+
+  const restCapture = (i: number): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url: `https://${PRIMARY_HOST}/api/orders/availability`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: null,
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { slots: [`slot-${i}`] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+
+  const authNoiseCapture = (): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "home",
+    method: "POST",
+    url: `https://${NOISE_HOST}/graphql`,
+    status: 200,
+    requestHeaders: { "Content-Type": "application/json" },
+    requestPostData: JSON.stringify({
+      operationName: "SessionRefresh",
+      query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+    }),
+    responseHeaders: { "content-type": "application/json" },
+    responseBody: { data: { sessionRefresh: { ok: true } } },
+    operationName: "SessionRefresh",
+    query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+    variables: null,
+    decodedParams: null,
+  });
+
+  it("classifies REST — not GraphQL — once primaryHost resolves to the real backend despite cross-eTLD+1 GraphQL-shaped noise sorting first", () => {
+    // Noise captures sort BEFORE the own-backend REST captures, the exact
+    // array-order shape that used to make the noise host win the anchor.
+    const captures = [
+      ...Array.from({ length: 5 }, () => authNoiseCapture()),
+      ...Array.from({ length: 50 }, (_, i) => restCapture(i)),
+    ];
+
+    const baseUrl = deriveBaseUrl(captures, []);
+    expect(baseUrl).toBe(`https://${PRIMARY_HOST}`);
+    const primaryHost = new URL(baseUrl).hostname;
+
+    // fallbackDomain mirrors recon-generate.ts's own derivation
+    // (`registrableDomain(new URL(baseUrl).hostname)`) so the scoping gate
+    // isGraphQL actually exercises matches what the real caller computes.
+    expect(isGraphQL(captures, [], "catalog-fixture.example.org", primaryHost)).toBe(false);
   });
 });
 
@@ -3916,6 +4015,24 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
   });
 });
 
+describe("emitContractTs — queryConst escapes hazardous template-literal sequences in the resolved query text", () => {
+  it("escapes a literal backtick and a ${...} sequence rather than splicing them raw", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: '{ widget(label: `starred`) { id note(format: "${RAW_EXPR}") } }',
+      multiStepBody: `    return { data: {} as unknown };`,
+    });
+    const queryConstMatch = source.match(/const TESTSITE_QUERY = `([\s\S]*?)`;\n/);
+    expect(queryConstMatch).not.toBeNull();
+    const queryConstBody = queryConstMatch?.[1] ?? "";
+    expect(queryConstBody).toContain("\\`starred\\`");
+    expect(queryConstBody).toContain("\\${RAW_EXPR}");
+    expect(queryConstBody).not.toMatch(/[^\\]`starred`/);
+    expect(queryConstBody).not.toMatch(/[^\\]\$\{RAW_EXPR\}/);
+  });
+});
+
 describe("query-constant comment", () => {
   it("no longer promises a trim the generator never performs", () => {
     const source = emitContractTs({
@@ -5073,6 +5190,29 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     expect(baseUrl).toBe("https://login.example.com");
   });
 
+  it("resolves to the dominant own-backend host when a same-company marketing redirect on a different registrable domain sorts first", () => {
+    const marketingRedirect = capture(
+      "https://www.example-landing.com/bounce",
+      "2024-01-01T00:00:00Z"
+    );
+    const backend = Array.from({ length: 4 }, (_, i) =>
+      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
+    );
+
+    const baseUrl = deriveBaseUrl([marketingRedirect, ...backend], []);
+
+    expect(baseUrl).toBe("https://api.example.com");
+  });
+
+  it("does not exclude a genuine own-backend host from the anchor pick just because its label matches the marketing vocabulary", () => {
+    const real = capture("https://www.example.com/a", "2024-01-01T00:00:00Z");
+    const other = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
+
+    const baseUrl = deriveBaseUrl([real, other], []);
+
+    expect(baseUrl).toBe("https://www.example.com");
+  });
+
   it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {
     const real = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
     const chatty = Array.from({ length: 5 }, (_, i) =>
@@ -5110,5 +5250,28 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     const baseUrl = deriveBaseUrl([anchor, ...sameRegistrableDomainMajority], []);
 
     expect(baseUrl).toBe("https://dominant.example.com");
+  });
+
+  it("still lets a same-company auth-redirect-labeled host win when it is the pool's dominant host by capture count", () => {
+    const authDominant = Array.from({ length: 5 }, (_, i) =>
+      capture(`https://login.example-id.com/${i}`, `2024-01-01T00:00:0${i}Z`)
+    );
+    const minorityOther = capture("https://other.example.com/x", "2024-01-01T00:00:05Z");
+
+    const baseUrl = deriveBaseUrl([...authDominant, minorityOther], []);
+
+    expect(baseUrl).toBe("https://login.example-id.com");
+  });
+
+  it("lets a genuine own-backend host labeled like an auth bounce win the same-domain GraphQL dominance vote when it is the dominant host by count", () => {
+    const siblingSubdomainMinority = capture("https://sub.example.com/0", "2024-01-01T00:00:00Z");
+    const loginBackendMajority = Array.from({ length: 5 }, (_, i) => ({
+      ...capture(`https://login.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
+      query: i === 0 ? "query GetWidgets { widgets { id } }" : null,
+    }));
+
+    const baseUrl = deriveBaseUrl([siblingSubdomainMinority, ...loginBackendMajority], []);
+
+    expect(baseUrl).toBe("https://login.example.com");
   });
 });

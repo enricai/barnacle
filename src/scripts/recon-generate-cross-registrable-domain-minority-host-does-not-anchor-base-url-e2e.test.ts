@@ -18,8 +18,9 @@ import type { Capture } from "@/scripts/recon-shared";
  *   wins" rule already picks the dominant host trivially.
  * - recon-generate.test.ts's "resolves to the dominant own-backend host when
  *   a same-company auth redirect ... sorts first" covers a minority host
- *   whose label matches AUTH_HOST_LABEL (`login.`), which isAuthRedirectCapture
- *   already excludes from the anchor pool regardless of registrable domain.
+ *   whose label matches AUTH_HOST_LABEL (`login.`), which
+ *   isSameCompanyRedirectCapture already excludes from the anchor pool
+ *   regardless of registrable domain.
  *
  * Neither covers a minority host that (a) sorts first in array order, (b) is
  * on a genuinely different registrable domain from the dominant host, (c) has
@@ -36,12 +37,13 @@ const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-const DOMINANT_HOST = "www.orders-fixture.example.org";
+const DOMINANT_HOST = "orders-fixture.example.org";
 // A genuinely different registrable domain from DOMINANT_HOST (not a
-// subdomain), with a hostname label that does not match AUTH_HOST_LABEL, so
-// this capture is neither excluded by the same-domain fallback path nor by
-// isAuthRedirectCapture -- isolating the sameDomainHasGraphql gap on its own.
-const MINORITY_HOST = "www.orders-fixture-alerts.example.net";
+// subdomain), with a hostname label that does not match AUTH_HOST_LABEL or
+// MARKETING_HOST_LABEL, so this capture is neither excluded by the
+// same-domain fallback path nor by isSameCompanyRedirectCapture -- isolating
+// the sameDomainHasGraphql gap on its own.
+const MINORITY_HOST = "orders-fixture-alerts.example.net";
 
 const ITEM_IDS = ["item-0", "item-1", "item-2"];
 
