@@ -8682,11 +8682,12 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     if (out.some((e) => e._el === ctrl || (e._el && e._el.contains(ctrl)))) continue;
     const valueMissing = ctrl.validity ? ctrl.validity.valueMissing : !ctrl.value;
     if (!valueMissing) continue;
-    let label = "";
+    const byFor = ctrl.id && document.querySelector ? document.querySelector('label[for="' + ctrl.id + '"]') : null;
+    let label = byFor && byFor.textContent ? byFor.textContent.trim() : "";
     let scan = ctrl;
     for (let i = 0; i < 4 && scan && !label; i++) {
-      const lbl = scan.querySelector ? scan.querySelector("label") : null;
-      if (lbl && lbl.textContent) label = lbl.textContent.trim();
+      const ownLabel = scan.closest ? scan.closest("label") : null;
+      if (ownLabel && ownLabel.textContent) label = ownLabel.textContent.trim();
       scan = scan.parentElement;
     }
     if (!label) label = ctrl.getAttribute("aria-label") || ctrl.getAttribute("data-id") || ctrl.getAttribute("name") || ctrl.getAttribute("id") || "(unlabeled)";

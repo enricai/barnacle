@@ -174,4 +174,80 @@ describe("flow-runner/probeFormValidityBeforeSubmit — native-validity fallback
       logged.some((l) => l.includes("pre-submit probe: 1 ng-invalid form control(s) detected"))
     ).toBe(true);
   });
+
+  it("does not mislabel a pristine, empty, required sibling field with an unrelated ancestor's label text", async () => {
+    const window = new Window({ url: "https://apply.example.com/application/abc-123" });
+    const document = window.document;
+    document.body.innerHTML = `
+      <form>
+        <div class="section">
+          <label for="first_name">First name</label>
+          <input type="text" id="first_name" name="first_name" required value="Jane" />
+          <div class="sub">
+            <input type="text" id="last_name" name="last_name" required />
+          </div>
+        </div>
+      </form>
+    `;
+
+    let probeResult: unknown;
+    const childTarget: FrameTarget = {
+      frame: {} as FrameTarget["frame"],
+      frameSelector: "iframe#apply_frame",
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const src = String(expr);
+        if (src.includes("MARKERS")) {
+          const fn = new Function("document", `return (${src});`) as (d: unknown) => unknown;
+          probeResult = fn(document);
+          return probeResult;
+        }
+        if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
+        if (src === "location.href") return "https://apply.example.com/application/abc-123";
+        return null;
+      }) as FrameTarget["evaluate"],
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }) as unknown as FrameTarget["locator"],
+      url: () => Promise.resolve("https://apply.example.com/application/abc-123"),
+      title: () => Promise.resolve("Apply"),
+    };
+    resolveFrameTarget.mockResolvedValue(childTarget);
+
+    await executeStepWithHealing({
+      stagehand: {} as unknown as Stagehand,
+      page: fakePage(),
+      step: "Click the Submit button",
+      optional: false,
+      upload: false,
+      submitStep: true,
+      stepIndex: 0,
+      totalSteps: () => 1,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      uploadFixture: null,
+      isFinalStep: true,
+      submitEndpointPattern: "/gq",
+      submittedStateSelectors: ["uapp-universal-submitted-page"],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      frameTarget: childTarget,
+    } as never).catch(() => undefined);
+
+    const result = probeResult as Array<{ label: string; emptyOrUnchecked: boolean }>;
+    expect(result.some((e) => e.label === "First name")).toBe(false);
+    expect(result.some((e) => e.label === "last_name" && e.emptyOrUnchecked === true)).toBe(true);
+  });
 });
