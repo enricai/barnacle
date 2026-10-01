@@ -8501,7 +8501,13 @@ export interface InvalidFormControl {
  *        - select: pick the first non-empty option.
  *      Each auto-pick is recorded so the cascade can surface a self-heal
  *      warning ("you auto-picked X; consider adding an explicit step").
+ *   3. NATIVE-VALIDITY FALLBACK — independent of the class-marker scan:
+ *      any `required` control whose native `validity.valueMissing` (or,
+ *      absent a `validity` object, an empty `.value`) is true gets flagged
+ *      even when no framework has applied an invalid-marker class yet
+ *      (e.g. a pristine, untouched required field).
  *
+
  * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
  * `data-id`, and `name`.
  */
@@ -8662,6 +8668,30 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
       }
     }
     out.push({ label, classSignature, emptyOrUnchecked, autoFilled, _el: el });
+  }
+  // Native-validity fallback: the class-marker scan above is blind to a
+  // required field that is genuinely empty but PRISTINE -- a framework
+  // that never applies ng-invalid/Mui-error/etc. until after user
+  // interaction, or one that doesn't use any of the listed conventions
+  // at all. This pass is independent of INVALID_CLASS_RX and relies
+  // solely on the native HTML5 constraint-validation API, so it catches
+  // required-and-empty controls no CSS framework has marked invalid yet.
+  const requiredEls = Array.from(document.querySelectorAll("input,select,textarea"));
+  for (const ctrl of requiredEls) {
+    if (!ctrl.required) continue;
+    if (out.some((e) => e._el === ctrl || (e._el && e._el.contains(ctrl)))) continue;
+    const valueMissing = ctrl.validity ? ctrl.validity.valueMissing : !ctrl.value;
+    if (!valueMissing) continue;
+    let label = "";
+    let scan = ctrl;
+    for (let i = 0; i < 4 && scan && !label; i++) {
+      const lbl = scan.querySelector ? scan.querySelector("label") : null;
+      if (lbl && lbl.textContent) label = lbl.textContent.trim();
+      scan = scan.parentElement;
+    }
+    if (!label) label = ctrl.getAttribute("aria-label") || ctrl.getAttribute("data-id") || ctrl.getAttribute("name") || ctrl.getAttribute("id") || "(unlabeled)";
+    label = label.replace(/\\s+/g, " ").slice(0, 80);
+    out.push({ label, classSignature: "", emptyOrUnchecked: true, autoFilled: null, _el: ctrl });
   }
   // Strip the DOM reference before serialization.
   return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked, autoFilled: e.autoFilled }));
