@@ -190,10 +190,10 @@ function writeRunDir(root: string): void {
   // join field, with both cross-domain noise hosts threaded between chunks
   // of it so no contiguous run of "real" captures exists in array order.
   let noiseCounter = 6;
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1700; i++) {
     availabilityNoise(i);
-    if (i % 11 === 0) authNoise(noiseCounter++);
-    if (i % 13 === 0) telemetryNoise(noiseCounter++);
+    if (i % 23 === 0) authNoise(noiseCounter++);
+    if (i % 29 === 0) telemetryNoise(noiseCounter++);
   }
 
   // Genuine submissions matching the declared submitEndpointPattern, one per
@@ -210,9 +210,9 @@ function writeRunDir(root: string): void {
       }),
       `confirm-${orderId}`
     );
-    availabilityNoise(400 + i);
-    if (i % 5 === 0) authNoise(noiseCounter++);
-    if (i % 7 === 0) telemetryNoise(noiseCounter++);
+    availabilityNoise(1700 + i);
+    if (i % 11 === 0) authNoise(noiseCounter++);
+    if (i % 13 === 0) telemetryNoise(noiseCounter++);
   });
 
   // Trailing noise from both hosts after the genuine submissions, proving
