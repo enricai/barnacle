@@ -8507,7 +8507,6 @@ export interface InvalidFormControl {
  *      even when no framework has applied an invalid-marker class yet
  *      (e.g. a pristine, untouched required field).
  *
-
  * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
  * `data-id`, and `name`.
  */
