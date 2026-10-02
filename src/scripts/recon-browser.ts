@@ -1052,12 +1052,17 @@ function matchByNormalizedLabel<T>(
 ): T | null {
   const named = entries.filter((entry) => entry.text.length > 0);
   const exact = named.find((entry) => entry.text === normalizedLabel);
-  const partial =
-    exact ??
-    named.find(
-      (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
-    );
-  return partial?.value ?? null;
+  if (exact) return exact.value;
+  const candidates = named.filter(
+    (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
+  );
+  const mostSpecific = candidates.reduce<{ text: string; value: T } | null>((closest, entry) => {
+    if (!closest) return entry;
+    const entryDistance = Math.abs(entry.text.length - normalizedLabel.length);
+    const closestDistance = Math.abs(closest.text.length - normalizedLabel.length);
+    return entryDistance < closestDistance ? entry : closest;
+  }, null);
+  return mostSpecific?.value ?? null;
 }
 
 /**

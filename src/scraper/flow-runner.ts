@@ -5517,9 +5517,12 @@ function parseFieldLabelTarget(step: string): FieldLabelTarget | null {
  * Name"); otherwise a substring match either direction (a `fieldLabel` of
  * "Acme Non-Employee ID" against an accessible name of "Non-Employee ID", or
  * the reverse) so minor phrasing drift between the flow's field noun and the
- * control's own label still resolves. Returns `null` — never a guess — when
- * no candidate's accessible name relates to `fieldLabel` at all, so the
- * caller can refuse to act rather than fill/click the wrong control.
+ * control's own label still resolves; when multiple candidates qualify via
+ * substring, the one whose length is closest to `fieldLabel`'s (the most
+ * specific match) wins, not whichever happened to come first. Returns
+ * `null` — never a guess — when no candidate's accessible name relates to
+ * `fieldLabel` at all, so the caller can refuse to act rather than
+ * fill/click the wrong control.
  */
 function findDeepLocatorCandidateByFieldLabel(
   candidates: readonly DeepLocatorCandidate[],
@@ -5532,10 +5535,16 @@ function findDeepLocatorCandidateByFieldLabel(
     .filter((entry) => entry.text.length > 0);
   const exact = named.find((entry) => entry.text === normalizedLabel);
   if (exact) return exact.candidate;
-  const partial = named.find(
+  const partials = named.filter(
     (entry) => entry.text.includes(normalizedLabel) || normalizedLabel.includes(entry.text)
   );
-  return partial?.candidate ?? null;
+  const mostSpecific = partials.reduce<(typeof partials)[number] | null>((closest, entry) => {
+    if (!closest) return entry;
+    const entryDistance = Math.abs(entry.text.length - normalizedLabel.length);
+    const closestDistance = Math.abs(closest.text.length - normalizedLabel.length);
+    return entryDistance < closestDistance ? entry : closest;
+  }, null);
+  return mostSpecific?.candidate ?? null;
 }
 
 /** Max settle-retry attempts for a primitive's DOM enumerate (see `pollEnumerate`). */
@@ -8492,11 +8501,21 @@ export interface InvalidFormControl {
  *        - select: pick the first non-empty option.
  *      Each auto-pick is recorded so the cascade can surface a self-heal
  *      warning ("you auto-picked X; consider adding an explicit step").
+ *   3. NATIVE-VALIDITY FALLBACK — independent of the class-marker scan:
+ *      any `required` control whose native `validity.valueMissing` (or,
+ *      absent a `validity` object, an empty `.value`) is true gets flagged
+ *      even when no framework has applied an invalid-marker class yet
+ *      (e.g. a pristine, untouched required field).
  *
  * Label resolution checks (in order) the nearest `<label>`, `aria-label`,
  * `data-id`, and `name`.
+ *
+ * Exported (mirroring {@link fieldValuesAtFailureExpr}) so the real
+ * native-validity-fallback logic can be exercised against a genuine DOM in
+ * unit tests, rather than only through a mocked `evaluate`.
  */
-const FORM_VALIDITY_PROBE_EXPR = `(() => {
+export function formValidityProbeExpr(): string {
+  return `(() => {
   const INVALID_CLASS_RX = /(${INVALID_MARKER_CLASS_SOURCE})/;
   const MARKERS = ["ng-invalid", "mat-form-field-invalid", "is-invalid", "field-invalid", "input-invalid", "Mui-error", "ng-touched", "ng-dirty"];
   function fire(el, ev) {
@@ -8654,9 +8673,35 @@ const FORM_VALIDITY_PROBE_EXPR = `(() => {
     }
     out.push({ label, classSignature, emptyOrUnchecked, autoFilled, _el: el });
   }
+  // Native-validity fallback: the class-marker scan above is blind to a
+  // required field that is genuinely empty but PRISTINE -- a framework
+  // that never applies ng-invalid/Mui-error/etc. until after user
+  // interaction, or one that doesn't use any of the listed conventions
+  // at all. This pass is independent of INVALID_CLASS_RX and relies
+  // solely on the native HTML5 constraint-validation API, so it catches
+  // required-and-empty controls no CSS framework has marked invalid yet.
+  const requiredEls = Array.from(document.querySelectorAll("input,select,textarea"));
+  for (const ctrl of requiredEls) {
+    if (!ctrl.required) continue;
+    if (out.some((e) => e._el === ctrl || (e._el && e._el.contains(ctrl)))) continue;
+    const valueMissing = ctrl.validity ? ctrl.validity.valueMissing : !ctrl.value;
+    if (!valueMissing) continue;
+    const byFor = ctrl.id && document.querySelector ? document.querySelector("label[for=\\"" + ctrl.id + "\\"]") : null;
+    let label = byFor && byFor.textContent ? byFor.textContent.trim() : "";
+    let scan = ctrl;
+    for (let i = 0; i < 4 && scan && !label; i++) {
+      const ownLabel = scan.closest ? scan.closest("label") : null;
+      if (ownLabel && ownLabel.textContent) label = ownLabel.textContent.trim();
+      scan = scan.parentElement;
+    }
+    if (!label) label = ctrl.getAttribute("aria-label") || ctrl.getAttribute("data-id") || ctrl.getAttribute("name") || ctrl.getAttribute("id") || "(unlabeled)";
+    label = label.replace(/\\s+/g, " ").slice(0, 80);
+    out.push({ label, classSignature: "", emptyOrUnchecked: true, autoFilled: null, _el: ctrl });
+  }
   // Strip the DOM reference before serialization.
   return out.slice(0, 12).map((e) => ({ label: e.label, classSignature: e.classSignature, emptyOrUnchecked: e.emptyOrUnchecked, autoFilled: e.autoFilled }));
 })()`;
+}
 
 /**
  * Runs ONLY on the cascade's final step when a submitEndpointPattern is
@@ -8736,7 +8781,7 @@ async function probeFormValidityBeforeSubmit(params: {
 }): Promise<InvalidFormControl[]> {
   const { target, stepIndex, totalSteps, logger } = params;
   try {
-    const raw = await target.evaluate(FORM_VALIDITY_PROBE_EXPR);
+    const raw = await target.evaluate(formValidityProbeExpr());
     if (!Array.isArray(raw)) return [];
     const out: InvalidFormControl[] = [];
     for (const entry of raw) {
