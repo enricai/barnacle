@@ -4072,17 +4072,30 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * In-page source for `(el) => Element | null`: the nearest ancestor of `el`,
  * within {@link MAX_SELECTION_ANCESTOR_DEPTH} levels, whose subtree contains a
  * selection-marker element (`role="combobox"`/`role="listbox"`, or a
- * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) — climbing ancestor
- * levels rather than a single `closest()` call, because a design-system
- * combobox's marker (the `role="combobox"` trigger) and its committed-value
- * control (a hidden `<input>`) are commonly SIBLINGS under a shared wrapper
- * that itself carries no role/class marker: `closest()` only searches
- * self-and-ancestors of `el`, so it can never see a marker that lives on a
- * cousin subtree. At each level, `querySelectorAll` searches the WHOLE
- * subtree (not just direct children), so the marker may be nested arbitrarily
- * deep under that ancestor. Returns the FIRST (nearest) qualifying ancestor,
- * so a same-shaped input/select outside that common ancestor is never
- * mistaken for the same control's committed-value sibling. Shared by
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) AND at most one
+ * independent WIDGET ROOT (`role="combobox"` or a
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match — a bare `role="listbox"`
+ * is a widget's PANEL, not its own root, since the ARIA combobox pattern
+ * always pairs one trigger with one owned listbox) — climbing ancestor levels
+ * rather than a single `closest()` call, because a design-system combobox's
+ * marker (the `role="combobox"` trigger) and its committed-value control (a
+ * hidden `<input>`) are commonly SIBLINGS under a shared wrapper that itself
+ * carries no role/class marker: `closest()` only searches self-and-ancestors
+ * of `el`, so it can never see a marker that lives on a cousin subtree. At
+ * each level, `querySelectorAll` searches the WHOLE subtree (not just direct
+ * children), so the marker may be nested arbitrarily deep under that
+ * ancestor. The widget-root cap is deliberate: a candidate ancestor whose
+ * subtree contains TWO OR MORE independent widget roots (e.g. two unrelated
+ * toggle-shaped rows sharing a parent) is ambiguous about which widget —
+ * and therefore which committed-value control — actually belongs to `el`, so
+ * it is skipped rather than returned; climbing continues to look for an
+ * unambiguous (single-widget) ancestor instead of exposing the whole
+ * multi-widget subtree to the caller's input/select scan, which would let an
+ * UNRELATED sibling widget's own state change masquerade as `el`'s. A single
+ * trigger + its own owned listbox panel (one widget root) still passes.
+ * Returns the FIRST (nearest) unambiguous qualifying ancestor, so a
+ * same-shaped input/select outside that common ancestor is never mistaken for
+ * the same control's committed-value sibling. Shared by
  * {@link SELECTION_STATE_MAP_EXPR}'s `isCommittedValueControl` and
  * {@link selectionSiblingCommittedValueChanged}'s container resolution so the
  * baseline capture and the read-back agree on exactly what counts as
@@ -4092,9 +4105,12 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  */
 const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
     const MARKER_SEL = '[role="combobox"],[role="listbox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const WIDGET_ROOT_SEL = '[role="combobox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
-      if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) return node;
+      if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) {
+        if (node.querySelectorAll(WIDGET_ROOT_SEL).length <= 1) return node;
+      }
       node = node.parentElement;
     }
     return null;
