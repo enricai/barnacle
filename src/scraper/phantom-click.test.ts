@@ -56,7 +56,11 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
 
   it("classifies as effective when the URL's origin or path changes", () => {
     const attempt = makeAttempt({
-      post: { networkCount: 0, url: "https://apply.acme.example/jobs/confirmation", bodyHtmlLength: 184186 },
+      post: {
+        networkCount: 0,
+        url: "https://apply.acme.example/jobs/confirmation",
+        bodyHtmlLength: 184186,
+      },
     });
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });
