@@ -86,7 +86,11 @@ import {
   sleep,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
-import { classifyPhantomClick, type PhantomClickVerdict } from "@/scraper/phantom-click";
+import {
+  classifyPhantomClick,
+  hasOriginOrPathChanged,
+  type PhantomClickVerdict,
+} from "@/scraper/phantom-click";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
@@ -5630,29 +5634,7 @@ export async function waitForTransitionBody(params: {
   return false;
 }
 
-/**
- * Reduces a URL to origin+pathname (query/hash ignored) so a captcha
- * target's post-submit `url()` can be compared to its pre-submit baseline
- * without a same-page query-string change (e.g. a step counter) registering
- * as a false advance. Unparseable URLs compare equal only to themselves.
- */
-function originAndPathOf(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return url;
-  }
-}
-
-/**
- * Credits a captchaGated advance from an observed navigation: true only
- * when origin or pathname actually changed, so a same-page query-string
- * mutation (e.g. a step counter) never counts as an advance.
- */
-export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean {
-  return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
-}
+export { hasOriginOrPathChanged } from "@/scraper/phantom-click";
 
 /**
  * Polls the captcha target's URL for an origin/path change after a

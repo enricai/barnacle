@@ -43,6 +43,26 @@ export interface PhantomClickAttempt {
   isSubmitShapedStep?: boolean;
 }
 
+function originAndPathOf(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Credits a navigation as real only when origin or pathname actually
+ * changed, so a same-page query-string mutation (e.g. a step counter) never
+ * counts as an advance. Shared by {@link classifyPhantomClick} and
+ * flow-runner's own urlChanged/retryUrlChanged checks so both agree on what
+ * counts as a genuine navigation.
+ */
+export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean {
+  return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
+}
+
 export type PhantomClickVerdict =
   /** Stagehand reported success but pre/post shows no observable effect — a no-op click. */
   | "phantom"
@@ -73,7 +93,7 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
 
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
   const bytesDelta = attempt.post.bodyHtmlLength - attempt.pre.bodyHtmlLength;
-  const urlChanged = attempt.post.url !== attempt.pre.url;
+  const urlChanged = hasOriginOrPathChanged(attempt.pre.url, attempt.post.url);
   // The resolved element's OWN committed selection state changed across the
   // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
   // swap, ARIA, native `checked`) registers here with no network, no URL, and a

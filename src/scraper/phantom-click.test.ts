@@ -54,11 +54,18 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
     expect(classifyPhantomClick(attempt)).toBe("effective");
   });
 
-  it("classifies as effective when the URL changes", () => {
+  it("classifies as effective when the URL's origin or path changes", () => {
+    const attempt = makeAttempt({
+      post: { networkCount: 0, url: "https://apply.acme.example/jobs/confirmation", bodyHtmlLength: 184186 },
+    });
+    expect(classifyPhantomClick(attempt)).toBe("effective");
+  });
+
+  it("classifies as phantom when only the URL's query string changes", () => {
     const attempt = makeAttempt({
       post: { networkCount: 0, url: `${URL}?step=2`, bodyHtmlLength: 184186 },
     });
-    expect(classifyPhantomClick(attempt)).toBe("effective");
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 
   it("classifies as effective when the DOM grows past the trivial-delta threshold", () => {
