@@ -175,6 +175,51 @@ function buildTwoIndependentStandaloneListboxes(): {
   return { window, decoyEl, listboxAOptionEl, listboxAValueInput, listboxBValueInput };
 }
 
+/**
+ * A page with a no-op decoy button, ONE genuine `role="combobox"` trigger
+ * (with its OWN owned `role="listbox"` panel via `aria-controls`), and a
+ * SECOND, wholly unrelated bare `role="listbox"` that no trigger owns — all
+ * as cousin branches under one shared `.page` wrapper. Regression fixture
+ * for the widget-root count's trigger/listbox pairing: a trigger's mere
+ * presence in scope must not make an unrelated, un-owned listbox count as
+ * that trigger's panel — the real trigger (1 root) and the un-owned listbox
+ * (1 root) are two independent widgets, not one.
+ */
+function buildTriggerPlusUnownedStandaloneListbox(): {
+  window: Window;
+  decoyEl: HappyDomElement;
+  standaloneListboxValueInput: { value: string };
+} {
+  const window = new Window({ url: "https://widgets.example.com/panel" });
+  const document = window.document;
+  document.body.innerHTML = `
+    <div class="page">
+      <div class="decoyRow">
+        <button id="decoyBtn">Dismiss</button>
+      </div>
+      <div class="toggleRow">
+        <button role="combobox" aria-expanded="false" aria-controls="togglePanel" id="toggleTrigger">Toggle</button>
+        <ul role="listbox" id="togglePanel">
+          <li role="option" id="toggleOption">Option 1</li>
+        </ul>
+        <input type="hidden" id="toggleValue" value="" />
+      </div>
+      <div class="standaloneListboxRow">
+        <ul role="listbox" id="standaloneListbox">
+          <li role="option" id="standaloneOption">Option A1</li>
+        </ul>
+        <input type="hidden" id="standaloneListboxValue" value="" />
+      </div>
+    </div>
+  `;
+  const decoyEl = document.getElementById("decoyBtn") as unknown as HappyDomElement;
+  const standaloneListboxValueInput = document.getElementById("standaloneListboxValue") as unknown as {
+    value: string;
+  };
+
+  return { window, decoyEl, standaloneListboxValueInput };
+}
+
 /** Wires the real generated expression strings (SELECTION_STATE_MAP_EXPR, verifyDomEffect's click-branch probes) against a live happy-dom document. */
 function makeTarget(window: Window): FrameTarget {
   const document = window.document;
@@ -294,6 +339,42 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
     // counted as zero widget roots, so the ambiguity guard never fired and
     // the shared `.page` ancestor was accepted as "unambiguous".
     listboxBValueInput.value = "unrelated-change";
+
+    const clickAction: Action = {
+      selector: `xpath=${absoluteXPathFor(decoyEl)}`,
+      description: "Dismiss decoy control",
+      method: "click",
+    } as Action;
+
+    const domVerified = await verifyDomEffect(target, clickAction, pre.selectionStateByXpath);
+    expect(domVerified).toBe(false);
+
+    const post = await snapshotPage(target, signalCounter, undefined, false);
+    const verdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre: { networkCount: pre.networkCount, url: pre.url, bodyHtmlLength: pre.bodyHtmlLength },
+      post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
+      elementStateChanged: domVerified,
+      isSubmitShapedStep: false,
+    });
+    expect(verdict).toBe("phantom");
+  });
+
+  it("classifies 'phantom' for a no-op decoy click, NOT crediting an UNRELATED standalone listbox's state change via a trigger that does not own it (real combobox trigger + un-owned sibling listbox sharing an ancestor)", async () => {
+    const { window, decoyEl, standaloneListboxValueInput } = buildTriggerPlusUnownedStandaloneListbox();
+    const target = makeTarget(window);
+    const signalCounter = { n: 0 };
+
+    const pre = await snapshotPage(target, signalCounter, undefined, true);
+
+    // The decoy's own click does nothing — but, concurrently and for a
+    // reason entirely unrelated to the click, the standalone listbox's own
+    // hidden committed-value control changes. Before the fix, the mere
+    // presence of ANY combobox-like trigger in the shared ancestor made the
+    // widget-root count collapse to just the trigger count (1), silently
+    // treating the un-owned standalone listbox as if it were that trigger's
+    // own panel, so the ambiguity guard never fired.
+    standaloneListboxValueInput.value = "unrelated-change";
 
     const clickAction: Action = {
       selector: `xpath=${absoluteXPathFor(decoyEl)}`,

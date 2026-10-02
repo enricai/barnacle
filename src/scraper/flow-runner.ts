@@ -4073,13 +4073,14 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * within {@link MAX_SELECTION_ANCESTOR_DEPTH} levels, whose subtree contains a
  * selection-marker element (`role="combobox"`/`role="listbox"`, or a
  * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) AND at most one
- * independent WIDGET ROOT (`role="combobox"` or a
- * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match — a `role="listbox"` is
- * that widget's PANEL, not its own root, ONLY when the candidate subtree also
- * contains a combobox-like trigger, since the ARIA combobox pattern always
- * pairs one trigger with one owned listbox; with NO trigger anywhere in the
- * subtree, each bare `role="listbox"` is itself a standalone widget root — a
- * multi-select listbox used on its own, with no opener — so two such
+ * independent WIDGET ROOT (each `role="combobox"`/marker trigger is its own
+ * root; a `role="listbox"` is a root TOO unless some trigger in the subtree
+ * actually declares ownership of it via `aria-owns`/`aria-controls` — a
+ * trigger merely co-existing in the same subtree does NOT make every listbox
+ * its panel, since a real trigger plus an unrelated, un-owned bare listbox
+ * (its own standalone multi-select, no opener) are still two independent
+ * widgets, not one; with NO trigger anywhere in the subtree, each bare
+ * `role="listbox"` is likewise its own standalone widget root, so two such
  * triggerless listboxes sharing an ancestor are still counted as two
  * independent roots rather than silently collapsing to zero) — climbing
  * ancestor levels rather than a single `closest()` call, because a design-system combobox's
@@ -4111,16 +4112,26 @@ function elementSelectionFingerprintExpr(xpath: string): string {
 const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
     const MARKER_SEL = '[role="combobox"],[role="listbox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
     const WIDGET_ROOT_SEL = '[role="combobox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const isOwnedListbox = (listbox, triggers) => {
+      if (!listbox.id) return false;
+      return triggers.some((trigger) => {
+        const ownsId = trigger.getAttribute("aria-owns") || trigger.getAttribute("aria-controls");
+        return ownsId === listbox.id;
+      });
+    };
     const countWidgetRoots = (scope) => {
-      // A role=listbox is a combobox's owned PANEL only when the scope also
-      // contains a combobox-like trigger (the ARIA combobox pattern pairs one
-      // trigger with one owned listbox). With no trigger anywhere in scope,
-      // each bare listbox is itself a standalone widget root (e.g. an
-      // always-open multi-select with no opener), so two such listboxes
-      // sharing an ancestor still count as two roots instead of zero.
-      const triggerRoots = scope.querySelectorAll(WIDGET_ROOT_SEL).length;
-      if (triggerRoots > 0) return triggerRoots;
-      return scope.querySelectorAll('[role="listbox"]').length;
+      // Each combobox-like trigger is its own widget root. A role=listbox is
+      // that widget's owned PANEL only when SOME trigger in scope actually
+      // declares ownership of it via aria-owns/aria-controls — a trigger
+      // merely co-existing in the same scope does not make every listbox its
+      // panel, since a trigger plus an unrelated, un-owned bare listbox (its
+      // own standalone multi-select, no opener) are still two independent
+      // widgets. Any listbox left un-owned by every trigger — including when
+      // there is no trigger in scope at all — counts as its own widget root.
+      const triggers = Array.from(scope.querySelectorAll(WIDGET_ROOT_SEL));
+      const listboxes = Array.from(scope.querySelectorAll('[role="listbox"]'));
+      const unownedListboxes = listboxes.filter((lb) => !isOwnedListbox(lb, triggers));
+      return triggers.length + unownedListboxes.length;
     };
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
