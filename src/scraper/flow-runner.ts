@@ -12484,7 +12484,7 @@ export async function executeStepWithHealing(params: {
             page
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
-          const retryUrlChanged = retryPost.url !== pre.url;
+          const retryUrlChanged = hasOriginOrPathChanged(pre.url, retryPost.url);
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
