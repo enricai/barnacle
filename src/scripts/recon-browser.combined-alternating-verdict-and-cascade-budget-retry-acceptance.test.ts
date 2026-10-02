@@ -300,13 +300,15 @@ describe("recon-browser/main — alternating phantom/effective verdict resolves 
             elementStateChanged: false,
             isSubmitShapedStep: true,
           });
-        // Session 2's final bridge: a real URL change — unambiguously
-        // "effective" regardless of the submit-shape veto, resolving the run.
+        // Session 2's final bridge: a real URL change — a genuine pathname
+        // change, not a same-page query-string mutation (hasOriginOrPathChanged
+        // deliberately excludes the latter) — unambiguously "effective"
+        // regardless of the submit-shape veto, resolving the run.
         case BRIDGE_URL_CHANGE:
           return resolveViaRealVerdict(args.step, {
             actResultSuccess: true,
             pre: baseSnapshot,
-            post: { ...baseSnapshot, url: `${BASE_URL}?confirmed=1` },
+            post: { ...baseSnapshot, url: `${BASE_URL}/confirmed` },
             elementStateChanged: false,
             isSubmitShapedStep: false,
           });
