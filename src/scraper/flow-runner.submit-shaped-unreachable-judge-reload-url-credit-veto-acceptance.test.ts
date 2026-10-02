@@ -6,26 +6,35 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
- * True-positive counterpart to flow-runner.submit-shaped-weak-signal-veto-
- * acceptance.test.ts (bugfix-002's widened judge gate): an UNFLAGGED,
- * non-final click step whose resolved control is an objectively
- * submit-shaped affordance (a `<button type="submit">` inside a `<form>`)
- * still gets credited when the click genuinely lands the flow on a success
- * destination — a URL matching `successUrlFragments`, a title matching
- * `successPageTitleHints`, and a DOM node matching `submittedStateSelectors`
- * all present. Pins that widening the judge trigger to re-litigate
- * attribute-detected submit-shaped clicks (b2a26ec) did not turn into a
- * blanket false-negative for the genuine-success case: with `anthropic:
- * null` the judge is unavailable, so credit falls back to the deterministic
- * submitted-state DOM-selector probe, exactly the path a real judge would
- * corroborate with the URL/title signals too.
+ * Pins the general form of the url-credit chokepoint fix (f0acfc8,
+ * "route urlChanged through hasOriginOrPathChanged"): the raw
+ * `post.url !== pre.url` comparison was wrong for EVERY consumer of
+ * `urlChanged`, not only the reported non-submit-shaped step. The defect
+ * report's own rationale calls this out explicitly: the comparison "is
+ * equally wrong for submit-shaped steps whose submit-judge never runs, e.g.
+ * when requireSubmitEndpoint is false."
+ *
+ * `hasSubmitTransitionSignal` (flow-runner.ts) only decides whether the
+ * Haiku `verifySubmitWithLLM` judge re-litigates an already-`verified`
+ * step; it does not itself correct the weak `urlChanged` value feeding
+ * `verified` / `record.verifiedBy`. So a `submitStep: true` step whose
+ * resolved element is NOT attribute-detected as submit-shaped
+ * (`resolvedElementIsSubmitShaped: false`) and whose flow configures no
+ * `submitEndpointPattern` (`requireSubmitEndpoint: false`) never reaches
+ * the judge gate at all — if the pre-fix comparison were still in place, a
+ * cosmetic query-string-only reload would ride straight through as
+ * `verified: true, verifiedBy: "url"` with nothing downstream ever
+ * re-checking it.
+ *
+ * Mirrors flow-runner.submit-shaped-weak-signal-veto-acceptance.test.ts's
+ * offline happy-dom harness: Stagehand's own `act()` never touches the DOM,
+ * so only the n+16 fallback's own `el.click()` can produce a real page
+ * effect, forcing the cascade through the exact `urlChanged` computation
+ * under test.
  */
 
 const BASE_URL = "https://apply.example.com/step/1";
-const SUCCESS_URL = "https://apply.example.com/step/1/success";
-const SUBMIT_STEP_INSTRUCTION = "Click the button to continue";
-const HARMLESS_SECOND_STEP = "Click the 'Details' link";
-const SUBMITTED_STATE_SELECTOR = ".app-submitted-page";
+const SUBMIT_STEP_INSTRUCTION = "Click the 'Submit' button";
 
 function makeLogger(): { logger: Logger; info: string[]; warn: string[] } {
   const info: string[] = [];
@@ -80,11 +89,16 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
 }
 
 /**
- * Builds the offline fixture: a two-step flow whose first step's trusted
- * click resolves onto a `<button type="submit">` and whose click handler
- * navigates the (mutable) page URL to a success fragment, retitles the
- * page with a success hint, and renders a submitted-state DOM marker — the
- * genuine, correctly-resolved counterpart to the weak-signal veto fixture.
+ * Builds the offline fixture: a single `submitStep: true` step whose
+ * resolved control is a plain, non-submit-shaped `<div role="button">`
+ * (never a `<button type="submit">` or `<input type="submit">`, so
+ * `resolvedClickTargetIsSubmitShaped` reads false), and whose real
+ * `el.click()` handler mutates ONLY the tracked page URL by appending a
+ * cosmetic query param — no DOM content changes, so no other signal
+ * (view-swap, form-value, dom-selection) can accidentally credit the step.
+ * `page.url()` reads the SAME mutable `state.url` both pre- and post-click,
+ * so the pre/post pair exercises the real `hasOriginOrPathChanged` read
+ * path rather than a canned pair of literals.
  */
 function buildFixture(): {
   page: Page;
@@ -98,42 +112,25 @@ function buildFixture(): {
   const document = window.document;
   document.body.innerHTML = `
     <div class="wizardFooter">
-      <form id="theForm">
-        <button id="theControl" type="submit">Continue</button>
-      </form>
-      <a id="detailsLink" href="#details">Details</a>
+      <div id="theControl" role="button" tabindex="0">Submit</div>
     </div>
   `;
 
   const controlEl = document.getElementById("theControl") as unknown as HappyDomElement;
-  const detailsLinkEl = document.getElementById("detailsLink") as unknown as HappyDomElement;
-  if (!controlEl || !detailsLinkEl) throw new Error("fixture setup failed");
+  if (!controlEl) throw new Error("fixture setup failed");
 
   const controlXPath = absoluteXPathFor(controlEl);
-  const detailsLinkXPath = absoluteXPathFor(detailsLinkEl);
 
-  const state = { url: BASE_URL, title: "Apply — Step 1", clicks: 0 };
+  const state = { url: BASE_URL };
 
   (
     controlEl as unknown as {
       addEventListener: (type: string, cb: (ev: unknown) => void) => void;
     }
   ).addEventListener("click", () => {
-    // Genuine success destination: URL transitions to a fragment matching
-    // successUrlFragments, the title matches successPageTitleHints, AND a
-    // submitted-state DOM marker renders — the correctly-resolved-fallback
-    // counterpart to the weak-signal veto fixture's byte-positive reset.
-    // The act() mock (below) resolves BOTH flow steps onto this same
-    // control (mirroring the shared fixture's sibling tests), so the click
-    // count is folded into the URL's path (not a hash fragment, which
-    // hasOriginOrPathChanged ignores) to keep producing a fresh urlChanged
-    // signal on the harmless second step's re-click too.
-    state.clicks += 1;
-    state.url = `${SUCCESS_URL}/${state.clicks}`;
-    state.title = "Apply — Submitted";
-    const marker = document.createElement("div");
-    marker.setAttribute("class", "app-submitted-page");
-    document.body.appendChild(marker as unknown as HappyDomElement);
+    // Cosmetic reload: same origin, same path, only the query string moves —
+    // the exact shape hasOriginOrPathChanged must NOT treat as a navigation.
+    state.url = `${BASE_URL}?reloaded=1`;
   });
 
   const documentElement = document.documentElement as unknown as HappyDomElement;
@@ -157,7 +154,7 @@ function buildFixture(): {
       return fn(document, win.XPathResult);
     },
     url: () => state.url,
-    title: async () => state.title,
+    title: async () => "Apply — Step 1",
     locator: () => ({
       first: () => ({
         click: async () => {
@@ -174,9 +171,10 @@ function buildFixture(): {
   } as unknown as Page;
 
   const stagehand: Stagehand = {
-    // Stagehand's own act() never touches the DOM — the trusted click
-    // delivery below (`page.locator(...).first().click()`) fires the real
-    // handler, matching every other offline acceptance test in this suite.
+    // Stagehand's own act() never touches the DOM, so only n+16's own click
+    // delivery (page.locator(...).first().click() above) can produce a real
+    // page effect, forcing the cascade through the exact urlChanged
+    // computation under test.
     act: vi.fn().mockImplementation(async () => ({
       success: true,
       message: "clicked",
@@ -191,47 +189,39 @@ function buildFixture(): {
           : [{ selector: "xpath=//probe-presence", description: "probe-presence" }]
       ),
   } as unknown as Stagehand;
-  void detailsLinkXPath;
 
   const steps: HealingFlowStep[] = [
-    { instruction: SUBMIT_STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
-    { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
+    { instruction: SUBMIT_STEP_INSTRUCTION, optional: false, upload: false, submitStep: true },
   ];
 
   const { logger, info, warn } = makeLogger();
   return { page, stagehand, steps, logger, info, warn };
 }
 
-describe("flow-runner submit-shaped step — correctly-resolved click to a genuine success destination still credits", () => {
-  it("credits an UNFLAGGED, non-final click onto a correctly-resolved submit-shaped control whose destination matches success URL/title/DOM signals", async () => {
+describe("flow-runner submit-shaped step with unreachable submit-judge — bare URL reload credit veto", () => {
+  it("does NOT credit a submitStep:true step as verified via url from a cosmetic query-string-only reload, when the resolved control is not submit-shaped and no submitEndpointPattern leaves requireSubmitEndpoint false (judge never engages)", async () => {
     const { page, stagehand, steps, logger, info } = buildFixture();
 
-    const result = await runHealingFlow({
-      stagehand,
-      page,
-      steps,
-      logger,
-      anthropic: null,
-      rephraseModel: null,
-      uploadFixture: null,
-      submittedStateSelectors: [SUBMITTED_STATE_SELECTOR],
-      successUrlFragments: ["/success"],
-      successPageTitleHints: ["Submitted"],
-    });
+    await expect(
+      runHealingFlow({
+        stagehand,
+        page,
+        steps,
+        logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+        // No submitEndpointPattern configured: requireSubmitEndpoint stays
+        // false, so the Haiku submit-judge re-litigation never engages —
+        // hasSubmitTransitionSignal's gate is unreachable for this step.
+        submitEndpointPattern: null,
+      })
+    ).rejects.toBeTruthy();
 
-    // The widened judge gate (bugfix-002) re-litigates this step because
-    // the resolved control is submit-shaped, but with `anthropic: null`
-    // the judge is unavailable and credit falls back to the deterministic
-    // submitted-state DOM probe — the true-positive path must still credit
-    // the step and let the flow reach its final (harmless) step.
-    expect(result.lastStepIndex).toBe(1);
-    expect(
-      info.some((line) =>
-        line.includes(
-          `submit verified via submitted-state DOM selector '${SUBMITTED_STATE_SELECTOR}'`
-        )
-      )
-    ).toBe(true);
-    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+    // Must never have been credited as verified via the stale raw url
+    // comparison — not on the first attempt, and not via a "url" verdict
+    // logged on any later attempt either.
+    expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(false);
+    expect(info.some((line) => line.includes("verifiedBy=url"))).toBe(false);
   });
 });

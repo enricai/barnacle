@@ -117,7 +117,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
           actions: [{ selector: "input#f", description: "field", method: "fill" }],
         };
       }
-      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      urls.current = `https://careers.example.org/jobs/123/apply/step-${stepCount}`;
       return {
         success: true,
         message: "acted",
@@ -163,7 +163,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
     let stepCount = 0;
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      urls.current = `https://careers.example.org/jobs/123/apply/step-${stepCount}`;
       return {
         success: true,
         message: "acted",
@@ -237,7 +237,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
     ]);
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      urls.current = `https://careers.example.org/jobs/123/apply/step-${stepCount}`;
       return {
         success: true,
         message: "acted",
@@ -307,7 +307,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
     ]);
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      urls.current = `https://careers.example.org/jobs/123/apply?step=${stepCount}`;
+      urls.current = `https://careers.example.org/jobs/123/apply/step-${stepCount}`;
       return {
         success: true,
         message: "acted",

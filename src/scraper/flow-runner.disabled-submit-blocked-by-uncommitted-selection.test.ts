@@ -206,7 +206,7 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
       act: vi.fn().mockImplementation(async (input: unknown) => {
         const description = describeActInput(input);
         if (description.includes("Full Name")) {
-          state.url = `${BASE_URL}#name-filled`;
+          state.url = `${BASE_URL}/name-filled`;
           return {
             success: true,
             message: "filled",
@@ -255,7 +255,7 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
         }
         if (description.includes("Upload Documents")) {
           state.uploadDocsStepReached = true;
-          state.url = `${BASE_URL}#documents-uploaded`;
+          state.url = `${BASE_URL}/documents-uploaded`;
           return {
             success: true,
             message: "clicked",
@@ -313,7 +313,7 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
     // The 'Full Name' fill ran before the sequence's blocked step, proving
     // the failure is attributable to 'Continue', not an earlier setup
     // failure.
-    expect(state.url).toBe(`${BASE_URL}#name-filled`);
+    expect(state.url).toBe(`${BASE_URL}/name-filled`);
 
     // The plan option WAS clicked and its real commit handler fired — the
     // hidden committed-value control changed, and the visible label
@@ -330,6 +330,6 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
     // again after the option pick.
     expect(state.continueClickCount).toBeGreaterThan(0);
     expect(state.uploadDocsStepReached).toBe(false);
-    expect(state.url).toBe(`${BASE_URL}#name-filled`);
+    expect(state.url).toBe(`${BASE_URL}/name-filled`);
   });
 });

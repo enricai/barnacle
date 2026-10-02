@@ -124,7 +124,7 @@ function makeTargetSiteStagehand(state: TargetSiteSequenceState): Stagehand {
     act: vi.fn().mockImplementation(async (input: unknown) => {
       const description = describeActInput(input);
       if (description.includes("Email Address")) {
-        state.url = `${BASE_URL}#email-filled`;
+        state.url = `${BASE_URL}/email-filled`;
         return {
           success: true,
           message: "filled",
@@ -140,7 +140,7 @@ function makeTargetSiteStagehand(state: TargetSiteSequenceState): Stagehand {
         };
       }
       if (description.includes("'Password'")) {
-        state.url = `${BASE_URL}#password-filled`;
+        state.url = `${BASE_URL}/password-filled`;
         return {
           success: true,
           message: "filled",
@@ -183,7 +183,7 @@ function makeTargetSiteStagehand(state: TargetSiteSequenceState): Stagehand {
       }
       if (description.includes("Select Files")) {
         state.uploadResumeStepReached = true;
-        state.url = `${BASE_URL}#resume-uploaded`;
+        state.url = `${BASE_URL}/resume-uploaded`;
         return {
           success: true,
           message: "clicked",
@@ -455,7 +455,7 @@ describe("flow-runner blocked Create-Account acceptance regression (bugfix-001, 
     // no URL change, and the step-progress indicator is byte-identical
     // before and after every blocked attempt — the report's literal "step 1
     // of 8 unchanged" evidence.
-    expect(state.url).toBe(`${BASE_URL}#password-filled`);
+    expect(state.url).toBe(`${BASE_URL}/password-filled`);
     expect(state.stepIndicatorText).toBe(STEP_INDICATOR_TEXT);
 
     // The blocked submit did reveal inline validation errors (the exact

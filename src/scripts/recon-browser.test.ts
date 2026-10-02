@@ -6017,7 +6017,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
-      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      getUrl: () => `${BASE_URL}/step-${stepsCompleted}`,
       bodyHtmlLength: 184186,
       onDeepClick: () => {
         stepsCompleted += 1;
@@ -6078,7 +6078,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
-      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      getUrl: () => `${BASE_URL}/step-${stepsCompleted}`,
       bodyHtmlLength: 184186,
       deepIndexClicked: -1,
     });
@@ -6152,7 +6152,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
-      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      getUrl: () => `${BASE_URL}/step-${stepsCompleted}`,
       bodyHtmlLength: 184186,
       onDeepClick: () => {
         stepsCompleted += 1;
@@ -6208,7 +6208,7 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     const BASE_URL = "https://apply.acme.example/jobs/1/apply-portal/apply";
     let stepsCompleted = 0;
     const page = fakePage({
-      getUrl: () => `${BASE_URL}?step=${stepsCompleted}`,
+      getUrl: () => `${BASE_URL}/step-${stepsCompleted}`,
       bodyHtmlLength: 184186,
     });
     const stagehandAct = vi.fn().mockImplementation(async () => {

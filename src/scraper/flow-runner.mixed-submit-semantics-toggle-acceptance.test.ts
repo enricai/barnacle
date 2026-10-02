@@ -167,7 +167,7 @@ function makeMixedFlowStagehand(
     act: vi.fn().mockImplementation(async (input: unknown) => {
       if (typeof input === "string" && input === SUBMIT_STEP) {
         state.submitClicked = true;
-        state.url = `${BASE_URL}#preferences-saved`;
+        state.url = `${BASE_URL}/preferences-saved`;
         return {
           success: true,
           message: "clicked",
