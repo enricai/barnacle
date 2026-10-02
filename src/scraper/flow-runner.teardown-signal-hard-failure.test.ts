@@ -100,7 +100,7 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
         watchLogLine(TEARDOWN_LOG_LINE);
         return new Promise(() => {});
       }
-      urls.current = `https://portal.example.org/records/9/details?step=${stepCount}`;
+      urls.current = `https://portal.example.org/records/9/details/step-${stepCount}`;
       return {
         success: true,
         message: "acted",
@@ -138,7 +138,7 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
     ]);
     guardedAct.mockImplementation(async () => {
       stepCount += 1;
-      urls.current = `https://portal.example.org/records/9/details?step=${stepCount}`;
+      urls.current = `https://portal.example.org/records/9/details/step-${stepCount}`;
       return {
         success: true,
         message: "acted",

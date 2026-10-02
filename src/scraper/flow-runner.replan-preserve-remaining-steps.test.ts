@@ -51,7 +51,7 @@ const CHILD_SRC = `${CHILD_ORIGIN}/application/abc-123/basic-info`;
 /** The cascade's actual hop (`flow-runner.ts` scopes the observe-act fallback to `INTERACTIVE_CANDIDATE_SELECTOR`, not `"*"`) — must match so the fake's registered elements resolve at the same selector the cascade clicks through. */
 const HOP_SELECTOR = `${IFRAME_SELECTOR} >> ${INTERACTIVE_CANDIDATE_SELECTOR}`;
 const ENTRY_OPEN_URL = `${CHILD_ORIGIN}/application/abc-123/work-history#entry-open`;
-const ENTRY_CURRENT_TOGGLED_URL = `${CHILD_ORIGIN}/application/abc-123/work-history#entry-current`;
+const ENTRY_CURRENT_TOGGLED_URL = `${CHILD_ORIGIN}/application/abc-123/work-history/entry-current`;
 const ENTRY_SAVED_URL = `${CHILD_ORIGIN}/application/abc-123/work-history#entry-saved`;
 const EDUCATION_HISTORY_URL = `${CHILD_ORIGIN}/application/abc-123/education-history`;
 const GQ_URL = `${CHILD_ORIGIN}/application/abc-123/gq`;
