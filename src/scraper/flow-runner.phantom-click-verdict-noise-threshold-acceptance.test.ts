@@ -126,6 +126,55 @@ function buildTwoIndependentToggles(): {
   return { window, decoyEl, toggleATriggerEl, toggleAValueInput, toggleBValueInput };
 }
 
+/**
+ * A page with a no-op decoy button and TWO INDEPENDENT STANDALONE
+ * `role="listbox"` widgets (no owning `role="combobox"` trigger for
+ * either — e.g. two unrelated always-open multi-select listboxes), all three
+ * as cousin branches under one shared `.page` wrapper. Regression fixture for
+ * the ambiguity guard's widget-root count: a bare, unowned `role="listbox"`
+ * must itself count as an independent widget root, not silently collapse to
+ * zero alongside a second unowned listbox sharing the same ancestor.
+ */
+function buildTwoIndependentStandaloneListboxes(): {
+  window: Window;
+  decoyEl: HappyDomElement;
+  listboxAOptionEl: HappyDomElement;
+  listboxAValueInput: { value: string };
+  listboxBValueInput: { value: string };
+} {
+  const window = new Window({ url: "https://widgets.example.com/panel" });
+  const document = window.document;
+  document.body.innerHTML = `
+    <div class="page">
+      <div class="decoyRow">
+        <button id="decoyBtn">Dismiss</button>
+      </div>
+      <div class="listboxRowA">
+        <ul role="listbox" id="listboxA">
+          <li role="option" id="listboxAOption">Option A1</li>
+        </ul>
+        <input type="hidden" id="listboxAValue" value="" />
+      </div>
+      <div class="listboxRowB">
+        <ul role="listbox" id="listboxB">
+          <li role="option" id="listboxBOption">Option B1</li>
+        </ul>
+        <input type="hidden" id="listboxBValue" value="" />
+      </div>
+    </div>
+  `;
+  const decoyEl = document.getElementById("decoyBtn") as unknown as HappyDomElement;
+  const listboxAOptionEl = document.getElementById("listboxAOption") as unknown as HappyDomElement;
+  const listboxAValueInput = document.getElementById("listboxAValue") as unknown as {
+    value: string;
+  };
+  const listboxBValueInput = document.getElementById("listboxBValue") as unknown as {
+    value: string;
+  };
+
+  return { window, decoyEl, listboxAOptionEl, listboxAValueInput, listboxBValueInput };
+}
+
 /** Wires the real generated expression strings (SELECTION_STATE_MAP_EXPR, verifyDomEffect's click-branch probes) against a live happy-dom document. */
 function makeTarget(window: Window): FrameTarget {
   const document = window.document;
@@ -229,5 +278,40 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
       isSubmitShapedStep: false,
     });
     expect(verdict).toBe("effective");
+  });
+
+  it("classifies 'phantom' for a no-op decoy click, NOT crediting an UNRELATED standalone listbox's own state change (two bare role=listbox widgets sharing an ancestor, no owning combobox for either)", async () => {
+    const { window, decoyEl, listboxBValueInput } = buildTwoIndependentStandaloneListboxes();
+    const target = makeTarget(window);
+    const signalCounter = { n: 0 };
+
+    const pre = await snapshotPage(target, signalCounter, undefined, true);
+
+    // The decoy's own click does nothing — but, concurrently and for a
+    // reason entirely unrelated to the click, listbox B's own hidden
+    // committed-value control changes. Before the fix, two bare
+    // `role="listbox"` elements (neither owned by a `role="combobox"`) both
+    // counted as zero widget roots, so the ambiguity guard never fired and
+    // the shared `.page` ancestor was accepted as "unambiguous".
+    listboxBValueInput.value = "unrelated-change";
+
+    const clickAction: Action = {
+      selector: `xpath=${absoluteXPathFor(decoyEl)}`,
+      description: "Dismiss decoy control",
+      method: "click",
+    } as Action;
+
+    const domVerified = await verifyDomEffect(target, clickAction, pre.selectionStateByXpath);
+    expect(domVerified).toBe(false);
+
+    const post = await snapshotPage(target, signalCounter, undefined, false);
+    const verdict = classifyPhantomClick({
+      actResultSuccess: true,
+      pre: { networkCount: pre.networkCount, url: pre.url, bodyHtmlLength: pre.bodyHtmlLength },
+      post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
+      elementStateChanged: domVerified,
+      isSubmitShapedStep: false,
+    });
+    expect(verdict).toBe("phantom");
   });
 });

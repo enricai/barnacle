@@ -4074,9 +4074,14 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * selection-marker element (`role="combobox"`/`role="listbox"`, or a
  * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) AND at most one
  * independent WIDGET ROOT (`role="combobox"` or a
- * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match — a bare `role="listbox"`
- * is a widget's PANEL, not its own root, since the ARIA combobox pattern
- * always pairs one trigger with one owned listbox) — climbing ancestor levels
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match — a `role="listbox"`
+ * OWNED by a `role="combobox"` via `aria-controls`/`aria-owns` is that
+ * widget's PANEL, not its own root, since the ARIA combobox pattern always
+ * pairs one trigger with one owned listbox; a `role="listbox"` with NO owning
+ * combobox in the same subtree is itself a standalone widget root — a
+ * multi-select listbox used on its own, with no trigger — so two such
+ * UNOWNED listboxes sharing an ancestor are still counted as two independent
+ * roots rather than silently collapsing to zero) — climbing ancestor levels
  * rather than a single `closest()` call, because a design-system combobox's
  * marker (the `role="combobox"` trigger) and its committed-value control (a
  * hidden `<input>`) are commonly SIBLINGS under a shared wrapper that itself
@@ -4106,10 +4111,22 @@ function elementSelectionFingerprintExpr(xpath: string): string {
 const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
     const MARKER_SEL = '[role="combobox"],[role="listbox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
     const WIDGET_ROOT_SEL = '[role="combobox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const countWidgetRoots = (scope) => {
+      const ownedListboxIds = new Set();
+      for (const opener of scope.querySelectorAll('[role="combobox"]')) {
+        const owned = opener.getAttribute("aria-controls") || opener.getAttribute("aria-owns") || "";
+        for (const id of owned.split(/\\s+/)) if (id) ownedListboxIds.add(id);
+      }
+      let standaloneListboxes = 0;
+      for (const lb of scope.querySelectorAll('[role="listbox"]')) {
+        if (!ownedListboxIds.has(lb.getAttribute("id") || "")) standaloneListboxes++;
+      }
+      return scope.querySelectorAll(WIDGET_ROOT_SEL).length + standaloneListboxes;
+    };
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) {
-        if (node.querySelectorAll(WIDGET_ROOT_SEL).length <= 1) return node;
+        if (countWidgetRoots(node) <= 1) return node;
       }
       node = node.parentElement;
     }
