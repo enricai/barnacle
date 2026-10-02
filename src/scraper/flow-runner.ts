@@ -11825,7 +11825,7 @@ export async function executeStepWithHealing(params: {
     }
 
     const networkFired = post.networkCount > pre.networkCount;
-    const urlChanged = post.url !== pre.url;
+    const urlChanged = hasOriginOrPathChanged(pre.url, post.url);
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     const isClick = resolvedAction !== null && resolvedAction.method === "click";
