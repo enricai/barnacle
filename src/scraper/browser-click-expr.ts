@@ -202,3 +202,131 @@ export function clickActivationExpr(elVar: string): string {
     else { ${elVar}.dispatchEvent(__mouse("click", 0)); }
   }`;
 }
+
+/**
+ * Recursive open-shadow-root walker: collects every element reachable from
+ * `root`, descending into each open `shadowRoot` encountered. Composed as a
+ * browser-context expression string (not runtime code) so it can be
+ * interpolated into an `evaluate`/`evaluateHandle` body. Shared by
+ * `submit-control.ts`'s submit-candidate ranking and
+ * {@link RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR} below so the one
+ * shadow-piercing walk never drifts into two copies.
+ */
+export const DEEP_ELEMENTS_EXPR = `((root) => {
+  const out = [];
+  const walk = (node) => {
+    const kids = node.querySelectorAll ? Array.from(node.querySelectorAll("*")) : [];
+    for (const el of kids) {
+      out.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(root);
+  return out;
+})`;
+
+/**
+ * Browser-context `(host) => Element | null` expression that resolves the
+ * real interactive control living inside `host`'s own (open) shadow root.
+ *
+ * `document.evaluate` (the xpath engine a resolved `xpath=` selector is
+ * delivered through) cannot cross a shadow boundary: on a custom-element
+ * host whose real activation target is an interior shadow-DOM descendant,
+ * the xpath resolves to the host itself, so a click dispatched there lands
+ * on the host's own bounding box and never reaches the descendant's
+ * handler. This walks `host.shadowRoot` (via {@link DEEP_ELEMENTS_EXPR})
+ * for the first VISIBLE, ENABLED element that is itself clickable — a
+ * `<button>`, an `<a>`, a `[role="button"]`, or any other non-decorative
+ * element exposing a native `.click()` — and returns it. Returns `null`
+ * when `host` has no shadow root, or no interactive descendant qualifies,
+ * so the caller falls back unchanged to clicking `host` itself.
+ */
+export const RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR = `((host) => {
+  if (!host || !host.shadowRoot) return null;
+  const isVisible = (el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden";
+  };
+  const isDisabled = (el) =>
+    el.disabled === true || el.getAttribute("aria-disabled") === "true";
+  const isInteractive = (el) => {
+    const tag = (el.tagName || "").toLowerCase();
+    const role = (el.getAttribute("role") || "").toLowerCase();
+    if (tag === "button" || tag === "a" || role === "button") return true;
+    return (
+      typeof el.click === "function" && role !== "presentation" && role !== "none"
+    );
+  };
+  const deepElements = ${DEEP_ELEMENTS_EXPR}(host.shadowRoot);
+  for (const el of deepElements) {
+    if (isInteractive(el) && isVisible(el) && !isDisabled(el)) return el;
+  }
+  return null;
+})`;
+
+/**
+ * Result shape `buildMarkShadowInteractiveDescendantExpr`'s `page.evaluate`
+ * call resolves to.
+ */
+export interface MarkShadowInteractiveDescendantResult {
+  found: boolean;
+}
+
+/**
+ * Builds a self-contained `page.evaluate` expression: resolves `xpathBody`
+ * via `document.evaluate` (the same light-DOM resolution a trusted-click
+ * delivers through), then — via {@link RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR}
+ * — looks inside that host's own shadow root for the real interactive
+ * descendant, stamping it with a throwaway `markerAttr="markerValue"`
+ * attribute so the caller can locate it through a plain CSS attribute
+ * selector afterward. A CSS selector (unlike xpath) pierces an open shadow
+ * root — Stagehand's own `Locator` resolves a CSS selector via a querySelector
+ * pass first, falling back to a shadow-piercing walk when that comes up
+ * empty — so stamping the descendant and re-locating it via CSS is what lets
+ * the caller deliver a genuinely trusted (CDP-level) click at the real
+ * target instead of the host. Resolves `{ found: false }` (never throws)
+ * when the xpath doesn't resolve or the host has no qualifying shadow
+ * descendant, so the caller falls back to clicking the host via the
+ * original xpath locator.
+ */
+export function buildMarkShadowInteractiveDescendantExpr(
+  xpathBody: string,
+  markerAttr: string,
+  markerValue: string
+): string {
+  return `(() => {
+    const r = document.evaluate(${JSON.stringify(xpathBody)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const host = r.singleNodeValue;
+    if (!host) return { found: false };
+    const resolveShadowInteractiveDescendant = ${RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR};
+    const descendant = resolveShadowInteractiveDescendant(host);
+    if (!descendant) return { found: false };
+    descendant.setAttribute(${JSON.stringify(markerAttr)}, ${JSON.stringify(markerValue)});
+    return { found: true };
+  })()`;
+}
+
+/**
+ * Builds the cleanup counterpart to {@link buildMarkShadowInteractiveDescendantExpr}:
+ * re-resolves the same host via `xpathBody`, finds the marked descendant
+ * inside its shadow root, and strips the throwaway marker attribute. Never
+ * throws — the marker is purely a locator convenience and a leftover
+ * attribute (if the host vanished mid-step, e.g. a genuine submit) has no
+ * behavioral effect, so the caller treats this as fire-and-forget best-effort
+ * cleanup.
+ */
+export function buildUnmarkShadowDescendantExpr(
+  xpathBody: string,
+  markerAttr: string,
+  markerValue: string
+): string {
+  return `(() => {
+    const r = document.evaluate(${JSON.stringify(xpathBody)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const host = r.singleNodeValue;
+    if (!host || !host.shadowRoot) return;
+    const marked = host.shadowRoot.querySelector(${JSON.stringify(`[${markerAttr}="${markerValue}"]`)});
+    if (marked) marked.removeAttribute(${JSON.stringify(markerAttr)});
+  })()`;
+}

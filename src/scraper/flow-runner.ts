@@ -42,8 +42,11 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import {
+  buildMarkShadowInteractiveDescendantExpr,
+  buildUnmarkShadowDescendantExpr,
   clickActivationExpr,
   MAX_SELECTION_ANCESTOR_DEPTH,
+  type MarkShadowInteractiveDescendantResult,
   retargetToSelectionMarkerExpr,
   SELECTION_MARKER_CLASS_SELECTOR_SRC,
   SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
@@ -11152,8 +11155,44 @@ export async function executeStepWithHealing(params: {
             continue;
           }
           const topWindowTarget = frameTarget ?? mainFrameTarget(page);
+          let clickedShadowDescendant = false;
           try {
-            await topWindowTarget.locator(topWindowSelector).first().click();
+            // `document.evaluate` (what the xpath-resolved locator below is
+            // built on) cannot cross a shadow boundary, so on a custom-
+            // element host whose real activation lives on an interior
+            // shadow-DOM descendant, the xpath resolves to the host itself —
+            // the phantomed target from attempt 1. Resolve into the host's
+            // own (open) shadow root for the real interactive descendant and
+            // stamp it with a throwaway marker attribute; a CSS attribute
+            // selector (unlike xpath) pierces an open shadow root, so
+            // re-locating via that marker and clicking delivers a genuinely
+            // trusted click at the real target instead of the host's own
+            // bounding box. No shadow root, or no qualifying descendant,
+            // falls back unchanged to clicking the host via its xpath.
+            const xpathBody = xpathBodyForEvaluate(topWindowSelector);
+            const markerAttr = "data-barnacle-shadow-click-target";
+            const markerValue = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+            const markResult = xpathBody
+              ? await topWindowTarget
+                  .evaluate<MarkShadowInteractiveDescendantResult>(
+                    buildMarkShadowInteractiveDescendantExpr(xpathBody, markerAttr, markerValue)
+                  )
+                  .catch((): MarkShadowInteractiveDescendantResult => ({ found: false }))
+              : { found: false };
+            if (markResult.found) {
+              try {
+                await topWindowTarget.locator(`[${markerAttr}="${markerValue}"]`).first().click();
+                clickedShadowDescendant = true;
+              } finally {
+                await topWindowTarget
+                  .evaluate(
+                    buildUnmarkShadowDescendantExpr(xpathBody as string, markerAttr, markerValue)
+                  )
+                  .catch(() => undefined);
+              }
+            } else {
+              await topWindowTarget.locator(topWindowSelector).first().click();
+            }
           } catch (err) {
             const failureMessage = `trusted-click-retry: top-window trusted click threw ${toErrorMessage(err)}`;
             record.actResultSuccess = false;
@@ -11166,12 +11205,14 @@ export async function executeStepWithHealing(params: {
             );
             continue;
           }
-          record.instruction = `trusted-click-retry (top-window): ${topWindowSelector}`;
+          record.instruction = `trusted-click-retry (top-window): ${topWindowSelector}${clickedShadowDescendant ? " (shadow descendant)" : ""}`;
           record.actResultSuccess = true;
-          record.actResultDescription = `trusted-click-retry clicked "${topWindowSelector}" via top-window locator`;
+          record.actResultDescription = clickedShadowDescendant
+            ? `trusted-click-retry clicked the shadow-DOM descendant of "${topWindowSelector}" via top-window locator`
+            : `trusted-click-retry clicked "${topWindowSelector}" via top-window locator`;
           record.triedSelectors = [...triedSelectors];
           logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: trusted-click-retry: top-window trusted locator click on the resolved target`
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: trusted-click-retry: top-window trusted locator click on the resolved target${clickedShadowDescendant ? " (shadow descendant)" : ""}`
           );
           resolvedAction = {
             selector: topWindowSelector,
