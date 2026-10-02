@@ -8849,12 +8849,21 @@ function isExplainedByCorrelatedSiblingField(
   for (const siblingPath of siblingPaths) {
     const pathSegments = siblingPath.split(".");
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
+    let sawUnexplainableField = false;
     for (const body of allBodies) {
-      const siblingRaw = readValueAtPath(body, pathSegments);
       const fieldRaw = readValueAtPath(body, path);
-      if (siblingRaw === undefined || fieldRaw === undefined) continue;
+      if (fieldRaw === undefined) continue;
+      const siblingRaw = readValueAtPath(body, pathSegments);
+      if (siblingRaw === undefined) {
+        // This body has a value for the field we're trying to explain but no
+        // value for the candidate sibling — the sibling can't vouch for it,
+        // so don't let a function fitted over the OTHER bodies paper over it.
+        sawUnexplainableField = true;
+        break;
+      }
       pairs.push({ siblingValue: String(siblingRaw), fieldValue: String(fieldRaw) });
     }
+    if (sawUnexplainableField) continue;
     const distinctSiblingValues = new Set(pairs.map((p) => p.siblingValue));
     if (distinctSiblingValues.size < 2) continue;
     const siblingToField = new Map<string, string>();

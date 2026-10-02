@@ -97,6 +97,53 @@ function buildNoCorrelatedSiblingSteps(): MulticallFixtureStep[] {
   ];
 }
 
+/** `pageHistory` is a perfect function of `page` across r1-r3 (lockstep), but
+ * r4 — whose `page` also differs — omits `pageHistory` entirely. A sibling
+ * that explains every OTHER capture must not be credited as an explanation
+ * for a capture it has no data on at all: r4's `page` divergence is still an
+ * unexplained ambiguity and must hard-fail. */
+function buildSiblingMissingOnDivergentCaptureSteps(): MulticallFixtureStep[] {
+  return [
+    buildStep("r0", {
+      url: "https://api.example.com/catalog/search/",
+      requestPostData: '{"page":1}',
+      responseBody: {
+        results: [{ sku: "sku-a" }, { sku: "sku-b" }, { sku: "sku-c" }, { sku: "sku-d" }],
+      },
+      timestamp: "2024-04-01T00:00:00Z",
+      method: "GET",
+    }),
+    buildStep("r1", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-a",
+      requestPostData: '{"page":1,"pageHistory":false}',
+      responseBody: { results: [{ sku: "sku-a", amount: 19.99 }] },
+      timestamp: "2024-04-01T00:00:01Z",
+      method: "GET",
+    }),
+    buildStep("r2", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-b",
+      requestPostData: '{"page":1,"pageHistory":false}',
+      responseBody: { results: [{ sku: "sku-b", amount: 24.99 }] },
+      timestamp: "2024-04-01T00:00:02Z",
+      method: "GET",
+    }),
+    buildStep("r3", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-c",
+      requestPostData: '{"page":2,"pageHistory":true}',
+      responseBody: { results: [{ sku: "sku-c", amount: 29.99 }] },
+      timestamp: "2024-04-01T00:00:03Z",
+      method: "GET",
+    }),
+    buildStep("r4", {
+      url: "https://api.example.com/catalog/pricing/?sku=sku-d",
+      requestPostData: '{"page":9}',
+      responseBody: { results: [{ sku: "sku-d", amount: 39.99 }] },
+      timestamp: "2024-04-01T00:00:04Z",
+      method: "GET",
+    }),
+  ];
+}
+
 function emit(steps: MulticallFixtureStep[], foldReturnSpec: FoldReturnSpec | null): string {
   return emitMultiStepExecuteHttp(
     steps as unknown as Parameters<typeof emitMultiStepExecuteHttp>[0],
@@ -129,5 +176,9 @@ describe("emitMultiStepExecuteHttp — lockstep-correlation exception is precise
 
   it("still throws naming the body field when no other field varies at all", () => {
     expect(() => emit(buildNoCorrelatedSiblingSteps(), SPEC)).toThrow(/pageSize/);
+  });
+
+  it("still throws naming the body field when the sibling that explains every other capture is entirely absent on the divergent one", () => {
+    expect(() => emit(buildSiblingMissingOnDivergentCaptureSteps(), SPEC)).toThrow(/page/);
   });
 });
