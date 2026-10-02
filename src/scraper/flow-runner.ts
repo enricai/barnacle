@@ -42,8 +42,11 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import {
+  buildMarkShadowInteractiveDescendantExpr,
+  buildUnmarkShadowDescendantExpr,
   clickActivationExpr,
   MAX_SELECTION_ANCESTOR_DEPTH,
+  type MarkShadowInteractiveDescendantResult,
   retargetToSelectionMarkerExpr,
   SELECTION_MARKER_CLASS_SELECTOR_SRC,
   SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC,
@@ -4069,17 +4072,39 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * In-page source for `(el) => Element | null`: the nearest ancestor of `el`,
  * within {@link MAX_SELECTION_ANCESTOR_DEPTH} levels, whose subtree contains a
  * selection-marker element (`role="combobox"`/`role="listbox"`, or a
- * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) — climbing ancestor
- * levels rather than a single `closest()` call, because a design-system
- * combobox's marker (the `role="combobox"` trigger) and its committed-value
- * control (a hidden `<input>`) are commonly SIBLINGS under a shared wrapper
- * that itself carries no role/class marker: `closest()` only searches
- * self-and-ancestors of `el`, so it can never see a marker that lives on a
- * cousin subtree. At each level, `querySelectorAll` searches the WHOLE
- * subtree (not just direct children), so the marker may be nested arbitrarily
- * deep under that ancestor. Returns the FIRST (nearest) qualifying ancestor,
- * so a same-shaped input/select outside that common ancestor is never
- * mistaken for the same control's committed-value sibling. Shared by
+ * {@link WIDGET_KIT_SELECTION_MARKER_SELECTORS} match) AND at most one
+ * independent WIDGET ROOT (each `role="combobox"`/marker trigger is its own
+ * root; a `role="listbox"` is a root TOO unless some trigger in the subtree
+ * actually declares ownership of it via `aria-owns`/`aria-controls` — a
+ * trigger merely co-existing in the same subtree does NOT make every listbox
+ * its panel, since a real trigger plus an unrelated, un-owned bare listbox
+ * (its own standalone multi-select, no opener) are still two independent
+ * widgets, not one; with NO trigger anywhere in the subtree, each bare
+ * `role="listbox"` is likewise its own standalone widget root, so two such
+ * triggerless listboxes sharing an ancestor are still counted as two
+ * independent roots rather than silently collapsing to zero — EXCEPT when
+ * the scope holds exactly one trigger and exactly one listbox and neither
+ * declares ownership of the other: that pairing is unambiguous regardless of
+ * missing ARIA wiring, so it still counts as a single root) — climbing
+ * ancestor levels rather than a single `closest()` call, because a design-system combobox's
+ * marker (the `role="combobox"` trigger) and its committed-value control (a
+ * hidden `<input>`) are commonly SIBLINGS under a shared wrapper that itself
+ * carries no role/class marker: `closest()` only searches self-and-ancestors
+ * of `el`, so it can never see a marker that lives on a cousin subtree. At
+ * each level, `querySelectorAll` searches the WHOLE subtree (not just direct
+ * children), so the marker may be nested arbitrarily deep under that
+ * ancestor. The widget-root cap is deliberate: a candidate ancestor whose
+ * subtree contains TWO OR MORE independent widget roots (e.g. two unrelated
+ * toggle-shaped rows sharing a parent) is ambiguous about which widget —
+ * and therefore which committed-value control — actually belongs to `el`, so
+ * it is skipped rather than returned; climbing continues to look for an
+ * unambiguous (single-widget) ancestor instead of exposing the whole
+ * multi-widget subtree to the caller's input/select scan, which would let an
+ * UNRELATED sibling widget's own state change masquerade as `el`'s. A single
+ * trigger + its own owned listbox panel (one widget root) still passes.
+ * Returns the FIRST (nearest) unambiguous qualifying ancestor, so a
+ * same-shaped input/select outside that common ancestor is never mistaken for
+ * the same control's committed-value sibling. Shared by
  * {@link SELECTION_STATE_MAP_EXPR}'s `isCommittedValueControl` and
  * {@link selectionSiblingCommittedValueChanged}'s container resolution so the
  * baseline capture and the read-back agree on exactly what counts as
@@ -4089,9 +4114,42 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  */
 const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
     const MARKER_SEL = '[role="combobox"],[role="listbox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const WIDGET_ROOT_SEL = '[role="combobox"],' + ${JSON.stringify(WIDGET_KIT_SELECTION_MARKER_SELECTORS)};
+    const isOwnedListbox = (listbox, triggers) => {
+      if (!listbox.id) return false;
+      return triggers.some((trigger) => {
+        const ownsId = trigger.getAttribute("aria-owns") || trigger.getAttribute("aria-controls");
+        return ownsId === listbox.id;
+      });
+    };
+    const countWidgetRoots = (scope) => {
+      // Each combobox-like trigger is its own widget root. A role=listbox is
+      // that widget's owned PANEL only when SOME trigger in scope actually
+      // declares ownership of it via aria-owns/aria-controls — a trigger
+      // merely co-existing in the same scope does not make every listbox its
+      // panel, since a trigger plus an unrelated, un-owned bare listbox (its
+      // own standalone multi-select, no opener) are still two independent
+      // widgets. Any listbox left un-owned by every trigger — including when
+      // there is no trigger in scope at all — counts as its own widget root.
+      const triggers = Array.from(scope.querySelectorAll(WIDGET_ROOT_SEL));
+      const listboxes = Array.from(scope.querySelectorAll('[role="listbox"]'));
+      const unownedListboxes = listboxes.filter((lb) => !isOwnedListbox(lb, triggers));
+      // A lone trigger next to a lone listbox, neither declaring aria-owns/
+      // aria-controls, is still an unambiguous single widget (a real-world
+      // combobox that never bothered to wire up ARIA ownership) — only
+      // count it as two independent roots once there is more than one
+      // trigger or more than one listbox in scope to actually be ambiguous
+      // about pairing.
+      if (triggers.length === 1 && listboxes.length === 1 && unownedListboxes.length === 1) {
+        return 1;
+      }
+      return triggers.length + unownedListboxes.length;
+    };
     let node = el.parentElement;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
-      if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) return node;
+      if (node.querySelectorAll && node.querySelectorAll(MARKER_SEL).length > 0) {
+        if (countWidgetRoots(node) <= 1) return node;
+      }
       node = node.parentElement;
     }
     return null;
@@ -11152,8 +11210,44 @@ export async function executeStepWithHealing(params: {
             continue;
           }
           const topWindowTarget = frameTarget ?? mainFrameTarget(page);
+          let clickedShadowDescendant = false;
           try {
-            await topWindowTarget.locator(topWindowSelector).first().click();
+            // `document.evaluate` (what the xpath-resolved locator below is
+            // built on) cannot cross a shadow boundary, so on a custom-
+            // element host whose real activation lives on an interior
+            // shadow-DOM descendant, the xpath resolves to the host itself —
+            // the phantomed target from attempt 1. Resolve into the host's
+            // own (open) shadow root for the real interactive descendant and
+            // stamp it with a throwaway marker attribute; a CSS attribute
+            // selector (unlike xpath) pierces an open shadow root, so
+            // re-locating via that marker and clicking delivers a genuinely
+            // trusted click at the real target instead of the host's own
+            // bounding box. No shadow root, or no qualifying descendant,
+            // falls back unchanged to clicking the host via its xpath.
+            const xpathBody = xpathBodyForEvaluate(topWindowSelector);
+            const markerAttr = "data-barnacle-shadow-click-target";
+            const markerValue = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+            const markResult = xpathBody
+              ? await topWindowTarget
+                  .evaluate<MarkShadowInteractiveDescendantResult>(
+                    buildMarkShadowInteractiveDescendantExpr(xpathBody, markerAttr, markerValue)
+                  )
+                  .catch((): MarkShadowInteractiveDescendantResult => ({ found: false }))
+              : { found: false };
+            if (markResult.found) {
+              try {
+                await topWindowTarget.locator(`[${markerAttr}="${markerValue}"]`).first().click();
+                clickedShadowDescendant = true;
+              } finally {
+                await topWindowTarget
+                  .evaluate(
+                    buildUnmarkShadowDescendantExpr(xpathBody as string, markerAttr, markerValue)
+                  )
+                  .catch(() => undefined);
+              }
+            } else {
+              await topWindowTarget.locator(topWindowSelector).first().click();
+            }
           } catch (err) {
             const failureMessage = `trusted-click-retry: top-window trusted click threw ${toErrorMessage(err)}`;
             record.actResultSuccess = false;
@@ -11166,12 +11260,14 @@ export async function executeStepWithHealing(params: {
             );
             continue;
           }
-          record.instruction = `trusted-click-retry (top-window): ${topWindowSelector}`;
+          record.instruction = `trusted-click-retry (top-window): ${topWindowSelector}${clickedShadowDescendant ? " (shadow descendant)" : ""}`;
           record.actResultSuccess = true;
-          record.actResultDescription = `trusted-click-retry clicked "${topWindowSelector}" via top-window locator`;
+          record.actResultDescription = clickedShadowDescendant
+            ? `trusted-click-retry clicked the shadow-DOM descendant of "${topWindowSelector}" via top-window locator`
+            : `trusted-click-retry clicked "${topWindowSelector}" via top-window locator`;
           record.triedSelectors = [...triedSelectors];
           logger.info(
-            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: trusted-click-retry: top-window trusted locator click on the resolved target`
+            `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: trusted-click-retry: top-window trusted locator click on the resolved target${clickedShadowDescendant ? " (shadow descendant)" : ""}`
           );
           resolvedAction = {
             selector: topWindowSelector,

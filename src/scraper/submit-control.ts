@@ -9,7 +9,11 @@
  * included, and "Back"/"Cancel"/"Save draft"-shaped controls never appear.
  */
 
-import { clickActivationExpr, MAX_SELECTION_ANCESTOR_DEPTH } from "@/scraper/browser-click-expr";
+import {
+  clickActivationExpr,
+  DEEP_ELEMENTS_EXPR,
+  MAX_SELECTION_ANCESTOR_DEPTH,
+} from "@/scraper/browser-click-expr";
 
 /**
  * Verbs that identify a control as NOT the submit action even when it is
@@ -82,24 +86,6 @@ const IS_DISABLED_EXPR = `((el) => {
     el = el.parentElement;
   }
   return false;
-})`;
-
-/**
- * Recursive open-shadow-root walker, composed as a browser-context
- * expression string via string interpolation rather than runtime code that
- * could share a module import.
- */
-const DEEP_ELEMENTS_EXPR = `((root) => {
-  const out = [];
-  const walk = (node) => {
-    const kids = node.querySelectorAll ? Array.from(node.querySelectorAll("*")) : [];
-    for (const el of kids) {
-      out.push(el);
-      if (el.shadowRoot) walk(el.shadowRoot);
-    }
-  };
-  walk(root);
-  return out;
 })`;
 
 /**
