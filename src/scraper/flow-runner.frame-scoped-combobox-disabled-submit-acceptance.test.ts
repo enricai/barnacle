@@ -261,7 +261,7 @@ describe("flow-runner frame-scoped combobox commit + disabled-submit veto (offli
       act: vi.fn().mockImplementation(async (input: unknown) => {
         const description = describeActInput(input);
         if (description.includes("Full Name")) {
-          state.childUrl = `${CHILD_SRC}#name-filled`;
+          state.childUrl = `${CHILD_SRC}/name-filled`;
           return {
             success: true,
             message: "filled",
@@ -292,7 +292,7 @@ describe("flow-runner frame-scoped combobox commit + disabled-submit veto (offli
           };
         }
         if (description.includes("Company Name")) {
-          state.childUrl = `${CHILD_SRC}#name-filled-company-filled`;
+          state.childUrl = `${CHILD_SRC}/name-filled-company-filled`;
           return {
             success: true,
             message: "filled",
@@ -326,7 +326,7 @@ describe("flow-runner frame-scoped combobox commit + disabled-submit veto (offli
         }
         if (description.includes("Upload Documents")) {
           state.uploadDocsStepReached = true;
-          state.childUrl = `${CHILD_SRC}#documents-uploaded`;
+          state.childUrl = `${CHILD_SRC}/documents-uploaded`;
           return {
             success: true,
             message: "clicked",
@@ -387,7 +387,7 @@ describe("flow-runner frame-scoped combobox commit + disabled-submit veto (offli
     // blocked step, proving the failure is attributable to 'Continue', not
     // an earlier setup failure — and that the frame-scoped fill path stays
     // unaffected by the click-path fix under test.
-    expect(state.childUrl).toBe(`${CHILD_SRC}#name-filled-company-filled`);
+    expect(state.childUrl).toBe(`${CHILD_SRC}/name-filled-company-filled`);
 
     // The plan option WAS clicked (inside the frame) and its real commit
     // handler fired exactly once — the hidden committed-value control
@@ -405,6 +405,6 @@ describe("flow-runner frame-scoped combobox commit + disabled-submit veto (offli
     // and the child frame's URL never moved again after the company-name fill.
     expect(state.continueClickCount).toBeGreaterThan(0);
     expect(state.uploadDocsStepReached).toBe(false);
-    expect(state.childUrl).toBe(`${CHILD_SRC}#name-filled-company-filled`);
+    expect(state.childUrl).toBe(`${CHILD_SRC}/name-filled-company-filled`);
   });
 });

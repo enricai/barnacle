@@ -147,7 +147,7 @@ describe("flow-runner evidence-table alternating-verdict regression (offline fix
       }
     ).addEventListener("click", () => {
       saveClickCalls += 1;
-      currentUrl = `${BASE_URL}?saved=1`;
+      currentUrl = `${BASE_URL}/saved`;
     });
 
     const supportInputEl = document.getElementById("tabSupportState") as unknown as HappyDomElement;

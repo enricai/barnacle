@@ -128,7 +128,7 @@ function buildFixture(): {
     // count is folded into the URL to keep producing a fresh urlChanged
     // signal on the harmless second step's re-click too.
     state.clicks += 1;
-    state.url = `${SUCCESS_URL}#${state.clicks}`;
+    state.url = `${SUCCESS_URL}/${state.clicks}`;
     state.title = "Apply — Submitted";
     const marker = document.createElement("div");
     marker.setAttribute("class", "app-submitted-page");

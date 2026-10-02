@@ -145,7 +145,7 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
         attach();
         topUrls.current = "https://careers.example.org/jobs/123/apply";
       } else {
-        childUrls.current = `${CHILD_ORIGIN_URL}?step=${stepCount}`;
+        childUrls.current = `${CHILD_ORIGIN_URL}/step-${stepCount}`;
       }
       return {
         success: true,

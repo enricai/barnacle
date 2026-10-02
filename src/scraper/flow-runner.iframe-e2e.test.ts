@@ -493,7 +493,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
     const topUrl = { current: `${TOP_ORIGIN}/jobs/123/apply` };
     const stagehand = {
       act: async (input: unknown) => {
-        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply?applied=1`;
+        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply/applied`;
         return {
           success: true,
           message: "clicked",

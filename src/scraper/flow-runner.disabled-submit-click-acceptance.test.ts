@@ -138,7 +138,7 @@ function makeOnboardingStagehand(state: OnboardingSequenceState): Stagehand {
     act: vi.fn().mockImplementation(async (input: unknown) => {
       const description = describeActInput(input);
       if (description.includes("Full Name")) {
-        state.url = `${BASE_URL}#name-filled`;
+        state.url = `${BASE_URL}/name-filled`;
         return {
           success: true,
           message: "filled",
@@ -246,7 +246,7 @@ describe("flow-runner disabled-submit n+16 fallback acceptance regression (disab
     // The 'Full Name' fill step (verified via a real URL change) ran before
     // the disabled click, proving the failure is attributable to 'Continue'
     // specifically, not an earlier setup failure.
-    expect(state.url).toBe(`${BASE_URL}#name-filled`);
+    expect(state.url).toBe(`${BASE_URL}/name-filled`);
 
     // The disabled click was attempted (Stagehand reported success each
     // time, and the n+16 fallback's own synthetic click fired) but NEVER
@@ -255,7 +255,7 @@ describe("flow-runner disabled-submit n+16 fallback acceptance regression (disab
     expect(state.continueClickCount).toBeGreaterThan(0);
     expect(state.fallbackClickFired).toBe(true);
     expect(state.uploadDocsStepReached).toBe(false);
-    expect(state.url).toBe(`${BASE_URL}#name-filled`);
+    expect(state.url).toBe(`${BASE_URL}/name-filled`);
 
     // The exact recon report shape on the n+16 fallback's own retry
     // snapshot: no network/url change, a nonzero body-HTML delta (the
