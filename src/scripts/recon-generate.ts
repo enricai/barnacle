@@ -8831,6 +8831,56 @@ interface FrozenVaryingDrillParam {
 }
 
 /**
+ * True when a varying body leaf's apparent ambiguity is actually explained
+ * by another field in the same request bodies: some sibling leaf path's
+ * value determines the target field's value as a true function (each
+ * distinct sibling value maps to exactly one distinct field value) across
+ * `capture` plus every same-endpoint capture. A page-size field that always
+ * reads 25 when `tier` is `"standard"` and 100 when `tier` is `"premium"`
+ * is not an unexplained ambiguity — `tier` explains it.
+ */
+function isExplainedByCorrelatedSiblingField(
+  path: readonly string[],
+  parsedBody: unknown,
+  otherBodies: readonly unknown[],
+  siblingPaths: ReadonlySet<string>
+): boolean {
+  const allBodies = [parsedBody, ...otherBodies];
+  for (const siblingPath of siblingPaths) {
+    const pathSegments = siblingPath.split(".");
+    const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
+    let sawUnexplainableField = false;
+    for (const body of allBodies) {
+      const fieldRaw = readValueAtPath(body, path);
+      if (fieldRaw === undefined) continue;
+      const siblingRaw = readValueAtPath(body, pathSegments);
+      if (siblingRaw === undefined) {
+        // This body has a value for the field we're trying to explain but no
+        // value for the candidate sibling — the sibling can't vouch for it,
+        // so don't let a function fitted over the OTHER bodies paper over it.
+        sawUnexplainableField = true;
+        break;
+      }
+      pairs.push({ siblingValue: String(siblingRaw), fieldValue: String(fieldRaw) });
+    }
+    if (sawUnexplainableField) continue;
+    const distinctSiblingValues = new Set(pairs.map((p) => p.siblingValue));
+    if (distinctSiblingValues.size < 2) continue;
+    const siblingToField = new Map<string, string>();
+    const isFunction = pairs.every(({ siblingValue, fieldValue }) => {
+      const existing = siblingToField.get(siblingValue);
+      if (existing === undefined) {
+        siblingToField.set(siblingValue, fieldValue);
+        return true;
+      }
+      return existing === fieldValue;
+    });
+    if (isFunction && siblingToField.size === distinctSiblingValues.size) return true;
+  }
+  return false;
+}
+
+/**
  * Finds every query param or JSON body leaf on `capture`'s own request that
  * (a) was left as a literal in `renderedText` — never swapped for a
  * `${...}` accessor by the threading pass above — and (b) took a different
@@ -8893,26 +8943,38 @@ function findFrozenVaryingDrillParams(
     }
   })();
   if (parsedBody !== undefined) {
+    const otherBodies = sameEndpointCaptures
+      .map((c) => {
+        try {
+          return typeof c.requestPostData === "string" && c.requestPostData.length > 0
+            ? JSON.parse(c.requestPostData)
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((b): b is unknown => b !== undefined);
+    const allPaths = Array.from(walkAllPrimitiveLeaves(parsedBody)).map(({ path }) =>
+      path.join(".")
+    );
     for (const { path, value } of walkAllPrimitiveLeaves(parsedBody)) {
       if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean")
         continue;
       const stringValue = String(value);
       if (!isFrozenLiteral(stringValue)) continue;
       const fieldPath = path.join(".");
-      const differing = sameEndpointCaptures
-        .map((c) => {
-          try {
-            const otherBody =
-              typeof c.requestPostData === "string" && c.requestPostData.length > 0
-                ? JSON.parse(c.requestPostData)
-                : undefined;
-            return otherBody === undefined ? undefined : readValueAtPath(otherBody, path);
-          } catch {
-            return undefined;
-          }
-        })
+      const differing = otherBodies
+        .map((otherBody) => readValueAtPath(otherBody, path))
         .find((v) => v !== undefined && String(v) !== stringValue);
-      if (differing !== undefined) {
+      if (
+        differing !== undefined &&
+        !isExplainedByCorrelatedSiblingField(
+          path,
+          parsedBody,
+          otherBodies,
+          new Set(allPaths.filter((p) => p !== fieldPath))
+        )
+      ) {
         frozen.push({
           location: "body field",
           key: fieldPath,
