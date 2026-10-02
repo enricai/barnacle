@@ -4082,7 +4082,10 @@ function elementSelectionFingerprintExpr(xpath: string): string {
  * widgets, not one; with NO trigger anywhere in the subtree, each bare
  * `role="listbox"` is likewise its own standalone widget root, so two such
  * triggerless listboxes sharing an ancestor are still counted as two
- * independent roots rather than silently collapsing to zero) — climbing
+ * independent roots rather than silently collapsing to zero — EXCEPT when
+ * the scope holds exactly one trigger and exactly one listbox and neither
+ * declares ownership of the other: that pairing is unambiguous regardless of
+ * missing ARIA wiring, so it still counts as a single root) — climbing
  * ancestor levels rather than a single `closest()` call, because a design-system combobox's
  * marker (the `role="combobox"` trigger) and its committed-value control (a
  * hidden `<input>`) are commonly SIBLINGS under a shared wrapper that itself
@@ -4131,6 +4134,15 @@ const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
       const triggers = Array.from(scope.querySelectorAll(WIDGET_ROOT_SEL));
       const listboxes = Array.from(scope.querySelectorAll('[role="listbox"]'));
       const unownedListboxes = listboxes.filter((lb) => !isOwnedListbox(lb, triggers));
+      // A lone trigger next to a lone listbox, neither declaring aria-owns/
+      // aria-controls, is still an unambiguous single widget (a real-world
+      // combobox that never bothered to wire up ARIA ownership) — only
+      // count it as two independent roots once there is more than one
+      // trigger or more than one listbox in scope to actually be ambiguous
+      // about pairing.
+      if (triggers.length === 1 && listboxes.length === 1 && unownedListboxes.length === 1) {
+        return 1;
+      }
       return triggers.length + unownedListboxes.length;
     };
     let node = el.parentElement;

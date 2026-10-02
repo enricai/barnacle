@@ -213,7 +213,9 @@ function buildTriggerPlusUnownedStandaloneListbox(): {
     </div>
   `;
   const decoyEl = document.getElementById("decoyBtn") as unknown as HappyDomElement;
-  const standaloneListboxValueInput = document.getElementById("standaloneListboxValue") as unknown as {
+  const standaloneListboxValueInput = document.getElementById(
+    "standaloneListboxValue"
+  ) as unknown as {
     value: string;
   };
 
@@ -361,7 +363,8 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
   });
 
   it("classifies 'phantom' for a no-op decoy click, NOT crediting an UNRELATED standalone listbox's state change via a trigger that does not own it (real combobox trigger + un-owned sibling listbox sharing an ancestor)", async () => {
-    const { window, decoyEl, standaloneListboxValueInput } = buildTriggerPlusUnownedStandaloneListbox();
+    const { window, decoyEl, standaloneListboxValueInput } =
+      buildTriggerPlusUnownedStandaloneListbox();
     const target = makeTarget(window);
     const signalCounter = { n: 0 };
 

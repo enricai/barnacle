@@ -178,11 +178,13 @@ describe("flow-runner/executeStepWithHealing — trusted-click-retry resolves in
     expect(retryClickedSelector).not.toBe(HOST_XPATH);
     expect(retryClickedSelector).toContain(MARKER_ATTR);
 
-    const infoLines = (testLogger.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
-      (c) => String(c[0])
-    );
+    const infoLines = (
+      testLogger.info as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.map((c) => String(c[0]));
     expect(
-      infoLines.some((line) => line.includes("trusted-click-retry") && line.includes("shadow descendant"))
+      infoLines.some(
+        (line) => line.includes("trusted-click-retry") && line.includes("shadow descendant")
+      )
     ).toBe(true);
   });
 
@@ -224,11 +226,13 @@ describe("flow-runner/executeStepWithHealing — trusted-click-retry resolves in
     expect(clickedSelectors[1]).toBe(HOST_XPATH);
     expect(clickedSelectors.every((s) => !s.includes(MARKER_ATTR))).toBe(true);
 
-    const infoLines = (testLogger.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
-      (c) => String(c[0])
-    );
+    const infoLines = (
+      testLogger.info as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.map((c) => String(c[0]));
     expect(
-      infoLines.some((line) => line.includes("trusted-click-retry") && line.includes("shadow descendant"))
+      infoLines.some(
+        (line) => line.includes("trusted-click-retry") && line.includes("shadow descendant")
+      )
     ).toBe(false);
   });
 });
