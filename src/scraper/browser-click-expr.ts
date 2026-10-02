@@ -236,10 +236,16 @@ export const DEEP_ELEMENTS_EXPR = `((root) => {
  * on the host's own bounding box and never reaches the descendant's
  * handler. This walks `host.shadowRoot` (via {@link DEEP_ELEMENTS_EXPR})
  * for the first VISIBLE, ENABLED element that is itself clickable — a
- * `<button>`, an `<a>`, a `[role="button"]`, or any other non-decorative
- * element exposing a native `.click()` — and returns it. Returns `null`
- * when `host` has no shadow root, or no interactive descendant qualifies,
- * so the caller falls back unchanged to clicking `host` itself.
+ * `<button>`, an `<a href>`, an `<input type="submit"|"button">`, a
+ * `[role="button"]`/`[role="link"]`, or an element carrying an explicit
+ * `tabindex`/`onclick` affordance — and returns it. Deliberately does NOT
+ * treat `typeof el.click === "function"` as a signal of interactivity:
+ * `click()` is a generic method every `HTMLElement` exposes (wrapper
+ * `<div>`s included), so that check alone would match the first visible
+ * container in document order rather than the real control nested inside
+ * it. Returns `null` when `host` has no shadow root, or no interactive
+ * descendant qualifies, so the caller falls back unchanged to clicking
+ * `host` itself.
  */
 export const RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR = `((host) => {
   if (!host || !host.shadowRoot) return null;
@@ -254,10 +260,14 @@ export const RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR = `((host) => {
   const isInteractive = (el) => {
     const tag = (el.tagName || "").toLowerCase();
     const role = (el.getAttribute("role") || "").toLowerCase();
-    if (tag === "button" || tag === "a" || role === "button") return true;
-    return (
-      typeof el.click === "function" && role !== "presentation" && role !== "none"
-    );
+    if (tag === "button" || tag === "select" || tag === "textarea") return true;
+    if (tag === "a" && el.hasAttribute("href")) return true;
+    if (tag === "input" && !["hidden"].includes((el.getAttribute("type") || "").toLowerCase())) return true;
+    if (role === "button" || role === "link" || role === "checkbox" || role === "radio" || role === "menuitem")
+      return true;
+    if (el.hasAttribute("onclick")) return true;
+    const tabIndex = el.getAttribute("tabindex");
+    return tabIndex !== null && Number(tabIndex) >= 0;
   };
   const deepElements = ${DEEP_ELEMENTS_EXPR}(host.shadowRoot);
   for (const el of deepElements) {
