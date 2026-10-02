@@ -125,7 +125,8 @@ function buildFixture(): {
     // counterpart to the weak-signal veto fixture's byte-positive reset.
     // The act() mock (below) resolves BOTH flow steps onto this same
     // control (mirroring the shared fixture's sibling tests), so the click
-    // count is folded into the URL to keep producing a fresh urlChanged
+    // count is folded into the URL's path (not a hash fragment, which
+    // hasOriginOrPathChanged ignores) to keep producing a fresh urlChanged
     // signal on the harmless second step's re-click too.
     state.clicks += 1;
     state.url = `${SUCCESS_URL}/${state.clicks}`;

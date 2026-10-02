@@ -255,7 +255,7 @@ describe("flow-runner disabled-submit-blocked-by-uncommitted-selection (offline 
         }
         if (description.includes("Upload Documents")) {
           state.uploadDocsStepReached = true;
-          state.url = `${BASE_URL}#documents-uploaded`;
+          state.url = `${BASE_URL}/documents-uploaded`;
           return {
             success: true,
             message: "clicked",

@@ -324,8 +324,10 @@ function makeFakeStagehandForMidflowAttach(
         // — the top document stays on careers.example.org throughout, per
         // the reported timeline) is what flips classifyPhantomClick's
         // urlChanged signal: a real "Apply now" click that mounts the wizard
-        // also updates the top page's own URL/history state.
-        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply?applied=1`;
+        // also updates the top page's own URL/history state. Must be an
+        // actual path segment, not a query string: hasOriginOrPathChanged
+        // ignores query-only differences.
+        topUrl.current = `${TOP_ORIGIN}/jobs/123/apply/applied`;
         return {
           success: true,
           message: "clicked",

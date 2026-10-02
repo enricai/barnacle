@@ -173,7 +173,7 @@ function makeOnboardingStagehand(state: OnboardingSequenceState): Stagehand {
       }
       if (description.includes("Upload Documents")) {
         state.uploadDocsStepReached = true;
-        state.url = `${BASE_URL}#documents-uploaded`;
+        state.url = `${BASE_URL}/documents-uploaded`;
         return {
           success: true,
           message: "clicked",
