@@ -6686,7 +6686,7 @@ function applyVolatileFieldSubstitutions(
  * file still compiles. Short values (< {@link MIN_STATE_VALUE_LENGTH}) are
  * skipped — they are the legitimately-constant enum-like fields.
  */
-function collectUnboundLiterals(
+export function collectUnboundLiterals(
   finalTemplate: string,
   parsedBody: unknown,
   shieldedUuids: Set<string>
@@ -6702,6 +6702,18 @@ function collectUnboundLiterals(
     if (finalTemplate.includes(JSON.stringify(value))) {
       seen.add(key);
       unbound.push(key);
+    }
+  }
+  if (parsedBody !== null && typeof parsedBody === "object") {
+    for (const [key, value] of Object.entries(parsedBody)) {
+      if (value === null || typeof value !== "object") continue;
+      if (seen.has(key)) continue;
+      // Whole array/object value never got threaded as a unit — ${JSON.stringify(...)}
+      // never replaced it, so it still sits verbatim in the emitted template.
+      if (finalTemplate.includes(JSON.stringify(value))) {
+        seen.add(key);
+        unbound.push(key);
+      }
     }
   }
   return unbound;

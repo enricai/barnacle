@@ -13,6 +13,7 @@ import {
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   collectHeaderBindings,
+  collectUnboundLiterals,
   compileActionSteps,
   countSpliceableFacets,
   deriveBaseUrl,
@@ -4302,6 +4303,36 @@ describe("inferZodSchemaFromSamples", () => {
   it("collapses to unknown past the configured depth so pathological payloads stay bounded", () => {
     const deep = { a: { b: { c: { d: { e: "too far" } } } } };
     expect(inferZodSchemaFromSamples([deep], 0, "", { maxDepth: 2 })).toContain("z.unknown()");
+  });
+});
+
+describe("collectUnboundLiterals — composite array/object values", () => {
+  it("flags a key whose whole array-of-objects value is still a bare literal in the template", () => {
+    const parsedBody = {
+      partyMix: [
+        { ageCategory: "ADULT", count: 2 },
+        { ageCategory: "CHILD", count: 1 },
+      ],
+    };
+    const finalTemplate = `{"partyMix":${JSON.stringify(parsedBody.partyMix)}}`;
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("partyMix");
+  });
+
+  it("does not flag a composite value that was correctly substituted with a template expression", () => {
+    const parsedBody = {
+      partyMix: [
+        { ageCategory: "ADULT", count: 2 },
+        { ageCategory: "CHILD", count: 1 },
+      ],
+    };
+    const finalTemplate = `{"partyMix":\${JSON.stringify(payload.partyMix)}}`;
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).not.toContain("partyMix");
+  });
+
+  it("still flags an unbound long literal string leaf (pre-existing scalar behavior unchanged)", () => {
+    const parsedBody = { description: "a reasonably long literal string value" };
+    const finalTemplate = `{"description":${JSON.stringify(parsedBody.description)}}`;
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("description");
   });
 });
 
