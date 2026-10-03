@@ -37,9 +37,7 @@ describe("recon-browser reload-to-unrelated-earlier-page regression (offline fix
   });
 
   it("consequently does not short-circuit the step into completedSteps-style credit, mirroring the production gate exactly", () => {
-    const nonSubmitStep: NormalizedStep = mk(
-      "Select 'Weekly' in the 'Digest Frequency' dropdown"
-    );
+    const nonSubmitStep: NormalizedStep = mk("Select 'Weekly' in the 'Digest Frequency' dropdown");
 
     const shortCircuitFires =
       !nonSubmitStep.submitStep &&
