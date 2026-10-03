@@ -206,9 +206,9 @@ describe("harvestPersonaBindings", () => {
 
 describe("extractNavigateToHashFragmentValue", () => {
   it("extracts the trailing slash segment for a hierarchical hash (no regression)", () => {
-    expect(
-      extractNavigateToHashFragmentValue("https://shop.example.com/#/catalog/widgets")
-    ).toBe("widgets");
+    expect(extractNavigateToHashFragmentValue("https://shop.example.com/#/catalog/widgets")).toBe(
+      "widgets"
+    );
   });
 
   it("returns the full suffix delta when the current hash extends the previous hash", () => {
