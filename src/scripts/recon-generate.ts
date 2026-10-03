@@ -352,6 +352,22 @@ export function extractStepPersonaValue(
 }
 
 /**
+ * Extracts the trailing path segment of a navigateTo URL's hash fragment —
+ * e.g. `.../#/jobs/category-widgets` yields `widgets` — as the persona value
+ * an explicit `payloadField` annotation on that step names. Site-agnostic:
+ * reads only the URL's own hash shape, no domain knowledge.
+ *
+ * @returns the segment, or null when the URL has no non-empty hash segment
+ */
+export function extractNavigateToHashFragmentValue(url: string): string | null {
+  const hashIndex = url.indexOf("#");
+  if (hashIndex === -1) return null;
+  const hash = url.slice(hashIndex + 1);
+  const segments = hash.split("/").filter((s) => s.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1]! : null;
+}
+
+/**
  * Derives a payload field name from the field LABEL in a fill/enter/type
  * instruction, for steps the consumer vocabulary does not cover.
  *
@@ -404,6 +420,20 @@ export function harvestPersonaBindings(
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // A navigateTo step carries no prose instruction to extract a persona
+    // value FROM — its own text is a captured page.goto, not a fill/select
+    // label. The facet an explicit `payloadField` annotation names instead
+    // lives in the URL itself (recon-browser captures navigation targets like
+    // `.../#/jobs/category-widgets`), so the value to correlate against
+    // downstream header/body templates is the URL's own hash-derived
+    // fragment, not anything extractStepPersonaValue could find in `step.step`.
+    if (isObj && step.navigateTo !== undefined) {
+      if (!step.payloadField) continue;
+      const value = extractNavigateToHashFragmentValue(step.navigateTo);
+      if (value === null) continue;
+      if (!bindings.has(value)) bindings.set(value, `payload.${step.payloadField}`);
+      continue;
+    }
     const vocabField = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -4496,7 +4526,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string>,
+  unconditionalExcludeValues: ReadonlySet<string>,
+  restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>
@@ -4523,9 +4554,27 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
-    if (priorStepStateValues.size > 0) {
+    if (unconditionalExcludeValues.size > 0 || restrictedExcludeSourceByValue.size > 0) {
+      // A name-free join/chain value (unconditionalExcludeValues) excludes the
+      // whole field on ANY leaf coincidence, same as before. A RESTRICTED prior-
+      // step value (one with a real source field name) additionally requires
+      // keyNamesCorrelate(sourceName, key) — mirroring the discipline
+      // replaceGuardedAgainstExistingPlaceholders/findThreadedJoinFields already
+      // apply to the exact same class of value-coincidence false positive.
+      // Without this, a broken field's own unrelated short scalar leaf (a
+      // count/id) merely equalling SOME other step's produced value gets the
+      // ENTIRE array/object excluded from threading, even though nothing about
+      // that leaf's key names the same concept as the matched value's source.
       const carriesThreadedValue = [...walkAllPrimitiveLeaves(value)].some(
-        ({ value: leaf }) => leaf !== null && priorStepStateValues.has(String(leaf))
+        ({ value: leaf, path: leafPath }) => {
+          if (leaf === null) return false;
+          const leafValue = String(leaf);
+          if (unconditionalExcludeValues.has(leafValue)) return true;
+          const sourceName = restrictedExcludeSourceByValue.get(leafValue);
+          if (sourceName === undefined) return false;
+          const leafKey = leafPath.at(-1);
+          return leafKey !== undefined && keyNamesCorrelate(sourceName, leafKey);
+        }
       );
       if (carriesThreadedValue) continue;
     }
@@ -4579,7 +4628,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   template: string,
   objectBody: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string>,
+  unconditionalExcludeValues: ReadonlySet<string>,
+  restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
@@ -4596,21 +4646,42 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     template,
     envelope as Record<string, unknown>,
     outStructuredKeys,
-    priorStepStateValues,
+    unconditionalExcludeValues,
+    restrictedExcludeSourceByValue,
     searchFrom,
     envelopePath,
     objectBody
   );
 }
 
+/**
+ * `priorStepStateBindings` carries the SAME value→binding map
+ * {@link deriveStateVarByValue} produces. A binding with `restricted: true`
+ * (a value whose source has a real field name) only excludes a candidate
+ * field when its own leaf's key {@link keyNamesCorrelate}s with that source
+ * name — an unrestricted binding (name-free, e.g. a bare array-index chain
+ * hop) or a `joinFieldValues` entry excludes unconditionally on any leaf
+ * match, same as before. Without the correlation requirement, an array/
+ * object field whose own unrelated short scalar leaf (a count/id) merely
+ * EQUALS some other step's produced value gets the whole field wrongly
+ * excluded from threading — the same value-coincidence class of bug
+ * {@link keyNamesCorrelate}'s other call sites already guard against.
+ */
 export function applyStructuredValuePayloadSubstitutions(
   template: string,
   parsedBody: unknown,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string> = new Set()
+  priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
+  joinFieldValues: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
+  }
+  const unconditionalExcludeValues = new Set<string>(joinFieldValues);
+  const restrictedExcludeSourceByValue = new Map<string, string>();
+  for (const [value, binding] of priorStepStateBindings) {
+    if (binding.restricted) restrictedExcludeSourceByValue.set(value, binding.sourceName);
+    else unconditionalExcludeValues.add(value);
   }
   // A cruise-line-style multi-room/multi-guest search body commonly batches
   // per-element criteria as a top-level JSON ARRAY rather than a single
@@ -4628,7 +4699,8 @@ export function applyStructuredValuePayloadSubstitutions(
           result,
           element as Record<string, unknown>,
           outStructuredKeys,
-          priorStepStateValues,
+          unconditionalExcludeValues,
+          restrictedExcludeSourceByValue,
           cursor
         );
       result = nextResult;
@@ -4640,7 +4712,8 @@ export function applyStructuredValuePayloadSubstitutions(
     template,
     parsedBody as Record<string, unknown>,
     outStructuredKeys,
-    priorStepStateValues,
+    unconditionalExcludeValues,
+    restrictedExcludeSourceByValue,
     0
   );
   return result;
@@ -6113,7 +6186,7 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * elsewhere), so narrowing its OTHER occurrences is only warranted once that
  * correlated occurrence is actually observed in the same text — see {@link
  * replaceGuardedAgainstExistingPlaceholders}. */
-interface StateVarBinding {
+export interface StateVarBinding {
   varName: string;
   sourceName: string;
   restricted: boolean;
@@ -7214,10 +7287,8 @@ export function emitMultiStepExecuteHttp(
             rawBodyWithFacetSplices,
             parsedBody,
             outStructuredKeys,
-            new Set([
-              ...deriveStateVarByValue(prior, cap).keys(),
-              ...(joinFieldValuesByStep.get(i) ?? []),
-            ])
+            deriveStateVarByValue(prior, cap),
+            joinFieldValuesByStep.get(i) ?? new Set()
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
@@ -13710,9 +13781,22 @@ function computeFlowPayloadFieldNames(
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
-    // navigateTo/emailStep/password-token steps bypass field resolution
-    // entirely — see emitBrowserFlowTs's stepLiterals pass for why.
-    if (isObj && step.navigateTo !== undefined) continue;
+    // A navigateTo step's own instruction text bypasses field resolution —
+    // it's a captured page.goto, not a prose instruction, so there is no
+    // label/quoted-constant to correlate (see emitBrowserFlowTs's stepLiterals
+    // pass). An explicit `payloadField` annotation is a different thing: it is
+    // the author directly naming the facet the navigation target encodes, and
+    // resolveStepPayloadField's own `explicit` short-circuit would honor it
+    // unconditionally — so it must still be registered here, or every
+    // downstream consumer of this accumulator (REST facet-splice, schema
+    // declaration) silently drops the facet the author explicitly declared.
+    if (isObj && step.navigateTo !== undefined) {
+      if (step.payloadField) {
+        payloadFieldNames.add(step.payloadField);
+        registerFieldOptionality(step.payloadField, step.optional === true);
+      }
+      continue;
+    }
     if (isObj && step.emailStep === true) continue;
     if (instruction.includes(RECON_PASSWORD_TOKEN)) continue;
     const field = resolveStepPayloadField(
