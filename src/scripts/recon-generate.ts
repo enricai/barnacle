@@ -6678,13 +6678,14 @@ function applyVolatileFieldSubstitutions(
 }
 
 /**
- * Collects captured string leaves that survived every binding/generation pass as
- * still-literal — the values a reviewer must look at because they couldn't be
- * traced to a payload field, a generator, or a schema anchor. Returns the JSON
- * key names (deduped, in first-seen order) so the emitter can prepend a single
- * `// TODO: unbound captured literal` marker; it never mutates the body, so the
- * file still compiles. Short values (< {@link MIN_STATE_VALUE_LENGTH}) are
- * skipped — they are the legitimately-constant enum-like fields.
+ * Collects captured string leaves AND whole array/object values that survived
+ * every binding/generation pass as still-literal — the values a reviewer must
+ * look at because they couldn't be traced to a payload field, a generator, or
+ * a schema anchor. Returns the JSON key names (deduped, in first-seen order)
+ * so the emitter can prepend a single `// TODO: unbound captured literal`
+ * marker; it never mutates the body, so the file still compiles. Short string
+ * values (< {@link MIN_STATE_VALUE_LENGTH}) are skipped — they are the
+ * legitimately-constant enum-like fields.
  */
 export function collectUnboundLiterals(
   finalTemplate: string,
