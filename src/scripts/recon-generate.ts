@@ -352,6 +352,22 @@ export function extractStepPersonaValue(
 }
 
 /**
+ * Extracts the trailing path segment of a navigateTo URL's hash fragment —
+ * e.g. `.../#/jobs/category-widgets` yields `widgets` — as the persona value
+ * an explicit `payloadField` annotation on that step names. Site-agnostic:
+ * reads only the URL's own hash shape, no domain knowledge.
+ *
+ * @returns the segment, or null when the URL has no non-empty hash segment
+ */
+export function extractNavigateToHashFragmentValue(url: string): string | null {
+  const hashIndex = url.indexOf("#");
+  if (hashIndex === -1) return null;
+  const hash = url.slice(hashIndex + 1);
+  const segments = hash.split("/").filter((s) => s.length > 0);
+  return segments.length > 0 ? segments[segments.length - 1]! : null;
+}
+
+/**
  * Derives a payload field name from the field LABEL in a fill/enter/type
  * instruction, for steps the consumer vocabulary does not cover.
  *
@@ -404,6 +420,20 @@ export function harvestPersonaBindings(
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
+    // A navigateTo step carries no prose instruction to extract a persona
+    // value FROM — its own text is a captured page.goto, not a fill/select
+    // label. The facet an explicit `payloadField` annotation names instead
+    // lives in the URL itself (recon-browser captures navigation targets like
+    // `.../#/jobs/category-widgets`), so the value to correlate against
+    // downstream header/body templates is the URL's own hash-derived
+    // fragment, not anything extractStepPersonaValue could find in `step.step`.
+    if (isObj && step.navigateTo !== undefined) {
+      if (!step.payloadField) continue;
+      const value = extractNavigateToHashFragmentValue(step.navigateTo);
+      if (value === null) continue;
+      if (!bindings.has(value)) bindings.set(value, `payload.${step.payloadField}`);
+      continue;
+    }
     const vocabField = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -13710,9 +13740,22 @@ function computeFlowPayloadFieldNames(
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
-    // navigateTo/emailStep/password-token steps bypass field resolution
-    // entirely — see emitBrowserFlowTs's stepLiterals pass for why.
-    if (isObj && step.navigateTo !== undefined) continue;
+    // A navigateTo step's own instruction text bypasses field resolution —
+    // it's a captured page.goto, not a prose instruction, so there is no
+    // label/quoted-constant to correlate (see emitBrowserFlowTs's stepLiterals
+    // pass). An explicit `payloadField` annotation is a different thing: it is
+    // the author directly naming the facet the navigation target encodes, and
+    // resolveStepPayloadField's own `explicit` short-circuit would honor it
+    // unconditionally — so it must still be registered here, or every
+    // downstream consumer of this accumulator (REST facet-splice, schema
+    // declaration) silently drops the facet the author explicitly declared.
+    if (isObj && step.navigateTo !== undefined) {
+      if (step.payloadField) {
+        payloadFieldNames.add(step.payloadField);
+        registerFieldOptionality(step.payloadField, step.optional === true);
+      }
+      continue;
+    }
     if (isObj && step.emailStep === true) continue;
     if (instruction.includes(RECON_PASSWORD_TOKEN)) continue;
     const field = resolveStepPayloadField(
