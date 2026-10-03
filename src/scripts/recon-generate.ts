@@ -357,12 +357,26 @@ export function extractStepPersonaValue(
  * an explicit `payloadField` annotation on that step names. Site-agnostic:
  * reads only the URL's own hash shape, no domain knowledge.
  *
- * @returns the segment, or null when the URL has no non-empty hash segment
+ * When `previousHash` is given and the current hash is a strict extension of
+ * it (the accumulating-hash case, e.g. `#a` -> `#a,b`), the persona value is
+ * only the NEW suffix the step added, not the whole cumulative string — a
+ * cumulative value would never recur verbatim in any single request literal.
+ *
+ * @returns the segment (or delta), or null when the URL has no non-empty
+ *   hash segment
  */
-export function extractNavigateToHashFragmentValue(url: string): string | null {
+export function extractNavigateToHashFragmentValue(
+  url: string,
+  previousHash?: string
+): string | null {
   const hashIndex = url.indexOf("#");
   if (hashIndex === -1) return null;
   const hash = url.slice(hashIndex + 1);
+  if (previousHash && hash.length > previousHash.length && hash.startsWith(previousHash)) {
+    const suffix = hash.slice(previousHash.length);
+    const delta = /^[,/]/.test(suffix) ? suffix.slice(1) : suffix;
+    if (delta.length > 0) return delta;
+  }
   const segments = hash.split("/").filter((s) => s.length > 0);
   return segments.length > 0 ? segments[segments.length - 1]! : null;
 }
@@ -417,6 +431,7 @@ export function harvestPersonaBindings(
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
+  let previousNavigateToHash: string | undefined;
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -428,8 +443,14 @@ export function harvestPersonaBindings(
     // downstream header/body templates is the URL's own hash-derived
     // fragment, not anything extractStepPersonaValue could find in `step.step`.
     if (isObj && step.navigateTo !== undefined) {
-      if (!step.payloadField) continue;
-      const value = extractNavigateToHashFragmentValue(step.navigateTo);
+      const hashIndex = step.navigateTo.indexOf("#");
+      const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+      if (!step.payloadField) {
+        previousNavigateToHash = currentHash;
+        continue;
+      }
+      const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
+      previousNavigateToHash = currentHash;
       if (value === null) continue;
       if (!bindings.has(value)) bindings.set(value, `payload.${step.payloadField}`);
       continue;
@@ -6657,15 +6678,16 @@ function applyVolatileFieldSubstitutions(
 }
 
 /**
- * Collects captured string leaves that survived every binding/generation pass as
- * still-literal — the values a reviewer must look at because they couldn't be
- * traced to a payload field, a generator, or a schema anchor. Returns the JSON
- * key names (deduped, in first-seen order) so the emitter can prepend a single
- * `// TODO: unbound captured literal` marker; it never mutates the body, so the
- * file still compiles. Short values (< {@link MIN_STATE_VALUE_LENGTH}) are
- * skipped — they are the legitimately-constant enum-like fields.
+ * Collects captured string leaves AND whole array/object values that survived
+ * every binding/generation pass as still-literal — the values a reviewer must
+ * look at because they couldn't be traced to a payload field, a generator, or
+ * a schema anchor. Returns the JSON key names (deduped, in first-seen order)
+ * so the emitter can prepend a single `// TODO: unbound captured literal`
+ * marker; it never mutates the body, so the file still compiles. Short string
+ * values (< {@link MIN_STATE_VALUE_LENGTH}) are skipped — they are the
+ * legitimately-constant enum-like fields.
  */
-function collectUnboundLiterals(
+export function collectUnboundLiterals(
   finalTemplate: string,
   parsedBody: unknown,
   shieldedUuids: Set<string>
@@ -6681,6 +6703,18 @@ function collectUnboundLiterals(
     if (finalTemplate.includes(JSON.stringify(value))) {
       seen.add(key);
       unbound.push(key);
+    }
+  }
+  if (parsedBody !== null && typeof parsedBody === "object") {
+    for (const [key, value] of Object.entries(parsedBody)) {
+      if (value === null || typeof value !== "object") continue;
+      if (seen.has(key)) continue;
+      // Whole array/object value never got threaded as a unit — ${JSON.stringify(...)}
+      // never replaced it, so it still sits verbatim in the emitted template.
+      if (finalTemplate.includes(JSON.stringify(value))) {
+        seen.add(key);
+        unbound.push(key);
+      }
     }
   }
   return unbound;

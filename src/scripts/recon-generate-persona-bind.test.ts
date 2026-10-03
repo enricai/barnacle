@@ -4,6 +4,7 @@ import {
   deriveFillLabelField,
   emitMultiStepExecuteHttp,
   extractEntryUrlParams,
+  extractNavigateToHashFragmentValue,
   extractStepPersonaValue,
   harvestPersonaBindings,
 } from "@/scripts/recon-generate";
@@ -168,6 +169,56 @@ describe("harvestPersonaBindings", () => {
     const bindings = harvestPersonaBindings(steps, VOCAB, ENV);
     expect(bindings.get("Reginald")).toBe("payload.FirstName");
     expect(bindings.get("Quentin")).toBe("payload.MiddleName");
+  });
+
+  it("binds each navigateTo step in an accumulating hash to its own new token, not the cumulative prefix", () => {
+    const empty: ReconVocabulary = { subject: /(?!)/, exclusions: [], table: [] };
+    const steps = [
+      {
+        step: "navigate to the catalog with the widget facet applied",
+        navigateTo: "https://shop.example.com/#a",
+        payloadField: "FacetOne",
+      },
+      {
+        step: "navigate to the catalog with the gadget facet applied",
+        navigateTo: "https://shop.example.com/#a,b",
+        payloadField: "FacetTwo",
+      },
+      {
+        step: "navigate to the catalog with the gizmo facet applied",
+        navigateTo: "https://shop.example.com/#a,b,c",
+        payloadField: "FacetThree",
+      },
+      {
+        step: "navigate to the catalog with the doohickey facet applied",
+        navigateTo: "https://shop.example.com/#a,b,c,d",
+        payloadField: "FacetFour",
+      },
+    ];
+    const bindings = harvestPersonaBindings(steps, empty, ENV);
+    expect(bindings.get("a")).toBe("payload.FacetOne");
+    expect(bindings.get("b")).toBe("payload.FacetTwo");
+    expect(bindings.get("c")).toBe("payload.FacetThree");
+    expect(bindings.get("d")).toBe("payload.FacetFour");
+    expect(bindings.size).toBe(4);
+  });
+});
+
+describe("extractNavigateToHashFragmentValue", () => {
+  it("extracts the trailing slash segment for a hierarchical hash (no regression)", () => {
+    expect(extractNavigateToHashFragmentValue("https://shop.example.com/#/catalog/widgets")).toBe(
+      "widgets"
+    );
+  });
+
+  it("returns the full suffix delta when the current hash extends the previous hash", () => {
+    expect(extractNavigateToHashFragmentValue("https://shop.example.com/#a,b", "a")).toBe("b");
+  });
+
+  it("falls back to trailing-segment extraction when the hash does not extend the previous one", () => {
+    expect(
+      extractNavigateToHashFragmentValue("https://shop.example.com/#/catalog/widgets", "x,y")
+    ).toBe("widgets");
   });
 });
 
