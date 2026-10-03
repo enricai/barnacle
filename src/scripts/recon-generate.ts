@@ -357,12 +357,26 @@ export function extractStepPersonaValue(
  * an explicit `payloadField` annotation on that step names. Site-agnostic:
  * reads only the URL's own hash shape, no domain knowledge.
  *
- * @returns the segment, or null when the URL has no non-empty hash segment
+ * When `previousHash` is given and the current hash is a strict extension of
+ * it (the accumulating-hash case, e.g. `#a` -> `#a,b`), the persona value is
+ * only the NEW suffix the step added, not the whole cumulative string — a
+ * cumulative value would never recur verbatim in any single request literal.
+ *
+ * @returns the segment (or delta), or null when the URL has no non-empty
+ *   hash segment
  */
-export function extractNavigateToHashFragmentValue(url: string): string | null {
+export function extractNavigateToHashFragmentValue(
+  url: string,
+  previousHash?: string
+): string | null {
   const hashIndex = url.indexOf("#");
   if (hashIndex === -1) return null;
   const hash = url.slice(hashIndex + 1);
+  if (previousHash && hash.length > previousHash.length && hash.startsWith(previousHash)) {
+    const suffix = hash.slice(previousHash.length);
+    const delta = /^[,/]/.test(suffix) ? suffix.slice(1) : suffix;
+    if (delta.length > 0) return delta;
+  }
   const segments = hash.split("/").filter((s) => s.length > 0);
   return segments.length > 0 ? segments[segments.length - 1]! : null;
 }
@@ -417,6 +431,7 @@ export function harvestPersonaBindings(
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
+  let previousNavigateToHash: string | undefined;
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -428,8 +443,14 @@ export function harvestPersonaBindings(
     // downstream header/body templates is the URL's own hash-derived
     // fragment, not anything extractStepPersonaValue could find in `step.step`.
     if (isObj && step.navigateTo !== undefined) {
-      if (!step.payloadField) continue;
-      const value = extractNavigateToHashFragmentValue(step.navigateTo);
+      const hashIndex = step.navigateTo.indexOf("#");
+      const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+      if (!step.payloadField) {
+        previousNavigateToHash = currentHash;
+        continue;
+      }
+      const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
+      previousNavigateToHash = currentHash;
       if (value === null) continue;
       if (!bindings.has(value)) bindings.set(value, `payload.${step.payloadField}`);
       continue;
