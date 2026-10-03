@@ -100,8 +100,7 @@ vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
 
 import { StepVerificationError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
-import { hasPageAlreadyAdvancedPastStep } from "@/scripts/recon-browser";
-import { main } from "@/scripts/recon-browser";
+import { hasPageAlreadyAdvancedPastStep, main } from "@/scripts/recon-browser";
 
 const ALREADY_ADVANCED_LOG = "verification failed but the page already advanced past this step";
 
