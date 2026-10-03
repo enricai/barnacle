@@ -32,7 +32,10 @@ function fixtureCaptures(): Capture[] {
     buildCapture({
       url: `https://${OWN_BACKEND_HOST}/catalog/search/`,
       requestPostData: JSON.stringify({ sort: "relevance" }),
-      requestHeaders: { "Content-Type": "application/json", "X-Catalog-Category": CATEGORY_FRAGMENT },
+      requestHeaders: {
+        "Content-Type": "application/json",
+        "X-Catalog-Category": CATEGORY_FRAGMENT,
+      },
       responseBody: { ok: true },
       timestamp: "2026-01-01T00:00:00.000Z",
     }),
@@ -113,7 +116,9 @@ describe("recon-generate CLI — navigateTo step's explicit payloadField reaches
     // The recon's captured literal must never survive frozen in any header
     // or body template — every occurrence must have been rewritten.
     const literalFrozenAsJsonValue = `"${CATEGORY_FRAGMENT}"`;
-    const headerBlocks = [...contract.matchAll(/headers:\s*\{([\s\S]*?)\},/g)].map((m) => m[1] ?? "");
+    const headerBlocks = [...contract.matchAll(/headers:\s*\{([\s\S]*?)\},/g)].map(
+      (m) => m[1] ?? ""
+    );
     expect(headerBlocks.some((h) => h.includes(expectedSplice))).toBe(true);
     for (const header of headerBlocks) {
       expect(header).not.toContain(literalFrozenAsJsonValue);
