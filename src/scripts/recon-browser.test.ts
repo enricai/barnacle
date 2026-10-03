@@ -2100,7 +2100,8 @@ describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
     expect(
       hasPageAlreadyAdvancedPastStep(
         "https://apply.example.com/wizard/step-2",
-        "https://apply.example.com/wizard/step-2"
+        "https://apply.example.com/wizard/step-2",
+        "Click the 'Continue' button"
       )
     ).toBe(false);
   });
@@ -2109,7 +2110,8 @@ describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
     expect(
       hasPageAlreadyAdvancedPastStep(
         "https://apply.example.com/wizard/step-2",
-        "https://apply.example.com/wizard/step-3"
+        "https://apply.example.com/wizard/step-3",
+        "Click the 'Continue' button"
       )
     ).toBe(true);
   });
@@ -2118,7 +2120,8 @@ describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
     expect(
       hasPageAlreadyAdvancedPastStep(
         "https://careers.example.com/apply",
-        "https://apply.example.com/wizard/step-1"
+        "https://apply.example.com/wizard/step-1",
+        "Click the 'Continue' button"
       )
     ).toBe(true);
   });
@@ -2127,7 +2130,8 @@ describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
     expect(
       hasPageAlreadyAdvancedPastStep(
         "https://apply.example.com/wizard/step-2?tab=details",
-        "https://apply.example.com/wizard/step-2?tab=review"
+        "https://apply.example.com/wizard/step-2?tab=review",
+        "Click the 'Continue' button"
       )
     ).toBe(false);
   });
@@ -2136,18 +2140,47 @@ describe("recon-browser/hasPageAlreadyAdvancedPastStep", () => {
     expect(
       hasPageAlreadyAdvancedPastStep(
         "https://apply.example.com/wizard/step-2#section-a",
-        "https://apply.example.com/wizard/step-2#section-b"
+        "https://apply.example.com/wizard/step-2#section-b",
+        "Click the 'Continue' button"
       )
     ).toBe(false);
   });
 
   it("fails closed (false) on an unparseable URL", () => {
-    expect(hasPageAlreadyAdvancedPastStep("not-a-url", "https://apply.example.com/step-2")).toBe(
-      false
-    );
-    expect(hasPageAlreadyAdvancedPastStep("https://apply.example.com/step-2", "not-a-url")).toBe(
-      false
-    );
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "not-a-url",
+        "https://apply.example.com/step-2",
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/step-2",
+        "not-a-url",
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
+  });
+
+  it("returns false when the page lands on a sign-in path and the step was not about signing in (bounce/regression)", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2",
+        "https://apply.example.com/login",
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
+  });
+
+  it("returns true when the page lands on a sign-in path and the step itself is about signing in", () => {
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        "https://apply.example.com/wizard/step-2",
+        "https://apply.example.com/sign-in",
+        "Sign in with your email and password"
+      )
+    ).toBe(true);
   });
 });
 

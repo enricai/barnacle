@@ -1401,29 +1401,42 @@ function originAndPath(url: string): string | null {
   }
 }
 
+/** Word-boundary phrase patterns identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PATTERNS}. */
+const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
+
 /**
  * Detect whether the live page has already navigated away from where a step
  * started, mirroring {@link findRecentPageTransition} in flow-runner.ts:
  * an observed URL transition is a legitimate completion signal, not
  * ambiguous state that needs an LLM to interpret. Used as a deterministic,
  * pre-replan short-circuit: when a step's verification fails but the page
- * has moved to a new origin or path, the step's effect already landed and
+ * has moved to a new origin or path, the step's effect landed and
  * replanning would either re-author completed work or re-propose the same
  * failed step against a page that no longer matches it. A same-path
  * query/hash-only change (SPA-internal state, e.g. a modal toggling `?tab=`)
- * is NOT treated as advancement — that is not a real navigation. Fails
- * closed (returns false) on unparseable URLs so the existing replan path is
- * unaffected when the signal is ambiguous.
+ * is NOT treated as advancement — that is not a real navigation. A path
+ * difference alone is also not sufficient proof: if the new path is
+ * sign-in/log-in-shaped and the step itself was not about signing in, the
+ * page bounced back to an auth gate rather than advancing, so this returns
+ * false and lets the normal replan path run. Fails closed (returns false) on
+ * unparseable URLs so the existing replan path is unaffected when the signal
+ * is ambiguous.
  */
-export function hasPageAlreadyAdvancedPastStep(stepStartUrl: string, currentUrl: string): boolean {
+export function hasPageAlreadyAdvancedPastStep(
+  stepStartUrl: string,
+  currentUrl: string,
+  stepInstruction: string
+): boolean {
   const start = originAndPath(stepStartUrl);
   const current = originAndPath(currentUrl);
   if (start === null || current === null) return false;
-  return start !== current;
+  if (start === current) return false;
+  const currentPathname = new URL(currentUrl).pathname;
+  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(currentPathname));
+  if (!landedOnSignIn) return true;
+  const norm = normalizeInstruction(stepInstruction);
+  return SIGN_IN_PATTERNS.some((p) => p.test(norm));
 }
-
-/** Word-boundary phrase patterns identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PATTERNS}. */
-const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
 const ACCOUNT_CREATION_PATTERNS = [
@@ -3126,7 +3139,10 @@ async function main(): Promise<void> {
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
-          if (!step.submitStep && hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)) {
+          if (
+            !step.submitStep &&
+            hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction)
+          ) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
             );
