@@ -4526,7 +4526,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string>,
+  unconditionalExcludeValues: ReadonlySet<string>,
+  restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>
@@ -4553,9 +4554,27 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
-    if (priorStepStateValues.size > 0) {
+    if (unconditionalExcludeValues.size > 0 || restrictedExcludeSourceByValue.size > 0) {
+      // A name-free join/chain value (unconditionalExcludeValues) excludes the
+      // whole field on ANY leaf coincidence, same as before. A RESTRICTED prior-
+      // step value (one with a real source field name) additionally requires
+      // keyNamesCorrelate(sourceName, key) — mirroring the discipline
+      // replaceGuardedAgainstExistingPlaceholders/findThreadedJoinFields already
+      // apply to the exact same class of value-coincidence false positive.
+      // Without this, a broken field's own unrelated short scalar leaf (a
+      // count/id) merely equalling SOME other step's produced value gets the
+      // ENTIRE array/object excluded from threading, even though nothing about
+      // that leaf's key names the same concept as the matched value's source.
       const carriesThreadedValue = [...walkAllPrimitiveLeaves(value)].some(
-        ({ value: leaf }) => leaf !== null && priorStepStateValues.has(String(leaf))
+        ({ value: leaf, path: leafPath }) => {
+          if (leaf === null) return false;
+          const leafValue = String(leaf);
+          if (unconditionalExcludeValues.has(leafValue)) return true;
+          const sourceName = restrictedExcludeSourceByValue.get(leafValue);
+          if (sourceName === undefined) return false;
+          const leafKey = leafPath.at(-1);
+          return leafKey !== undefined && keyNamesCorrelate(sourceName, leafKey);
+        }
       );
       if (carriesThreadedValue) continue;
     }
@@ -4609,7 +4628,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   template: string,
   objectBody: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string>,
+  unconditionalExcludeValues: ReadonlySet<string>,
+  restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
@@ -4626,21 +4646,42 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     template,
     envelope as Record<string, unknown>,
     outStructuredKeys,
-    priorStepStateValues,
+    unconditionalExcludeValues,
+    restrictedExcludeSourceByValue,
     searchFrom,
     envelopePath,
     objectBody
   );
 }
 
+/**
+ * `priorStepStateBindings` carries the SAME value→binding map
+ * {@link deriveStateVarByValue} produces. A binding with `restricted: true`
+ * (a value whose source has a real field name) only excludes a candidate
+ * field when its own leaf's key {@link keyNamesCorrelate}s with that source
+ * name — an unrestricted binding (name-free, e.g. a bare array-index chain
+ * hop) or a `joinFieldValues` entry excludes unconditionally on any leaf
+ * match, same as before. Without the correlation requirement, an array/
+ * object field whose own unrelated short scalar leaf (a count/id) merely
+ * EQUALS some other step's produced value gets the whole field wrongly
+ * excluded from threading — the same value-coincidence class of bug
+ * {@link keyNamesCorrelate}'s other call sites already guard against.
+ */
 export function applyStructuredValuePayloadSubstitutions(
   template: string,
   parsedBody: unknown,
   outStructuredKeys: Map<string, string>,
-  priorStepStateValues: ReadonlySet<string> = new Set()
+  priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
+  joinFieldValues: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
+  }
+  const unconditionalExcludeValues = new Set<string>(joinFieldValues);
+  const restrictedExcludeSourceByValue = new Map<string, string>();
+  for (const [value, binding] of priorStepStateBindings) {
+    if (binding.restricted) restrictedExcludeSourceByValue.set(value, binding.sourceName);
+    else unconditionalExcludeValues.add(value);
   }
   // A cruise-line-style multi-room/multi-guest search body commonly batches
   // per-element criteria as a top-level JSON ARRAY rather than a single
@@ -4658,7 +4699,8 @@ export function applyStructuredValuePayloadSubstitutions(
           result,
           element as Record<string, unknown>,
           outStructuredKeys,
-          priorStepStateValues,
+          unconditionalExcludeValues,
+          restrictedExcludeSourceByValue,
           cursor
         );
       result = nextResult;
@@ -4670,7 +4712,8 @@ export function applyStructuredValuePayloadSubstitutions(
     template,
     parsedBody as Record<string, unknown>,
     outStructuredKeys,
-    priorStepStateValues,
+    unconditionalExcludeValues,
+    restrictedExcludeSourceByValue,
     0
   );
   return result;
@@ -6143,7 +6186,7 @@ const MAX_URL_PARAM_DECODE_DEPTH = 3;
  * elsewhere), so narrowing its OTHER occurrences is only warranted once that
  * correlated occurrence is actually observed in the same text — see {@link
  * replaceGuardedAgainstExistingPlaceholders}. */
-interface StateVarBinding {
+export interface StateVarBinding {
   varName: string;
   sourceName: string;
   restricted: boolean;
@@ -7244,10 +7287,8 @@ export function emitMultiStepExecuteHttp(
             rawBodyWithFacetSplices,
             parsedBody,
             outStructuredKeys,
-            new Set([
-              ...deriveStateVarByValue(prior, cap).keys(),
-              ...(joinFieldValuesByStep.get(i) ?? []),
-            ])
+            deriveStateVarByValue(prior, cap),
+            joinFieldValuesByStep.get(i) ?? new Set()
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
