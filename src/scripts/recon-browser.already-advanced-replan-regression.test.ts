@@ -149,19 +149,25 @@ function shortCircuitFires(
   stepStartUrl: string,
   currentUrl: string
 ): boolean {
-  return !step.submitStep && hasPageAlreadyAdvancedPastStep(stepStartUrl, currentUrl);
+  return (
+    !step.submitStep && hasPageAlreadyAdvancedPastStep(stepStartUrl, currentUrl, step.instruction)
+  );
 }
 
 describe("recon-browser already-advanced replan regression (offline fixture)", () => {
   it("detects the page already advanced past the failed step by the time verification fails", () => {
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, POST_FAILURE_URL)).toBe(true);
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, POST_FAILURE_URL, FAILED_STEP)).toBe(
+      true
+    );
   });
 
   it("does not treat a same-origin-and-path query/hash-only change as advancement (fails closed toward replanning)", () => {
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}?modal=open`)).toBe(
-      false
-    );
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}#section`)).toBe(false);
+    expect(
+      hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}?modal=open`, FAILED_STEP)
+    ).toBe(false);
+    expect(
+      hasPageAlreadyAdvancedPastStep(STEP_START_URL, `${STEP_START_URL}#section`, FAILED_STEP)
+    ).toBe(false);
   });
 
   it("demonstrates the destructive outcome the pre-replan short-circuit exists to prevent: without it, none of the existing splice-time guards catch the re-authored earlier-form bridge", () => {
@@ -183,7 +189,7 @@ describe("recon-browser already-advanced replan regression (offline fixture)", (
   });
 
   it("regression guard: hasPageAlreadyAdvancedPastStep returns false when the page has not moved, so the flow loop's existing replan path remains reachable", () => {
-    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, STEP_START_URL)).toBe(false);
+    expect(hasPageAlreadyAdvancedPastStep(STEP_START_URL, STEP_START_URL, FAILED_STEP)).toBe(false);
   });
 });
 

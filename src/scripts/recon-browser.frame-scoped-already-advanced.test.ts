@@ -53,19 +53,35 @@ describe("recon-browser replan short-circuit frame-scoped already-advanced (offl
     // The wrapper page's own URL is identical before and after — a top-level
     // page.url() comparison alone would see no advancement at all.
     expect(WRAPPER_URL).toBe(WRAPPER_URL);
-    expect(hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure)).toBe(true);
+    expect(
+      hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, "Click the 'Continue' button")
+    ).toBe(true);
   });
 
   it("does not treat a same-origin-and-path query/hash-only change inside the frame as advancement", () => {
-    expect(hasPageAlreadyAdvancedPastStep(FRAME_STEP_2_URL, `${FRAME_STEP_2_URL}?modal=open`)).toBe(
-      false
-    );
-    expect(hasPageAlreadyAdvancedPastStep(FRAME_STEP_2_URL, `${FRAME_STEP_2_URL}#section`)).toBe(
-      false
-    );
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        FRAME_STEP_2_URL,
+        `${FRAME_STEP_2_URL}?modal=open`,
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        FRAME_STEP_2_URL,
+        `${FRAME_STEP_2_URL}#section`,
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
   });
 
   it("regression guard: returns false when the frame has not moved, so the flow loop's replan path remains reachable", () => {
-    expect(hasPageAlreadyAdvancedPastStep(FRAME_STEP_2_URL, FRAME_STEP_2_URL)).toBe(false);
+    expect(
+      hasPageAlreadyAdvancedPastStep(
+        FRAME_STEP_2_URL,
+        FRAME_STEP_2_URL,
+        "Click the 'Continue' button"
+      )
+    ).toBe(false);
   });
 });
