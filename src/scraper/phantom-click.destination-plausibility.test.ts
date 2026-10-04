@@ -53,6 +53,18 @@ describe("scraper/phantom-click isPlausibleStepDestination", () => {
       postUrl: "https://example.com/login",
       expected: false,
     },
+    {
+      name: "comma-free single-clause sign-in instruction landing on a sign-in-shaped path is plausible",
+      stepInstruction: "click the Sign In link",
+      postUrl: "https://apply.example.com/login",
+      expected: true,
+    },
+    {
+      name: "genuine sign-in action clause after a comma still landing on a sign-in-shaped path is plausible",
+      stepInstruction: "On the account options panel, click the Sign In button",
+      postUrl: "https://apply.example.com/login",
+      expected: true,
+    },
   ])("$name", ({ stepInstruction, postUrl, expected }) => {
     expect(isPlausibleStepDestination(stepInstruction, postUrl)).toBe(expected);
   });
