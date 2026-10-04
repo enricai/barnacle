@@ -172,10 +172,6 @@ describe("flow-runner/executeStepWithHealing — primary-loop urlChanged is gate
 });
 
 describe("flow-runner/executeStepWithHealing — n+16 fallback retryUrlChanged is gated by destination plausibility", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   function fakeN16Page(urls: { current: string }, clickTargetUrl: string): Page {
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
@@ -240,13 +236,12 @@ describe("flow-runner/executeStepWithHealing — n+16 fallback retryUrlChanged i
   const RESOLVED_XPATH_SELECTOR = "xpath=/html[1]/body[1]/div[1]/button[1]";
 
   beforeEach(() => {
+    vi.clearAllMocks();
     guardedAct.mockResolvedValue({
       success: true,
       message: "clicked",
       actionDescription: "Continue",
-      actions: [
-        { selector: RESOLVED_XPATH_SELECTOR, description: "Continue", method: "click" },
-      ],
+      actions: [{ selector: RESOLVED_XPATH_SELECTOR, description: "Continue", method: "click" }],
     });
     guardedObserve.mockImplementation(async (_stagehand: unknown, instruction?: unknown) =>
       typeof instruction === "string"

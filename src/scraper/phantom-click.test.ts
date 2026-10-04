@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
-import { classifyPhantomClick, isPlausibleStepDestination, SIGN_IN_PATTERNS } from "@/scraper/phantom-click";
+import {
+  classifyPhantomClick,
+  isPlausibleStepDestination,
+  SIGN_IN_PATTERNS,
+} from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/52270016990/apply-portal/apply";
 
