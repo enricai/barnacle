@@ -4584,6 +4584,36 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * search there stops an earlier element's already-rewritten (or still-frozen)
  * span from swallowing a later element's identically-named key.
  */
+function isTokenBoundaryChar(ch: string | undefined): boolean {
+  return ch === undefined || !/[A-Za-z0-9]/.test(ch);
+}
+
+/**
+ * True when `needle` occurs in `haystack` at a token boundary (flanked only
+ * by non-alphanumeric characters or the string's own edges) — e.g. a
+ * navigateTo facet's bare literal recurring inside a captured array element
+ * that suffixes it with a constant delimiter string (`"<literal>;filterId=
+ * urlFriendlyId"`). Exact equality alone misses this recurrence shape since
+ * the leaf carries the delimiter-joined text, not the bare literal. Mirrors
+ * the same boundary discipline `bindsWithoutCollision` already applies when
+ * registering a value for substring splicing in the first place.
+ */
+function containsValueAtTokenBoundary(haystack: string, needle: string): boolean {
+  if (needle.length === 0 || needle === haystack) return false;
+  let from = 0;
+  while (true) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return false;
+    if (
+      isTokenBoundaryChar(haystack[at - 1]) &&
+      isTokenBoundaryChar(haystack[at + needle.length])
+    ) {
+      return true;
+    }
+    from = at + needle.length;
+  }
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4642,6 +4672,14 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       // {@link buildValueAlternationPattern}'s own token-boundary rule so a
       // facet value that merely happens to be a substring of an unrelated,
       // dash/dot-concatenated compound token is still correctly left alone.
+      //
+      // Beyond exact equality, a leaf that carries an excluded value as a
+      // token-bounded SUBSTRING (e.g. a navigateTo facet literal recurring
+      // inside an array element suffixed by a constant delimiter string, like
+      // `"<literal>;filterId=urlFriendlyId"`) must exclude the field too —
+      // otherwise the field gets frozen wholesale before the later
+      // literal-value interpolation pass (which operates on text, not parsed
+      // values) ever gets a chance to splice the facet out of that element.
       const carriesThreadedValue = [...walkAllPrimitiveLeaves(value)].some(
         ({ value: leaf, path: leafPath }) => {
           if (leaf === null) return false;
@@ -4650,6 +4688,9 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
           if (payloadAccessorExcludePattern !== null) {
             payloadAccessorExcludePattern.lastIndex = 0;
             if (payloadAccessorExcludePattern.test(leafValue)) return true;
+          }
+          for (const excluded of unconditionalExcludeValues) {
+            if (containsValueAtTokenBoundary(leafValue, excluded)) return true;
           }
           const sourceName = restrictedExcludeSourceByValue.get(leafValue);
           if (sourceName === undefined) return false;
