@@ -89,7 +89,7 @@ export function isPlausibleStepDestination(stepInstruction: string, postUrl: str
     }
   })();
   if (pathname === null) return true;
-  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname));
+  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname.toLowerCase()));
   if (!landedOnSignIn) return true;
   const normalized = normalizeForPatternMatch(stepInstruction);
   return SIGN_IN_PATTERNS.some((p) => p.test(normalized));

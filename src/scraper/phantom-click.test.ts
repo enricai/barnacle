@@ -212,6 +212,12 @@ describe("isPlausibleStepDestination", () => {
     expect(isPlausibleStepDestination("click the Create Account button", "not-a-url")).toBe(true);
   });
 
+  it("vetoes a capitalized sign-in-shaped path (e.g. /SignIn) the same as a lowercase one", () => {
+    expect(
+      isPlausibleStepDestination("click the Create Account button", "https://x.com/SignIn")
+    ).toBe(false);
+  });
+
   it("exports SIGN_IN_PATTERNS", () => {
     expect(SIGN_IN_PATTERNS.length).toBeGreaterThan(0);
   });
