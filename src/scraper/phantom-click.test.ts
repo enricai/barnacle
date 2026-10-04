@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
-import { classifyPhantomClick } from "@/scraper/phantom-click";
+import {
+  classifyPhantomClick,
+  isPlausibleStepDestination,
+  SIGN_IN_PATTERNS,
+} from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/52270016990/apply-portal/apply";
 
@@ -186,5 +190,39 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
       post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 + 10550 },
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
+  });
+});
+
+describe("isPlausibleStepDestination", () => {
+  it("vetoes a sign-in-shaped path when the step instruction is not about signing in", () => {
+    expect(
+      isPlausibleStepDestination("click the Create Account button", "https://x.com/login")
+    ).toBe(false);
+  });
+
+  it("credits a sign-in-shaped path when the step instruction is about signing in", () => {
+    expect(isPlausibleStepDestination("click the Sign In button", "https://x.com/login")).toBe(
+      true
+    );
+  });
+
+  it("credits a non-sign-in-shaped path regardless of the step instruction", () => {
+    expect(
+      isPlausibleStepDestination("click the Create Account button", "https://x.com/register")
+    ).toBe(true);
+  });
+
+  it("fails open on an unparseable postUrl", () => {
+    expect(isPlausibleStepDestination("click the Create Account button", "not-a-url")).toBe(true);
+  });
+
+  it("vetoes a capitalized sign-in-shaped path (e.g. /SignIn) the same as a lowercase one", () => {
+    expect(
+      isPlausibleStepDestination("click the Create Account button", "https://x.com/SignIn")
+    ).toBe(false);
+  });
+
+  it("exports SIGN_IN_PATTERNS", () => {
+    expect(SIGN_IN_PATTERNS.length).toBeGreaterThan(0);
   });
 });

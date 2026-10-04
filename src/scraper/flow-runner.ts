@@ -92,6 +92,7 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
+  isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
@@ -11903,7 +11904,8 @@ export async function executeStepWithHealing(params: {
     }
 
     const networkFired = post.networkCount > pre.networkCount;
-    const urlChanged = hasOriginOrPathChanged(pre.url, post.url);
+    const urlChanged =
+      hasOriginOrPathChanged(pre.url, post.url) && isPlausibleStepDestination(step, post.url);
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     const isClick = resolvedAction !== null && resolvedAction.method === "click";
@@ -12203,6 +12205,7 @@ export async function executeStepWithHealing(params: {
       elementStateChanged: domVerified,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+      destinationPlausible: isPlausibleStepDestination(step, post.url),
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -12562,7 +12565,9 @@ export async function executeStepWithHealing(params: {
             page
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
-          const retryUrlChanged = hasOriginOrPathChanged(pre.url, retryPost.url);
+          const retryUrlChanged =
+            hasOriginOrPathChanged(pre.url, retryPost.url) &&
+            isPlausibleStepDestination(step, retryPost.url);
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
@@ -12765,6 +12770,7 @@ export async function executeStepWithHealing(params: {
             post: retryPost,
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retrySubmitShaped,
+            destinationPlausible: isPlausibleStepDestination(step, retryPost.url),
           });
           let retryVerified =
             !clickBlockedByDisabled &&

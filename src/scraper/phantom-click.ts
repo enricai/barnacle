@@ -41,6 +41,14 @@ export interface PhantomClickAttempt {
    * so non-submit callers and existing tests are unchanged; defaults to false.
    */
   isSubmitShapedStep?: boolean;
+  /**
+   * Mirrors flow-runner's own `isPlausibleStepDestination` gate on its
+   * `urlChanged`/`retryUrlChanged` signals: false when the post-URL landed
+   * on a destination (e.g. a sign-in gate) that doesn't plausibly
+   * corroborate the step's own instruction. Optional so callers/tests that
+   * don't supply it default to true (no veto), matching today's behavior.
+   */
+  destinationPlausible?: boolean;
 }
 
 function originAndPathOf(url: string): string {
@@ -61,6 +69,38 @@ function originAndPathOf(url: string): string {
  */
 export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean {
   return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
+}
+
+/** Word-boundary phrase patterns identifying a sign-in/log-in step. */
+export const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
+
+/** Collapses whitespace and lowercases, so instruction text compares consistently against {@link SIGN_IN_PATTERNS}. */
+function normalizeForPatternMatch(instruction: string): string {
+  return instruction.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Gates whether a landed destination plausibly corroborates a step's own
+ * instruction, so a URL change alone is never enough to credit advancement:
+ * if the destination is sign-in-shaped but the step itself wasn't about
+ * signing in, the page bounced back to an auth gate rather than advancing.
+ * Fails open (returns true) on an unparseable postUrl, matching
+ * {@link hasOriginOrPathChanged}'s own try/catch style, since an unparseable
+ * URL gives no basis for a sign-in-shaped veto.
+ */
+export function isPlausibleStepDestination(stepInstruction: string, postUrl: string): boolean {
+  const pathname = (() => {
+    try {
+      return new URL(postUrl).pathname;
+    } catch {
+      return null;
+    }
+  })();
+  if (pathname === null) return true;
+  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname.toLowerCase()));
+  if (!landedOnSignIn) return true;
+  const normalized = normalizeForPatternMatch(stepInstruction);
+  return SIGN_IN_PATTERNS.some((p) => p.test(normalized));
 }
 
 export type PhantomClickVerdict =
@@ -93,7 +133,9 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
 
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
   const bytesDelta = attempt.post.bodyHtmlLength - attempt.pre.bodyHtmlLength;
-  const urlChanged = hasOriginOrPathChanged(attempt.pre.url, attempt.post.url);
+  const urlChanged =
+    hasOriginOrPathChanged(attempt.pre.url, attempt.post.url) &&
+    attempt.destinationPlausible !== false;
   // The resolved element's OWN committed selection state changed across the
   // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
   // swap, ARIA, native `checked`) registers here with no network, no URL, and a
