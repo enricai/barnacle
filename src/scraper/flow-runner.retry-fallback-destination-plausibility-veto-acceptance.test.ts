@@ -19,10 +19,14 @@ import type { Logger } from "@/types/logging";
  * mirroring flow-runner.trusted-click-throw-wrong-destination-veto-
  * acceptance.test.ts's trigger mechanism, so the fallback is reached only
  * after the primary attempt's trusted-click delivery is exhausted — not
- * driven straight into the fallback by a mock. `isFinalStep: false` and
- * `submitStep: false` isolate `retryVerified` down to `retryUrlChanged`
- * alone (no `retryDestinationUnconfirmed`/submit-endpoint-judge vetoes in
- * play), so a flip of this test depends on exactly the plausibility gate.
+ * driven straight into the fallback by a mock. `submitStep: true` makes
+ * `retrySubmitShaped` true unconditionally, and the resolved element's
+ * accessible name doesn't clear the submit-shape bar, so neither
+ * classifyPhantomClick's plausibility-unaware OR-branch nor the
+ * submit-endpoint judge corroboration branch engages — isolating
+ * `retryVerified` down to `retryUrlChanged` alone (no
+ * `retryDestinationUnconfirmed`/submit-endpoint-judge vetoes in play), so a
+ * flip of this test depends on exactly the plausibility gate.
  * Site-agnostic fixture (generic "shop.example.com" checkout flow), not any
  * real site or plugin.
  */
