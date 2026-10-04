@@ -480,6 +480,42 @@ export function harvestPersonaBindings(
   return bindings;
 }
 
+/** A navigateTo step's declared `payloadField` paired with its extracted hash
+ * literal, in flow order. See {@link extractNavigateToFacetOrder}. */
+export interface NavigateToFacetBinding {
+  readonly value: string;
+  readonly field: string;
+}
+
+/**
+ * Re-walks the flow for navigateTo+payloadField steps in isolation, in flow
+ * order, independent of whether {@link harvestPersonaBindings} could anchor
+ * each one's literal anywhere in the capture. `harvestPersonaBindings` only
+ * sees flow steps (not captures), so it cannot tell which of its bindings
+ * will turn out to have zero recurrence downstream — this lets the emitter,
+ * which DOES see the captures, re-derive the same (value, field) pairs and
+ * try the causally-adjacent-action fallback (see `emitMultiStepExecuteHttp`)
+ * for whichever ones the recurrence-anchored path left unbound.
+ */
+export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
+  const order: NavigateToFacetBinding[] = [];
+  let previousNavigateToHash: string | undefined;
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.navigateTo === undefined) continue;
+    const hashIndex = step.navigateTo.indexOf("#");
+    const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+    if (!step.payloadField) {
+      previousNavigateToHash = currentHash;
+      continue;
+    }
+    const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
+    previousNavigateToHash = currentHash;
+    if (value === null || value.length === 0) continue;
+    order.push({ value, field: step.payloadField });
+  }
+  return order;
+}
+
 /**
  * Detects a flow step whose quoted VALUE is the space-joined concatenation of
  * two already-known field values (either order), e.g. a signature step whose
@@ -6879,6 +6915,106 @@ function emitFoldMatchAndMergeLines(
   ];
 }
 
+/** Parses a URL's query string into a key→value map. Returns an empty map on
+ * a malformed URL or when there is no query string. */
+function parseUrlQueryParams(url: string): Map<string, string> {
+  const params = new Map<string, string>();
+  try {
+    for (const [key, value] of new URL(url).searchParams) params.set(key, value);
+  } catch {
+    // malformed URL — treat as having no query params
+  }
+  return params;
+}
+
+/** Parses a captured JSON request body into its string leaf values. Returns
+ * an empty array when the body is absent or not valid JSON. */
+function parseBodyLeafValues(requestPostData: string | null): string[] {
+  if (!requestPostData) return [];
+  try {
+    return [...walkStringLeaves(JSON.parse(requestPostData))].map((leaf) => leaf.value);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Walks `actions` in order and groups the query-string/body leaf values that
+ * appear in an action's own capture but did NOT appear in the immediately-
+ * preceding action's capture, PER TRANSITION (one entry per adjacent action
+ * pair that introduced at least one such value). This is the generic
+ * "what's new here" diff {@link correlateUnreachableNavigateToFacets} uses —
+ * kept per-transition (rather than flattened) so a transition that
+ * introduces more than one new value, or multiple transitions that fire
+ * between two facets' real actions, can be told apart from the single clean
+ * transition a lone facet causes.
+ *
+ * The first action never contributes: with no predecessor to diff against,
+ * every one of its values would trivially count as "new", which is nearly
+ * always the baseline/listing call a navigateTo-declared filter does NOT
+ * affect (the already-working recurrence-anchored path exists precisely
+ * because a real facet DOES recur in a later request; nothing here changes
+ * that — this only supplies values for facets that are not found at all).
+ */
+function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionStep[]): string[][] {
+  const seenGlobally = new Set<string>();
+  const transitions: string[][] = [];
+  for (let i = 1; i < actions.length; i++) {
+    const prior = actions[i - 1]!.capture;
+    const current = actions[i]!.capture;
+    const seenThisTransition = new Set<string>();
+    const values: string[] = [];
+    const record = (value: string): void => {
+      if (value.length === 0 || seenGlobally.has(value) || seenThisTransition.has(value)) return;
+      seenThisTransition.add(value);
+      values.push(value);
+    };
+    const priorParams = parseUrlQueryParams(prior.url);
+    for (const [key, value] of parseUrlQueryParams(current.url)) {
+      if (priorParams.get(key) !== value) record(value);
+    }
+    const priorLeaves = new Set(parseBodyLeafValues(prior.requestPostData));
+    for (const value of parseBodyLeafValues(current.requestPostData)) {
+      if (!priorLeaves.has(value)) record(value);
+    }
+    for (const value of values) seenGlobally.add(value);
+    if (values.length > 0) transitions.push(values);
+  }
+  return transitions;
+}
+
+/**
+ * Resolves each zero-recurrence navigateTo facet (in flow order) to the real
+ * request value it causally affects, or returns `null` when the correlation
+ * cannot be trusted.
+ *
+ * Pairing is positional — facet N gets the Nth qualifying transition — which
+ * is only safe when every transition in the pool is itself unambiguous (an
+ * action introduced EXACTLY ONE new value, so there is no question which
+ * value within it is "the" new one) AND the pool's size exactly matches the
+ * number of facets awaiting a value. A transition that introduces more than
+ * one new value is dropped from the pool entirely rather than guessing which
+ * of its values is real; if that drops the pool below (or an unrelated
+ * single-value transition pushes it above) the facet count, the pairing is
+ * no longer guaranteed to line facets up with the RIGHT transition, so
+ * nothing is bound — leaving a facet declared-but-unbound is preferable to
+ * silently wiring it to another facet's (or an unrelated transition's) value.
+ */
+function correlateUnreachableNavigateToFacets(
+  facets: readonly NavigateToFacetBinding[],
+  actions: readonly ActionStep[]
+): ReadonlyMap<string, string> | null {
+  const unambiguousValues = collectNewlyAppearingRequestValueTransitions(actions)
+    .filter((transition) => transition.length === 1)
+    .map((transition) => transition[0]!);
+  if (unambiguousValues.length !== facets.length) return null;
+  const byField = new Map<string, string>();
+  facets.forEach(({ field }, index) => {
+    byField.set(field, unambiguousValues[index]!);
+  });
+  return byField;
+}
+
 /** Exported for unit testing — lets tests drive the multipart-upload code path directly
  * without going through the full emitContractTs pipeline. */
 export function emitMultiStepExecuteHttp(
@@ -7018,6 +7154,48 @@ export function emitMultiStepExecuteHttp(
     if (!payloadAccessorByValue.has(value)) payloadAccessorByValue.set(value, accessor);
     const field = accessor.startsWith("payload.") ? accessor.slice("payload.".length) : null;
     if (field !== null && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(field)) outDiscoveredFields.add(field);
+  }
+  // Fallback for a navigateTo step's declared `payloadField` whose extracted
+  // hash literal has ZERO recurrence anywhere in the capture — not merely
+  // blocked by the collision guard above, but genuinely absent from every
+  // action's URL, body, AND headers. `harvestPersonaBindings` can only ever
+  // register the one raw literal it extracted; when the site never replays
+  // that literal verbatim (it's transformed, mapped to a backend code, or
+  // otherwise re-shaped before the real request), the field is structurally
+  // unreachable by the recurrence-anchored path above, exactly like a
+  // declared-but-never-bound schema field.
+  //
+  // Site-agnostic, position/causality-based correlation: a navigateTo step
+  // always precedes the real request its facet affects, so each such
+  // unreachable facet (in flow order) is paired with the next "new" value —
+  // a query-string or body leaf that a later action's capture carries but
+  // its immediately-preceding action's capture does not — found by walking
+  // the actions in order. This is a best-effort structural guarantee, not a
+  // completeness proof: when the adjacent action's own capture carries no
+  // new value at all (the facet's effect is purely server-side / implicit),
+  // or when the correlation is ambiguous (see
+  // `correlateUnreachableNavigateToFacets`), there is nothing safe to splice
+  // and the field(s) stay unbound rather than risk a wrong binding.
+  const appearsAnywhereInCapture = (value: string): boolean =>
+    actions.some(
+      (action) =>
+        action.capture.url.includes(value) ||
+        (action.capture.requestPostData?.includes(value) ?? false) ||
+        Object.values(action.capture.requestHeaders).some((h) => h.includes(value))
+    );
+  const unreachableNavigateToFacets = extractNavigateToFacetOrder(flowSteps).filter(
+    ({ value }) => !appearsAnywhereInCapture(value)
+  );
+  if (unreachableNavigateToFacets.length > 0) {
+    const correlated = correlateUnreachableNavigateToFacets(unreachableNavigateToFacets, actions);
+    for (const { field } of correlated === null ? [] : unreachableNavigateToFacets) {
+      const diffed = correlated?.get(field);
+      if (diffed === undefined) continue;
+      if (!bindsWithoutCollision(diffed)) continue;
+      if (payloadAccessorByValue.has(diffed)) continue;
+      payloadAccessorByValue.set(diffed, `payload.${field}`);
+      if (isValidJsIdentifier(field)) outDiscoveredFields.add(field);
+    }
   }
   // Job coordinates from the recon entry URL's query string (e.g.
   // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
@@ -13827,7 +14005,10 @@ function computeFlowPayloadFieldNames(
     if (isObj && step.navigateTo !== undefined) {
       if (step.payloadField) {
         payloadFieldNames.add(step.payloadField);
-        registerFieldOptionality(step.payloadField, step.optional === true);
+        // An explicitly declared payloadField is always required at the
+        // schema level, independent of step.optional's execution-skip
+        // semantics (which the browser-flow step record still honors as-is).
+        registerFieldOptionality(step.payloadField, false);
       }
       continue;
     }
@@ -13845,9 +14026,13 @@ function computeFlowPayloadFieldNames(
         ? resolveCompositePersonaFields(instruction, knownFieldValues)
         : null;
     const optional = isObj ? step.optional === true : false;
+    const explicit = isObj ? step.payloadField : undefined;
     if (field !== null) {
       payloadFieldNames.add(field);
-      registerFieldOptionality(field, optional);
+      // An explicit payloadField annotation is always required at the
+      // schema level; only the vocabulary/composite-persona heuristic falls
+      // back to step.optional's execution-skip semantics.
+      registerFieldOptionality(field, explicit ? false : optional);
     }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);

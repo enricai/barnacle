@@ -222,6 +222,7 @@ describe("recon-generate CLI — generalized required-schema-field body-usage st
             step: "navigate to the widgets catalog category page",
             navigateTo: `https://${OWN_BACKEND_HOST}/#/catalog/${CATEGORY_FRAGMENT}`,
             payloadField: "Category",
+            optional: true,
           },
           { step: "browse catalog search" },
           { step: "submit catalog search", submitStep: true },
@@ -251,6 +252,12 @@ describe("recon-generate CLI — generalized required-schema-field body-usage st
     // The corpus is shaped to declare 5+ distinct required fields — a
     // trivial/empty extraction would silently pass with nothing to check.
     expect(requiredFields.length).toBeGreaterThanOrEqual(5);
+
+    // The navigateTo step carrying this payloadField is itself `optional:
+    // true` — that must NOT downgrade the declared PayloadSchema field to
+    // `.optional()` or drop it from requiredFields entirely. Step-level
+    // optionality and payload-field requiredness are independent axes.
+    expect(requiredFields).toContain("Category");
 
     const bodyAccessors = extractBodyAccessors(contract);
     const headerAccessors = extractHeaderAccessors(contract);
