@@ -485,6 +485,7 @@ export function harvestPersonaBindings(
 export interface NavigateToFacetBinding {
   readonly value: string;
   readonly field: string;
+  readonly optional: boolean;
 }
 
 /**
@@ -511,7 +512,7 @@ export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): Navigat
     const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
     previousNavigateToHash = currentHash;
     if (value === null || value.length === 0) continue;
-    order.push({ value, field: step.payloadField });
+    order.push({ value, field: step.payloadField, optional: step.optional === true });
   }
   return order;
 }
