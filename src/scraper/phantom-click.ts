@@ -80,13 +80,75 @@ function normalizeForPatternMatch(instruction: string): string {
 }
 
 /**
+ * Closed list of recognized step-instruction imperative verbs, mirroring the
+ * closed-list style of recon-browser.ts's ACCOUNT_CREATION_PATTERNS/
+ * SUBMIT_SHAPED_INSTRUCTION_PATTERNS, used to isolate a step instruction's
+ * own action clause(s) from surrounding descriptive context.
+ */
+const STEP_ACTION_VERBS = [
+  "click",
+  "tap",
+  "press",
+  "select",
+  "choose",
+  "check",
+  "uncheck",
+  "toggle",
+  "fill",
+  "type",
+  "enter",
+  "input",
+  "upload",
+  "attach",
+  "drag",
+  "drop",
+  "scroll",
+  "submit",
+  "switch",
+  "navigate",
+  "open",
+  "expand",
+  "collapse",
+  "confirm",
+  "agree",
+  "accept",
+  "continue",
+];
+
+const STEP_ACTION_VERB_PATTERN = new RegExp(`\\b(?:${STEP_ACTION_VERBS.join("|")})\\b`);
+
+/**
+ * Splits a step instruction into its comma/"to"/"and"-delimited clauses and
+ * keeps only the ones containing a recognized imperative action verb, so
+ * pattern matching (e.g. {@link SIGN_IN_PATTERNS}) targets the step's own
+ * action rather than descriptive context that merely mentions a page element.
+ * Falls back to every clause when none carry a recognized verb, preserving
+ * today's conservative whole-text behavior for unparseable instruction shapes
+ * rather than silently passing. Exported so other sign-in-shaped-instruction
+ * checks (e.g. bugfix-002) can reuse the same clause isolation.
+ */
+export function splitIntoActionClauses(instruction: string): string[] {
+  const normalized = normalizeForPatternMatch(instruction);
+  const clauses = normalized
+    .split(/,| (?:to|and) /)
+    .map((clause) => clause.trim())
+    .filter((clause) => clause.length > 0);
+  const actionClauses = clauses.filter((clause) => STEP_ACTION_VERB_PATTERN.test(clause));
+  return actionClauses.length > 0 ? actionClauses : clauses;
+}
+
+/**
  * Gates whether a landed destination plausibly corroborates a step's own
  * instruction, so a URL change alone is never enough to credit advancement:
  * if the destination is sign-in-shaped but the step itself wasn't about
  * signing in, the page bounced back to an auth gate rather than advancing.
- * Fails open (returns true) on an unparseable postUrl, matching
- * {@link hasOriginOrPathChanged}'s own try/catch style, since an unparseable
- * URL gives no basis for a sign-in-shaped veto.
+ * Matches {@link SIGN_IN_PATTERNS} only against the instruction's own
+ * action clause(s) (see {@link splitIntoActionClauses}), so a step whose
+ * surrounding descriptive text merely mentions a sign-in form isn't
+ * mistaken for a step that is itself about signing in. Fails open (returns
+ * true) on an unparseable postUrl, matching {@link hasOriginOrPathChanged}'s
+ * own try/catch style, since an unparseable URL gives no basis for a
+ * sign-in-shaped veto.
  */
 export function isPlausibleStepDestination(stepInstruction: string, postUrl: string): boolean {
   const pathname = (() => {
@@ -99,8 +161,8 @@ export function isPlausibleStepDestination(stepInstruction: string, postUrl: str
   if (pathname === null) return true;
   const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname.toLowerCase()));
   if (!landedOnSignIn) return true;
-  const normalized = normalizeForPatternMatch(stepInstruction);
-  return SIGN_IN_PATTERNS.some((p) => p.test(normalized));
+  const actionClauses = splitIntoActionClauses(stepInstruction);
+  return actionClauses.some((clause) => SIGN_IN_PATTERNS.some((p) => p.test(clause)));
 }
 
 export type PhantomClickVerdict =
