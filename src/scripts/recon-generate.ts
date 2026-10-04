@@ -8670,6 +8670,42 @@ export function spliceFacetsIntoStringVariable(
 }
 
 /**
+ * Splices a captured array-valued GraphQL variable's elements against
+ * navigateTo facet bindings instead of the `key:value` segment grammar
+ * {@link spliceFacetsIntoStringVariable} matches — an array element like
+ * `widget-x;filterId=urlFriendlyId` carries a bare literal plus a constant
+ * trailing delimiter, with no `key:` prefix to key off of. Matching is
+ * token-boundary guarded the same way {@link bindsWithoutCollision} (recon-
+ * generate.ts ~7223) guards persona bindings elsewhere in this file, so a
+ * facet literal that's merely a substring of an unrelated element never
+ * misfires.
+ */
+export function spliceFacetsIntoArrayVariable(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[]
+): string | null {
+  if (!Array.isArray(value)) return null;
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const matchFacet = (element: string): NavigateToFacetBinding | undefined =>
+    facets.find(({ value: literal }) => {
+      if (element === literal) return true;
+      if (!element.startsWith(literal)) return false;
+      return !isAlnum(element[literal.length]);
+    });
+  let matchCount = 0;
+  const elements = (value as unknown[]).map((element) => {
+    if (typeof element !== "string") return JSON.stringify(element);
+    const matched = matchFacet(element);
+    if (!matched) return JSON.stringify(element);
+    matchCount++;
+    const suffix = element.slice(matched.value.length);
+    return `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+  });
+  if (matchCount === 0) return null;
+  return `[${elements.join(", ")}]`;
+}
+
+/**
  * Renders the variables literal for the primary-operation getGql() call —
  * each key from the selected capture's own recorded variables is bound to
  * `payload.<Field>` when it correlates (case-insensitively) with one of the
@@ -8680,12 +8716,16 @@ export function spliceFacetsIntoStringVariable(
  * other value is emitted verbatim via JSON.stringify. `optionalFieldNames`
  * marks which of `payloadFieldNames` a facet-string splice should treat as
  * optional (see {@link spliceFacetsIntoStringVariable}); it has no effect on
- * top-level key correlation.
+ * top-level key correlation. When a value is an array (not itself a string
+ * key correlation candidate), its elements are matched against
+ * `navigateToFacets` instead — see {@link spliceFacetsIntoArrayVariable} for
+ * why that's a distinct grammar from the `key:value` one above.
  */
 function renderGqlVariablesExpr(
   variables: unknown,
   payloadFieldNames: Set<string> | undefined,
-  optionalFieldNames: ReadonlySet<string> = new Set()
+  optionalFieldNames: ReadonlySet<string> = new Set(),
+  navigateToFacets: readonly NavigateToFacetBinding[] = []
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
@@ -8693,7 +8733,8 @@ function renderGqlVariablesExpr(
     const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
     const facetSpliceExpr = matchedField
       ? null
-      : spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
+      : (spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
+        spliceFacetsIntoArrayVariable(value, navigateToFacets));
     const valueExpr = matchedField
       ? `payload.${matchedField}`
       : (facetSpliceExpr ?? JSON.stringify(value));
@@ -12544,6 +12585,13 @@ export function emitContractTs(opts: {
    * corresponding payload-schema field `.optional()` and is threaded into
    * {@link renderGqlVariablesExpr} so an absent optional facet drops its
    * segment instead of splicing `undefined` into a GraphQL filter string. */ optionalPayloadFieldNames?: ReadonlySet<string>;
+  /** The flow's own steps — re-walked via {@link extractNavigateToFacetOrder}
+   * so the GraphQL variables path can splice a captured array-valued
+   * variable's elements against the same navigateTo facet bindings the REST
+   * body path already correlates against (see
+   * {@link spliceFacetsIntoArrayVariable}). Defaults to `[]` (no array
+   * splicing) for call sites that don't have a flow. */
+  flowSteps?: FlowStepInput[];
   /** Response-header/cookie-origin state bindings collected from the action
    * sequence's produces[] (see `collectHeaderBindings`) — rendered as
    * `createHttpClient`'s `bind` option so a value like a `Set-Cookie`-minted
@@ -12606,6 +12654,7 @@ export function emitContractTs(opts: {
     valueConstraints = EMPTY_VALUE_CONSTRAINTS,
     payloadFieldNames,
     optionalPayloadFieldNames = new Set<string>(),
+    flowSteps: contractFlowSteps = [],
     headerBindings = [],
     unpopulatedDeclaredVariables = [],
     fallbackGateSpec = {},
@@ -13181,10 +13230,21 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
+  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps);
   const gqlVariablesExpr = gqlOperationName
-    ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
+    ? renderGqlVariablesExpr(
+        gqlVariables,
+        payloadFieldNames,
+        optionalPayloadFieldNames,
+        navigateToFacets
+      )
     : paginationSignal
-      ? renderGqlVariablesExpr(gqlVariables, payloadFieldNames, optionalPayloadFieldNames)
+      ? renderGqlVariablesExpr(
+          gqlVariables,
+          payloadFieldNames,
+          optionalPayloadFieldNames,
+          navigateToFacets
+        )
       : "{ q: payload.query }";
 
   /** Builds the nested `for` loop block(s) — see {@link pathToFoldLoopLines}
@@ -15566,6 +15626,7 @@ async function main(): Promise<void> {
       isSubmissionFlow,
       inputBody,
       hasMultipartStep,
+      flowSteps,
       actionSteps,
       foldReturnSpec,
       discoveredFormFields,
