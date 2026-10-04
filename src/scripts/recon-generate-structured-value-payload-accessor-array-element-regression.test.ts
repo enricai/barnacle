@@ -100,6 +100,38 @@ describe("applyStructuredValuePayloadSubstitutions — payload-accessor literal 
     expect(outStructuredKeys.has("lineItems")).toBe(false);
   });
 
+  it("still excludes unconditionally on an unrestricted (name-free) prior-step value match, with payloadAccessorExcludeValues present but unused", () => {
+    const parsedBody = {
+      lineItems: [{ sku: "WIDGET-1", quantity: 2 }],
+    };
+    const template = JSON.stringify(parsedBody);
+    const outStructuredKeys = new Map<string, string>();
+
+    const priorStepStateBindings = new Map<string, StateVarBinding>([
+      [
+        "2",
+        {
+          varName: "chainValue0",
+          sourceName: "0",
+          restricted: false,
+          unconditional: true,
+        },
+      ],
+    ]);
+
+    const result = applyStructuredValuePayloadSubstitutions(
+      template,
+      parsedBody,
+      outStructuredKeys,
+      priorStepStateBindings,
+      new Set(),
+      new Map()
+    );
+
+    expect(result).toBe(template);
+    expect(outStructuredKeys.has("lineItems")).toBe(false);
+  });
+
   it("still threads a field whose leaf coincidentally equals an unrelated restricted prior-step value, with payloadAccessorExcludeValues present but unused", () => {
     const parsedBody = {
       lineItems: [
