@@ -4553,7 +4553,12 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * and swap for `${item.<field>}`. Freezing either into an opaque
  * `${JSON.stringify(payload.tokens)}` blob here would silently drop the
  * value the request depends on, breaking the fold at exactly the case an
- * ARRAY/OBJECT-wrapped join field represents.
+ * ARRAY/OBJECT-wrapped join field represents. A candidate whose leaves
+ * include a value already registered as a payload-accessor literal (e.g. a
+ * facet value a prior step derived and already wired for splicing elsewhere,
+ * such as a `departmentCode` recurring inside a `tags` array) is excluded on
+ * the same unconditional basis — it is already-threaded text waiting on the
+ * substring-splice pass, not caller-supplied history data.
  *
  * A body with no detected form envelope worth swallowing into (a facet/
  * search body — all scalars, if any, sit directly at the root) still needs
@@ -4717,24 +4722,34 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
  * (a value whose source has a real field name) only excludes a candidate
  * field when its own leaf's key {@link keyNamesCorrelate}s with that source
  * name — an unrestricted binding (name-free, e.g. a bare array-index chain
- * hop) or a `joinFieldValues` entry excludes unconditionally on any leaf
- * match, same as before. Without the correlation requirement, an array/
- * object field whose own unrelated short scalar leaf (a count/id) merely
- * EQUALS some other step's produced value gets the whole field wrongly
- * excluded from threading — the same value-coincidence class of bug
- * {@link keyNamesCorrelate}'s other call sites already guard against.
+ * hop), a `joinFieldValues` entry, or a `payloadAccessorExcludeValues` key
+ * excludes unconditionally on any leaf match, same as before.
+ * `payloadAccessorExcludeValues` carries the same value→accessor map already
+ * registered for substring splicing elsewhere (e.g. a facet value derived
+ * from an earlier step), so a candidate field whose leaf already matches one
+ * of those literals is left alone here too, instead of being wholesale-
+ * swallowed into an opaque `${JSON.stringify(payload.<key>)}` blob before
+ * that splice gets a chance to thread it. Without the correlation
+ * requirement, an array/object field whose own unrelated short scalar leaf
+ * (a count/id) merely EQUALS some other step's produced value gets the whole
+ * field wrongly excluded from threading — the same value-coincidence class
+ * of bug {@link keyNamesCorrelate}'s other call sites already guard against.
  */
 export function applyStructuredValuePayloadSubstitutions(
   template: string,
   parsedBody: unknown,
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
-  joinFieldValues: ReadonlySet<string> = new Set()
+  joinFieldValues: ReadonlySet<string> = new Set(),
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
   }
   const unconditionalExcludeValues = new Set<string>(joinFieldValues);
+  for (const value of payloadAccessorExcludeValues.keys()) {
+    unconditionalExcludeValues.add(value);
+  }
   const restrictedExcludeSourceByValue = new Map<string, string>();
   for (const [value, binding] of priorStepStateBindings) {
     if (binding.restricted) restrictedExcludeSourceByValue.set(value, binding.sourceName);
@@ -7500,7 +7515,8 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
-            joinFieldValuesByStep.get(i) ?? new Set()
+            joinFieldValuesByStep.get(i) ?? new Set(),
+            payloadAccessorByValue
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
