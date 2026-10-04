@@ -117,7 +117,11 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
-import { isPlausibleStepDestination, SIGN_IN_PATTERNS } from "@/scraper/phantom-click";
+import {
+  isPlausibleStepDestination,
+  SIGN_IN_PATTERNS,
+  splitIntoActionClauses,
+} from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
@@ -1463,10 +1467,11 @@ export function isReplanRegressingAcrossAuthBoundary(
     return ACCOUNT_CREATION_PATTERNS.some((p) => p.test(norm));
   });
   if (!hasAccountCreation) return false;
-  return newSteps.some((s) => {
-    const norm = normalizeInstruction(s.instruction);
-    return SIGN_IN_PATTERNS.some((p) => p.test(norm));
-  });
+  return newSteps.some((s) =>
+    splitIntoActionClauses(s.instruction).some((clause) =>
+      SIGN_IN_PATTERNS.some((p) => p.test(clause))
+    )
+  );
 }
 
 /** Word-boundary phrase patterns identifying submit/finalize wording in a step's own instruction text. */
