@@ -63,6 +63,38 @@ export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean
   return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
 }
 
+/** Word-boundary phrase patterns identifying a sign-in/log-in step. */
+export const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
+
+/** Collapses whitespace and lowercases, so instruction text compares consistently against {@link SIGN_IN_PATTERNS}. */
+function normalizeForPatternMatch(instruction: string): string {
+  return instruction.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Gates whether a landed destination plausibly corroborates a step's own
+ * instruction, so a URL change alone is never enough to credit advancement:
+ * if the destination is sign-in-shaped but the step itself wasn't about
+ * signing in, the page bounced back to an auth gate rather than advancing.
+ * Fails open (returns true) on an unparseable postUrl, matching
+ * {@link hasOriginOrPathChanged}'s own try/catch style, since an unparseable
+ * URL gives no basis for a sign-in-shaped veto.
+ */
+export function isPlausibleStepDestination(stepInstruction: string, postUrl: string): boolean {
+  const pathname = (() => {
+    try {
+      return new URL(postUrl).pathname;
+    } catch {
+      return null;
+    }
+  })();
+  if (pathname === null) return true;
+  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname));
+  if (!landedOnSignIn) return true;
+  const normalized = normalizeForPatternMatch(stepInstruction);
+  return SIGN_IN_PATTERNS.some((p) => p.test(normalized));
+}
+
 export type PhantomClickVerdict =
   /** Stagehand reported success but pre/post shows no observable effect — a no-op click. */
   | "phantom"
