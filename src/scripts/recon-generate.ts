@@ -6939,12 +6939,15 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
 }
 
 /**
- * Walks `actions` in order and collects every query-string or request-body
- * leaf value that appears in an action's own capture but did NOT appear in
- * the immediately-preceding action's capture — the generic "what's new here"
- * diff the navigateTo-facet fallback in {@link emitMultiStepExecuteHttp} uses
- * to correlate a declared field against the real request it affects, when the
- * field's own captured literal never recurs verbatim anywhere.
+ * Walks `actions` in order and groups the query-string/body leaf values that
+ * appear in an action's own capture but did NOT appear in the immediately-
+ * preceding action's capture, PER TRANSITION (one entry per adjacent action
+ * pair that introduced at least one such value). This is the generic
+ * "what's new here" diff {@link correlateUnreachableNavigateToFacets} uses —
+ * kept per-transition (rather than flattened) so a transition that
+ * introduces more than one new value, or multiple transitions that fire
+ * between two facets' real actions, can be told apart from the single clean
+ * transition a lone facet causes.
  *
  * The first action never contributes: with no predecessor to diff against,
  * every one of its values would trivially count as "new", which is nearly
@@ -6953,17 +6956,19 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  * because a real facet DOES recur in a later request; nothing here changes
  * that — this only supplies values for facets that are not found at all).
  */
-function collectNewlyAppearingRequestValues(actions: readonly ActionStep[]): string[] {
-  const seen = new Set<string>();
-  const discovered: string[] = [];
-  const record = (value: string): void => {
-    if (value.length === 0 || seen.has(value)) return;
-    seen.add(value);
-    discovered.push(value);
-  };
+function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionStep[]): string[][] {
+  const seenGlobally = new Set<string>();
+  const transitions: string[][] = [];
   for (let i = 1; i < actions.length; i++) {
     const prior = actions[i - 1]!.capture;
     const current = actions[i]!.capture;
+    const seenThisTransition = new Set<string>();
+    const values: string[] = [];
+    const record = (value: string): void => {
+      if (value.length === 0 || seenGlobally.has(value) || seenThisTransition.has(value)) return;
+      seenThisTransition.add(value);
+      values.push(value);
+    };
     const priorParams = parseUrlQueryParams(prior.url);
     for (const [key, value] of parseUrlQueryParams(current.url)) {
       if (priorParams.get(key) !== value) record(value);
@@ -6972,8 +6977,42 @@ function collectNewlyAppearingRequestValues(actions: readonly ActionStep[]): str
     for (const value of parseBodyLeafValues(current.requestPostData)) {
       if (!priorLeaves.has(value)) record(value);
     }
+    for (const value of values) seenGlobally.add(value);
+    if (values.length > 0) transitions.push(values);
   }
-  return discovered;
+  return transitions;
+}
+
+/**
+ * Resolves each zero-recurrence navigateTo facet (in flow order) to the real
+ * request value it causally affects, or returns `null` when the correlation
+ * cannot be trusted.
+ *
+ * Pairing is positional — facet N gets the Nth qualifying transition — which
+ * is only safe when every transition in the pool is itself unambiguous (an
+ * action introduced EXACTLY ONE new value, so there is no question which
+ * value within it is "the" new one) AND the pool's size exactly matches the
+ * number of facets awaiting a value. A transition that introduces more than
+ * one new value is dropped from the pool entirely rather than guessing which
+ * of its values is real; if that drops the pool below (or an unrelated
+ * single-value transition pushes it above) the facet count, the pairing is
+ * no longer guaranteed to line facets up with the RIGHT transition, so
+ * nothing is bound — leaving a facet declared-but-unbound is preferable to
+ * silently wiring it to another facet's (or an unrelated transition's) value.
+ */
+function correlateUnreachableNavigateToFacets(
+  facets: readonly NavigateToFacetBinding[],
+  actions: readonly ActionStep[]
+): ReadonlyMap<string, string> | null {
+  const unambiguousValues = collectNewlyAppearingRequestValueTransitions(actions)
+    .filter((transition) => transition.length === 1)
+    .map((transition) => transition[0]!);
+  if (unambiguousValues.length !== facets.length) return null;
+  const byField = new Map<string, string>();
+  facets.forEach(({ field }, index) => {
+    byField.set(field, unambiguousValues[index]!);
+  });
+  return byField;
 }
 
 /** Exported for unit testing — lets tests drive the multipart-upload code path directly
@@ -7134,7 +7173,9 @@ export function emitMultiStepExecuteHttp(
   // the actions in order. This is a best-effort structural guarantee, not a
   // completeness proof: when the adjacent action's own capture carries no
   // new value at all (the facet's effect is purely server-side / implicit),
-  // there is nothing to splice and the field stays unbound.
+  // or when the correlation is ambiguous (see
+  // `correlateUnreachableNavigateToFacets`), there is nothing safe to splice
+  // and the field(s) stay unbound rather than risk a wrong binding.
   const appearsAnywhereInCapture = (value: string): boolean =>
     actions.some(
       (action) =>
@@ -7146,15 +7187,15 @@ export function emitMultiStepExecuteHttp(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
   if (unreachableNavigateToFacets.length > 0) {
-    const candidateValues = collectNewlyAppearingRequestValues(actions);
-    unreachableNavigateToFacets.forEach(({ field }, index) => {
-      const diffed = candidateValues[index];
-      if (diffed === undefined) return;
-      if (!bindsWithoutCollision(diffed)) return;
-      if (payloadAccessorByValue.has(diffed)) return;
+    const correlated = correlateUnreachableNavigateToFacets(unreachableNavigateToFacets, actions);
+    for (const { field } of correlated === null ? [] : unreachableNavigateToFacets) {
+      const diffed = correlated?.get(field);
+      if (diffed === undefined) continue;
+      if (!bindsWithoutCollision(diffed)) continue;
+      if (payloadAccessorByValue.has(diffed)) continue;
       payloadAccessorByValue.set(diffed, `payload.${field}`);
       if (isValidJsIdentifier(field)) outDiscoveredFields.add(field);
-    });
+    }
   }
   // Job coordinates from the recon entry URL's query string (e.g.
   // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
