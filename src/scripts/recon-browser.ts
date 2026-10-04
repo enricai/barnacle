@@ -117,6 +117,7 @@ import {
   resolveFrameTarget,
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
+import { isPlausibleStepDestination, SIGN_IN_PATTERNS } from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
@@ -1401,9 +1402,6 @@ function originAndPath(url: string): string | null {
   }
 }
 
-/** Word-boundary phrase patterns identifying a sign-in/log-in step, keyed lowercase like {@link ACCOUNT_CREATION_PATTERNS}. */
-const SIGN_IN_PATTERNS = [/\bsign[\s-]?in\b/, /\blog[\s-]?in\b/];
-
 /**
  * Detect whether the live page has already navigated away from where a step
  * started, mirroring {@link findRecentPageTransition} in flow-runner.ts:
@@ -1431,11 +1429,7 @@ export function hasPageAlreadyAdvancedPastStep(
   const current = originAndPath(currentUrl);
   if (start === null || current === null) return false;
   if (start === current) return false;
-  const currentPathname = new URL(currentUrl).pathname;
-  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(currentPathname));
-  if (!landedOnSignIn) return true;
-  const norm = normalizeInstruction(stepInstruction);
-  return SIGN_IN_PATTERNS.some((p) => p.test(norm));
+  return isPlausibleStepDestination(stepInstruction, currentUrl);
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
