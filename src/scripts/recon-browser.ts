@@ -1456,7 +1456,10 @@ const ACCOUNT_CREATION_PATTERNS = [
  * siblings `isReplanReproposingFailedStep`/`isReplanCycle`. Matches on word
  * boundaries (not plain substring) so instructions like "redesign in the
  * layout" or "assign in the reviewer field" don't false-positive on "sign
- * in". Pure.
+ * in". Scopes the Sign-In match to the step's own action clause (via
+ * `splitIntoActionClauses`, shared with `isPlausibleStepDestination`) so a
+ * step that merely mentions sign-in in descriptive context isn't mistaken
+ * for one that is itself about signing in. Pure.
  */
 export function isReplanRegressingAcrossAuthBoundary(
   newSteps: readonly NormalizedStep[],
