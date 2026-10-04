@@ -8700,7 +8700,10 @@ export function spliceFacetsIntoArrayVariable(
     if (!matched) return JSON.stringify(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
-    return `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+    const elementLiteral = `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+    return matched.optional
+      ? `...(payload.${matched.field} ? [${elementLiteral}] : [])`
+      : elementLiteral;
   });
   if (matchCount === 0) return null;
   return `[${elements.join(", ")}]`;
