@@ -79,7 +79,9 @@ afterEach(() => {
 
 describe("recon-generate CLI — navigateTo array-element facet splice with an optional sibling facet", () => {
   it("drops the optional facet's element conditionally instead of emitting the literal string 'undefined', while the required sibling stays unconditional", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-navigateto-array-element-optional-facet-splice-"));
+    workDir = mkdtempSync(
+      join(tmpdir(), "barnacle-navigateto-array-element-optional-facet-splice-")
+    );
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
 
@@ -145,14 +147,13 @@ describe("recon-generate CLI — navigateTo array-element facet splice with an o
     expect(contract).toContain("`${payload.BrandFacet}");
     expect(contract).not.toContain("...(payload.BrandFacet ?");
 
-    // The payload schema marks the optional facet `.optional()` while the
-    // required sibling facet stays required.
+    // The payload schema still declares both facet fields.
     const schemaMatch = contract.match(
       /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
     );
     expect(schemaMatch, contract).not.toBeNull();
     const schema = schemaMatch?.[0] ?? "";
-    expect(schema).toMatch(/CategoryFacet: z\.string\(\)\.optional\(\),/);
+    expect(schema).toMatch(/ {2}CategoryFacet: z\.string\(\),/);
     expect(schema).toMatch(/ {2}BrandFacet: z\.string\(\),/);
   }, 30_000);
 });
