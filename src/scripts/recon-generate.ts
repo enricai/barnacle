@@ -8679,7 +8679,11 @@ export function spliceFacetsIntoStringVariable(
  * token-boundary guarded the same way {@link bindsWithoutCollision} (recon-
  * generate.ts ~7223) guards persona bindings elsewhere in this file, so a
  * facet literal that's merely a substring of an unrelated element never
- * misfires.
+ * misfires. A matched binding whose `optional` flag is set is emitted as a
+ * conditionally-included array element (`...(payload.<field> ? [...] : [])`)
+ * instead of inline, the same optional-splice convention
+ * {@link spliceFacetsIntoStringVariable} uses, so an absent optional facet
+ * drops its element rather than emitting `undefined`.
  */
 export function spliceFacetsIntoArrayVariable(
   value: unknown,
