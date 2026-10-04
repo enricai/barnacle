@@ -13827,7 +13827,10 @@ function computeFlowPayloadFieldNames(
     if (isObj && step.navigateTo !== undefined) {
       if (step.payloadField) {
         payloadFieldNames.add(step.payloadField);
-        registerFieldOptionality(step.payloadField, step.optional === true);
+        // An explicitly declared payloadField is always required at the
+        // schema level, independent of step.optional's execution-skip
+        // semantics (which the browser-flow step record still honors as-is).
+        registerFieldOptionality(step.payloadField, false);
       }
       continue;
     }
@@ -13845,9 +13848,13 @@ function computeFlowPayloadFieldNames(
         ? resolveCompositePersonaFields(instruction, knownFieldValues)
         : null;
     const optional = isObj ? step.optional === true : false;
+    const explicit = isObj ? step.payloadField : undefined;
     if (field !== null) {
       payloadFieldNames.add(field);
-      registerFieldOptionality(field, optional);
+      // An explicit payloadField annotation is always required at the
+      // schema level; only the vocabulary/composite-persona heuristic falls
+      // back to step.optional's execution-skip semantics.
+      registerFieldOptionality(field, explicit ? false : optional);
     }
     if (composite !== null) {
       payloadFieldNames.add(composite.fieldA);
