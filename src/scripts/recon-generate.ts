@@ -4553,7 +4553,12 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * and swap for `${item.<field>}`. Freezing either into an opaque
  * `${JSON.stringify(payload.tokens)}` blob here would silently drop the
  * value the request depends on, breaking the fold at exactly the case an
- * ARRAY/OBJECT-wrapped join field represents.
+ * ARRAY/OBJECT-wrapped join field represents. A candidate whose leaves
+ * include a value already registered as a payload-accessor literal (e.g. a
+ * facet value a prior step derived and already wired for splicing elsewhere,
+ * such as a `departmentCode` recurring inside a `tags` array) is excluded on
+ * the same unconditional basis — it is already-threaded text waiting on the
+ * substring-splice pass, not caller-supplied history data.
  *
  * A body with no detected form envelope worth swallowing into (a facet/
  * search body — all scalars, if any, sit directly at the root) still needs
@@ -4579,6 +4584,36 @@ function locateFormEnvelopePath(parsedBody: unknown): string[] {
  * search there stops an earlier element's already-rewritten (or still-frozen)
  * span from swallowing a later element's identically-named key.
  */
+function isTokenBoundaryChar(ch: string | undefined): boolean {
+  return ch === undefined || !/[A-Za-z0-9]/.test(ch);
+}
+
+/**
+ * True when `needle` occurs in `haystack` at a token boundary (flanked only
+ * by non-alphanumeric characters or the string's own edges) — e.g. a
+ * navigateTo facet's bare literal recurring inside a captured array element
+ * that suffixes it with a constant delimiter string (`"<literal>;filterId=
+ * urlFriendlyId"`). Exact equality alone misses this recurrence shape since
+ * the leaf carries the delimiter-joined text, not the bare literal. Mirrors
+ * the same boundary discipline `bindsWithoutCollision` already applies when
+ * registering a value for substring splicing in the first place.
+ */
+function containsValueAtTokenBoundary(haystack: string, needle: string): boolean {
+  if (needle.length === 0 || needle === haystack) return false;
+  let from = 0;
+  while (true) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return false;
+    if (
+      isTokenBoundaryChar(haystack[at - 1]) &&
+      isTokenBoundaryChar(haystack[at + needle.length])
+    ) {
+      return true;
+    }
+    from = at + needle.length;
+  }
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4587,7 +4622,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
   envelopePath: string[],
-  rootBody: Record<string, unknown>
+  rootBody: Record<string, unknown>,
+  payloadAccessorExcludePattern: RegExp | null
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4611,7 +4647,11 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
-    if (unconditionalExcludeValues.size > 0 || restrictedExcludeSourceByValue.size > 0) {
+    if (
+      unconditionalExcludeValues.size > 0 ||
+      restrictedExcludeSourceByValue.size > 0 ||
+      payloadAccessorExcludePattern !== null
+    ) {
       // A name-free join/chain value (unconditionalExcludeValues) excludes the
       // whole field on ANY leaf coincidence, same as before. A RESTRICTED prior-
       // step value (one with a real source field name) additionally requires
@@ -4622,11 +4662,36 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       // count/id) merely equalling SOME other step's produced value gets the
       // ENTIRE array/object excluded from threading, even though nothing about
       // that leaf's key names the same concept as the matched value's source.
+      // A registered payload-accessor literal (payloadAccessorExcludePattern)
+      // excludes unconditionally too, but on a DELIMITED-SUBSTRING match, not
+      // exact leaf equality — the reported shape is a facet value recurring
+      // inside a captured array element with a constant suffix still attached
+      // (e.g. a hash-derived facet embedded in a `tags` entry alongside a
+      // trailing marker), so requiring the whole leaf to equal the bare facet
+      // literal would miss exactly the case this exclusion exists for. Reuses
+      // {@link buildValueAlternationPattern}'s own token-boundary rule so a
+      // facet value that merely happens to be a substring of an unrelated,
+      // dash/dot-concatenated compound token is still correctly left alone.
+      //
+      // Beyond exact equality, a leaf that carries an excluded value as a
+      // token-bounded SUBSTRING (e.g. a navigateTo facet literal recurring
+      // inside an array element suffixed by a constant delimiter string, like
+      // `"<literal>;filterId=urlFriendlyId"`) must exclude the field too —
+      // otherwise the field gets frozen wholesale before the later
+      // literal-value interpolation pass (which operates on text, not parsed
+      // values) ever gets a chance to splice the facet out of that element.
       const carriesThreadedValue = [...walkAllPrimitiveLeaves(value)].some(
         ({ value: leaf, path: leafPath }) => {
           if (leaf === null) return false;
           const leafValue = String(leaf);
           if (unconditionalExcludeValues.has(leafValue)) return true;
+          if (payloadAccessorExcludePattern !== null) {
+            payloadAccessorExcludePattern.lastIndex = 0;
+            if (payloadAccessorExcludePattern.test(leafValue)) return true;
+          }
+          for (const excluded of unconditionalExcludeValues) {
+            if (containsValueAtTokenBoundary(leafValue, excluded)) return true;
+          }
           const sourceName = restrictedExcludeSourceByValue.get(leafValue);
           if (sourceName === undefined) return false;
           const leafKey = leafPath.at(-1);
@@ -4687,7 +4752,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   outStructuredKeys: Map<string, string>,
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
-  searchFrom: number
+  searchFrom: number,
+  payloadAccessorExcludePattern: RegExp | null
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4707,7 +4773,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     restrictedExcludeSourceByValue,
     searchFrom,
     envelopePath,
-    objectBody
+    objectBody,
+    payloadAccessorExcludePattern
   );
 }
 
@@ -4718,7 +4785,17 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
  * field when its own leaf's key {@link keyNamesCorrelate}s with that source
  * name — an unrestricted binding (name-free, e.g. a bare array-index chain
  * hop) or a `joinFieldValues` entry excludes unconditionally on any leaf
- * match, same as before. Without the correlation requirement, an array/
+ * match, same as before. A `payloadAccessorExcludeValues` key excludes
+ * unconditionally too, but on a delimited-SUBSTRING match of the leaf (see
+ * {@link applyStructuredValuePayloadSubstitutionsForEnvelope}), not exact
+ * equality — the reported shape is a facet value recurring inside a captured
+ * array element with a constant suffix still attached (e.g. a hash-derived
+ * facet embedded in a `tags` entry alongside a trailing marker), so a
+ * candidate field whose leaf merely CONTAINS one of those literals at a token
+ * boundary is left alone here too, instead of being wholesale-swallowed into
+ * an opaque `${JSON.stringify(payload.<key>)}` blob before the substring-
+ * splice pass ({@link interpolateStateValues}) gets a chance to thread it.
+ * Without the correlation requirement on the restricted source, an array/
  * object field whose own unrelated short scalar leaf (a count/id) merely
  * EQUALS some other step's produced value gets the whole field wrongly
  * excluded from threading — the same value-coincidence class of bug
@@ -4729,7 +4806,8 @@ export function applyStructuredValuePayloadSubstitutions(
   parsedBody: unknown,
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
-  joinFieldValues: ReadonlySet<string> = new Set()
+  joinFieldValues: ReadonlySet<string> = new Set(),
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4740,6 +4818,12 @@ export function applyStructuredValuePayloadSubstitutions(
     if (binding.restricted) restrictedExcludeSourceByValue.set(value, binding.sourceName);
     else unconditionalExcludeValues.add(value);
   }
+  const payloadAccessorExcludePattern =
+    payloadAccessorExcludeValues.size > 0
+      ? buildValueAlternationPattern(
+          [...payloadAccessorExcludeValues.keys()].sort((a, b) => b.length - a.length)
+        )
+      : null;
   // A cruise-line-style multi-room/multi-guest search body commonly batches
   // per-element criteria as a top-level JSON ARRAY rather than a single
   // object. Walk each element in textual order (via the growing searchFrom
@@ -4758,7 +4842,8 @@ export function applyStructuredValuePayloadSubstitutions(
           outStructuredKeys,
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
-          cursor
+          cursor,
+          payloadAccessorExcludePattern
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4771,7 +4856,8 @@ export function applyStructuredValuePayloadSubstitutions(
     outStructuredKeys,
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
-    0
+    0,
+    payloadAccessorExcludePattern
   );
   return result;
 }
@@ -7500,7 +7586,8 @@ export function emitMultiStepExecuteHttp(
             parsedBody,
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
-            joinFieldValuesByStep.get(i) ?? new Set()
+            joinFieldValuesByStep.get(i) ?? new Set(),
+            payloadAccessorByValue
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
