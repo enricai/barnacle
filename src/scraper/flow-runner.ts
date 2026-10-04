@@ -12205,6 +12205,7 @@ export async function executeStepWithHealing(params: {
       elementStateChanged: domVerified,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+      destinationPlausible: isPlausibleStepDestination(step, post.url),
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -12769,6 +12770,7 @@ export async function executeStepWithHealing(params: {
             post: retryPost,
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retrySubmitShaped,
+            destinationPlausible: isPlausibleStepDestination(step, retryPost.url),
           });
           let retryVerified =
             !clickBlockedByDisabled &&

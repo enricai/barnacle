@@ -41,6 +41,14 @@ export interface PhantomClickAttempt {
    * so non-submit callers and existing tests are unchanged; defaults to false.
    */
   isSubmitShapedStep?: boolean;
+  /**
+   * Mirrors flow-runner's own `isPlausibleStepDestination` gate on its
+   * `urlChanged`/`retryUrlChanged` signals: false when the post-URL landed
+   * on a destination (e.g. a sign-in gate) that doesn't plausibly
+   * corroborate the step's own instruction. Optional so callers/tests that
+   * don't supply it default to true (no veto), matching today's behavior.
+   */
+  destinationPlausible?: boolean;
 }
 
 function originAndPathOf(url: string): string {
@@ -125,7 +133,9 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
 
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
   const bytesDelta = attempt.post.bodyHtmlLength - attempt.pre.bodyHtmlLength;
-  const urlChanged = hasOriginOrPathChanged(attempt.pre.url, attempt.post.url);
+  const urlChanged =
+    hasOriginOrPathChanged(attempt.pre.url, attempt.post.url) &&
+    attempt.destinationPlausible !== false;
   // The resolved element's OWN committed selection state changed across the
   // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
   // swap, ARIA, native `checked`) registers here with no network, no URL, and a
