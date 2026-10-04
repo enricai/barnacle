@@ -11,8 +11,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { hasPageAlreadyAdvancedPastStep, isReplanRegressingAcrossAuthBoundary } from "@/scripts/recon-browser";
 import type { NormalizedStep } from "@/scripts/recon-browser";
+import {
+  hasPageAlreadyAdvancedPastStep,
+  isReplanRegressingAcrossAuthBoundary,
+} from "@/scripts/recon-browser";
 
 describe("recon-browser — contextual sign-in mention does not trip the replan auth-boundary bridge veto", () => {
   const mk = (instruction: string): NormalizedStep => ({
