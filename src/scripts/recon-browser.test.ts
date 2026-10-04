@@ -2246,6 +2246,24 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
       )
     ).toBe(false);
   });
+
+  it("does not fire when sign-in is only mentioned in a descriptive clause, not the step's own action", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Navigate to account settings, which is next to the sign in link")],
+        ["Fill in the email field", "Click 'Create Account'"]
+      )
+    ).toBe(false);
+  });
+
+  it("still fires when the step's own action clause is itself signing in", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(
+        [mk("Click the 'Sign In' button")],
+        ["Fill in the email field", "Click 'Create Account'"]
+      )
+    ).toBe(true);
+  });
 });
 
 describe("recon-browser/isSubmitShapedInstructionText", () => {

@@ -46,6 +46,25 @@ describe("scraper/phantom-click isPlausibleStepDestination", () => {
       postUrl: "not-a-url",
       expected: true,
     },
+    {
+      name: "reported-symptom instruction: descriptive context mentions a sign-in form but the step's own action clause is account registration",
+      stepInstruction:
+        "Below the newly-revealed Email Address/Password sign-in form, under the text 'Don't have an account yet?', click the 'Create Account' button to switch to account registration",
+      postUrl: "https://example.com/login",
+      expected: false,
+    },
+    {
+      name: "comma-free single-clause sign-in instruction landing on a sign-in-shaped path is plausible",
+      stepInstruction: "click the Sign In link",
+      postUrl: "https://apply.example.com/login",
+      expected: true,
+    },
+    {
+      name: "genuine sign-in action clause after a comma still landing on a sign-in-shaped path is plausible",
+      stepInstruction: "On the account options panel, click the Sign In button",
+      postUrl: "https://apply.example.com/login",
+      expected: true,
+    },
   ])("$name", ({ stepInstruction, postUrl, expected }) => {
     expect(isPlausibleStepDestination(stepInstruction, postUrl)).toBe(expected);
   });
