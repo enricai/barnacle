@@ -118,6 +118,17 @@ const STEP_ACTION_VERBS = [
 const STEP_ACTION_VERB_PATTERN = new RegExp(`\\b(?:${STEP_ACTION_VERBS.join("|")})\\b`);
 
 /**
+ * Verbs whose own direct complement is introduced by "to" (e.g. "navigate to
+ * the sign in page"), so splitting on " to " must NOT sever them from that
+ * complement the way it severs e.g. "click sign in to continue" into
+ * independent clauses — doing so would strand the verb's own target text
+ * (which is where a sign-in-shaped match actually lives) in a clause with no
+ * recognized action verb, and {@link splitIntoActionClauses} would then
+ * discard it as non-action descriptive context.
+ */
+const TO_COMPLEMENT_VERBS = ["navigate", "go", "switch", "scroll", "open", "proceed"];
+
+/**
  * Splits a step instruction into its comma/"to"/"and"-delimited clauses and
  * keeps only the ones containing a recognized imperative action verb, so
  * pattern matching (e.g. {@link SIGN_IN_PATTERNS}) targets the step's own
@@ -125,13 +136,21 @@ const STEP_ACTION_VERB_PATTERN = new RegExp(`\\b(?:${STEP_ACTION_VERBS.join("|")
  * Falls back to every clause when none carry a recognized verb, preserving
  * today's conservative whole-text behavior for unparseable instruction shapes
  * rather than silently passing. Exported so other sign-in-shaped-instruction
- * checks (e.g. bugfix-002) can reuse the same clause isolation.
+ * checks (e.g. bugfix-002) can reuse the same clause isolation. Does not split
+ * on " to " when it directly follows a {@link TO_COMPLEMENT_VERBS} verb, so
+ * "navigate to the sign in page" stays one clause instead of stranding "the
+ * sign in page" apart from its governing verb.
  */
 export function splitIntoActionClauses(instruction: string): string[] {
   const normalized = normalizeForPatternMatch(instruction);
-  const clauses = normalized
+  const toComplementPattern = new RegExp(`\\b(?:${TO_COMPLEMENT_VERBS.join("|")}) to `);
+  const toPlaceholder = "__BARNACLE_TO__";
+  const protectedText = normalized.replace(toComplementPattern, (match) =>
+    match.replace(" to ", ` ${toPlaceholder} `)
+  );
+  const clauses = protectedText
     .split(/,| (?:to|and) /)
-    .map((clause) => clause.trim())
+    .map((clause) => clause.trim().replace(toPlaceholder, "to"))
     .filter((clause) => clause.length > 0);
   const actionClauses = clauses.filter((clause) => STEP_ACTION_VERB_PATTERN.test(clause));
   return actionClauses.length > 0 ? actionClauses : clauses;
