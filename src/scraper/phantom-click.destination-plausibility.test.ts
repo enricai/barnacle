@@ -46,6 +46,13 @@ describe("scraper/phantom-click isPlausibleStepDestination", () => {
       postUrl: "not-a-url",
       expected: true,
     },
+    {
+      name: "reported-symptom instruction: descriptive context mentions a sign-in form but the step's own action clause is account registration",
+      stepInstruction:
+        "Below the newly-revealed Email Address/Password sign-in form, under the text 'Don't have an account yet?', click the 'Create Account' button to switch to account registration",
+      postUrl: "https://example.com/login",
+      expected: false,
+    },
   ])("$name", ({ stepInstruction, postUrl, expected }) => {
     expect(isPlausibleStepDestination(stepInstruction, postUrl)).toBe(expected);
   });
