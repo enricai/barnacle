@@ -12764,10 +12764,7 @@ export async function executeStepWithHealing(params: {
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
-          const retryDestinationPlausible = isPlausibleStepDestination(
-            step,
-            retryPost.url,
-          );
+          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,

@@ -120,11 +120,12 @@ function buildFixture(stepInstruction: string) {
   const documentElement = document.documentElement as unknown as HappyDomElement;
   const win = window as unknown as { XPathResult?: unknown };
   win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
-  (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate =
-    (expr: string) => {
-      const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
-      return { singleNodeValue: node };
-    };
+  (document as unknown as { evaluate: (expr: string) => { singleNodeValue: unknown } }).evaluate = (
+    expr: string
+  ) => {
+    const node = expr.startsWith("//") ? null : resolveAbsoluteXPath(documentElement, expr);
+    return { singleNodeValue: node };
+  };
 
   const session = { on: () => {}, off: () => {} };
   const page: Page = {
