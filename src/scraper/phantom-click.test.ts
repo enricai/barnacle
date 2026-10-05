@@ -214,7 +214,7 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
         post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 + 500 },
       });
       expect(classifyPhantomClick(attempt)).toBe("effective");
-    },
+    }
   );
 });
 
