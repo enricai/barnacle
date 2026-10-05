@@ -19,9 +19,7 @@ function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttem
 // (phantom-click.ts). Closes one of the two disjuncts feeding the n+16
 // fallback's retryVerdict==="effective" credit.
 describe("scraper/phantom-click classifyPhantomClick bytesChangedSignificantly destinationPlausible gate", () => {
-  it.each([
-    { name: "destinationPlausible false", destinationPlausible: false as const },
-  ])(
+  it.each([{ name: "destinationPlausible false", destinationPlausible: false as const }])(
     "classifies a non-submit-shaped byte-growth attempt as phantom when $name",
     ({ destinationPlausible }) => {
       const attempt = makeAttempt({
