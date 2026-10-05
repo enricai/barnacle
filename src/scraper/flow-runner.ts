@@ -12764,13 +12764,17 @@ export async function executeStepWithHealing(params: {
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
+          const retryDestinationPlausible = isPlausibleStepDestination(
+            step,
+            retryPost.url,
+          );
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retrySubmitShaped,
-            destinationPlausible: isPlausibleStepDestination(step, retryPost.url),
+            destinationPlausible: retryDestinationPlausible,
           });
           let retryVerified =
             !clickBlockedByDisabled &&
@@ -12782,6 +12786,7 @@ export async function executeStepWithHealing(params: {
               retrySelectionStateChanged ||
               (!retrySubmitShaped && retryVerdict === "effective") ||
               (weakDomSignalsAllowed &&
+                retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
           if (retryVerified) {
             record.phantomClickVerdict = retryVerdict;
