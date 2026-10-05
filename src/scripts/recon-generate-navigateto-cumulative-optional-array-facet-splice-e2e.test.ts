@@ -82,6 +82,79 @@ function writeRunDir(root: string, captures: Capture[]): void {
   });
 }
 
+/**
+ * Finds the matching closing backtick for the template literal starting at
+ * `text[start]` (which must be a backtick), honoring legitimately nested
+ * template literals inside `${...}` expressions — e.g. an array-element
+ * accessor like `` `${payload.Field}suffix` `` spliced inside another
+ * template literal's own `${JSON.stringify(...)}` substitution. A naive
+ * `([^\`]*)` regex treats any inner backtick as the closer, truncating the
+ * match before the real end.
+ */
+function templateLiteralEnd(text: string, start: number): number {
+  let i = start + 1;
+  let exprDepth = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (exprDepth === 0) {
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (ch === "`") return i;
+      if (ch === "$" && text[i + 1] === "{") {
+        exprDepth = 1;
+        i += 2;
+        continue;
+      }
+      i++;
+    } else {
+      if (ch === "`") {
+        i = templateLiteralEnd(text, i) + 1;
+        continue;
+      }
+      if (ch === "{") {
+        exprDepth++;
+        i++;
+        continue;
+      }
+      if (ch === "}") {
+        exprDepth--;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < text.length && text[i] !== quote) {
+          i += text[i] === "\\" ? 2 : 1;
+        }
+        i++;
+        continue;
+      }
+      i++;
+    }
+  }
+  return -1;
+}
+
+/** Nesting-aware counterpart to a naive `/body:\s*\`([^\`]*)\`,/g` scan. */
+function extractBodyBlocks(contract: string): string[] {
+  const blocks: string[] = [];
+  const marker = "body: `";
+  let searchFrom = 0;
+  for (;;) {
+    const markerStart = contract.indexOf(marker, searchFrom);
+    if (markerStart === -1) break;
+    const backtickStart = markerStart + marker.length - 1;
+    const end = templateLiteralEnd(contract, backtickStart);
+    if (end === -1) break;
+    blocks.push(contract.slice(backtickStart + 1, end));
+    searchFrom = end + 1;
+  }
+  return blocks;
+}
+
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
 
@@ -133,7 +206,7 @@ describe("recon-generate CLI — five all-optional cumulative-hash navigateTo fa
     const contractPath = join(siteOutDir, "contract.ts");
     const contract = readFileSync(contractPath, "utf8");
 
-    const bodyBlocks = [...contract.matchAll(/body:\s*`([^`]*)`,/g)].map((m) => m[1] ?? "");
+    const bodyBlocks = extractBodyBlocks(contract);
     expect(bodyBlocks.length, contract).toBeGreaterThan(0);
     const combinedBody = bodyBlocks.join("\n");
 
