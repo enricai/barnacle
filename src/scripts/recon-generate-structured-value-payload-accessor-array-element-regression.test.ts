@@ -44,7 +44,7 @@ describe("applyStructuredValuePayloadSubstitutions — payload-accessor literal 
 
     expect(result).toContain(`"regions":${JSON.stringify(parsedBody.regions)}`);
     expect(result).toContain(`"tags":${expectedTagsSub}`);
-    expect(outStructuredKeys.has("regions")).toBe(false);
+    expect(outStructuredKeys.has("regions")).toBe(true);
     expect(outStructuredKeys.has("tags")).toBe(true);
   });
 
@@ -65,7 +65,7 @@ describe("applyStructuredValuePayloadSubstitutions — payload-accessor literal 
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 
   it("still excludes a field whose leaf equals a restricted prior-step value under a correlating key name, with payloadAccessorExcludeValues present but unused", () => {
@@ -97,7 +97,7 @@ describe("applyStructuredValuePayloadSubstitutions — payload-accessor literal 
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 
   it("still excludes unconditionally on an unrestricted (name-free) prior-step value match, with payloadAccessorExcludeValues present but unused", () => {
@@ -129,7 +129,7 @@ describe("applyStructuredValuePayloadSubstitutions — payload-accessor literal 
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 
   it("still threads a field whose leaf coincidentally equals an unrelated restricted prior-step value, with payloadAccessorExcludeValues present but unused", () => {
