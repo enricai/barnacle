@@ -7284,11 +7284,7 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      const {
-        accessor,
-        field: accessorField,
-        structuredRootPath,
-      } = payloadAccessorForPath(path);
+      const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
       // structured shape regardless of whether Mechanism B visited the key.
