@@ -87,7 +87,9 @@ afterEach(() => {
 
 describe("recon-generate CLI — labeled cumulative-hash navigateTo facets shared across two call sites", () => {
   it("threads every facet's own accessor into every call site's array, not just the first facet/first site", () => {
-    workDir = mkdtempSync(join(tmpdir(), "barnacle-navigateto-labeled-cumulative-array-facet-splice-"));
+    workDir = mkdtempSync(
+      join(tmpdir(), "barnacle-navigateto-labeled-cumulative-array-facet-splice-")
+    );
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
 
