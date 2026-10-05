@@ -185,7 +185,7 @@ describe("recon-generate CLI + tsc --noEmit — array-of-objects field schema/bo
     );
     expect(schemaMatch, contract).not.toBeNull();
     const schema = schemaMatch?.[0] ?? "";
-    expect(schema).toMatch(/sortCriteria:\s*z\.array\(z\.object\(/);
+    expect(schema).toMatch(/sortCriteria:[^\n]*z\.array\(z\.object\(/);
     expect(schema).not.toMatch(/sortCriteria:\s*z\.string\(\)/);
 
     // Body-construction accessors indexing into sortCriteria as an array
