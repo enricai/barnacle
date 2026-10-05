@@ -191,6 +191,31 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
     });
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
+
+  // Mirrors urlChanged's own destinationPlausible gate: a DOM-byte-only change
+  // must not count as an effect when the landed page is an implausible
+  // destination for the step, same as a URL-only change would be vetoed.
+  it("stays phantom on byte growth alone when destinationPlausible is false", () => {
+    const attempt = makeAttempt({
+      destinationPlausible: false,
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 + 500 },
+    });
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
+  });
+
+  it.each([
+    { name: "destinationPlausible unset (back-compat)", destinationPlausible: undefined },
+    { name: "destinationPlausible true", destinationPlausible: true },
+  ])(
+    "still classifies as effective on byte growth alone when $name",
+    ({ destinationPlausible }) => {
+      const attempt = makeAttempt({
+        destinationPlausible,
+        post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 + 500 },
+      });
+      expect(classifyPhantomClick(attempt)).toBe("effective");
+    }
+  );
 });
 
 describe("isPlausibleStepDestination", () => {

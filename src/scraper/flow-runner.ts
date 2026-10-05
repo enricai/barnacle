@@ -1916,6 +1916,17 @@ export function isDomOnlyAdvanceVerified(params: {
  * when the probe can't run (non-xpath selector, evaluate failure) it stays
  * at its default `true` so it never manufactures a veto out of missing
  * information. Only a confirmed `false` blocks the credit.
+ *
+ * **Destination-plausibility veto:** none of the signals above look at
+ * WHERE the click landed. A non-submit click that bounces to a page
+ * {@link isPlausibleStepDestination} rejects as implausible for the step
+ * (e.g. a settings-panel tab switcher landing on an unrelated marketing
+ * page) can still clear every byte/text threshold above, crediting a
+ * phantom transition the same way a same-page toggle is credited.
+ * `destinationPlausible` is optional and defaults to the `!== false`
+ * no-veto behavior — matching the sibling `destinationPlausible` param on
+ * `classifyPhantomClick` — so existing/future callers that don't thread it
+ * are unaffected.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -1927,6 +1938,7 @@ export function isClickViewSwapVerified(params: {
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
   resolvedElementIsSubmitShaped?: boolean;
+  destinationPlausible?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1940,8 +1952,10 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
     resolvedElementIsSubmitShaped = false,
+    destinationPlausible,
   } = params;
   if (resolvedAction?.method !== "click") return false;
+  if (destinationPlausible === false) return false;
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
   // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
@@ -12023,6 +12037,10 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : false;
+    // Shared with classifyPhantomClick's destinationPlausible input below —
+    // same instruction/url pair, computed once so the two gates stay
+    // provably consistent.
+    const destinationPlausible = isPlausibleStepDestination(step, post.url);
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -12030,7 +12048,8 @@ export async function executeStepWithHealing(params: {
     // Below that threshold, also credits a smaller text-changing reveal (≥500B) —
     // fixes the top-window site Work-History gate-message reveal (+789B) that used to
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
-    // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
+    // ng-invalid marker count grew, or when the landed destination is implausible
+    // for the step (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -12041,6 +12060,7 @@ export async function executeStepWithHealing(params: {
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
+      destinationPlausible,
     });
     if (
       clickViewSwapVerified === false &&
@@ -12087,6 +12107,7 @@ export async function executeStepWithHealing(params: {
     const formValueVerified =
       isStateClass &&
       formValueWeakSignalAllowed &&
+      isPlausibleStepDestination(step, post.url) &&
       post.formValueSignature !== pre.formValueSignature;
     // Committed-value guard on the act-success path. A controlled datepicker
     // (react-datepicker) accepts the typed value, discards it on React's next
@@ -12205,7 +12226,7 @@ export async function executeStepWithHealing(params: {
       elementStateChanged: domVerified,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
-      destinationPlausible: isPlausibleStepDestination(step, post.url),
+      destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -12764,24 +12785,54 @@ export async function executeStepWithHealing(params: {
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
+          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
+          // `classifyPhantomClick`'s own `elementStateChanged` input is
+          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229):
+          // the primary technique's call (flow-runner.ts's `domVerified`,
+          // line ~12222) deliberately trusts an element-scoped read-back
+          // regardless of destination, by design. The n+16 fallback's
+          // `retrySelectionStateChanged`, UNLIKE the primary technique's
+          // `domVerified`, is partly driven by this fallback's OWN synthetic
+          // `el.click()`/forced-checkbox probe rather than a genuine site
+          // click handler — pre-gating it here (this call site only; the
+          // primary technique's call above is untouched) closes the n+16-
+          // specific path where `classifyPhantomClick`'s `"effective"`
+          // verdict would otherwise re-credit a destination-implausible
+          // click purely off `elementStateChanged`, bypassing the direct
+          // `retrySelectionStateChanged`/`checkboxStateVerified` gates below.
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
-            elementStateChanged: retrySelectionStateChanged,
+            elementStateChanged: retrySelectionStateChanged && retryDestinationPlausible,
             isSubmitShapedStep: retrySubmitShaped,
-            destinationPlausible: isPlausibleStepDestination(step, retryPost.url),
+            destinationPlausible: retryDestinationPlausible,
           });
+          // Destination-plausibility audit of every remaining disjunct in
+          // this OR (the recon report's closing instruction, see
+          // flow-runner.retry-fallback-remaining-disjuncts-destination-
+          // audit.test.ts): `retryNetworkFired` is a bare request COUNT with
+          // zero awareness of destination (a request can fire en route to
+          // ANY page, including a wrong one); `checkboxStateVerified` forces
+          // `.checked = true` on whatever element the xpath resolves to on
+          // the CURRENTLY LOADED page, independent of whether the click
+          // fallback navigated there correctly; `retrySelectionStateChanged`
+          // reads a fingerprint for whatever element the xpath/selector
+          // resolves to post-click, same independence from destination. All
+          // three get the same `isPlausibleStepDestination` gate
+          // `weakDomSignalsAllowed` already has (bugfix-002) — `retryUrlChanged`
+          // already folds the same check in at its own computation above.
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
-            (retryNetworkFired ||
+            ((retryNetworkFired && retryDestinationPlausible) ||
               retryUrlChanged ||
-              checkboxStateVerified ||
-              retrySelectionStateChanged ||
+              (checkboxStateVerified && retryDestinationPlausible) ||
+              (retrySelectionStateChanged && retryDestinationPlausible) ||
               (!retrySubmitShaped && retryVerdict === "effective") ||
               (weakDomSignalsAllowed &&
+                retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
           if (retryVerified) {
             record.phantomClickVerdict = retryVerdict;
@@ -12934,7 +12985,18 @@ export async function executeStepWithHealing(params: {
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
-              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+              // Mirror the same `retryDestinationPlausible` gate `retryVerified`
+              // applies to `retryNetworkFired` above — otherwise a step verified
+              // via `retryVerdict === "effective"` (or `weakDomSignalsAllowed`)
+              // while the destination is implausible would still be labeled
+              // "network" here off the raw, ungated flag, misreporting what
+              // actually verified it and desyncing `verifiedBy` consumers (e.g.
+              // the `priorDomVerified` check below) from the real gate.
+              record.verifiedBy = retryUrlChanged
+                ? "url"
+                : retryNetworkFired && retryDestinationPlausible
+                  ? "network"
+                  : "dom";
             }
             record.post = retryPost;
             attempts.push(record);
