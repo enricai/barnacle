@@ -5206,16 +5206,35 @@ function pathToPayloadFieldName(path: string[]): string {
  * {@link pathToPayloadFieldName}; segments from the first array index onward
  * are rendered with {@link pathToAccessor} against that flat prefix.
  */
-function payloadAccessorForPath(path: string[]): { accessor: string; field: string } {
+function payloadAccessorForPath(path: string[]): {
+  accessor: string;
+  field: string;
+  structuredRootPath: string[] | null;
+} {
   const arrayIndexPos = path.findIndex((segment) => /^\d+$/.test(segment));
   if (arrayIndexPos === -1) {
     const field = pathToPayloadFieldName(path);
-    return { accessor: `payload.${field}`, field };
+    return { accessor: `payload.${field}`, field, structuredRootPath: null };
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
   const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
-  return { accessor: `payload.${field}${suffix}`, field };
+  return {
+    accessor: `payload.${field}${suffix}`,
+    field,
+    structuredRootPath: objectPath.length > 0 ? objectPath : null,
+  };
+}
+
+/** Reads the value at `path` inside a parsed JSON body, or undefined when any hop is missing. */
+function valueAtJsonPath(root: unknown, path: string[]): unknown {
+  return path.reduce<unknown>(
+    (node, segment) =>
+      node !== null && typeof node === "object"
+        ? (node as Record<string, unknown>)[segment]
+        : undefined,
+    root
+  );
 }
 
 /** Derives a valid camelCase identifier from a fixture filename (e.g.
@@ -7265,8 +7284,20 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      const { accessor, field: accessorField } = payloadAccessorForPath(path);
+      const {
+        accessor,
+        field: accessorField,
+        structuredRootPath,
+      } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
+      // The accessor indexes into this field, so its declared type must be the
+      // structured shape regardless of whether Mechanism B visited the key.
+      if (structuredRootPath !== null && !outStructuredKeys.has(accessorField)) {
+        const structuredRoot = valueAtJsonPath(inputBody, structuredRootPath);
+        if (structuredRoot !== undefined && structuredRoot !== null) {
+          outStructuredKeys.set(accessorField, inferZodSchema(structuredRoot));
+        }
+      }
       if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
