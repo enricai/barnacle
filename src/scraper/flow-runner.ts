@@ -11918,8 +11918,10 @@ export async function executeStepWithHealing(params: {
     }
 
     const networkFired = post.networkCount > pre.networkCount;
-    const urlChanged =
-      hasOriginOrPathChanged(pre.url, post.url) && isPlausibleStepDestination(step, post.url);
+    // Computed once: gates every credit signal that takes no post-click URL
+    // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
+    const destinationPlausible = isPlausibleStepDestination(step, post.url);
+    const urlChanged = hasOriginOrPathChanged(pre.url, post.url) && destinationPlausible;
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     const isClick = resolvedAction !== null && resolvedAction.method === "click";
@@ -11961,7 +11963,7 @@ export async function executeStepWithHealing(params: {
     // on the common path). Scoped by preCaptureIdx via an eviction-proof disk scan.
     const advanceGateTimeoutMs =
       captchaGated && isSubmitOrFinalStep ? CAPTCHA_TRANSITION_POLL_MS : ADVANCE_TRANSITION_POLL_MS;
-    const networkIsRealAdvance = !advanceGateActive
+    const networkAdvanced = !advanceGateActive
       ? networkFired
       : await waitForTransitionBody({
           page,
@@ -11970,7 +11972,8 @@ export async function executeStepWithHealing(params: {
           timeoutMs: advanceGateTimeoutMs,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
-    if (advanceGateActive && !networkIsRealAdvance) {
+    const networkIsRealAdvance = networkAdvanced && destinationPlausible;
+    if (advanceGateActive && !networkAdvanced) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${advanceGateTimeoutMs}ms poll (non-advancing POST); not treating as verified`
       );
@@ -11993,13 +11996,13 @@ export async function executeStepWithHealing(params: {
       isFinalOrSubmit:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       isAdvance: isAdvanceStep(step),
-      domVerified,
+      domVerified: domVerified && destinationPlausible,
       networkIsRealAdvance,
       urlChanged,
     })
-      ? domVerified
+      ? domVerified && destinationPlausible
       : false;
-    if (domVerified && !domVerifiedForStep) {
+    if (domVerified && !domVerifiedForStep && destinationPlausible) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
@@ -12037,10 +12040,6 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : false;
-    // Shared with classifyPhantomClick's destinationPlausible input below —
-    // same instruction/url pair, computed once so the two gates stay
-    // provably consistent.
-    const destinationPlausible = isPlausibleStepDestination(step, post.url);
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -12223,7 +12222,7 @@ export async function executeStepWithHealing(params: {
       actResultSuccess: record.actResultSuccess,
       pre,
       post,
-      elementStateChanged: domVerified,
+      elementStateChanged: domVerified && destinationPlausible,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       destinationPlausible,
@@ -12787,10 +12786,9 @@ export async function executeStepWithHealing(params: {
             !clickTargetIsSelectionMarker;
           const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           // `classifyPhantomClick`'s own `elementStateChanged` input is
-          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229):
-          // the primary technique's call (flow-runner.ts's `domVerified`,
-          // line ~12222) deliberately trusts an element-scoped read-back
-          // regardless of destination, by design. The n+16 fallback's
+          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229);
+          // the primary attempt gates its credit paths (`domVerifiedForStep`,
+          // `networkIsRealAdvance`) on destination itself. The n+16 fallback's
           // `retrySelectionStateChanged`, UNLIKE the primary technique's
           // `domVerified`, is partly driven by this fallback's OWN synthetic
           // `el.click()`/forced-checkbox probe rather than a genuine site
