@@ -10,11 +10,11 @@ import type { Capture } from "@/scripts/recon-shared";
 /**
  * Closes the report's exact "1 of 5-7 facets, 1 of several call sites"
  * shape: a growing navigateTo hash where each step appends a `label/value`
- * SEGMENT PAIR (e.g. `.../ship/X` then `.../ship/X/sailMonth/Y`), not a bare
+ * SEGMENT PAIR (e.g. `.../color/X` then `.../color/X/size/Y`), not a bare
  * value. {@link extractNavigateToHashFragmentValue}'s cumulative-delta
  * extraction previously stripped only the leading separator off the new
  * suffix, leaving the appended LABEL segment glued to the value
- * (`"sailMonth/Y"` instead of `"Y"`) for every facet after the first — so
+ * (`"size/Y"` instead of `"Y"`) for every facet after the first — so
  * every facet past the first silently failed to correlate against any
  * capture and was dropped, at every call site that referenced it. Drives the
  * real `recon:generate` CLI over a generic catalog/e-commerce domain fixture

@@ -69,7 +69,8 @@ describe("applyStructuredValuePayloadSubstitutions — multiple exclusion source
     // sources may be dropped by the others' presence, and the control
     // element proves the array wasn't swallowed for some unrelated reason.
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("tags")).toBe(false);
+    // The schema key is registered independently of the swallow, so the declared type stays in sync with the payload accessor.
+    expect(outStructuredKeys.has("tags")).toBe(true);
 
     // Every one of the three raw literals must survive frozen in the text —
     // each still available for its own downstream splice pass to thread.
