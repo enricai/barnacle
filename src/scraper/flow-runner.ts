@@ -1916,6 +1916,17 @@ export function isDomOnlyAdvanceVerified(params: {
  * when the probe can't run (non-xpath selector, evaluate failure) it stays
  * at its default `true` so it never manufactures a veto out of missing
  * information. Only a confirmed `false` blocks the credit.
+ *
+ * **Destination-plausibility veto:** none of the signals above look at
+ * WHERE the click landed. A non-submit click that bounces to a page
+ * {@link isPlausibleStepDestination} rejects as implausible for the step
+ * (e.g. a settings-panel tab switcher landing on an unrelated marketing
+ * page) can still clear every byte/text threshold above, crediting a
+ * phantom transition the same way a same-page toggle is credited.
+ * `destinationPlausible` is optional and defaults to the `!== false`
+ * no-veto behavior — matching the sibling `destinationPlausible` param on
+ * `classifyPhantomClick` — so existing/future callers that don't thread it
+ * are unaffected.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -1927,6 +1938,7 @@ export function isClickViewSwapVerified(params: {
   invalidMarkerDelta?: number;
   clickedElementStillPresent?: boolean;
   resolvedElementIsSubmitShaped?: boolean;
+  destinationPlausible?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -1940,8 +1952,10 @@ export function isClickViewSwapVerified(params: {
     invalidMarkerDelta = 0,
     clickedElementStillPresent = true,
     resolvedElementIsSubmitShaped = false,
+    destinationPlausible,
   } = params;
   if (resolvedAction?.method !== "click") return false;
+  if (destinationPlausible === false) return false;
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
   // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
@@ -12023,6 +12037,10 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : false;
+    // Shared with classifyPhantomClick's destinationPlausible input below —
+    // same instruction/url pair, computed once so the two gates stay
+    // provably consistent.
+    const destinationPlausible = isPlausibleStepDestination(step, post.url);
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -12030,7 +12048,8 @@ export async function executeStepWithHealing(params: {
     // Below that threshold, also credits a smaller text-changing reveal (≥500B) —
     // fixes the top-window site Work-History gate-message reveal (+789B) that used to
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
-    // ng-invalid marker count grew (see isClickViewSwapVerified's doc comment).
+    // ng-invalid marker count grew, or when the landed destination is implausible
+    // for the step (see isClickViewSwapVerified's doc comment).
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -12041,6 +12060,7 @@ export async function executeStepWithHealing(params: {
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
+      destinationPlausible,
     });
     if (
       clickViewSwapVerified === false &&
@@ -12205,7 +12225,7 @@ export async function executeStepWithHealing(params: {
       elementStateChanged: domVerified,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
-      destinationPlausible: isPlausibleStepDestination(step, post.url),
+      destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
