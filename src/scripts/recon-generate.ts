@@ -4648,6 +4648,16 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
+    // Schema registration and the wholesale text-swallow below are
+    // independent concerns: this field's inferred Zod shape is correct
+    // regardless of whether any of the exclusion/guard checks below skip
+    // freezing its literal into the template. Registering it here (before
+    // those checks, and before even locating the span) keeps the generated
+    // contract's declared type in sync with payloadAccessorForPath's
+    // array/object accessors even when the wholesale swallow is skipped.
+    if (!outStructuredKeys.has(key)) {
+      outStructuredKeys.set(key, inferZodSchema(value));
+    }
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -4746,9 +4756,6 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
-    if (!outStructuredKeys.has(key)) {
-      outStructuredKeys.set(key, inferZodSchema(value));
-    }
   }
   return { result, nextSearchFrom: cursor };
 }
