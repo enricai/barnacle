@@ -48,4 +48,24 @@ describe("spliceFacetsIntoArrayVariable (via emitContractTs end-to-end)", () => 
 
     expect(contract).toContain(JSON.stringify(["unrelated-item"]));
   });
+
+  it("emits a conditional spread for an optional navigateTo facet matched in an array variable", () => {
+    const contract = emitContractTs({
+      ...BASE_OPTS,
+      gqlVariables: { ids: ["widget-x;filterId=urlFriendlyId", "widget-static"] },
+      flowSteps: [
+        {
+          step: "navigate to widget",
+          navigateTo: "/catalog#widget-x",
+          payloadField: "slug",
+          optional: true,
+        },
+      ],
+    });
+
+    expect(contract).toContain(
+      "...(payload.slug ? [`${payload.slug};filterId=urlFriendlyId`] : [])"
+    );
+    expect(contract).not.toContain("undefined");
+  });
 });

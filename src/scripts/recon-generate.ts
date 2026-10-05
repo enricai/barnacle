@@ -485,6 +485,7 @@ export function harvestPersonaBindings(
 export interface NavigateToFacetBinding {
   readonly value: string;
   readonly field: string;
+  readonly optional: boolean;
 }
 
 /**
@@ -511,7 +512,7 @@ export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): Navigat
     const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
     previousNavigateToHash = currentHash;
     if (value === null || value.length === 0) continue;
-    order.push({ value, field: step.payloadField });
+    order.push({ value, field: step.payloadField, optional: step.optional === true });
   }
   return order;
 }
@@ -6705,6 +6706,67 @@ function applyPayloadKeyValueSubstitutions(
  * steps declared any field to correlate against) or when a leaf's value has
  * no `key:value` segment matching one of them.
  */
+/** Yields every array-valued leaf in `value` (at any object nesting depth) —
+ * `{@link applyOptionalArrayFacetSplicePayloadSubstitutions}`'s raw-array
+ * search surface. Does not recurse INTO an array's own elements (a facet
+ * array is always a flat array of primitives in every observed recon shape),
+ * matching {@link walkAllPrimitiveLeaves}'s depth-first walk of everything
+ * else. */
+function* walkArrayLeaves(
+  value: unknown,
+  path: string[] = []
+): Generator<{ value: unknown[]; path: string[] }, void, unknown> {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    yield { value, path };
+    return;
+  }
+  for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    yield* walkArrayLeaves(inner, [...path, key]);
+  }
+}
+
+/**
+ * REST-body counterpart to {@link spliceFacetsIntoArrayVariable}'s GraphQL
+ * use: a navigateTo facet's literal recurring as one array element (suffixed
+ * by a constant delimiter) inside a REST JSON body gets its element text
+ * swapped for `${payload.<field>}` by the plain `interpolateStateValues`
+ * splice later in the pipeline — but that pass only rewrites literal text
+ * IN PLACE, so when the matched facet is optional it would leave the array's
+ * frozen `undefined`-shaped element (and its JSON delimiter/comma) in the
+ * output whenever the caller omits the field, instead of omitting the
+ * element entirely.
+ *
+ * This pass runs first and, for any array that matches at least one OPTIONAL
+ * facet, rewrites the array's own frozen `JSON.stringify(...)` occurrence in
+ * the body template to a single `${JSON.stringify([...])}` splice point
+ * built from {@link spliceFacetsIntoArrayVariable}'s per-element conditional-
+ * emission shape — the same `...(payload.<field> ? [...] : [])` convention
+ * {@link spliceFacetsIntoStringVariable} already uses for the `key:value`
+ * grammar. A required-only match (no optional facet in that array) is left
+ * for the later plain splice to handle exactly as before — this pass is a
+ * no-op whenever nothing it rewrites would differ, so the existing
+ * required-only REST array-element shape (recon-generate-navigateto-array-
+ * element-facet-splice-e2e.test.ts) never changes.
+ */
+function applyOptionalArrayFacetSplicePayloadSubstitutions(
+  template: string,
+  inputBody: unknown,
+  navigateToFacets: readonly NavigateToFacetBinding[]
+): string {
+  if (!navigateToFacets.some((facet) => facet.optional)) return template;
+  if (inputBody === null || typeof inputBody !== "object") return template;
+  let result = template;
+  for (const { value } of walkArrayLeaves(inputBody)) {
+    const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
+    if (spliced === null || !spliced.includes("...(payload.")) continue;
+    const target = JSON.stringify(value);
+    if (!result.includes(target)) continue;
+    result = result.split(target).join(`\${JSON.stringify(${spliced})}`);
+  }
+  return result;
+}
+
 function applyFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
@@ -7269,7 +7331,14 @@ export function emitMultiStepExecuteHttp(
         (action.capture.requestPostData?.includes(value) ?? false) ||
         Object.values(action.capture.requestHeaders).some((h) => h.includes(value))
     );
-  const unreachableNavigateToFacets = extractNavigateToFacetOrder(flowSteps).filter(
+  // Hoisted once so both the unreachable-facet fallback above and the
+  // REST array-element optional splice below (applyOptionalArrayFacetSplice
+  // PayloadSubstitutions) share the exact same (value, field, optional)
+  // triples — the array splice must see each binding's `optional` flag
+  // precisely as the flow declared it, same as the already-fixed GraphQL
+  // array-variable path ({@link spliceFacetsIntoArrayVariable}).
+  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
+  const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
   if (unreachableNavigateToFacets.length > 0) {
@@ -7570,6 +7639,21 @@ export function emitMultiStepExecuteHttp(
             restOptionalFieldNames
           )
         : rawBodyWithFormSubs;
+    // Optional-facet array-element splice — a navigateTo facet literal
+    // recurring as one element of an array field (not the `key:value`
+    // grammar above) must drop its own element, not freeze an `undefined`,
+    // when its binding is optional and the caller omits it. Runs BEFORE
+    // Mechanism B (below) can swallow the whole array wholesale as an
+    // unparameterized structured value — see
+    // {@link applyOptionalArrayFacetSplicePayloadSubstitutions}.
+    const rawBodyWithOptionalArrayFacetSplices =
+      parsedBody !== null
+        ? applyOptionalArrayFacetSplicePayloadSubstitutions(
+            rawBodyWithFacetSplices,
+            parsedBody,
+            navigateToFacetOrder
+          )
+        : rawBodyWithFacetSplices;
     // Mechanism B — parameterize whole nested caller structures
     // (experienceData/educationData history, opaque eventData) BEFORE value
     // substitution reaches inside them: swallowing the entire array/object first
@@ -7582,7 +7666,7 @@ export function emitMultiStepExecuteHttp(
     const rawBodyWithStructuredSubs =
       parsedBody !== null
         ? applyStructuredValuePayloadSubstitutions(
-            rawBodyWithFacetSplices,
+            rawBodyWithOptionalArrayFacetSplices,
             parsedBody,
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
@@ -8678,7 +8762,11 @@ export function spliceFacetsIntoStringVariable(
  * token-boundary guarded the same way {@link bindsWithoutCollision} (recon-
  * generate.ts ~7223) guards persona bindings elsewhere in this file, so a
  * facet literal that's merely a substring of an unrelated element never
- * misfires.
+ * misfires. A matched binding whose `optional` flag is set is emitted as a
+ * conditionally-included array element (`...(payload.<field> ? [...] : [])`)
+ * instead of inline, the same optional-splice convention
+ * {@link spliceFacetsIntoStringVariable} uses, so an absent optional facet
+ * drops its element rather than emitting `undefined`.
  */
 export function spliceFacetsIntoArrayVariable(
   value: unknown,
@@ -8699,7 +8787,10 @@ export function spliceFacetsIntoArrayVariable(
     if (!matched) return JSON.stringify(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
-    return `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+    const elementLiteral = `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+    return matched.optional
+      ? `...(payload.${matched.field} ? [${elementLiteral}] : [])`
+      : elementLiteral;
   });
   if (matchCount === 0) return null;
   return `[${elements.join(", ")}]`;
