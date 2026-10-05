@@ -22,7 +22,7 @@ import { buildStep, type MulticallFixtureStep } from "@/scripts/recon-generate-m
 function buildSingleHopDualOccurrenceActionSteps(): MulticallFixtureStep[] {
   return [
     buildStep("r0", {
-      url: "https://api.example.com/cruises/search/",
+      url: "https://api.example.com/voyages/search/",
       requestPostData: '{"region":"caribbean"}',
       responseBody: {
         sailings: [
@@ -36,7 +36,7 @@ function buildSingleHopDualOccurrenceActionSteps(): MulticallFixtureStep[] {
       timestamp: "2024-04-01T00:00:00Z",
     }),
     buildStep("r1", {
-      url: "https://api.example.com/cruises/pricing/cx-1/",
+      url: "https://api.example.com/voyages/pricing/cx-1/",
       requestPostData: '{"lookup":true}',
       responseBody: {
         pricedSailings: [
@@ -53,7 +53,7 @@ function buildSingleHopDualOccurrenceActionSteps(): MulticallFixtureStep[] {
       timestamp: "2024-04-01T00:00:01Z",
     }),
     buildStep("r2", {
-      url: "https://api.example.com/cruises/pricing/cx-1/?refresh=true",
+      url: "https://api.example.com/voyages/pricing/cx-1/?refresh=true",
       requestPostData: '{"lookup":true,"refresh":true}',
       responseBody: {
         pricedSailings: [
@@ -73,7 +73,7 @@ function buildSingleHopDualOccurrenceActionSteps(): MulticallFixtureStep[] {
 }
 
 const SINGLE_HOP_DUAL_OCCURRENCE_SPEC: FoldReturnSpec = {
-  endpointPattern: "/cruises/pricing/",
+  endpointPattern: "/voyages/pricing/",
   resultsPath: "sailings",
   drillResultsPath: "pricedSailings",
   joinFields: ["reservationId"],

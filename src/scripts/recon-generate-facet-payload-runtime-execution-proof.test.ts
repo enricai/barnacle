@@ -46,7 +46,7 @@ const CAPTURED_REGION = "Pacific";
 const CAPTURED_THEME = "Alpine";
 
 // Array-of-objects payload field, structurally identical to the reported
-// partyMix shape, recurring verbatim across all three request bodies.
+// attendeeMix shape, recurring verbatim across all three request bodies.
 const CAPTURED_GROUP_MIX = [{ adultCount: 2, childCount: 0, subAges: [], mixId: "0" }];
 
 function captureBody(extra: Record<string, unknown>): string {

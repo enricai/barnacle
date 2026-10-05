@@ -4309,24 +4309,24 @@ describe("inferZodSchemaFromSamples", () => {
 describe("collectUnboundLiterals — composite array/object values", () => {
   it("flags a key whose whole array-of-objects value is still a bare literal in the template", () => {
     const parsedBody = {
-      partyMix: [
+      groupMix: [
         { ageCategory: "ADULT", count: 2 },
         { ageCategory: "CHILD", count: 1 },
       ],
     };
-    const finalTemplate = `{"partyMix":${JSON.stringify(parsedBody.partyMix)}}`;
-    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("partyMix");
+    const finalTemplate = `{"groupMix":${JSON.stringify(parsedBody.groupMix)}}`;
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("groupMix");
   });
 
   it("does not flag a composite value that was correctly substituted with a template expression", () => {
     const parsedBody = {
-      partyMix: [
+      groupMix: [
         { ageCategory: "ADULT", count: 2 },
         { ageCategory: "CHILD", count: 1 },
       ],
     };
-    const finalTemplate = `{"partyMix":\${JSON.stringify(payload.partyMix)}}`;
-    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).not.toContain("partyMix");
+    const finalTemplate = `{"groupMix":\${JSON.stringify(payload.groupMix)}}`;
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).not.toContain("groupMix");
   });
 
   it("still flags an unbound long literal string leaf (pre-existing scalar behavior unchanged)", () => {

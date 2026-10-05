@@ -9,8 +9,8 @@ import type { Capture } from "@/scripts/recon-shared";
 
 /**
  * Pins Finding 1's scalar half: a flow-declared, schema-required string
- * payload field (mirroring the report's ship/departurePort/sailMonth/theme/
- * privateIsland facets) whose captured value repeats verbatim across EVERY
+ * payload field (mirroring the report's ship/departurePort/travelMonth/theme/
+ * memberArea facets) whose captured value repeats verbatim across EVERY
  * action-step request body must be emitted as `${payload.<Field>}` in every
  * one of those occurrences, exactly like the adjacent, already-correctly-
  * wired `filters` field in the same bodies — not validated as required and
