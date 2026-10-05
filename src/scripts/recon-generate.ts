@@ -375,7 +375,13 @@ export function extractNavigateToHashFragmentValue(
   if (previousHash && hash.length > previousHash.length && hash.startsWith(previousHash)) {
     const suffix = hash.slice(previousHash.length);
     const delta = /^[,/]/.test(suffix) ? suffix.slice(1) : suffix;
-    if (delta.length > 0) return delta;
+    // A growing hash can append more than one path segment per step (a
+    // "label/value" pair, not a bare value) — e.g. "ship/X" then
+    // "ship/X/sailMonth/Y" appends "sailMonth/Y", not just "Y". The facet's
+    // actual VALUE is always the last segment of whatever was newly
+    // appended, matching the no-previous-hash fallback below.
+    const deltaSegments = delta.split(/[,/]/).filter((s) => s.length > 0);
+    if (deltaSegments.length > 0) return deltaSegments[deltaSegments.length - 1]!;
   }
   const segments = hash.split("/").filter((s) => s.length > 0);
   return segments.length > 0 ? segments[segments.length - 1]! : null;
