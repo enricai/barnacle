@@ -6798,17 +6798,71 @@ function applyOptionalArrayFacetSplicePayloadSubstitutions(
   inputBody: unknown,
   navigateToFacets: readonly NavigateToFacetBinding[]
 ): string {
-  if (!navigateToFacets.some((facet) => facet.optional)) return template;
+  if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value } of walkArrayLeaves(inputBody)) {
     const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
-    if (spliced === null || !spliced.includes("...(payload.")) continue;
-    const target = JSON.stringify(value);
-    if (!result.includes(target)) continue;
-    result = result.split(target).join(`\${JSON.stringify(${spliced})}`);
+    if (spliced === null) continue;
+    result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${spliced})}`);
   }
   return result;
+}
+
+/**
+ * Rewrites every occurrence of `target` inside `template` by JSON structure
+ * (bracket-balanced, string-aware, whitespace-insensitive) rather than by
+ * exact `JSON.stringify` text, so a pretty-printed or re-spaced body array
+ * is still replaced.
+ */
+function replaceJsonArrayOccurrences(
+  template: string,
+  target: unknown[],
+  replacement: string
+): string {
+  const targetKey = JSON.stringify(target);
+  let out = "";
+  let from = 0;
+  while (from < template.length) {
+    const open = template.indexOf("[", from);
+    if (open === -1) break;
+    const close = findMatchingBracket(template, open);
+    const candidate = close === -1 ? undefined : template.slice(open, close + 1);
+    const matches = candidate !== undefined && jsonTextEquals(candidate, targetKey);
+    if (!matches) {
+      out += template.slice(from, open + 1);
+      from = open + 1;
+      continue;
+    }
+    out += template.slice(from, open) + replacement;
+    from = (close as number) + 1;
+  }
+  return out + template.slice(from);
+}
+
+function findMatchingBracket(text: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function jsonTextEquals(candidate: string, targetKey: string): boolean {
+  try {
+    return JSON.stringify(JSON.parse(candidate)) === targetKey;
+  } catch {
+    return false;
+  }
 }
 
 function applyFacetSplicePayloadSubstitutions(
@@ -7281,9 +7335,19 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
+  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      // A facet-bearing array element belongs to the facet's payloadField, not
+      // a by-index accessor that would freeze the sibling elements' shape.
+      if (
+        /^\d+$/.test(path[path.length - 1] ?? "") &&
+        Array.isArray(valueAtJsonPath(inputBody, path.slice(0, -1))) &&
+        matchArrayElementFacet(value, navigateToFacetOrder) !== undefined
+      ) {
+        continue;
+      }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
@@ -7389,7 +7453,6 @@ export function emitMultiStepExecuteHttp(
   // triples — the array splice must see each binding's `optional` flag
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
-  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
   const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
@@ -8806,6 +8869,24 @@ export function spliceFacetsIntoStringVariable(
 }
 
 /**
+ * Token-boundary match of one array element against the declared navigateTo
+ * facets — the single place elements are matched so the GraphQL and REST
+ * paths (and the REST accessor registration) never disagree on what a
+ * facet-bearing element is.
+ */
+function matchArrayElementFacet(
+  element: string,
+  facets: readonly NavigateToFacetBinding[]
+): NavigateToFacetBinding | undefined {
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  return facets.find(({ value: literal }) => {
+    if (element === literal) return true;
+    if (!element.startsWith(literal)) return false;
+    return !isAlnum(element[literal.length]);
+  });
+}
+
+/**
  * Splices a captured array-valued GraphQL variable's elements against
  * navigateTo facet bindings instead of the `key:value` segment grammar
  * {@link spliceFacetsIntoStringVariable} matches — an array element like
@@ -8825,17 +8906,10 @@ export function spliceFacetsIntoArrayVariable(
   facets: readonly NavigateToFacetBinding[]
 ): string | null {
   if (!Array.isArray(value)) return null;
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  const matchFacet = (element: string): NavigateToFacetBinding | undefined =>
-    facets.find(({ value: literal }) => {
-      if (element === literal) return true;
-      if (!element.startsWith(literal)) return false;
-      return !isAlnum(element[literal.length]);
-    });
   let matchCount = 0;
   const elements = (value as unknown[]).map((element) => {
     if (typeof element !== "string") return JSON.stringify(element);
-    const matched = matchFacet(element);
+    const matched = matchArrayElementFacet(element, facets);
     if (!matched) return JSON.stringify(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
