@@ -38,7 +38,7 @@ describe("applyStructuredValuePayloadSubstitutions — payloadAccessorExcludeVal
     expect(result).toContain(`"filters":${expectedFiltersSub}`);
     expect(result).toContain('"tags":["engineering","backend"]');
     expect(outStructuredKeys.has("filters")).toBe(true);
-    expect(outStructuredKeys.has("tags")).toBe(false);
+    expect(outStructuredKeys.has("tags")).toBe(true);
   });
 
   it("swallows the same array field when no payload-accessor exclusion is registered", () => {

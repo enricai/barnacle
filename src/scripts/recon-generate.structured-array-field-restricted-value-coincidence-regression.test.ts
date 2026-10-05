@@ -88,7 +88,7 @@ describe("applyStructuredValuePayloadSubstitutions — restricted value-coincide
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 
   it("still excludes unconditionally on an unrestricted (name-free) prior-step value match", () => {
@@ -118,7 +118,7 @@ describe("applyStructuredValuePayloadSubstitutions — restricted value-coincide
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 
   it("still excludes unconditionally on a join-field value match", () => {
@@ -137,6 +137,6 @@ describe("applyStructuredValuePayloadSubstitutions — restricted value-coincide
     );
 
     expect(result).toBe(template);
-    expect(outStructuredKeys.has("lineItems")).toBe(false);
+    expect(outStructuredKeys.has("lineItems")).toBe(true);
   });
 });

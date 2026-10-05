@@ -39,7 +39,7 @@ describe("applyStructuredValuePayloadSubstitutions — pre-spliced span is left 
     const expectedCategorySub = "${JSON.stringify(payload.category)}";
 
     expect(result).toContain(`"tags":${expectedTagsSpan}`);
-    expect(outStructuredKeys.has("tags")).toBe(false);
+    expect(outStructuredKeys.has("tags")).toBe(true);
 
     expect(result).toContain(`"category":${expectedCategorySub}`);
     expect(outStructuredKeys.has("category")).toBe(true);

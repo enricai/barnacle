@@ -38,7 +38,7 @@ describe("applyStructuredValuePayloadSubstitutions — pre-spliced span preserva
 
     expect(result).toContain(`"regions":${regionsSpan}`);
     expect(result).toContain(`"tags":${expectedTagsSub}`);
-    expect(outStructuredKeys.has("regions")).toBe(false);
+    expect(outStructuredKeys.has("regions")).toBe(true);
     expect(outStructuredKeys.has("tags")).toBe(true);
   });
 });

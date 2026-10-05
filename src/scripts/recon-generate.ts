@@ -375,7 +375,13 @@ export function extractNavigateToHashFragmentValue(
   if (previousHash && hash.length > previousHash.length && hash.startsWith(previousHash)) {
     const suffix = hash.slice(previousHash.length);
     const delta = /^[,/]/.test(suffix) ? suffix.slice(1) : suffix;
-    if (delta.length > 0) return delta;
+    // A growing hash can append more than one path segment per step (a
+    // "label/value" pair, not a bare value) — e.g. "color/X" then
+    // "color/X/size/Y" appends "size/Y", not just "Y". The facet's
+    // actual VALUE is always the last segment of whatever was newly
+    // appended, matching the no-previous-hash fallback below.
+    const deltaSegments = delta.split(/[,/]/).filter((s) => s.length > 0);
+    if (deltaSegments.length > 0) return deltaSegments[deltaSegments.length - 1]!;
   }
   const segments = hash.split("/").filter((s) => s.length > 0);
   return segments.length > 0 ? segments[segments.length - 1]! : null;
@@ -4648,6 +4654,16 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
+    // Schema registration and the wholesale text-swallow below are
+    // independent concerns: this field's inferred Zod shape is correct
+    // regardless of whether any of the exclusion/guard checks below skip
+    // freezing its literal into the template. Registering it here (before
+    // those checks, and before even locating the span) keeps the generated
+    // contract's declared type in sync with payloadAccessorForPath's
+    // array/object accessors even when the wholesale swallow is skipped.
+    if (!outStructuredKeys.has(key)) {
+      outStructuredKeys.set(key, inferZodSchema(value));
+    }
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -4746,9 +4762,6 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
-    if (!outStructuredKeys.has(key)) {
-      outStructuredKeys.set(key, inferZodSchema(value));
-    }
   }
   return { result, nextSearchFrom: cursor };
 }
