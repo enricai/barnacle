@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
 import { type AttemptRecord, executeStepWithHealing } from "@/scraper/flow-runner";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -10,6 +13,9 @@ import type { Logger } from "@/types/logging";
  * destination-gated like `retryVerified`, so traffic on an implausible
  * sign-in-shaped landing URL for an inferred-final step is not credited.
  */
+
+process.env.RECON_RUN_ID = "n16-network-gate";
+process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "n16-network-gate-"));
 
 const guardedObserve = vi.fn();
 const guardedAct = vi.fn();
@@ -40,6 +46,15 @@ function makePage(urls: { current: string }, counter: { n: number }, landing: st
       if (src.includes("XPathResult.FIRST_ORDERED_NODE_TYPE") && src.includes('kind: "click"')) {
         urls.current = landing;
         counter.n += 1;
+        const dir = resolveReconRunDir().graphqlDir;
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+          join(dir, "5-transition.json"),
+          JSON.stringify({
+            requestPostData: "TransitionWorklet",
+            variables: { input: { type: "next" } },
+          })
+        );
         return { fired: true, kind: "click" };
       }
       return null;
@@ -83,7 +98,7 @@ async function run(landing: string): Promise<{ attempts: AttemptRecord[]; threw:
     submitEndpointPattern: null,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,
-    advanceTransitionBodyPattern: null,
+    advanceTransitionBodyPattern: "TransitionWorklet",
     successUrlFragments: [],
     successPageTitleHints: [],
     ownBackendHostnames: [],
