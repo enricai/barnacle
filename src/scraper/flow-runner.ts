@@ -12697,8 +12697,12 @@ export async function executeStepWithHealing(params: {
           // Poll for the real TransitionWorklet(type="next") like the primary
           // verifier — the transition POST can land after this snapshot, and a
           // one-shot check would false-negative and retry into a back-bounce.
+          // Destination-gated so an implausible landing URL's traffic cannot satisfy
+          // the veto or the submit-transition carve-out downstream.
+          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
+            retryDestinationPlausible &&
             (await waitForTransitionBody({
               page,
               preIdx: preCaptureIdx,
@@ -12784,7 +12788,6 @@ export async function executeStepWithHealing(params: {
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
-          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           // `classifyPhantomClick`'s own `elementStateChanged` input is
           // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229);
           // the primary attempt gates its credit paths (`domVerifiedForStep`,
