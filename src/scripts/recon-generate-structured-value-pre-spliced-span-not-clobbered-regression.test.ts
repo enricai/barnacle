@@ -44,4 +44,23 @@ describe("applyStructuredValuePayloadSubstitutions — pre-spliced span is left 
     expect(result).toContain(`"category":${expectedCategorySub}`);
     expect(outStructuredKeys.has("category")).toBe(true);
   });
+
+  it("still threads a field whose leaf text merely contains the literal word 'payload.' as ordinary data", () => {
+    const parsedBody = {
+      tags: ["view payload.json", "sale"],
+    };
+    const template = '{"tags":["view payload.json","sale"]}';
+    const outStructuredKeys = new Map<string, string>();
+
+    const result = applyStructuredValuePayloadSubstitutions(
+      template,
+      parsedBody,
+      outStructuredKeys
+    );
+
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+    const expectedTagsSub = "${JSON.stringify(payload.tags)}";
+    expect(result).toContain(`"tags":${expectedTagsSub}`);
+    expect(outStructuredKeys.has("tags")).toBe(true);
+  });
 });

@@ -4732,14 +4732,17 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     }
     if (spanEnd === -1) continue;
     // An earlier pass in this same pipeline run (e.g. the optional-facet
-    // array-element splice) may have already spliced a `payload.<field>`
+    // array-element splice) may have already spliced a `${payload.<field>}`
     // accessor into this exact span — e.g. turning one element of a
     // search/filter array into `...(payload.sortOrder ? [...] : [])`. The
     // exclusion-source checks above only ever see the ORIGINAL parsed leaf
     // values, so they can't detect this; inspecting the located span's
     // CURRENT text catches it and leaves the pre-spliced accessor intact
-    // instead of clobbering it with a wholesale replacement.
-    if (result.slice(spanStart, spanEnd).includes("payload.")) continue;
+    // instead of clobbering it with a wholesale replacement. Matching on the
+    // literal template-placeholder prefix `${payload.` (rather than the bare
+    // substring `payload.`) avoids false-positiving on scraped leaf data that
+    // merely happens to contain the word "payload." as ordinary text.
+    if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
     const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
