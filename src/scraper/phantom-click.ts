@@ -229,9 +229,13 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const elementStateChanged = !attempt.isSubmitShapedStep && attempt.elementStateChanged === true;
   // Mirrors the elementStateChanged veto above: a submit-shaped step must prove
   // itself via network/URL, so a mere DOM-byte reflow (growth OR shrink) must
-  // not lift the verdict off `phantom` either.
+  // not lift the verdict off `phantom` either. Also mirrors urlChanged's own
+  // destinationPlausible gate: a DOM-byte-only change on a page that landed
+  // somewhere implausible for the step must not count as an effect either.
   const bytesChangedSignificantly =
-    !attempt.isSubmitShapedStep && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
+    !attempt.isSubmitShapedStep &&
+    Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES &&
+    attempt.destinationPlausible !== false;
 
   const hasEffect =
     networkDelta !== 0 || urlChanged || elementStateChanged || bytesChangedSignificantly;
