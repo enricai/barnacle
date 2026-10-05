@@ -12985,7 +12985,18 @@ export async function executeStepWithHealing(params: {
           );
           if (retryVerified) {
             if (record.verifiedBy === null) {
-              record.verifiedBy = retryUrlChanged ? "url" : retryNetworkFired ? "network" : "dom";
+              // Mirror the same `retryDestinationPlausible` gate `retryVerified`
+              // applies to `retryNetworkFired` above — otherwise a step verified
+              // via `retryVerdict === "effective"` (or `weakDomSignalsAllowed`)
+              // while the destination is implausible would still be labeled
+              // "network" here off the raw, ungated flag, misreporting what
+              // actually verified it and desyncing `verifiedBy` consumers (e.g.
+              // the `priorDomVerified` check below) from the real gate.
+              record.verifiedBy = retryUrlChanged
+                ? "url"
+                : retryNetworkFired && retryDestinationPlausible
+                  ? "network"
+                  : "dom";
             }
             record.post = retryPost;
             attempts.push(record);
