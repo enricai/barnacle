@@ -12786,22 +12786,50 @@ export async function executeStepWithHealing(params: {
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
           const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
+          // `classifyPhantomClick`'s own `elementStateChanged` input is
+          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229):
+          // the primary technique's call (flow-runner.ts's `domVerified`,
+          // line ~12222) deliberately trusts an element-scoped read-back
+          // regardless of destination, by design. The n+16 fallback's
+          // `retrySelectionStateChanged`, UNLIKE the primary technique's
+          // `domVerified`, is partly driven by this fallback's OWN synthetic
+          // `el.click()`/forced-checkbox probe rather than a genuine site
+          // click handler — pre-gating it here (this call site only; the
+          // primary technique's call above is untouched) closes the n+16-
+          // specific path where `classifyPhantomClick`'s `"effective"`
+          // verdict would otherwise re-credit a destination-implausible
+          // click purely off `elementStateChanged`, bypassing the direct
+          // `retrySelectionStateChanged`/`checkboxStateVerified` gates below.
           const retryVerdict = classifyPhantomClick({
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
-            elementStateChanged: retrySelectionStateChanged,
+            elementStateChanged: retrySelectionStateChanged && retryDestinationPlausible,
             isSubmitShapedStep: retrySubmitShaped,
             destinationPlausible: retryDestinationPlausible,
           });
+          // Destination-plausibility audit of every remaining disjunct in
+          // this OR (the recon report's closing instruction, see
+          // flow-runner.retry-fallback-remaining-disjuncts-destination-
+          // audit.test.ts): `retryNetworkFired` is a bare request COUNT with
+          // zero awareness of destination (a request can fire en route to
+          // ANY page, including a wrong one); `checkboxStateVerified` forces
+          // `.checked = true` on whatever element the xpath resolves to on
+          // the CURRENTLY LOADED page, independent of whether the click
+          // fallback navigated there correctly; `retrySelectionStateChanged`
+          // reads a fingerprint for whatever element the xpath/selector
+          // resolves to post-click, same independence from destination. All
+          // three get the same `isPlausibleStepDestination` gate
+          // `weakDomSignalsAllowed` already has (bugfix-002) — `retryUrlChanged`
+          // already folds the same check in at its own computation above.
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
-            (retryNetworkFired ||
+            ((retryNetworkFired && retryDestinationPlausible) ||
               retryUrlChanged ||
-              checkboxStateVerified ||
-              retrySelectionStateChanged ||
+              (checkboxStateVerified && retryDestinationPlausible) ||
+              (retrySelectionStateChanged && retryDestinationPlausible) ||
               (!retrySubmitShaped && retryVerdict === "effective") ||
               (weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
