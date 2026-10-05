@@ -27,8 +27,15 @@ import type { Logger } from "@/types/logging";
  */
 
 const BASE_URL = "https://shop.example.com/login";
-const CONTINUE_STEP = "Confirm the shipping address and continue to payment";
-const PLAUSIBLE_STEP = "Sign in to confirm your identity";
+// Both phrasings contain "click the submit" so `isSubmitIntentStep` makes
+// `retrySubmitShaped` true, which in turn makes `classifyPhantomClick`'s own
+// `bytesChangedSignificantly`/`elementStateChanged` disjuncts (unrelated to
+// this subtask's `weakDomSignalsAllowed` disjunct) stay vetoed — isolating
+// `retryVerified` down to exactly the `weakDomSignalsAllowed` disjunct under
+// test. Only the plausible phrasing's own action clause ("click sign in")
+// matches `SIGN_IN_PATTERNS`.
+const CONTINUE_STEP = "Click the submit button and click continue to confirm the shipping address";
+const PLAUSIBLE_STEP = "Click the submit button and click sign in to confirm your identity";
 
 const INFO_LINES: string[] = [];
 const testLogger = {
