@@ -7572,7 +7572,8 @@ export function emitMultiStepExecuteHttp(
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
   for (const { value, field } of navigateToFacetOrder) {
-    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value)) outDiscoveredFields.add(field);
+    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value))
+      outDiscoveredFields.add(field);
   }
   const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
