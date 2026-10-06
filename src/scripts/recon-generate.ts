@@ -6811,15 +6811,24 @@ function applyScalarFacetSplicePayloadSubstitutions(
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
-    if (typeof value !== "string") continue;
+    if (typeof value !== "string" && typeof value !== "number") continue;
     if (/^\d+$/.test(path[path.length - 1] ?? "")) continue;
-    const facet = navigateToFacets.find((f) => f.value === value);
+    const facet = matchFacetRecurrence(String(value), navigateToFacets, {
+      allowDelimiterSuffix: false
+    });
     if (facet === undefined) continue;
     const literal = JSON.stringify(value);
-    const replacement = facet.optional
-      ? `\${JSON.stringify(payload.${facet.field} ?? ${literal})}`
-      : `"\${payload.${facet.field}}"`;
+    const fallback = facet.optional ? ` ?? ${literal}` : "";
+    const replacement =
+      typeof value === "number" || facet.optional
+        ? `\${JSON.stringify(payload.${facet.field}${fallback})}`
+        : `"\${payload.${facet.field}}"`;
     for (const sep of [":", ": "]) {
+      if (typeof value === "number") {
+        const re = new RegExp(`${sep}${literal}(?![\\w.])`, "g");
+        result = result.replace(re, () => `${sep}${replacement}`);
+        continue;
+      }
       result = result.split(`${sep}${literal}`).join(`${sep}${replacement}`);
     }
   }
@@ -9019,14 +9028,31 @@ function matchArrayElementFacet(
   element: string,
   facets: readonly NavigateToFacetBinding[]
 ): NavigateToFacetBinding | undefined {
+  return matchFacetRecurrence(element, facets, { allowDelimiterSuffix: true });
+}
+
+/**
+ * The one facet-recurrence predicate every grammar (array element, scalar
+ * leaf) consults, so a declared facet literal is judged to recur identically
+ * everywhere. A number leaf is compared by its string form, so a numeric body
+ * value matches the string literal a navigateTo hash yields. With
+ * `allowDelimiterSuffix`, a literal followed by a non-alphanumeric delimiter
+ * suffix also matches. The longest literal wins.
+ */
+function matchFacetRecurrence(
+  text: string,
+  facets: readonly NavigateToFacetBinding[],
+  options: { allowDelimiterSuffix: boolean }
+): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  // Longest literal wins so overlapping literals resolve by specificity, not
-  // declaration order.
   return facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
     const literal = facet.value;
     const matches =
-      element === literal ||
-      (literal.length > 0 && element.startsWith(literal) && !isAlnum(element[literal.length]));
+      text === literal ||
+      (options.allowDelimiterSuffix &&
+        literal.length > 0 &&
+        text.startsWith(literal) &&
+        !isAlnum(text[literal.length]));
     if (!matches) return best;
     return best === undefined || literal.length > best.value.length ? facet : best;
   }, undefined);
