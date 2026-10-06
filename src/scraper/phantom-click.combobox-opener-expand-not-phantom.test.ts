@@ -10,6 +10,7 @@ function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttem
     actResultSuccess: true,
     pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
+    destinationPlausible: true,
     ...overrides,
   };
 }

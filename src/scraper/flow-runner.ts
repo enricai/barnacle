@@ -6110,7 +6110,7 @@ export async function injectCaptchaTokenAndSubmit(
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
   responseField = "h-captcha-response",
-  verification?: { signalCounter: { n: number }; page?: Page }
+  verification?: { signalCounter: { n: number }; page?: Page; step: string }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -6148,6 +6148,7 @@ export async function submitCaptchaGatedForm(
         pre,
         post,
         isSubmitShapedStep: true,
+        destinationPlausible: isPlausibleStepDestination(verification.step, post.url),
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -9328,8 +9329,9 @@ function redactIfSensitive(text: string, sensitiveValue?: string): string {
 async function probeChildFrameSubmitFallback(params: {
   page: Page;
   signalCounter: { n: number };
+  step: string;
 }): Promise<FrameTarget | null> {
-  const { page, signalCounter } = params;
+  const { page, signalCounter, step } = params;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
   // all and doesn't implement this pair, which is indistinguishable here from
@@ -9388,6 +9390,7 @@ async function probeChildFrameSubmitFallback(params: {
       pre,
       post,
       isSubmitShapedStep: true,
+      destinationPlausible: isPlausibleStepDestination(step, post.url),
     });
     if (verdict !== "phantom") return target;
 
@@ -9403,6 +9406,7 @@ async function probeChildFrameSubmitFallback(params: {
       pre,
       post: runnerUpPost,
       isSubmitShapedStep: true,
+      destinationPlausible: isPlausibleStepDestination(step, runnerUpPost.url),
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -10206,6 +10210,7 @@ export async function executeStepWithHealing(params: {
             fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget, "h-captcha-response", {
               signalCounter,
               page,
+              step,
             });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
@@ -10458,7 +10463,7 @@ export async function executeStepWithHealing(params: {
       !frameTarget?.declaredFrameSelector &&
       (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
     ) {
-      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
       if (fallbackTarget) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
@@ -11120,6 +11125,7 @@ export async function executeStepWithHealing(params: {
                 // stray selection flip must not mask a top-pick phantom and skip
                 // the runner-up retry.
                 isSubmitShapedStep: true,
+                destinationPlausible: isPlausibleStepDestination(step, midPost.url),
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -11918,8 +11924,10 @@ export async function executeStepWithHealing(params: {
     }
 
     const networkFired = post.networkCount > pre.networkCount;
-    const urlChanged =
-      hasOriginOrPathChanged(pre.url, post.url) && isPlausibleStepDestination(step, post.url);
+    // Computed once: gates every credit signal that takes no post-click URL
+    // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
+    const destinationPlausible = isPlausibleStepDestination(step, post.url);
+    const urlChanged = hasOriginOrPathChanged(pre.url, post.url) && destinationPlausible;
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     const isClick = resolvedAction !== null && resolvedAction.method === "click";
@@ -11961,7 +11969,7 @@ export async function executeStepWithHealing(params: {
     // on the common path). Scoped by preCaptureIdx via an eviction-proof disk scan.
     const advanceGateTimeoutMs =
       captchaGated && isSubmitOrFinalStep ? CAPTCHA_TRANSITION_POLL_MS : ADVANCE_TRANSITION_POLL_MS;
-    const networkIsRealAdvance = !advanceGateActive
+    const networkAdvanced = !advanceGateActive
       ? networkFired
       : await waitForTransitionBody({
           page,
@@ -11970,7 +11978,8 @@ export async function executeStepWithHealing(params: {
           timeoutMs: advanceGateTimeoutMs,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
-    if (advanceGateActive && !networkIsRealAdvance) {
+    const networkIsRealAdvance = networkAdvanced && destinationPlausible;
+    if (advanceGateActive && !networkAdvanced) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} network fired but no advance-transition (type=next) body matched within ${advanceGateTimeoutMs}ms poll (non-advancing POST); not treating as verified`
       );
@@ -11993,13 +12002,13 @@ export async function executeStepWithHealing(params: {
       isFinalOrSubmit:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       isAdvance: isAdvanceStep(step),
-      domVerified,
+      domVerified: domVerified && destinationPlausible,
       networkIsRealAdvance,
       urlChanged,
     })
-      ? domVerified
+      ? domVerified && destinationPlausible
       : false;
-    if (domVerified && !domVerifiedForStep) {
+    if (domVerified && !domVerifiedForStep && destinationPlausible) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} advance step succeeded only via DOM state change (field toggle / non-advancing POST), not a real transition; not treating as verified`
       );
@@ -12037,10 +12046,6 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : false;
-    // Shared with classifyPhantomClick's destinationPlausible input below —
-    // same instruction/url pair, computed once so the two gates stay
-    // provably consistent.
-    const destinationPlausible = isPlausibleStepDestination(step, post.url);
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
@@ -12223,7 +12228,7 @@ export async function executeStepWithHealing(params: {
       actResultSuccess: record.actResultSuccess,
       pre,
       post,
-      elementStateChanged: domVerified,
+      elementStateChanged: domVerified && destinationPlausible,
       isSubmitShapedStep:
         submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
       destinationPlausible,
@@ -12698,8 +12703,12 @@ export async function executeStepWithHealing(params: {
           // Poll for the real TransitionWorklet(type="next") like the primary
           // verifier — the transition POST can land after this snapshot, and a
           // one-shot check would false-negative and retry into a back-bounce.
+          // Destination-gated so an implausible landing URL's traffic cannot satisfy
+          // the veto or the submit-transition carve-out downstream.
+          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
+            retryDestinationPlausible &&
             (await waitForTransitionBody({
               page,
               preIdx: preCaptureIdx,
@@ -12785,12 +12794,10 @@ export async function executeStepWithHealing(params: {
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
-          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           // `classifyPhantomClick`'s own `elementStateChanged` input is
-          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229):
-          // the primary technique's call (flow-runner.ts's `domVerified`,
-          // line ~12222) deliberately trusts an element-scoped read-back
-          // regardless of destination, by design. The n+16 fallback's
+          // UNGATED by `destinationPlausible` (phantom-click.ts ~220-229);
+          // the primary attempt gates its credit paths (`domVerifiedForStep`,
+          // `networkIsRealAdvance`) on destination itself. The n+16 fallback's
           // `retrySelectionStateChanged`, UNLIKE the primary technique's
           // `domVerified`, is partly driven by this fallback's OWN synthetic
           // `el.click()`/forced-checkbox probe rather than a genuine site
@@ -12804,7 +12811,7 @@ export async function executeStepWithHealing(params: {
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
-            elementStateChanged: retrySelectionStateChanged && retryDestinationPlausible,
+            elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retrySubmitShaped,
             destinationPlausible: retryDestinationPlausible,
           });
@@ -13216,7 +13223,7 @@ export async function executeStepWithHealing(params: {
     !frameTarget?.declaredFrameSelector &&
     (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
   ) {
-    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
     if (fallbackTarget) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`

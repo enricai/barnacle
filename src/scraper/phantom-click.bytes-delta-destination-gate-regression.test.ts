@@ -10,6 +10,7 @@ function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttem
     actResultSuccess: true,
     pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
+    destinationPlausible: true,
     ...overrides,
   };
 }
@@ -34,10 +35,7 @@ describe("scraper/phantom-click classifyPhantomClick bytesChangedSignificantly d
     }
   );
 
-  it.each([
-    { name: "destinationPlausible unset (today's default)", destinationPlausible: undefined },
-    { name: "destinationPlausible true", destinationPlausible: true as const },
-  ])(
+  it.each([{ name: "destinationPlausible true", destinationPlausible: true as const }])(
     "still classifies the identical byte-growth attempt as effective when $name",
     ({ destinationPlausible }) => {
       const attempt = makeAttempt({
@@ -54,7 +52,6 @@ describe("scraper/phantom-click classifyPhantomClick bytesChangedSignificantly d
 
   it.each([
     { name: "destinationPlausible false", destinationPlausible: false as const },
-    { name: "destinationPlausible unset", destinationPlausible: undefined },
     { name: "destinationPlausible true", destinationPlausible: true as const },
   ])(
     "stays phantom on a submit-shaped step with byte growth alone regardless of $name",
