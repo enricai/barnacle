@@ -346,3 +346,21 @@ describe("persona binding — short-value substring-corruption guard", () => {
     expect(body).toContain("payload.FirstName} Reconaldo");
   });
 });
+
+describe("extractNavigateToHashFragmentValue — accumulating hash forms", () => {
+  const url = (hash: string): string => `https://shop.example.com/#${hash}`;
+
+  it("takes the new value of a key=value pair joined by an ampersand", () => {
+    expect(extractNavigateToHashFragmentValue(url("brand=acme&season=spring"), "brand=acme")).toBe(
+      "spring"
+    );
+  });
+
+  it("takes the new value when the step prepends rather than appends", () => {
+    expect(extractNavigateToHashFragmentValue(url("spring,acme"), "acme")).toBe("spring");
+  });
+
+  it("takes the new value across semicolon-joined label/value pairs", () => {
+    expect(extractNavigateToHashFragmentValue(url("brand/acme;size/xl"), "brand/acme")).toBe("xl");
+  });
+});
