@@ -6835,12 +6835,9 @@ function applyScalarFacetSplicePayloadSubstitutions(
   return result;
 }
 
-/** Yields every array-valued leaf in `value` (at any object nesting depth) —
- * `{@link applyArrayFacetSplicePayloadSubstitutions}`'s raw-array
- * search surface. Does not recurse INTO an array's own elements (a facet
- * array is always a flat array of primitives in every observed recon shape),
- * matching {@link walkAllPrimitiveLeaves}'s depth-first walk of everything
- * else. */
+/** Yields every array in `value` (outermost first, at any nesting depth,
+ * including arrays inside array elements) — `{@link
+ * applyArrayFacetSplicePayloadSubstitutions}`'s raw-array search surface. */
 function* walkArrayLeaves(
   value: unknown,
   path: string[] = []
@@ -6848,6 +6845,9 @@ function* walkArrayLeaves(
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
     yield { value, path };
+    for (const [index, inner] of value.entries()) {
+      yield* walkArrayLeaves(inner, [...path, String(index)]);
+    }
     return;
   }
   for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
@@ -6883,26 +6883,71 @@ function applyArrayFacetSplicePayloadSubstitutions(
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value } of walkArrayLeaves(inputBody)) {
-    const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
-    if (spliced === null) continue;
-    const replacement = spliced.includes("...(payload.")
-      ? `\${JSON.stringify(${spliced})}`
-      : renderRequiredFacetArrayText(value, navigateToFacets);
+    if (!containsFacetArray(value, navigateToFacets)) continue;
+    const expression = renderFacetValueExpression(value, navigateToFacets);
+    const replacement = expression.includes("...(payload.")
+      ? `\${JSON.stringify(${expression})}`
+      : renderRequiredFacetValueText(value, navigateToFacets);
     result = replaceJsonArrayOccurrences(result, value, replacement);
   }
   return result;
 }
 
-/** Compact JSON text of an array whose facet-bearing string elements are
- * rewritten to `"${payload.<field>}<suffix>"` in place. */
-function renderRequiredFacetArrayText(
-  value: unknown[],
+/** Whether `value` is, or contains at any depth, an array with a
+ * facet-bearing string element. */
+function containsFacetArray(value: unknown, facets: readonly NavigateToFacetBinding[]): boolean {
+  for (const { value: array } of walkArrayLeaves(value)) {
+    const hasFacet = array.some(
+      (element) => typeof element === "string" && matchArrayElementFacet(element, facets)
+    );
+    if (hasFacet) return true;
+  }
+  return false;
+}
+
+/** JS expression for `value` with every facet array at any depth spliced, so
+ * one construction covers arrays nested inside array elements. */
+function renderFacetValueExpression(
+  value: unknown,
   facets: readonly NavigateToFacetBinding[]
 ): string {
+  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return (
+      spliceFacetsIntoArrayVariable(value, facets, (element) =>
+        renderFacetValueExpression(element, facets)
+      ) ?? `[${value.map((element) => renderFacetValueExpression(element, facets)).join(", ")}]`
+    );
+  }
+  const entries = Object.entries(value as Record<string, unknown>).map(
+    ([key, inner]) => `${JSON.stringify(key)}: ${renderFacetValueExpression(inner, facets)}`
+  );
+  return `{ ${entries.join(", ")} }`;
+}
+
+/** Compact JSON text of `value` whose facet-bearing string elements, at any
+ * array depth, are rewritten to `"${payload.<field>}<suffix>"` in place. */
+function renderRequiredFacetValueText(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[]
+): string {
+  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
+    return JSON.stringify(value);
+  }
+  if (!Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, inner]) => `${JSON.stringify(key)}:${renderRequiredFacetValueText(inner, facets)}`
+    );
+    return `{${entries.join(",")}}`;
+  }
   const elements = value.map((element) => {
     const matched =
       typeof element === "string" ? matchArrayElementFacet(element, facets) : undefined;
-    if (typeof element !== "string" || matched === undefined) return JSON.stringify(element);
+    if (typeof element !== "string" || matched === undefined) {
+      return renderRequiredFacetValueText(element, facets);
+    }
     const suffix = JSON.stringify(element.slice(matched.value.length)).slice(1, -1);
     return `"\${payload.${matched.field}}${suffix}"`;
   });
@@ -9106,14 +9151,15 @@ function spliceFacetRecurrenceIntoScalarVariable(
  */
 export function spliceFacetsIntoArrayVariable(
   value: unknown,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
+  renderElement: (element: unknown) => string = (element) => JSON.stringify(element)
 ): string | null {
   if (!Array.isArray(value)) return null;
   let matchCount = 0;
   const elements = (value as unknown[]).map((element) => {
-    if (typeof element !== "string") return JSON.stringify(element);
+    if (typeof element !== "string") return renderElement(element);
     const matched = matchArrayElementFacet(element, facets);
-    if (!matched) return JSON.stringify(element);
+    if (!matched) return renderElement(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
     const elementLiteral = `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
