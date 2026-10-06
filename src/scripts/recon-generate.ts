@@ -6814,7 +6814,7 @@ function applyScalarFacetSplicePayloadSubstitutions(
     if (typeof value !== "string" && typeof value !== "number") continue;
     if (/^\d+$/.test(path[path.length - 1] ?? "")) continue;
     const facet = matchFacetRecurrence(String(value), navigateToFacets, {
-      allowDelimiterSuffix: false
+      allowDelimiterSuffix: false,
     });
     if (facet === undefined) continue;
     const literal = JSON.stringify(value);
