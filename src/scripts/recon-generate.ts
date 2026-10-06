@@ -6798,12 +6798,13 @@ function applyOptionalArrayFacetSplicePayloadSubstitutions(
   inputBody: unknown,
   navigateToFacets: readonly NavigateToFacetBinding[]
 ): string {
-  if (navigateToFacets.length === 0) return template;
+  if (!navigateToFacets.some((facet) => facet.optional)) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value } of walkArrayLeaves(inputBody)) {
     const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
-    if (spliced === null) continue;
+    // Required-only matches keep the in-place text splice (pinned shape).
+    if (spliced === null || !spliced.includes("...(payload.")) continue;
     result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${spliced})}`);
   }
   return result;
