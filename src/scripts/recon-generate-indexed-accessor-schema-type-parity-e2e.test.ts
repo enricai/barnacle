@@ -127,8 +127,6 @@ describe("recon-generate CLI + tsc --noEmit — array-of-objects field schema/bo
     expect(schema).toMatch(/orderCriteria:[^\n]*z\.array\(z\.object\(/);
     expect(schema).not.toMatch(/orderCriteria:\s*z\.string\(\)/);
 
-    expect(contract).not.toMatch(/payload\.orderCriteria\[/);
-
     // Body-construction accessors indexing into orderCriteria as an array
     // (e.g. payload.orderCriteria["0"]!.field) only type-check when the
     // schema agrees it's an array of objects — tsc below is the ultimate

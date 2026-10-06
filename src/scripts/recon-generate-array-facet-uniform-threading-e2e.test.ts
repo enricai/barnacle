@@ -10,7 +10,7 @@ import type { Capture } from "@/scripts/recon-shared";
 /**
  * Pins uniform threading of every declared array facet at every REST call
  * site when three facets (two required, one optional) share one array field
- * across two call sites: each appears as `payload.<facet>`, with no by-index
+ * across three call sites: each appears as `payload.<facet>`, with no by-index
  * element accessor and no wholesale pass-through. A non-facet object array in
  * the same bodies must still freeze as before. Generic library-catalog
  * fixture.
@@ -49,6 +49,12 @@ function fixtureCaptures(): Capture[] {
       requestPostData: JSON.stringify({ filters, columns: COLUMNS }),
       responseBody: { ok: true },
       timestamp: "2026-06-01T00:00:01.000Z",
+    }),
+    buildCapture({
+      url: `https://${OWN_BACKEND_HOST}/library/lookup-refine/`,
+      requestPostData: JSON.stringify({ filters, columns: COLUMNS, refine: true }),
+      responseBody: { ok: true },
+      timestamp: "2026-06-01T00:00:01.500Z",
     }),
     buildCapture({
       url: `https://${OWN_BACKEND_HOST}/library/lookup-summary/`,
@@ -96,7 +102,6 @@ function extractCallSiteBodies(contract: string): Map<string, string> {
   return bodies;
 }
 
-
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
 
@@ -107,7 +112,7 @@ afterEach(() => {
   siteOutDir = null;
 });
 
-describe("recon-generate CLI — three array facets (one optional) across two call sites", () => {
+describe("recon-generate CLI — three array facets (one optional) across three call sites", () => {
   it("threads each facet as payload.<facet> in every array and still freezes the non-facet array", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-array-facet-uniform-threading-"));
     const runRoot = join(workDir, "run");
@@ -140,7 +145,7 @@ describe("recon-generate CLI — three array facets (one optional) across two ca
           { step: "browse library" },
           { step: "look up books", submitStep: true },
         ],
-        submitEndpointPattern: "library/lookup-books",
+        submitEndpointPattern: "library/lookup-summary",
         requireSubmitEndpointMatch: true,
         ownBackendHostnames: [OWN_BACKEND_HOST],
       })
@@ -162,11 +167,15 @@ describe("recon-generate CLI — three array facets (one optional) across two ca
     expect(contract).not.toContain("JSON.stringify(payload.filters)");
     expect(contract).not.toMatch(/payload\.filters\[/);
 
-    for (const path of ["/library/lookup-books/", "/library/lookup-summary/"]) {
+    for (const path of [
+      "/library/lookup-books/",
+      "/library/lookup-refine/",
+      "/library/lookup-summary/",
+    ]) {
       const body = bodies.get(path);
       expect(body, contract).toBeDefined();
-      expect(body).toContain("${payload.AuthorFacet}");
-      expect(body).toContain("${payload.GenreFacet}");
+      expect(body).toContain(`\${payload.AuthorFacet}`);
+      expect(body).toContain(`\${payload.GenreFacet}`);
       expect(body).toContain("payload.LanguageFacet");
       expect(body).toContain(SUFFIX);
       expect(body).not.toContain('"title"');
