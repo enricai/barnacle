@@ -104,6 +104,16 @@ afterEach(() => {
   siteOutDir = null;
 });
 
+function runGenerate(siteId: string, runRoot: string): string {
+  const result = spawnSync(
+    TSX_BIN,
+    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+    { cwd: REPO_ROOT, encoding: "utf8" }
+  );
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  return readFileSync(join(siteOutDir ?? "", "contract.ts"), "utf8");
+}
+
 describe("recon-generate CLI — every facet at every call site", () => {
   it("splices every declared facet through one construction at all four sites", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-array-facet-every-declared-"));
@@ -166,5 +176,73 @@ describe("recon-generate CLI — every facet at every call site", () => {
     }
     expect(bodies.get(SITE_PATHS[0] ?? "")).toContain("type=hotel");
     expect(bodies.get(SITE_PATHS[2] ?? "")).toContain("page=1");
+  }, 30_000);
+
+  it("splices a facet whose hash fragment differs from its body literal (correlated unreachable case) at every site", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-array-facet-correlated-"));
+    const runRoot = join(workDir, "run");
+    const hashToken = "hashx-stay-9001";
+    const bodyToken = "bodyx-code-7001";
+    const cityBody = tagged(TOKENS.CityFacet);
+    const bodies: unknown[] = [
+      { filters: ["type=hotel", cityBody] },
+      { filters: ["type=hotel", cityBody, tagged(bodyToken)] },
+      { filters: [tagged(bodyToken), cityBody], refine: true },
+      { filters: ["sort=price", cityBody, tagged(bodyToken), "page=1"] },
+    ];
+    writeRunDir(
+      runRoot,
+      bodies.map((body, index) =>
+        buildCapture({
+          url: `https://${OWN_BACKEND_HOST}${SITE_PATHS[index]}`,
+          requestPostData: JSON.stringify(body),
+          responseBody: { ok: true },
+          timestamp: `2026-06-01T00:00:0${index}.000Z`,
+        })
+      )
+    );
+
+    const siteId = `array-facet-correlated-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const base = `https://${OWN_BACKEND_HOST}/#/stay`;
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          {
+            step: "navigate with CityFacet applied",
+            navigateTo: `${base}/${TOKENS.CityFacet}`,
+            payloadField: "CityFacet",
+          },
+          {
+            step: "navigate with CodeFacet applied",
+            navigateTo: `${base}/${TOKENS.CityFacet}/${hashToken}`,
+            payloadField: "CodeFacet",
+            optional: true,
+          },
+          { step: "search stays", submitStep: true },
+        ],
+        submitEndpointPattern: "stay/search-d",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const contract = runGenerate(siteId, runRoot);
+    const callBodies = extractCallSiteBodies(contract);
+
+    expect(contract).not.toContain(hashToken);
+    expect(contract).not.toContain(bodyToken);
+    expect(contract).not.toMatch(/JSON\.stringify\(payload\.filters\)/);
+    expect(contract).not.toMatch(/payload\.filters\[/);
+    expect(callBodies.size).toBe(SITE_PATHS.length);
+    expect(callBodies.get(SITE_PATHS[0] ?? "")).not.toContain("payload.CodeFacet");
+    for (const path of SITE_PATHS) {
+      expect(callBodies.get(path)).toContain("payload.CityFacet");
+    }
+    for (const path of SITE_PATHS.slice(1)) {
+      expect(callBodies.get(path)).toContain("payload.CodeFacet");
+    }
   }, 30_000);
 });
