@@ -75,6 +75,34 @@ describe("applyStructuredValuePayloadSubstitutions — array-of-objects schema r
   });
 });
 
+describe("applyStructuredValuePayloadSubstitutions — schema type independent of field and body visiting order", () => {
+  const withRegion = { sorts: [{ criteria: "price", order: "ASC", region: "EU" }] };
+  const withoutRegion = { sorts: [{ criteria: "price", order: "ASC" }] };
+
+  const registerAll = (bodies: Array<Record<string, unknown>>): string => {
+    const out = new Map<string, string>();
+    for (const body of bodies) {
+      applyStructuredValuePayloadSubstitutions(JSON.stringify(body), body, out);
+    }
+    return out.get("sorts") ?? "";
+  };
+
+  it("registers the same z.array(z.object(...)) schema whichever body is visited first", () => {
+    const forward = registerAll([withRegion, withoutRegion]);
+    const reversed = registerAll([withoutRegion, withRegion]);
+    expect(forward).toMatch(/^z\.array\(z\.object\(/);
+    expect(forward).toBe(reversed);
+    expect(forward).toContain("region");
+  });
+
+  it("registers an array schema whichever position the field has among sibling keys", () => {
+    const first = { sorts: withRegion.sorts, limit: 10 };
+    const last = { limit: 10, sorts: withRegion.sorts };
+    expect(registerAll([first])).toMatch(/^z\.array\(z\.object\(/);
+    expect(registerAll([last])).toBe(registerAll([first]));
+  });
+});
+
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");

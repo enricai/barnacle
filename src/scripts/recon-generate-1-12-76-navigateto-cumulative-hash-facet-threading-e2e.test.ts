@@ -25,11 +25,9 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.navigateto-cumulative-hash-facet-threading-fixture.example.com";
 
-// Tokens are chosen so none is a substring of another (e.g. "category-tok"
-// vs "subcategory-tok" would collide, since harvestPersonaBindings' collision
-// guard refuses to bind a value that recurs as a flanked substring elsewhere
-// in the captured bodies) — that guard is orthogonal to the fix under test
-// and must not interfere with it.
+// Tokens are chosen so none is a substring of another; collisions are
+// covered by the scalar-facet-collision test, and keeping them out here
+// isolates the hash-delta behavior under test.
 const FACETS: ReadonlyArray<{ token: string; field: string }> = [
   { token: "alfa-mkr", field: "CategoryFacet" },
   { token: "bravo-mkr", field: "SubcategoryFacet" },

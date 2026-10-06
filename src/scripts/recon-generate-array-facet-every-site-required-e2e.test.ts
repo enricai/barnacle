@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { spliceFacetsIntoArrayVariable } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -123,4 +124,15 @@ describe("recon-generate CLI — required array facets at every call site", () =
     expect(contract).not.toContain(`"${tagged(AUTHOR_TOKEN)}"`);
     expect(contract).not.toContain(`"${tagged(GENRE_TOKEN)}"`);
   }, 30_000);
+});
+
+describe("spliceFacetsIntoArrayVariable overlapping literals", () => {
+  it("matches each element to its longest token-bounded literal regardless of declaration order", () => {
+    const value = ["widget-x;a=1", "widget;b=2"];
+    const short = { value: "widget", field: "short", optional: false };
+    const long = { value: "widget-x", field: "long", optional: false };
+    const expected = "[`${payload.long};a=1`, `${payload.short};b=2`]";
+    expect(spliceFacetsIntoArrayVariable(value, [short, long] as never)).toBe(expected);
+    expect(spliceFacetsIntoArrayVariable(value, [long, short] as never)).toBe(expected);
+  });
 });

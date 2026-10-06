@@ -4631,6 +4631,32 @@ function containsValueAtTokenBoundary(haystack: string, needle: string): boolean
   }
 }
 
+const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unknown[]>>();
+
+/**
+ * Single registration point for a structured (array/object) payload field, so
+ * the declared schema type is inferred from every captured body carrying the
+ * field rather than from whichever body or visiting order reached it first.
+ * Both the by-index accessor loop and the whole-field substitution pass go
+ * through here, so an indexed accessor can never coexist with a string schema.
+ */
+function registerStructuredPayloadField(
+  outStructuredKeys: Map<string, string>,
+  field: string,
+  value: unknown
+): void {
+  if (value === undefined || value === null) return;
+  const samplesByField =
+    structuredFieldSamples.get(outStructuredKeys) ?? new Map<string, unknown[]>();
+  structuredFieldSamples.set(outStructuredKeys, samplesByField);
+  const samples = samplesByField.get(field) ?? [];
+  samplesByField.set(field, samples);
+  const serialized = JSON.stringify(value);
+  if (samples.some((sample) => JSON.stringify(sample) === serialized)) return;
+  samples.push(value);
+  outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4640,7 +4666,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  facetOwnedArrayKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4671,9 +4698,11 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // those checks, and before even locating the span) keeps the generated
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
-    if (!outStructuredKeys.has(key)) {
-      outStructuredKeys.set(key, inferZodSchema(value));
-    }
+    registerStructuredPayloadField(outStructuredKeys, key, value);
+    // A facet-owned array field renders through the per-element facet splice
+    // at every call site; a call site whose array carries no facet element
+    // stays literal rather than collapsing to an opaque stringify of the field.
+    if (isNonEmptyArray && facetOwnedArrayKeys.has(key)) continue;
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -4789,7 +4818,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  facetOwnedArrayKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4810,7 +4840,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     searchFrom,
     envelopePath,
     objectBody,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    facetOwnedArrayKeys
   );
 }
 
@@ -4843,7 +4874,8 @@ export function applyStructuredValuePayloadSubstitutions(
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
-  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
+  facetOwnedArrayKeys: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4879,7 +4911,8 @@ export function applyStructuredValuePayloadSubstitutions(
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
           cursor,
-          payloadAccessorExcludePattern
+          payloadAccessorExcludePattern,
+          facetOwnedArrayKeys
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4893,7 +4926,8 @@ export function applyStructuredValuePayloadSubstitutions(
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
     0,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    facetOwnedArrayKeys
   );
   return result;
 }
@@ -6760,6 +6794,38 @@ function applyPayloadKeyValueSubstitutions(
  * steps declared any field to correlate against) or when a leaf's value has
  * no `key:value` segment matching one of them.
  */
+/**
+ * Binds a scalar navigateTo facet at every call site: each object-property
+ * string leaf, at any depth, whose whole value equals a declared facet literal
+ * becomes `${payload.<field>}`. Matching is per whole leaf, so the same
+ * literal flanked by alphanumerics inside an unrelated token is never touched
+ * and no global collision guard can drop the facet. An optional facet falls
+ * back to the captured literal when the caller omits it, never `undefined`.
+ */
+function applyScalarFacetSplicePayloadSubstitutions(
+  template: string,
+  inputBody: unknown,
+  navigateToFacets: readonly NavigateToFacetBinding[]
+): string {
+  if (navigateToFacets.length === 0) return template;
+  if (inputBody === null || typeof inputBody !== "object") return template;
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+    if (typeof value !== "string") continue;
+    if (/^\d+$/.test(path[path.length - 1] ?? "")) continue;
+    const facet = navigateToFacets.find((f) => f.value === value);
+    if (facet === undefined) continue;
+    const literal = JSON.stringify(value);
+    const replacement = facet.optional
+      ? `\${JSON.stringify(payload.${facet.field} ?? ${literal})}`
+      : `"\${payload.${facet.field}}"`;
+    for (const sep of [":", ": "]) {
+      result = result.split(`${sep}${literal}`).join(`${sep}${replacement}`);
+    }
+  }
+  return result;
+}
+
 /** Yields every array-valued leaf in `value` (at any object nesting depth) —
  * `{@link applyArrayFacetSplicePayloadSubstitutions}`'s raw-array
  * search surface. Does not recurse INTO an array's own elements (a facet
@@ -6834,12 +6900,18 @@ function renderRequiredFacetArrayText(
   return `[${elements.join(",")}]`;
 }
 
+/** Nearest non-index key of an array's path: the payload field it maps to,
+ * independent of nesting depth or index position. */
+function arrayFieldKey(path: readonly string[]): string {
+  return [...path].reverse().find((segment) => !/^\d+$/.test(segment)) ?? "";
+}
+
 /**
- * Keys (`JSON.stringify(path)`) of every array, in ANY captured body, that
- * carries at least one facet-bearing element. The facet pass owns those
+ * Field keys ({@link arrayFieldKey}) of every array, in ANY captured body,
+ * that carries at least one facet-bearing element. The facet pass owns those
  * arrays wholesale, so none of their elements may also be frozen as a
- * by-index `payload.<field>["N"]` accessor from whichever body happened to
- * be parsed first.
+ * by-index `payload.<field>["N"]` accessor, whichever body was parsed first
+ * and wherever the array sits in it.
  */
 function collectFacetArrayPathKeys(
   bodies: readonly unknown[],
@@ -6854,7 +6926,7 @@ function collectFacetArrayPathKeys(
         (element) =>
           typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
       );
-      if (hasFacet) keys.add(JSON.stringify(path));
+      if (hasFacet) keys.add(arrayFieldKey(path));
     }
   }
   return keys;
@@ -7399,7 +7471,7 @@ export function emitMultiStepExecuteHttp(
       // that would freeze the sibling elements' shape.
       if (
         /^\d+$/.test(path[path.length - 1] ?? "") &&
-        facetArrayPathKeys.has(JSON.stringify(path.slice(0, -1)))
+        facetArrayPathKeys.has(arrayFieldKey(path.slice(0, -1)))
       ) {
         continue;
       }
@@ -7407,11 +7479,12 @@ export function emitMultiStepExecuteHttp(
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
       // structured shape regardless of whether Mechanism B visited the key.
-      if (structuredRootPath !== null && !outStructuredKeys.has(accessorField)) {
-        const structuredRoot = valueAtJsonPath(inputBody, structuredRootPath);
-        if (structuredRoot !== undefined && structuredRoot !== null) {
-          outStructuredKeys.set(accessorField, inferZodSchema(structuredRoot));
-        }
+      if (structuredRootPath !== null) {
+        registerStructuredPayloadField(
+          outStructuredKeys,
+          accessorField,
+          valueAtJsonPath(inputBody, structuredRootPath)
+        );
       }
       if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
@@ -7508,6 +7581,10 @@ export function emitMultiStepExecuteHttp(
   // triples — the array splice must see each binding's `optional` flag
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
+  for (const { value, field } of navigateToFacetOrder) {
+    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value))
+      outDiscoveredFields.add(field);
+  }
   const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
@@ -7824,6 +7901,14 @@ export function emitMultiStepExecuteHttp(
             navigateToFacetOrder
           )
         : rawBodyWithFacetSplices;
+    const rawBodyWithScalarFacetSplices =
+      parsedBody !== null
+        ? applyScalarFacetSplicePayloadSubstitutions(
+            rawBodyWithOptionalArrayFacetSplices,
+            parsedBody,
+            navigateToFacetOrder
+          )
+        : rawBodyWithOptionalArrayFacetSplices;
     // Mechanism B — parameterize whole nested caller structures
     // (experienceData/educationData history, opaque eventData) BEFORE value
     // substitution reaches inside them: swallowing the entire array/object first
@@ -7836,12 +7921,13 @@ export function emitMultiStepExecuteHttp(
     const rawBodyWithStructuredSubs =
       parsedBody !== null
         ? applyStructuredValuePayloadSubstitutions(
-            rawBodyWithOptionalArrayFacetSplices,
+            rawBodyWithScalarFacetSplices,
             parsedBody,
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
-            payloadAccessorByValue
+            payloadAccessorByValue,
+            facetArrayPathKeys
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
@@ -8934,11 +9020,16 @@ function matchArrayElementFacet(
   facets: readonly NavigateToFacetBinding[]
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  return facets.find(({ value: literal }) => {
-    if (element === literal) return true;
-    if (!element.startsWith(literal)) return false;
-    return !isAlnum(element[literal.length]);
-  });
+  // Longest literal wins so overlapping literals resolve by specificity, not
+  // declaration order.
+  return facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
+    const literal = facet.value;
+    const matches =
+      element === literal ||
+      (literal.length > 0 && element.startsWith(literal) && !isAlnum(element[literal.length]));
+    if (!matches) return best;
+    return best === undefined || literal.length > best.value.length ? facet : best;
+  }, undefined);
 }
 
 /**

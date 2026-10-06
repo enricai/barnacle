@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -104,10 +104,13 @@ function extractCallSiteBodies(contract: string): Map<string, string> {
 
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
+let tsconfigPath: string | null = null;
 
 afterEach(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+  if (tsconfigPath) rmSync(tsconfigPath, { force: true });
+  tsconfigPath = null;
   workDir = null;
   siteOutDir = null;
 });
@@ -185,4 +188,148 @@ describe("recon-generate CLI — three array facets (one optional) across three 
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain("${JSON.stringify(payload.columns)}");
   }, 30_000);
+});
+
+const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");
+const MARKET_TOKEN = "marketx-shelf-7004";
+const SORT = [{ criteria: "title", order: "ASC", region: "MI" }];
+
+function acceptanceCaptures(): Capture[] {
+  const filters = [tagged(AUTHOR_TOKEN), tagged(GENRE_TOKEN), tagged(LANGUAGE_TOKEN), SUFFIX];
+  return [
+    buildCapture({
+      url: `https://${OWN_BACKEND_HOST}/library/lookup-books/`,
+      requestPostData: JSON.stringify({ filters, sort: SORT, market: MARKET_TOKEN }),
+      responseBody: { ok: true },
+      timestamp: "2026-06-01T00:00:01.000Z",
+    }),
+    buildCapture({
+      url: `https://${OWN_BACKEND_HOST}/library/lookup-refine/`,
+      requestPostData: JSON.stringify({
+        filters: [tagged(AUTHOR_TOKEN), tagged(GENRE_TOKEN), SUFFIX],
+        sort: SORT,
+        market: MARKET_TOKEN,
+        refine: true,
+      }),
+      responseBody: { ok: true },
+      timestamp: "2026-06-01T00:00:01.500Z",
+    }),
+    buildCapture({
+      url: `https://${OWN_BACKEND_HOST}/library/lookup-summary/`,
+      requestPostData: JSON.stringify({
+        filters,
+        sort: SORT,
+        market: MARKET_TOKEN,
+        summaryOnly: true,
+      }),
+      responseBody: { ok: true },
+      timestamp: "2026-06-01T00:00:02.000Z",
+    }),
+  ];
+}
+
+describe("recon-generate CLI + tsc — facet and schema parity across call sites with an object-array sort", () => {
+  it("references every declared facet at every site, keeps schema and bodies consistent, and typechecks", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-array-facet-acceptance-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(runRoot, acceptanceCaptures());
+
+    const siteId = `array-facet-acceptance-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const base = `https://${OWN_BACKEND_HOST}/#/library`;
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          {
+            step: "navigate to the shelf with the author facet applied",
+            navigateTo: `${base}/author/${AUTHOR_TOKEN}`,
+            payloadField: "AuthorFacet",
+          },
+          {
+            step: "navigate to the shelf with the genre facet applied",
+            navigateTo: `${base}/author/${AUTHOR_TOKEN}/genre/${GENRE_TOKEN}`,
+            payloadField: "GenreFacet",
+          },
+          {
+            step: "navigate to the shelf with the language facet applied",
+            navigateTo: `${base}/lang/${LANGUAGE_TOKEN}`,
+            payloadField: "LanguageFacet",
+            optional: true,
+          },
+          {
+            step: "navigate to the shelf with the market applied",
+            navigateTo: `${base}/market/${MARKET_TOKEN}`,
+            payloadField: "MarketFacet",
+          },
+          { step: "look up books", submitStep: true },
+        ],
+        submitEndpointPattern: "library/lookup-summary",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    const bodies = extractCallSiteBodies(contract);
+
+    for (const token of [AUTHOR_TOKEN, GENRE_TOKEN, LANGUAGE_TOKEN, MARKET_TOKEN]) {
+      expect(contract).not.toContain(token);
+    }
+    expect(contract).not.toContain("JSON.stringify(payload.filters)");
+    expect(contract).not.toMatch(/payload\.filters\[/);
+
+    const carriers: Record<string, string[]> = {
+      "/library/lookup-books/": ["AuthorFacet", "GenreFacet", "LanguageFacet", "MarketFacet"],
+      "/library/lookup-refine/": ["AuthorFacet", "GenreFacet", "MarketFacet"],
+      "/library/lookup-summary/": ["AuthorFacet", "GenreFacet", "LanguageFacet", "MarketFacet"],
+    };
+    for (const [path, fields] of Object.entries(carriers)) {
+      const body = bodies.get(path);
+      expect(body, contract).toBeDefined();
+      for (const field of fields) expect(body).toContain(`payload.${field}`);
+    }
+
+    expect(contract).toMatch(
+      /sort: z\.array\(z\.object\(\{\s*criteria: z\.string\(\),\s*order: z\.string\(\),\s*region: z\.string\(\),?\s*\}\)\)/
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+    expect(contract).toContain("${JSON.stringify(payload.sort)}");
+
+    if (!existsSync(TSC_BIN)) {
+      throw new Error("tsc not installed — cannot verify the emitted plugin compiles");
+    }
+    tsconfigPath = join(REPO_ROOT, `tsconfig.array-facet-acceptance.${process.pid}.json`);
+    writeFileSync(
+      tsconfigPath,
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: {
+          noEmit: true,
+          incremental: false,
+          tsBuildInfoFile: null,
+          paths: {
+            "@/*": ["./src/*"],
+            "@test/*": ["./test/*"],
+            "@enricai/barnacle/*": ["./src/*"],
+          },
+        },
+        include: [`src/sites/${siteId}/**/*.ts`],
+      })
+    );
+    const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    const diagnostics = `${check.stdout}\n${check.stderr}`;
+    expect(check.status, diagnostics).toBe(0);
+  }, 90_000);
 });
