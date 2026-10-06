@@ -45,10 +45,10 @@ export interface PhantomClickAttempt {
    * Mirrors flow-runner's own `isPlausibleStepDestination` gate on its
    * `urlChanged`/`retryUrlChanged` signals: false when the post-URL landed
    * on a destination (e.g. a sign-in gate) that doesn't plausibly
-   * corroborate the step's own instruction. Optional so callers/tests that
-   * don't supply it default to true (no veto), matching today's behavior.
+   * corroborate the step's own instruction. Required so no caller can
+   * silently fail open; it vetoes every effect signal, not only the URL ones.
    */
-  destinationPlausible?: boolean;
+  destinationPlausible: boolean;
 }
 
 function originAndPathOf(url: string): string {
@@ -214,28 +214,15 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
 
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
   const bytesDelta = attempt.post.bodyHtmlLength - attempt.pre.bodyHtmlLength;
-  const urlChanged =
-    hasOriginOrPathChanged(attempt.pre.url, attempt.post.url) &&
-    attempt.destinationPlausible !== false;
-  // The resolved element's OWN committed selection state changed across the
-  // click — a design-system option/toggle (Base Web `kind` flip, hashed-class
-  // swap, ARIA, native `checked`) registers here with no network, no URL, and a
-  // byte delta whose magnitude stays below the byte floor. Authoritative
-  // and element-scoped (`verifyDomEffect` read it off the clicked element, not a
-  // page-wide fingerprint), so an unrelated element's change can't fake it. NOT
-  // on a submit-shaped step: a submit must prove itself via network/URL, or the
-  // cascade's phantom-verdict-driven escalation to the deep submit locator would
-  // be defeated by a stray self-toggle on the submit button.
+  if (!attempt.destinationPlausible) return "phantom";
+
+  const urlChanged = hasOriginOrPathChanged(attempt.pre.url, attempt.post.url);
+  // Element-scoped selection flip; not on a submit-shaped step, which must
+  // prove itself via network/URL or the deep-submit escalation is defeated.
   const elementStateChanged = !attempt.isSubmitShapedStep && attempt.elementStateChanged === true;
-  // Mirrors the elementStateChanged veto above: a submit-shaped step must prove
-  // itself via network/URL, so a mere DOM-byte reflow (growth OR shrink) must
-  // not lift the verdict off `phantom` either. Also mirrors urlChanged's own
-  // destinationPlausible gate: a DOM-byte-only change on a page that landed
-  // somewhere implausible for the step must not count as an effect either.
+  // A submit-shaped step likewise ignores a mere DOM-byte reflow.
   const bytesChangedSignificantly =
-    !attempt.isSubmitShapedStep &&
-    Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES &&
-    attempt.destinationPlausible !== false;
+    !attempt.isSubmitShapedStep && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
   const hasEffect =
     networkDelta !== 0 || urlChanged || elementStateChanged || bytesChangedSignificantly;

@@ -14,6 +14,7 @@ function makeAttempt(overrides: Partial<PhantomClickAttempt>): PhantomClickAttem
     actResultSuccess: true,
     pre: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
     post: { networkCount: 0, url: URL, bodyHtmlLength: 184186 },
+    destinationPlausible: true,
     ...overrides,
   };
 }
@@ -203,10 +204,7 @@ describe("scraper/phantom-click classifyPhantomClick", () => {
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 
-  it.each([
-    { name: "destinationPlausible unset (back-compat)", destinationPlausible: undefined },
-    { name: "destinationPlausible true", destinationPlausible: true },
-  ])(
+  it.each([{ name: "destinationPlausible true", destinationPlausible: true }])(
     "still classifies as effective on byte growth alone when $name",
     ({ destinationPlausible }) => {
       const attempt = makeAttempt({
@@ -250,4 +248,28 @@ describe("isPlausibleStepDestination", () => {
   it("exports SIGN_IN_PATTERNS", () => {
     expect(SIGN_IN_PATTERNS.length).toBeGreaterThan(0);
   });
+});
+
+describe("scraper/phantom-click classifyPhantomClick gates every effect signal on destinationPlausible", () => {
+  it.each([
+    {
+      name: "networkDelta",
+      overrides: { post: { networkCount: 3, url: URL, bodyHtmlLength: 184186 } },
+    },
+    { name: "elementStateChanged", overrides: { elementStateChanged: true } },
+    {
+      name: "urlChanged",
+      overrides: { post: { networkCount: 0, url: `${URL}/next`, bodyHtmlLength: 184186 } },
+    },
+  ])(
+    "is phantom on $name when destinationPlausible is false, effective when true",
+    ({ overrides }) => {
+      expect(classifyPhantomClick(makeAttempt({ ...overrides, destinationPlausible: false }))).toBe(
+        "phantom"
+      );
+      expect(classifyPhantomClick(makeAttempt({ ...overrides, destinationPlausible: true }))).toBe(
+        "effective"
+      );
+    }
+  );
 });

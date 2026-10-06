@@ -288,6 +288,7 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
       post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
       elementStateChanged: domVerified,
       isSubmitShapedStep: false,
+      destinationPlausible: true,
     });
     expect(verdict).toBe("phantom");
   });
@@ -323,6 +324,7 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
       post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
       elementStateChanged: domVerified,
       isSubmitShapedStep: false,
+      destinationPlausible: true,
     });
     expect(verdict).toBe("effective");
   });
@@ -358,6 +360,7 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
       post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
       elementStateChanged: domVerified,
       isSubmitShapedStep: false,
+      destinationPlausible: true,
     });
     expect(verdict).toBe("phantom");
   });
@@ -395,6 +398,7 @@ describe("flow-runner phantom-click verdict noise-threshold acceptance (offline 
       post: { networkCount: post.networkCount, url: post.url, bodyHtmlLength: post.bodyHtmlLength },
       elementStateChanged: domVerified,
       isSubmitShapedStep: false,
+      destinationPlausible: true,
     });
     expect(verdict).toBe("phantom");
   });

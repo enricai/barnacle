@@ -152,6 +152,7 @@ describe("flow-runner/submitCaptchaGatedForm — phantom-click verification on t
     const target = makeFakeTarget(form);
     const result = await submitCaptchaGatedForm(target, "h-captcha-response", {
       signalCounter: { n: 0 },
+      step: "Click Submit",
     });
 
     expect(result).toBe(true);
@@ -174,6 +175,7 @@ describe("flow-runner/submitCaptchaGatedForm — phantom-click verification on t
     const target = makeFakeTarget(form);
     const result = await submitCaptchaGatedForm(target, "h-captcha-response", {
       signalCounter: { n: 0 },
+      step: "Click Submit",
     });
 
     expect(result).toBe(true);

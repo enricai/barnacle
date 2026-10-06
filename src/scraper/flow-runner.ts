@@ -6110,7 +6110,7 @@ export async function injectCaptchaTokenAndSubmit(
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
   responseField = "h-captcha-response",
-  verification?: { signalCounter: { n: number }; page?: Page }
+  verification?: { signalCounter: { n: number }; page?: Page; step: string }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -6148,6 +6148,7 @@ export async function submitCaptchaGatedForm(
         pre,
         post,
         isSubmitShapedStep: true,
+        destinationPlausible: isPlausibleStepDestination(verification.step, post.url),
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -9328,8 +9329,9 @@ function redactIfSensitive(text: string, sensitiveValue?: string): string {
 async function probeChildFrameSubmitFallback(params: {
   page: Page;
   signalCounter: { n: number };
+  step: string;
 }): Promise<FrameTarget | null> {
-  const { page, signalCounter } = params;
+  const { page, signalCounter, step } = params;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
   // all and doesn't implement this pair, which is indistinguishable here from
@@ -9388,6 +9390,7 @@ async function probeChildFrameSubmitFallback(params: {
       pre,
       post,
       isSubmitShapedStep: true,
+      destinationPlausible: isPlausibleStepDestination(step, post.url),
     });
     if (verdict !== "phantom") return target;
 
@@ -9403,6 +9406,7 @@ async function probeChildFrameSubmitFallback(params: {
       pre,
       post: runnerUpPost,
       isSubmitShapedStep: true,
+      destinationPlausible: isPlausibleStepDestination(step, runnerUpPost.url),
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -10206,6 +10210,7 @@ export async function executeStepWithHealing(params: {
             fallbackSubmitted = await submitCaptchaGatedForm(captchaTarget, "h-captcha-response", {
               signalCounter,
               page,
+              step,
             });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
@@ -10458,7 +10463,7 @@ export async function executeStepWithHealing(params: {
       !frameTarget?.declaredFrameSelector &&
       (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
     ) {
-      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
       if (fallbackTarget) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
@@ -11120,6 +11125,7 @@ export async function executeStepWithHealing(params: {
                 // stray selection flip must not mask a top-pick phantom and skip
                 // the runner-up retry.
                 isSubmitShapedStep: true,
+                destinationPlausible: isPlausibleStepDestination(step, midPost.url),
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -12805,7 +12811,7 @@ export async function executeStepWithHealing(params: {
             actResultSuccess: record.actResultSuccess,
             pre,
             post: retryPost,
-            elementStateChanged: retrySelectionStateChanged && retryDestinationPlausible,
+            elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retrySubmitShaped,
             destinationPlausible: retryDestinationPlausible,
           });
@@ -13217,7 +13223,7 @@ export async function executeStepWithHealing(params: {
     !frameTarget?.declaredFrameSelector &&
     (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
   ) {
-    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter });
+    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
     if (fallbackTarget) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`

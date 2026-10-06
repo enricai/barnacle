@@ -274,6 +274,7 @@ describe("recon-browser/main — alternating phantom/effective verdict resolves 
             post: baseSnapshot,
             elementStateChanged: false,
             isSubmitShapedStep: false,
+            destinationPlausible: true,
           });
         // Session 1's bridge: no network/URL/byte signal at all, but the
         // clicked element's OWN committed selection state flips — mirrors the
@@ -286,6 +287,7 @@ describe("recon-browser/main — alternating phantom/effective verdict resolves 
             post: baseSnapshot,
             elementStateChanged: true,
             isSubmitShapedStep: false,
+            destinationPlausible: true,
           });
         // Session 2's second bridge: submit-shaped, and its only signal is a
         // +700B DOM-only growth (no network, no URL change) — bugfix-002
@@ -299,6 +301,7 @@ describe("recon-browser/main — alternating phantom/effective verdict resolves 
             post: { ...baseSnapshot, bodyHtmlLength: baseSnapshot.bodyHtmlLength + 700 },
             elementStateChanged: false,
             isSubmitShapedStep: true,
+            destinationPlausible: true,
           });
         // Session 2's final bridge: a real URL change — a genuine pathname
         // change, not a same-page query-string mutation (hasOriginOrPathChanged
@@ -311,6 +314,7 @@ describe("recon-browser/main — alternating phantom/effective verdict resolves 
             post: { ...baseSnapshot, url: `${BASE_URL}/confirmed` },
             elementStateChanged: false,
             isSubmitShapedStep: false,
+            destinationPlausible: true,
           });
         default:
           throw new Error(`unexpected step in test stub: ${args.step}`);
