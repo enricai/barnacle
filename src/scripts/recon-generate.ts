@@ -4631,6 +4631,32 @@ function containsValueAtTokenBoundary(haystack: string, needle: string): boolean
   }
 }
 
+const structuredFieldSamples = new WeakMap<Map<string, string>, Map<string, unknown[]>>();
+
+/**
+ * Single registration point for a structured (array/object) payload field, so
+ * the declared schema type is inferred from every captured body carrying the
+ * field rather than from whichever body or visiting order reached it first.
+ * Both the by-index accessor loop and the whole-field substitution pass go
+ * through here, so an indexed accessor can never coexist with a string schema.
+ */
+function registerStructuredPayloadField(
+  outStructuredKeys: Map<string, string>,
+  field: string,
+  value: unknown
+): void {
+  if (value === undefined || value === null) return;
+  const samplesByField =
+    structuredFieldSamples.get(outStructuredKeys) ?? new Map<string, unknown[]>();
+  structuredFieldSamples.set(outStructuredKeys, samplesByField);
+  const samples = samplesByField.get(field) ?? [];
+  samplesByField.set(field, samples);
+  const serialized = JSON.stringify(value);
+  if (samples.some((sample) => JSON.stringify(sample) === serialized)) return;
+  samples.push(value);
+  outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4671,9 +4697,7 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // those checks, and before even locating the span) keeps the generated
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
-    if (!outStructuredKeys.has(key)) {
-      outStructuredKeys.set(key, inferZodSchema(value));
-    }
+    registerStructuredPayloadField(outStructuredKeys, key, value);
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -7407,11 +7431,12 @@ export function emitMultiStepExecuteHttp(
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
       // structured shape regardless of whether Mechanism B visited the key.
-      if (structuredRootPath !== null && !outStructuredKeys.has(accessorField)) {
-        const structuredRoot = valueAtJsonPath(inputBody, structuredRootPath);
-        if (structuredRoot !== undefined && structuredRoot !== null) {
-          outStructuredKeys.set(accessorField, inferZodSchema(structuredRoot));
-        }
+      if (structuredRootPath !== null) {
+        registerStructuredPayloadField(
+          outStructuredKeys,
+          accessorField,
+          valueAtJsonPath(inputBody, structuredRootPath)
+        );
       }
       if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
