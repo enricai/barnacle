@@ -6646,7 +6646,7 @@ export interface AdditionalBodyKeyInfo {
  * even though the field genuinely IS one this step's own request sends as
  * caller-supplied data.
  */
-function applyPayloadKeyValueSubstitutions(
+export function applyPayloadKeyValueSubstitutions(
   template: string,
   inputBody: unknown,
   additionalBodies: unknown[] = [],
@@ -6654,13 +6654,28 @@ function applyPayloadKeyValueSubstitutions(
   /** Every capture's response body from the same run, scanned only for
    * {@link CAPACITY_FIELD_NAME_PATTERN}-shaped numeric leaves — the
    * evidence source for a discovered "number" key's `capacityMax`. */
-  responseBodiesForCapacitySignal: readonly unknown[] = []
+  responseBodiesForCapacitySignal: readonly unknown[] = [],
+  outStructuredKeys: Map<string, string> = new Map()
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
   const seenValueByKey = new Map<string, string | number | boolean>();
   const distinctValuesByKey = new Map<string, Set<string | number>>();
   const allBodies = [inputBody, ...additionalBodies];
+  // Structure is registered from every body before any scalar is considered, so
+  // a name that is an array/object in one body and a primitive in another gets
+  // the structured schema regardless of which body is visited first.
+  for (const body of allBodies) {
+    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+      if (!isValidJsIdentifier(key)) continue;
+      if (value === null || typeof value !== "object") continue;
+      if (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0) continue;
+      registerStructuredPayloadField(outStructuredKeys, key, value);
+    }
+  }
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
       continue;
@@ -6669,6 +6684,7 @@ function applyPayloadKeyValueSubstitutions(
       if (path.length !== 1) continue;
       const key = path[0]!;
       if (!isValidJsIdentifier(key)) continue;
+      if (outStructuredKeys.has(key)) continue;
       if (value === null) continue;
       // Dedupe identical (key, value) pairs only — a repeated occurrence of
       // the SAME literal value for a key across bodies needs no second
@@ -8069,7 +8085,8 @@ export function emitMultiStepExecuteHttp(
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys,
-          allResponseBodies
+          allResponseBodies,
+          outStructuredKeys
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
