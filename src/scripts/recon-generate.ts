@@ -4666,7 +4666,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  facetOwnedArrayKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4698,6 +4699,10 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
     registerStructuredPayloadField(outStructuredKeys, key, value);
+    // A facet-owned array field renders through the per-element facet splice
+    // at every call site; a call site whose array carries no facet element
+    // stays literal rather than collapsing to an opaque stringify of the field.
+    if (isNonEmptyArray && facetOwnedArrayKeys.has(key)) continue;
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -4813,7 +4818,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  facetOwnedArrayKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4834,7 +4840,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     searchFrom,
     envelopePath,
     objectBody,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    facetOwnedArrayKeys
   );
 }
 
@@ -4867,7 +4874,8 @@ export function applyStructuredValuePayloadSubstitutions(
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
-  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
+  facetOwnedArrayKeys: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4903,7 +4911,8 @@ export function applyStructuredValuePayloadSubstitutions(
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
           cursor,
-          payloadAccessorExcludePattern
+          payloadAccessorExcludePattern,
+          facetOwnedArrayKeys
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4917,7 +4926,8 @@ export function applyStructuredValuePayloadSubstitutions(
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
     0,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    facetOwnedArrayKeys
   );
   return result;
 }
@@ -7916,7 +7926,8 @@ export function emitMultiStepExecuteHttp(
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
-            payloadAccessorByValue
+            payloadAccessorByValue,
+            facetArrayPathKeys
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
