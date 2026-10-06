@@ -13525,7 +13525,6 @@ export function emitContractTs(opts: {
   for (const [fieldName, constraint] of Object.entries(valueConstraints)) {
     const line = extendFields.get(fieldName);
     if (line === null || line === undefined) continue;
-    if (structuredFieldNames.has(fieldName)) continue;
     if (
       constraint.enumValues === undefined &&
       constraint.min === undefined &&
