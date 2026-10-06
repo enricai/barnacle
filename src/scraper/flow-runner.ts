@@ -12150,7 +12150,7 @@ export async function executeStepWithHealing(params: {
     const formValueVerified =
       isStateClass &&
       formValueWeakSignalAllowed &&
-      isPlausibleStepDestination(step, post.url) &&
+      destinationPlausible &&
       post.formValueSignature !== pre.formValueSignature;
     // Committed-value guard on the act-success path. A controlled datepicker
     // (react-datepicker) accepts the typed value, discards it on React's next
