@@ -4657,6 +4657,28 @@ function registerStructuredPayloadField(
   outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
 }
 
+/**
+ * Whether `value` (at `path`) is, or holds at any depth, an array whose field
+ * key the facet pass owns, so an enclosing wholesale swallow cannot stringify
+ * a facet-owned array that merely sits below an envelope key.
+ */
+function carriesFacetOwnedArray(
+  value: unknown,
+  path: readonly string[],
+  ownedKeys: ReadonlySet<string>
+): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    if (value.length > 0 && ownedKeys.has(arrayFieldKey(path))) return true;
+    return value.some((element, index) =>
+      carriesFacetOwnedArray(element, [...path, String(index)], ownedKeys)
+    );
+  }
+  return Object.entries(value as Record<string, unknown>).some(([key, inner]) =>
+    carriesFacetOwnedArray(inner, [...path, key], ownedKeys)
+  );
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4702,7 +4724,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // A facet-owned array field renders through the per-element facet splice
     // at every call site; a call site whose array carries no facet element
     // stays literal rather than collapsing to an opaque stringify of the field.
-    if (isNonEmptyArray && facetOwnedArrayKeys.has(key)) continue;
+    // The same holds for an object field holding such an array at any depth.
+    if (carriesFacetOwnedArray(value, [key], facetOwnedArrayKeys)) continue;
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -13512,9 +13535,16 @@ export function emitContractTs(opts: {
     // The accessor suffix decides the type: `payload.f[` implies an array and
     // `payload.f.` an object, so only a bare accessor may default to a string.
     const bodyReferencedFields = new Map<string, string>();
-    for (const m of multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g)) {
+    for (const m of multiStepBody.matchAll(
+      /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g
+    )) {
       const name = m[1]!;
-      const zod = m[2] === "[" ? "z.array(z.unknown())" : m[2] ? "z.record(z.string(), z.unknown())" : "z.string()";
+      const zod =
+        m[2] === "["
+          ? "z.array(z.unknown())"
+          : m[2]
+            ? "z.record(z.string(), z.unknown())"
+            : "z.string()";
       const prior = bodyReferencedFields.get(name);
       if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
     }
@@ -13522,7 +13552,10 @@ export function emitContractTs(opts: {
       if (extendFields.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = bodyReferencedFields.get(name)!;
-      addExtendField(name, `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`);
+      addExtendField(
+        name,
+        `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
+      );
     }
   }
 
