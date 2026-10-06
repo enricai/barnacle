@@ -4657,6 +4657,28 @@ function registerStructuredPayloadField(
   outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
 }
 
+/**
+ * Whether `value` (at `path`) is, or holds at any depth, an array whose field
+ * key the facet pass owns, so an enclosing wholesale swallow cannot stringify
+ * a facet-owned array that merely sits below an envelope key.
+ */
+function carriesFacetOwnedArray(
+  value: unknown,
+  path: readonly string[],
+  ownedKeys: ReadonlySet<string>
+): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    if (value.length > 0 && ownedKeys.has(arrayFieldKey(path))) return true;
+    return value.some((element, index) =>
+      carriesFacetOwnedArray(element, [...path, String(index)], ownedKeys)
+    );
+  }
+  return Object.entries(value as Record<string, unknown>).some(([key, inner]) =>
+    carriesFacetOwnedArray(inner, [...path, key], ownedKeys)
+  );
+}
+
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4702,7 +4724,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // A facet-owned array field renders through the per-element facet splice
     // at every call site; a call site whose array carries no facet element
     // stays literal rather than collapsing to an opaque stringify of the field.
-    if (isNonEmptyArray && facetOwnedArrayKeys.has(key)) continue;
+    // The same holds for an object field holding such an array at any depth.
+    if (carriesFacetOwnedArray(value, [key], facetOwnedArrayKeys)) continue;
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -6811,27 +6834,33 @@ function applyScalarFacetSplicePayloadSubstitutions(
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
-    if (typeof value !== "string") continue;
+    if (typeof value !== "string" && typeof value !== "number") continue;
     if (/^\d+$/.test(path[path.length - 1] ?? "")) continue;
-    const facet = navigateToFacets.find((f) => f.value === value);
+    const facet = matchFacetRecurrence(String(value), navigateToFacets, {
+      allowDelimiterSuffix: false,
+    });
     if (facet === undefined) continue;
     const literal = JSON.stringify(value);
-    const replacement = facet.optional
-      ? `\${JSON.stringify(payload.${facet.field} ?? ${literal})}`
-      : `"\${payload.${facet.field}}"`;
+    const fallback = facet.optional ? ` ?? ${literal}` : "";
+    const replacement =
+      typeof value === "number" || facet.optional
+        ? `\${JSON.stringify(payload.${facet.field}${fallback})}`
+        : `"\${payload.${facet.field}}"`;
     for (const sep of [":", ": "]) {
+      if (typeof value === "number") {
+        const re = new RegExp(`${sep}${literal}(?![\\w.])`, "g");
+        result = result.replace(re, () => `${sep}${replacement}`);
+        continue;
+      }
       result = result.split(`${sep}${literal}`).join(`${sep}${replacement}`);
     }
   }
   return result;
 }
 
-/** Yields every array-valued leaf in `value` (at any object nesting depth) —
- * `{@link applyArrayFacetSplicePayloadSubstitutions}`'s raw-array
- * search surface. Does not recurse INTO an array's own elements (a facet
- * array is always a flat array of primitives in every observed recon shape),
- * matching {@link walkAllPrimitiveLeaves}'s depth-first walk of everything
- * else. */
+/** Yields every array in `value` (outermost first, at any nesting depth,
+ * including arrays inside array elements) — `{@link
+ * applyArrayFacetSplicePayloadSubstitutions}`'s raw-array search surface. */
 function* walkArrayLeaves(
   value: unknown,
   path: string[] = []
@@ -6839,6 +6868,9 @@ function* walkArrayLeaves(
   if (value === null || typeof value !== "object") return;
   if (Array.isArray(value)) {
     yield { value, path };
+    for (const [index, inner] of value.entries()) {
+      yield* walkArrayLeaves(inner, [...path, String(index)]);
+    }
     return;
   }
   for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
@@ -6874,26 +6906,71 @@ function applyArrayFacetSplicePayloadSubstitutions(
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value } of walkArrayLeaves(inputBody)) {
-    const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
-    if (spliced === null) continue;
-    const replacement = spliced.includes("...(payload.")
-      ? `\${JSON.stringify(${spliced})}`
-      : renderRequiredFacetArrayText(value, navigateToFacets);
+    if (!containsFacetArray(value, navigateToFacets)) continue;
+    const expression = renderFacetValueExpression(value, navigateToFacets);
+    const replacement = expression.includes("...(payload.")
+      ? `\${JSON.stringify(${expression})}`
+      : renderRequiredFacetValueText(value, navigateToFacets);
     result = replaceJsonArrayOccurrences(result, value, replacement);
   }
   return result;
 }
 
-/** Compact JSON text of an array whose facet-bearing string elements are
- * rewritten to `"${payload.<field>}<suffix>"` in place. */
-function renderRequiredFacetArrayText(
-  value: unknown[],
+/** Whether `value` is, or contains at any depth, an array with a
+ * facet-bearing string element. */
+function containsFacetArray(value: unknown, facets: readonly NavigateToFacetBinding[]): boolean {
+  for (const { value: array } of walkArrayLeaves(value)) {
+    const hasFacet = array.some(
+      (element) => typeof element === "string" && matchArrayElementFacet(element, facets)
+    );
+    if (hasFacet) return true;
+  }
+  return false;
+}
+
+/** JS expression for `value` with every facet array at any depth spliced, so
+ * one construction covers arrays nested inside array elements. */
+function renderFacetValueExpression(
+  value: unknown,
   facets: readonly NavigateToFacetBinding[]
 ): string {
+  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return (
+      spliceFacetsIntoArrayVariable(value, facets, (element) =>
+        renderFacetValueExpression(element, facets)
+      ) ?? `[${value.map((element) => renderFacetValueExpression(element, facets)).join(", ")}]`
+    );
+  }
+  const entries = Object.entries(value as Record<string, unknown>).map(
+    ([key, inner]) => `${JSON.stringify(key)}: ${renderFacetValueExpression(inner, facets)}`
+  );
+  return `{ ${entries.join(", ")} }`;
+}
+
+/** Compact JSON text of `value` whose facet-bearing string elements, at any
+ * array depth, are rewritten to `"${payload.<field>}<suffix>"` in place. */
+function renderRequiredFacetValueText(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[]
+): string {
+  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
+    return JSON.stringify(value);
+  }
+  if (!Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>).map(
+      ([key, inner]) => `${JSON.stringify(key)}:${renderRequiredFacetValueText(inner, facets)}`
+    );
+    return `{${entries.join(",")}}`;
+  }
   const elements = value.map((element) => {
     const matched =
       typeof element === "string" ? matchArrayElementFacet(element, facets) : undefined;
-    if (typeof element !== "string" || matched === undefined) return JSON.stringify(element);
+    if (typeof element !== "string" || matched === undefined) {
+      return renderRequiredFacetValueText(element, facets);
+    }
     const suffix = JSON.stringify(element.slice(matched.value.length)).slice(1, -1);
     return `"\${payload.${matched.field}}${suffix}"`;
   });
@@ -7006,9 +7083,8 @@ function applyFacetSplicePayloadSubstitutions(
   const fields = [...payloadFieldNames];
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
-    if (path.length !== 1) continue;
-    const key = path[0]!;
-    if (!isValidJsIdentifier(key)) continue;
+    const key = path[path.length - 1];
+    if (key === undefined || !isValidJsIdentifier(key)) continue;
     if (typeof value !== "string") continue;
     const spliced = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
     if (spliced === null) continue;
@@ -9019,17 +9095,65 @@ function matchArrayElementFacet(
   element: string,
   facets: readonly NavigateToFacetBinding[]
 ): NavigateToFacetBinding | undefined {
+  return matchFacetRecurrence(element, facets, { allowDelimiterSuffix: true });
+}
+
+/**
+ * The one facet-recurrence predicate every grammar (array element, scalar
+ * leaf) consults, so a declared facet literal is judged to recur identically
+ * everywhere. A number leaf is compared by its string form, so a numeric body
+ * value matches the string literal a navigateTo hash yields. With
+ * `allowDelimiterSuffix`, a literal followed by a non-alphanumeric delimiter
+ * suffix also matches. The longest literal wins.
+ */
+function matchFacetRecurrence(
+  text: string,
+  facets: readonly NavigateToFacetBinding[],
+  options: { allowDelimiterSuffix: boolean }
+): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  // Longest literal wins so overlapping literals resolve by specificity, not
-  // declaration order.
   return facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
     const literal = facet.value;
     const matches =
-      element === literal ||
-      (literal.length > 0 && element.startsWith(literal) && !isAlnum(element[literal.length]));
+      text === literal ||
+      (options.allowDelimiterSuffix &&
+        literal.length > 0 &&
+        text.startsWith(literal) &&
+        !isAlnum(text[literal.length]));
     if (!matches) return best;
     return best === undefined || literal.length > best.value.length ? facet : best;
   }, undefined);
+}
+
+/**
+ * Binds a top-level GraphQL variable whose scalar value (or, for a string, any
+ * `key:value` packed segment's value) recurs as a declared navigateTo facet
+ * literal, via the shared {@link matchFacetRecurrence} predicate so GraphQL
+ * judges recurrence exactly as the array and REST scalar passes do.
+ */
+function spliceFacetRecurrenceIntoScalarVariable(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[]
+): string | null {
+  if (facets.length === 0) return null;
+  if (typeof value === "string" || typeof value === "number") {
+    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    if (facet !== undefined) return `payload.${facet.field}`;
+  }
+  if (typeof value !== "string") return null;
+  const segments = value.split(/([|,;])/);
+  let bound = false;
+  const parts = segments.map((segment, index) => {
+    const colonIndex = segment.indexOf(":");
+    if (index % 2 !== 0 || colonIndex < 0) return escapeForTemplateLiteral(segment);
+    const facet = matchFacetRecurrence(segment.slice(colonIndex + 1), facets, {
+      allowDelimiterSuffix: false,
+    });
+    if (facet === undefined) return escapeForTemplateLiteral(segment);
+    bound = true;
+    return `${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${payload.${facet.field}}`;
+  });
+  return bound ? `\`${parts.join("")}\`` : null;
 }
 
 /**
@@ -9049,14 +9173,15 @@ function matchArrayElementFacet(
  */
 export function spliceFacetsIntoArrayVariable(
   value: unknown,
-  facets: readonly NavigateToFacetBinding[]
+  facets: readonly NavigateToFacetBinding[],
+  renderElement: (element: unknown) => string = (element) => JSON.stringify(element)
 ): string | null {
   if (!Array.isArray(value)) return null;
   let matchCount = 0;
   const elements = (value as unknown[]).map((element) => {
-    if (typeof element !== "string") return JSON.stringify(element);
+    if (typeof element !== "string") return renderElement(element);
     const matched = matchArrayElementFacet(element, facets);
-    if (!matched) return JSON.stringify(element);
+    if (!matched) return renderElement(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
     const elementLiteral = `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
@@ -9092,18 +9217,24 @@ function renderGqlVariablesExpr(
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
-  const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
-    const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-    const facetSpliceExpr = matchedField
-      ? null
-      : (spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
-        spliceFacetsIntoArrayVariable(value, navigateToFacets));
-    const valueExpr = matchedField
-      ? `payload.${matchedField}`
-      : (facetSpliceExpr ?? JSON.stringify(value));
-    return `${key}: ${valueExpr}`;
-  });
-  return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+  const renderValue = (value: unknown): string => {
+    const spliced =
+      spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
+      spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
+      spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets);
+    if (spliced !== null) return spliced;
+    if (Array.isArray(value)) return `[${value.map(renderValue).join(", ")}]`;
+    if (value !== null && typeof value === "object") return renderObject(value);
+    return JSON.stringify(value);
+  };
+  const renderObject = (obj: object): string => {
+    const entries = Object.entries(obj).map(([key, value]) => {
+      const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
+      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : renderValue(value)}`;
+    });
+    return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+  };
+  return renderObject(variables);
 }
 
 /** A count-style page-size key (e.g. `count`, `limit`, `first`) paired with a
@@ -13203,7 +13334,9 @@ export function emitContractTs(opts: {
   // override semantics a chain of `.extend()` calls used to have (each
   // subsequent `.extend` replaced an earlier field of the same name).
   const extendFields = new Map<string, string>();
+  const structuredFieldNames = new Set<string>();
   const addExtendField = (name: string, line: string): void => {
+    if (structuredFieldNames.has(name)) return;
     extendFields.set(name, line);
   };
 
@@ -13377,7 +13510,8 @@ export function emitContractTs(opts: {
     if (isReservedByApplicantContactSchema(name)) continue;
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
     const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
-    addExtendField(name, `  ${key}: ${value},`);
+    extendFields.set(name, `  ${key}: ${value},`);
+    structuredFieldNames.add(name);
   }
 
   // Closing-the-loop safety net: every discovered-field source above tracks
@@ -13398,13 +13532,30 @@ export function emitContractTs(opts: {
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
   if (multiStepBody) {
-    const bodyReferencedFields = new Set(
-      [...multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]!)
-    );
-    for (const name of [...bodyReferencedFields].sort()) {
+    // The accessor suffix decides the type: `payload.f[` implies an array and
+    // `payload.f.` an object, so only a bare accessor may default to a string.
+    const bodyReferencedFields = new Map<string, string>();
+    for (const m of multiStepBody.matchAll(
+      /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g
+    )) {
+      const name = m[1]!;
+      const zod =
+        m[2] === "["
+          ? "z.array(z.unknown())"
+          : m[2]
+            ? "z.record(z.string(), z.unknown())"
+            : "z.string()";
+      const prior = bodyReferencedFields.get(name);
+      if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
+    }
+    for (const name of [...bodyReferencedFields.keys()].sort()) {
       if (extendFields.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: z.string(),`);
+      const zod = bodyReferencedFields.get(name)!;
+      addExtendField(
+        name,
+        `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
+      );
     }
   }
 
