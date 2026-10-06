@@ -9059,6 +9059,37 @@ function matchFacetRecurrence(
 }
 
 /**
+ * Binds a top-level GraphQL variable whose scalar value (or, for a string, any
+ * `key:value` packed segment's value) recurs as a declared navigateTo facet
+ * literal, via the shared {@link matchFacetRecurrence} predicate so GraphQL
+ * judges recurrence exactly as the array and REST scalar passes do.
+ */
+function spliceFacetRecurrenceIntoScalarVariable(
+  value: unknown,
+  facets: readonly NavigateToFacetBinding[]
+): string | null {
+  if (facets.length === 0) return null;
+  if (typeof value === "string" || typeof value === "number") {
+    const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
+    if (facet !== undefined) return `payload.${facet.field}`;
+  }
+  if (typeof value !== "string") return null;
+  const segments = value.split(/([|,;])/);
+  let bound = false;
+  const parts = segments.map((segment, index) => {
+    const colonIndex = segment.indexOf(":");
+    if (index % 2 !== 0 || colonIndex < 0) return escapeForTemplateLiteral(segment);
+    const facet = matchFacetRecurrence(segment.slice(colonIndex + 1), facets, {
+      allowDelimiterSuffix: false,
+    });
+    if (facet === undefined) return escapeForTemplateLiteral(segment);
+    bound = true;
+    return `${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${"$"}{payload.${facet.field}}`;
+  });
+  return bound ? `\`${parts.join("")}\`` : null;
+}
+
+/**
  * Splices a captured array-valued GraphQL variable's elements against
  * navigateTo facet bindings instead of the `key:value` segment grammar
  * {@link spliceFacetsIntoStringVariable} matches — an array element like
@@ -9123,7 +9154,8 @@ function renderGqlVariablesExpr(
     const facetSpliceExpr = matchedField
       ? null
       : (spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
-        spliceFacetsIntoArrayVariable(value, navigateToFacets));
+        spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
+        spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets));
     const valueExpr = matchedField
       ? `payload.${matchedField}`
       : (facetSpliceExpr ?? JSON.stringify(value));
