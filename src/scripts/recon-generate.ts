@@ -12974,6 +12974,60 @@ export function buildContractChecklist(opts: {
   ].filter((line) => line !== "");
 }
 
+interface AccessorShape {
+  isArray: boolean;
+  element: AccessorShape | null;
+  keys: Map<string, AccessorShape>;
+}
+
+const PAYLOAD_ACCESSOR_CHAIN =
+  /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)((?:!|\??\.[A-Za-z_$][A-Za-z0-9_$]*(?!\()|\[(?:"[^"\]]*"|\d+)\])*)/g;
+const PAYLOAD_CHAIN_SEGMENT = /\??\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"[^"\]]*"|\d+)\]/g;
+
+function newAccessorShape(): AccessorShape {
+  return { isArray: false, element: null, keys: new Map() };
+}
+
+function renderAccessorShape(shape: AccessorShape): string {
+  if (shape.isArray) {
+    return `z.array(${shape.element ? renderAccessorShape(shape.element) : "z.string()"})`;
+  }
+  if (shape.keys.size === 0) return "z.string()";
+  const entries = [...shape.keys.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([key, child]) =>
+        `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${renderAccessorShape(child)}`
+    );
+  return `z.object({ ${entries.join(", ")} })`;
+}
+
+/**
+ * Derives each `payload.<field>` Zod type from the full accessor chain the
+ * emitted body text uses (`payload.f["0"]!.x` => array of objects with key
+ * `x`), so the schema can never reject a property access the body performs.
+ */
+function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
+  const roots = new Map<string, AccessorShape>();
+  for (const m of body.matchAll(PAYLOAD_ACCESSOR_CHAIN)) {
+    const root = roots.get(m[1]!) ?? newAccessorShape();
+    roots.set(m[1]!, root);
+    let node = root;
+    for (const seg of m[2]!.matchAll(PAYLOAD_CHAIN_SEGMENT)) {
+      if (seg[1] === undefined) {
+        node.isArray = true;
+        node.element ??= newAccessorShape();
+        node = node.element;
+        continue;
+      }
+      const child = node.keys.get(seg[1]) ?? newAccessorShape();
+      node.keys.set(seg[1], child);
+      node = child;
+    }
+  }
+  return new Map([...roots].map(([name, shape]) => [name, renderAccessorShape(shape)]));
+}
+
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
@@ -13540,22 +13594,7 @@ export function emitContractTs(opts: {
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
   if (multiStepBody) {
-    // The accessor suffix decides the type: `payload.f[` implies an array and
-    // `payload.f.` an object, so only a bare accessor may default to a string.
-    const bodyReferencedFields = new Map<string, string>();
-    for (const m of multiStepBody.matchAll(
-      /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g
-    )) {
-      const name = m[1]!;
-      const zod =
-        m[2] === "["
-          ? "z.array(z.unknown())"
-          : m[2]
-            ? "z.record(z.string(), z.unknown())"
-            : "z.string()";
-      const prior = bodyReferencedFields.get(name);
-      if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
-    }
+    const bodyReferencedFields = deriveBodyAccessorZodTypes(multiStepBody);
     for (const name of [...bodyReferencedFields.keys()].sort()) {
       if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
