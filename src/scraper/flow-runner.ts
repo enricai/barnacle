@@ -1399,6 +1399,19 @@ export function findRecentBackendError(params: {
 }
 
 /**
+ * Network-capture transitions say a request succeeded, not where the page
+ * landed, so a credit must also see a landed URL the step could plausibly have
+ * targeted (e.g. not a sign-in bounce the instruction never asked for).
+ */
+async function isLandedUrlPlausibleForStep(
+  page: Page,
+  target: FrameTarget,
+  step: string
+): Promise<boolean> {
+  return isPlausibleStepDestination(step, await readCurrentFrameUrl(page, target));
+}
+
+/**
  * Detect whether the page legitimately transitioned within the supplied
  * capture-meta window — a 3xx redirect or a same-origin non-GET capture
  * that returned 2xx and looks like a flow-progression URL (not a tracking
@@ -5720,13 +5733,17 @@ async function waitForCaptchaNavigation(params: {
   page: Page;
   captchaTarget: FrameTarget;
   baselineUrl: string;
+  step: string;
   timeoutMs: number;
   intervalMs: number;
 }): Promise<boolean> {
-  const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
+  const { page, captchaTarget, baselineUrl, step, timeoutMs, intervalMs } = params;
   const check = async (): Promise<boolean> => {
     const currentUrl = await readCurrentFrameUrl(page, captchaTarget);
-    return hasOriginOrPathChanged(baselineUrl, currentUrl);
+    return (
+      hasOriginOrPathChanged(baselineUrl, currentUrl) &&
+      isPlausibleStepDestination(step, currentUrl)
+    );
   };
   if (await check()) return true;
   const deadline = performance.now() + timeoutMs;
@@ -6159,7 +6176,21 @@ export async function submitCaptchaGatedForm(
             if (isNavigatingEvaluateRejection(err)) return { clicked: false };
             throw err;
           });
-        if (runnerUpClickResult.clicked) return true;
+        if (runnerUpClickResult.clicked) {
+          const runnerUpPost = await snapshotPage(
+            target,
+            verification.signalCounter,
+            verification.page
+          );
+          const runnerUpVerdict = classifyPhantomClick({
+            actResultSuccess: true,
+            pre: post,
+            post: runnerUpPost,
+            isSubmitShapedStep: true,
+            destinationPlausible: isPlausibleStepDestination(verification.step, runnerUpPost.url),
+          });
+          if (runnerUpVerdict !== "phantom") return true;
+        }
       }
     }
   }
@@ -10258,6 +10289,7 @@ export async function executeStepWithHealing(params: {
           page,
           captchaTarget,
           baselineUrl: pageUrl,
+          step,
           timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
@@ -10279,7 +10311,10 @@ export async function executeStepWithHealing(params: {
           recentCaptureMeta,
           preMetaLength: preCaptchaMetaLength,
         });
-        if (networkTransitionUrl !== null) {
+        if (
+          networkTransitionUrl !== null &&
+          (await isLandedUrlPlausibleForStep(page, captchaTarget, step))
+        ) {
           logger.info(
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit network response confirmed the advance (${networkTransitionUrl})`
           );
@@ -10423,7 +10458,10 @@ export async function executeStepWithHealing(params: {
       recentCaptureMeta,
       preMetaLength: stepStartMetaLength,
     });
-    if (transitionUrl !== null) {
+    if (
+      transitionUrl !== null &&
+      (await isLandedUrlPlausibleForStep(page, frameTarget ?? mainFrameTarget(page), step))
+    ) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
@@ -12112,7 +12150,7 @@ export async function executeStepWithHealing(params: {
     const formValueVerified =
       isStateClass &&
       formValueWeakSignalAllowed &&
-      isPlausibleStepDestination(step, post.url) &&
+      destinationPlausible &&
       post.formValueSignature !== pre.formValueSignature;
     // Committed-value guard on the act-success path. A controlled datepicker
     // (react-datepicker) accepts the typed value, discards it on React's next
