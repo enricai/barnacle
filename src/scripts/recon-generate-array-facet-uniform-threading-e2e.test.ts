@@ -176,7 +176,8 @@ describe("recon-generate CLI — three array facets (one optional) across three 
       expect(body, contract).toBeDefined();
       expect(body).toContain(`\${payload.AuthorFacet}`);
       expect(body).toContain(`\${payload.GenreFacet}`);
-      expect(body).toContain("payload.LanguageFacet");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
+      expect(body).toContain("...(payload.LanguageFacet ? [`${payload.LanguageFacet}");
       expect(body).toContain(SUFFIX);
       expect(body).not.toContain('"title"');
     }
