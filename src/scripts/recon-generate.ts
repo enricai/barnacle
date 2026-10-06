@@ -372,19 +372,27 @@ export function extractNavigateToHashFragmentValue(
   const hashIndex = url.indexOf("#");
   if (hashIndex === -1) return null;
   const hash = url.slice(hashIndex + 1);
-  if (previousHash && hash.length > previousHash.length && hash.startsWith(previousHash)) {
-    const suffix = hash.slice(previousHash.length);
-    const delta = /^[,/]/.test(suffix) ? suffix.slice(1) : suffix;
-    // A growing hash can append more than one path segment per step (a
-    // "label/value" pair, not a bare value) — e.g. "color/X" then
-    // "color/X/size/Y" appends "size/Y", not just "Y". The facet's
-    // actual VALUE is always the last segment of whatever was newly
-    // appended, matching the no-previous-hash fallback below.
-    const deltaSegments = delta.split(/[,/]/).filter((s) => s.length > 0);
-    if (deltaSegments.length > 0) return deltaSegments[deltaSegments.length - 1]!;
+  if (previousHash) {
+    // A growing hash can add more than one token per step (a "label/value"
+    // pair, or a "key=value" pair), at either end, joined by any hash
+    // separator. The facet's actual VALUE is the last token that is new
+    // relative to the previous hash, with any "key=" prefix removed.
+    const previousTokens = new Set(splitHashTokens(previousHash));
+    const added = splitHashTokens(hash).filter((token) => !previousTokens.has(token));
+    const delta = added[added.length - 1];
+    if (delta !== undefined) return stripHashKeyPrefix(delta);
   }
   const segments = hash.split("/").filter((s) => s.length > 0);
-  return segments.length > 0 ? segments[segments.length - 1]! : null;
+  return segments.length > 0 ? stripHashKeyPrefix(segments[segments.length - 1]!) : null;
+}
+
+function splitHashTokens(hash: string): string[] {
+  return hash.split(/[,/;&]/).filter((token) => token.length > 0);
+}
+
+function stripHashKeyPrefix(token: string): string {
+  const stripped = token.slice(token.indexOf("=") + 1);
+  return stripped.length > 0 ? stripped : token;
 }
 
 /**
@@ -13549,9 +13557,12 @@ export function emitContractTs(opts: {
       if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
     }
     for (const name of [...bodyReferencedFields.keys()].sort()) {
-      if (extendFields.has(name)) continue;
+      if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = bodyReferencedFields.get(name)!;
+      // A scalar registration from another source must not outlive an accessor
+      // that indexes or dereferences the field: the body text is the ground truth.
+      if (extendFields.has(name) && zod === "z.string()") continue;
       addExtendField(
         name,
         `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
