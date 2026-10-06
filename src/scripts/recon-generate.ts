@@ -7060,9 +7060,8 @@ function applyFacetSplicePayloadSubstitutions(
   const fields = [...payloadFieldNames];
   let result = template;
   for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
-    if (path.length !== 1) continue;
-    const key = path[0]!;
-    if (!isValidJsIdentifier(key)) continue;
+    const key = path[path.length - 1];
+    if (key === undefined || !isValidJsIdentifier(key)) continue;
     if (typeof value !== "string") continue;
     const spliced = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
     if (spliced === null) continue;
@@ -9195,19 +9194,24 @@ function renderGqlVariablesExpr(
 ): string {
   if (variables === null || typeof variables !== "object" || Array.isArray(variables)) return "{}";
   const fields = payloadFieldNames ? [...payloadFieldNames] : [];
-  const entries = Object.entries(variables as Record<string, unknown>).map(([key, value]) => {
-    const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
-    const facetSpliceExpr = matchedField
-      ? null
-      : (spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
-        spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
-        spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets));
-    const valueExpr = matchedField
-      ? `payload.${matchedField}`
-      : (facetSpliceExpr ?? JSON.stringify(value));
-    return `${key}: ${valueExpr}`;
-  });
-  return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+  const renderValue = (value: unknown): string => {
+    const spliced =
+      spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
+      spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
+      spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets);
+    if (spliced !== null) return spliced;
+    if (Array.isArray(value)) return `[${value.map(renderValue).join(", ")}]`;
+    if (value !== null && typeof value === "object") return renderObject(value);
+    return JSON.stringify(value);
+  };
+  const renderObject = (obj: object): string => {
+    const entries = Object.entries(obj).map(([key, value]) => {
+      const matchedField = fields.find((field) => field.toLowerCase() === key.toLowerCase());
+      return `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${matchedField ? `payload.${matchedField}` : renderValue(value)}`;
+    });
+    return entries.length > 0 ? `{ ${entries.join(", ")} }` : "{}";
+  };
+  return renderObject(variables);
 }
 
 /** A count-style page-size key (e.g. `count`, `limit`, `first`) paired with a
