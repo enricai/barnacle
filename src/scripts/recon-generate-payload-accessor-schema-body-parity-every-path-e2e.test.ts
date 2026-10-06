@@ -146,6 +146,7 @@ describe("recon-generate CLI + tsc --noEmit — array-of-objects field schema/bo
     const accessorFields = new Set(
       [...contract.matchAll(/payload\.(\w+)\[/g)].map((m) => m[1] ?? "")
     );
+    expect([...accessorFields], contract).toContain("sorts");
     for (const field of accessorFields) {
       expect(schema, `${field} indexed in a body`).not.toMatch(
         new RegExp(`\\b${field}:\\s*z\\.string\\(\\)`)
