@@ -13549,9 +13549,12 @@ export function emitContractTs(opts: {
       if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
     }
     for (const name of [...bodyReferencedFields.keys()].sort()) {
-      if (extendFields.has(name)) continue;
+      if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = bodyReferencedFields.get(name)!;
+      // A scalar registration from another source must not outlive an accessor
+      // that indexes or dereferences the field: the body text is the ground truth.
+      if (extendFields.has(name) && zod === "z.string()") continue;
       addExtendField(
         name,
         `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
