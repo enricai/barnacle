@@ -1,1 +1,0 @@
-{"steps":[{"step":"browse catalog listing"},{"step":"view item detail"},{"step":"select item","submitStep":true}],"submitEndpointPattern":"catalog/select","requireSubmitEndpointMatch":true,"ownBackendHostnames":["www.fold-drill-typecheck-name-correlation-fixture.example.com"]}

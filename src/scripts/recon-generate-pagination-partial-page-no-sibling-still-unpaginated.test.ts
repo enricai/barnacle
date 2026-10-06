@@ -92,7 +92,7 @@ describe("recon-generate pagination signal: partial-page primary with no sibling
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     expect(contract).toMatch(
-      /const data = await getGql\(context\.baseUrl\)\("listingSearch_Items", \w+_QUERY, \{ pagination: \{"count":10,"skip":0\}, filters: "category:widgets\|color:blue" \}\);\n\s*return \{ data \};/
+      /const data = await getGql\(context\.baseUrl\)\("listingSearch_Items", \w+_QUERY, \{ pagination: \{ count: 10, skip: 0 \}, filters: "category:widgets\|color:blue" \}\);\n\s*return \{ data \};/
     );
     expect(contract).not.toContain("MAX_PAGES");
     expect(contract).not.toContain("maxPages");

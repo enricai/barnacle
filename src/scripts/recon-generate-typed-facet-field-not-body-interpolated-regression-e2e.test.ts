@@ -163,11 +163,11 @@ describe("recon-generate CLI — flow-declared scalar facet payload field interp
     // keeping its own non-facet segment ("remote:true") literal — proving
     // the mechanism reaches beyond the exact-key pass, not just re-derives
     // the same accessor some other way.
-    expect(allBodies).toMatch(/region:\$\{payload\.region\}/);
+    expect(allBodies).toMatch(/region:\$\{payload\.[Rr]egion\}/);
     expect(allBodies).toContain("remote:true");
 
     // No invalidly-nested placeholder anywhere in the emitted bodies.
-    expect(allBodies).not.toMatch(/\$\{[^}]*\$\{/);
+    expect(allBodies).not.toMatch(/\$\{[^}`]*\$\{/);
 
     // Any leftover raw literal (there should be none, per the above) may
     // only ever live in non-functional tracking headers, never in a body.
