@@ -1,0 +1,1 @@
+{"steps":[{"step":"search available sailings","submitStep":true}],"submitEndpointPattern":"available-sailings","requireSubmitEndpointMatch":true,"ownBackendHostnames":["www.noise-dilution-scale-fixture.example.com"]}

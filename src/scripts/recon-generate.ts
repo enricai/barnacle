@@ -9084,7 +9084,7 @@ function spliceFacetRecurrenceIntoScalarVariable(
     });
     if (facet === undefined) return escapeForTemplateLiteral(segment);
     bound = true;
-    return `${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${"$"}{payload.${facet.field}}`;
+    return `${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${payload.${facet.field}}`;
   });
   return bound ? `\`${parts.join("")}\`` : null;
 }

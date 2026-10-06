@@ -1,0 +1,1 @@
+{"steps":[{"step":"browse catalog listing"},{"step":"view item detail"},{"step":"select item","submitStep":true}],"submitEndpointPattern":"catalog/select","requireSubmitEndpointMatch":true,"ownBackendHostnames":["www.schema-body-value-coincidence-combined-regression-fixture.example.com"]}
