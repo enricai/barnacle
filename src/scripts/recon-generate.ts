@@ -7575,6 +7575,11 @@ export function emitMultiStepExecuteHttp(
       ) {
         continue;
       }
+      // A leaf recurring as a declared facet literal binds to that facet's
+      // payloadField via the persona pass, not to a by-index accessor.
+      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
+        continue;
+      }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
       // The accessor indexes into this field, so its declared type must be the
