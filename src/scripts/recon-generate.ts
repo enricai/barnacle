@@ -13261,7 +13261,9 @@ export function emitContractTs(opts: {
   // override semantics a chain of `.extend()` calls used to have (each
   // subsequent `.extend` replaced an earlier field of the same name).
   const extendFields = new Map<string, string>();
+  const structuredFieldNames = new Set<string>();
   const addExtendField = (name: string, line: string): void => {
+    if (structuredFieldNames.has(name)) return;
     extendFields.set(name, line);
   };
 
@@ -13435,7 +13437,8 @@ export function emitContractTs(opts: {
     if (isReservedByApplicantContactSchema(name)) continue;
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
     const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
-    addExtendField(name, `  ${key}: ${value},`);
+    extendFields.set(name, `  ${key}: ${value},`);
+    structuredFieldNames.add(name);
   }
 
   // Closing-the-loop safety net: every discovered-field source above tracks
@@ -13456,13 +13459,20 @@ export function emitContractTs(opts: {
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
   if (multiStepBody) {
-    const bodyReferencedFields = new Set(
-      [...multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((m) => m[1]!)
-    );
-    for (const name of [...bodyReferencedFields].sort()) {
+    // The accessor suffix decides the type: `payload.f[` implies an array and
+    // `payload.f.` an object, so only a bare accessor may default to a string.
+    const bodyReferencedFields = new Map<string, string>();
+    for (const m of multiStepBody.matchAll(/\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g)) {
+      const name = m[1]!;
+      const zod = m[2] === "[" ? "z.array(z.unknown())" : m[2] ? "z.record(z.string(), z.unknown())" : "z.string()";
+      const prior = bodyReferencedFields.get(name);
+      if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
+    }
+    for (const name of [...bodyReferencedFields.keys()].sort()) {
       if (extendFields.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: z.string(),`);
+      const zod = bodyReferencedFields.get(name)!;
+      addExtendField(name, `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`);
     }
   }
 
@@ -13515,6 +13525,7 @@ export function emitContractTs(opts: {
   for (const [fieldName, constraint] of Object.entries(valueConstraints)) {
     const line = extendFields.get(fieldName);
     if (line === null || line === undefined) continue;
+    if (structuredFieldNames.has(fieldName)) continue;
     if (
       constraint.enumValues === undefined &&
       constraint.min === undefined &&
