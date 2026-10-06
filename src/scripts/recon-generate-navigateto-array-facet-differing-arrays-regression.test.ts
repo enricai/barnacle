@@ -176,6 +176,7 @@ describe("recon-generate CLI — filters arrays that differ per call site", () =
       expect(body).not.toContain("JSON.stringify(payload.filters)");
       expect(body).not.toMatch(/payload\.filters\[/);
     }
+    expect(contract).toContain("filters: multipartJsonObject(z.array(z.string()))");
     expect(bodies.get("/shop/search-refine/")).toContain("other-literal");
     expect(bodies.get("/shop/search-summary/")).toContain("extra-literal");
   }, 30_000);
