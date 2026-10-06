@@ -6858,12 +6858,18 @@ function renderRequiredFacetArrayText(
   return `[${elements.join(",")}]`;
 }
 
+/** Nearest non-index key of an array's path: the payload field it maps to,
+ * independent of nesting depth or index position. */
+function arrayFieldKey(path: readonly string[]): string {
+  return [...path].reverse().find((segment) => !/^\d+$/.test(segment)) ?? "";
+}
+
 /**
- * Keys (`JSON.stringify(path)`) of every array, in ANY captured body, that
- * carries at least one facet-bearing element. The facet pass owns those
+ * Field keys ({@link arrayFieldKey}) of every array, in ANY captured body,
+ * that carries at least one facet-bearing element. The facet pass owns those
  * arrays wholesale, so none of their elements may also be frozen as a
- * by-index `payload.<field>["N"]` accessor from whichever body happened to
- * be parsed first.
+ * by-index `payload.<field>["N"]` accessor, whichever body was parsed first
+ * and wherever the array sits in it.
  */
 function collectFacetArrayPathKeys(
   bodies: readonly unknown[],
@@ -6878,7 +6884,7 @@ function collectFacetArrayPathKeys(
         (element) =>
           typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
       );
-      if (hasFacet) keys.add(JSON.stringify(path));
+      if (hasFacet) keys.add(arrayFieldKey(path));
     }
   }
   return keys;
@@ -7423,7 +7429,7 @@ export function emitMultiStepExecuteHttp(
       // that would freeze the sibling elements' shape.
       if (
         /^\d+$/.test(path[path.length - 1] ?? "") &&
-        facetArrayPathKeys.has(JSON.stringify(path.slice(0, -1)))
+        facetArrayPathKeys.has(arrayFieldKey(path.slice(0, -1)))
       ) {
         continue;
       }
@@ -8959,11 +8965,16 @@ function matchArrayElementFacet(
   facets: readonly NavigateToFacetBinding[]
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  return facets.find(({ value: literal }) => {
-    if (element === literal) return true;
-    if (!element.startsWith(literal)) return false;
-    return !isAlnum(element[literal.length]);
-  });
+  // Longest literal wins so overlapping literals resolve by specificity, not
+  // declaration order.
+  return facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
+    const literal = facet.value;
+    const matches =
+      element === literal ||
+      (literal.length > 0 && element.startsWith(literal) && !isAlnum(element[literal.length]));
+    if (!matches) return best;
+    return best === undefined || literal.length > best.value.length ? facet : best;
+  }, undefined);
 }
 
 /**
