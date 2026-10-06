@@ -6784,6 +6784,38 @@ function applyPayloadKeyValueSubstitutions(
  * steps declared any field to correlate against) or when a leaf's value has
  * no `key:value` segment matching one of them.
  */
+/**
+ * Binds a scalar navigateTo facet at every call site: each object-property
+ * string leaf, at any depth, whose whole value equals a declared facet literal
+ * becomes `${payload.<field>}`. Matching is per whole leaf, so the same
+ * literal flanked by alphanumerics inside an unrelated token is never touched
+ * and no global collision guard can drop the facet. An optional facet falls
+ * back to the captured literal when the caller omits it, never `undefined`.
+ */
+function applyScalarFacetSplicePayloadSubstitutions(
+  template: string,
+  inputBody: unknown,
+  navigateToFacets: readonly NavigateToFacetBinding[]
+): string {
+  if (navigateToFacets.length === 0) return template;
+  if (inputBody === null || typeof inputBody !== "object") return template;
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(inputBody)) {
+    if (typeof value !== "string") continue;
+    if (/^\d+$/.test(path[path.length - 1] ?? "")) continue;
+    const facet = navigateToFacets.find((f) => f.value === value);
+    if (facet === undefined) continue;
+    const literal = JSON.stringify(value);
+    const replacement = facet.optional
+      ? `\${JSON.stringify(payload.${facet.field} ?? ${literal})}`
+      : `"\${payload.${facet.field}}"`;
+    for (const sep of [":", ": "]) {
+      result = result.split(`${sep}${literal}`).join(`${sep}${replacement}`);
+    }
+  }
+  return result;
+}
+
 /** Yields every array-valued leaf in `value` (at any object nesting depth) —
  * `{@link applyArrayFacetSplicePayloadSubstitutions}`'s raw-array
  * search surface. Does not recurse INTO an array's own elements (a facet
@@ -7539,6 +7571,9 @@ export function emitMultiStepExecuteHttp(
   // triples — the array splice must see each binding's `optional` flag
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
+  for (const { value, field } of navigateToFacetOrder) {
+    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value)) outDiscoveredFields.add(field);
+  }
   const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
@@ -7855,6 +7890,14 @@ export function emitMultiStepExecuteHttp(
             navigateToFacetOrder
           )
         : rawBodyWithFacetSplices;
+    const rawBodyWithScalarFacetSplices =
+      parsedBody !== null
+        ? applyScalarFacetSplicePayloadSubstitutions(
+            rawBodyWithOptionalArrayFacetSplices,
+            parsedBody,
+            navigateToFacetOrder
+          )
+        : rawBodyWithOptionalArrayFacetSplices;
     // Mechanism B — parameterize whole nested caller structures
     // (experienceData/educationData history, opaque eventData) BEFORE value
     // substitution reaches inside them: swallowing the entire array/object first
@@ -7867,7 +7910,7 @@ export function emitMultiStepExecuteHttp(
     const rawBodyWithStructuredSubs =
       parsedBody !== null
         ? applyStructuredValuePayloadSubstitutions(
-            rawBodyWithOptionalArrayFacetSplices,
+            rawBodyWithScalarFacetSplices,
             parsedBody,
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
