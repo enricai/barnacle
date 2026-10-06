@@ -6163,7 +6163,21 @@ export async function submitCaptchaGatedForm(
             if (isNavigatingEvaluateRejection(err)) return { clicked: false };
             throw err;
           });
-        if (runnerUpClickResult.clicked) return true;
+        if (runnerUpClickResult.clicked) {
+          const runnerUpPost = await snapshotPage(
+            target,
+            verification.signalCounter,
+            verification.page
+          );
+          const runnerUpVerdict = classifyPhantomClick({
+            actResultSuccess: true,
+            pre: post,
+            post: runnerUpPost,
+            isSubmitShapedStep: true,
+            destinationPlausible: isPlausibleStepDestination(verification.step, runnerUpPost.url),
+          });
+          if (runnerUpVerdict !== "phantom") return true;
+        }
       }
     }
   }

@@ -143,8 +143,15 @@ describe("flow-runner/submitCaptchaGatedForm — phantom-click verification on t
     expect(runnerUp.clicked).toBe(false);
   });
 
-  it("with verification opted in, retries the runner-up when the top pick's click shows zero observable effect", async () => {
-    const form = makeEl("form", {}, "", {});
+  it("with verification opted in, does not credit a runner-up click that also shows zero observable effect; falls through to the form-level submit", async () => {
+    const form = makeEl("form", {}, "", {}) as FakeEl & {
+      requestSubmit: () => void;
+      requestSubmitCount: number;
+    };
+    form.requestSubmitCount = 0;
+    form.requestSubmit = () => {
+      form.requestSubmitCount += 1;
+    };
     appendChild(form, makeEl("div", { "data-sitekey": "10000000-ffff-ffff-ffff-000000000001" }));
     const topPick = appendChild(form, makeEl("button", { type: "submit" }, "Submit"));
     const runnerUp = appendChild(form, makeEl("div", { role: "button" }, "Submit Application"));
@@ -158,6 +165,7 @@ describe("flow-runner/submitCaptchaGatedForm — phantom-click verification on t
     expect(result).toBe(true);
     expect(topPick.clicked).toBe(true);
     expect(runnerUp.clicked).toBe(true);
+    expect(form.requestSubmitCount).toBe(1);
   });
 
   it("with verification opted in and no runner-up available, falls through to the form-level submit instead of crediting the phantom top pick", async () => {
