@@ -19,12 +19,13 @@ describe("extractNavigateToFacetOrder — every declared facet is bound", () => 
       "key=value",
       ["/b=acme", "&c=red", "&s=xl", "&m=cotton", "&se=spring", "&o=paris", "&st=modern"],
     ],
+    ["mixed", ["/acme", ",red", "&s=xl", "/cotton", ";spring", ",paris", "&st=modern"]],
     ["slash", ["/acme", "/red", "/xl", "/cotton", "/spring", "/paris", "/modern"]],
   ])("%s cumulative hash yields one binding per facet", (_name, deltas) => {
     const cumulative = deltas.map((_, i) => deltas.slice(0, i + 1).join(""));
     const bindings = extractNavigateToFacetOrder(flowFor(cumulative));
     expect(bindings.map((b) => b.field)).toEqual(FACETS);
-    const literals = deltas.map((d) => d.replace(/^[/,&]/, "").replace(/^[^=]*=/, ""));
+    const literals = deltas.map((d) => d.replace(/^[/,&;]/, "").replace(/^[^=]*=/, ""));
     expect(bindings.map((b) => b.value)).toEqual(literals);
   });
 });
