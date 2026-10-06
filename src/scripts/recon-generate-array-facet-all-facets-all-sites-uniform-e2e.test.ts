@@ -157,7 +157,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
       expect(body).toContain("...(payload.NeighborhoodFacet ? [`${payload.NeighborhoodFacet}");
       expect(body).toContain(DELIMITER);
     }
-    expect(bodies.get(SITE_PATHS[0])).toContain("type=hotel");
-    expect(bodies.get(SITE_PATHS[2])).toContain("page=1");
+    expect(bodies.get(SITE_PATHS[0] ?? "")).toContain("type=hotel");
+    expect(bodies.get(SITE_PATHS[2] ?? "")).toContain("page=1");
   }, 30_000);
 });
