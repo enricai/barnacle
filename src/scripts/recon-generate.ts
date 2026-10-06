@@ -12981,7 +12981,7 @@ interface AccessorShape {
 }
 
 const PAYLOAD_ACCESSOR_CHAIN =
-  /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)((?:!|\??\.[A-Za-z_$][A-Za-z0-9_$]*(?!\()|\[(?:"[^"\]]*"|\d+)\])*)/g;
+  /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)((?:!|\??\.[A-Za-z_$][A-Za-z0-9_$]*(?![A-Za-z0-9_$(])|\[(?:"[^"\]]*"|\d+)\])*)/g;
 const PAYLOAD_CHAIN_SEGMENT = /\??\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"[^"\]]*"|\d+)\]/g;
 
 function newAccessorShape(): AccessorShape {
