@@ -5720,13 +5720,14 @@ async function waitForCaptchaNavigation(params: {
   page: Page;
   captchaTarget: FrameTarget;
   baselineUrl: string;
+  step: string;
   timeoutMs: number;
   intervalMs: number;
 }): Promise<boolean> {
-  const { page, captchaTarget, baselineUrl, timeoutMs, intervalMs } = params;
+  const { page, captchaTarget, baselineUrl, step, timeoutMs, intervalMs } = params;
   const check = async (): Promise<boolean> => {
     const currentUrl = await readCurrentFrameUrl(page, captchaTarget);
-    return hasOriginOrPathChanged(baselineUrl, currentUrl);
+    return hasOriginOrPathChanged(baselineUrl, currentUrl) && isPlausibleStepDestination(step, currentUrl);
   };
   if (await check()) return true;
   const deadline = performance.now() + timeoutMs;
@@ -10258,6 +10259,7 @@ export async function executeStepWithHealing(params: {
           page,
           captchaTarget,
           baselineUrl: pageUrl,
+          step,
           timeoutMs: CAPTCHA_TRANSITION_POLL_MS,
           intervalMs: ADVANCE_TRANSITION_POLL_INTERVAL_MS,
         });
