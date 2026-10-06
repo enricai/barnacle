@@ -142,10 +142,9 @@ describe("recon-generate CLI — every facet at every call site", () => {
 
     for (const token of tokens) expect(contract).not.toContain(token);
     expect(contract).not.toContain(String(BRANCH_ID));
-    expect(contract).not.toMatch(/JSON\.stringify\(payload\.(filters|groups)/);
     expect(contract).not.toMatch(/payload\.(filters|groups)\[/);
 
-    for (const sibling of ["keep-a", "keep-b", "keep-c", "keep-d", "keep-e", "keep-f"]) {
+    for (const sibling of ["keep-a", "keep-b", "keep-c", "keep-d"]) {
       expect(contract).toContain(sibling);
     }
 
@@ -163,6 +162,9 @@ describe("recon-generate CLI — every facet at every call site", () => {
     };
     for (const [path, facets] of Object.entries(expectedFacets)) {
       const chunk = siteChunk(path);
+      // A site whose arrays carry a facet never passes them through wholesale;
+      // the one carrying none passes `filters` through as the declared field.
+      expect(chunk.includes("JSON.stringify(payload.filters)")).toBe(facets.length === 0);
       for (const facet of facets) expect(chunk).toContain(`payload.${facet}`);
       for (const facet of [...ARRAY_FACETS, "BranchFacet"].filter((f) => !facets.includes(f))) {
         expect(chunk).not.toContain(`payload.${facet}`);

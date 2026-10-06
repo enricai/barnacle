@@ -82,6 +82,19 @@ function writeRunDir(root: string, captures: Capture[]): void {
   });
 }
 
+/**
+ * Body template of every `httpClient(...)` call. Split on the emitter's stable
+ * idiom rather than a backtick-free regex, because a spliced array renders as
+ * `${JSON.stringify([`${payload.X}...`])}` and nests backticks.
+ */
+function extractBodyBlocks(contract: string): string[] {
+  return contract
+    .split("httpClient(`")
+    .slice(1)
+    .map((chunk) => chunk.slice(chunk.indexOf("body: `") + "body: `".length))
+    .map((chunk) => chunk.slice(0, chunk.indexOf("`,\n      schema:")));
+}
+
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
 
@@ -124,7 +137,7 @@ describe("recon-generate CLI — five navigateTo facets sharing one array-typed 
       const contractPath = join(siteOutDir, "contract.ts");
       const contract = readFileSync(contractPath, "utf8");
 
-      const bodyBlocks = [...contract.matchAll(/body:\s*`([^`]*)`,/g)].map((m) => m[1] ?? "");
+      const bodyBlocks = extractBodyBlocks(contract);
       expect(bodyBlocks.length, contract).toBeGreaterThan(0);
       const combinedBody = bodyBlocks.join("\n");
 

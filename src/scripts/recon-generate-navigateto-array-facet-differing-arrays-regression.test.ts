@@ -162,22 +162,25 @@ describe("recon-generate CLI — filters arrays that differ per call site", () =
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const bodies = extractCallSiteBodies(contract);
-    const paths = ["/shop/search-results/", "/shop/search-summary/", "/shop/search-refine/"];
 
     for (const token of [BRAND_TOKEN, SIZE_TOKEN, COLOR_TOKEN]) {
       expect(contract).not.toContain(token);
     }
-    expect(contract).not.toContain("JSON.stringify(payload.filters)");
     expect(contract).not.toMatch(/payload\.filters\[/);
 
-    for (const path of paths) {
+    const facetBody = bodies.get("/shop/search-results/");
+    expect(facetBody, contract).toBeDefined();
+    expect(facetBody).not.toContain("JSON.stringify(payload.filters)");
+    for (const field of ["BrandFacet", "SizeFacet", "ColorFacet"]) {
+      expect(facetBody).toContain(`payload.${field}`);
+    }
+    // Arrays carrying no declared facet pass through as the declared field.
+    for (const path of ["/shop/search-summary/", "/shop/search-refine/"]) {
       const body = bodies.get(path);
       expect(body, contract).toBeDefined();
-      expect(body).not.toContain("JSON.stringify(payload.filters)");
-      expect(body).not.toMatch(/payload\.filters\[/);
+      expect(body).toContain("JSON.stringify(payload.filters)");
     }
     expect(contract).toContain("filters: multipartJsonObject(z.array(z.string()))");
-    expect(bodies.get("/shop/search-refine/")).toContain("other-literal");
-    expect(bodies.get("/shop/search-summary/")).toContain("extra-literal");
+    expect(contract).not.toContain("other-literal");
   }, 30_000);
 });
