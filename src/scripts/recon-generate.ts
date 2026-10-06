@@ -9239,7 +9239,7 @@ export function spliceFacetsIntoArrayVariable(
  * `navigateToFacets` instead — see {@link spliceFacetsIntoArrayVariable} for
  * why that's a distinct grammar from the `key:value` one above.
  */
-function renderGqlVariablesExpr(
+export function renderGqlVariablesExpr(
   variables: unknown,
   payloadFieldNames: Set<string> | undefined,
   optionalFieldNames: ReadonlySet<string> = new Set(),
@@ -9250,7 +9250,7 @@ function renderGqlVariablesExpr(
   const renderValue = (value: unknown): string => {
     const spliced =
       spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
-      spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
+      spliceFacetsIntoArrayVariable(value, navigateToFacets, renderValue) ??
       spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets);
     if (spliced !== null) return spliced;
     if (Array.isArray(value)) return `[${value.map(renderValue).join(", ")}]`;
