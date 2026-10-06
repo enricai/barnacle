@@ -1398,6 +1398,20 @@ export function findRecentBackendError(params: {
   return null;
 }
 
+
+/**
+ * Network-capture transitions say a request succeeded, not where the page
+ * landed, so a credit must also see a landed URL the step could plausibly have
+ * targeted (e.g. not a sign-in bounce the instruction never asked for).
+ */
+async function isLandedUrlPlausibleForStep(
+  page: Page,
+  target: FrameTarget,
+  step: string
+): Promise<boolean> {
+  return isPlausibleStepDestination(step, await readCurrentFrameUrl(page, target));
+}
+
 /**
  * Detect whether the page legitimately transitioned within the supplied
  * capture-meta window — a 3xx redirect or a same-origin non-GET capture
@@ -10298,7 +10312,10 @@ export async function executeStepWithHealing(params: {
           recentCaptureMeta,
           preMetaLength: preCaptchaMetaLength,
         });
-        if (networkTransitionUrl !== null) {
+        if (
+          networkTransitionUrl !== null &&
+          (await isLandedUrlPlausibleForStep(page, captchaTarget, step))
+        ) {
           logger.info(
             `${formatStepPrefix(stepIndex, totalSteps)} captchaGated step: post-submit network response confirmed the advance (${networkTransitionUrl})`
           );
@@ -10442,7 +10459,10 @@ export async function executeStepWithHealing(params: {
       recentCaptureMeta,
       preMetaLength: stepStartMetaLength,
     });
-    if (transitionUrl !== null) {
+    if (
+      transitionUrl !== null &&
+      (await isLandedUrlPlausibleForStep(page, frameTarget ?? mainFrameTarget(page), step))
+    ) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} skipped (probe absent but recent transition detected: ${transitionUrl})`
       );
