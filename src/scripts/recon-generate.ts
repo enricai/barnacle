@@ -3299,6 +3299,16 @@ function jsonBodyLeafValues(requestPostData: string | null | undefined): string[
   return values;
 }
 
+/** Parses a captured request body as JSON; null for an absent or non-JSON body (multipart raw bytes). */
+function parseJsonBodyOrNull(requestPostData: string | null | undefined): unknown {
+  if (typeof requestPostData !== "string" || requestPostData.length === 0) return null;
+  try {
+    return JSON.parse(requestPostData);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Same JSON body walk as {@link jsonBodyLeafValues}, but grouped by the JSON
  * key/array-index that carries each leaf value — the by-name correlation
@@ -5206,16 +5216,35 @@ function pathToPayloadFieldName(path: string[]): string {
  * {@link pathToPayloadFieldName}; segments from the first array index onward
  * are rendered with {@link pathToAccessor} against that flat prefix.
  */
-function payloadAccessorForPath(path: string[]): { accessor: string; field: string } {
+function payloadAccessorForPath(path: string[]): {
+  accessor: string;
+  field: string;
+  structuredRootPath: string[] | null;
+} {
   const arrayIndexPos = path.findIndex((segment) => /^\d+$/.test(segment));
   if (arrayIndexPos === -1) {
     const field = pathToPayloadFieldName(path);
-    return { accessor: `payload.${field}`, field };
+    return { accessor: `payload.${field}`, field, structuredRootPath: null };
   }
   const objectPath = path.slice(0, arrayIndexPos);
   const field = objectPath.length > 0 ? pathToPayloadFieldName(objectPath) : (path[0] ?? "");
   const suffix = pathToAccessor(path.slice(arrayIndexPos), { assertNonNull: true });
-  return { accessor: `payload.${field}${suffix}`, field };
+  return {
+    accessor: `payload.${field}${suffix}`,
+    field,
+    structuredRootPath: objectPath.length > 0 ? objectPath : null,
+  };
+}
+
+/** Reads the value at `path` inside a parsed JSON body, or undefined when any hop is missing. */
+function valueAtJsonPath(root: unknown, path: string[]): unknown {
+  return path.reduce<unknown>(
+    (node, segment) =>
+      node !== null && typeof node === "object"
+        ? (node as Record<string, unknown>)[segment]
+        : undefined,
+    root
+  );
 }
 
 /** Derives a valid camelCase identifier from a fixture filename (e.g.
@@ -6732,7 +6761,7 @@ function applyPayloadKeyValueSubstitutions(
  * no `key:value` segment matching one of them.
  */
 /** Yields every array-valued leaf in `value` (at any object nesting depth) —
- * `{@link applyOptionalArrayFacetSplicePayloadSubstitutions}`'s raw-array
+ * `{@link applyArrayFacetSplicePayloadSubstitutions}`'s raw-array
  * search surface. Does not recurse INTO an array's own elements (a facet
  * array is always a flat array of primitives in every observed recon shape),
  * matching {@link walkAllPrimitiveLeaves}'s depth-first walk of everything
@@ -6754,42 +6783,137 @@ function* walkArrayLeaves(
 /**
  * REST-body counterpart to {@link spliceFacetsIntoArrayVariable}'s GraphQL
  * use: a navigateTo facet's literal recurring as one array element (suffixed
- * by a constant delimiter) inside a REST JSON body gets its element text
- * swapped for `${payload.<field>}` by the plain `interpolateStateValues`
- * splice later in the pipeline — but that pass only rewrites literal text
- * IN PLACE, so when the matched facet is optional it would leave the array's
- * frozen `undefined`-shaped element (and its JSON delimiter/comma) in the
- * output whenever the caller omits the field, instead of omitting the
- * element entirely.
+ * by a constant delimiter) inside a REST JSON body gets its element swapped
+ * for `${payload.<field>}` — for EVERY declared facet, required or optional,
+ * at EVERY call site's own array. Matching is structural (see
+ * {@link replaceJsonArrayOccurrences}) and token-boundary guarded per element
+ * ({@link matchArrayElementFacet}), so the splice never depends on the
+ * global, all-or-nothing persona collision guard, on which call site carried
+ * the array first, on element order, or on a facet being optional.
  *
- * This pass runs first and, for any array that matches at least one OPTIONAL
- * facet, rewrites the array's own frozen `JSON.stringify(...)` occurrence in
- * the body template to a single `${JSON.stringify([...])}` splice point
- * built from {@link spliceFacetsIntoArrayVariable}'s per-element conditional-
- * emission shape — the same `...(payload.<field> ? [...] : [])` convention
- * {@link spliceFacetsIntoStringVariable} already uses for the `key:value`
- * grammar. A required-only match (no optional facet in that array) is left
- * for the later plain splice to handle exactly as before — this pass is a
- * no-op whenever nothing it rewrites would differ, so the existing
- * required-only REST array-element shape (recon-generate-navigateto-array-
- * element-facet-splice-e2e.test.ts) never changes.
+ * An array that matches an OPTIONAL facet is rewritten to a single
+ * `${JSON.stringify([...])}` splice point built from
+ * {@link spliceFacetsIntoArrayVariable}'s per-element conditional emission, so
+ * an absent optional facet drops its element instead of freezing an
+ * `undefined`. A required-only array keeps the compact in-place text shape
+ * (`["${payload.<field>}<suffix>","literal"]`), and non-facet elements stay
+ * literal in both.
  */
-function applyOptionalArrayFacetSplicePayloadSubstitutions(
+function applyArrayFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
   navigateToFacets: readonly NavigateToFacetBinding[]
 ): string {
-  if (!navigateToFacets.some((facet) => facet.optional)) return template;
+  if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
   for (const { value } of walkArrayLeaves(inputBody)) {
     const spliced = spliceFacetsIntoArrayVariable(value, navigateToFacets);
-    if (spliced === null || !spliced.includes("...(payload.")) continue;
-    const target = JSON.stringify(value);
-    if (!result.includes(target)) continue;
-    result = result.split(target).join(`\${JSON.stringify(${spliced})}`);
+    if (spliced === null) continue;
+    const replacement = spliced.includes("...(payload.")
+      ? `\${JSON.stringify(${spliced})}`
+      : renderRequiredFacetArrayText(value, navigateToFacets);
+    result = replaceJsonArrayOccurrences(result, value, replacement);
   }
   return result;
+}
+
+/** Compact JSON text of an array whose facet-bearing string elements are
+ * rewritten to `"${payload.<field>}<suffix>"` in place. */
+function renderRequiredFacetArrayText(
+  value: unknown[],
+  facets: readonly NavigateToFacetBinding[]
+): string {
+  const elements = value.map((element) => {
+    const matched =
+      typeof element === "string" ? matchArrayElementFacet(element, facets) : undefined;
+    if (typeof element !== "string" || matched === undefined) return JSON.stringify(element);
+    const suffix = JSON.stringify(element.slice(matched.value.length)).slice(1, -1);
+    return `"\${payload.${matched.field}}${suffix}"`;
+  });
+  return `[${elements.join(",")}]`;
+}
+
+/**
+ * Keys (`JSON.stringify(path)`) of every array, in ANY captured body, that
+ * carries at least one facet-bearing element. The facet pass owns those
+ * arrays wholesale, so none of their elements may also be frozen as a
+ * by-index `payload.<field>["N"]` accessor from whichever body happened to
+ * be parsed first.
+ */
+function collectFacetArrayPathKeys(
+  bodies: readonly unknown[],
+  facets: readonly NavigateToFacetBinding[]
+): Set<string> {
+  const keys = new Set<string>();
+  if (facets.length === 0) return keys;
+  for (const body of bodies) {
+    if (body === null || typeof body !== "object") continue;
+    for (const { value, path } of walkArrayLeaves(body)) {
+      const hasFacet = value.some(
+        (element) =>
+          typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
+      );
+      if (hasFacet) keys.add(JSON.stringify(path));
+    }
+  }
+  return keys;
+}
+
+/**
+ * Rewrites every occurrence of `target` inside `template` by JSON structure
+ * (bracket-balanced, string-aware, whitespace-insensitive) rather than by
+ * exact `JSON.stringify` text, so a pretty-printed or re-spaced body array
+ * is still replaced.
+ */
+function replaceJsonArrayOccurrences(
+  template: string,
+  target: unknown[],
+  replacement: string
+): string {
+  const targetKey = JSON.stringify(target);
+  let out = "";
+  let from = 0;
+  while (from < template.length) {
+    const open = template.indexOf("[", from);
+    if (open === -1) break;
+    const close = findMatchingBracket(template, open);
+    const candidate = close === -1 ? undefined : template.slice(open, close + 1);
+    const matches = candidate !== undefined && jsonTextEquals(candidate, targetKey);
+    if (!matches) {
+      out += template.slice(from, open + 1);
+      from = open + 1;
+      continue;
+    }
+    out += template.slice(from, open) + replacement;
+    from = (close as number) + 1;
+  }
+  return out + template.slice(from);
+}
+
+function findMatchingBracket(text: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function jsonTextEquals(candidate: string, targetKey: string): boolean {
+  try {
+    return JSON.stringify(JSON.parse(candidate)) === targetKey;
+  } catch {
+    return false;
+  }
 }
 
 function applyFacetSplicePayloadSubstitutions(
@@ -7262,11 +7386,33 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
+  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
+  const facetArrayPathKeys = collectFacetArrayPathKeys(
+    actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
+    navigateToFacetOrder
+  );
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
-      const { accessor, field: accessorField } = payloadAccessorForPath(path);
+      // An element of an array any call site's facet pass owns belongs to the
+      // facet's payloadField (or stays literal), not to a by-index accessor
+      // that would freeze the sibling elements' shape.
+      if (
+        /^\d+$/.test(path[path.length - 1] ?? "") &&
+        facetArrayPathKeys.has(JSON.stringify(path.slice(0, -1)))
+      ) {
+        continue;
+      }
+      const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
       payloadAccessorByValue.set(value, accessor);
+      // The accessor indexes into this field, so its declared type must be the
+      // structured shape regardless of whether Mechanism B visited the key.
+      if (structuredRootPath !== null && !outStructuredKeys.has(accessorField)) {
+        const structuredRoot = valueAtJsonPath(inputBody, structuredRootPath);
+        if (structuredRoot !== undefined && structuredRoot !== null) {
+          outStructuredKeys.set(accessorField, inferZodSchema(structuredRoot));
+        }
+      }
       if (isValidJsIdentifier(accessorField)) outDiscoveredFields.add(accessorField);
       // Phase F: register a lowercase variant for UUID-shaped values so case-
       // variant URL path segments (e.g. r9 echoes the requisition UUID in
@@ -7362,7 +7508,6 @@ export function emitMultiStepExecuteHttp(
   // triples — the array splice must see each binding's `optional` flag
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
-  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
   const unreachableNavigateToFacets = navigateToFacetOrder.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
@@ -7670,10 +7815,10 @@ export function emitMultiStepExecuteHttp(
     // when its binding is optional and the caller omits it. Runs BEFORE
     // Mechanism B (below) can swallow the whole array wholesale as an
     // unparameterized structured value — see
-    // {@link applyOptionalArrayFacetSplicePayloadSubstitutions}.
+    // {@link applyArrayFacetSplicePayloadSubstitutions}.
     const rawBodyWithOptionalArrayFacetSplices =
       parsedBody !== null
-        ? applyOptionalArrayFacetSplicePayloadSubstitutions(
+        ? applyArrayFacetSplicePayloadSubstitutions(
             rawBodyWithFacetSplices,
             parsedBody,
             navigateToFacetOrder
@@ -8779,6 +8924,24 @@ export function spliceFacetsIntoStringVariable(
 }
 
 /**
+ * Token-boundary match of one array element against the declared navigateTo
+ * facets — the single place elements are matched so the GraphQL and REST
+ * paths (and the REST accessor registration) never disagree on what a
+ * facet-bearing element is.
+ */
+function matchArrayElementFacet(
+  element: string,
+  facets: readonly NavigateToFacetBinding[]
+): NavigateToFacetBinding | undefined {
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  return facets.find(({ value: literal }) => {
+    if (element === literal) return true;
+    if (!element.startsWith(literal)) return false;
+    return !isAlnum(element[literal.length]);
+  });
+}
+
+/**
  * Splices a captured array-valued GraphQL variable's elements against
  * navigateTo facet bindings instead of the `key:value` segment grammar
  * {@link spliceFacetsIntoStringVariable} matches — an array element like
@@ -8798,17 +8961,10 @@ export function spliceFacetsIntoArrayVariable(
   facets: readonly NavigateToFacetBinding[]
 ): string | null {
   if (!Array.isArray(value)) return null;
-  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  const matchFacet = (element: string): NavigateToFacetBinding | undefined =>
-    facets.find(({ value: literal }) => {
-      if (element === literal) return true;
-      if (!element.startsWith(literal)) return false;
-      return !isAlnum(element[literal.length]);
-    });
   let matchCount = 0;
   const elements = (value as unknown[]).map((element) => {
     if (typeof element !== "string") return JSON.stringify(element);
-    const matched = matchFacet(element);
+    const matched = matchArrayElementFacet(element, facets);
     if (!matched) return JSON.stringify(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
