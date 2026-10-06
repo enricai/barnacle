@@ -5727,7 +5727,10 @@ async function waitForCaptchaNavigation(params: {
   const { page, captchaTarget, baselineUrl, step, timeoutMs, intervalMs } = params;
   const check = async (): Promise<boolean> => {
     const currentUrl = await readCurrentFrameUrl(page, captchaTarget);
-    return hasOriginOrPathChanged(baselineUrl, currentUrl) && isPlausibleStepDestination(step, currentUrl);
+    return (
+      hasOriginOrPathChanged(baselineUrl, currentUrl) &&
+      isPlausibleStepDestination(step, currentUrl)
+    );
   };
   if (await check()) return true;
   const deadline = performance.now() + timeoutMs;
