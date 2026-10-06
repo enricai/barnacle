@@ -6646,7 +6646,7 @@ export interface AdditionalBodyKeyInfo {
  * even though the field genuinely IS one this step's own request sends as
  * caller-supplied data.
  */
-function applyPayloadKeyValueSubstitutions(
+export function applyPayloadKeyValueSubstitutions(
   template: string,
   inputBody: unknown,
   additionalBodies: unknown[] = [],
@@ -6654,13 +6654,28 @@ function applyPayloadKeyValueSubstitutions(
   /** Every capture's response body from the same run, scanned only for
    * {@link CAPACITY_FIELD_NAME_PATTERN}-shaped numeric leaves — the
    * evidence source for a discovered "number" key's `capacityMax`. */
-  responseBodiesForCapacitySignal: readonly unknown[] = []
+  responseBodiesForCapacitySignal: readonly unknown[] = [],
+  outStructuredKeys: Map<string, string> = new Map()
 ): string {
   const merged: Array<[string, string | number | boolean]> = [];
   const seenPairs = new Set<string>();
   const seenValueByKey = new Map<string, string | number | boolean>();
   const distinctValuesByKey = new Map<string, Set<string | number>>();
   const allBodies = [inputBody, ...additionalBodies];
+  // Structure is registered from every body before any scalar is considered, so
+  // a name that is an array/object in one body and a primitive in another gets
+  // the structured schema regardless of which body is visited first.
+  for (const body of allBodies) {
+    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+      if (!isValidJsIdentifier(key)) continue;
+      if (value === null || typeof value !== "object") continue;
+      if (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0) continue;
+      registerStructuredPayloadField(outStructuredKeys, key, value);
+    }
+  }
   for (const body of allBodies) {
     if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
       continue;
@@ -6669,6 +6684,7 @@ function applyPayloadKeyValueSubstitutions(
       if (path.length !== 1) continue;
       const key = path[0]!;
       if (!isValidJsIdentifier(key)) continue;
+      if (outStructuredKeys.has(key)) continue;
       if (value === null) continue;
       // Dedupe identical (key, value) pairs only — a repeated occurrence of
       // the SAME literal value for a key across bodies needs no second
@@ -8069,7 +8085,8 @@ export function emitMultiStepExecuteHttp(
           inputBody,
           additionalBodies,
           outDiscoveredAdditionalBodyKeys,
-          allResponseBodies
+          allResponseBodies,
+          outStructuredKeys
         )
       : "";
     // Mechanism A — generic (plain-JSON, wire-key-anchored) dropdown label→code
@@ -12974,6 +12991,60 @@ export function buildContractChecklist(opts: {
   ].filter((line) => line !== "");
 }
 
+interface AccessorShape {
+  isArray: boolean;
+  element: AccessorShape | null;
+  keys: Map<string, AccessorShape>;
+}
+
+const PAYLOAD_ACCESSOR_CHAIN =
+  /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)((?:!|\??\.[A-Za-z_$][A-Za-z0-9_$]*(?![A-Za-z0-9_$(])|\[(?:"[^"\]]*"|\d+)\])*)/g;
+const PAYLOAD_CHAIN_SEGMENT = /\??\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"[^"\]]*"|\d+)\]/g;
+
+function newAccessorShape(): AccessorShape {
+  return { isArray: false, element: null, keys: new Map() };
+}
+
+function renderAccessorShape(shape: AccessorShape): string {
+  if (shape.isArray) {
+    return `z.array(${shape.element ? renderAccessorShape(shape.element) : "z.string()"})`;
+  }
+  if (shape.keys.size === 0) return "z.string()";
+  const entries = [...shape.keys.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([key, child]) =>
+        `${isValidJsIdentifier(key) ? key : JSON.stringify(key)}: ${renderAccessorShape(child)}`
+    );
+  return `z.object({ ${entries.join(", ")} })`;
+}
+
+/**
+ * Derives each `payload.<field>` Zod type from the full accessor chain the
+ * emitted body text uses (`payload.f["0"]!.x` => array of objects with key
+ * `x`), so the schema can never reject a property access the body performs.
+ */
+function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
+  const roots = new Map<string, AccessorShape>();
+  for (const m of body.matchAll(PAYLOAD_ACCESSOR_CHAIN)) {
+    const root = roots.get(m[1]!) ?? newAccessorShape();
+    roots.set(m[1]!, root);
+    let node = root;
+    for (const seg of m[2]!.matchAll(PAYLOAD_CHAIN_SEGMENT)) {
+      if (seg[1] === undefined) {
+        node.isArray = true;
+        node.element ??= newAccessorShape();
+        node = node.element;
+        continue;
+      }
+      const child = node.keys.get(seg[1]) ?? newAccessorShape();
+      node.keys.set(seg[1], child);
+      node = child;
+    }
+  }
+  return new Map([...roots].map(([name, shape]) => [name, renderAccessorShape(shape)]));
+}
+
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
@@ -13540,22 +13611,7 @@ export function emitContractTs(opts: {
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
   if (multiStepBody) {
-    // The accessor suffix decides the type: `payload.f[` implies an array and
-    // `payload.f.` an object, so only a bare accessor may default to a string.
-    const bodyReferencedFields = new Map<string, string>();
-    for (const m of multiStepBody.matchAll(
-      /\bpayload\.([A-Za-z_$][A-Za-z0-9_$]*)(\[|\.(?!\.))?/g
-    )) {
-      const name = m[1]!;
-      const zod =
-        m[2] === "["
-          ? "z.array(z.unknown())"
-          : m[2]
-            ? "z.record(z.string(), z.unknown())"
-            : "z.string()";
-      const prior = bodyReferencedFields.get(name);
-      if (prior === undefined || prior === "z.string()") bodyReferencedFields.set(name, zod);
-    }
+    const bodyReferencedFields = deriveBodyAccessorZodTypes(multiStepBody);
     for (const name of [...bodyReferencedFields.keys()].sort()) {
       if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
