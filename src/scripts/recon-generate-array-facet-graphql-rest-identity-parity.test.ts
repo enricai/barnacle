@@ -16,6 +16,7 @@ const ARRAY = [ELEMENT, "widget-static"];
 const FLOW_STEPS = [
   { step: "navigate to widget", navigateTo: `/catalog#${FACET_LITERAL}`, payloadField: "slug" },
 ];
+// biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
 const SPLICE = "`${payload.slug};filterId=urlFriendlyId`";
 
 function restCapture(): Capture {
