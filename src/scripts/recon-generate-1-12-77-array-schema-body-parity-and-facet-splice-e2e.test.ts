@@ -25,6 +25,7 @@ const OWN_BACKEND_HOST = "www.array-schema-body-parity-facet-splice-fixture.exam
 const DELIMITER = ";kind=slug";
 const CATEGORY_TOKEN = "categoryx-retail-7001";
 const BRAND_TOKEN = "brandx-retail-7002";
+const REGION_TOKEN = "regionx-retail-7003";
 const SITE_PATHS = ["/shop/query-a/", "/shop/query-b/", "/shop/query-c/", "/shop/query-d/"];
 
 function tagged(token: string): string {
@@ -48,7 +49,7 @@ function fixtureCaptures(): Capture[] {
       tags: [`a${DELIMITER}`, category, brand, `b${DELIMITER}`],
     },
     { tags: [brand, `winter-2026${DELIMITER}`, category] },
-    { tags: [category, brand], page: 1 },
+    { tags: [category, brand], page: 1, storeRegion: REGION_TOKEN },
   ];
   return bodies.map((body, index) =>
     buildCapture({
@@ -131,6 +132,12 @@ describe("recon-generate CLI — array schema/body parity and facet splice at ev
             payloadField: "BrandFacet",
             optional: true,
           },
+          {
+            step: "navigate to the shop with the region facet applied",
+            navigateTo: `${base}/region/${REGION_TOKEN}`,
+            payloadField: "RegionFacet",
+            optional: true,
+          },
           { step: "browse shop" },
           { step: "query shop", submitStep: true },
         ],
@@ -169,6 +176,10 @@ describe("recon-generate CLI — array schema/body parity and facet splice at ev
       expect(body, `${path}: ${contract}`).toContain("payload.CategoryFacet");
       if (path !== SITE_PATHS[0]) expect(body, path).toContain("payload.BrandFacet");
     }
+    // (c) scalar facet appearing at a single call site must still be spliced.
+    expect(bodies.get(SITE_PATHS[3] ?? "") ?? "").toContain("storeRegion");
+    expect(bodies.get(SITE_PATHS[3] ?? "") ?? "", contract).toContain("payload.RegionFacet");
+    expect(schemaFieldText(contract, "RegionFacet"), contract).not.toBe("");
     // The facet token inside the ordering array must be the facet accessor,
     // not a frozen by-index accessor on the array.
     for (const path of SITE_PATHS.slice(0, 2)) {

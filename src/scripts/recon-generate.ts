@@ -6941,14 +6941,23 @@ function renderFacetValueExpression(
   return `{ ${entries.join(", ")} }`;
 }
 
-/** Nearest non-index key of an array's path: the payload field it maps to,
- * independent of nesting depth or index position. */
-function arrayFieldKey(path: readonly string[]): string {
-  return [...path].reverse().find((segment) => !/^\d+$/.test(segment)) ?? "";
+/** Full index-free path of an array: identifies the array across call sites
+ * whatever index it was captured at, without conflating same-named fields
+ * that live at different paths. */
+function arrayPathKey(path: readonly string[]): string {
+  return JSON.stringify(path.filter((segment) => !/^\d+$/.test(segment)));
+}
+
+/** True when `path` addresses anything inside an array in `ownedKeys`, at any
+ * depth (string or object element alike). */
+function isInsideOwnedArray(path: readonly string[], ownedKeys: ReadonlySet<string>): boolean {
+  return path.some(
+    (segment, index) => /^\d+$/.test(segment) && ownedKeys.has(arrayPathKey(path.slice(0, index)))
+  );
 }
 
 /**
- * Field keys ({@link arrayFieldKey}) of every array, in ANY captured body,
+ * Path keys ({@link arrayPathKey}) of every array, in ANY captured body,
  * that carries at least one facet-bearing element. The facet pass owns those
  * arrays wholesale, so none of their elements may also be frozen as a
  * by-index `payload.<field>["N"]` accessor, whichever body was parsed first
@@ -6967,7 +6976,7 @@ function collectFacetArrayPathKeys(
         (element) =>
           typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
       );
-      if (hasFacet) keys.add(arrayFieldKey(path));
+      if (hasFacet) keys.add(arrayPathKey(path));
     }
   }
   return keys;
@@ -7432,6 +7441,23 @@ function bindsWithoutCollisionIn(bodies: readonly string[], value: string): bool
 }
 
 /**
+ * Whether `value` occurs in `text` at least once flanked by non-alphanumerics,
+ * so facet reachability agrees with the token-boundary {@link matchFacetRecurrence}
+ * the splice passes use instead of counting a mere substring of a longer token.
+ */
+function occursAtTokenBoundary(text: string, value: string): boolean {
+  if (value.length === 0) return false;
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  let from = 0;
+  while (true) {
+    const at = text.indexOf(value, from);
+    if (at === -1) return false;
+    if (!isAlnum(text[at - 1]) && !isAlnum(text[at + value.length])) return true;
+    from = at + 1;
+  }
+}
+
+/**
  * Every literal the flow's declared navigateTo facets take in the captured
  * traffic: the hash-derived literal plus, for a facet whose hash literal never
  * recurs, the body/query value {@link correlateUnreachableNavigateToFacets}
@@ -7446,9 +7472,10 @@ function resolveRecurringNavigateToFacets(
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
       ({ capture }) =>
-        capture.url.includes(value) ||
-        (capture.requestPostData?.includes(value) ?? false) ||
-        Object.values(capture.requestHeaders).some((h) => h.includes(value))
+        occursAtTokenBoundary(capture.url, value) ||
+        (capture.requestPostData != null &&
+          occursAtTokenBoundary(capture.requestPostData, value)) ||
+        Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
   const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
   if (unreachable.length === 0) return [...declared];
@@ -7482,16 +7509,28 @@ function resolveRecurringNavigateToFacets(
  * no longer guaranteed to line facets up with the RIGHT transition, so
  * nothing is bound — leaving a facet declared-but-unbound is preferable to
  * silently wiring it to another facet's (or an unrelated transition's) value.
+ *
+ * When the TOTAL transition count (ambiguous ones included) equals the facet
+ * count, each ambiguous transition still holds its facet's slot, so only that
+ * facet stays unbound while the others bind by position.
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
   actions: readonly ActionStep[]
 ): ReadonlyMap<string, string> | null {
-  const unambiguousValues = collectNewlyAppearingRequestValueTransitions(actions)
+  const transitions = collectNewlyAppearingRequestValueTransitions(actions);
+  const byField = new Map<string, string>();
+  if (transitions.length === facets.length) {
+    facets.forEach(({ field }, index) => {
+      const transition = transitions[index]!;
+      if (transition.length === 1) byField.set(field, transition[0]!);
+    });
+    return byField.size > 0 ? byField : null;
+  }
+  const unambiguousValues = transitions
     .filter((transition) => transition.length === 1)
     .map((transition) => transition[0]!);
   if (unambiguousValues.length !== facets.length) return null;
-  const byField = new Map<string, string>();
   facets.forEach(({ field }, index) => {
     byField.set(field, unambiguousValues[index]!);
   });
@@ -7584,12 +7623,7 @@ export function emitMultiStepExecuteHttp(
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
-      if (
-        /^\d+$/.test(path[path.length - 1] ?? "") &&
-        facetArrayPathKeys.has(arrayFieldKey(path.slice(0, -1)))
-      ) {
-        continue;
-      }
+      if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
       if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
@@ -7688,36 +7722,19 @@ export function emitMultiStepExecuteHttp(
   // or when the correlation is ambiguous (see
   // `correlateUnreachableNavigateToFacets`), there is nothing safe to splice
   // and the field(s) stay unbound rather than risk a wrong binding.
-  const appearsAnywhereInCapture = (value: string): boolean =>
-    actions.some(
-      (action) =>
-        action.capture.url.includes(value) ||
-        (action.capture.requestPostData?.includes(value) ?? false) ||
-        Object.values(action.capture.requestHeaders).some((h) => h.includes(value))
-    );
-  // Hoisted once so both the unreachable-facet fallback above and the
-  // REST array-element optional splice below (applyOptionalArrayFacetSplice
-  // PayloadSubstitutions) share the exact same (value, field, optional)
-  // triples — the array splice must see each binding's `optional` flag
-  // precisely as the flow declared it, same as the already-fixed GraphQL
-  // array-variable path ({@link spliceFacetsIntoArrayVariable}).
-  for (const { value, field } of declaredNavigateToFacets) {
-    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value))
+  // Every facet any splice pass binds comes from the one resolved list, so the
+  // schema declaration and accessor table cannot disagree with the splices.
+  const declaredFacetValues = new Set(declaredNavigateToFacets.map(({ value }) => value));
+  for (const { value, field } of navigateToFacetOrder) {
+    if (!isValidJsIdentifier(field)) continue;
+    if (declaredFacetValues.has(value)) {
       outDiscoveredFields.add(field);
-  }
-  const unreachableNavigateToFacets = declaredNavigateToFacets.filter(
-    ({ value }) => !appearsAnywhereInCapture(value)
-  );
-  if (unreachableNavigateToFacets.length > 0) {
-    const correlated = correlateUnreachableNavigateToFacets(unreachableNavigateToFacets, actions);
-    for (const { field } of correlated === null ? [] : unreachableNavigateToFacets) {
-      const diffed = correlated?.get(field);
-      if (diffed === undefined) continue;
-      if (!bindsWithoutCollision(diffed)) continue;
-      if (payloadAccessorByValue.has(diffed)) continue;
-      payloadAccessorByValue.set(diffed, `payload.${field}`);
-      if (isValidJsIdentifier(field)) outDiscoveredFields.add(field);
+      continue;
     }
+    if (!bindsWithoutCollision(value)) continue;
+    if (payloadAccessorByValue.has(value)) continue;
+    payloadAccessorByValue.set(value, `payload.${field}`);
+    outDiscoveredFields.add(field);
   }
   // Job coordinates from the recon entry URL's query string (e.g.
   // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
