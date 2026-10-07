@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,7 @@ import type { Capture } from "@/scripts/recon-shared";
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.all-facets-all-sites-fixture.example.com";
@@ -89,10 +90,49 @@ function writeRunDir(root: string, captures: Capture[]): void {
   });
 }
 
+const MIX_HOST = "www.structured-array-all-facets-fixture.example.com";
+const MIX_TOKEN_A = "tokena-depot-8001";
+const MIX_TOKEN_B = "tokenb-depot-8002";
+const MIX_PATHS = ["/depot/query-a/", "/depot/query-b/", "/depot/query-c/"];
+
+function mixCaptures(): Capture[] {
+  const a = tagged(MIX_TOKEN_A);
+  const b = tagged(MIX_TOKEN_B);
+  const ordering = [
+    { criteria: "price", order: "ASC" },
+    { criteria: a, order: "ASC" },
+  ];
+  const bodies: unknown[] = [
+    { ordering, tags: [a, "keep-x", b], noise: "ordering" },
+    { ordering, tags: ["keep-y", b, a], page: 1 },
+    { tags: [a, b], page: 2 },
+  ];
+  return bodies.map((body, index) =>
+    buildCapture({
+      url: `https://${MIX_HOST}${MIX_PATHS[index]}`,
+      requestPostData: JSON.stringify(body),
+      responseBody: { ok: true },
+      timestamp: `2026-06-01T00:00:0${index}.000Z`,
+    })
+  );
+}
+
+/** Returns the PayloadSchema text declaring `field`, up to the next top-level key. */
+function schemaFieldText(contract: string, field: string): string {
+  const schema = contract.match(
+    /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
+  );
+  const text = schema?.[0] ?? "";
+  return text.match(new RegExp(` {2}${field}:[\\s\\S]*?(?=\\n {2}\\S|\\n\\}\\))`))?.[0] ?? "";
+}
+
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
+let tsconfigPath: string | null = null;
 
 afterEach(() => {
+  if (tsconfigPath) rmSync(tsconfigPath, { force: true });
+  tsconfigPath = null;
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
   workDir = null;
@@ -162,13 +202,95 @@ describe("recon-generate CLI — every facet at every call site", () => {
     };
     for (const [path, facets] of Object.entries(expectedFacets)) {
       const chunk = siteChunk(path);
-      // A site whose arrays carry a facet never passes them through wholesale;
-      // the one carrying none passes `filters` through as the declared field.
-      expect(chunk.includes("JSON.stringify(payload.filters)")).toBe(facets.length === 0);
+      // No site passes a facet-owned array through wholesale, whether or not
+      // its own array carries a facet.
+      expect(chunk).not.toContain("JSON.stringify(payload.filters)");
       for (const facet of facets) expect(chunk).toContain(`payload.${facet}`);
       for (const facet of [...ARRAY_FACETS, "BranchFacet"].filter((f) => !facets.includes(f))) {
         expect(chunk).not.toContain(`payload.${facet}`);
       }
     }
   }, 60_000);
+
+  it("gives a structured array field one shape, threads every facet at every site, and typechecks", () => {
+    if (!existsSync(TSC_BIN))
+      throw new Error("tsc not installed — cannot verify the emitted plugin compiles");
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-structured-all-facets-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(runRoot, mixCaptures());
+    const siteId = `structured-all-facets-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const base = `https://${MIX_HOST}/#/depot`;
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          {
+            step: "navigate with the first facet applied",
+            navigateTo: `${base}/${MIX_TOKEN_A}`,
+            payloadField: "FirstFacet",
+          },
+          {
+            step: "navigate with the second facet applied",
+            navigateTo: `${base}/${MIX_TOKEN_A}/${MIX_TOKEN_B}`,
+            payloadField: "SecondFacet",
+            optional: true,
+          },
+          { step: "query depot", submitStep: true },
+        ],
+        submitEndpointPattern: "depot/query-c",
+        requireSubmitEndpointMatch: true,
+        ownBackendHostnames: [MIX_HOST],
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+
+    const ordering = schemaFieldText(contract, "ordering");
+    expect(ordering, contract).toMatch(/z\.array\(\s*z\.object/);
+    expect(ordering).not.toMatch(/z\.string\(\)/);
+    expect(contract).not.toMatch(/payload\.ordering(?!\[)/);
+    for (const token of [MIX_TOKEN_A, MIX_TOKEN_B]) expect(contract).not.toContain(token);
+    expect(contract).not.toMatch(/JSON\.stringify\(payload\.tags\)/);
+    expect(contract).not.toMatch(/payload\.tags\[/);
+    for (const keep of ["keep-x", "keep-y"]) expect(contract).toContain(keep);
+
+    const chunks = contract.split("httpClient(`").slice(1);
+    for (const path of MIX_PATHS) {
+      const chunk = chunks.find((c) => c.startsWith(`\${payload.BaseUrl}${path}`)) ?? "";
+      expect(chunk, `${path}: ${contract}`).toContain("payload.FirstFacet");
+      expect(chunk, path).toContain("payload.SecondFacet");
+    }
+
+    tsconfigPath = join(REPO_ROOT, `tsconfig.structured-all-facets.${process.pid}.json`);
+    writeFileSync(
+      tsconfigPath,
+      JSON.stringify({
+        extends: "./tsconfig.json",
+        compilerOptions: {
+          noEmit: true,
+          incremental: false,
+          tsBuildInfoFile: null,
+          paths: {
+            "@/*": ["./src/*"],
+            "@test/*": ["./test/*"],
+            "@enricai/barnacle/*": ["./src/*"],
+          },
+        },
+        include: [`src/sites/${siteId}/**/*.ts`],
+      })
+    );
+    const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    expect(check.status, `${check.stdout}\n${check.stderr}\n${contract}`).toBe(0);
+  }, 120_000);
 });

@@ -511,6 +511,11 @@ export interface NavigateToFacetBinding {
  * which DOES see the captures, re-derive the same (value, field) pairs and
  * try the causally-adjacent-action fallback (see `emitMultiStepExecuteHttp`)
  * for whichever ones the recurrence-anchored path left unbound.
+ *
+ * A step whose URL carries no hash literal still holds its slot (empty
+ * `value`) so positional correlation against captured transitions stays
+ * aligned with the declared facets; {@link resolveRecurringNavigateToFacets}
+ * drops the empty literal itself and keeps only a correlated value.
  */
 export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
   const order: NavigateToFacetBinding[] = [];
@@ -525,8 +530,7 @@ export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): Navigat
     }
     const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
     previousNavigateToHash = currentHash;
-    if (value === null || value.length === 0) continue;
-    order.push({ value, field: step.payloadField, optional: step.optional === true });
+    order.push({ value: value ?? "", field: step.payloadField, optional: step.optional === true });
   }
   return order;
 }
@@ -4674,7 +4678,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  ownedArrayPathKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4685,12 +4690,15 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   // pagination/sort block) outranks the root as the "form envelope". Root
   // keys already present on the envelope are skipped so nothing is visited
   // (or registered) twice.
-  const envelopeEntries = Object.entries(envelope);
-  const rootEntries =
+  const envelopeEntries = Object.entries(envelope).map(
+    ([key, value]) => [key, value, [...envelopePath, key]] as const
+  );
+  const rootEntries = (
     envelopePath.length === 0
       ? []
-      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope));
-  for (const [key, value] of [...envelopeEntries, ...rootEntries]) {
+      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope))
+  ).map(([key, value]) => [key, value, [key]] as const);
+  for (const [key, value, valuePath] of [...envelopeEntries, ...rootEntries]) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4698,6 +4706,9 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
+    // An array path the facet pass owns is rendered element by element at every
+    // call site, so it is neither a payload field of its own nor swallowable.
+    if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath))) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -4825,7 +4836,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  ownedArrayPathKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4846,7 +4858,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     searchFrom,
     envelopePath,
     objectBody,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    ownedArrayPathKeys
   );
 }
 
@@ -4879,7 +4892,8 @@ export function applyStructuredValuePayloadSubstitutions(
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
-  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
+  ownedArrayPathKeys: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4915,7 +4929,8 @@ export function applyStructuredValuePayloadSubstitutions(
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
           cursor,
-          payloadAccessorExcludePattern
+          payloadAccessorExcludePattern,
+          ownedArrayPathKeys
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4929,7 +4944,8 @@ export function applyStructuredValuePayloadSubstitutions(
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
     0,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    ownedArrayPathKeys
   );
   return result;
 }
@@ -6894,13 +6910,20 @@ function* walkArrayLeaves(
 function applyArrayFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
-  navigateToFacets: readonly NavigateToFacetBinding[]
+  navigateToFacets: readonly NavigateToFacetBinding[],
+  ownedArrayPathKeys: ReadonlySet<string>
 ): string {
   if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
-  for (const { value } of walkArrayLeaves(inputBody)) {
-    if (!containsFacetArray(value, navigateToFacets)) continue;
+  for (const { value, path } of walkArrayLeaves(inputBody)) {
+    if (value.length === 0) continue;
+    if (
+      !ownedArrayPathKeys.has(arrayPathKey(path)) &&
+      !containsFacetArray(value, navigateToFacets)
+    ) {
+      continue;
+    }
     const expression = renderFacetValueExpression(value, navigateToFacets);
     result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
   }
@@ -7393,8 +7416,15 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  * affect (the already-working recurrence-anchored path exists precisely
  * because a real facet DOES recur in a later request; nothing here changes
  * that — this only supplies values for facets that are not found at all).
+ *
+ * Values that carry a literal of an already-reachable facet are explained by
+ * that facet and never enter the pool, so reachable facets' own transitions
+ * cannot skew the pool size away from the count of facets awaiting a value.
  */
-function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionStep[]): string[][] {
+function collectNewlyAppearingRequestValueTransitions(
+  actions: readonly ActionStep[],
+  explainedLiterals: readonly string[] = []
+): string[][] {
   const seenGlobally = new Set<string>();
   const transitions: string[][] = [];
   for (let i = 1; i < actions.length; i++) {
@@ -7404,6 +7434,7 @@ function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionSt
     const values: string[] = [];
     const record = (value: string): void => {
       if (value.length === 0 || seenGlobally.has(value) || seenThisTransition.has(value)) return;
+      if (explainedLiterals.some((literal) => occursAtTokenBoundary(value, literal))) return;
       seenThisTransition.add(value);
       values.push(value);
     };
@@ -7477,10 +7508,16 @@ function resolveRecurringNavigateToFacets(
           occursAtTokenBoundary(capture.requestPostData, value)) ||
         Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
-  const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
-  if (unreachable.length === 0) return [...declared];
-  const correlated = correlateUnreachableNavigateToFacets(unreachable, actions);
-  if (correlated === null) return [...declared];
+  const reachable = declared.filter(({ value }) => value.length > 0 && appearsAnywhere(value));
+  const resolvedDeclared = declared.filter(({ value }) => value.length > 0);
+  const unreachable = declared.filter((facet) => !reachable.includes(facet));
+  if (unreachable.length === 0) return resolvedDeclared;
+  const correlated = correlateUnreachableNavigateToFacets(
+    unreachable,
+    actions,
+    reachable.map(({ value }) => value)
+  );
+  if (correlated === null) return resolvedDeclared;
   const bodies = actions
     .map(({ capture }) => capture.requestPostData)
     .filter((body): body is string => typeof body === "string" && body.length > 0);
@@ -7490,7 +7527,7 @@ function resolveRecurringNavigateToFacets(
     if (declared.some(({ value }) => value === diffed)) return [];
     return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
   });
-  return [...declared, ...extras];
+  return [...resolvedDeclared, ...extras];
 }
 
 /**
@@ -7516,9 +7553,10 @@ function resolveRecurringNavigateToFacets(
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[]
+  actions: readonly ActionStep[],
+  explainedLiterals: readonly string[]
 ): ReadonlyMap<string, string> | null {
-  const transitions = collectNewlyAppearingRequestValueTransitions(actions);
+  const transitions = collectNewlyAppearingRequestValueTransitions(actions, explainedLiterals);
   const byField = new Map<string, string>();
   if (transitions.length === facets.length) {
     facets.forEach(({ field }, index) => {
@@ -8036,7 +8074,8 @@ export function emitMultiStepExecuteHttp(
         ? applyArrayFacetSplicePayloadSubstitutions(
             rawBodyWithFacetSplices,
             parsedBody,
-            navigateToFacetOrder
+            navigateToFacetOrder,
+            facetArrayPathKeys
           )
         : rawBodyWithFacetSplices;
     const rawBodyWithScalarFacetSplices =
@@ -8064,7 +8103,8 @@ export function emitMultiStepExecuteHttp(
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
-            payloadAccessorByValue
+            payloadAccessorByValue,
+            facetArrayPathKeys
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
@@ -13080,7 +13120,7 @@ function renderAccessorShape(shape: AccessorShape): string {
  * emitted body text uses (`payload.f["0"]!.x` => array of objects with key
  * `x`), so the schema can never reject a property access the body performs.
  */
-function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
+function deriveBodyAccessorShapes(body: string): Map<string, AccessorShape> {
   const roots = new Map<string, AccessorShape>();
   for (const m of body.matchAll(PAYLOAD_ACCESSOR_CHAIN)) {
     const root = roots.get(m[1]!) ?? newAccessorShape();
@@ -13098,7 +13138,29 @@ function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
       node = child;
     }
   }
-  return new Map([...roots].map(([name, shape]) => [name, renderAccessorShape(shape)]));
+  return roots;
+}
+
+function isStructuredAccessorShape(shape: AccessorShape): boolean {
+  return shape.isArray || shape.keys.size > 0;
+}
+
+/**
+ * Whether a declared Zod expression already admits every access the shape
+ * demands (array-ness and each dereferenced key), so a richer structured
+ * declaration is kept instead of being narrowed to the accessor-derived one.
+ */
+function declaredSchemaCoversAccessorShape(declared: string, shape: AccessorShape): boolean {
+  if (shape.isArray && !/\bz\.array\(/.test(declared)) return false;
+  if (!shape.isArray && shape.keys.size > 0 && !/\bz\.(object|record)\(/.test(declared)) {
+    return false;
+  }
+  const childShapes = [...(shape.element ? [shape.element] : []), ...shape.keys.values()];
+  return (
+    [...shape.keys.keys()].every((key) =>
+      new RegExp(`(?:^|[\\s{,])"?${key.replace(/[$]/g, "\\$&")}"?\\s*:`).test(declared)
+    ) && childShapes.every((child) => declaredSchemaCoversAccessorShape(declared, child))
+  );
 }
 
 /** Generates a complete contract.ts source string for a plugin — exported so
@@ -13666,15 +13728,33 @@ export function emitContractTs(opts: {
   // its structural root regardless of which upstream pass forgot to record a
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
+  const accessorStructuredFields = new Set<string>();
   if (multiStepBody) {
-    const bodyReferencedFields = deriveBodyAccessorZodTypes(multiStepBody);
+    const bodyReferencedFields = deriveBodyAccessorShapes(multiStepBody);
     for (const name of [...bodyReferencedFields.keys()].sort()) {
-      if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
-      const zod = bodyReferencedFields.get(name)!;
-      // A scalar registration from another source must not outlive an accessor
-      // that indexes or dereferences the field: the body text is the ground truth.
-      if (extendFields.has(name) && zod === "z.string()") continue;
+      const shape = bodyReferencedFields.get(name)!;
+      const structured = isStructuredAccessorShape(shape);
+      // The body text is the ground truth for a field's shape: a scalar
+      // registration from any source must not outlive an accessor that indexes
+      // or dereferences the field, and a structured declaration is kept only
+      // when it already admits every access the body performs.
+      if (structured) {
+        const declared = extendFields.get(name);
+        if (
+          structuredFieldNames.has(name) &&
+          declared !== undefined &&
+          declaredSchemaCoversAccessorShape(declared, shape)
+        ) {
+          accessorStructuredFields.add(name);
+          continue;
+        }
+        accessorStructuredFields.add(name);
+        structuredFieldNames.delete(name);
+      } else if (extendFields.has(name)) {
+        continue;
+      }
+      const zod = renderAccessorShape(shape);
       addExtendField(
         name,
         `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
@@ -13729,6 +13809,7 @@ export function emitContractTs(opts: {
   // capture this run and is a no-op, not an error: there is no schema line
   // for it to attach to.
   for (const [fieldName, constraint] of Object.entries(valueConstraints)) {
+    if (accessorStructuredFields.has(fieldName)) continue;
     const line = extendFields.get(fieldName);
     if (line === null || line === undefined) continue;
     if (
@@ -13867,7 +13948,9 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
-  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps);
+  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps).filter(
+    ({ value }) => value.length > 0
+  );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
         gqlVariables,
