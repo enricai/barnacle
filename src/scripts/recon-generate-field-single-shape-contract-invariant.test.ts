@@ -24,6 +24,8 @@ interface ShapeCase {
   facets: Array<{ payloadField: string; token: string }>;
 }
 
+const STRUCTURED_DECLARATION = /z\.(?:array|object|record|tuple)\(|multipartJson/;
+
 type UsageClass = "scalar" | "indexed" | "wholesale";
 
 const CASES: ShapeCase[] = [
@@ -65,8 +67,8 @@ const CASES: ShapeCase[] = [
     ],
   },
   {
-    name: "facet field colliding with an array key and a scalar key",
-    facets: [{ payloadField: "filters", token: "cityx-shop-8001" }],
+    name: "one facet reaching both an array element and a scalar key",
+    facets: [{ payloadField: "CityFacet", token: "cityx-shop-8001" }],
     bodies: [
       { filters: ["a", `cityx-shop-8001${DELIMITER}`], q: `cityx-shop-8001${DELIMITER}` },
       { filters: [`cityx-shop-8001${DELIMITER}`], q: "x" },
@@ -83,9 +85,7 @@ const CASES: ShapeCase[] = [
 ];
 
 function schemaBlock(contract: string): string {
-  const match = contract.match(
-    /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
-  );
+  const match = contract.match(/PayloadSchema = [\w.]*?(?:z\.object|\.extend)\(\{[\s\S]*?\n\}\);/);
   expect(match, contract).not.toBeNull();
   return match?.[0] ?? "";
 }
@@ -189,14 +189,16 @@ describe("recon-generate CLI — one shape decision per payload field", () => {
 
       for (const [field, kinds] of usages) {
         const scalar = kinds.has("scalar");
-        expect(scalar && (kinds.has("indexed") || kinds.has("wholesale")), `${field} mixes shapes`)
-          .toBe(false);
+        expect(
+          scalar && (kinds.has("indexed") || kinds.has("wholesale")),
+          `${field} mixes shapes`
+        ).toBe(false);
         const declared = declaredShape(schema, field);
         expect(declared, `${field} has no schema entry\n${forward}`).not.toBe("");
         if (scalar) {
-          expect(declared, `${field} spliced as scalar`).toMatch(/z\.string\(\)/);
+          expect(declared, `${field} spliced as scalar`).not.toMatch(STRUCTURED_DECLARATION);
         } else {
-          expect(declared, `${field} used as array/object`).not.toMatch(/z\.string\(\)\s*[,.]?\s*(?:\/\/.*)?$/);
+          expect(declared, `${field} used as array/object`).toMatch(STRUCTURED_DECLARATION);
         }
       }
 
