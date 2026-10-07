@@ -174,13 +174,12 @@ describe("recon-generate CLI — filters arrays that differ per call site", () =
     for (const field of ["BrandFacet", "SizeFacet", "ColorFacet"]) {
       expect(facetBody).toContain(`payload.${field}`);
     }
-    // Arrays carrying no declared facet pass through as the declared field.
+    // A path the facet pass owns renders every site's array literally, never as a wholesale field.
     for (const path of ["/shop/search-summary/", "/shop/search-refine/"]) {
       const body = bodies.get(path);
       expect(body, contract).toBeDefined();
-      expect(body).toContain("JSON.stringify(payload.filters)");
+      expect(body).not.toContain("JSON.stringify(payload.filters)");
     }
-    expect(contract).toContain("filters: multipartJsonObject(z.array(z.string()))");
-    expect(contract).not.toContain("other-literal");
+    expect(contract).not.toContain("JSON.stringify(payload.filters)");
   }, 30_000);
 });

@@ -1,0 +1,1 @@
+{"steps":[{"step":"select 'widgets' from the Category filter","payloadField":"category"},{"step":"verify the filtered results are visible","submitStep":true}]}

@@ -4678,7 +4678,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  ownedArrayPathKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4689,12 +4690,15 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   // pagination/sort block) outranks the root as the "form envelope". Root
   // keys already present on the envelope are skipped so nothing is visited
   // (or registered) twice.
-  const envelopeEntries = Object.entries(envelope);
-  const rootEntries =
+  const envelopeEntries = Object.entries(envelope).map(
+    ([key, value]) => [key, value, [...envelopePath, key]] as const
+  );
+  const rootEntries = (
     envelopePath.length === 0
       ? []
-      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope));
-  for (const [key, value] of [...envelopeEntries, ...rootEntries]) {
+      : Object.entries(rootBody).filter(([key]) => key !== envelopePath[0] && !(key in envelope))
+  ).map(([key, value]) => [key, value, [key]] as const);
+  for (const [key, value, valuePath] of [...envelopeEntries, ...rootEntries]) {
     const isNonEmptyArray = Array.isArray(value) && value.length > 0;
     const isNestedObject =
       value !== null &&
@@ -4702,6 +4706,9 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
       !Array.isArray(value) &&
       Object.keys(value as Record<string, unknown>).length > 0;
     if (!isNonEmptyArray && !isNestedObject) continue;
+    // An array path the facet pass owns is rendered element by element at every
+    // call site, so it is neither a payload field of its own nor swallowable.
+    if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath))) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -4829,7 +4836,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
-  payloadAccessorExcludePattern: RegExp | null
+  payloadAccessorExcludePattern: RegExp | null,
+  ownedArrayPathKeys: ReadonlySet<string>
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4850,7 +4858,8 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     searchFrom,
     envelopePath,
     objectBody,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    ownedArrayPathKeys
   );
 }
 
@@ -4883,7 +4892,8 @@ export function applyStructuredValuePayloadSubstitutions(
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
-  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
+  ownedArrayPathKeys: ReadonlySet<string> = new Set()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4919,7 +4929,8 @@ export function applyStructuredValuePayloadSubstitutions(
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
           cursor,
-          payloadAccessorExcludePattern
+          payloadAccessorExcludePattern,
+          ownedArrayPathKeys
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4933,7 +4944,8 @@ export function applyStructuredValuePayloadSubstitutions(
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
     0,
-    payloadAccessorExcludePattern
+    payloadAccessorExcludePattern,
+    ownedArrayPathKeys
   );
   return result;
 }
@@ -6898,13 +6910,20 @@ function* walkArrayLeaves(
 function applyArrayFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
-  navigateToFacets: readonly NavigateToFacetBinding[]
+  navigateToFacets: readonly NavigateToFacetBinding[],
+  ownedArrayPathKeys: ReadonlySet<string>
 ): string {
   if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
   let result = template;
-  for (const { value } of walkArrayLeaves(inputBody)) {
-    if (!containsFacetArray(value, navigateToFacets)) continue;
+  for (const { value, path } of walkArrayLeaves(inputBody)) {
+    if (value.length === 0) continue;
+    if (
+      !ownedArrayPathKeys.has(arrayPathKey(path)) &&
+      !containsFacetArray(value, navigateToFacets)
+    ) {
+      continue;
+    }
     const expression = renderFacetValueExpression(value, navigateToFacets);
     result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
   }
@@ -8055,7 +8074,8 @@ export function emitMultiStepExecuteHttp(
         ? applyArrayFacetSplicePayloadSubstitutions(
             rawBodyWithFacetSplices,
             parsedBody,
-            navigateToFacetOrder
+            navigateToFacetOrder,
+            facetArrayPathKeys
           )
         : rawBodyWithFacetSplices;
     const rawBodyWithScalarFacetSplices =
@@ -8083,7 +8103,8 @@ export function emitMultiStepExecuteHttp(
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
-            payloadAccessorByValue
+            payloadAccessorByValue,
+            facetArrayPathKeys
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
