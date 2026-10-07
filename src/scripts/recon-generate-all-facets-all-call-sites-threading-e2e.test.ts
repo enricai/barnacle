@@ -162,9 +162,9 @@ describe("recon-generate CLI — every facet at every call site", () => {
     };
     for (const [path, facets] of Object.entries(expectedFacets)) {
       const chunk = siteChunk(path);
-      // A site whose arrays carry a facet never passes them through wholesale;
-      // the one carrying none passes `filters` through as the declared field.
-      expect(chunk.includes("JSON.stringify(payload.filters)")).toBe(facets.length === 0);
+      // No site passes a facet-owned array through wholesale, whether or not
+      // its own array carries a facet.
+      expect(chunk).not.toContain("JSON.stringify(payload.filters)");
       for (const facet of facets) expect(chunk).toContain(`payload.${facet}`);
       for (const facet of [...ARRAY_FACETS, "BranchFacet"].filter((f) => !facets.includes(f))) {
         expect(chunk).not.toContain(`payload.${facet}`);

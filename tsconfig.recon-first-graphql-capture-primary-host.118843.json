@@ -1,1 +1,0 @@
-{"extends":"./tsconfig.json","compilerOptions":{"noEmit":true,"incremental":false,"tsBuildInfoFile":null,"paths":{"@/*":["./src/*"],"@test/*":["./test/*"],"@enricai/barnacle/*":["./src/*"]}},"include":["src/sites/first-graphql-capture-primary-host-narrowing-e2e-test-118843/**/*.ts"]}

@@ -141,7 +141,7 @@ describe("recon-generate CLI — one construction for every facet-carrying array
     expect(body(1)).toContain("...(payload.GammaFacet ? [");
     expect(body(0)).not.toContain("payload.GammaFacet");
 
-    expect(body(2)).toContain('"categories":${JSON.stringify(["only-plain-one", "only-plain-two"]');
+    expect(body(2)).toContain('"categories":${JSON.stringify(["only-plain-one","only-plain-two"]');
     expect(body(2)).not.toContain("JSON.stringify(payload.categories)");
     expect(contract).not.toContain("JSON.stringify(payload.categories)");
   }, 60_000);
