@@ -7506,7 +7506,7 @@ function occursAtTokenBoundary(text: string, value: string): boolean {
  * a facet is judged to recur identically by all of them instead of each pass
  * deciding from the hash-derived literal alone.
  */
-function resolveRecurringNavigateToFacets(
+export function resolveRecurringNavigateToFacets(
   declared: readonly NavigateToFacetBinding[],
   actions: readonly ActionStep[]
 ): NavigateToFacetBinding[] {
