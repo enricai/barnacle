@@ -13080,7 +13080,7 @@ function renderAccessorShape(shape: AccessorShape): string {
  * emitted body text uses (`payload.f["0"]!.x` => array of objects with key
  * `x`), so the schema can never reject a property access the body performs.
  */
-function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
+function deriveBodyAccessorShapes(body: string): Map<string, AccessorShape> {
   const roots = new Map<string, AccessorShape>();
   for (const m of body.matchAll(PAYLOAD_ACCESSOR_CHAIN)) {
     const root = roots.get(m[1]!) ?? newAccessorShape();
@@ -13098,7 +13098,29 @@ function deriveBodyAccessorZodTypes(body: string): Map<string, string> {
       node = child;
     }
   }
-  return new Map([...roots].map(([name, shape]) => [name, renderAccessorShape(shape)]));
+  return roots;
+}
+
+function isStructuredAccessorShape(shape: AccessorShape): boolean {
+  return shape.isArray || shape.keys.size > 0;
+}
+
+/**
+ * Whether a declared Zod expression already admits every access the shape
+ * demands (array-ness and each dereferenced key), so a richer structured
+ * declaration is kept instead of being narrowed to the accessor-derived one.
+ */
+function declaredSchemaCoversAccessorShape(declared: string, shape: AccessorShape): boolean {
+  if (shape.isArray && !/\bz\.array\(/.test(declared)) return false;
+  if (!shape.isArray && shape.keys.size > 0 && !/\bz\.(object|record)\(/.test(declared)) {
+    return false;
+  }
+  const childShapes = [...(shape.element ? [shape.element] : []), ...shape.keys.values()];
+  return (
+    [...shape.keys.keys()].every((key) =>
+      new RegExp(`(?:^|[\\s{,])"?${key.replace(/[$]/g, "\\$&")}"?\\s*:`).test(declared)
+    ) && childShapes.every((child) => declaredSchemaCoversAccessorShape(declared, child))
+  );
 }
 
 /** Generates a complete contract.ts source string for a plugin — exported so
@@ -13666,15 +13688,33 @@ export function emitContractTs(opts: {
   // its structural root regardless of which upstream pass forgot to record a
   // field, instead of adding a fifth registration site that could itself be
   // forgotten by a future pass.
+  const accessorStructuredFields = new Set<string>();
   if (multiStepBody) {
-    const bodyReferencedFields = deriveBodyAccessorZodTypes(multiStepBody);
+    const bodyReferencedFields = deriveBodyAccessorShapes(multiStepBody);
     for (const name of [...bodyReferencedFields.keys()].sort()) {
-      if (structuredFieldNames.has(name)) continue;
       if (isReservedByApplicantContactSchema(name)) continue;
-      const zod = bodyReferencedFields.get(name)!;
-      // A scalar registration from another source must not outlive an accessor
-      // that indexes or dereferences the field: the body text is the ground truth.
-      if (extendFields.has(name) && zod === "z.string()") continue;
+      const shape = bodyReferencedFields.get(name)!;
+      const structured = isStructuredAccessorShape(shape);
+      // The body text is the ground truth for a field's shape: a scalar
+      // registration from any source must not outlive an accessor that indexes
+      // or dereferences the field, and a structured declaration is kept only
+      // when it already admits every access the body performs.
+      if (structured) {
+        const declared = extendFields.get(name);
+        if (
+          structuredFieldNames.has(name) &&
+          declared !== undefined &&
+          declaredSchemaCoversAccessorShape(declared, shape)
+        ) {
+          accessorStructuredFields.add(name);
+          continue;
+        }
+        accessorStructuredFields.add(name);
+        structuredFieldNames.delete(name);
+      } else if (extendFields.has(name)) {
+        continue;
+      }
+      const zod = renderAccessorShape(shape);
       addExtendField(
         name,
         `  ${name}: ${zod === "z.string()" || !payloadNeedsMultipart ? zod : `multipartJsonObject(${zod})`},`
@@ -13729,6 +13769,7 @@ export function emitContractTs(opts: {
   // capture this run and is a no-op, not an error: there is no schema line
   // for it to attach to.
   for (const [fieldName, constraint] of Object.entries(valueConstraints)) {
+    if (accessorStructuredFields.has(fieldName)) continue;
     const line = extendFields.get(fieldName);
     if (line === null || line === undefined) continue;
     if (
