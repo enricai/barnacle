@@ -7432,6 +7432,23 @@ function bindsWithoutCollisionIn(bodies: readonly string[], value: string): bool
 }
 
 /**
+ * Whether `value` occurs in `text` at least once flanked by non-alphanumerics,
+ * so facet reachability agrees with the token-boundary {@link matchFacetRecurrence}
+ * the splice passes use instead of counting a mere substring of a longer token.
+ */
+function occursAtTokenBoundary(text: string, value: string): boolean {
+  if (value.length === 0) return false;
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  let from = 0;
+  while (true) {
+    const at = text.indexOf(value, from);
+    if (at === -1) return false;
+    if (!isAlnum(text[at - 1]) && !isAlnum(text[at + value.length])) return true;
+    from = at + 1;
+  }
+}
+
+/**
  * Every literal the flow's declared navigateTo facets take in the captured
  * traffic: the hash-derived literal plus, for a facet whose hash literal never
  * recurs, the body/query value {@link correlateUnreachableNavigateToFacets}
@@ -7446,9 +7463,9 @@ function resolveRecurringNavigateToFacets(
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
       ({ capture }) =>
-        capture.url.includes(value) ||
-        (capture.requestPostData?.includes(value) ?? false) ||
-        Object.values(capture.requestHeaders).some((h) => h.includes(value))
+        occursAtTokenBoundary(capture.url, value) ||
+        (capture.requestPostData != null && occursAtTokenBoundary(capture.requestPostData, value)) ||
+        Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
   const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
   if (unreachable.length === 0) return [...declared];
