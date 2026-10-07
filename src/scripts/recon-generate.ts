@@ -7464,7 +7464,8 @@ function resolveRecurringNavigateToFacets(
     actions.some(
       ({ capture }) =>
         occursAtTokenBoundary(capture.url, value) ||
-        (capture.requestPostData != null && occursAtTokenBoundary(capture.requestPostData, value)) ||
+        (capture.requestPostData != null &&
+          occursAtTokenBoundary(capture.requestPostData, value)) ||
         Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
   const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
