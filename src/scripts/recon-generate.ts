@@ -6952,8 +6952,7 @@ function arrayPathKey(path: readonly string[]): string {
  * depth (string or object element alike). */
 function isInsideOwnedArray(path: readonly string[], ownedKeys: ReadonlySet<string>): boolean {
   return path.some(
-    (segment, index) =>
-      /^\d+$/.test(segment) && ownedKeys.has(arrayPathKey(path.slice(0, index)))
+    (segment, index) => /^\d+$/.test(segment) && ownedKeys.has(arrayPathKey(path.slice(0, index)))
   );
 }
 
