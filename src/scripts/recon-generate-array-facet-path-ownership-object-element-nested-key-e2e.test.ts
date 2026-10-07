@@ -22,7 +22,6 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const OWN_BACKEND_HOST = "www.array-facet-path-objelem-fixture.example.com";
 const DELIMITER = ";src=facet";
 const AUTHOR_TOKEN = "authorx-shelf-7001";
-const GENRE_TOKEN = "genrex-shelf-7002";
 
 function tagged(token: string): string {
   return `${token}${DELIMITER}`;
