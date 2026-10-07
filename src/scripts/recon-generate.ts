@@ -4665,28 +4665,6 @@ function registerStructuredPayloadField(
   outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
 }
 
-/**
- * Whether `value` (at `path`) is, or holds at any depth, an array whose field
- * key the facet pass owns, so an enclosing wholesale swallow cannot stringify
- * a facet-owned array that merely sits below an envelope key.
- */
-function carriesFacetOwnedArray(
-  value: unknown,
-  path: readonly string[],
-  ownedKeys: ReadonlySet<string>
-): boolean {
-  if (value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) {
-    if (value.length > 0 && ownedKeys.has(arrayFieldKey(path))) return true;
-    return value.some((element, index) =>
-      carriesFacetOwnedArray(element, [...path, String(index)], ownedKeys)
-    );
-  }
-  return Object.entries(value as Record<string, unknown>).some(([key, inner]) =>
-    carriesFacetOwnedArray(inner, [...path, key], ownedKeys)
-  );
-}
-
 function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
@@ -4696,8 +4674,7 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
   searchFrom: number,
   envelopePath: string[],
   rootBody: Record<string, unknown>,
-  payloadAccessorExcludePattern: RegExp | null,
-  facetOwnedArrayKeys: ReadonlySet<string>
+  payloadAccessorExcludePattern: RegExp | null
 ): { result: string; nextSearchFrom: number } {
   let result = template;
   let cursor = searchFrom;
@@ -4729,11 +4706,10 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
     registerStructuredPayloadField(outStructuredKeys, key, value);
-    // A facet-owned array field renders through the per-element facet splice
-    // at every call site; a call site whose array carries no facet element
-    // stays literal rather than collapsing to an opaque stringify of the field.
-    // The same holds for an object field holding such an array at any depth.
-    if (carriesFacetOwnedArray(value, [key], facetOwnedArrayKeys)) continue;
+    // A call site whose array carries a facet was already rewritten by the
+    // facet pass (the span-text guard below leaves it intact); a site whose
+    // array carries none falls through to the same opaque `payload.<key>`
+    // passthrough every non-facet array gets, so the declared field is used.
     if (
       unconditionalExcludeValues.size > 0 ||
       restrictedExcludeSourceByValue.size > 0 ||
@@ -4849,8 +4825,7 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
   unconditionalExcludeValues: ReadonlySet<string>,
   restrictedExcludeSourceByValue: ReadonlyMap<string, string>,
   searchFrom: number,
-  payloadAccessorExcludePattern: RegExp | null,
-  facetOwnedArrayKeys: ReadonlySet<string>
+  payloadAccessorExcludePattern: RegExp | null
 ): { result: string; nextSearchFrom: number } {
   const envelopePath = locateFormEnvelopePath(objectBody);
   let envelope: unknown = objectBody;
@@ -4871,8 +4846,7 @@ function applyStructuredValuePayloadSubstitutionsForObjectBody(
     searchFrom,
     envelopePath,
     objectBody,
-    payloadAccessorExcludePattern,
-    facetOwnedArrayKeys
+    payloadAccessorExcludePattern
   );
 }
 
@@ -4905,8 +4879,7 @@ export function applyStructuredValuePayloadSubstitutions(
   outStructuredKeys: Map<string, string>,
   priorStepStateBindings: ReadonlyMap<string, StateVarBinding> = new Map(),
   joinFieldValues: ReadonlySet<string> = new Set(),
-  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map(),
-  facetOwnedArrayKeys: ReadonlySet<string> = new Set()
+  payloadAccessorExcludeValues: ReadonlyMap<string, string> = new Map()
 ): string {
   if (parsedBody === null || typeof parsedBody !== "object") {
     return template;
@@ -4942,8 +4915,7 @@ export function applyStructuredValuePayloadSubstitutions(
           unconditionalExcludeValues,
           restrictedExcludeSourceByValue,
           cursor,
-          payloadAccessorExcludePattern,
-          facetOwnedArrayKeys
+          payloadAccessorExcludePattern
         );
       result = nextResult;
       cursor = nextSearchFrom;
@@ -4957,8 +4929,7 @@ export function applyStructuredValuePayloadSubstitutions(
     unconditionalExcludeValues,
     restrictedExcludeSourceByValue,
     0,
-    payloadAccessorExcludePattern,
-    facetOwnedArrayKeys
+    payloadAccessorExcludePattern
   );
   return result;
 }
@@ -6913,13 +6884,12 @@ function* walkArrayLeaves(
  * global, all-or-nothing persona collision guard, on which call site carried
  * the array first, on element order, or on a facet being optional.
  *
- * An array that matches an OPTIONAL facet is rewritten to a single
- * `${JSON.stringify([...])}` splice point built from
- * {@link spliceFacetsIntoArrayVariable}'s per-element conditional emission, so
- * an absent optional facet drops its element instead of freezing an
- * `undefined`. A required-only array keeps the compact in-place text shape
- * (`["${payload.<field>}<suffix>","literal"]`), and non-facet elements stay
- * literal in both.
+ * Every facet-carrying array, whether its facets are required or optional, is
+ * rewritten to the same single `${JSON.stringify([...])}` splice point built
+ * from {@link spliceFacetsIntoArrayVariable}'s per-element conditional
+ * emission, so an absent optional facet drops its element instead of freezing
+ * an `undefined` and no call site renders the array through a different
+ * construction. Non-facet elements stay literal.
  */
 function applyArrayFacetSplicePayloadSubstitutions(
   template: string,
@@ -6932,10 +6902,7 @@ function applyArrayFacetSplicePayloadSubstitutions(
   for (const { value } of walkArrayLeaves(inputBody)) {
     if (!containsFacetArray(value, navigateToFacets)) continue;
     const expression = renderFacetValueExpression(value, navigateToFacets);
-    const replacement = expression.includes("...(payload.")
-      ? `\${JSON.stringify(${expression})}`
-      : renderRequiredFacetValueText(value, navigateToFacets);
-    result = replaceJsonArrayOccurrences(result, value, replacement);
+    result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
   }
   return result;
 }
@@ -6972,33 +6939,6 @@ function renderFacetValueExpression(
     ([key, inner]) => `${JSON.stringify(key)}: ${renderFacetValueExpression(inner, facets)}`
   );
   return `{ ${entries.join(", ")} }`;
-}
-
-/** Compact JSON text of `value` whose facet-bearing string elements, at any
- * array depth, are rewritten to `"${payload.<field>}<suffix>"` in place. */
-function renderRequiredFacetValueText(
-  value: unknown,
-  facets: readonly NavigateToFacetBinding[]
-): string {
-  if (value === null || typeof value !== "object" || !containsFacetArray(value, facets)) {
-    return JSON.stringify(value);
-  }
-  if (!Array.isArray(value)) {
-    const entries = Object.entries(value as Record<string, unknown>).map(
-      ([key, inner]) => `${JSON.stringify(key)}:${renderRequiredFacetValueText(inner, facets)}`
-    );
-    return `{${entries.join(",")}}`;
-  }
-  const elements = value.map((element) => {
-    const matched =
-      typeof element === "string" ? matchArrayElementFacet(element, facets) : undefined;
-    if (typeof element !== "string" || matched === undefined) {
-      return renderRequiredFacetValueText(element, facets);
-    }
-    const suffix = JSON.stringify(element.slice(matched.value.length)).slice(1, -1);
-    return `"\${payload.${matched.field}}${suffix}"`;
-  });
-  return `[${elements.join(",")}]`;
 }
 
 /** Nearest non-index key of an array's path: the payload field it maps to,
@@ -7089,13 +7029,25 @@ function jsonTextEquals(candidate: string, targetKey: string): boolean {
   }
 }
 
+/** A facet literal recurring inside a packed string under a key that does not
+ * name its payload field. A leaf that IS the bare literal is left to the scalar
+ * pass, which owns the optional fallback for it. */
+function packedFacetRecurrence(
+  value: string,
+  facets: readonly NavigateToFacetBinding[]
+): string | null {
+  const spliced = spliceFacetRecurrenceIntoScalarVariable(value, facets);
+  return spliced !== null && !spliced.startsWith("payload.") ? spliced : null;
+}
+
 function applyFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
   payloadFieldNames: ReadonlySet<string>,
-  optionalFieldNames: ReadonlySet<string>
+  optionalFieldNames: ReadonlySet<string>,
+  navigateToFacets: readonly NavigateToFacetBinding[] = []
 ): string {
-  if (payloadFieldNames.size === 0) return template;
+  if (payloadFieldNames.size === 0 && navigateToFacets.length === 0) return template;
   if (
     inputBody === undefined ||
     inputBody === null ||
@@ -7110,10 +7062,18 @@ function applyFacetSplicePayloadSubstitutions(
     const key = path[path.length - 1];
     if (key === undefined || !isValidJsIdentifier(key)) continue;
     if (typeof value !== "string") continue;
-    const spliced = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
+    const kv = spliceFacetsIntoStringVariable(value, fields, optionalFieldNames);
+    const spliced = kv ?? packedFacetRecurrence(value, navigateToFacets);
     if (spliced === null) continue;
     const target = `"${key}":${JSON.stringify(value)}`;
-    const replacement = `"${key}":"\${${spliced}}"`;
+    // A required-only packed value with nothing JSON-escaped splices in place,
+    // so the accessor sits directly in the string instead of nesting a template.
+    const inline =
+      kv === null &&
+      spliced.startsWith("`") &&
+      !spliced.startsWith("`${") &&
+      JSON.stringify(value).slice(1, -1) === value;
+    const replacement = inline ? `"${key}":"${spliced.slice(1, -1)}"` : `"${key}":"\${${spliced}}"`;
     result = result.split(target).join(replacement);
   }
   return result;
@@ -7453,6 +7413,60 @@ function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionSt
 }
 
 /**
+ * Whether `value` occurs in every request body only at token boundaries (never
+ * flanked by an alphanumeric), so a global rewrite of it cannot mangle a longer
+ * token. Shared by the persona-binding guard and facet identity resolution.
+ */
+function bindsWithoutCollisionIn(bodies: readonly string[], value: string): boolean {
+  const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  for (const body of bodies) {
+    let from = 0;
+    while (true) {
+      const at = body.indexOf(value, from);
+      if (at === -1) break;
+      if (isAlnum(body[at - 1]) || isAlnum(body[at + value.length])) return false;
+      from = at + value.length;
+    }
+  }
+  return true;
+}
+
+/**
+ * Every literal the flow's declared navigateTo facets take in the captured
+ * traffic: the hash-derived literal plus, for a facet whose hash literal never
+ * recurs, the body/query value {@link correlateUnreachableNavigateToFacets}
+ * pairs it with. Every per-site splice pass matches against this one list, so
+ * a facet is judged to recur identically by all of them instead of each pass
+ * deciding from the hash-derived literal alone.
+ */
+function resolveRecurringNavigateToFacets(
+  declared: readonly NavigateToFacetBinding[],
+  actions: readonly ActionStep[]
+): NavigateToFacetBinding[] {
+  const appearsAnywhere = (value: string): boolean =>
+    actions.some(
+      ({ capture }) =>
+        capture.url.includes(value) ||
+        (capture.requestPostData?.includes(value) ?? false) ||
+        Object.values(capture.requestHeaders).some((h) => h.includes(value))
+    );
+  const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
+  if (unreachable.length === 0) return [...declared];
+  const correlated = correlateUnreachableNavigateToFacets(unreachable, actions);
+  if (correlated === null) return [...declared];
+  const bodies = actions
+    .map(({ capture }) => capture.requestPostData)
+    .filter((body): body is string => typeof body === "string" && body.length > 0);
+  const extras = unreachable.flatMap((facet) => {
+    const diffed = correlated.get(facet.field);
+    if (diffed === undefined || diffed.length === 0) return [];
+    if (declared.some(({ value }) => value === diffed)) return [];
+    return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
+  });
+  return [...declared, ...extras];
+}
+
+/**
  * Resolves each zero-recurrence navigateTo facet (in flow order) to the real
  * request value it causally affects, or returns `null` when the correlation
  * cannot be trusted.
@@ -7558,7 +7572,8 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
-  const navigateToFacetOrder = extractNavigateToFacetOrder(flowSteps);
+  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps);
+  const navigateToFacetOrder = resolveRecurringNavigateToFacets(declaredNavigateToFacets, actions);
   const facetArrayPathKeys = collectFacetArrayPathKeys(
     actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
     navigateToFacetOrder
@@ -7573,6 +7588,11 @@ export function emitMultiStepExecuteHttp(
         /^\d+$/.test(path[path.length - 1] ?? "") &&
         facetArrayPathKeys.has(arrayFieldKey(path.slice(0, -1)))
       ) {
+        continue;
+      }
+      // A leaf recurring as a declared facet literal binds to that facet's
+      // payloadField via the persona pass, not to a by-index accessor.
+      if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
         continue;
       }
       const { accessor, field: accessorField, structuredRootPath } = payloadAccessorForPath(path);
@@ -7681,11 +7701,11 @@ export function emitMultiStepExecuteHttp(
   // triples — the array splice must see each binding's `optional` flag
   // precisely as the flow declared it, same as the already-fixed GraphQL
   // array-variable path ({@link spliceFacetsIntoArrayVariable}).
-  for (const { value, field } of navigateToFacetOrder) {
+  for (const { value, field } of declaredNavigateToFacets) {
     if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value))
       outDiscoveredFields.add(field);
   }
-  const unreachableNavigateToFacets = navigateToFacetOrder.filter(
+  const unreachableNavigateToFacets = declaredNavigateToFacets.filter(
     ({ value }) => !appearsAnywhereInCapture(value)
   );
   if (unreachableNavigateToFacets.length > 0) {
@@ -7983,7 +8003,8 @@ export function emitMultiStepExecuteHttp(
             rawBodyWithFormSubs,
             parsedBody,
             restPayloadFieldNames,
-            restOptionalFieldNames
+            restOptionalFieldNames,
+            navigateToFacetOrder
           )
         : rawBodyWithFormSubs;
     // Optional-facet array-element splice — a navigateTo facet literal
@@ -8026,8 +8047,7 @@ export function emitMultiStepExecuteHttp(
             outStructuredKeys,
             deriveStateVarByValue(prior, cap),
             joinFieldValuesByStep.get(i) ?? new Set(),
-            payloadAccessorByValue,
-            facetArrayPathKeys
+            payloadAccessorByValue
           )
         : rawBodyWithFormSubs;
     // Whole-value caller coordinates bind here — after structured subs, BEFORE
@@ -9168,17 +9188,36 @@ function spliceFacetRecurrenceIntoScalarVariable(
   if (typeof value !== "string") return null;
   const segments = value.split(/([|,;])/);
   let bound = false;
-  const parts = segments.map((segment, index) => {
+  let anyOptional = false;
+  const units: string[] = [];
+  for (let index = 0; index < segments.length; index += 2) {
+    const segment = segments[index] as string;
+    const trailingDelimiter = (segments[index + 1] as string | undefined) ?? "";
     const colonIndex = segment.indexOf(":");
-    if (index % 2 !== 0 || colonIndex < 0) return escapeForTemplateLiteral(segment);
-    const facet = matchFacetRecurrence(segment.slice(colonIndex + 1), facets, {
-      allowDelimiterSuffix: false,
-    });
-    if (facet === undefined) return escapeForTemplateLiteral(segment);
+    const facet =
+      colonIndex < 0
+        ? undefined
+        : matchFacetRecurrence(segment.slice(colonIndex + 1), facets, {
+            allowDelimiterSuffix: false,
+          });
+    if (facet === undefined) {
+      units.push(`\`${escapeForTemplateLiteral(segment + trailingDelimiter)}\``);
+      continue;
+    }
     bound = true;
-    return `${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${payload.${facet.field}}`;
-  });
-  return bound ? `\`${parts.join("")}\`` : null;
+    const unit = `\`${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${payload.${facet.field}}${escapeForTemplateLiteral(trailingDelimiter)}\``;
+    // An absent optional facet drops its own segment (and delimiter) rather
+    // than rendering the string `undefined` into the packed value.
+    if (facet.optional) {
+      anyOptional = true;
+      units.push(`...(payload.${facet.field} ? [${unit}] : [])`);
+      continue;
+    }
+    units.push(unit);
+  }
+  if (!bound) return null;
+  if (anyOptional) return `[${units.join(", ")}].join("")`;
+  return `\`${units.map((unit) => unit.slice(1, -1)).join("")}\``;
 }
 
 /**
@@ -9234,7 +9273,7 @@ export function spliceFacetsIntoArrayVariable(
  * `navigateToFacets` instead — see {@link spliceFacetsIntoArrayVariable} for
  * why that's a distinct grammar from the `key:value` one above.
  */
-function renderGqlVariablesExpr(
+export function renderGqlVariablesExpr(
   variables: unknown,
   payloadFieldNames: Set<string> | undefined,
   optionalFieldNames: ReadonlySet<string> = new Set(),
@@ -9245,7 +9284,7 @@ function renderGqlVariablesExpr(
   const renderValue = (value: unknown): string => {
     const spliced =
       spliceFacetsIntoStringVariable(value, fields, optionalFieldNames) ??
-      spliceFacetsIntoArrayVariable(value, navigateToFacets) ??
+      spliceFacetsIntoArrayVariable(value, navigateToFacets, renderValue) ??
       spliceFacetRecurrenceIntoScalarVariable(value, navigateToFacets);
     if (spliced !== null) return spliced;
     if (Array.isArray(value)) return `[${value.map(renderValue).join(", ")}]`;

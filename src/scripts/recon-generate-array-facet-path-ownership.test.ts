@@ -105,10 +105,13 @@ describe("recon-generate CLI — required array facets at every call site", () =
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).not.toContain("JSON.stringify(payload.search)");
+    const [facetSite, plainSite] = contract.split("httpClient(`").slice(1);
+    expect(facetSite).not.toContain("JSON.stringify(payload.search)");
     expect(contract).not.toMatch(/payload\.(search|filters)\[/);
-    expect(contract).toContain(`"filters":["plain-one","plain-two-long"]`);
-    expect(contract).toContain(`"\${payload.AuthorFacet}${DELIMITER}"`);
-    expect(contract).toContain(`"\${payload.GenreFacet}${DELIMITER}"`);
+    expect(facetSite).toContain(
+      `"filters":\${JSON.stringify([\`\${payload.AuthorFacet}${DELIMITER}\`, \`\${payload.GenreFacet}${DELIMITER}\`])}`
+    );
+    expect(plainSite).toContain("JSON.stringify(payload.search)");
+    expect(contract).not.toContain("plain-one");
   }, 30_000);
 });
