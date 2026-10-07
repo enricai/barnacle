@@ -6941,14 +6941,24 @@ function renderFacetValueExpression(
   return `{ ${entries.join(", ")} }`;
 }
 
-/** Nearest non-index key of an array's path: the payload field it maps to,
- * independent of nesting depth or index position. */
-function arrayFieldKey(path: readonly string[]): string {
-  return [...path].reverse().find((segment) => !/^\d+$/.test(segment)) ?? "";
+/** Full index-free path of an array: identifies the array across call sites
+ * whatever index it was captured at, without conflating same-named fields
+ * that live at different paths. */
+function arrayPathKey(path: readonly string[]): string {
+  return JSON.stringify(path.filter((segment) => !/^\d+$/.test(segment)));
+}
+
+/** True when `path` addresses anything inside an array in `ownedKeys`, at any
+ * depth (string or object element alike). */
+function isInsideOwnedArray(path: readonly string[], ownedKeys: ReadonlySet<string>): boolean {
+  return path.some(
+    (segment, index) =>
+      /^\d+$/.test(segment) && ownedKeys.has(arrayPathKey(path.slice(0, index)))
+  );
 }
 
 /**
- * Field keys ({@link arrayFieldKey}) of every array, in ANY captured body,
+ * Path keys ({@link arrayPathKey}) of every array, in ANY captured body,
  * that carries at least one facet-bearing element. The facet pass owns those
  * arrays wholesale, so none of their elements may also be frozen as a
  * by-index `payload.<field>["N"]` accessor, whichever body was parsed first
@@ -6967,7 +6977,7 @@ function collectFacetArrayPathKeys(
         (element) =>
           typeof element === "string" && matchArrayElementFacet(element, facets) !== undefined
       );
-      if (hasFacet) keys.add(arrayFieldKey(path));
+      if (hasFacet) keys.add(arrayPathKey(path));
     }
   }
   return keys;
@@ -7602,12 +7612,7 @@ export function emitMultiStepExecuteHttp(
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
-      if (
-        /^\d+$/.test(path[path.length - 1] ?? "") &&
-        facetArrayPathKeys.has(arrayFieldKey(path.slice(0, -1)))
-      ) {
-        continue;
-      }
+      if (isInsideOwnedArray(path, facetArrayPathKeys)) continue;
       // A leaf recurring as a declared facet literal binds to that facet's
       // payloadField via the persona pass, not to a by-index accessor.
       if (matchFacetRecurrence(value, navigateToFacetOrder, { allowDelimiterSuffix: true })) {
