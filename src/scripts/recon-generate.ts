@@ -511,6 +511,11 @@ export interface NavigateToFacetBinding {
  * which DOES see the captures, re-derive the same (value, field) pairs and
  * try the causally-adjacent-action fallback (see `emitMultiStepExecuteHttp`)
  * for whichever ones the recurrence-anchored path left unbound.
+ *
+ * A step whose URL carries no hash literal still holds its slot (empty
+ * `value`) so positional correlation against captured transitions stays
+ * aligned with the declared facets; {@link resolveRecurringNavigateToFacets}
+ * drops the empty literal itself and keeps only a correlated value.
  */
 export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
   const order: NavigateToFacetBinding[] = [];
@@ -525,8 +530,7 @@ export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): Navigat
     }
     const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
     previousNavigateToHash = currentHash;
-    if (value === null || value.length === 0) continue;
-    order.push({ value, field: step.payloadField, optional: step.optional === true });
+    order.push({ value: value ?? "", field: step.payloadField, optional: step.optional === true });
   }
   return order;
 }
@@ -7393,8 +7397,15 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  * affect (the already-working recurrence-anchored path exists precisely
  * because a real facet DOES recur in a later request; nothing here changes
  * that — this only supplies values for facets that are not found at all).
+ *
+ * Values that carry a literal of an already-reachable facet are explained by
+ * that facet and never enter the pool, so reachable facets' own transitions
+ * cannot skew the pool size away from the count of facets awaiting a value.
  */
-function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionStep[]): string[][] {
+function collectNewlyAppearingRequestValueTransitions(
+  actions: readonly ActionStep[],
+  explainedLiterals: readonly string[] = []
+): string[][] {
   const seenGlobally = new Set<string>();
   const transitions: string[][] = [];
   for (let i = 1; i < actions.length; i++) {
@@ -7404,6 +7415,7 @@ function collectNewlyAppearingRequestValueTransitions(actions: readonly ActionSt
     const values: string[] = [];
     const record = (value: string): void => {
       if (value.length === 0 || seenGlobally.has(value) || seenThisTransition.has(value)) return;
+      if (explainedLiterals.some((literal) => occursAtTokenBoundary(value, literal))) return;
       seenThisTransition.add(value);
       values.push(value);
     };
@@ -7477,10 +7489,16 @@ function resolveRecurringNavigateToFacets(
           occursAtTokenBoundary(capture.requestPostData, value)) ||
         Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
-  const unreachable = declared.filter(({ value }) => !appearsAnywhere(value));
-  if (unreachable.length === 0) return [...declared];
-  const correlated = correlateUnreachableNavigateToFacets(unreachable, actions);
-  if (correlated === null) return [...declared];
+  const reachable = declared.filter(({ value }) => value.length > 0 && appearsAnywhere(value));
+  const resolvedDeclared = declared.filter(({ value }) => value.length > 0);
+  const unreachable = declared.filter((facet) => !reachable.includes(facet));
+  if (unreachable.length === 0) return resolvedDeclared;
+  const correlated = correlateUnreachableNavigateToFacets(
+    unreachable,
+    actions,
+    reachable.map(({ value }) => value)
+  );
+  if (correlated === null) return resolvedDeclared;
   const bodies = actions
     .map(({ capture }) => capture.requestPostData)
     .filter((body): body is string => typeof body === "string" && body.length > 0);
@@ -7490,7 +7508,7 @@ function resolveRecurringNavigateToFacets(
     if (declared.some(({ value }) => value === diffed)) return [];
     return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
   });
-  return [...declared, ...extras];
+  return [...resolvedDeclared, ...extras];
 }
 
 /**
@@ -7516,9 +7534,10 @@ function resolveRecurringNavigateToFacets(
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[]
+  actions: readonly ActionStep[],
+  explainedLiterals: readonly string[]
 ): ReadonlyMap<string, string> | null {
-  const transitions = collectNewlyAppearingRequestValueTransitions(actions);
+  const transitions = collectNewlyAppearingRequestValueTransitions(actions, explainedLiterals);
   const byField = new Map<string, string>();
   if (transitions.length === facets.length) {
     facets.forEach(({ field }, index) => {
@@ -13908,7 +13927,9 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
-  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps);
+  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps).filter(
+    ({ value }) => value.length > 0
+  );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
         gqlVariables,
