@@ -382,8 +382,36 @@ export function extractNavigateToHashFragmentValue(
     const delta = added[added.length - 1];
     if (delta !== undefined) return stripHashKeyPrefix(delta);
   }
-  const segments = hash.split("/").filter((s) => s.length > 0);
-  return segments.length > 0 ? stripHashKeyPrefix(segments[segments.length - 1]!) : null;
+  const tokens = splitHashTokens(hash);
+  return tokens.length > 0 ? stripHashKeyPrefix(tokens[tokens.length - 1]!) : null;
+}
+
+/**
+ * Single walk over navigateTo+payloadField steps shared by
+ * {@link harvestPersonaBindings} and {@link extractNavigateToFacetOrder}, so
+ * both derive identical literals. The delta baseline is the most recent
+ * hash-bearing navigateTo; a hashless reset navigation must not erase it, or
+ * the next cumulative hash would be taken whole and never recur in a request.
+ */
+function walkNavigateToFacets(
+  flowSteps: FlowStepInput[]
+): Array<{ value: string | null; field: string; optional: boolean }> {
+  const facets: Array<{ value: string | null; field: string; optional: boolean }> = [];
+  let baselineHash: string | undefined;
+  for (const step of flowSteps) {
+    if (typeof step === "string" || step.navigateTo === undefined) continue;
+    const hashIndex = step.navigateTo.indexOf("#");
+    const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
+    if (step.payloadField) {
+      facets.push({
+        value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
+        field: step.payloadField,
+        optional: step.optional === true,
+      });
+    }
+    if (currentHash !== undefined) baselineHash = currentHash;
+  }
+  return facets;
 }
 
 function splitHashTokens(hash: string): string[] {
@@ -445,7 +473,11 @@ export function harvestPersonaBindings(
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
-  let previousNavigateToHash: string | undefined;
+  for (const facet of walkNavigateToFacets(flowSteps)) {
+    if (facet.value !== null && !bindings.has(facet.value)) {
+      bindings.set(facet.value, `payload.${facet.field}`);
+    }
+  }
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -456,19 +488,7 @@ export function harvestPersonaBindings(
     // `.../#/jobs/category-widgets`), so the value to correlate against
     // downstream header/body templates is the URL's own hash-derived
     // fragment, not anything extractStepPersonaValue could find in `step.step`.
-    if (isObj && step.navigateTo !== undefined) {
-      const hashIndex = step.navigateTo.indexOf("#");
-      const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
-      if (!step.payloadField) {
-        previousNavigateToHash = currentHash;
-        continue;
-      }
-      const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
-      previousNavigateToHash = currentHash;
-      if (value === null) continue;
-      if (!bindings.has(value)) bindings.set(value, `payload.${step.payloadField}`);
-      continue;
-    }
+    if (isObj && step.navigateTo !== undefined) continue;
     const vocabField = resolveStepPayloadField(
       instruction,
       isObj ? step.payloadField : undefined,
@@ -518,21 +538,11 @@ export interface NavigateToFacetBinding {
  * drops the empty literal itself and keeps only a correlated value.
  */
 export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
-  const order: NavigateToFacetBinding[] = [];
-  let previousNavigateToHash: string | undefined;
-  for (const step of flowSteps) {
-    if (typeof step === "string" || step.navigateTo === undefined) continue;
-    const hashIndex = step.navigateTo.indexOf("#");
-    const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
-    if (!step.payloadField) {
-      previousNavigateToHash = currentHash;
-      continue;
-    }
-    const value = extractNavigateToHashFragmentValue(step.navigateTo, previousNavigateToHash);
-    previousNavigateToHash = currentHash;
-    order.push({ value: value ?? "", field: step.payloadField, optional: step.optional === true });
-  }
-  return order;
+  return walkNavigateToFacets(flowSteps).map((facet) => ({
+    value: facet.value ?? "",
+    field: facet.field,
+    optional: facet.optional,
+  }));
 }
 
 /**
