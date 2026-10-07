@@ -13958,8 +13958,9 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
-  const navigateToFacets = extractNavigateToFacetOrder(contractFlowSteps).filter(
-    ({ value }) => value.length > 0
+  const navigateToFacets = resolveRecurringNavigateToFacets(
+    extractNavigateToFacetOrder(contractFlowSteps),
+    actionSteps
   );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
