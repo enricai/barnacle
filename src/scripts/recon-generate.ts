@@ -7688,36 +7688,19 @@ export function emitMultiStepExecuteHttp(
   // or when the correlation is ambiguous (see
   // `correlateUnreachableNavigateToFacets`), there is nothing safe to splice
   // and the field(s) stay unbound rather than risk a wrong binding.
-  const appearsAnywhereInCapture = (value: string): boolean =>
-    actions.some(
-      (action) =>
-        action.capture.url.includes(value) ||
-        (action.capture.requestPostData?.includes(value) ?? false) ||
-        Object.values(action.capture.requestHeaders).some((h) => h.includes(value))
-    );
-  // Hoisted once so both the unreachable-facet fallback above and the
-  // REST array-element optional splice below (applyOptionalArrayFacetSplice
-  // PayloadSubstitutions) share the exact same (value, field, optional)
-  // triples — the array splice must see each binding's `optional` flag
-  // precisely as the flow declared it, same as the already-fixed GraphQL
-  // array-variable path ({@link spliceFacetsIntoArrayVariable}).
-  for (const { value, field } of declaredNavigateToFacets) {
-    if (isValidJsIdentifier(field) && appearsAnywhereInCapture(value))
+  // Every facet any splice pass binds comes from the one resolved list, so the
+  // schema declaration and accessor table cannot disagree with the splices.
+  const declaredFacetValues = new Set(declaredNavigateToFacets.map(({ value }) => value));
+  for (const { value, field } of navigateToFacetOrder) {
+    if (!isValidJsIdentifier(field)) continue;
+    if (declaredFacetValues.has(value)) {
       outDiscoveredFields.add(field);
-  }
-  const unreachableNavigateToFacets = declaredNavigateToFacets.filter(
-    ({ value }) => !appearsAnywhereInCapture(value)
-  );
-  if (unreachableNavigateToFacets.length > 0) {
-    const correlated = correlateUnreachableNavigateToFacets(unreachableNavigateToFacets, actions);
-    for (const { field } of correlated === null ? [] : unreachableNavigateToFacets) {
-      const diffed = correlated?.get(field);
-      if (diffed === undefined) continue;
-      if (!bindsWithoutCollision(diffed)) continue;
-      if (payloadAccessorByValue.has(diffed)) continue;
-      payloadAccessorByValue.set(diffed, `payload.${field}`);
-      if (isValidJsIdentifier(field)) outDiscoveredFields.add(field);
+      continue;
     }
+    if (!bindsWithoutCollision(value)) continue;
+    if (payloadAccessorByValue.has(value)) continue;
+    payloadAccessorByValue.set(value, `payload.${field}`);
+    outDiscoveredFields.add(field);
   }
   // Job coordinates from the recon entry URL's query string (e.g.
   // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
