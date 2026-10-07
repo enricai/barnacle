@@ -7509,16 +7509,28 @@ function resolveRecurringNavigateToFacets(
  * no longer guaranteed to line facets up with the RIGHT transition, so
  * nothing is bound — leaving a facet declared-but-unbound is preferable to
  * silently wiring it to another facet's (or an unrelated transition's) value.
+ *
+ * When the TOTAL transition count (ambiguous ones included) equals the facet
+ * count, each ambiguous transition still holds its facet's slot, so only that
+ * facet stays unbound while the others bind by position.
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
   actions: readonly ActionStep[]
 ): ReadonlyMap<string, string> | null {
-  const unambiguousValues = collectNewlyAppearingRequestValueTransitions(actions)
+  const transitions = collectNewlyAppearingRequestValueTransitions(actions);
+  const byField = new Map<string, string>();
+  if (transitions.length === facets.length) {
+    facets.forEach(({ field }, index) => {
+      const transition = transitions[index]!;
+      if (transition.length === 1) byField.set(field, transition[0]!);
+    });
+    return byField.size > 0 ? byField : null;
+  }
+  const unambiguousValues = transitions
     .filter((transition) => transition.length === 1)
     .map((transition) => transition[0]!);
   if (unambiguousValues.length !== facets.length) return null;
-  const byField = new Map<string, string>();
   facets.forEach(({ field }, index) => {
     byField.set(field, unambiguousValues[index]!);
   });
