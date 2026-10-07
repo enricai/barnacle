@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { extractNavigateToFacetOrder } from "@/scripts/recon-generate";
+import type { ReconVocabulary } from "@/recon/vocabulary";
+import { extractNavigateToFacetOrder, harvestPersonaBindings } from "@/scripts/recon-generate";
+
+const EMPTY_VOCAB: ReconVocabulary = { subject: /(?!)/, exclusions: [], table: [] };
 
 /**
  * Regression test for `extractNavigateToFacetOrder` discarding each
@@ -27,6 +30,26 @@ describe("extractNavigateToFacetOrder — optional flag threading", () => {
     expect(bindings).toEqual([
       { value: "widgets", field: "Category", optional: false },
       { value: "east", field: "Region", optional: true },
+    ]);
+  });
+});
+
+describe("hashless reset navigations between cumulative hash steps", () => {
+  const steps = [
+    { step: "go", navigateTo: "https://shop.example/#/s/a", payloadField: "Origin" },
+    { step: "reset", navigateTo: "https://shop.example/" },
+    { step: "go", navigateTo: "https://shop.example/#/s/a,b", payloadField: "Dest" },
+    { step: "reset", navigateTo: "https://shop.example/" },
+    { step: "go", navigateTo: "https://shop.example/#/s/a,b,c", payloadField: "Class" },
+  ] as Parameters<typeof extractNavigateToFacetOrder>[0];
+
+  it("yields one bare token per facet and matching persona bindings", () => {
+    expect(extractNavigateToFacetOrder(steps).map((f) => f.value)).toEqual(["a", "b", "c"]);
+    const bindings = harvestPersonaBindings(steps, EMPTY_VOCAB, {});
+    expect([...bindings]).toEqual([
+      ["a", "payload.Origin"],
+      ["b", "payload.Dest"],
+      ["c", "payload.Class"],
     ]);
   });
 });

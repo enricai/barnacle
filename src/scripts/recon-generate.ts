@@ -406,7 +406,7 @@ function walkNavigateToFacets(
       facets.push({
         value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
         field: step.payloadField,
-        optional: step.optional === true
+        optional: step.optional === true,
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
@@ -541,7 +541,7 @@ export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): Navigat
   return walkNavigateToFacets(flowSteps).map((facet) => ({
     value: facet.value ?? "",
     field: facet.field,
-    optional: facet.optional
+    optional: facet.optional,
   }));
 }
 
