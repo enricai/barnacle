@@ -101,6 +101,40 @@ describe("scraper/retry", () => {
       expect(counter.n).toBe(1);
     });
 
+    it("aborts on a lifetime death whose message looks like a timeout, without restart", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new SessionLifetimeExceededError("session timed out: lifetime reached");
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/lifetime reached/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
+    it("aborts on a foreign-realm lifetime error even when the classifier would map it to a timeout", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            const foreign = new Error("Timeout: session lifetime exceeded");
+            foreign.name = "SessionLifetimeExceededError";
+            throw foreign;
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/lifetime exceeded/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
     it("emits logger.error on CaptchaError so ops can alert on it", async () => {
       loggerStub.error.mockClear();
       await expect(
