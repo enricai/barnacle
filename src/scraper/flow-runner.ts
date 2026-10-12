@@ -9962,7 +9962,9 @@ export async function executeStepWithHealing(params: {
   // Submit, and unfilled required fields produce silent submit failures
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
-  const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
+  const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";
+  const requireSubmitEndpoint =
+    (isFinalStep || submitStep) && !stepDeclaredNonSubmit && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
   // scoped click read-back) ONLY for selection/field-answer click steps — never
   // for submit/advance steps, whose own self-toggling buttons must not
@@ -12164,7 +12166,7 @@ export async function executeStepWithHealing(params: {
     // independent of the flow-authored `submitStep` flag. See
     // resolvedClickTargetIsSubmitShaped's doc comment.
     const resolvedElementIsSubmitShaped =
-      isClick && resolvedAction?.selector
+      isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
