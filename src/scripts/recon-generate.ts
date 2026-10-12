@@ -11270,6 +11270,38 @@ function readValueAtPath(body: unknown, path: readonly string[]): unknown {
   }, body);
 }
 
+const ARRAY_ELEMENT_IDENTITY = /^[\s\S]*([^A-Za-z0-9=]\w+=\w+)$/;
+
+/** The `<delimiter><name>=<kind>` suffix of a self-describing array element
+ * (the grammar {@link matchArrayElementFacet} binds on), or `undefined`. */
+function arrayElementIdentity(element: unknown): string | undefined {
+  if (typeof element !== "string") return undefined;
+  return ARRAY_ELEMENT_IDENTITY.exec(element)?.[1];
+}
+
+/**
+ * Counterpart of the primitive leaf at `path` in `body`, read from `otherBody`.
+ * A leaf that is a self-describing string element of an array is matched by its
+ * identity suffix within the same array, never by index, so differently shaped
+ * arrays are not mistaken for one array with a varying slot; an identity the
+ * other body lacks yields `undefined`. Every other path defers to
+ * {@link readValueAtPath}.
+ */
+export function readComparableBodyLeaf(
+  body: unknown,
+  otherBody: unknown,
+  path: readonly string[]
+): unknown {
+  const arrayPath = path.slice(0, -1);
+  const parent = readValueAtPath(body, arrayPath);
+  const leaf = readValueAtPath(body, path);
+  const identity = Array.isArray(parent) ? arrayElementIdentity(leaf) : undefined;
+  if (identity === undefined) return readValueAtPath(otherBody, path);
+  const otherParent = readValueAtPath(otherBody, arrayPath);
+  if (!Array.isArray(otherParent)) return undefined;
+  return otherParent.find((element) => arrayElementIdentity(element) === identity);
+}
+
 /**
  * Turns a flow author's plain dot-separated {@link FoldReturnSpec.resultsPath}
  * / `drillResultsPath` into the SAME {@link ARRAY_WILDCARD_SEGMENT}-bearing
