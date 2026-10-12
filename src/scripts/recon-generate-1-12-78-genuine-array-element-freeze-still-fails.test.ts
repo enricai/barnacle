@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { collectRequestBodyValuesByKey } from "@/scripts/recon-generate";
+import {
+  collectRequestBodyValuesByKey,
+  compileActionSteps,
+  emitContractTs,
+  extractGraphQLActionSequence,
+  type FoldReturnSpec,
+  indexStateValues,
+} from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 const cap = (body: unknown): Capture =>
@@ -28,5 +35,81 @@ describe("collectRequestBodyValuesByKey — genuine variance still reported", ()
     const byKey = collectRequestBodyValuesByKey(a, [a, b])!;
     expect([...byKey.get("page")!]).toEqual(["1"]);
     expect(byKey.has("filters")).toBe(false);
+  });
+});
+
+describe("emitContractTs — genuine variance still hard fails", () => {
+  const BASE = "https://api.example.com";
+  const SPEC: FoldReturnSpec = {
+    endpointPattern: "/catalog/pricing/",
+    resultsPath: "results",
+    joinFields: ["sku"],
+  };
+  const search = {
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "browse",
+    method: "GET",
+    url: `${BASE}/catalog/search?page=1`,
+    status: 200,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }] },
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  };
+  const drill = (sku: string, region: string, ts: string): unknown => ({
+    ...search,
+    timestamp: ts,
+    url: `${BASE}/catalog/pricing/?sku=${sku}&region=${region}`,
+    responseBody: { results: [{ sku, amount: 19.99 }] },
+  });
+
+  const build = (captures: unknown[]): string => {
+    const actions = extractGraphQLActionSequence(captures as never[], null, SPEC);
+    const state = indexStateValues(
+      captures as never[],
+      new Set(),
+      new Set(actions.map((a) => a.index))
+    );
+    return emitContractTs({
+      siteId: "genuine-body-variance-test",
+      pascal: "GenuineBodyVarianceTest",
+      baseUrl: BASE,
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: search.responseBody,
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/catalog/search",
+      gqlOperationName: null,
+      gqlVariables: null,
+      auxFiles: [],
+      actionSteps: compileActionSteps(actions, state),
+      foldReturnSpec: SPEC,
+    });
+  };
+
+  it("throws when a drill query param varies and nothing threads it", () => {
+    expect(() =>
+      build([
+        search,
+        drill("sku-a", "us", "2024-01-01T00:00:01Z"),
+        drill("sku-b", "eu", "2024-01-01T00:00:02Z"),
+      ])
+    ).toThrow(/region/);
+  });
+
+  it("does not throw when the drill query param is constant", () => {
+    expect(() =>
+      build([
+        search,
+        drill("sku-a", "us", "2024-01-01T00:00:01Z"),
+        drill("sku-b", "us", "2024-01-01T00:00:02Z"),
+      ])
+    ).not.toThrow();
   });
 });
