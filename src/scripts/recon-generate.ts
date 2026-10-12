@@ -9887,9 +9887,9 @@ function isExplainedByCorrelatedSiblingField(
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
     let sawUnexplainableField = false;
     for (const body of allBodies) {
-      const fieldRaw = readValueAtPath(body, path);
+      const fieldRaw = readComparableBodyLeaf(parsedBody, body, path);
       if (fieldRaw === undefined) continue;
-      const siblingRaw = readValueAtPath(body, pathSegments);
+      const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
       if (siblingRaw === undefined) {
         // This body has a value for the field we're trying to explain but no
         // value for the candidate sibling — the sibling can't vouch for it,
@@ -10000,7 +10000,7 @@ function findFrozenVaryingDrillParams(
       if (!isFrozenLiteral(stringValue)) continue;
       const fieldPath = path.join(".");
       const differing = otherBodies
-        .map((otherBody) => readValueAtPath(otherBody, path))
+        .map((otherBody) => readComparableBodyLeaf(parsedBody, otherBody, path))
         .find((v) => v !== undefined && String(v) !== stringValue);
       if (
         differing !== undefined &&
