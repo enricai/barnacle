@@ -9448,6 +9448,12 @@ export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
   /**
+   * Aborts when the session is known dead; checked at the top of each cascade
+   * attempt so the classified death error surfaces instead of running the
+   * remaining attempts against a torn-down page.
+   */
+  abortSignal?: AbortSignal;
+  /**
    * Resolved cross-origin frame scope (see `resolveFrameTarget`). Every
    * DOM-direct probe/fill/click in the cascade evaluates/locates against
    * this instead of `page` directly, so a flow whose form lives inside a
@@ -10887,6 +10893,7 @@ export async function executeStepWithHealing(params: {
   // already has an up-to-date ranking to report from.
   let lastRankedSubmitCandidates: SubmitCandidate[] | null = null;
   for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt++) {
+    params.abortSignal?.throwIfAborted();
     // Telemetry-driven technique-skip: when a cascade technique's
     // preconditions cannot be met by the prior attempts' state, running
     // it would burn the attempt slot without exercising new behaviour.
@@ -13429,6 +13436,8 @@ export async function executeNavigateStep(params: {
 export interface RunHealingFlowDeps {
   stagehand: Stagehand;
   page: Page;
+  /** Forwarded to each step's cascade so a dead session stops further attempts. */
+  abortSignal?: AbortSignal;
   steps: HealingFlowStep[];
   logger: Logger;
   anthropic: Anthropic | null;
@@ -13602,6 +13611,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         stepPromise = executeStepWithHealing({
           stagehand,
           page,
+          abortSignal: deps.abortSignal,
           step: s.instruction,
           optional: s.optional,
           upload: s.upload,

@@ -3001,6 +3001,7 @@ async function main(): Promise<void> {
               : executeStepWithHealing({
                   stagehand,
                   page,
+                  abortSignal: session.deathAbortSignal,
                   frameTarget,
                   step: step.instruction,
                   optional: step.optional,
