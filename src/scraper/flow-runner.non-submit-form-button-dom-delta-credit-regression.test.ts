@@ -234,8 +234,18 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
     verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
     const fixture = buildFixture(
       (defaults) => [
-        { ...defaults[0], instruction: GUARDRAIL_TAB_INSTRUCTION },
-        { ...defaults[1], instruction: GUARDRAIL_TAB_INSTRUCTION, optional: false },
+        {
+          instruction: GUARDRAIL_TAB_INSTRUCTION,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+        {
+          instruction: GUARDRAIL_TAB_INSTRUCTION,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
       ],
       { urlChangesOnClick: true, buttonLabel: "Continue" }
     );
@@ -251,7 +261,12 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
     verifySubmitWithLLM.mockReset();
     verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
     const fixture = buildFixture((defaults) => [
-      { ...defaults[0], instruction: "Click the 'Submit' button", submitStep: true },
+      {
+        instruction: "Click the 'Submit' button",
+        optional: false,
+        upload: false,
+        submitStep: true,
+      },
       defaults[1] as HealingFlowStep,
     ]);
 
