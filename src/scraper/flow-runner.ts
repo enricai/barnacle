@@ -10551,7 +10551,12 @@ export async function executeStepWithHealing(params: {
     // submit control in an unrelated same-origin child iframe.
     if (
       !frameTarget?.declaredFrameSelector &&
-      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      })
     ) {
       const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
       if (fallbackTarget) {
@@ -10595,10 +10600,14 @@ export async function executeStepWithHealing(params: {
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
-    const targetResolutionDiagnostic =
-      submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
-        ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
-        : null;
+    const targetResolutionDiagnostic = isStepSubmitShaped({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    })
+      ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
+      : null;
     const dumpPath =
       onStepFailure?.({
         stepIndex,
