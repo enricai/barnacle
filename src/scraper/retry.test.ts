@@ -85,6 +85,22 @@ describe("scraper/retry", () => {
       expect(onSessionRestart).not.toHaveBeenCalled();
     });
 
+    it("aborts on a name-matched SessionLifetimeExceededError from another realm", async () => {
+      const counter = { n: 0 };
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            const foreign = new Error("foreign lifetime");
+            foreign.name = "SessionLifetimeExceededError";
+            throw foreign;
+          },
+          { maxAttempts: 3 }
+        )
+      ).rejects.toThrow(/foreign lifetime/);
+      expect(counter.n).toBe(1);
+    });
+
     it("emits logger.error on CaptchaError so ops can alert on it", async () => {
       loggerStub.error.mockClear();
       await expect(
