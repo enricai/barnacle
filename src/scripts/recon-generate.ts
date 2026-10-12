@@ -9931,7 +9931,7 @@ function isExplainedByCorrelatedSiblingField(
  * identical pathname to group two captures at all, so no path segment can
  * ever be observed to vary within a matched group.
  */
-function findFrozenVaryingDrillParams(
+export function findFrozenVaryingDrillParams(
   capture: Capture,
   renderedText: string,
   allCaptures: readonly Capture[]

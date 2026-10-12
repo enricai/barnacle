@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { collectRequestBodyValuesByKey, readComparableBodyLeaf } from "@/scripts/recon-generate";
+import {
+  collectRequestBodyValuesByKey,
+  findFrozenVaryingDrillParams,
+  readComparableBodyLeaf,
+} from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
 const cap = (body: unknown): Capture =>
@@ -48,5 +52,15 @@ describe("collectRequestBodyValuesByKey across differently shaped arrays", () =>
     const a = cap({ filters: ["red;facetId=color", "XL;facetType=size"] });
     const b = cap({ filters: ["XL;facetType=size", "red;facetId=color"] });
     expect(collectRequestBodyValuesByKey(a, [a, b])!.size).toBe(0);
+  });
+});
+
+describe("findFrozenVaryingDrillParams across array shapes", () => {
+  it("returns [] for reordered and differently shaped facet arrays", () => {
+    const a = cap({ filters: ["red;facetId=color", "XL;facetType=size"] });
+    const reordered = cap({ filters: ["XL;facetType=size", "red;facetId=color"] });
+    const shaped = cap({ filters: ["x|brand=acme", "y|line=basic", "z|tier=gold"] });
+    const rendered = JSON.stringify({ filters: ["red;facetId=color", "XL;facetType=size"] });
+    expect(findFrozenVaryingDrillParams(a, rendered, [a, reordered, shaped])).toEqual([]);
   });
 });
