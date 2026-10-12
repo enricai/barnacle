@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { flowHasSubmitSemantics } from "@/scraper/flow-runner";
+import { flowHasSubmitSemantics, isStepSubmitShaped } from "@/scraper/flow-runner";
 
 describe("scraper/flow-runner flowHasSubmitSemantics", () => {
   it("returns false when no step submits and no submit-endpoint shape is declared (read-only flow)", () => {
@@ -61,5 +61,39 @@ describe("scraper/flow-runner flowHasSubmitSemantics", () => {
     });
 
     expect(result).toBe(false);
+  });
+});
+
+describe("scraper/flow-runner isStepSubmitShaped with flow-level inference", () => {
+  const FLOW = {
+    steps: [{ submitStep: false }, { submitStep: false }],
+    submitEndpointPattern: "/api/submit",
+    requireSubmitEndpointMatch: true,
+  };
+
+  it("keeps flow-level submit semantics true when no step carries the submitStep flag", () => {
+    expect(flowHasSubmitSemantics(FLOW)).toBe(true);
+  });
+
+  it("does not infer submit shape onto a final step whose instruction declares it non-submit", () => {
+    expect(
+      isStepSubmitShaped({
+        step: "Click a category tab on example.com. Do NOT click 'Book Now' or any control that proceeds to checkout.",
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: flowHasSubmitSemantics(FLOW),
+      })
+    ).toBe(false);
+  });
+
+  it("still infers submit shape onto an unflagged final step with neutral wording", () => {
+    expect(
+      isStepSubmitShaped({
+        step: "Click the category tab",
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: flowHasSubmitSemantics(FLOW),
+      })
+    ).toBe(true);
   });
 });
