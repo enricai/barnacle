@@ -12356,7 +12356,7 @@ export async function executeStepWithHealing(params: {
       post,
       elementStateChanged: domVerified && destinationPlausible,
       isSubmitShapedStep:
-        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+        isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
       destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
@@ -12379,7 +12379,7 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)) &&
+      !(isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag })) &&
       domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
@@ -12848,7 +12848,7 @@ export async function executeStepWithHealing(params: {
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
             isFinalOrSubmit:
-              submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+              isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -12911,10 +12911,8 @@ export async function executeStepWithHealing(params: {
           // treated identically to an explicitly flagged one everywhere this
           // value is read below.
           const retrySubmitShaped =
-            submitStep ||
-            (isFinalStep && flowHasSubmitSemanticsFlag) ||
-            retryResolvedElementIsSubmitShaped ||
-            isSubmitIntentStep(step);
+            isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) ||
+            (retryResolvedElementIsSubmitShaped && classifyStepSubmitIntent(step) !== "non-submit");
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
