@@ -1,4 +1,5 @@
-import { CdpTransportClosedError } from "@/scraper/errors";
+import { CdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper/errors";
+import type { BrowserSession } from "@/scraper/session-shared";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 
 /**
@@ -20,17 +21,21 @@ const TEARDOWN_ERROR_LEVEL = 0;
  * that still runs even while the loop is draining, so callers racing this
  * signal see the death instead of a silent exit 0.
  */
-export function createSessionTeardownDetector(): {
+export function createSessionTeardownDetector(opts?: {
+  classifyDeath?: () => { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+}): {
   watchLogLine: (line: StagehandLogLine) => void;
   deathSignal: Promise<never>;
+  deathAbortSignal: AbortSignal;
 } {
-  let signalDeath: ((err: CdpTransportClosedError) => void) | undefined;
+  let signalDeath: ((err: Error) => void) | undefined;
   const deathSignal = new Promise<never>((_resolve, reject) => {
-    signalDeath = (err: CdpTransportClosedError): void => reject(err);
+    signalDeath = (err: Error): void => reject(err);
   });
   // deathSignal's executor runs synchronously above, so signalDeath is
   // always assigned before watchLogLine can be called.
   deathSignal.catch(() => undefined);
+  const abortController = new AbortController();
 
   let fired = false;
   const watchLogLine = (line: StagehandLogLine): void => {
@@ -38,12 +43,17 @@ export function createSessionTeardownDetector(): {
     if (line.level !== TEARDOWN_ERROR_LEVEL) return;
     if (!line.message.includes(TEARDOWN_MESSAGE_SUBSTRING)) return;
     fired = true;
-    signalDeath?.(
-      new CdpTransportClosedError(`stagehand-initiated teardown mid-flow: ${line.message}`)
-    );
+    const hit = opts?.classifyDeath?.();
+    const err = hit
+      ? new SessionLifetimeExceededError(
+          `scraper session reached its configured lifetime (${hit.elapsedSeconds.toFixed(1)}s elapsed of ${hit.configuredTimeoutSeconds}s): ${line.message}`
+        )
+      : new CdpTransportClosedError(`stagehand-initiated teardown mid-flow: ${line.message}`);
+    signalDeath?.(err);
+    abortController.abort(err);
   };
 
-  return { watchLogLine, deathSignal };
+  return { watchLogLine, deathSignal, deathAbortSignal: abortController.signal };
 }
 
 /**
@@ -98,4 +108,21 @@ export function raceAgainstTeardown<T>(
   deathSignal: Promise<never>
 ): Promise<T> {
   return Promise.race([stepPromise, deathSignal]);
+}
+
+/**
+ * Upgrades a caught error to `SessionLifetimeExceededError` when the session
+ * recorded a lifetime-expiry death, so every code path that observes the
+ * death fails fast regardless of which error it caught. Steel sessions have
+ * no `getSessionTimeoutHit`, so the error passes through unchanged.
+ */
+export function resolveSessionDeathError(
+  session: Pick<BrowserSession, "getSessionTimeoutHit"> | undefined,
+  err: unknown
+): unknown {
+  const hit = session?.getSessionTimeoutHit?.();
+  if (!hit) return err;
+  return new SessionLifetimeExceededError(
+    `scraper session reached its configured lifetime (${hit.elapsedSeconds.toFixed(1)}s elapsed of ${hit.configuredTimeoutSeconds}s)`
+  );
 }

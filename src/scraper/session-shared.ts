@@ -63,6 +63,11 @@ export interface BrowserSession {
    */
   deathSignal?: Promise<never>;
   /**
+   * Aborts with the same classified error `deathSignal` rejects with, for
+   * callers that need an AbortSignal rather than a promise to race.
+   */
+  deathAbortSignal?: AbortSignal;
+  /**
    * Returns the {@link CdpTransportClosedError} recorded if Stagehand tore
    * the CDP transport down on its own, mid-operation — as opposed to the
    * transport closing as an expected consequence of this session's own
