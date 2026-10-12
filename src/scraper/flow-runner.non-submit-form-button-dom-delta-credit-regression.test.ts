@@ -87,7 +87,8 @@ const GUARDRAIL_TAB_INSTRUCTION =
   "Click a plan tier tab. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout";
 
 function buildFixture(
-  stepsOverride?: (defaults: HealingFlowStep[]) => HealingFlowStep[]
+  stepsOverride?: (defaults: HealingFlowStep[]) => HealingFlowStep[],
+  options: { urlChangesOnClick?: boolean; buttonLabel?: string } = {}
 ): {
   page: Page;
   stagehand: Stagehand;
@@ -101,12 +102,13 @@ function buildFixture(
   document.body.innerHTML = `
     <form id="theForm">
       <div>
-        <button id="theControl">Expand details</button>
+        <button id="theControl">${options.buttonLabel ?? "Expand details"}</button>
       </div>
       <a id="detailsLink" href="#details">Details</a>
     </form>
   `;
 
+  let clicked = false;
   const controlEl = document.getElementById("theControl") as unknown as HappyDomElement;
   const detailsLinkEl = document.getElementById("detailsLink") as unknown as HappyDomElement;
   if (!controlEl || !detailsLinkEl) throw new Error("fixture setup failed");
@@ -119,6 +121,7 @@ function buildFixture(
       addEventListener: (type: string, cb: (ev: unknown) => void) => void;
     }
   ).addEventListener("click", () => {
+    clicked = true;
     const marker = document.createElement("div");
     marker.setAttribute("data-expanded", "x".repeat(2000));
     controlEl.appendChild(marker as unknown as HappyDomElement);
@@ -146,7 +149,8 @@ function buildFixture(
       ) => unknown;
       return fn(document, win.XPathResult);
     },
-    url: () => BASE_URL,
+    url: () =>
+      clicked && options.urlChangesOnClick ? "https://portal.example.com/dashboard/pro" : BASE_URL,
     title: async () => "Dashboard",
     locator: () => ({
       first: () => ({
@@ -228,10 +232,13 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
   it("does not judge a guardrailed mid-flow tab click and a guardrailed final step", async () => {
     verifySubmitWithLLM.mockReset();
     verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
-    const fixture = buildFixture((defaults) => [
-      { ...defaults[0], instruction: GUARDRAIL_TAB_INSTRUCTION },
-      { ...defaults[1], instruction: GUARDRAIL_TAB_INSTRUCTION, optional: false },
-    ]);
+    const fixture = buildFixture(
+      (defaults) => [
+        { ...defaults[0], instruction: GUARDRAIL_TAB_INSTRUCTION },
+        { ...defaults[1], instruction: GUARDRAIL_TAB_INSTRUCTION, optional: false },
+      ],
+      { urlChangesOnClick: true, buttonLabel: "Continue" }
+    );
 
     const result = await runFlow(fixture);
 
