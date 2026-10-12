@@ -292,3 +292,58 @@ describe("session-teardown/createDeathClassifier", () => {
     expect(classifyDeath()).toBeUndefined();
   });
 });
+
+describe("session-teardown/lifetime classification on the death signal", () => {
+  const teardownLine = {
+    level: 0,
+    category: "stagehand:v3",
+    message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
+  } as StagehandLogLine;
+
+  it("carries elapsed and limit in the lifetime error and is non-retryable", async () => {
+    const classifyDeath = createDeathClassifier({
+      configuredTimeoutSeconds: 300,
+      toleranceSeconds: 15,
+      isOwnClose: () => false,
+      getElapsedSeconds: () => 301.5,
+      getCompletedStepCount: () => 1,
+    });
+    const { watchLogLine, deathSignal } = createSessionTeardownDetector({ classifyDeath });
+    watchLogLine(teardownLine);
+    const err = (await deathSignal.catch((e: unknown) => e)) as SessionLifetimeExceededError;
+    expect(err).toBeInstanceOf(SessionLifetimeExceededError);
+    expect(err.retryable).toBe(false);
+    expect(err.message).toContain("301.5s elapsed of 300s");
+  });
+
+  it("yields a retryable CdpTransportClosedError for a crash before the lifetime", async () => {
+    const classifyDeath = createDeathClassifier({
+      configuredTimeoutSeconds: 300,
+      toleranceSeconds: 15,
+      isOwnClose: () => false,
+      getElapsedSeconds: () => 30,
+      getCompletedStepCount: () => 1,
+    });
+    const { watchLogLine, deathSignal } = createSessionTeardownDetector({ classifyDeath });
+    watchLogLine(teardownLine);
+    const err = await deathSignal.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CdpTransportClosedError);
+    expect(err).not.toBeInstanceOf(SessionLifetimeExceededError);
+    expect((err as CdpTransportClosedError).retryable).toBe(true);
+  });
+
+  it("memoizes the first lifetime hit so a later signal reports the same elapsed time", () => {
+    let elapsed = 299;
+    const classifyDeath = createDeathClassifier({
+      configuredTimeoutSeconds: 300,
+      toleranceSeconds: 5,
+      isOwnClose: () => false,
+      getElapsedSeconds: () => elapsed,
+      getCompletedStepCount: () => 0,
+    });
+    const first = classifyDeath();
+    elapsed = 310;
+    expect(classifyDeath()).toBe(first);
+    expect(first).toEqual({ configuredTimeoutSeconds: 300, elapsedSeconds: 299 });
+  });
+});

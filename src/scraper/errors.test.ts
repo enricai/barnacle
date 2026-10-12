@@ -17,10 +17,12 @@ import {
   isEmailStepInboxUnavailableError,
   isHttpSchemaError,
   isScraperError,
+  isSessionLifetimeExceededError,
   MissingFormMapKeyError,
   type NeedsUserInfoResult,
   type RunHealingFlowResult,
   ScraperError,
+  SessionLifetimeExceededError,
   StepVerificationError,
   UnknownScraperError,
 } from "@/scraper/errors";
@@ -371,5 +373,23 @@ describe("RunHealingFlowResult", () => {
     expect(result.submitVerified).toBe(true);
     expect(result.submitStepSkipped).toBe(false);
     expect(result.lastStepIndex).toBe(4);
+  });
+});
+
+describe("SessionLifetimeExceededError", () => {
+  it("is non-retryable and distinct from the retryable CdpTransportClosedError", () => {
+    const err = new SessionLifetimeExceededError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(false);
+    expect(err.name).toBe("SessionLifetimeExceededError");
+    expect(isCdpTransportClosedError(err)).toBe(false);
+    expect(new CdpTransportClosedError().retryable).toBe(true);
+  });
+
+  it("isSessionLifetimeExceededError recognizes a cross-realm name-tagged Error", () => {
+    const crossRealm = new Error("x");
+    crossRealm.name = "SessionLifetimeExceededError";
+    expect(isSessionLifetimeExceededError(crossRealm)).toBe(true);
+    expect(isSessionLifetimeExceededError(new CdpTransportClosedError())).toBe(false);
   });
 });

@@ -14,7 +14,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
-import { isCdpTransportClosedError } from "@/scraper/errors";
+import { isCdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 import {
   createBrowserbaseBrowserSession,
@@ -22,6 +22,7 @@ import {
   makeOutboundIpAccessor,
   type StagehandLogLine,
 } from "@/scraper/session-browserbase";
+import { resolveSessionDeathError } from "@/scraper/session-teardown";
 import type { Logger } from "@/types/logging";
 
 const { configRef } = vi.hoisted(() => ({
@@ -569,6 +570,32 @@ describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () 
       expect(timeoutHit).toBeDefined();
       expect(timeoutHit?.configuredTimeoutSeconds).toBe(300);
       expect(timeoutHit?.elapsedSeconds).toBeCloseTo(290, 0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a retryable CdpTransportClosedError while resolveSessionDeathError upgrades a lifetime death to non-retryable", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = await createBrowserbaseBrowserSession({
+        browserbaseSessionCreateParams: { timeout: 300 },
+      });
+      const fakeStagehand = session.stagehand as unknown as {
+        context: { conn: { onTransportClosed: ReturnType<typeof vi.fn> } };
+      };
+      const handler = fakeStagehand.context.conn.onTransportClosed.mock.calls[0]?.[0] as (
+        why: string
+      ) => void;
+
+      vi.advanceTimersByTime(300_000);
+      handler("socket-close code=1006 reason=");
+
+      const closed = session.getCdpTransportClosedError?.();
+      expect(isCdpTransportClosedError(closed)).toBe(true);
+      const resolved = resolveSessionDeathError(session, closed);
+      expect(resolved).toBeInstanceOf(SessionLifetimeExceededError);
+      expect((resolved as SessionLifetimeExceededError).message).toContain("of 300s");
     } finally {
       vi.useRealTimers();
     }
