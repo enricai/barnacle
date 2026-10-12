@@ -12119,7 +12119,12 @@ export async function executeStepWithHealing(params: {
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
       isFinalOrSubmit:
-        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+        isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
       isAdvance: isAdvanceStep(step),
       domVerified: domVerified && destinationPlausible,
       networkIsRealAdvance,
@@ -12223,10 +12228,12 @@ export async function executeStepWithHealing(params: {
     // gate (requireSubmitEndpoint) will re-litigate the credit below.
     const formValueWeakSignalAllowed =
       !(
-        submitStep ||
-        (isFinalStep && flowHasSubmitSemanticsFlag) ||
-        resolvedElementIsSubmitShaped ||
-        isSubmitIntentStep(step)
+        isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }) || resolvedElementIsSubmitShaped
       ) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
