@@ -1553,6 +1553,48 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
 }
 
 /**
+ * A negation followed, in the same clause, by a checkout/proceed/submit target
+ * ("Do NOT click ... any control that proceeds to checkout"). Deliberately
+ * narrow: a negation alone ("do not click Book Now") is not a declaration.
+ */
+const NEGATED_SUBMIT_CLAUSE =
+  /\b(?:do not|don't|dont|never|must not|should not|shouldn't)\b[^.;\n]*?\b(?:proceeds? to (?:the )?checkout|proceed(?:s|ing)? (?:to|with) (?:the )?(?:checkout|payment|purchase)|check ?out|submit(?:s|ting)?)\b[^.;\n]*/gi;
+
+export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
+
+/**
+ * Reads the step's own instruction for a declared submit intent, so an
+ * explicit "this is NOT a submit/checkout click" can veto inferred submit
+ * shape. A positive submit phrase outside the negated clause keeps "submit"
+ * so a real submit step that mentions a guardrail is not demoted. Pure.
+ */
+export function classifyStepSubmitIntent(instruction: string | null | undefined): StepSubmitIntent {
+  if (!instruction) return "unspecified";
+  const remainder = instruction.replace(NEGATED_SUBMIT_CLAUSE, " ");
+  if (isSubmitIntentStep(remainder)) return "submit";
+  if (remainder !== instruction) return "non-submit";
+  return isSubmitIntentStep(instruction) ? "submit" : "unspecified";
+}
+
+/**
+ * Single seam answering "is this step submit-shaped?": an explicit `submitStep`
+ * flag is authoritative, a declared non-submit instruction vetoes every
+ * inferred path, otherwise final-step inference or submit-intent wording applies.
+ */
+export function isStepSubmitShaped(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  const { step, submitStep, isFinalStep, flowHasSubmitSemantics: flowSubmit } = params;
+  if (submitStep) return true;
+  const intent = classifyStepSubmitIntent(step);
+  if (intent === "non-submit") return false;
+  return (isFinalStep && flowSubmit) || intent === "submit";
+}
+
+/**
  * Is this flow step's intent to check a checkbox or select a radio option?
  * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
  * from crediting a checkbox/radio-intent step: those signals move whenever ANY
