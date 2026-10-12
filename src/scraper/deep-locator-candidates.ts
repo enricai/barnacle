@@ -318,6 +318,16 @@ function isFrameCandidateScanResult(entry: unknown): entry is FrameCandidateScan
 }
 
 /**
+ * Result of {@link scanFrameCandidatesBatched}. `seamResponsive` is `true` only
+ * when the frame evaluate answered, so the legacy loop knows a second read
+ * against the same seam is worth its round-trip rather than another hang.
+ */
+interface BatchedScanOutcome {
+  candidates: DeepLocatorCandidate[] | null;
+  seamResponsive: boolean;
+}
+
+/**
  * Batched-scan fast path: one `frameTarget.evaluate(buildScanFrameCandidatesExpr(innerSelector))`
  * round-trip replaces the legacy `count()` + N × `nth(i).textContent()` loop.
  * Returns `null` (never throws) when no frame seam is available, the
@@ -341,8 +351,8 @@ async function scanFrameCandidatesBatched(
   frameTarget: FrameTarget | null,
   innerSelector: string,
   hopSelector: string
-): Promise<DeepLocatorCandidate[] | null> {
-  if (!frameTarget) return null;
+): Promise<BatchedScanOutcome> {
+  if (!frameTarget) return { candidates: null, seamResponsive: false };
 
   let scanResults: unknown;
   try {
@@ -353,19 +363,19 @@ async function scanFrameCandidatesBatched(
     logger.warn(
       `deepLocator batched scan for ${hopSelector} failed, degrading to per-candidate enumeration: ${toErrorMessage(err)}`
     );
-    return null;
+    return { candidates: null, seamResponsive: false };
   }
   if (!Array.isArray(scanResults) || !scanResults.every(isFrameCandidateScanResult)) {
     logger.warn(
       `deepLocator batched scan for ${hopSelector} returned a non-conforming payload, degrading to per-candidate enumeration`
     );
-    return null;
+    return { candidates: null, seamResponsive: false };
   }
   if (scanResults.length === 0) {
     logger.warn(
       `deepLocator batched scan for ${hopSelector} matched zero elements, degrading to per-candidate enumeration in case a shadow-DOM control was missed`
     );
-    return null;
+    return { candidates: null, seamResponsive: true };
   }
 
   const visibleResults = scanResults.filter((entry) => entry.visible);
@@ -374,12 +384,13 @@ async function scanFrameCandidatesBatched(
       `deepLocator batched scan for ${hopSelector} dropped ${scanResults.length - visibleResults.length} unrendered candidate(s)`
     );
   }
-  return visibleResults.map((entry) => ({
+  const candidates = visibleResults.map((entry) => ({
     index: entry.index,
     selector: candidateSelector(hopSelector, entry.index),
     accessibleText: entry.text.trim(),
     isNav: entry.isNav === true,
   }));
+  return { candidates, seamResponsive: true };
 }
 
 /**
@@ -514,16 +525,12 @@ export async function resolveDeepLocatorCandidates(
   }
 
   const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
-  const batchedCandidates = await scanFrameCandidatesBatched(
-    frameTarget,
-    innerSelector,
-    hopSelector
-  );
+  const scan = await scanFrameCandidatesBatched(frameTarget, innerSelector, hopSelector);
   const candidates =
-    batchedCandidates ??
+    scan.candidates ??
     (await enumerateCandidatesViaLegacyLoop(
       delegate,
-      frameTarget,
+      scan.seamResponsive ? frameTarget : null,
       innerSelector,
       hopSelector,
       callTimeoutMs,
