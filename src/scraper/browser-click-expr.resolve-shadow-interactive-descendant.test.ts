@@ -112,6 +112,15 @@ describe("RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR", () => {
     expect(resolve(host)).toBe(realButton);
   });
 
+  it("skips an aria-hidden button in favor of the plain one", () => {
+    const host = makeElement("card-widget");
+    host.shadowRoot = makeElement("shadow-root");
+    appendChild(host.shadowRoot, makeElement("button", { "aria-hidden": "true" }));
+    const realButton = appendChild(host.shadowRoot, makeElement("button"));
+
+    expect(resolve(host)).toBe(realButton);
+  });
+
   it("resolves a role=button div when there is no native button", () => {
     const host = makeElement("card-widget");
     host.shadowRoot = makeElement("shadow-root");

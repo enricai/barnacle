@@ -211,6 +211,18 @@ describe("captureTargetResolutionDiagnosticSnapshot against a real generated exp
     });
   });
 
+  it("reports an aria-hidden candidate as not visible and a plain one as visible", async () => {
+    const decoy = makeFakeEl("div", { "aria-hidden": "true" }, "Create Account");
+    const real = makeFakeEl("div", {}, "Create Account");
+    const page = fakePageEvaluatingRealExpr(makeFakeRoot([decoy, real]));
+
+    const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
+
+    const visibility = snapshot?.candidates.map((c) => c.visible) ?? [];
+    expect(visibility).toContain(true);
+    expect(visibility).not.toContain(undefined);
+  });
+
   // Rules out this module's own duplicated DEEP_ELEMENTS_EXPR (see the
   // docblock on buildCandidateDetailExpr) for a closed shadow root
   // specifically -- a separate code path from submit-control.ts's copy,
