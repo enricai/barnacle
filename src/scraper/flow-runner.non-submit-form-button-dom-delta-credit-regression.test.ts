@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
+const { verifySubmitWithLLM } = vi.hoisted(() => ({
+  verifySubmitWithLLM: vi.fn(),
+}));
+vi.mock("@/lib/llm/judges/verify-submit", () => ({ verifySubmitWithLLM }));
+
 /**
  * Pins bugfix-003's primary-xpath-hit branch (distinct from the
  * xpathTail-retarget branch covered by
@@ -78,7 +83,12 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
  * n+16 fallback's PRIMARY xpath (never staled, so the tail-retarget branch is
  * never reached) against a bare `<button>` wrapped in a `<form>`.
  */
-function buildFixture(): {
+const GUARDRAIL_TAB_INSTRUCTION =
+  "Click a plan tier tab. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout";
+
+function buildFixture(
+  stepsOverride?: (defaults: HealingFlowStep[]) => HealingFlowStep[]
+): {
   page: Page;
   stagehand: Stagehand;
   steps: HealingFlowStep[];
@@ -170,10 +180,11 @@ function buildFixture(): {
   } as unknown as Stagehand;
   void detailsLinkXPath;
 
-  const steps: HealingFlowStep[] = [
+  const defaults: HealingFlowStep[] = [
     { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
     { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
   ];
+  const steps = stepsOverride ? stepsOverride(defaults) : defaults;
 
   const { logger, info, warn } = makeLogger();
   return { page, stagehand, steps, logger, info, warn };
@@ -195,5 +206,50 @@ describe("flow-runner resolvedClickTargetIsSubmitShaped — primary-xpath-hit br
 
     expect(result.lastStepIndex).toBe(1);
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+  });
+});
+
+describe("flow-runner declared non-submit step never reaches the submit judge", () => {
+  const runFlow = async (
+    fixture: ReturnType<typeof buildFixture>
+  ): Promise<Awaited<ReturnType<typeof runHealingFlow>>> =>
+    runHealingFlow({
+      stagehand: fixture.stagehand,
+      page: fixture.page,
+      steps: fixture.steps,
+      logger: fixture.logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      submitEndpointPattern: "/api/submit",
+      requireSubmitEndpointMatch: true,
+    });
+
+  it("does not judge a guardrailed mid-flow tab click and a guardrailed final step", async () => {
+    verifySubmitWithLLM.mockReset();
+    verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    const fixture = buildFixture((defaults) => [
+      { ...defaults[0], instruction: GUARDRAIL_TAB_INSTRUCTION },
+      { ...defaults[1], instruction: GUARDRAIL_TAB_INSTRUCTION, optional: false },
+    ]);
+
+    const result = await runFlow(fixture);
+
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    expect(result.lastStepIndex).toBe(1);
+    expect(fixture.info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+  });
+
+  it("control: a genuine submitStep still reaches the judge", async () => {
+    verifySubmitWithLLM.mockReset();
+    verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    const fixture = buildFixture((defaults) => [
+      { ...defaults[0], instruction: "Click the 'Submit' button", submitStep: true },
+      defaults[1] as HealingFlowStep,
+    ]);
+
+    await runFlow(fixture).catch(() => undefined);
+
+    expect(verifySubmitWithLLM).toHaveBeenCalled();
   });
 });
