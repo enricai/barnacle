@@ -18,7 +18,8 @@ describe("collectRequestBodyValuesByKey — genuine variance still reported", ()
     const a = cap({ items: [{ sku: "a" }, { sku: "b" }] });
     const b = cap({ items: [{ sku: "a" }, { sku: "c" }] });
     const byKey = collectRequestBodyValuesByKey(a, [a, b])!;
-    expect(byKey.has("items")).toBe(true);
+    expect([...byKey.keys()]).toEqual(["sku"]);
+    expect([...byKey.get("sku")!]).toEqual(["b"]);
   });
 
   it("still flags a varying scalar body field", () => {
