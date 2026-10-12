@@ -218,9 +218,7 @@ describe("captureTargetResolutionDiagnosticSnapshot against a real generated exp
 
     const snapshot = await captureTargetResolutionDiagnosticSnapshot(undefined, page);
 
-    const visibility = snapshot?.candidates.map((c) => c.visible) ?? [];
-    expect(visibility).toContain(true);
-    expect(visibility).not.toContain(undefined);
+    expect(snapshot?.candidates.map((c) => c.visible)).toEqual([false, true]);
   });
 
   // Rules out this module's own duplicated DEEP_ELEMENTS_EXPR (see the
