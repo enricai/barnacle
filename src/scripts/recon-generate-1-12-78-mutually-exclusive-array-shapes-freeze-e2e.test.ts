@@ -23,19 +23,27 @@ const OWN_BACKEND_HOST = "www.mutually-exclusive-array-shapes-fixture.example.co
 const DRILL_URL = `https://${OWN_BACKEND_HOST}/catalog/pricing/`;
 
 const ID_STYLE_FILTERS = [
-  "red;filterId=color-red",
-  "xl;filterId=size-xl",
-  "cotton;filterId=material-cotton",
-  "sale;filterId=promo-sale",
+  "red;filterId=colorRed",
+  "xl;filterId=sizeXl",
+  "cotton;filterId=materialCotton",
+  "sale;filterId=promoSale",
 ];
 const TYPE_STYLE_FILTERS = [
-  "RED;filterType=color",
-  "XL;filterType=size",
-  "COTTON;filterType=material",
+  ...ID_STYLE_FILTERS.slice(0, 3),
   "NIGHT;filterType=night",
   "PRIVATEISLAND;filterType=privateIsland",
   "SALE;filterType=promo",
 ];
+
+/**
+ * A never-shared marker query key carrying the capture's index-3 element
+ * literally, so the rendered drill URL contains that element (the same
+ * coincidental-substring mechanism the frozen-varying guard exists to catch)
+ * without any query param ever differing between captures.
+ */
+function marker(filters: string[]): string {
+  return `mark-${filters[3]}`;
+}
 
 function fixtureCaptures(): Capture[] {
   const primary = buildCapture({
@@ -46,7 +54,7 @@ function fixtureCaptures(): Capture[] {
   });
   const drill = (sku: string, filters: string[], timestamp: string): Capture =>
     buildCapture({
-      url: `${DRILL_URL}?sku=${sku}`,
+      url: `${DRILL_URL}?sku=${sku}&${marker(filters)}=ok`,
       requestPostData: JSON.stringify({ filters }),
       responseBody: { results: [{ sku, amount: 19.99 }] },
       timestamp,
@@ -93,10 +101,7 @@ describe("recon-generate CLI — mutually-exclusive facet-array shapes across sa
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({
-        steps: [
-          { step: "search catalog" },
-          { step: "drill into pricing", submitStep: true },
-        ],
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
         submitEndpointPattern: "catalog/pricing",
         ownBackendHostnames: [OWN_BACKEND_HOST],
         foldReturn: {
