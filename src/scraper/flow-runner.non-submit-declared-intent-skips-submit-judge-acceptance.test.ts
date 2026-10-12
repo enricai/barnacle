@@ -185,36 +185,55 @@ describe.each(MARKUPS)(
     });
 
     const run = async (
-      actClicks: boolean
-    ): Promise<{ lastStepIndex: number; info: string[]; warn: string[] }> => {
+      actClicks: boolean,
+      followedByStep: boolean
+    ): Promise<{ step1Verified: boolean; info: string[]; warn: string[] }> => {
       const fx = buildFixture({ ...markup, actClicks });
-      const result = await runHealingFlow({
+      // The filler step after the tab only exists to make step 1 non-final; its
+      // own click has no fresh effect, so its failure is expected and ignored.
+      await runHealingFlow({
         stagehand: fx.stagehand,
         page: fx.page,
-        steps: [{ instruction: STEP, optional: false, upload: false, submitStep: false }],
+        steps: [
+          { instruction: STEP, optional: false, upload: false, submitStep: false },
+          ...(followedByStep
+            ? [
+                {
+                  instruction: "Click the 'Details' link",
+                  optional: true,
+                  upload: false,
+                  submitStep: false,
+                },
+              ]
+            : []),
+        ],
         logger: fx.logger,
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
         submitEndpointPattern: "/bookings/confirm$",
         requireSubmitEndpointMatch: true,
-      });
-      return { lastStepIndex: result.lastStepIndex, info: fx.info, warn: fx.warn };
+      }).catch(() => undefined);
+      const step1Verified = fx.info.some((l) => l.includes("step 1/") && l.includes("succeeded"));
+      return { step1Verified, info: fx.info, warn: fx.warn };
     };
 
     const rejected = (lines: string[]): boolean =>
       lines.some((l) => l.includes("submit-judge-rejected"));
 
     it("primary attempt: verifies via view-swap credit without invoking the judge", async () => {
-      const { lastStepIndex, info, warn } = await run(true);
-      expect(lastStepIndex).toBe(0);
+      const { step1Verified, info, warn } = await run(true, false);
+      expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
 
+    // Non-final: on a final step the n+16 path's separate destination-unconfirmed
+    // veto (URL changed, no endpoint pattern once the step is non-submit) decides
+    // the outcome, so the judge gate is only isolated when the step is interior.
     it("n+16 retry: verifies via DOM credit without invoking the judge", async () => {
-      const { lastStepIndex, info, warn } = await run(false);
-      expect(lastStepIndex).toBe(0);
+      const { step1Verified, info, warn } = await run(false, true);
+      expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
