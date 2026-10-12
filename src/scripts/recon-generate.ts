@@ -9791,7 +9791,7 @@ function collectRequestUrlValues(capture: Capture, allCaptures?: readonly Captur
  * UNRELATED body field can't be threaded onto it. Returns `null` when
  * `capture.requestPostData` isn't parseable JSON, the same non-JSON signal
  * {@link jsonBodyLeafValuesByKey} returns. */
-function collectRequestBodyValuesByKey(
+export function collectRequestBodyValuesByKey(
   capture: Capture,
   allCaptures?: readonly Capture[]
 ): Map<string, Set<string>> | null {
@@ -9817,7 +9817,7 @@ function collectRequestBodyValuesByKey(
       try {
         const otherBody = parsedRequestBodyFor(c);
         if (otherBody === undefined) return undefined;
-        const otherValue = readValueAtPath(otherBody, path);
+        const otherValue = readComparableBodyLeaf(parsedBody, otherBody, path);
         return otherValue === undefined ? undefined : String(otherValue);
       } catch {
         return undefined;
