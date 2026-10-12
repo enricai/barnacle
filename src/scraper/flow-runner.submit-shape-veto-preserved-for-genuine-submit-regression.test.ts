@@ -5,6 +5,16 @@ import { describe, expect, it, vi } from "vitest";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
+const verifySubmitWithLLM = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-submit")>();
+  return {
+    ...actual,
+    verifySubmitWithLLM: (...args: unknown[]) => verifySubmitWithLLM(...args),
+  };
+});
+
 /**
  * Non-regression companion to bugfix-001's narrowing (2b587a7): a bare,
  * default-type `<button>` merely owned by a `<form>` no longer gets
@@ -483,6 +493,44 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
           submitStep: true,
         })
       );
+    });
+
+    it("still invokes verifySubmitWithLLM for a submitStep-flagged step that transitions", async () => {
+      verifySubmitWithLLM.mockReset();
+      verifySubmitWithLLM.mockResolvedValue({
+        verified: true,
+        reason: null,
+        dom_signal: null,
+        url_signal: "/thank-you",
+        rationale: "URL transitioned to the thank-you page",
+      });
+      const fixture = buildPrimaryXPathFixture({
+        controlTag: "button",
+        controlAttrs: 'type="button"',
+        controlText: "Widget Details",
+        submitStep: true,
+      });
+      const originalAct = fixture.stagehand.act as unknown as (...a: unknown[]) => Promise<unknown>;
+      let transitioned = false;
+      (fixture.stagehand as unknown as { act: unknown }).act = async (
+        ...a: unknown[]
+      ): Promise<unknown> => {
+        transitioned = true;
+        return originalAct(...a);
+      };
+      (fixture.page as unknown as { url: () => string }).url = () =>
+        transitioned ? `${BASE_URL}/thank-you` : BASE_URL;
+      await runHealingFlow({
+        stagehand: fixture.stagehand,
+        page: fixture.page,
+        steps: fixture.steps,
+        logger: fixture.logger,
+        submitEndpointPattern: "/submit",
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      }).catch(() => undefined);
+      expect(verifySubmitWithLLM).toHaveBeenCalled();
     });
 
     it("still vetoes a real submit-phrase step with no negative declaration (primary xpath)", async () => {
