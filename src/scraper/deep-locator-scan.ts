@@ -81,19 +81,7 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
  */
 export const DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS = 1_000;
 
-/**
- * Visibility check shared by every candidate the scan expression builds: a
- * node with a 0x0 layout box, or a computed `display:none`/
- * `visibility:hidden`, can never be the target of a real click — this is the
- * DOM-observable symptom that {@link isNodeNotActionableError} catches from
- * the CDP-error side when a click is attempted anyway.
- */
-const IS_VISIBLE_EXPR = `((el) => {
-  const rect = el.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return false;
-  const style = getComputedStyle(el);
-  return style.display !== "none" && style.visibility !== "hidden";
-})`;
+const IS_VISIBLE_EXPR = ACTIONABLE_VISIBILITY_EXPR;
 
 /**
  * Flags a candidate as a navigation/advance control that a "select
