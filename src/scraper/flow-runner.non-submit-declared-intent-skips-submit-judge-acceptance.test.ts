@@ -105,10 +105,12 @@ function buildFixture(params: Markup & { actClicks: boolean }): {
   const pricesEl = document.getElementById("prices") as unknown as HappyDomElement;
   if (!controlEl || !pricesEl) throw new Error("fixture setup failed");
   const controlXPath = absoluteXPathFor(controlEl);
+  let currentUrl = BASE_URL;
 
   (
     controlEl as unknown as { addEventListener: (t: string, cb: () => void) => void }
   ).addEventListener("click", () => {
+    currentUrl = `${BASE_URL}/outside`;
     pricesEl.innerHTML = `<p data-outside="${"x".repeat(2000)}">Outside: $80</p>`;
   });
 
@@ -124,14 +126,13 @@ function buildFixture(params: Markup & { actClicks: boolean }): {
   const session = { on: () => {}, off: () => {} };
   const page = {
     evaluate: async (expr: unknown): Promise<unknown> => {
-      const fn = new window.Function(
-        "document",
-        "XPathResult",
-        `return (${String(expr)});`
-      ) as (d: unknown, x: unknown) => unknown;
+      const fn = new window.Function("document", "XPathResult", `return (${String(expr)});`) as (
+        d: unknown,
+        x: unknown
+      ) => unknown;
       return fn(document, win.XPathResult);
     },
-    url: () => BASE_URL,
+    url: () => currentUrl,
     title: async () => "Unit 42 | Rental Fixture",
     locator: () => ({
       first: () => ({
@@ -176,43 +177,46 @@ const MARKUPS: Array<[string, Markup]> = [
   ["sole button in a form ancestor", { label: "Outside", wrapInForm: true }],
 ];
 
-describe.each(MARKUPS)("non-submit declared intent skips the submit judge — %s", (_name, markup) => {
-  beforeEach(() => {
-    vi.mocked(verifySubmitWithLLM).mockClear();
-  });
-
-  const run = async (
-    actClicks: boolean
-  ): Promise<{ lastStepIndex: number; info: string[]; warn: string[] }> => {
-    const fx = buildFixture({ ...markup, actClicks });
-    const result = await runHealingFlow({
-      stagehand: fx.stagehand,
-      page: fx.page,
-      steps: [{ instruction: STEP, optional: false, upload: false, submitStep: false }],
-      logger: fx.logger,
-      anthropic: null,
-      rephraseModel: null,
-      uploadFixture: null,
-      submitEndpointPattern: "/bookings/confirm$",
-      requireSubmitEndpointMatch: true,
+describe.each(MARKUPS)(
+  "non-submit declared intent skips the submit judge — %s",
+  (_name, markup) => {
+    beforeEach(() => {
+      vi.mocked(verifySubmitWithLLM).mockClear();
     });
-    return { lastStepIndex: result.lastStepIndex, info: fx.info, warn: fx.warn };
-  };
 
-  const rejected = (lines: string[]): boolean =>
-    lines.some((l) => l.includes("submit-judge-rejected"));
+    const run = async (
+      actClicks: boolean
+    ): Promise<{ lastStepIndex: number; info: string[]; warn: string[] }> => {
+      const fx = buildFixture({ ...markup, actClicks });
+      const result = await runHealingFlow({
+        stagehand: fx.stagehand,
+        page: fx.page,
+        steps: [{ instruction: STEP, optional: false, upload: false, submitStep: false }],
+        logger: fx.logger,
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+        submitEndpointPattern: "/bookings/confirm$",
+        requireSubmitEndpointMatch: true,
+      });
+      return { lastStepIndex: result.lastStepIndex, info: fx.info, warn: fx.warn };
+    };
 
-  it("primary attempt: verifies via view-swap credit without invoking the judge", async () => {
-    const { lastStepIndex, info, warn } = await run(true);
-    expect(lastStepIndex).toBe(0);
-    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
-    expect(rejected([...info, ...warn])).toBe(false);
-  });
+    const rejected = (lines: string[]): boolean =>
+      lines.some((l) => l.includes("submit-judge-rejected"));
 
-  it("n+16 retry: verifies via DOM credit without invoking the judge", async () => {
-    const { lastStepIndex, info, warn } = await run(false);
-    expect(lastStepIndex).toBe(0);
-    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
-    expect(rejected([...info, ...warn])).toBe(false);
-  });
-});
+    it("primary attempt: verifies via view-swap credit without invoking the judge", async () => {
+      const { lastStepIndex, info, warn } = await run(true);
+      expect(lastStepIndex).toBe(0);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(rejected([...info, ...warn])).toBe(false);
+    });
+
+    it("n+16 retry: verifies via DOM credit without invoking the judge", async () => {
+      const { lastStepIndex, info, warn } = await run(false);
+      expect(lastStepIndex).toBe(0);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(rejected([...info, ...warn])).toBe(false);
+    });
+  }
+);
