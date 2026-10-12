@@ -15,6 +15,7 @@ import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   buildClickFrameCandidateExpr,
+  buildNonActionableIndicesExpr,
   buildScanFrameCandidatesExpr,
   DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS,
   type FrameCandidateClickResult,
@@ -337,13 +338,10 @@ function isFrameCandidateScanResult(entry: unknown): entry is FrameCandidateScan
  * an empty frame.
  */
 async function scanFrameCandidatesBatched(
-  page: Page,
-  frameSelector: string | null | undefined,
+  frameTarget: FrameTarget | null,
   innerSelector: string,
-  hopSelector: string,
-  timeoutOptions: DeepLocatorTimeoutOptions
+  hopSelector: string
 ): Promise<DeepLocatorCandidate[] | null> {
-  const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
   if (!frameTarget) return null;
 
   let scanResults: unknown;
@@ -385,6 +383,33 @@ async function scanFrameCandidatesBatched(
 }
 
 /**
+ * One frame evaluate naming the match indices that fail the shared
+ * actionable-visibility predicate, for the legacy loop: a Stagehand `Locator`
+ * has no per-element evaluate (and `isVisible()` ignores `aria-hidden`), so an
+ * `aria-hidden` decoy can only be recognised from the frame. Returns an empty
+ * set (never throws) when there is no frame seam or the read fails, which
+ * leaves the loop's behavior as it was without a seam.
+ */
+async function readNonActionableIndices(
+  frameTarget: FrameTarget | null,
+  innerSelector: string,
+  hopSelector: string
+): Promise<Set<number>> {
+  if (!frameTarget) return new Set();
+  try {
+    const indices = await frameTarget.evaluate<number[]>(
+      buildNonActionableIndicesExpr(innerSelector)
+    );
+    return new Set(Array.isArray(indices) ? indices.filter((i) => typeof i === "number") : []);
+  } catch (err) {
+    logger.warn(
+      `deepLocator non-actionable read for ${hopSelector} failed, enumerating without it: ${toErrorMessage(err)}`
+    );
+    return new Set();
+  }
+}
+
+/**
  * Legacy fallback: `count()` then one `nth(index).textContent()` round-trip
  * per candidate, individually bounded by `callTimeoutMs` via
  * {@link withWatchdog} and collectively bounded by `enumerationBudgetMs` so a
@@ -397,6 +422,8 @@ async function scanFrameCandidatesBatched(
  */
 async function enumerateCandidatesViaLegacyLoop(
   delegate: DeepLocatorInstance,
+  frameTarget: FrameTarget | null,
+  innerSelector: string,
   hopSelector: string,
   callTimeoutMs: number,
   enumerationBudgetMs: number
@@ -410,6 +437,7 @@ async function enumerateCandidatesViaLegacyLoop(
   });
   if (count === 0) return [];
 
+  const nonActionable = await readNonActionableIndices(frameTarget, innerSelector, hopSelector);
   const candidates: DeepLocatorCandidate[] = [];
   const enumerationDeadline = Date.now() + enumerationBudgetMs;
   for (let index = 0; index < count; index++) {
@@ -419,6 +447,7 @@ async function enumerateCandidatesViaLegacyLoop(
       );
       break;
     }
+    if (nonActionable.has(index)) continue;
     const accessibleText = await withWatchdog(() => delegate.nth(index).textContent(), {
       timeoutMs: callTimeoutMs,
       label: `deepLocator textContent() for ${hopSelector} nth=${index}`,
@@ -484,17 +513,18 @@ export async function resolveDeepLocatorCandidates(
     return [];
   }
 
+  const frameTarget = await resolveScanFrameTarget(page, frameSelector, timeoutOptions);
   const batchedCandidates = await scanFrameCandidatesBatched(
-    page,
-    frameSelector,
+    frameTarget,
     innerSelector,
-    hopSelector,
-    timeoutOptions
+    hopSelector
   );
   const candidates =
     batchedCandidates ??
     (await enumerateCandidatesViaLegacyLoop(
       delegate,
+      frameTarget,
+      innerSelector,
       hopSelector,
       callTimeoutMs,
       enumerationBudgetMs
