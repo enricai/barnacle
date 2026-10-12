@@ -30,25 +30,50 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
 describe("scraper/flow-runner isStepSubmitShaped", () => {
   it("keeps an explicit submitStep authoritative over a non-submit instruction", () => {
     expect(
-      isStepSubmitShaped({ step: NEG, submitStep: true, isFinalStep: true, flowHasSubmitSemantics: true }),
+      isStepSubmitShaped({
+        step: NEG,
+        submitStep: true,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
     ).toBe(true);
   });
 
   it("vetoes final-step inference when the instruction declares non-submit", () => {
     expect(
-      isStepSubmitShaped({ step: NEG, submitStep: false, isFinalStep: true, flowHasSubmitSemantics: true }),
+      isStepSubmitShaped({
+        step: NEG,
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
     ).toBe(false);
   });
 
   it("infers submit from final step with flow semantics, or from submit wording", () => {
     expect(
-      isStepSubmitShaped({ step: "Review", submitStep: false, isFinalStep: true, flowHasSubmitSemantics: true }),
+      isStepSubmitShaped({
+        step: "Review",
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
     ).toBe(true);
     expect(
-      isStepSubmitShaped({ step: "click submit", submitStep: false, isFinalStep: false, flowHasSubmitSemantics: false }),
+      isStepSubmitShaped({
+        step: "click submit",
+        submitStep: false,
+        isFinalStep: false,
+        flowHasSubmitSemantics: false,
+      })
     ).toBe(true);
     expect(
-      isStepSubmitShaped({ step: "Review", submitStep: false, isFinalStep: true, flowHasSubmitSemantics: false }),
+      isStepSubmitShaped({
+        step: "Review",
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: false,
+      })
     ).toBe(false);
   });
 });
