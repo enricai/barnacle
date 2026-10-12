@@ -1,6 +1,6 @@
 import { CdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper/errors";
-import type { BrowserSession } from "@/scraper/session-shared";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
+import type { BrowserSession } from "@/scraper/session-shared";
 
 /**
  * Substring Stagehand's own v3 transport logs at `level:0` (error) when it
