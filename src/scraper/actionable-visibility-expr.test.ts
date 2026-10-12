@@ -26,7 +26,7 @@ const g = globalThis as unknown as { getComputedStyle?: unknown };
 
 function check(opts: FakeOpts): boolean {
   g.getComputedStyle = (el: { style: unknown }): unknown => el.style;
-  const fn = (0, eval)(ACTIONABLE_VISIBILITY_EXPR) as (el: unknown) => boolean;
+  const fn = new Function(`return (${ACTIONABLE_VISIBILITY_EXPR});`)() as (el: unknown) => boolean;
   return fn(fake(opts));
 }
 
