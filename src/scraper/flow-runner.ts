@@ -10958,7 +10958,7 @@ export async function executeStepWithHealing(params: {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
           ? attempt1UnreachableViaLightDom &&
-            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+            (isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }))
             ? "deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "trusted-click-retry"
@@ -10978,7 +10978,7 @@ export async function executeStepWithHealing(params: {
         advanceUnmovedAfterAttempt1,
         attempt1UnreachableViaLightDom,
         submitShapedStep:
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+          isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
       });
       if (decision.skip) {
         logger.info(
@@ -11131,7 +11131,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         attempt1UnreachableViaLightDom &&
-        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+        (isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }))
       ) {
         // Deep submit-control locator: attempt 1 either phantom-clicked
         // (Stagehand reported success but pre/post showed zero effect) or
@@ -11272,7 +11272,7 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         phantomClickAfterAttempt1 &&
-        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+        !(isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }))
       ) {
         // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
         // Stagehand reported success but pre/post showed zero effect. On a
