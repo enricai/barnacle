@@ -2,7 +2,11 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CdpTransportClosedError } from "@/scraper/errors";
-import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import {
+  executeStepWithHealing,
+  type HealingFlowStep,
+  runHealingFlow,
+} from "@/scraper/flow-runner";
 import { createSessionTeardownDetector } from "@/scraper/session-teardown";
 import type { Logger } from "@/types/logging";
 
@@ -167,5 +171,83 @@ describe("flow-runner/runHealingFlow — session-teardown-detector deathSignal",
     // promise into a rejection or throw as an unhandled rejection.
     watchLogLine(TEARDOWN_LOG_LINE);
     await expect(deathSignal).rejects.toThrow(CdpTransportClosedError);
+  });
+});
+
+function buildCascadeParams(
+  abortSignal?: AbortSignal
+): Parameters<typeof executeStepWithHealing>[0] {
+  return {
+    stagehand: makeStagehand(),
+    page: makeFakePage({ current: "https://portal.example.org/records/9/details" }),
+    abortSignal,
+    step: "Click the mystery widget",
+    optional: false,
+    upload: false,
+    submitStep: false,
+    stepIndex: 0,
+    phase: "flow",
+    signalCounter: { n: 0 },
+    recentCaptures: [],
+    recentCaptureMeta: [],
+    anthropic: null,
+    rephraseModel: null,
+    logger: testLogger,
+    captureFn: vi.fn().mockResolvedValue(undefined),
+    uploadFixture: null,
+    isFinalStep: false,
+    flowHasSubmitSemantics: false,
+    submitEndpointPattern: null,
+    submittedStateSelectors: [],
+    requireSubmitEndpointMatch: false,
+    advanceTransitionBodyPattern: null,
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    ownBackendHostnames: [],
+    knownErrorClassPrefixes: [],
+    wizardExitButtonLabels: [],
+  };
+}
+
+function attemptLogCount(): number {
+  return (testLogger.info as ReturnType<typeof vi.fn>).mock.calls.filter(([msg]) =>
+    String(msg).includes("produced no observable effect")
+  ).length;
+}
+
+describe("flow-runner/executeStepWithHealing — cascade stops once the session is known dead", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    guardedObserve.mockResolvedValue([
+      { selector: "xpath=//button", description: "mystery widget", method: "click", arguments: [] },
+    ]);
+  });
+
+  it("issues no further act attempts or attempt log lines after the signal aborts mid-cascade", async () => {
+    const death = new Error("SessionLifetimeExpired: session reached its configured lifetime");
+    const controller = new AbortController();
+    guardedAct.mockImplementation(async () => {
+      controller.abort(death);
+      return { success: false, message: "", actionDescription: "", actions: [] };
+    });
+
+    await expect(executeStepWithHealing(buildCascadeParams(controller.signal))).rejects.toBe(death);
+
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(attemptLogCount()).toBeLessThanOrEqual(1);
+  });
+
+  it("runs more than one attempt when the session stays alive (control case)", async () => {
+    guardedAct.mockResolvedValue({
+      success: false,
+      message: "",
+      actionDescription: "",
+      actions: [],
+    });
+    const controller = new AbortController();
+
+    await executeStepWithHealing(buildCascadeParams(controller.signal)).catch(() => undefined);
+
+    expect(guardedAct.mock.calls.length).toBeGreaterThan(1);
   });
 });
