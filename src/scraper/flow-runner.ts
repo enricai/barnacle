@@ -12627,19 +12627,23 @@ export async function executeStepWithHealing(params: {
           // tail node `clickExpr` below is about to click, instead of only
           // ever checking the (possibly unresolvable) primary xpath — see
           // resolvedClickTargetIsSubmitShaped's doc comment.
-          const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector,
-            xpathTail
-          );
+          const retryResolvedElementIsSubmitShaped = stepDeclaredNonSubmit
+            ? false
+            : await resolvedClickTargetIsSubmitShaped(
+                frameTarget ?? mainFrameTarget(page),
+                resolvedAction.selector,
+                xpathTail
+              );
           // See resolvedClickUsedXpathTailRetarget's doc comment: flags that
           // this click's target identity came only from the loose tail
           // heuristic, not Stagehand's own resolved selector.
-          const retryClickUsedXpathTailRetarget = await resolvedClickUsedXpathTailRetarget(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector,
-            xpathTail
-          );
+          const retryClickUsedXpathTailRetarget = stepDeclaredNonSubmit
+            ? false
+            : await resolvedClickUsedXpathTailRetarget(
+                frameTarget ?? mainFrameTarget(page),
+                resolvedAction.selector,
+                xpathTail
+              );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
           // delivery can suppress the synthetic `clickActivationExpr`
@@ -12914,7 +12918,7 @@ export async function executeStepWithHealing(params: {
           // value is read below.
           const retrySubmitShaped =
             isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) ||
-            (retryResolvedElementIsSubmitShaped && classifyStepSubmitIntent(step) !== "non-submit");
+            retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
