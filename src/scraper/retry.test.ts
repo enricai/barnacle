@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CaptchaError,
+  SessionLifetimeExceededError,
   CdpTransportClosedError,
   EmptyResultsError,
   SelectorFailureError,
@@ -66,6 +67,22 @@ describe("scraper/retry", () => {
         )
       ).rejects.toThrow(/captcha/);
       expect(counter.n).toBe(1);
+    });
+
+    it("aborts on SessionLifetimeExceededError without retry or session restart", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new SessionLifetimeExceededError("session lifetime reached");
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/session lifetime reached/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
     });
 
     it("emits logger.error on CaptchaError so ops can alert on it", async () => {

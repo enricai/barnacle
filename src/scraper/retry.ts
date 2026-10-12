@@ -11,6 +11,7 @@ import {
   SessionTimeoutError,
   StepVerificationError,
   UnknownScraperError,
+  isSessionLifetimeExceededError,
 } from "@/scraper/errors";
 
 const logger = getLogger({ name: "scraper/retry" });
@@ -33,7 +34,7 @@ export interface RetryOptions {
  * Wraps a scraper task with p-retry and a classification policy aligned
  * with our ScraperError hierarchy:
  *
- * - CaptchaError + EmptyResultsError + StepVerificationError → AbortError, no retry.
+ * - CaptchaError + EmptyResultsError + StepVerificationError + SessionLifetimeExceededError → AbortError, no retry.
  * - SessionTimeoutError + CdpTransportClosedError → invoke onSessionRestart before every retry, then retry up to maxAttempts.
  * - SelectorFailureError + UnknownScraperError → retry up to maxAttempts.
  * - Anything non-ScraperError → wrap in UnknownScraperError and retry.
@@ -69,6 +70,11 @@ export async function withScraperRetry<T>(
           logger.warn(
             `step verification failed deterministically — aborting retry: ${err.message}`
           );
+          throw new AbortError(err.message);
+        }
+
+        if (isSessionLifetimeExceededError(raw) || isSessionLifetimeExceededError(err)) {
+          logger.error(`session reached its configured lifetime — aborting retry: ${err.message}`);
           throw new AbortError(err.message);
         }
 
