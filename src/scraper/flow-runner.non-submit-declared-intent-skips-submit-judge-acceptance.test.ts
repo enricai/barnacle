@@ -237,5 +237,11 @@ describe.each(MARKUPS)(
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
+
+    it("n+16 retry on the final step: never invokes the judge", async () => {
+      const { info, warn } = await run(false, false);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(rejected([...info, ...warn])).toBe(false);
+    });
   }
 );
