@@ -126,3 +126,32 @@ export function resolveSessionDeathError(
     `scraper session reached its configured lifetime (${hit.elapsedSeconds.toFixed(1)}s elapsed of ${hit.configuredTimeoutSeconds}s)`
   );
 }
+
+/**
+ * Builds the single lifetime classifier shared by the log-line detector and
+ * the transport-closed listener, so the order in which those signals arrive
+ * cannot change the outcome, and our own `close()` never classifies.
+ */
+export function createDeathClassifier(opts: {
+  configuredTimeoutSeconds: number;
+  toleranceSeconds: number;
+  isOwnClose: () => boolean;
+  getElapsedSeconds: () => number;
+  getCompletedStepCount: () => number;
+}): () => { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined {
+  let hit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+  return () => {
+    if (opts.isOwnClose()) return undefined;
+    if (hit) return hit;
+    const elapsedSeconds = opts.getElapsedSeconds();
+    const classification = classifySessionTeardown({
+      configuredTimeoutSeconds: opts.configuredTimeoutSeconds,
+      elapsedSeconds,
+      completedStepCount: opts.getCompletedStepCount(),
+      toleranceSeconds: opts.toleranceSeconds,
+    });
+    if (!classification.isTimeoutHit) return undefined;
+    hit = { configuredTimeoutSeconds: opts.configuredTimeoutSeconds, elapsedSeconds };
+    return hit;
+  };
+}

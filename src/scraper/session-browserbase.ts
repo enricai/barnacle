@@ -13,7 +13,11 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
-import { classifySessionTeardown, createSessionTeardownDetector } from "@/scraper/session-teardown";
+import {
+  classifySessionTeardown,
+  createDeathClassifier,
+  createSessionTeardownDetector,
+} from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 
@@ -248,20 +252,15 @@ export async function createBrowserbaseBrowserSession(
   let completedStepCount = 0;
   // Single classification shared by the log-line detector and the transport
   // listener so the order in which those two signals arrive cannot matter.
-  const classifyDeath = ():
-    | { configuredTimeoutSeconds: number; elapsedSeconds: number }
-    | undefined => {
-    if (weInitiatedClose) return undefined;
-    if (sessionTimeoutHit) return sessionTimeoutHit;
-    const elapsedSeconds = (Date.now() - sessionStartedAt) / 1000;
-    const classification = classifySessionTeardown({
-      configuredTimeoutSeconds,
-      elapsedSeconds,
-      completedStepCount,
-      toleranceSeconds: TOLERANCE_SECONDS,
-    });
-    if (!classification.isTimeoutHit) return undefined;
-    sessionTimeoutHit = { configuredTimeoutSeconds, elapsedSeconds };
+  const classifyLifetime = createDeathClassifier({
+    configuredTimeoutSeconds,
+    toleranceSeconds: TOLERANCE_SECONDS,
+    isOwnClose: () => weInitiatedClose,
+    getElapsedSeconds: () => (Date.now() - sessionStartedAt) / 1000,
+    getCompletedStepCount: () => completedStepCount,
+  });
+  const classifyDeath = (): typeof sessionTimeoutHit => {
+    sessionTimeoutHit = classifyLifetime() ?? sessionTimeoutHit;
     return sessionTimeoutHit;
   };
   const {

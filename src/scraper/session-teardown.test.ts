@@ -4,6 +4,7 @@ import { CdpTransportClosedError, SessionLifetimeExceededError } from "@/scraper
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
   classifySessionTeardown,
+  createDeathClassifier,
   createSessionTeardownDetector,
   raceAgainstTeardown,
   resolveSessionDeathError,
@@ -248,5 +249,46 @@ describe("session-teardown/resolveSessionDeathError", () => {
   it("is undefined-safe for Steel-shaped sessions", () => {
     expect(resolveSessionDeathError({}, original)).toBe(original);
     expect(resolveSessionDeathError(undefined, original)).toBe(original);
+  });
+});
+
+describe("session-teardown/createDeathClassifier", () => {
+  const base = {
+    configuredTimeoutSeconds: 300,
+    toleranceSeconds: 5,
+    getCompletedStepCount: () => 2,
+  };
+
+  it("classifies a log-line death as lifetime with no transport-closed event", async () => {
+    const classifyDeath = createDeathClassifier({
+      ...base,
+      isOwnClose: () => false,
+      getElapsedSeconds: () => 299,
+    });
+    const { watchLogLine, deathSignal } = createSessionTeardownDetector({ classifyDeath });
+    watchLogLine({
+      level: 0,
+      category: "stagehand:v3",
+      message: "initiating shutdown → CDP transport closed: socket-close code=1006 reason=",
+    } as StagehandLogLine);
+    expect(await deathSignal.catch((e: unknown) => e)).toBeInstanceOf(SessionLifetimeExceededError);
+  });
+
+  it("never classifies our own close", () => {
+    const classifyDeath = createDeathClassifier({
+      ...base,
+      isOwnClose: () => true,
+      getElapsedSeconds: () => 400,
+    });
+    expect(classifyDeath()).toBeUndefined();
+  });
+
+  it("does not classify an early teardown", () => {
+    const classifyDeath = createDeathClassifier({
+      ...base,
+      isOwnClose: () => false,
+      getElapsedSeconds: () => 30,
+    });
+    expect(classifyDeath()).toBeUndefined();
   });
 });
