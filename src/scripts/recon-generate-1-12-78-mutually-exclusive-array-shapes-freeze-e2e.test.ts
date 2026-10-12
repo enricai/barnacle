@@ -31,7 +31,7 @@ const ID_STYLE_FILTERS = [
 const TYPE_STYLE_FILTERS = [
   ...ID_STYLE_FILTERS.slice(0, 3),
   "NIGHT;filterType=night",
-  "PRIVATEISLAND;filterType=privateIsland",
+  "GARDEN;filterType=garden",
   "SALE;filterType=promo",
 ];
 
