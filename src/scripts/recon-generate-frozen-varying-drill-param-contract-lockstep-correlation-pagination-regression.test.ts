@@ -132,4 +132,19 @@ describe("emitContractTs — frozen-but-varying drill param lockstep-correlation
     ]);
     expect(() => buildContract(actionSteps, primary)).toThrow(/page/);
   });
+
+  it("does not throw or flag a frozen param when facet arrays are differently shaped but carry the same identity value", () => {
+    const facetDrill = (sku: string, filters: string[], ts: string): unknown => ({
+      ...(pricingDrillCapture(sku, 1, "p1", ts) as object),
+      url: `${BASE}/catalog/pricing/?sku=${sku}&mark=red`,
+      requestPostData: JSON.stringify({ filters }),
+    });
+    const primary = searchCapture(1, "p1");
+    const actionSteps = buildActionSteps([
+      primary,
+      facetDrill("sku-a", ["red;facetId=color", "XL;facetType=size"], "2024-01-01T00:00:01Z"),
+      facetDrill("sku-b", ["XL;facetType=size"], "2024-01-01T00:00:02Z"),
+    ]);
+    expect(() => buildContract(actionSteps, primary)).not.toThrow();
+  });
 });
