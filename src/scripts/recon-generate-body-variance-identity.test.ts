@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Capture } from "@/scripts/recon-generate";
 import { collectRequestBodyValuesByKey } from "@/scripts/recon-generate";
+import type { Capture } from "@/scripts/recon-shared";
 
 const cap = (body: unknown): Capture =>
   ({ url: "https://x/search", method: "POST", requestPostData: JSON.stringify(body) }) as Capture;
