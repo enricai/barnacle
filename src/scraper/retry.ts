@@ -6,12 +6,12 @@ import {
   CaptchaError,
   CdpTransportClosedError,
   EmptyResultsError,
+  isSessionLifetimeExceededError,
   ScraperError,
   SelectorFailureError,
   SessionTimeoutError,
   StepVerificationError,
   UnknownScraperError,
-  isSessionLifetimeExceededError,
 } from "@/scraper/errors";
 
 const logger = getLogger({ name: "scraper/retry" });
@@ -73,7 +73,7 @@ export async function withScraperRetry<T>(
           throw new AbortError(err.message);
         }
 
-        if (isSessionLifetimeExceededError(raw) || isSessionLifetimeExceededError(err)) {
+        if (isSessionLifetimeExceededError(raw)) {
           logger.error(`session reached its configured lifetime — aborting retry: ${err.message}`);
           throw new AbortError(err.message);
         }
