@@ -2,10 +2,10 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  classifyStepSubmitIntent,
   flowHasSubmitSemantics,
   type HealingFlowStep,
   isAdvanceStep,
-  classifyStepSubmitIntent,
   isStepSubmitShaped,
   isSubmitIntentStep,
   runHealingFlow,
@@ -207,7 +207,9 @@ describe("classifyStepSubmitIntent — declared non-submit instruction", () => {
   it("keeps a genuine submit click as submit, even alongside a guardrail", () => {
     expect(classifyStepSubmitIntent("Click 'submit' to finish")).toBe("submit");
     expect(
-      classifyStepSubmitIntent("Click the submit button. Do not click anything that proceeds to checkout.")
+      classifyStepSubmitIntent(
+        "Click the submit button. Do not click anything that proceeds to checkout."
+      )
     ).toBe("submit");
   });
 
@@ -219,10 +221,20 @@ describe("classifyStepSubmitIntent — declared non-submit instruction", () => {
   it("vetoes inferred submit shape regardless of final-step or flow flags, but not an explicit submitStep", () => {
     const step = "Open the details tab. Never click anything that proceeds to checkout.";
     expect(
-      isStepSubmitShaped({ step, submitStep: false, isFinalStep: true, flowHasSubmitSemantics: true })
+      isStepSubmitShaped({
+        step,
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
     ).toBe(false);
     expect(
-      isStepSubmitShaped({ step, submitStep: true, isFinalStep: true, flowHasSubmitSemantics: true })
+      isStepSubmitShaped({
+        step,
+        submitStep: true,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
     ).toBe(true);
   });
 });
