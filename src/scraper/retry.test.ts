@@ -135,6 +135,42 @@ describe("scraper/retry", () => {
       expect(onSessionRestart).not.toHaveBeenCalled();
     });
 
+    const timeoutShapedLifetimeDeaths: Array<{ name: string; make: () => Error }> = [
+      {
+        name: "SessionTimeoutError-shaped message",
+        make: () => new Error("Timeout 30000ms exceeded: session lifetime reached"),
+      },
+      {
+        name: "CdpTransportClosedError-shaped message",
+        make: () => new CdpTransportClosedError("cdp transport closed: session lifetime reached"),
+      },
+      {
+        name: "SessionTimeoutError instance",
+        make: () => new SessionTimeoutError("session timed out: lifetime reached"),
+      },
+    ];
+
+    for (const c of timeoutShapedLifetimeDeaths) {
+      it(`rejects after exactly one invocation for a lifetime death (${c.name})`, async () => {
+        const counter = { n: 0 };
+        const onSessionRestart = vi.fn(async () => {});
+        await expect(
+          withScraperRetry(
+            async () => {
+              counter.n += 1;
+              const raw = c.make();
+              throw raw instanceof SessionTimeoutError || raw instanceof CdpTransportClosedError
+                ? new SessionLifetimeExceededError(raw.message)
+                : Object.assign(raw, { name: "SessionLifetimeExceededError" });
+            },
+            { maxAttempts: 3, onSessionRestart }
+          )
+        ).rejects.toThrow(/lifetime/);
+        expect(counter.n).toBe(1);
+        expect(onSessionRestart).not.toHaveBeenCalled();
+      });
+    }
+
     it("emits logger.error on CaptchaError so ops can alert on it", async () => {
       loggerStub.error.mockClear();
       await expect(
