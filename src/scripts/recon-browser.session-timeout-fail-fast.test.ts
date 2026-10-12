@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import { StagehandNotInitializedError } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/config", () => ({
@@ -201,7 +202,7 @@ describe("recon-browser/main — mid-step death after the configured lifetime fa
     executeStepWithHealingStub.mockImplementation(async () => {
       calls += 1;
       if (calls === DEATH_AFTER_STEP) {
-        throw new Error("StagehandNotInitializedError: Stagehand is not initialized");
+        throw new StagehandNotInitializedError("page");
       }
       return "ok";
     });
