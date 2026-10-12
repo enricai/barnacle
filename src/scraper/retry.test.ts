@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   CaptchaError,
+  SessionLifetimeExceededError,
   CdpTransportClosedError,
   EmptyResultsError,
   SelectorFailureError,
-  SessionLifetimeExceededError,
   SessionTimeoutError,
   StepVerificationError,
   UnknownScraperError,
