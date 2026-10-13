@@ -110,3 +110,43 @@ describe("scraper/flow-runner isStepSubmitShaped", () => {
     ).toBe(false);
   });
 });
+
+describe("scraper/flow-runner verbatim non-submit guardrail steps", () => {
+  const STEPS = [
+    "Click the 'Details' tab to expand the panel. This is a tab toggle and it is NOT checkout.",
+    "Click the first available date. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout",
+    "Click the 'Continue' tab. Do NOT click 'Pay', 'Place Order', or any control that proceeds to checkout.",
+  ];
+
+  it("classifies each guardrail step as non-submit", () => {
+    for (const step of STEPS) {
+      expect(classifyStepSubmitIntent(step)).toBe("non-submit");
+    }
+  });
+
+  it("resolves each guardrail step to not submit-shaped even as the final step", () => {
+    for (const step of STEPS) {
+      expect(
+        isStepSubmitShaped({
+          step,
+          submitStep: false,
+          isFinalStep: true,
+          flowHasSubmitSemantics: true,
+        })
+      ).toBe(false);
+    }
+  });
+
+  it("still resolves a genuine submit step to submit", () => {
+    const step = "Click Submit to place the order";
+    expect(classifyStepSubmitIntent(step)).toBe("submit");
+    expect(
+      isStepSubmitShaped({
+        step,
+        submitStep: false,
+        isFinalStep: false,
+        flowHasSubmitSemantics: false,
+      })
+    ).toBe(true);
+  });
+});
