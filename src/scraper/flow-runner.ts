@@ -9987,8 +9987,11 @@ export async function executeStepWithHealing(params: {
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
   const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";
+  // Single final-step inference every submit-strictness gate below reads, so a
+  // declared non-submit veto cannot be honoured at one site and missed at another.
+  const inferredFinalSubmitStep = isFinalStep && !stepDeclaredNonSubmit;
   const requireSubmitEndpoint =
-    (isFinalStep || submitStep) && !stepDeclaredNonSubmit && submitEndpointPattern !== null;
+    (inferredFinalSubmitStep || submitStep) && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
   // scoped click read-back) ONLY for selection/field-answer click steps — never
   // for submit/advance steps, whose own self-toggling buttons must not
@@ -12959,7 +12962,7 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!(isFinalStep && !stepDeclaredNonSubmit) &&
+            ((!inferredFinalSubmitStep &&
               !submitStep &&
               !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
@@ -13055,9 +13058,8 @@ export async function executeStepWithHealing(params: {
           // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
           // both of which rely on that carve-out and must stay green).
           const retryDestinationUnconfirmed =
-            isFinalStep &&
+            inferredFinalSubmitStep &&
             !submitStep &&
-            !stepDeclaredNonSubmit &&
             retryUrlChanged &&
             !retryResolvedElementIsSubmitShaped;
           if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {
