@@ -13641,11 +13641,18 @@ export function emitContractTs(opts: {
   const applicantContactEvidenceFieldNamesLower = new Set(
     [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
   );
+  // A browser-flow-only submission with no captured body has no inputBody to
+  // inspect; the payload fields its steps splice are the only evidence.
   const usesApplicantContactSchema =
-    inputBody != null &&
-    [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
-      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
-    );
+    inputBody != null
+      ? [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
+          path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+        )
+      : omitExecuteHttp &&
+        isSubmissionFlow &&
+        [...(payloadFieldNames ?? [])].some((name) =>
+          applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
+        );
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(name);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
@@ -13656,7 +13663,7 @@ export function emitContractTs(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody
+    : inputBody || (omitExecuteHttp && isSubmissionFlow)
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -16129,7 +16136,7 @@ async function main(): Promise<void> {
       );
     } else if (patternUndercounts) {
       logger.info(
-        `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
+        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
@@ -16242,7 +16249,13 @@ async function main(): Promise<void> {
         : new Map<string, StateValue>();
     const actionSteps =
       actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
-    const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
+    // A multi-step flow whose declared submit pattern selects no captures has no
+    // replayable HTTP sequence, yet is still not a search: treat it as a
+    // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
+    const noReplayableActionFlow = !gql && actionSteps.length === 0 && flowSteps.length > 1;
+    const isSubmissionFlow =
+      noReplayableActionFlow ||
+      (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome
@@ -16348,7 +16361,8 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
-    const browserFlowOnly = isSubmissionFlow && actionSteps.some((s) => s.isCrossDomain);
+    const browserFlowOnly =
+      isSubmissionFlow && (noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
     const multiStepBody = browserFlowOnly
       ? undefined
       : isSubmissionFlow
@@ -16470,7 +16484,7 @@ async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     if (emit === "config") {
