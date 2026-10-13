@@ -863,3 +863,23 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     );
   });
 });
+
+describe("extractTaggedPhrases contractions", () => {
+  it("treats a contraction apostrophe as neither opener nor closer", () => {
+    expect(
+      extractTaggedPhrases(
+        "under the text 'Don't have an account yet?', click the 'Create Account' button to switch to account registration"
+      )
+    ).toEqual([
+      { text: "Don't have an account yet?", negated: false },
+      { text: "Create Account", negated: false },
+    ]);
+  });
+
+  it("keeps negation tagging for ordinary quoted lists", () => {
+    expect(extractTaggedPhrases("Do NOT click 'X', 'Y'")).toEqual([
+      { text: "X", negated: true },
+      { text: "Y", negated: true },
+    ]);
+  });
+});

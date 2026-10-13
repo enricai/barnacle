@@ -166,7 +166,7 @@ export interface TaggedPhrase {
  * boundary (`.`/`;`) between the marker and the phrase ends the negation's
  * reach. Parallels the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
- * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
+ * quoting shape — but here we need ALL quoted phrases plus their
  * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
  * re-derive the exact same ranking {@link scoreCandidate} used to sort
  * `deepLocatorCandidates`, to detect a tie for the top rank rather than
