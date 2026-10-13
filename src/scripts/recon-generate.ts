@@ -48,7 +48,7 @@ import { loadReconValueConstraints, VALUE_CONSTRAINTS_NONE } from "@/recon/load-
 import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
-import type { EmailStepConfig } from "@/scraper/flow-runner";
+import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
 import {
   type Capture,
   type RateLimitFinding,
@@ -14840,6 +14840,22 @@ function jsonSchemaTypeOf(value: unknown): "string" | "number" | "boolean" | "ar
 }
 
 /**
+ * Whether the flow's last step declares itself non-submit in its own wording
+ * (and carries no explicit `submitStep` flag). The submission-flow forcing must
+ * skip it: an explicit flag overrides declared intent at runtime, so forcing it
+ * onto a trailing guardrail step would route that step through the submit judge.
+ */
+function lastFlowStepDeclaresNonSubmit(flowSteps: FlowStepInput[]): boolean {
+  const last = flowSteps.at(-1);
+  if (last === undefined) return false;
+  const isObj = typeof last !== "string";
+  return isStepDeclaredNonSubmit({
+    step: isObj ? last.step : last,
+    submitStep: isObj ? last.submitStep === true : false,
+  });
+}
+
+/**
  * Emits a config-only plugin manifest (`<siteId>.plugin.json`) from the recon
  * flow, as an alternative to the `.ts` trio for browser-only sites. Reuses the
  * SAME `resolveStepPayloadField` splice logic as the browser-flow emitter, so
@@ -14956,7 +14972,7 @@ export function emitConfigManifest(opts: {
   // load of this manifest also gates on runHealingFlow's submitStep verification.
   const lastStepIndex = steps.length - 1;
   const lastStep = steps[lastStepIndex];
-  if (isSubmissionFlow && lastStep !== undefined) {
+  if (isSubmissionFlow && lastStep !== undefined && !lastFlowStepDeclaresNonSubmit(flowSteps)) {
     steps[lastStepIndex] =
       typeof lastStep === "string"
         ? { step: lastStep, optional: false, upload: false, submitStep: true }
@@ -15204,7 +15220,11 @@ export function emitBrowserFlowTs(opts: {
   // submitStep:true even when the source recon-flow.json step never declared
   // it, so the engine's pre-submit probe/StepVerificationError actually gates it.
   const lastStepLiteral = stepLiterals.at(-1);
-  if (isSubmissionFlow && lastStepLiteral !== undefined) {
+  if (
+    isSubmissionFlow &&
+    lastStepLiteral !== undefined &&
+    !lastFlowStepDeclaresNonSubmit(flowSteps)
+  ) {
     stepLiterals[stepLiterals.length - 1] = lastStepLiteral.replace(
       /submitStep: (true|false)(?= \},)/,
       "submitStep: true"
