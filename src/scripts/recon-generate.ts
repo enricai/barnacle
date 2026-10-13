@@ -394,12 +394,34 @@ export function extractNavigateToHashFragmentValue(
  * the next cumulative hash would be taken whole and never recur in a request.
  */
 function walkNavigateToFacets(
-  flowSteps: FlowStepInput[]
-): Array<{ value: string | null; field: string; optional: boolean }> {
-  const facets: Array<{ value: string | null; field: string; optional: boolean }> = [];
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv
+): Array<{
+  value: string | null;
+  field: string;
+  optional: boolean;
+  origin: NavigateToFacetOrigin;
+}> {
+  const facets: Array<{
+    value: string | null;
+    field: string;
+    optional: boolean;
+    origin: NavigateToFacetOrigin;
+  }> = [];
   let baselineHash: string | undefined;
   for (const step of flowSteps) {
-    if (typeof step === "string" || step.navigateTo === undefined) continue;
+    if (typeof step === "string") continue;
+    if (step.navigateTo === undefined) {
+      if (step.payloadField && !step.payloadFieldNone) {
+        facets.push({
+          value: extractStepPersonaValue(step.step, env),
+          field: step.payloadField,
+          optional: step.optional === true,
+          origin: "step",
+        });
+      }
+      continue;
+    }
     const hashIndex = step.navigateTo.indexOf("#");
     const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
     if (step.payloadField) {
@@ -407,6 +429,7 @@ function walkNavigateToFacets(
         value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
         field: step.payloadField,
         optional: step.optional === true,
+        origin: "navigateTo",
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
@@ -473,7 +496,7 @@ export function harvestPersonaBindings(
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
-  for (const facet of walkNavigateToFacets(flowSteps)) {
+  for (const facet of walkNavigateToFacets(flowSteps, env)) {
     if (facet.value !== null && !bindings.has(facet.value)) {
       bindings.set(facet.value, `payload.${facet.field}`);
     }
@@ -520,7 +543,14 @@ export interface NavigateToFacetBinding {
   readonly value: string;
   readonly field: string;
   readonly optional: boolean;
+  /** `"navigateTo"` for a hash-derived facet; `"step"` for a literal read from
+   * a non-navigateTo step's quoted instruction value. Step-origin facets carry
+   * no transition slot, so they never enter positional correlation. */
+  readonly origin?: NavigateToFacetOrigin;
 }
+
+/** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
+export type NavigateToFacetOrigin = "navigateTo" | "step";
 
 /**
  * Re-walks the flow for navigateTo+payloadField steps in isolation, in flow
@@ -537,12 +567,18 @@ export interface NavigateToFacetBinding {
  * aligned with the declared facets; {@link resolveRecurringNavigateToFacets}
  * drops the empty literal itself and keeps only a correlated value.
  */
-export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
-  return walkNavigateToFacets(flowSteps).map((facet) => ({
-    value: facet.value ?? "",
-    field: facet.field,
-    optional: facet.optional,
-  }));
+export function extractNavigateToFacetOrder(
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv = process.env
+): NavigateToFacetBinding[] {
+  return walkNavigateToFacets(flowSteps, env)
+    .filter((facet) => facet.origin === "navigateTo" || facet.value !== null)
+    .map((facet) => ({
+      value: facet.value ?? "",
+      field: facet.field,
+      optional: facet.optional,
+      ...(facet.origin === "step" ? { origin: facet.origin } : {}),
+    }));
 }
 
 /**
@@ -7563,8 +7599,12 @@ export function resolveRecurringNavigateToFacets(
         Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
     );
   const reachable = declared.filter(({ value }) => value.length > 0 && appearsAnywhere(value));
-  const resolvedDeclared = declared.filter(({ value }) => value.length > 0);
-  const unreachable = declared.filter((facet) => !reachable.includes(facet));
+  const resolvedDeclared = declared.filter(
+    (facet) => facet.value.length > 0 && (facet.origin !== "step" || reachable.includes(facet))
+  );
+  const unreachable = declared.filter(
+    (facet) => facet.origin !== "step" && !reachable.includes(facet)
+  );
   if (unreachable.length === 0) return resolvedDeclared;
   const correlated = correlateUnreachableNavigateToFacets(
     unreachable,
@@ -7703,7 +7743,7 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
-  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps);
+  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps, process.env);
   const navigateToFacetOrder = resolveRecurringNavigateToFacets(declaredNavigateToFacets, actions);
   const facetArrayPathKeys = collectFacetArrayPathKeys(
     actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
@@ -14145,7 +14185,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
   const navigateToFacets = resolveRecurringNavigateToFacets(
-    extractNavigateToFacetOrder(contractFlowSteps),
+    extractNavigateToFacetOrder(contractFlowSteps, process.env),
     actionSteps
   );
   const gqlVariablesExpr = gqlOperationName
