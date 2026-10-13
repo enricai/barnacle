@@ -13100,8 +13100,8 @@ export async function executeStepWithHealing(params: {
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
-            ((retryNetworkFired && retryDestinationPlausible) ||
-              retryUrlChanged ||
+            ((n16ClickDelivered && retryNetworkFired && retryDestinationPlausible) ||
+              (n16ClickDelivered && retryUrlChanged) ||
               (checkboxStateVerified && retryDestinationPlausible) ||
               (retrySelectionStateChanged && retryDestinationPlausible) ||
               (n16ClickDelivered && !retrySubmitShaped && retryVerdict === "effective") ||
