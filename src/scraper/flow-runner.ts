@@ -1559,7 +1559,7 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
  * nothing about whether the author means a submit.
  */
 const SUBMIT_TARGET_SRC =
-  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|submit(?:s|ting)?)";
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
 
 /**
  * A negation followed, in the same clause, by a submit target ("Do NOT click
@@ -1577,6 +1577,16 @@ const LEADING_SUBMIT_IMPERATIVE = /(?:^|[.;]\s*)(?:then\s+)?submit\b/i;
 export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
 
 /**
+ * The instruction with every negated submit clause blanked, so callers that
+ * match submit wording on the step text (flow-load seeding) read only what the
+ * step positively asks for and never a guardrail ("Do NOT ... proceeds to
+ * checkout"). Pure.
+ */
+export function stripNegatedSubmitClauses(instruction: string): string {
+  return instruction.replace(NEGATED_SUBMIT_CLAUSE, " ");
+}
+
+/**
  * Reads the step's own instruction for a declared submit intent, so an
  * explicit "this is NOT a submit/checkout click" can veto inferred submit
  * shape. A positive submit phrase outside the negated clause keeps "submit"
@@ -1584,7 +1594,7 @@ export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
  */
 export function classifyStepSubmitIntent(instruction: string | null | undefined): StepSubmitIntent {
   if (!instruction) return "unspecified";
-  const remainder = instruction.replace(NEGATED_SUBMIT_CLAUSE, " ");
+  const remainder = stripNegatedSubmitClauses(instruction);
   if (isSubmitIntentStep(remainder) || LEADING_SUBMIT_IMPERATIVE.test(remainder)) return "submit";
   if (remainder !== instruction) return "non-submit";
   return isSubmitIntentStep(instruction) ? "submit" : "unspecified";

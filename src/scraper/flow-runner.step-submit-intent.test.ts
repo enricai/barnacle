@@ -20,6 +20,9 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
       "Expand the section without submitting the form",
       "Click the tab. Do not place the order",
       "Click it. Avoid anything that leads to checkout",
+      "Click the tab. Do not click Buy Now or anything that charges the card",
+      "Click the tab. Do not click any control that advances the booking",
+      "Click the tab. Don't advance to the next page",
     ]) {
       expect(classifyStepSubmitIntent(text)).toBe("non-submit");
     }
