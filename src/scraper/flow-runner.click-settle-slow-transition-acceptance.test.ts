@@ -159,6 +159,18 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
     expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0, verifiedBy: "network" })]);
   });
 
+  it("settles and verifies a successful act that reported no actions instead of fast-skipping", async () => {
+    const vp = makeVirtualPage(SLOW_DELAY_MS);
+    guardedAct.mockResolvedValue({ ...CLICK_RESULT, actions: [] });
+    const trajectory: { stepIndex: number; verifiedBy: string | null }[] = [];
+
+    const outcome = await executeStepWithHealing(baseParams(vp, { trajectory }) as never);
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0, verifiedBy: "network" })]);
+  });
+
   it("a click with no activity still falls through after about the idle give-up window", async () => {
     const vp = makeVirtualPage(null);
     guardedAct.mockImplementation(async () => {

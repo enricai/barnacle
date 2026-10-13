@@ -12152,7 +12152,7 @@ export async function executeStepWithHealing(params: {
     // cannot produce a positive signal: verified is forced false and the
     // cascade always falls through to attempt 2. Skip the wasted ~2-3s
     // of timeout + snapshot work and let the cascade try observe-act.
-    if (attempt === 1 && resolvedAction === null) {
+    if (attempt === 1 && resolvedAction === null && record.actResultSuccess !== true) {
       attempts.push(record);
       const reason = record.errorMessage
         ? `attempt 1 fast-skipped (no resolved action): ${record.errorMessage}`
@@ -12162,7 +12162,13 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
-    if (resolvedAction?.method === "click") {
+    // A successful act that reported no actions still ran a click-class action;
+    // judging it before its round-trip lands would cascade onto the advanced page.
+    const mayTriggerRoundTrip =
+      resolvedAction === null
+        ? record.actResultSuccess === true
+        : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    if (mayTriggerRoundTrip) {
       await settleAfterClick(page, signalCounter, pre.networkCount);
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
