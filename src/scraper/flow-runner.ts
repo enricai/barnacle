@@ -68,7 +68,6 @@ import {
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
   extractTaggedPhrases,
-  matchSingleQuotedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
   vetObserveCandidates,
@@ -99,6 +98,7 @@ import {
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
+import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
@@ -5410,16 +5410,16 @@ const WIDGET_NOUN_RE =
 /**
  * Matches `prefix` (which must end in a `(?=')` lookahead) and returns the
  * contraction-aware quoted phrase that starts right after it, so anchored
- * step parsers pair quotes the same way as {@link matchSingleQuotedPhrases}.
+ * step parsers pair quotes the same way as {@link findQuotedSpans}.
  */
 function matchQuotedAfter(
   instruction: string,
   prefix: RegExp
-): { match: RegExpExecArray; phrase: RegExpMatchArray } | null {
+): { match: RegExpExecArray; phrase: QuotedSpan } | null {
   const match = prefix.exec(instruction);
   if (!match) return null;
   const at = match.index + match[0].length;
-  const phrase = matchSingleQuotedPhrases(instruction).find((p) => p.index === at);
+  const phrase = findQuotedSpans(instruction).find((p) => p.start === at);
   return phrase ? { match, phrase } : null;
 }
 
@@ -5440,22 +5440,18 @@ function matchQuotedAfter(
  * non-option quote so existing un-adorned phrasings keep working.
  */
 function pickQuestionLabel(instruction: string, option: string): string | null {
-  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const candidates = matchSingleQuotedPhrases(instruction).filter((m) => m[1]!.trim() !== option);
+  const candidates = findQuotedSpans(instruction).filter((s) => s.text.trim() !== option);
   if (candidates.length === 0) return null;
-  const adjacentToWidgetNoun = candidates.find((m) => {
-    const start = m.index ?? 0;
-    const end = start + m[0].length;
-    const before = instruction.slice(Math.max(0, start - 25), start);
-    const after = instruction.slice(end, end + 40);
+  const adjacentToWidgetNoun = candidates.find((s) => {
+    const before = instruction.slice(Math.max(0, s.start - 25), s.start);
+    const after = instruction.slice(s.end, s.end + 40);
     return (
       /\bfor(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before) || WIDGET_NOUN_RE.test(after)
     );
   });
   // biome-ignore lint/style/noNonNullAssertion: candidates is guarded non-empty above, so the fallback element is always present
   const picked = (adjacentToWidgetNoun ?? candidates[0])!;
-  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  return picked[1]!.trim();
+  return picked.text.trim();
 }
 
 export function parseSelectStep(
@@ -5469,8 +5465,7 @@ export function parseSelectStep(
   if (!mentionsSelect) return null;
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
-  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const quoted = matchSingleQuotedPhrases(instruction).map((m) => m[1]!);
+  const quoted = findQuotedSpans(instruction).map((s) => s.text);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string following the word "select", allowing a
   // short filler ("the option", "the answer") between the verb and the
@@ -5482,8 +5477,7 @@ export function parseSelectStep(
     /\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?(?=')/i
   )?.phrase;
   if (!selMatch) return null;
-  // biome-ignore lint/style/noNonNullAssertion: guarded by the !selMatch early-return; group 1 is required by the pattern
-  const option = selMatch[1]!.trim();
+  const option = selMatch.text.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
   // introduced by "for '…'" or adjacent to a widget noun like "'…' dropdown"
   // or "'…' prompt selector". See `pickQuestionLabel`.
@@ -5522,7 +5516,7 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
   );
   if (!found) return null;
   const fieldLabel = found.match[1]?.trim();
-  const value = found.phrase[1]?.trim();
+  const value = found.phrase.text.trim();
   if (!fieldLabel || !value) return null;
   return { fieldLabel, value };
 }
@@ -5549,11 +5543,11 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
 export function parseFillValueIntent(instruction: string): { value: string } | null {
   if (parseSelectStep(instruction)) return null;
   if (/\bfill(?:\s+in)?\b/i.test(instruction)) {
-    const value = matchQuotedAfter(instruction, /\bwith\s+(?=')/i)?.phrase[1]?.trim();
+    const value = matchQuotedAfter(instruction, /\bwith\s+(?=')/i)?.phrase.text.trim();
     return value ? { value } : null;
   }
   if (/\btype\b/i.test(instruction)) {
-    const value = matchQuotedAfter(instruction, /\btype\s+(?=')/i)?.phrase[1]?.trim();
+    const value = matchQuotedAfter(instruction, /\btype\s+(?=')/i)?.phrase.text.trim();
     return value ? { value } : null;
   }
   return null;
@@ -5592,14 +5586,12 @@ export function parseRadioStep(
   if (!/\b(answer|radio)\b/.test(lower)) return null;
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
-  // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const quoted = matchSingleQuotedPhrases(instruction).map((m) => m[1]!);
+  const quoted = findQuotedSpans(instruction).map((s) => s.text);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string immediately after "click the".
   const optMatch = matchQuotedAfter(instruction, /\bclick\s+the\s+(?=')/i)?.phrase;
   if (!optMatch) return null;
-  // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
-  const option = optMatch[1]!.trim();
+  const option = optMatch.text.trim();
   // The QUESTION LABEL, when present, is a DIFFERENT quoted string — the one
   // introduced by "for the question '…'" / "for the '…' question". Some steps
   // phrase the question un-quoted ("…about requiring visa sponsorship"); in
@@ -5646,8 +5638,7 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
     /\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+(?=')/i
   )?.phrase;
   if (!optMatch) return null;
-  // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
-  const option = optMatch[1]!.trim();
+  const option = optMatch.text.trim();
   return { option };
 }
 
@@ -5669,8 +5660,8 @@ export function parseCheckStep(instruction: string): { label: string } | null {
   const lower = instruction.toLowerCase();
   if (/\bany\s+remaining\b/.test(lower)) return null;
   const found = matchQuotedAfter(instruction, /\b(?:check|click)\s+(?:the\s+)?(?=')/i);
-  const rest = found ? instruction.slice((found.phrase.index ?? 0) + found.phrase[0].length) : "";
-  const label = /^.*?\bcheckbox\b/i.test(rest) ? found?.phrase[1]?.trim() : undefined;
+  const rest = found ? instruction.slice(found.phrase.end) : "";
+  const label = /^.*?\bcheckbox\b/i.test(rest) ? found?.phrase.text.trim() : undefined;
   return label ? { label } : null;
 }
 
