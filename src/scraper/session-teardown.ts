@@ -25,6 +25,7 @@ export function createSessionTeardownDetector(opts?: {
   classifyDeath?: () => { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
 }): {
   watchLogLine: (line: StagehandLogLine) => void;
+  signalTransportClosed: (why: string) => void;
   deathSignal: Promise<never>;
   deathAbortSignal: AbortSignal;
 } {
@@ -38,22 +39,33 @@ export function createSessionTeardownDetector(opts?: {
   const abortController = new AbortController();
 
   let fired = false;
-  const watchLogLine = (line: StagehandLogLine): void => {
+  const fire = (detail: string, earlyMessage: string): void => {
     if (fired) return;
-    if (line.level !== TEARDOWN_ERROR_LEVEL) return;
-    if (!line.message.includes(TEARDOWN_MESSAGE_SUBSTRING)) return;
     fired = true;
     const hit = opts?.classifyDeath?.();
     const err = hit
       ? new SessionLifetimeExceededError(
-          `scraper session reached its configured lifetime (${hit.elapsedSeconds.toFixed(1)}s elapsed of ${hit.configuredTimeoutSeconds}s): ${line.message}`
+          `scraper session reached its configured lifetime (${hit.elapsedSeconds.toFixed(1)}s elapsed of ${hit.configuredTimeoutSeconds}s): ${detail}`
         )
-      : new CdpTransportClosedError(`stagehand-initiated teardown mid-flow: ${line.message}`);
+      : new CdpTransportClosedError(earlyMessage);
     signalDeath?.(err);
     abortController.abort(err);
   };
+  const watchLogLine = (line: StagehandLogLine): void => {
+    if (fired) return;
+    if (line.level !== TEARDOWN_ERROR_LEVEL) return;
+    if (!line.message.includes(TEARDOWN_MESSAGE_SUBSTRING)) return;
+    fire(line.message, `stagehand-initiated teardown mid-flow: ${line.message}`);
+  };
+  const signalTransportClosed = (why: string): void =>
+    fire(why, `scraper session's CDP transport was closed by the SDK: ${why}`);
 
-  return { watchLogLine, deathSignal, deathAbortSignal: abortController.signal };
+  return {
+    watchLogLine,
+    signalTransportClosed,
+    deathSignal,
+    deathAbortSignal: abortController.signal,
+  };
 }
 
 /**

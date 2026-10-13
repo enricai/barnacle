@@ -13,12 +13,15 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
-import { createSessionTeardownDetector } from "@/scraper/session-teardown";
+import { createDeathClassifier, createSessionTeardownDetector } from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 const logger = getLogger({ name: "scraper/session-steel" });
+
+/** Mirrors Browserbase: providers overshoot their configured lifetime, never undershoot. */
+const STEEL_TIMEOUT_TOLERANCE_SECONDS = 15;
 
 /** Formats a session proxy tuple as Steel's documented `proxyUrl`: `protocol://[user:pass@]host:port`. */
 function formatSteelProxyUrl(proxy: SessionProxyTuple): string {
@@ -104,7 +107,9 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // failure leaves a live session burning minutes until Steel's own timeout.
   let stagehand: Stagehand | undefined;
   let deathSignal: Promise<never> | undefined;
+  let deathAbortSignal: AbortSignal | undefined;
   let heartbeat: CdpHeartbeatHandle | undefined;
+  let weInitiatedClose = false;
   try {
     // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Stagehand's
     // V3 CDP connector requires the apiKey as a query parameter too — without it
@@ -124,9 +129,19 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
       : undefined;
 
     const forwardStagehandLogLine = makeStagehandLoggerForwarder(logger);
-    const teardownDetector = createSessionTeardownDetector();
+    const steelStartedAt = Date.now();
+    const teardownDetector = createSessionTeardownDetector({
+      classifyDeath: createDeathClassifier({
+        configuredTimeoutSeconds: config.scraper.steelSessionTimeoutMs / 1000,
+        toleranceSeconds: STEEL_TIMEOUT_TOLERANCE_SECONDS,
+        isOwnClose: () => weInitiatedClose,
+        getElapsedSeconds: () => (Date.now() - steelStartedAt) / 1000,
+        getCompletedStepCount: () => 0,
+      }),
+    });
     const watchForTeardown = teardownDetector.watchLogLine;
     deathSignal = teardownDetector.deathSignal;
+    deathAbortSignal = teardownDetector.deathAbortSignal;
     const stagehandLoggerCallback = (line: StagehandLogLine): void => {
       forwardStagehandLogLine(line);
       watchForTeardown(line);
@@ -183,7 +198,6 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // flipped at the top of `close()` below, before `stagehand.close()` runs;
   // only a transport close observed while it's still false is an SDK-
   // initiated teardown mid-operation, not a consequence of our own close.
-  let weInitiatedClose = false;
   let cdpTransportClosedError: CdpTransportClosedError | undefined;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;
@@ -220,6 +234,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     provider: "steel",
     close,
     deathSignal,
+    deathAbortSignal,
     getCdpTransportClosedError,
     sessionProxy,
   };

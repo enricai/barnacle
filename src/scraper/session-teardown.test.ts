@@ -347,3 +347,54 @@ describe("session-teardown/lifetime classification on the death signal", () => {
     expect(first).toEqual({ configuredTimeoutSeconds: 300, elapsedSeconds: 299 });
   });
 });
+
+describe("createSessionTeardownDetector transport-closed entry point", () => {
+  const hit300 = { configuredTimeoutSeconds: 300, elapsedSeconds: 301 };
+  const logLine: StagehandLogLine = {
+    level: 0,
+    message: "CDP transport closed: initiating shutdown",
+  } as StagehandLogLine;
+
+  for (const seconds of [300, 600]) {
+    it(`close at configured lifetime (${seconds}s) signals SessionLifetimeExceededError`, async () => {
+      const { signalTransportClosed, deathSignal, deathAbortSignal } =
+        createSessionTeardownDetector({
+          classifyDeath: () => ({ configuredTimeoutSeconds: seconds, elapsedSeconds: seconds + 1 }),
+        });
+      signalTransportClosed("socket-close code=1006");
+      await expect(deathSignal).rejects.toBeInstanceOf(SessionLifetimeExceededError);
+      expect(deathAbortSignal.reason).toBeInstanceOf(SessionLifetimeExceededError);
+    });
+  }
+
+  it("early close signals a retryable CdpTransportClosedError and aborts", async () => {
+    const { signalTransportClosed, deathSignal, deathAbortSignal } = createSessionTeardownDetector({
+      classifyDeath: () => undefined,
+    });
+    signalTransportClosed("socket-close code=1006");
+    await expect(deathSignal).rejects.toBeInstanceOf(CdpTransportClosedError);
+    expect(deathAbortSignal.aborted).toBe(true);
+    expect(deathAbortSignal.reason).toBeInstanceOf(CdpTransportClosedError);
+  });
+
+  it("listener then log line, and log line then listener, yield exactly one death error", async () => {
+    const a = createSessionTeardownDetector({ classifyDeath: () => hit300 });
+    a.signalTransportClosed("x");
+    a.watchLogLine(logLine);
+    await expect(a.deathSignal).rejects.toBeInstanceOf(SessionLifetimeExceededError);
+    const first = a.deathAbortSignal.reason;
+    expect(first).toBeInstanceOf(SessionLifetimeExceededError);
+
+    const b = createSessionTeardownDetector({ classifyDeath: () => undefined });
+    b.watchLogLine(logLine);
+    const reason = b.deathAbortSignal.reason;
+    b.signalTransportClosed("x");
+    await expect(b.deathSignal).rejects.toBeInstanceOf(CdpTransportClosedError);
+    expect(b.deathAbortSignal.reason).toBe(reason);
+  });
+
+  it("never signals when classifyDeath is own-close and listener is not invoked", () => {
+    const { deathAbortSignal } = createSessionTeardownDetector({ classifyDeath: () => undefined });
+    expect(deathAbortSignal.aborted).toBe(false);
+  });
+});
