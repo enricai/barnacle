@@ -31,7 +31,6 @@ import type { Logger } from "@/types/logging";
  */
 
 const STEP_INSTRUCTION = "Click the button to continue";
-const HARMLESS_SECOND_STEP = "Click the 'Details' link";
 
 function makeLogger(): { logger: Logger; info: string[]; warn: string[] } {
   const info: string[] = [];
@@ -284,7 +283,12 @@ function buildFixture(params: { baseUrl: string; label: string; staleprimary: bo
 
   const steps: HealingFlowStep[] = [
     { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
-    { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
+    {
+      instruction: `Click the '${params.label}' button`,
+      optional: true,
+      upload: false,
+      submitStep: false,
+    },
   ];
 
   const { logger, info, warn } = makeLogger();

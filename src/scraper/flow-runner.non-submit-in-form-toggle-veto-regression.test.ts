@@ -23,8 +23,8 @@ import type { Logger } from "@/types/logging";
 
 const BASE_URL = "https://apply.example.com/step/1";
 const STEP_INSTRUCTION = "Click the toggle to reveal the extra fields";
-const HARMLESS_SECOND_STEP = "Click the 'Details' link";
 const TOGGLE_LABEL = "Show additional options";
+const HARMLESS_SECOND_STEP = `Click the '${TOGGLE_LABEL}' button`;
 
 function makeLogger(): { logger: Logger; info: string[]; warn: string[] } {
   const info: string[] = [];
