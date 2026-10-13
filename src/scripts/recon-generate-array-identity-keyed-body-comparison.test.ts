@@ -82,10 +82,11 @@ describe("collectRequestBodyValuesByKey with mutually exclusive filters and sibl
     );
   });
 
-  it("does not let a varying sibling explain a slot the other body lacks", () => {
+  it("does not let a varying sibling explain a slot the other body lacks (only the sibling is frozen)", () => {
     const a = cap({ tier: "standard", filters: ["red;facetId=color"] });
     const b = cap({ tier: "premium", filters: ["XL;facetType=size"] });
     const rendered = JSON.stringify({ tier: "standard", filters: ["red;facetId=color"] });
-    expect(findFrozenVaryingDrillParams(a, rendered, [a, b])).toEqual([]);
+    const frozen = findFrozenVaryingDrillParams(a, rendered, [a, b]);
+    expect(frozen.map((f) => f.key)).toEqual(["tier"]);
   });
 });
