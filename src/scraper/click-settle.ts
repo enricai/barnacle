@@ -8,7 +8,7 @@ export interface SettleCounter {
 
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
-const IDLE_GIVE_UP_MS = 4000;
+const IDLE_GIVE_UP_MS = 8000;
 const MAX_MS = 15000;
 
 /**
