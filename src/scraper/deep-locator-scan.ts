@@ -40,6 +40,7 @@
  * range/not-actionable reported as data exactly like the click builder.
  */
 
+import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import { clickActivationExpr } from "@/scraper/browser-click-expr";
 
 /**
@@ -80,19 +81,7 @@ export const INTERACTIVE_CANDIDATE_SELECTOR =
  */
 export const DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS = 1_000;
 
-/**
- * Visibility check shared by every candidate the scan expression builds: a
- * node with a 0x0 layout box, or a computed `display:none`/
- * `visibility:hidden`, can never be the target of a real click — this is the
- * DOM-observable symptom that {@link isNodeNotActionableError} catches from
- * the CDP-error side when a click is attempted anyway.
- */
-const IS_VISIBLE_EXPR = `((el) => {
-  const rect = el.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) return false;
-  const style = getComputedStyle(el);
-  return style.display !== "none" && style.visibility !== "hidden";
-})`;
+const IS_VISIBLE_EXPR = ACTIONABLE_VISIBILITY_EXPR;
 
 /**
  * Flags a candidate as a navigation/advance control that a "select
@@ -236,6 +225,46 @@ export function buildScanFrameCandidatesExpr(innerSelector: string, root = "docu
       const text = accessibleName(el);
       return { index, text, visible: isVisible(el), isNav: isNavCandidate(el, text) };
     });
+  })()`;
+}
+
+/**
+ * Builds an evaluate expression returning the indices (into the shadow-piercing
+ * match order of `innerSelector`) of every match that fails
+ * {@link ACTIONABLE_VISIBILITY_EXPR}. Exists for the legacy per-candidate
+ * enumeration, whose Stagehand `Locator` exposes no per-element evaluate and
+ * whose `isVisible()` ignores `aria-hidden`, so the decoy filter must be read
+ * from the frame instead. Traversal mirrors Stagehand's
+ * `resolveCssSelectorPierce` (document first, then each open shadow root
+ * breadth-first, de-duplicating elements) so an index lines up with
+ * `deepLocator(hop).nth(index)` even when the light-DOM query missed the node.
+ */
+export function buildNonActionableIndicesExpr(innerSelector: string, root = "document"): string {
+  return `(() => {
+    const isActionable = ${ACTIONABLE_VISIBILITY_EXPR};
+    const selector = ${JSON.stringify(innerSelector)};
+    const seenRoots = new Set();
+    const seenElements = new Set();
+    const hidden = [];
+    let index = 0;
+    const queue = [${root}];
+    while (queue.length) {
+      const scope = queue.shift();
+      if (!scope || seenRoots.has(scope)) continue;
+      seenRoots.add(scope);
+      try {
+        for (const el of scope.querySelectorAll(selector)) {
+          if (seenElements.has(el)) continue;
+          seenElements.add(el);
+          if (!isActionable(el)) hidden.push(index);
+          index += 1;
+        }
+      } catch {}
+      for (const el of scope.querySelectorAll("*")) {
+        if (el.shadowRoot) queue.push(el.shadowRoot);
+      }
+    }
+    return hidden;
   })()`;
 }
 

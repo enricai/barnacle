@@ -67,8 +67,31 @@ describe("resolveDeepLocatorCandidates empty batched-scan fallback", () => {
     );
 
     expect(candidates.map((c) => c.accessibleText)).toEqual(["Alpha", "Beta", "Gamma"]);
-    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
     expect(loggerStub.warn).toHaveBeenCalledWith(expect.stringContaining("matched zero elements"));
+  });
+
+  it("drops an aria-hidden decoy twin the legacy loop would otherwise hand to scoring, keeping the real control and original indices", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, HOP_SELECTOR, ["Continue", "Continue", "Other"]);
+    const page = { deepLocator: makeFakeDeepLocator(frame) };
+    const evaluateSpy = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([0]);
+    const frameTarget = makeStubFrameTarget(evaluateSpy);
+
+    const candidates = await resolveDeepLocatorCandidates(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      "#apply_frame",
+      "*",
+      "click 'Continue'",
+      { frameTarget }
+    );
+
+    expect(candidates.map((c) => [c.index, c.accessibleText])).toEqual([
+      [1, "Continue"],
+      [2, "Other"],
+    ]);
+    expect(evaluateSpy.mock.calls[1]?.[0]).toContain("aria-hidden");
   });
 
   it("stays empty, without degrading, when the scan finds matches that are all visible:false", async () => {

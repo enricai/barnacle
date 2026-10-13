@@ -14,6 +14,7 @@
 import type { Page } from "@browserbasehq/stagehand";
 
 import { getLogger } from "@/lib/logging";
+import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import type { FrameTarget } from "@/scraper/frame-target";
 import {
   buildRankSubmitCandidatesExpr,
@@ -59,11 +60,10 @@ export interface TargetResolutionDiagnosticSnapshot {
 
 /**
  * Re-walks the light DOM plus every open shadow root (same traversal shape
- * as `submit-control.ts`'s private `DEEP_ELEMENTS_EXPR` — duplicated rather
- * than imported, since both are browser-context expression strings composed
- * by string interpolation, matching that module's own stated convention for
- * why `IS_VISIBLE_EXPR`/`DEEP_ELEMENTS_EXPR` are duplicated instead of
- * shared) to read the role/visible/disabled/excerpt fields the ranking
+ * as `submit-control.ts`'s private `DEEP_ELEMENTS_EXPR`, duplicated rather
+ * than imported; visibility comes from the shared
+ * {@link ACTIONABLE_VISIBILITY_EXPR} so an `aria-hidden` decoy is never
+ * reported visible) to read the role/visible/disabled/excerpt fields the ranking
  * expression itself doesn't return, and to build a short accessible-name
  * excerpt around the top-ranked candidate. Runs as a single `page.evaluate`
  * round trip so the DOM observed here always matches the one
@@ -83,12 +83,7 @@ function buildCandidateDetailExpr(root: string, deepIndices: readonly number[]):
       walk(rootEl);
       return out;
     })(${root});
-    const isVisible = (el) => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width === 0 && rect.height === 0) return false;
-      const style = getComputedStyle(el);
-      return style.display !== "none" && style.visibility !== "hidden";
-    };
+    const isVisible = ${ACTIONABLE_VISIBILITY_EXPR};
     const isDisabled = (el) => {
       for (let depth = 0, node = el; depth < 8 && node; depth++) {
         if (node.disabled === true) return true;

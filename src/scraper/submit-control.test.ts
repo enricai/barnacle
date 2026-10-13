@@ -1030,3 +1030,23 @@ describe("submit-control fixture sanity", () => {
     expect(submitButton.getAttribute("type")).toBe("submit");
   });
 });
+
+describe("submit-control/aria-hidden decoys", () => {
+  it("ranks only the real button and refuses to click the aria-hidden twin", () => {
+    const decoy = makeEl("button", { type: "submit", "aria-hidden": "true" }, "Create Account");
+    const real = makeEl("button", { type: "submit" }, "Create Account");
+    const document = makeRoot([decoy, real]);
+
+    const ranked = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(ranked.map((c) => c.deepIndex)).toEqual([1]);
+
+    const clickResult = evaluateInFakePage(buildClickByDeepIndexExpr(0), document);
+
+    expect(clickResult).toEqual({ clicked: false, reason: "not-actionable" });
+    expect(decoy.clicked).toBe(false);
+  });
+});

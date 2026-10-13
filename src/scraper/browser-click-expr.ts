@@ -21,6 +21,8 @@
  * stay identical (DRY) rather than drifting copies.
  */
 
+import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
+
 /**
  * Emits a browser-context statement block that activates the element bound to
  * `elVar`: focus, then a `pointerdown → mousedown → pointerup → mouseup` gesture
@@ -249,12 +251,7 @@ export const DEEP_ELEMENTS_EXPR = `((root) => {
  */
 export const RESOLVE_SHADOW_INTERACTIVE_DESCENDANT_EXPR = `((host) => {
   if (!host || !host.shadowRoot) return null;
-  const isVisible = (el) => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden";
-  };
+  const isVisible = ${ACTIONABLE_VISIBILITY_EXPR};
   const isDisabled = (el) =>
     el.disabled === true || el.getAttribute("aria-disabled") === "true";
   const isInteractive = (el) => {
