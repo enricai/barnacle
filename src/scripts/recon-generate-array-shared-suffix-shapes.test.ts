@@ -391,3 +391,34 @@ describe("findFrozenVaryingDrillParams with mutually exclusive filter arrays and
     }
   });
 });
+
+describe("readComparableBodyLeaf with positional identity tags on arrays of differing length", () => {
+  const tagged = (values: string[], name: string): string[] =>
+    values.map((value, index) => `${value};${name}=t${index}`);
+
+  for (const [ownLength, otherLength] of [
+    [4, 2],
+    [3, 1],
+    [1, 3],
+    [4, 6],
+  ] as const) {
+    it(`pairs disjoint ${ownLength} vs ${otherLength} elements with nothing`, () => {
+      const own = { filters: tagged(["a", "b", "c", "d"].slice(0, ownLength), "tagId") };
+      const other = {
+        filters: tagged(["w", "x", "y", "z", "u", "v"].slice(0, otherLength), "tagId"),
+      };
+      for (const index of indexesOf(own.filters)) {
+        expect(readComparableBodyLeaf(own, other, ["filters", index])).toBeUndefined();
+      }
+      for (const index of indexesOf(other.filters)) {
+        expect(readComparableBodyLeaf(other, own, ["filters", index])).toBeUndefined();
+      }
+    });
+  }
+
+  it("still pairs a changed value of the same-shaped array by identity", () => {
+    const own = { filters: tagged(["a", "b"], "tagId") };
+    const other = { filters: tagged(["z", "b"], "tagId") };
+    expect(readComparableBodyLeaf(own, other, ["filters", "0"])).toBe("z;tagId=t0");
+  });
+});

@@ -11341,6 +11341,22 @@ function arrayElementIdentity(element: unknown): string | undefined {
   return ARRAY_ELEMENT_IDENTITY.exec(element)?.[1];
 }
 
+/** The `<delimiter><name>` head of an {@link arrayElementIdentity} (its tag
+ * dropped), the part that says what ROLE an element plays in its array. */
+function identityName(identity: string | undefined): string | undefined {
+  return identity?.slice(0, identity.indexOf("="));
+}
+
+/** Order-insensitive fingerprint of the identity suffixes an array carries —
+ * two arrays with equal fingerprints are the same shape (reordered, or with
+ * only values changed), anything else is a different shape or length. */
+function identityShape(elements: readonly unknown[]): string {
+  return elements
+    .map((element) => arrayElementIdentity(element) ?? "")
+    .sort()
+    .join("\u0000");
+}
+
 /**
  * Index of the innermost path segment that indexes into an array (the array
  * holding the leaf, or one holding an object element that carries it), or -1.
@@ -11361,6 +11377,10 @@ function innermostArrayIndexSegment(body: unknown, path: readonly string[]): num
  * array with a varying slot; an identity the other body lacks yields
  * `undefined`. An identity shared by several elements of either array (e.g.
  * repeated `;tag=x` suffixes) is ambiguous and is paired only by exact value.
+ * When the arrays differ in shape or length, an identity is trusted only if
+ * its `;name=` role is also unique in both: a tag repeated by position
+ * (`;tagId=t0`, `;tagId=t1`) in two unrelated arrays says nothing about the
+ * elements being the same one.
  * A plain element of such an array is matched by value, since its
  * slot says nothing about it once the arrays' shapes differ. Every other path
  * defers to {@link readValueAtPath}.
@@ -11391,13 +11411,19 @@ export function readComparableBodyLeaf(
   const counterparts = otherArray.map((element) => readValueAtPath(element, elementSubpath));
   if (counterparts.includes(leaf)) return leaf;
   if (identity === undefined) return undefined;
+  const ownCounterparts = ownArray.map((element) => readValueAtPath(element, elementSubpath));
   const sharesIdentity = (candidate: unknown): boolean =>
     arrayElementIdentity(candidate) === identity;
-  const ownSharing = ownArray.filter((element) =>
-    sharesIdentity(readValueAtPath(element, elementSubpath))
-  );
+  const ownSharing = ownCounterparts.filter(sharesIdentity);
   const otherSharing = counterparts.filter(sharesIdentity);
   if (ownSharing.length !== 1 || otherSharing.length !== 1) return undefined;
+  const name = identityName(identity);
+  const nameIsUnique = (values: readonly unknown[]): boolean =>
+    values.filter((value) => identityName(arrayElementIdentity(value)) === name).length === 1;
+  const isSameShape = identityShape(ownCounterparts) === identityShape(counterparts);
+  if (!isSameShape && !(nameIsUnique(ownCounterparts) && nameIsUnique(counterparts))) {
+    return undefined;
+  }
   return otherSharing[0];
 }
 
