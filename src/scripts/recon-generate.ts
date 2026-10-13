@@ -13641,11 +13641,18 @@ export function emitContractTs(opts: {
   const applicantContactEvidenceFieldNamesLower = new Set(
     [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
   );
+  // A browser-flow-only submission with no captured body has no inputBody to
+  // inspect; the payload fields its steps splice are the only evidence.
   const usesApplicantContactSchema =
-    inputBody != null &&
-    [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
-      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
-    );
+    inputBody != null
+      ? [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
+          path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+        )
+      : omitExecuteHttp &&
+        isSubmissionFlow &&
+        [...(payloadFieldNames ?? [])].some((name) =>
+          applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
+        );
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(name);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
@@ -13656,7 +13663,7 @@ export function emitContractTs(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody
+    : inputBody || (omitExecuteHttp && isSubmissionFlow)
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
