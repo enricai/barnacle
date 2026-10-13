@@ -104,6 +104,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
   // failure leaves a live session burning minutes until Steel's own timeout.
   let stagehand: Stagehand | undefined;
   let deathSignal: Promise<never> | undefined;
+  let deathAbortSignal: AbortSignal | undefined;
   let heartbeat: CdpHeartbeatHandle | undefined;
   try {
     // Steel's websocketUrl is `wss://connect.steel.dev?sessionId=…`. Stagehand's
@@ -127,6 +128,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     const teardownDetector = createSessionTeardownDetector();
     const watchForTeardown = teardownDetector.watchLogLine;
     deathSignal = teardownDetector.deathSignal;
+    deathAbortSignal = teardownDetector.deathAbortSignal;
     const stagehandLoggerCallback = (line: StagehandLogLine): void => {
       forwardStagehandLogLine(line);
       watchForTeardown(line);
@@ -220,6 +222,7 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     provider: "steel",
     close,
     deathSignal,
+    deathAbortSignal,
     getCdpTransportClosedError,
     sessionProxy,
   };
