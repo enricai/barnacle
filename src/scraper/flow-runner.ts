@@ -1554,12 +1554,11 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
 
 /**
  * Targets whose negation declares the step is not a submit: a checkout/payment/
- * order/submit action, or a "proceeds/leads/advances to" phrase naming one.
- * Bare "do not click Book Now" stays undeclared — the control name alone says
- * nothing about whether the author means a submit.
+ * order/submit action, a purchase-action control named directly ("Book Now",
+ * "Reserve", "Add to Cart"), or a "proceeds/leads/advances to" phrase naming one.
  */
 const SUBMIT_TARGET_SRC =
-  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
 
 /**
  * A negation followed, in the same clause, by a submit target ("Do NOT click
