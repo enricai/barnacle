@@ -394,12 +394,34 @@ export function extractNavigateToHashFragmentValue(
  * the next cumulative hash would be taken whole and never recur in a request.
  */
 function walkNavigateToFacets(
-  flowSteps: FlowStepInput[]
-): Array<{ value: string | null; field: string; optional: boolean }> {
-  const facets: Array<{ value: string | null; field: string; optional: boolean }> = [];
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv
+): Array<{
+  value: string | null;
+  field: string;
+  optional: boolean;
+  origin: NavigateToFacetOrigin;
+}> {
+  const facets: Array<{
+    value: string | null;
+    field: string;
+    optional: boolean;
+    origin: NavigateToFacetOrigin;
+  }> = [];
   let baselineHash: string | undefined;
   for (const step of flowSteps) {
-    if (typeof step === "string" || step.navigateTo === undefined) continue;
+    if (typeof step === "string") continue;
+    if (step.navigateTo === undefined) {
+      if (step.payloadField && !step.payloadFieldNone) {
+        facets.push({
+          value: extractStepPersonaValue(step.step, env),
+          field: step.payloadField,
+          optional: step.optional === true,
+          origin: "step",
+        });
+      }
+      continue;
+    }
     const hashIndex = step.navigateTo.indexOf("#");
     const currentHash = hashIndex === -1 ? undefined : step.navigateTo.slice(hashIndex + 1);
     if (step.payloadField) {
@@ -407,6 +429,7 @@ function walkNavigateToFacets(
         value: extractNavigateToHashFragmentValue(step.navigateTo, baselineHash),
         field: step.payloadField,
         optional: step.optional === true,
+        origin: "navigateTo",
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
@@ -473,7 +496,7 @@ export function harvestPersonaBindings(
 ): Map<string, string> {
   const bindings = new Map<string, string>();
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary, env);
-  for (const facet of walkNavigateToFacets(flowSteps)) {
+  for (const facet of walkNavigateToFacets(flowSteps, env)) {
     if (facet.value !== null && !bindings.has(facet.value)) {
       bindings.set(facet.value, `payload.${facet.field}`);
     }
@@ -520,7 +543,14 @@ export interface NavigateToFacetBinding {
   readonly value: string;
   readonly field: string;
   readonly optional: boolean;
+  /** `"navigateTo"` for a hash-derived facet; `"step"` for a literal read from
+   * a non-navigateTo step's quoted instruction value. Step-origin facets carry
+   * no transition slot, so they never enter positional correlation. */
+  readonly origin?: NavigateToFacetOrigin;
 }
+
+/** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
+export type NavigateToFacetOrigin = "navigateTo" | "step";
 
 /**
  * Re-walks the flow for navigateTo+payloadField steps in isolation, in flow
@@ -537,12 +567,18 @@ export interface NavigateToFacetBinding {
  * aligned with the declared facets; {@link resolveRecurringNavigateToFacets}
  * drops the empty literal itself and keeps only a correlated value.
  */
-export function extractNavigateToFacetOrder(flowSteps: FlowStepInput[]): NavigateToFacetBinding[] {
-  return walkNavigateToFacets(flowSteps).map((facet) => ({
-    value: facet.value ?? "",
-    field: facet.field,
-    optional: facet.optional,
-  }));
+export function extractNavigateToFacetOrder(
+  flowSteps: FlowStepInput[],
+  env: NodeJS.ProcessEnv = process.env
+): NavigateToFacetBinding[] {
+  return walkNavigateToFacets(flowSteps, env)
+    .filter((facet) => facet.origin === "navigateTo" || facet.value !== null)
+    .map((facet) => ({
+      value: facet.value ?? "",
+      field: facet.field,
+      optional: facet.optional,
+      ...(facet.origin === "step" ? { origin: facet.origin } : {}),
+    }));
 }
 
 /**
@@ -6863,8 +6899,11 @@ function applyScalarFacetSplicePayloadSubstitutions(
     if (facet === undefined) continue;
     const literal = JSON.stringify(value);
     const fallback = facet.optional ? ` ?? ${literal}` : "";
-    const replacement =
-      typeof value === "number" || facet.optional
+    const casing = facetCaseMethod(String(value), facet);
+    const cased = casing ? `String(payload.${facet.field}${fallback}).${casing}()` : undefined;
+    const replacement = cased
+      ? `\${JSON.stringify(${cased})}`
+      : typeof value === "number" || facet.optional
         ? `\${JSON.stringify(payload.${facet.field}${fallback})}`
         : `"\${payload.${facet.field}}"`;
     for (const sep of [":", ": "]) {
@@ -7530,8 +7569,10 @@ function bindsWithoutCollisionIn(bodies: readonly string[], value: string): bool
  * so facet reachability agrees with the token-boundary {@link matchFacetRecurrence}
  * the splice passes use instead of counting a mere substring of a longer token.
  */
-function occursAtTokenBoundary(text: string, value: string): boolean {
-  if (value.length === 0) return false;
+function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = false): boolean {
+  if (rawValue.length === 0) return false;
+  const text = ignoreCase ? rawText.toLowerCase() : rawText;
+  const value = ignoreCase ? rawValue.toLowerCase() : rawValue;
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
   let from = 0;
   while (true) {
@@ -7557,14 +7598,18 @@ export function resolveRecurringNavigateToFacets(
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
       ({ capture }) =>
-        occursAtTokenBoundary(capture.url, value) ||
+        occursAtTokenBoundary(capture.url, value, true) ||
         (capture.requestPostData != null &&
-          occursAtTokenBoundary(capture.requestPostData, value)) ||
-        Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value))
+          occursAtTokenBoundary(capture.requestPostData, value, true)) ||
+        Object.values(capture.requestHeaders).some((h) => occursAtTokenBoundary(h, value, true))
     );
   const reachable = declared.filter(({ value }) => value.length > 0 && appearsAnywhere(value));
-  const resolvedDeclared = declared.filter(({ value }) => value.length > 0);
-  const unreachable = declared.filter((facet) => !reachable.includes(facet));
+  const resolvedDeclared = declared.filter(
+    (facet) => facet.value.length > 0 && (facet.origin !== "step" || reachable.includes(facet))
+  );
+  const unreachable = declared.filter(
+    (facet) => facet.origin !== "step" && !reachable.includes(facet)
+  );
   if (unreachable.length === 0) return resolvedDeclared;
   const correlated = correlateUnreachableNavigateToFacets(
     unreachable,
@@ -7703,7 +7748,7 @@ export function emitMultiStepExecuteHttp(
     optionalPayloadFieldNames: restOptionalFieldNames,
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
-  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps);
+  const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps, process.env);
   const navigateToFacetOrder = resolveRecurringNavigateToFacets(declaredNavigateToFacets, actions);
   const facetArrayPathKeys = collectFacetArrayPathKeys(
     actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
@@ -9284,17 +9329,43 @@ function matchFacetRecurrence(
   options: { allowDelimiterSuffix: boolean }
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  return facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-    const literal = facet.value;
-    const matches =
-      text === literal ||
-      (options.allowDelimiterSuffix &&
-        literal.length > 0 &&
-        text.startsWith(literal) &&
-        !isAlnum(text[literal.length]));
-    if (!matches) return best;
-    return best === undefined || literal.length > best.value.length ? facet : best;
-  }, undefined);
+  const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
+    facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
+      const literal = facet.value;
+      const same = (candidate: string): boolean =>
+        ignoreCase ? candidate.toLowerCase() === literal.toLowerCase() : candidate === literal;
+      const matches =
+        same(text) ||
+        (options.allowDelimiterSuffix &&
+          literal.length > 0 &&
+          same(text.slice(0, literal.length)) &&
+          !isAlnum(text[literal.length]));
+      if (!matches) return best;
+      return best === undefined || literal.length > best.value.length ? facet : best;
+    }, undefined);
+  return pick(false) ?? pick(true);
+}
+
+/**
+ * Renders the payload value for a matched facet in the casing the captured
+ * element carried, so a caller sending the declared literal reproduces the
+ * captured request exactly. An exact-case or mixed-case occurrence is emitted
+ * untouched.
+ */
+function facetCaseMethod(
+  captured: string,
+  facet: NavigateToFacetBinding
+): "toUpperCase" | "toLowerCase" | undefined {
+  const prefix = captured.slice(0, facet.value.length);
+  if (prefix === facet.value) return undefined;
+  if (prefix === facet.value.toUpperCase()) return "toUpperCase";
+  if (prefix === facet.value.toLowerCase()) return "toLowerCase";
+  return undefined;
+}
+
+function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
+  const method = facetCaseMethod(captured, facet);
+  return method ? `\${String(payload.${facet.field}).${method}()}` : `\${payload.${facet.field}}`;
 }
 
 /**
@@ -9310,7 +9381,12 @@ function spliceFacetRecurrenceIntoScalarVariable(
   if (facets.length === 0) return null;
   if (typeof value === "string" || typeof value === "number") {
     const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
-    if (facet !== undefined) return `payload.${facet.field}`;
+    if (facet !== undefined) {
+      const rendered = renderFacetPayloadValue(String(value), facet);
+      return rendered === `\${payload.${facet.field}}`
+        ? `payload.${facet.field}`
+        : `\`${rendered}\``;
+    }
   }
   if (typeof value !== "string") return null;
   const segments = value.split(/([|,;])/);
@@ -9332,7 +9408,7 @@ function spliceFacetRecurrenceIntoScalarVariable(
       continue;
     }
     bound = true;
-    const unit = `\`${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}\${payload.${facet.field}}${escapeForTemplateLiteral(trailingDelimiter)}\``;
+    const unit = `\`${escapeForTemplateLiteral(segment.slice(0, colonIndex + 1))}${renderFacetPayloadValue(segment.slice(colonIndex + 1), facet)}${escapeForTemplateLiteral(trailingDelimiter)}\``;
     // An absent optional facet drops its own segment (and delimiter) rather
     // than rendering the string `undefined` into the packed value.
     if (facet.optional) {
@@ -9375,7 +9451,7 @@ export function spliceFacetsIntoArrayVariable(
     if (!matched) return renderElement(element);
     matchCount++;
     const suffix = element.slice(matched.value.length);
-    const elementLiteral = `\`\${payload.${matched.field}}${escapeForTemplateLiteral(suffix)}\``;
+    const elementLiteral = `\`${renderFacetPayloadValue(element, matched)}${escapeForTemplateLiteral(suffix)}\``;
     return matched.optional
       ? `...(payload.${matched.field} ? [${elementLiteral}] : [])`
       : elementLiteral;
@@ -14145,7 +14221,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
   const navigateToFacets = resolveRecurringNavigateToFacets(
-    extractNavigateToFacetOrder(contractFlowSteps),
+    extractNavigateToFacetOrder(contractFlowSteps, process.env),
     actionSteps
   );
   const gqlVariablesExpr = gqlOperationName
@@ -14737,6 +14813,31 @@ export function assertRequiredUrlFieldsReferenced(
   throw new Error(
     `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
       `but never referenced by the emitted contract or browser flow — the flow would enter on the wrong page`
+  );
+}
+
+/**
+ * Names of the payload fields a flow explicitly declared via `payloadField`
+ * that no emitted request surface reads as `payload.<field>`. The surface is
+ * the emitted contract plus the browser flow: a field only the browser flow
+ * dereferences still changes browser-executed requests, so it counts as
+ * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
+ * so it never counts. Vocabulary-derived fields are out of scope. Reported
+ * rather than thrown because a field the flow declared but the site never
+ * sent is diagnosable, not a broken contract.
+ */
+export function unreferencedDeclaredPayloadFields(
+  contractCode: string,
+  browserFlowCode: string,
+  flowSteps: readonly FlowStepInput[]
+): string[] {
+  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const declared = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
+  }
+  return [...declared].filter(
+    (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
   );
 }
 
@@ -16603,6 +16704,21 @@ async function main(): Promise<void> {
   const result = generateFromCaptures(captures);
   if (result === null) return; // emit === "config": already written above.
   const final = healUnreferencedUrlFieldsOnce(captures, result, generateFromCaptures);
+
+  const unreferencedEverywhere = new Set(
+    unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+  );
+  // A browser-flow splice only changes the instruction text; when the contract
+  // replays HTTP requests, a field none of them carries still has no effect on
+  // the replayed requests and is reported too.
+  const unreferencedInContract = final.contractCode.includes("httpClient(")
+    ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
+    : [...unreferencedEverywhere];
+  for (const field of unreferencedInContract) {
+    logger.warn(
+      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
+    );
+  }
 
   writeFileSync(`${outDir}/contract.ts`, final.contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
