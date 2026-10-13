@@ -307,6 +307,8 @@ export function vetObserveCandidates<T extends { description: string }>(
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
   const text = normalize(best.candidate.description);
   const betterExists = scored.some((s) => s.score > 0);
+  // A context phrase ("under the text 'X'") adds a second positive, so require the
+  // candidate to overlap none of them rather than exactly one.
   const namesNone =
     positives.length > 0 &&
     text.length > 0 &&
