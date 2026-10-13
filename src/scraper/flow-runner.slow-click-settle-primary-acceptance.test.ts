@@ -152,7 +152,7 @@ describe("flow-runner/executeStepWithHealing — slow click settles in the prima
     expect(outcome).not.toBe("completed");
     expect(trajectory.some((t) => t.verifiedBy !== undefined && t.verifiedBy !== null)).toBe(false);
     expect(guardedAct.mock.calls.length).toBeGreaterThan(0);
-    const waited = clock.now - actTimes[0];
+    const waited = clock.now - (actTimes[0] ?? 0);
     expect(waited).toBeGreaterThanOrEqual(STEP_PAUSE_MS + IDLE_GIVE_UP_MS);
   });
 });
