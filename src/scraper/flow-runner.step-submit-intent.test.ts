@@ -39,7 +39,9 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
       expect(classifyStepSubmitIntent(text)).toBe("non-submit");
     }
     expect(classifyStepSubmitIntent("Click Submit. Do NOT click Cancel.")).toBe("submit");
-    expect(classifyStepSubmitIntent("Click the Submit button to submit the order. Do NOT click Reserve.")).toBe("submit");
+    expect(
+      classifyStepSubmitIntent("Click the Submit button to submit the order. Do NOT click Reserve.")
+    ).toBe("submit");
     expect(classifyStepSubmitIntent("Read the Reserved seating note")).toBe("unspecified");
   });
 
