@@ -102,7 +102,7 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
     // (applications, applicant, address, contact), not the bare 2 that
     // matched.
     expect(output).toMatch(
-      /submitEndpointPattern.*\(4 capture\(s\)\).*undercount.*\(8 capture\(s\)\)/
+      /using declared submitEndpointPattern.*\(4 capture\(s\)\).*finds 8 capture\(s\)/
     );
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
