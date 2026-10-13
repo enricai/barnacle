@@ -4261,10 +4261,10 @@ const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
  * source {@link selectionAncestorChanged} recomputes ancestor keys with, so the
  * two byte-match each other and Stagehand's resolved `xpath=/html[1]/…`
  * selectors. `[role=dialog],[role=tooltip],[aria-live]` subtrees are
- * skipped — they churn without a selection change. Visibility uses the same
- * rect + `getComputedStyle` idiom as `deep-locator-scan.ts`'s `IS_VISIBLE_EXPR`
- * (rather than `offsetParent`), so on-screen `position:fixed` controls — a
- * sticky Next/Submit bar, whose `offsetParent` is `null` — still enter the map.
+ * skipped — they churn without a selection change. Visibility uses the shared
+ * {@link ACTIONABLE_VISIBILITY_EXPR} (rect + `getComputedStyle`, skipping an
+ * element's own `aria-hidden="true"`; not `offsetParent`), so on-screen
+ * `position:fixed` controls — a sticky Next/Submit bar — still enter the map.
  * The visibility gate is waived for an `input`/`select` nested inside a nearby
  * combobox/listbox/group container: a design-system option commits its real
  * selection to a `display:none` or `aria-hidden` sibling input, not to the
@@ -4285,12 +4285,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   if (!b) return {};
   const xpathOf = ${XPATH_OF_FN_SRC};
   const nearbySelectionContainer = ${NEARBY_SELECTION_CONTAINER_FN_SRC};
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden";
-  };
+  const visible = ${ACTIONABLE_VISIBILITY_EXPR};
   const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox],[role=combobox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
