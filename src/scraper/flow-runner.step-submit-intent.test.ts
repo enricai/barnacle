@@ -113,9 +113,9 @@ describe("scraper/flow-runner isStepSubmitShaped", () => {
 
 describe("scraper/flow-runner verbatim non-submit guardrail steps", () => {
   const STEPS = [
-    "Click the 'Details' tab to expand the panel. This is a tab toggle and it is NOT checkout.",
-    "Click the first available date. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout",
-    "Click the 'Continue' tab. Do NOT click 'Pay', 'Place Order', or any control that proceeds to checkout.",
+    "In the pricing panel for the selected date, click on a category tab or link (e.g. 'Inside' or 'Suite') to view that category's price. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout.",
+    "Click the 'Continue' control that opens that item's own detail page. This is the selection view showing 'from $' prices; it is NOT checkout. Do NOT click 'Reserve', 'Book Now', 'Pay', 'Continue to Guest Info', or anything that proceeds past selection.",
+    "On the detail page, click the 'Verandah' type card to expand its sub-categories and their prices. Do NOT click 'Reserve', 'Book Now', 'Pay', or anything that proceeds past selection.",
   ];
 
   it("classifies each guardrail step as non-submit", () => {
