@@ -3,6 +3,32 @@ import { describe, expect, it } from "vitest";
 import { flowHasSubmitSemantics, isStepSubmitShaped } from "@/scraper/flow-runner";
 
 describe("scraper/flow-runner flowHasSubmitSemantics", () => {
+  it("returns false when an earlier step's own wording declares submit and the final step is a self-heal append", () => {
+    const result = flowHasSubmitSemantics({
+      steps: [
+        { submitStep: false, instruction: "Click the Submit button" },
+        { submitStep: false, instruction: "Dismiss the confirmation dialog" },
+      ],
+      submitEndpointPattern: "/api/submit",
+      requireSubmitEndpointMatch: false,
+    });
+
+    expect(result).toBe(false);
+  });
+
+  it("still returns true when no earlier step declares submit", () => {
+    const result = flowHasSubmitSemantics({
+      steps: [
+        { submitStep: false, instruction: "Fill in the name field" },
+        { submitStep: false, instruction: "Continue" },
+      ],
+      submitEndpointPattern: "/api/submit",
+      requireSubmitEndpointMatch: false,
+    });
+
+    expect(result).toBe(true);
+  });
+
   it("returns false when no step submits and no submit-endpoint shape is declared (read-only flow)", () => {
     const result = flowHasSubmitSemantics({
       steps: [{ submitStep: false }, { submitStep: false }],
