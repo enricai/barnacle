@@ -214,3 +214,254 @@ describe("recon-generate CLI — same-suffix array shapes across three drill cap
     expect(contract).toContain("/catalog/pricing/");
   }, 60_000);
 });
+
+const EXCLUSIVE_ID_TAGGED = [
+  "red;filterId=colorTag",
+  "xl;filterId=colorTag",
+  "cotton;filterId=colorTag",
+  "sale;filterId=colorTag",
+];
+const EXCLUSIVE_TYPE_TAGGED = [
+  "2026-12;filterType=date",
+  "GARDEN;filterType=theme",
+  "4;filterType=night",
+  "WW;filterType=ship",
+  "SALE;filterType=promo",
+  "XL;filterType=size",
+];
+
+function exclusiveFilterCaptures(): Capture[] {
+  const primary = buildCapture({
+    url: `https://${OWN_BACKEND_HOST}/catalog/search/`,
+    requestPostData: JSON.stringify({ page: 1 }),
+    responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }, { sku: "sku-c" }] },
+    timestamp: "2026-06-01T00:00:00.000Z",
+  });
+  const drill = (sku: string, filters: string[], region: string, timestamp: string): Capture =>
+    buildCapture({
+      url: `${DRILL_URL}?sku=${sku}`,
+      requestPostData: JSON.stringify({
+        currency: "USD",
+        filters,
+        region: "EU",
+        sorts: [{ criteria: "RECOMMENDED", region }],
+      }),
+      responseBody: { results: [{ sku, amount: 19.99 }] },
+      timestamp,
+    });
+  return [
+    primary,
+    drill("sku-a", EXCLUSIVE_ID_TAGGED, "NJ", "2026-06-01T00:00:01.000Z"),
+    drill("sku-b", EXCLUSIVE_ID_TAGGED.slice(0, 2), "NJ", "2026-06-01T00:00:02.000Z"),
+    drill("sku-c", EXCLUSIVE_TYPE_TAGGED, "FL", "2026-06-01T00:00:03.000Z"),
+  ];
+}
+
+describe("recon-generate CLI — mutually exclusive filter arrays with a differing sibling", () => {
+  it("generates contract.ts without a frozen-varying error when siblings are constant", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-constant-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(
+      runRoot,
+      exclusiveFilterCaptures().map((capture) => ({
+        ...capture,
+        requestPostData: capture.requestPostData?.replace('"region":"FL"', '"region":"NJ"') ?? null,
+      }))
+    );
+
+    const siteId = `exclusive-constant-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).not.toContain("would freeze a value that varied");
+    expect(readFileSync(join(siteOutDir, "contract.ts"), "utf8")).toContain("/catalog/pricing/");
+  }, 60_000);
+
+  it("treats a sibling region that follows the filter-array shape as explained", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-filters-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(runRoot, exclusiveFilterCaptures());
+
+    const siteId = `exclusive-filters-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).not.toContain("would freeze a value that varied");
+  }, 60_000);
+
+  it("still flags a sibling region that varies while the filter-array shape does not", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-same-shape-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(
+      runRoot,
+      exclusiveFilterCaptures().map((capture) => ({
+        ...capture,
+        requestPostData:
+          capture.requestPostData?.replace(
+            /"filters":\[[^\]]*\]/,
+            `"filters":${JSON.stringify(EXCLUSIVE_ID_TAGGED)}`
+          ) ?? null,
+      }))
+    );
+
+    const siteId = `exclusive-same-shape-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(1);
+    expect(output).toContain("sorts.0.region");
+    expect(output).not.toMatch(/body field \\?"filters\./);
+  }, 60_000);
+});
+
+describe("findFrozenVaryingDrillParams with mutually exclusive filter arrays and a differing sibling", () => {
+  const ID_TAGGED = [
+    "red;filterId=colorTag",
+    "xl;filterId=colorTag",
+    "cotton;filterId=colorTag",
+    "sale;filterId=colorTag",
+  ];
+  const TYPE_TAGGED = [
+    "2026-12;filterType=date",
+    "GARDEN;filterType=theme",
+    "4;filterType=night",
+    "WW;filterType=ship",
+    "SALE;filterType=promo",
+    "XL;filterType=size",
+  ];
+  const body = (filters: string[], region: string): Record<string, unknown> => ({
+    currency: "USD",
+    filters,
+    region: "EU",
+    sorts: [{ criteria: "RECOMMENDED", region }],
+  });
+  const variants = [
+    body(ID_TAGGED, "NJ"),
+    body(ID_TAGGED.slice(0, 3), "NJ"),
+    body(ID_TAGGED.slice(0, 2), "NJ"),
+    body(ID_TAGGED.slice(0, 1), "NJ"),
+    body(TYPE_TAGGED, "FL"),
+    body(TYPE_TAGGED.slice(0, 5), "FL"),
+  ];
+
+  it("never reports a filters.N entry for any ordered pair of shapes", () => {
+    const captures = variants.map((variant) => cap(variant));
+    for (const [capIndex, capture] of captures.entries()) {
+      const rendered = JSON.stringify(variants[capIndex]);
+      const frozen = findFrozenVaryingDrillParams(capture, rendered, captures);
+      expect(
+        frozen.filter((entry) => JSON.stringify(entry).includes("filters")),
+        `capture ${capIndex}`
+      ).toEqual([]);
+    }
+  });
+
+  it("pairs filters leaves of every shape pair only with an identical element", () => {
+    for (const [a, first] of variants.entries()) {
+      for (const [b, second] of variants.entries()) {
+        if (a === b) continue;
+        for (const index of indexesOf(first.filters as string[])) {
+          const leaf = (first.filters as string[])[Number(index)]!;
+          const expected = (second.filters as string[]).includes(leaf) ? leaf : undefined;
+          expect(
+            readComparableBodyLeaf(first, second, ["filters", index]),
+            `${a}->${b}[${index}]`
+          ).toBe(expected);
+        }
+      }
+    }
+  });
+});
+
+describe("readComparableBodyLeaf with positional identity tags on arrays of differing length", () => {
+  const tagged = (values: string[], name: string): string[] =>
+    values.map((value, index) => `${value};${name}=t${index}`);
+
+  for (const [ownLength, otherLength] of [
+    [4, 2],
+    [3, 1],
+    [1, 3],
+    [4, 6],
+  ] as const) {
+    it(`pairs disjoint ${ownLength} vs ${otherLength} elements with nothing`, () => {
+      const own = { filters: tagged(["a", "b", "c", "d"].slice(0, ownLength), "tagId") };
+      const other = {
+        filters: tagged(["w", "x", "y", "z", "u", "v"].slice(0, otherLength), "tagId"),
+      };
+      for (const index of indexesOf(own.filters)) {
+        expect(readComparableBodyLeaf(own, other, ["filters", index])).toBeUndefined();
+      }
+      for (const index of indexesOf(other.filters)) {
+        expect(readComparableBodyLeaf(other, own, ["filters", index])).toBeUndefined();
+      }
+    });
+  }
+
+  it("still pairs a changed value of the same-shaped array by identity", () => {
+    const own = { filters: tagged(["a", "b"], "tagId") };
+    const other = { filters: tagged(["z", "b"], "tagId") };
+    expect(readComparableBodyLeaf(own, other, ["filters", "0"])).toBe("z;tagId=t0");
+  });
+});

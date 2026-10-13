@@ -9942,26 +9942,33 @@ function isExplainedByCorrelatedSiblingField(
   siblingPaths: ReadonlySet<string>
 ): boolean {
   const allBodies = [parsedBody, ...otherBodies];
-  for (const siblingPath of siblingPaths) {
-    const pathSegments = siblingPath.split(".");
+  const siblingReaders: Array<(body: unknown) => string | undefined> = [
+    ...[...siblingPaths].map((siblingPath) => {
+      const pathSegments = siblingPath.split(".");
+      return (body: unknown): string | undefined => {
+        const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
+        return siblingRaw === undefined ? undefined : String(siblingRaw);
+      };
+    }),
+    ...selfDescribingArrayPaths(parsedBody).map((arrayPath) => (body: unknown): string => {
+      const array = readValueAtPath(body, arrayPath);
+      return Array.isArray(array) ? identityShape(array) : ABSENT_ARRAY_SHAPE;
+    }),
+  ];
+  return siblingReaders.some((readSibling) => {
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
-    let sawUnexplainableField = false;
     for (const body of allBodies) {
       const fieldRaw = readComparableBodyLeaf(parsedBody, body, path);
       if (fieldRaw === undefined) continue;
-      const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
-      if (siblingRaw === undefined) {
-        // This body has a value for the field we're trying to explain but no
-        // value for the candidate sibling — the sibling can't vouch for it,
-        // so don't let a function fitted over the OTHER bodies paper over it.
-        sawUnexplainableField = true;
-        break;
-      }
-      pairs.push({ siblingValue: String(siblingRaw), fieldValue: String(fieldRaw) });
+      const siblingValue = readSibling(body);
+      // This body has a value for the field we're trying to explain but no
+      // value for the candidate sibling — the sibling can't vouch for it, so
+      // don't let a function fitted over the OTHER bodies paper over it.
+      if (siblingValue === undefined) return false;
+      pairs.push({ siblingValue, fieldValue: String(fieldRaw) });
     }
-    if (sawUnexplainableField) continue;
     const distinctSiblingValues = new Set(pairs.map((p) => p.siblingValue));
-    if (distinctSiblingValues.size < 2) continue;
+    if (distinctSiblingValues.size < 2) return false;
     const siblingToField = new Map<string, string>();
     const isFunction = pairs.every(({ siblingValue, fieldValue }) => {
       const existing = siblingToField.get(siblingValue);
@@ -9971,9 +9978,8 @@ function isExplainedByCorrelatedSiblingField(
       }
       return existing === fieldValue;
     });
-    if (isFunction && siblingToField.size === distinctSiblingValues.size) return true;
-  }
-  return false;
+    return isFunction && siblingToField.size === distinctSiblingValues.size;
+  });
 }
 
 /**
@@ -11341,6 +11347,38 @@ function arrayElementIdentity(element: unknown): string | undefined {
   return ARRAY_ELEMENT_IDENTITY.exec(element)?.[1];
 }
 
+/** The `<delimiter><name>` head of an {@link arrayElementIdentity} (its tag
+ * dropped), the part that says what ROLE an element plays in its array. */
+function identityName(identity: string | undefined): string | undefined {
+  return identity?.slice(0, identity.indexOf("="));
+}
+
+/** Order-insensitive fingerprint of the identity suffixes an array carries —
+ * two arrays with equal fingerprints are the same shape (reordered, or with
+ * only values changed), anything else is a different shape or length. */
+function identityShape(elements: readonly unknown[]): string {
+  return elements
+    .map((element) => arrayElementIdentity(element) ?? "")
+    .sort()
+    .join("\u0000");
+}
+
+const ABSENT_ARRAY_SHAPE = "\u0001absent";
+
+/** Paths of every array in `body` that lists self-describing string elements
+ * (see {@link arrayElementIdentity}). Which identity suffixes such an array
+ * carries is itself a property of the request — a sibling field that differs
+ * only because the array took a different shape is explained by that shape. */
+function selfDescribingArrayPaths(body: unknown, path: readonly string[] = []): string[][] {
+  if (body === null || typeof body !== "object") return [];
+  const children = Object.entries(body).flatMap(([key, child]) =>
+    selfDescribingArrayPaths(child, [...path, key])
+  );
+  const isSelfDescribing =
+    Array.isArray(body) && body.some((element) => arrayElementIdentity(element) !== undefined);
+  return isSelfDescribing ? [[...path], ...children] : children;
+}
+
 /**
  * Index of the innermost path segment that indexes into an array (the array
  * holding the leaf, or one holding an object element that carries it), or -1.
@@ -11361,6 +11399,10 @@ function innermostArrayIndexSegment(body: unknown, path: readonly string[]): num
  * array with a varying slot; an identity the other body lacks yields
  * `undefined`. An identity shared by several elements of either array (e.g.
  * repeated `;tag=x` suffixes) is ambiguous and is paired only by exact value.
+ * When the arrays differ in shape or length, an identity is trusted only if
+ * its `;name=` role is also unique in both: a tag repeated by position
+ * (`;tagId=t0`, `;tagId=t1`) in two unrelated arrays says nothing about the
+ * elements being the same one.
  * A plain element of such an array is matched by value, since its
  * slot says nothing about it once the arrays' shapes differ. Every other path
  * defers to {@link readValueAtPath}.
@@ -11391,13 +11433,19 @@ export function readComparableBodyLeaf(
   const counterparts = otherArray.map((element) => readValueAtPath(element, elementSubpath));
   if (counterparts.includes(leaf)) return leaf;
   if (identity === undefined) return undefined;
+  const ownCounterparts = ownArray.map((element) => readValueAtPath(element, elementSubpath));
   const sharesIdentity = (candidate: unknown): boolean =>
     arrayElementIdentity(candidate) === identity;
-  const ownSharing = ownArray.filter((element) =>
-    sharesIdentity(readValueAtPath(element, elementSubpath))
-  );
+  const ownSharing = ownCounterparts.filter(sharesIdentity);
   const otherSharing = counterparts.filter(sharesIdentity);
   if (ownSharing.length !== 1 || otherSharing.length !== 1) return undefined;
+  const name = identityName(identity);
+  const nameIsUnique = (values: readonly unknown[]): boolean =>
+    values.filter((value) => identityName(arrayElementIdentity(value)) === name).length === 1;
+  const isSameShape = identityShape(ownCounterparts) === identityShape(counterparts);
+  if (!isSameShape && !(nameIsUnique(ownCounterparts) && nameIsUnique(counterparts))) {
+    return undefined;
+  }
   return otherSharing[0];
 }
 

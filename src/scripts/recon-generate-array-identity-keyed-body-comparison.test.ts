@@ -64,3 +64,31 @@ describe("findFrozenVaryingDrillParams across array shapes", () => {
     expect(findFrozenVaryingDrillParams(a, rendered, [a, reordered, shaped])).toEqual([]);
   });
 });
+
+describe("collectRequestBodyValuesByKey with mutually exclusive filters and siblings", () => {
+  it("does not offer mismatched-identity elements as varying even when a sibling varies", () => {
+    const a = cap({ tier: "standard", filters: ["red;facetId=color"] });
+    const b = cap({ tier: "premium", filters: ["XL;facetType=size"] });
+    const byKey = collectRequestBodyValuesByKey(a, [a, b])!;
+    expect(byKey.has("filters")).toBe(false);
+    expect(byKey.get("tier")).toEqual(new Set(["standard"]));
+  });
+
+  it("still reports a genuinely varying same-identity element", () => {
+    const a = cap({ filters: ["red;facetId=color"] });
+    const b = cap({ filters: ["blue;facetId=color"] });
+    expect(collectRequestBodyValuesByKey(a, [a, b])!.get("filters")).toEqual(
+      new Set(["red;facetId=color"])
+    );
+  });
+
+  it("explains a sibling that follows the filter-array shape, but not one that varies at equal shape", () => {
+    const a = cap({ tier: "standard", filters: ["red;facetId=color"] });
+    const b = cap({ tier: "premium", filters: ["XL;facetType=size"] });
+    const rendered = JSON.stringify({ tier: "standard", filters: ["red;facetId=color"] });
+    expect(findFrozenVaryingDrillParams(a, rendered, [a, b])).toEqual([]);
+    const sameShape = cap({ tier: "premium", filters: ["red;facetId=color"] });
+    const frozen = findFrozenVaryingDrillParams(a, rendered, [a, sameShape]);
+    expect(frozen.map((f) => f.key)).toEqual(["tier"]);
+  });
+});
