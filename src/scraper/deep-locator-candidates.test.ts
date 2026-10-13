@@ -883,6 +883,23 @@ describe("extractTaggedPhrases contractions", () => {
       { text: "Y", negated: true },
     ]);
   });
+
+  it("leaves plain quoted phrases unchanged", () => {
+    expect(extractTaggedPhrases("click 'Sign In'")).toEqual([{ text: "Sign In", negated: false }]);
+  });
+
+  it("keeps the negation split for select/Do NOT click", () => {
+    expect(extractTaggedPhrases("select 'Alpha'. Do NOT click 'Omega'")).toEqual([
+      { text: "Alpha", negated: false },
+      { text: "Omega", negated: true },
+    ]);
+  });
+
+  it("ignores a possessive or contraction inside an unquoted word", () => {
+    expect(extractTaggedPhrases("click the user's 'Save' button, don't wait")).toEqual([
+      { text: "Save", negated: false },
+    ]);
+  });
 });
 
 describe("vetObserveCandidates", () => {
