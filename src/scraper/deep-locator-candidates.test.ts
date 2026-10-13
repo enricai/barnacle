@@ -21,6 +21,7 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -881,5 +882,45 @@ describe("extractTaggedPhrases contractions", () => {
       { text: "X", negated: true },
       { text: "Y", negated: true },
     ]);
+  });
+});
+
+describe("vetObserveCandidates", () => {
+  const create = [{ text: "Create Account", negated: false }];
+  const c = (description: string): { description: string } => ({ description });
+
+  it("refuses a lone candidate naming a different control", () => {
+    expect(vetObserveCandidates([c("Click the Sign in with email button")], create).refuse).toBe(
+      true
+    );
+  });
+
+  it("accepts a lone matching candidate", () => {
+    expect(vetObserveCandidates([c("Click the Create Account button")], create).refuse).toBe(
+      false
+    );
+  });
+
+  it("refuses a lone negated match", () => {
+    const phrases = [{ text: "Create Account", negated: true }];
+    expect(vetObserveCandidates([c("Create Account button")], phrases).refuse).toBe(true);
+  });
+
+  it("accepts a zero-score candidate with empty description", () => {
+    expect(vetObserveCandidates([c("")], create).refuse).toBe(false);
+  });
+
+  it("picks the higher scorer of two candidates", () => {
+    const good = c("Create Account");
+    const verdict = vetObserveCandidates([c("Sign in"), good], create);
+    expect(verdict.candidate).toBe(good);
+    expect(verdict.refuse).toBe(false);
+  });
+
+  it("accepts the first candidate when there are no phrases", () => {
+    const first = c("anything");
+    const verdict = vetObserveCandidates([first, c("other")], []);
+    expect(verdict.candidate).toBe(first);
+    expect(verdict.refuse).toBe(false);
   });
 });

@@ -277,6 +277,44 @@ export function scoreCandidate(
   return 0;
 }
 
+/** Outcome of {@link vetObserveCandidates}: the best-scoring candidate, its score, and whether the caller should refuse to act on it. */
+export interface ObserveCandidateVerdict<T extends { description: string }> {
+  candidate: T | undefined;
+  score: number;
+  refuse: boolean;
+}
+
+/**
+ * Picks the best observe() candidate for the step's quoted phrases and decides
+ * whether acting on it would hit a control the step did not name. Reuses
+ * {@link scoreCandidate} so the veto can never drift from the ranking tiers;
+ * a lone candidate is enough to refuse, since observe() returns its best
+ * guess even when nothing matches.
+ */
+export function vetObserveCandidates<T extends { description: string }>(
+  candidates: T[],
+  phrases: TaggedPhrase[]
+): ObserveCandidateVerdict<T> {
+  const first = candidates[0];
+  if (!first || phrases.length === 0) return { candidate: first, score: 0, refuse: false };
+  const scored = candidates.map((candidate) => ({
+    candidate,
+    score: scoreCandidate(candidate.description, phrases),
+  }));
+  const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
+  if (best.score < 0) return { candidate: best.candidate, score: best.score, refuse: true };
+  if (best.score > 0) return { candidate: best.candidate, score: best.score, refuse: false };
+  const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
+  const text = normalize(best.candidate.description);
+  const betterExists = scored.some((s) => s.score > 0);
+  const namesNone =
+    positives.length === 1 &&
+    text.length > 0 &&
+    !text.includes(positives[0]) &&
+    !positives[0].includes(text);
+  return { candidate: best.candidate, score: 0, refuse: betterExists || namesNone };
+}
+
 /**
  * Resolves the `FrameTarget` the batched scan should evaluate against:
  * `timeoutOptions.frameTarget` when the caller already resolved one, else a
