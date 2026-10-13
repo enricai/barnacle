@@ -12120,13 +12120,12 @@ export async function executeStepWithHealing(params: {
     // `advanceTransitionBodyPattern` are unaffected.
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
-      isFinalOrSubmit:
-        isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        }),
+      isFinalOrSubmit: isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
       isAdvance: isAdvanceStep(step),
       domVerified: domVerified && destinationPlausible,
       networkIsRealAdvance,
@@ -12357,8 +12356,12 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       elementStateChanged: domVerified && destinationPlausible,
-      isSubmitShapedStep:
-        isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
+      isSubmitShapedStep: isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
       destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
@@ -12381,8 +12384,12 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag })) &&
-      domVerifiedForStep;
+      !isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }) && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
@@ -12853,8 +12860,12 @@ export async function executeStepWithHealing(params: {
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
-            isFinalOrSubmit:
-              isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
+            isFinalOrSubmit: isStepSubmitShaped({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            }),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -12917,8 +12928,12 @@ export async function executeStepWithHealing(params: {
           // treated identically to an explicitly flagged one everywhere this
           // value is read below.
           const retrySubmitShaped =
-            isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) ||
-            retryResolvedElementIsSubmitShaped;
+            isStepSubmitShaped({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
             ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
@@ -13219,7 +13234,12 @@ export async function executeStepWithHealing(params: {
     // error text pattern with 3 distinct rejection messages.
     if (
       record.resolvedMethod === "click" &&
-      isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag })
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      })
     ) {
       const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
@@ -13282,12 +13302,16 @@ export async function executeStepWithHealing(params: {
         // (triedSelectors), which is empty on an "unresolved" verdict, so a
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
-        const escalationTarget =
-          isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag })
-            ? "escalating attempt 2 to deep-submit-locator"
-            : phantomClickAfterAttempt1
-              ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
-              : "non-submit step — no resolved target for trusted-click-retry; attempt 2 continues the normal ladder";
+        const escalationTarget = isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        })
+          ? "escalating attempt 2 to deep-submit-locator"
+          : phantomClickAfterAttempt1
+            ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
+            : "non-submit step — no resolved target for trusted-click-retry; attempt 2 continues the normal ladder";
         logger.warn(
           `${formatStepPrefix(stepIndex, totalSteps)} ${verdictDescription} on attempt 1 (${record.technique}): ${outcomeDescription}${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
@@ -13299,8 +13323,12 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep:
-          isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
+        isFinalStep: isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -13321,8 +13349,12 @@ export async function executeStepWithHealing(params: {
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),
-        isFinalOrSubmit:
-          isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }),
+        isFinalOrSubmit: isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
         hasPattern: advanceTransitionBodyPattern !== null,
         clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
         networkFired,
@@ -13351,7 +13383,12 @@ export async function executeStepWithHealing(params: {
   // submit control in an unrelated same-origin child iframe.
   if (
     !frameTarget?.declaredFrameSelector &&
-    isStepSubmitShaped({ step, submitStep, isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag })
+    isStepSubmitShaped({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    })
   ) {
     const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
     if (fallbackTarget) {
