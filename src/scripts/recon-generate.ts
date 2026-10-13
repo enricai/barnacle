@@ -16129,7 +16129,7 @@ async function main(): Promise<void> {
       );
     } else if (patternUndercounts) {
       logger.info(
-        `submission selection: ignoring submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) as an undercount of the unfiltered heuristic action sequence (${unfilteredHeuristicActionCaptures.length} capture(s))`
+        `submission selection: using declared submitEndpointPattern/submitBodyPattern (${patternedHeuristicActionCaptures.length} capture(s)) although the unfiltered heuristic action sequence finds ${unfilteredHeuristicActionCaptures.length} capture(s); the unfiltered set would make the generator attempt an HTTP replay that aborts on frozen-varying fields`
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
