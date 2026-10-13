@@ -41,6 +41,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
+import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import {
   buildMarkShadowInteractiveDescendantExpr,
   buildUnmarkShadowDescendantExpr,
@@ -4260,10 +4261,10 @@ const NEARBY_SELECTION_CONTAINER_FN_SRC = `(el) => {
  * source {@link selectionAncestorChanged} recomputes ancestor keys with, so the
  * two byte-match each other and Stagehand's resolved `xpath=/html[1]/…`
  * selectors. `[role=dialog],[role=tooltip],[aria-live]` subtrees are
- * skipped — they churn without a selection change. Visibility uses the same
- * rect + `getComputedStyle` idiom as `deep-locator-scan.ts`'s `IS_VISIBLE_EXPR`
- * (rather than `offsetParent`), so on-screen `position:fixed` controls — a
- * sticky Next/Submit bar, whose `offsetParent` is `null` — still enter the map.
+ * skipped — they churn without a selection change. Visibility uses the shared
+ * {@link ACTIONABLE_VISIBILITY_EXPR} (rect + `getComputedStyle`, skipping an
+ * element's own `aria-hidden="true"`; not `offsetParent`), so on-screen
+ * `position:fixed` controls — a sticky Next/Submit bar — still enter the map.
  * The visibility gate is waived for an `input`/`select` nested inside a nearby
  * combobox/listbox/group container: a design-system option commits its real
  * selection to a `display:none` or `aria-hidden` sibling input, not to the
@@ -4284,12 +4285,7 @@ const SELECTION_STATE_MAP_EXPR = `(() => {
   if (!b) return {};
   const xpathOf = ${XPATH_OF_FN_SRC};
   const nearbySelectionContainer = ${NEARBY_SELECTION_CONTAINER_FN_SRC};
-  const visible = (el) => {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden";
-  };
+  const visible = ${ACTIONABLE_VISIBILITY_EXPR};
   const sel = "button,[role=button],a,li,[tabindex],input,select,textarea,[role=option],[role=tab],[role=switch],[role=checkbox],[role=menuitemcheckbox],[role=combobox]," + ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)};
   const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null;
   const isCommittedValueControl = (el) =>
@@ -5105,8 +5101,9 @@ export async function surfaceAndUpload(params: {
     if (document.querySelector("input[type=file]")) return { present: true };
     const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
     if (dz) return { present: true };
+    const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
-    if (btns.some((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
+    if (btns.some((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
     return { present: false };
   })()`;
   const gate = await pollEnumerate<{ present: boolean }>(
@@ -5229,7 +5226,7 @@ async function clickUploadAffordance(
 ): Promise<boolean> {
   // The browser-side matcher parallels isUploadAffordanceLabel; kept as a literal
   // so the enumerate is a static string (same trust posture as the other
-  // primitives). No external interpolation.
+  // primitives). Only the shared visibility constant is interpolated.
   const expr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isUpload = (raw) => {
@@ -5241,7 +5238,8 @@ async function clickUploadAffordance(
     };
     const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
-    const matches = els.filter((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""));
+    const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
+    const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
     if (matches.length === 0) return { clicked: false };
     const chosen = matches.find(scoped) || matches[0];
     chosen.click();
