@@ -18,12 +18,12 @@ function makeFake(onPoll: (polls: number, counter: { n: number }) => void): {
 }
 
 describe("settleAfterClick", () => {
-  it("returns after late activity plus quiet polls", async () => {
+  it("returns after activity within the idle window plus quiet polls", async () => {
     const f = makeFake((p, c) => {
-      if (p === 6) c.n += 1;
+      if (p === 3) c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0);
-    expect(f.polls()).toBe(9);
+    expect(f.polls()).toBe(6);
   });
 
   it("gives up when no activity ever appears", async () => {

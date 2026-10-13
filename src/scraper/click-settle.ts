@@ -19,7 +19,7 @@ const MAX_MS = 15000;
 export async function settleAfterClick(
   page: SettlePage,
   counter: SettleCounter,
-  preCount: number,
+  preCount: number
 ): Promise<void> {
   let seen = counter.n > preCount;
   let last = counter.n;
