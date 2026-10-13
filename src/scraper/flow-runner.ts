@@ -1553,12 +1553,26 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
 }
 
 /**
- * A negation followed, in the same clause, by a checkout/proceed/submit target
- * ("Do NOT click ... any control that proceeds to checkout"). Deliberately
- * narrow: a negation alone ("do not click Book Now") is not a declaration.
+ * Targets whose negation declares the step is not a submit: a checkout/payment/
+ * order/submit action, or a "proceeds/leads/advances to" phrase naming one.
+ * Bare "do not click Book Now" stays undeclared — the control name alone says
+ * nothing about whether the author means a submit.
  */
-const NEGATED_SUBMIT_CLAUSE =
-  /\b(?:do not|don't|dont|never|must not|should not|shouldn't)\b[^.;\n]*?\b(?:proceeds? to (?:the )?checkout|proceed(?:s|ing)? (?:to|with) (?:the )?(?:checkout|payment|purchase)|check ?out|submit(?:s|ting)?)\b[^.;\n]*/gi;
+const SUBMIT_TARGET_SRC =
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|submit(?:s|ting)?)";
+
+/**
+ * A negation followed, in the same clause, by a submit target ("Do NOT click
+ * ... any control that proceeds to checkout"), or an explicit "this is not a
+ * submit click" / "without submitting" declaration.
+ */
+const NEGATED_SUBMIT_CLAUSE = new RegExp(
+  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
+  "gi"
+);
+
+/** A positive submit imperative outside any negated clause ("Submit the form."). */
+const LEADING_SUBMIT_IMPERATIVE = /(?:^|[.;]\s*)(?:then\s+)?submit\b/i;
 
 export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
 
@@ -1571,7 +1585,7 @@ export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
 export function classifyStepSubmitIntent(instruction: string | null | undefined): StepSubmitIntent {
   if (!instruction) return "unspecified";
   const remainder = instruction.replace(NEGATED_SUBMIT_CLAUSE, " ");
-  if (isSubmitIntentStep(remainder)) return "submit";
+  if (isSubmitIntentStep(remainder) || LEADING_SUBMIT_IMPERATIVE.test(remainder)) return "submit";
   if (remainder !== instruction) return "non-submit";
   return isSubmitIntentStep(instruction) ? "submit" : "unspecified";
 }
@@ -12936,7 +12950,9 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
+            ((!(isFinalStep && !stepDeclaredNonSubmit) &&
+              !submitStep &&
+              !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
@@ -13030,7 +13046,11 @@ export async function executeStepWithHealing(params: {
           // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
           // both of which rely on that carve-out and must stay green).
           const retryDestinationUnconfirmed =
-            isFinalStep && !submitStep && retryUrlChanged && !retryResolvedElementIsSubmitShaped;
+            isFinalStep &&
+            !submitStep &&
+            !stepDeclaredNonSubmit &&
+            retryUrlChanged &&
+            !retryResolvedElementIsSubmitShaped;
           if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {
             // Veto directly rather than routing through the judge below: no
             // endpoint pattern and no submit-shaped element means there is
@@ -13440,14 +13460,14 @@ export async function executeStepWithHealing(params: {
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
-  const targetResolutionDiagnostic =
-    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
-      ? await captureTargetResolutionDiagnosticSnapshot(
-          frameTarget,
-          page,
-          lastRankedSubmitCandidates
-        )
-      : null;
+  const targetResolutionDiagnostic = isStepSubmitShaped({
+    step,
+    submitStep,
+    isFinalStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+  })
+    ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page, lastRankedSubmitCandidates)
+    : null;
   const dumpPath =
     onStepFailure?.({
       stepIndex,

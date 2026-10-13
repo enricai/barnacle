@@ -238,8 +238,9 @@ describe.each(MARKUPS)(
       expect(rejected([...info, ...warn])).toBe(false);
     });
 
-    it("n+16 retry on the final step: never invokes the judge", async () => {
-      const { info, warn } = await run(false, false);
+    it("n+16 retry on the final step: credits the declared non-submit step without the judge", async () => {
+      const { step1Verified, info, warn } = await run(false, false);
+      expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });

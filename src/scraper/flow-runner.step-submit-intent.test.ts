@@ -11,6 +11,21 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
     expect(classifyStepSubmitIntent(NEG)).toBe("non-submit");
   });
 
+  it("recognizes differently worded negated-submit guardrails", () => {
+    for (const text of [
+      "Click the Next control. Do not proceed to payment",
+      "Click the 'Continue' tab. Do not proceed to the payment page.",
+      "Open the details tab; never submit the order",
+      "Expand the section. This is not a submit click",
+      "Expand the section without submitting the form",
+      "Click the tab. Do not place the order",
+      "Click it. Avoid anything that leads to checkout",
+    ]) {
+      expect(classifyStepSubmitIntent(text)).toBe("non-submit");
+    }
+    expect(classifyStepSubmitIntent("Submit the form. Do not submit twice")).toBe("submit");
+  });
+
   it("classifies a click-submit instruction as submit", () => {
     expect(classifyStepSubmitIntent("click submit")).toBe("submit");
   });
