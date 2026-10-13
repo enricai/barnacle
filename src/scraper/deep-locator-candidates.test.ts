@@ -896,9 +896,7 @@ describe("vetObserveCandidates", () => {
   });
 
   it("accepts a lone matching candidate", () => {
-    expect(vetObserveCandidates([c("Click the Create Account button")], create).refuse).toBe(
-      false
-    );
+    expect(vetObserveCandidates([c("Click the Create Account button")], create).refuse).toBe(false);
   });
 
   it("refuses a lone negated match", () => {
