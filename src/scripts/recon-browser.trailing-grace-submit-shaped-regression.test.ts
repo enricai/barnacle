@@ -194,4 +194,82 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
   });
+
+  it("never asks the trailing-grace judge for an optional step that declares it is not a submit", async () => {
+    // Single trailing optional step (e.g. "place order" flow's final,
+    // redundant "Continue" tap). Its own cascade fails verification, but a
+    // genuine submit already landed server-side and the judge confirms it
+    // from recent capture history — the trailing-grace exit, not the
+    // gated origin/path-only shortcut, is what must credit this run.
+    const session = {
+      on: (): void => {},
+      off: (): void => {},
+    };
+    // The page URL genuinely advances between step-start and post-failure —
+    // origin+path differ, so hasPageAlreadyAdvancedPastStep would read true —
+    // to prove the submitStep gate (not merely a same-URL no-op) is what
+    // keeps the trailing-grace path reachable for a submit-shaped step.
+    const pageUrl = vi
+      .fn()
+      .mockReturnValueOnce("https://orders.example.com/checkout/review")
+      .mockReturnValue("https://orders.example.com/checkout/confirm");
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      url: pageUrl,
+      title: vi.fn().mockResolvedValue("Order Confirmation"),
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+        if (typeof expr === "string" && expr.includes("querySelector"))
+          return { matched: false, src: null };
+        return null;
+      }),
+      frames: vi.fn().mockReturnValue([]),
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+    } as unknown as Page;
+    const stagehand = {
+      context: { awaitActivePage: async (): Promise<Page> => page },
+    } as unknown as Stagehand;
+
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    executeStepWithHealingStub.mockImplementation(async () => {
+      throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifySubmitWithLLMStub.mockResolvedValue({
+      verified: true,
+      rationale: "recent 2xx POST to the site's own backend landed on the order confirmation page",
+    });
+
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://orders.example.com/checkout/review",
+      "--flow",
+      JSON.stringify({
+        steps: [
+          {
+            step: "Open the order history tab. Do not submit or place the order.",
+            optional: true,
+            upload: false,
+          },
+        ],
+      }),
+    ];
+
+    await expect(main()).resolves.not.toThrow();
+
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    expect(loggerStub.info).not.toHaveBeenCalledWith(
+      expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
+    );
+  });
 });
