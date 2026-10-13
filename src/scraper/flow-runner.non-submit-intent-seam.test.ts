@@ -9,11 +9,11 @@ import {
 const NON_SUBMIT_STEPS: Array<[string, string]> = [
   [
     "category tab with example list",
-    "In the pricing panel for the selected sail date, click on a stateroom category tab or link (e.g. 'Inside', 'Outside', 'Verandah', or 'Suite') to view that category's per-cabin price for the selected date. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout.",
+    "In the pricing panel for the selected date, click on a category tab or link (e.g. 'Basic' or 'Premium') to view that category's price. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout.",
   ],
   [
     "type card expansion",
-    "On the sailing detail page, click the 'Verandah' stateroom type (or any stateroom type card/tab) to expand its list of stateroom sub-categories and their individual 'from $' prices. Do NOT click 'Reserve', 'Book Now', 'Pay', or anything that proceeds past stateroom selection.",
+    "On the detail page, click the 'Premium' type card (or any type card/tab) to expand its sub-categories and their prices. Do NOT click 'Reserve', 'Book Now', 'Pay', or anything that proceeds past selection.",
   ],
   [
     "explicit not-checkout statement",
