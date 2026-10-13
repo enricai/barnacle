@@ -68,6 +68,7 @@ import {
   type DeepLocatorCandidate,
   type DeepLocatorTimeoutOptions,
   extractTaggedPhrases,
+  matchSingleQuotedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
 } from "@/scraper/deep-locator-candidates";
@@ -5406,6 +5407,22 @@ const WIDGET_NOUN_RE =
   /\b(prompt\s+selector|multiselect|typeahead|dropdown|field|question|checkbox|radio\s+button|radio)\b/i;
 
 /**
+ * Matches `prefix` (which must end in a `(?=')` lookahead) and returns the
+ * contraction-aware quoted phrase that starts right after it, so anchored
+ * step parsers pair quotes the same way as {@link matchSingleQuotedPhrases}.
+ */
+function matchQuotedAfter(
+  instruction: string,
+  prefix: RegExp
+): { match: RegExpExecArray; phrase: RegExpMatchArray } | null {
+  const match = prefix.exec(instruction);
+  if (!match) return null;
+  const at = match.index + match[0].length;
+  const phrase = matchSingleQuotedPhrases(instruction).find((p) => p.index === at);
+  return phrase ? { match, phrase } : null;
+}
+
+/**
  * Pick the QUESTION LABEL out of an instruction's quoted phrases, given the
  * already-extracted OPTION.
  *
@@ -5423,7 +5440,7 @@ const WIDGET_NOUN_RE =
  */
 function pickQuestionLabel(instruction: string, option: string): string | null {
   // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const candidates = [...instruction.matchAll(/'([^']+)'/g)].filter((m) => m[1]!.trim() !== option);
+  const candidates = matchSingleQuotedPhrases(instruction).filter((m) => m[1]!.trim() !== option);
   if (candidates.length === 0) return null;
   const adjacentToWidgetNoun = candidates.find((m) => {
     const start = m.index ?? 0;
@@ -5452,14 +5469,17 @@ export function parseSelectStep(
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
   // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  const quoted = matchSingleQuotedPhrases(instruction).map((m) => m[1]!);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string following the word "select", allowing a
   // short filler ("the option", "the answer") between the verb and the
   // quote — real flow phrasing like "select the option 'Job Boards'" or
   // "select the answer 'X'" otherwise fails to parse and the caller
   // silently no-ops before touching the DOM.
-  const selMatch = instruction.match(/\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?'([^']+)'/i);
+  const selMatch = matchQuotedAfter(
+    instruction,
+    /\bselect(?:\s+or\s+check)?\s+(?:the\s+\S+\s+)?(?=')/i
+  )?.phrase;
   if (!selMatch) return null;
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !selMatch early-return; group 1 is required by the pattern
   const option = selMatch[1]!.trim();
@@ -5495,12 +5515,13 @@ export function parseSelectStep(
  * to the normal cascade unchanged.
  */
 export function parseFillStep(instruction: string): { fieldLabel: string; value: string } | null {
-  const match = instruction.match(
-    /\bfill(?:\s+in)?\s+(?:the\s+)?(.+?)\s+(?:field|input|textbox)\s+with\s+'([^']+)'/i
+  const found = matchQuotedAfter(
+    instruction,
+    /\bfill(?:\s+in)?\s+(?:the\s+)?(.+?)\s+(?:field|input|textbox)\s+with\s+(?=')/i
   );
-  if (!match) return null;
-  const fieldLabel = match[1]?.trim();
-  const value = match[2]?.trim();
+  if (!found) return null;
+  const fieldLabel = found.match[1]?.trim();
+  const value = found.phrase[1]?.trim();
   if (!fieldLabel || !value) return null;
   return { fieldLabel, value };
 }
@@ -5527,11 +5548,11 @@ export function parseFillStep(instruction: string): { fieldLabel: string; value:
 export function parseFillValueIntent(instruction: string): { value: string } | null {
   if (parseSelectStep(instruction)) return null;
   if (/\bfill(?:\s+in)?\b/i.test(instruction)) {
-    const value = instruction.match(/\bwith\s+'([^']+)'/i)?.[1]?.trim();
+    const value = matchQuotedAfter(instruction, /\bwith\s+(?=')/i)?.phrase[1]?.trim();
     return value ? { value } : null;
   }
   if (/\btype\b/i.test(instruction)) {
-    const value = instruction.match(/\btype\s+'([^']+)'/i)?.[1]?.trim();
+    const value = matchQuotedAfter(instruction, /\btype\s+(?=')/i)?.phrase[1]?.trim();
     return value ? { value } : null;
   }
   return null;
@@ -5571,10 +5592,10 @@ export function parseRadioStep(
   // Catch-all steps ("for any remaining…") have no concrete single target.
   if (/\bany\s+remaining\b/.test(lower)) return null;
   // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-  const quoted = [...instruction.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  const quoted = matchSingleQuotedPhrases(instruction).map((m) => m[1]!);
   if (quoted.length === 0) return null;
   // The OPTION is the quoted string immediately after "click the".
-  const optMatch = instruction.match(/\bclick\s+the\s+'([^']+)'/i);
+  const optMatch = matchQuotedAfter(instruction, /\bclick\s+the\s+(?=')/i)?.phrase;
   if (!optMatch) return null;
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
   const option = optMatch[1]!.trim();
@@ -5619,7 +5640,10 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
   // tolerant of a short qualifier ("top-level", "leaf") between the noun and
   // the quote — e.g. "click the top-level category 'Job Boards'" or "click
   // the leaf option 'Internet - Job Boards/Search Engines'".
-  const optMatch = instruction.match(/\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+'([^']+)'/i);
+  const optMatch = matchQuotedAfter(
+    instruction,
+    /\bclick\s+the\s+(?:\S+\s+)?(?:category|option)\s+(?=')/i
+  )?.phrase;
   if (!optMatch) return null;
   // biome-ignore lint/style/noNonNullAssertion: guarded by the !optMatch early-return; group 1 is required by the pattern
   const option = optMatch[1]!.trim();
@@ -5643,8 +5667,9 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
 export function parseCheckStep(instruction: string): { label: string } | null {
   const lower = instruction.toLowerCase();
   if (/\bany\s+remaining\b/.test(lower)) return null;
-  const match = instruction.match(/\b(?:check|click)\s+(?:the\s+)?'([^']+)'.*?\bcheckbox\b/i);
-  const label = match?.[1]?.trim();
+  const found = matchQuotedAfter(instruction, /\b(?:check|click)\s+(?:the\s+)?(?=')/i);
+  const rest = found ? instruction.slice((found.phrase.index ?? 0) + found.phrase[0].length) : "";
+  const label = /^.*?\bcheckbox\b/i.test(rest) ? found?.phrase[1]?.trim() : undefined;
   return label ? { label } : null;
 }
 
