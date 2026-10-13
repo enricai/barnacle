@@ -43,13 +43,21 @@ let lateSignalMs = 6000;
 function makePage(
   urls: { current: string },
   counter: { n: number },
-  clock: { now: number; clickAt: number | null }
+  clock: {
+    now: number;
+    clickAt: number | null;
+    fallbackClicks: number;
+    escalatedClicks: number;
+    deepRankProbes: number;
+  }
 ): Page {
   return {
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
+      if (src.includes("ranked.sort")) clock.deepRankProbes += 1;
       if (src.includes("XPathResult.FIRST_ORDERED_NODE_TYPE") && src.includes('kind: "click"')) {
         clock.clickAt = clock.now;
+        clock.fallbackClicks += 1;
         return { fired: true, kind: "click" };
       }
       return null;
@@ -58,7 +66,9 @@ function makePage(
     title: vi.fn().mockResolvedValue("App"),
     locator: vi.fn().mockReturnValue({
       first: () => ({
-        click: vi.fn().mockResolvedValue(undefined),
+        click: vi.fn().mockImplementation(async () => {
+          clock.escalatedClicks += 1;
+        }),
         isChecked: vi.fn().mockResolvedValue(false),
         inputValue: vi.fn().mockResolvedValue(""),
       }),
@@ -82,10 +92,20 @@ function makePage(
   } as unknown as Page;
 }
 
-async function run(): Promise<{ attempts: AttemptRecord[]; threw: boolean }> {
+async function run(): Promise<{
+  attempts: AttemptRecord[];
+  threw: boolean;
+  clock: { fallbackClicks: number; escalatedClicks: number; deepRankProbes: number };
+}> {
   const urls = { current: "https://example.com/checkout/shipping" };
   const counter = { n: 0 };
-  const clock = { now: 0, clickAt: null as number | null };
+  const clock = {
+    now: 0,
+    clickAt: null as number | null,
+    fallbackClicks: 0,
+    escalatedClicks: 0,
+    deepRankProbes: 0,
+  };
   const failures: AttemptRecord[][] = [];
   const threw = await executeStepWithHealing({
     stagehand: {} as unknown as Stagehand,
@@ -123,7 +143,7 @@ async function run(): Promise<{ attempts: AttemptRecord[]; threw: boolean }> {
     () => false,
     () => true
   );
-  return { attempts: failures[0] ?? [], threw };
+  return { attempts: failures[0] ?? [], threw, clock };
 }
 
 describe("flow-runner n+16 fallback — slow click settles before the retry snapshot", () => {
@@ -144,9 +164,12 @@ describe("flow-runner n+16 fallback — slow click settles before the retry snap
   });
 
   it("credits a fallback click whose network signal lands ~6s late", async () => {
-    const { attempts, threw } = await run();
+    const { attempts, threw, clock } = await run();
     expect(threw).toBe(false);
     expect(attempts).toEqual([]);
+    expect(clock.fallbackClicks).toBe(1);
+    expect(clock.escalatedClicks).toBe(1);
+    expect(clock.deepRankProbes).toBe(0);
   });
 
   it("control: with no signal ever arriving the fallback is not credited", async () => {
