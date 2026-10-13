@@ -11270,10 +11270,12 @@ function readValueAtPath(body: unknown, path: readonly string[]): unknown {
   }, body);
 }
 
-const ARRAY_ELEMENT_IDENTITY = /^[\s\S]*([^A-Za-z0-9=]\w+=\w+)$/;
+const ARRAY_ELEMENT_IDENTITY = /^[\s\S]*([^A-Za-z0-9=]\w+=[\s\S]*)$/;
 
-/** The `<delimiter><name>=<kind>` suffix of a self-describing array element
- * (the grammar {@link matchArrayElementFacet} binds on), or `undefined`. */
+/** The `<delimiter><name>=<anything>` suffix of a self-describing array element
+ * (the grammar {@link matchArrayElementFacet} binds on), or `undefined`. The
+ * suffix is open-ended because slugs and names carry hyphens, dots and colons
+ * — a stricter shape would silently fall back to index comparison for them. */
 function arrayElementIdentity(element: unknown): string | undefined {
   if (typeof element !== "string") return undefined;
   return ARRAY_ELEMENT_IDENTITY.exec(element)?.[1];
@@ -11299,6 +11301,7 @@ export function readComparableBodyLeaf(
   if (identity === undefined) return readValueAtPath(otherBody, path);
   const otherParent = readValueAtPath(otherBody, arrayPath);
   if (!Array.isArray(otherParent)) return undefined;
+  if (otherParent.includes(leaf)) return leaf;
   return otherParent.find((element) => arrayElementIdentity(element) === identity);
 }
 
