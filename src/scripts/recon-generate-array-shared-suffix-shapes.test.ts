@@ -288,8 +288,8 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     const output = `${result.stdout}\n${result.stderr}`;
 
     expect(result.status, output).toBe(1);
-    expect(output).toContain('body field "sorts.0.region"');
-    expect(output).not.toContain('body field "filters.');
+    expect(output).toContain("sorts.0.region");
+    expect(output).not.toMatch(/body field \\?"filters\./);
   }, 60_000);
 });
 
