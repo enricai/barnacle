@@ -265,6 +265,7 @@ export async function createBrowserbaseBrowserSession(
   };
   const {
     watchLogLine: watchForTeardown,
+    signalTransportClosed,
     deathSignal,
     deathAbortSignal,
   } = createSessionTeardownDetector({ classifyDeath });
@@ -347,7 +348,7 @@ export async function createBrowserbaseBrowserSession(
       completedStepCount,
       toleranceSeconds: TOLERANCE_SECONDS,
     });
-    classifyDeath();
+    signalTransportClosed(why);
     logger.warn(classification.message);
   });
 
