@@ -12962,9 +12962,7 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!inferredFinalSubmitStep &&
-              !submitStep &&
-              !retryResolvedElementIsSubmitShaped) ||
+            ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
