@@ -49,6 +49,7 @@ import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
+import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import {
   type Capture,
   type RateLimitFinding,
@@ -96,40 +97,13 @@ const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
 const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 
 /**
- * Masks the apostrophe in a possessive `'s` (e.g. "the candidate's name") with
- * a non-quote placeholder of the same length, so a naive `'...'` quote scan
- * doesn't mistake the possessive apostrophe for an opening quote delimiter.
- * Length-preserving so callers that need positions in the ORIGINAL instruction
- * can reuse the indices matched against the masked string unchanged.
- */
-function maskPossessiveApostrophes(instruction: string): string {
-  return instruction.replace(/(\w)'(s\b)/g, "$1 $2");
-}
-
-/** One `'...'` quoted span found in an instruction, with its position in the ORIGINAL string. */
-interface QuoteSpan {
-  index: number;
-  length: number;
-  value: string;
-}
-
-function findQuoteSpans(instruction: string): QuoteSpan[] {
-  const masked = maskPossessiveApostrophes(instruction);
-  return [...masked.matchAll(/'([^']*)'/g)].map((m) => ({
-    index: m.index,
-    length: m[0].length,
-    value: instruction.slice(m.index + 1, m.index + m[0].length - 1),
-  }));
-}
-
-/**
  * Picks which quoted span in an instruction is the persona VALUE, per the
  * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
  * ANSWER first, then the question, so the value is the FIRST quoted span; a
  * `Fill`/`Enter`/`Type` step names the field label first and the value last,
  * so it is the LAST quoted span.
  */
-function pickValueSpan(instruction: string, spans: readonly QuoteSpan[]): QuoteSpan {
+function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
   return /^\s*(select|choose|pick)\b/i.test(instruction) ? spans[0]! : spans[spans.length - 1]!;
 }
 
@@ -155,13 +129,13 @@ function locateSpliceSite(
       after: instruction.slice(envToken.index + envToken[0].length),
     };
   }
-  const spans = findQuoteSpans(instruction);
+  const spans = findQuotedSpans(instruction);
   if (spans.length === 0) return null;
   const span = pickValueSpan(instruction, spans);
   return {
-    before: instruction.slice(0, span.index),
-    matched: instruction.slice(span.index, span.index + span.length),
-    after: instruction.slice(span.index + span.length),
+    before: instruction.slice(0, span.start),
+    matched: instruction.slice(span.start, span.end),
+    after: instruction.slice(span.end),
   };
 }
 
@@ -173,17 +147,17 @@ function locateSpliceSite(
  * can never be mistaken for the data it merely mentions.
  */
 function namesAControl(instruction: string): boolean {
-  return findQuoteSpans(instruction).some((span) =>
-    /^\s*(button|link|tab)\b/i.test(instruction.slice(span.index + span.length))
+  return findQuotedSpans(instruction).some((span) =>
+    /^\s*(button|link|tab)\b/i.test(instruction.slice(span.end))
   );
 }
 
 /** The quoted VALUE a Select/Choose/Fill step carries, per {@link pickValueSpan}'s
  * grammar rule — used to validate a vocabulary match's ANSWER, not just its label. */
 function pickedQuotedValue(instruction: string): string | null {
-  const spans = findQuoteSpans(instruction);
+  const spans = findQuotedSpans(instruction);
   if (spans.length === 0) return null;
-  const value = pickValueSpan(instruction, spans).value;
+  const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
 }
 
@@ -314,9 +288,9 @@ export function buildKnownFieldValues(
  * or the value-identity substitution silently misses.
  *
  * Two grammar facts, both verified against real ATS flows, drive the rule:
- *   1. The possessive apostrophe in "the candidate's first name 'Reginald'"
- *      opens a false quote — a naive `/'[^']*'/` yields `s first name `, not
- *      `Reginald`. Neutralizing `\w's` → `\ws` before matching removes it.
+ *   1. A letter-flanked apostrophe ("the candidate's first name 'Reginald'",
+ *      "Don't") is not a quote delimiter; the shared tokenizer skips it, so the
+ *      span is `Reginald`, not `s first name `.
  *   2. A `Select`/`Choose` step names the ANSWER first, then the question
  *      ("Select 'No' for the 'sponsorship' question"), so the value is the
  *      FIRST quoted token; a `Fill`/`Enter`/`Type` step names the field label
@@ -345,9 +319,9 @@ export function extractStepPersonaValue(
     const resolved = env[envToken[1]!];
     if (resolved) return resolved;
   }
-  const spans = findQuoteSpans(instruction);
+  const spans = findQuotedSpans(instruction);
   if (spans.length === 0) return null;
-  const value = pickValueSpan(instruction, spans).value;
+  const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
 }
 
@@ -596,9 +570,9 @@ export function resolveCompositePersonaFields(
   instruction: string,
   knownFieldValues: ReadonlyMap<string, string>
 ): { fieldA: string; fieldB: string } | null {
-  const spans = findQuoteSpans(instruction);
+  const spans = findQuotedSpans(instruction);
   if (spans.length === 0) return null;
-  const value = pickValueSpan(instruction, spans).value;
+  const value = pickValueSpan(instruction, spans).text;
   if (value.length === 0) return null;
   for (const [fieldA, valueA] of knownFieldValues) {
     for (const [fieldB, valueB] of knownFieldValues) {
@@ -4419,11 +4393,8 @@ export function buildSelectOptionResolutions(
     // returns first-quote when the sentence STARTS with select/choose/pick; a
     // dropdown step phrased "On the X step, select 'No' in the '…?' dropdown"
     // starts with "On", so read the first quote directly here for id= steps.
-    const firstQuoteLabel = ((): string | null => {
-      const cleaned = instruction.replace(/(\w)'s\b/g, "$1s");
-      const m = /'([^']*)'/.exec(cleaned);
-      return m && m[1]!.length > 0 ? m[1]! : null;
-    })();
+    const firstQuoteText = findQuotedSpans(instruction)[0]?.text;
+    const firstQuoteLabel = firstQuoteText ? firstQuoteText : null;
     const label = idMatch ? firstQuoteLabel : extractStepPersonaValue(instruction, env);
     if (label === null) continue;
     // Primary: an id= hint names the wire key AND the enum/enumNames schema key.

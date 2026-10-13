@@ -364,3 +364,13 @@ describe("extractNavigateToHashFragmentValue — accumulating hash forms", () =>
     expect(extractNavigateToHashFragmentValue(url("brand/acme;size/xl"), "brand/acme")).toBe("xl");
   });
 });
+
+describe("extractStepPersonaValue — letter-flanked apostrophes in quoted copy", () => {
+  it.each([
+    ["Fill in the field with the text 'Don't know'", "Don't know"],
+    ["Select 'Women's Health' in the 'Category' dropdown", "Women's Health"],
+    ["Fill in the Name field with the candidate's name 'Reginald'", "Reginald"],
+  ])("%s", (instruction, expected) => {
+    expect(extractStepPersonaValue(instruction, ENV)).toBe(expected);
+  });
+});
