@@ -10519,20 +10519,24 @@ export async function executeStepWithHealing(params: {
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
   params.abortSignal?.throwIfAborted();
-  const probeResult = await raceAbortSignal(probeStepBeforeAttempts({
-    stagehand,
-    page,
-    step,
-    stepIndex,
-    totalSteps,
-    logger,
-    captureFn,
-    frameTarget,
-    reresolveFrameTarget: async () => {
-      await reresolveFrameTargetIfLost();
-      return frameTarget;
-    },
-  });
+  const probeResult = await raceAbortSignal(
+    probeStepBeforeAttempts({
+      stagehand,
+      page,
+      step,
+      stepIndex,
+      totalSteps,
+      logger,
+      captureFn,
+      frameTarget,
+      reresolveFrameTarget: async () => {
+        await reresolveFrameTargetIfLost();
+        return frameTarget;
+      },
+    }),
+    params.abortSignal
+  );
+  params.abortSignal?.throwIfAborted();
   if (probeResult === "absent") {
     if (optional) {
       // Don't fast-skip when the page plainly has a required, still-empty
@@ -11049,10 +11053,7 @@ export async function executeStepWithHealing(params: {
       }
     }
     if (attempt > 1) {
-      await raceAbortSignal(
-        page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS),
-        params.abortSignal,
-      );
+      await raceAbortSignal(page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS), params.abortSignal);
       params.abortSignal?.throwIfAborted();
     }
 
