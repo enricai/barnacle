@@ -35,7 +35,7 @@ const testLogger = {
 
 const STEP = "click the 'Load Report' button";
 const SLOW_DELAY_MS = 6000;
-const IDLE_GIVE_UP_MS = 8000;
+const IDLE_GIVE_UP_MS = 14000;
 
 interface VirtualPage {
   page: Page;

@@ -26,10 +26,18 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(9);
   });
 
+  it("returns after activity at ~11s plus quiet polls", async () => {
+    const f = makeFake((p, c) => {
+      if (p === 11) c.n += 1;
+    });
+    await settleAfterClick(f.page, f.counter, 0);
+    expect(f.polls()).toBe(14);
+  });
+
   it("gives up when no activity ever appears", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0);
-    expect(f.polls()).toBe(8);
+    expect(f.polls()).toBe(14);
   });
 
   it("stops at the max on a continuous stream", async () => {

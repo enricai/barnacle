@@ -35,7 +35,7 @@ const RESOLVED_SELECTOR = "css=button#continue";
 const PRE_URL = "https://example.org/checkout/shipping";
 const POST_URL = "https://example.org/checkout/payment";
 const LATE_MS = 6_000;
-const IDLE_GIVE_UP_MS = 8_000;
+const IDLE_GIVE_UP_MS = 14_000;
 const STEP_PAUSE_MS = 2_000;
 
 interface Clock {
