@@ -255,6 +255,53 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
     expect(childFrame.childUrl.current).toBe(CHILD_FRAME_URL_AFTER);
   });
 
+  it("does not classify the child-frame click as phantom when its effect lands ~6s late (settle before the post snapshot)", async () => {
+    const childUrl = { current: CHILD_FRAME_URL_BEFORE };
+    const clicked = { value: false };
+    const waited = { ms: 0 };
+    const candidate: SubmitCandidate = {
+      deepIndex: 2,
+      tier: 3,
+      tag: "button",
+      accessibleName: "complete purchase",
+    };
+    const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      if (expr === "location.href") return childUrl.current;
+      const src = String(expr);
+      if (isRankExpr(src)) return [candidate];
+      if (isClickExpr(src)) {
+        clicked.value = true;
+        return { clicked: true };
+      }
+      if (src.includes("outerHTML")) return { html: 4096, text: "0:" };
+      return null;
+    });
+    const page = fakePage({ childFrame: { evaluate } });
+    (page as unknown as { waitForTimeout: unknown }).waitForTimeout = vi
+      .fn()
+      .mockImplementation(async (ms: number) => {
+        if (!clicked.value) return;
+        waited.ms += ms;
+        if (waited.ms >= 6000) childUrl.current = CHILD_FRAME_URL_AFTER;
+      });
+
+    const result = await runHealingFlow({
+      stagehand: unresolvedStagehand(),
+      page,
+      steps: [step()],
+      logger: makeTestLogger(),
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(result).toMatchObject({ lastStepIndex: 0 });
+    expect(childUrl.current).toBe(CHILD_FRAME_URL_AFTER);
+    expect(
+      evaluate.mock.calls.filter((c) => String(c[0]).includes('__mouse("click"'))
+    ).toHaveLength(1);
+  });
+
   it("still throws cascade-exhausted, byte-for-byte as before, when no child frame is attached at all (no-iframe regression guard)", async () => {
     const page = fakePage({});
     const stagehand = unresolvedStagehand();
