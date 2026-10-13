@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { findQuotedSpans, maskApostrophes, matchAnchored, restoreApostrophes } from "@/scraper/quoted-spans";
+import {
+  findQuotedSpans,
+  maskApostrophes,
+  matchAnchored,
+  restoreApostrophes,
+} from "@/scraper/quoted-spans";
 
 describe("quoted-spans", () => {
   it("ignores contraction apostrophes inside a quoted phrase", () => {

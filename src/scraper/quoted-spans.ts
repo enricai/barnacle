@@ -52,7 +52,9 @@ export function matchAnchored(text: string, pattern: RegExp): AnchoredMatch | nu
   if (!match) return null;
   const start = match.index;
   return {
-    groups: Array.from(match, (group) => (group === undefined ? undefined : restoreApostrophes(group))),
+    groups: Array.from(match, (group) =>
+      group === undefined ? undefined : restoreApostrophes(group)
+    ),
     start,
     end: start + match[0].length,
   };
