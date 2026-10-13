@@ -58,6 +58,7 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
+import { settleAfterClick } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -12150,6 +12151,9 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
+    if (resolvedAction?.method === "click") {
+      await settleAfterClick(page, signalCounter, pre.networkCount);
+    }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
 
@@ -12843,6 +12847,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
+          await settleAfterClick(page, signalCounter, pre.networkCount);
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
