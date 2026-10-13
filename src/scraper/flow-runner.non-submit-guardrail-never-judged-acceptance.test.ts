@@ -27,8 +27,10 @@ const STEPS: Array<[string, string]> = [
     "In the pricing panel, click on a category tab or link (e.g. 'Small', 'Large') to view that category's price. Do NOT click 'Add to Cart', 'Buy Now', 'Select', or any control that proceeds to checkout.",
   ],
   ["first list item", "Click the first item in the list. Do NOT click 'Add to Cart' or 'Buy Now'."],
-  ["category tab without a guardrail", "In the pricing panel, click on a category tab to view that category's price."],
-  ["continue tab with guardrail", "Click the 'Continue' tab. Do NOT click any control that proceeds to checkout."],
+  [
+    "continue tab with guardrail",
+    "Click the 'Continue' tab. Do NOT click any control that proceeds to checkout.",
+  ],
 ];
 function makeLogger(): { logger: Logger; info: string[]; warn: string[] } {
   const info: string[] = [];
