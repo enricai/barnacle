@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionTimeoutError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import { runWithSession } from "@/scraper/pool";
+import * as sessionModule from "@/scraper/session";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -13,6 +15,10 @@ import type { Logger } from "@/types/logging";
  * completed. bugfix-002/003 close this at the engine and CLI layers; this
  * covers the gap in `runHealingFlow` itself, which plugins call directly.
  */
+
+vi.mock("@/scraper/session", () => ({
+  createBrowserSession: vi.fn(),
+}));
 
 const guardedObserve = vi.fn();
 const guardedAct = vi.fn();
@@ -327,5 +333,71 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
     });
 
     expect(result.lastStepIndex).toBe(TOTAL_STEPS - 1);
+  });
+
+  describe("under runWithSession after a lifetime hit", () => {
+    const HIT = { configuredTimeoutSeconds: 60, elapsedSeconds: 60.2 };
+
+    function mockSession(page: Page, deathSignal?: Promise<never>): void {
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(
+        async () =>
+          ({
+            stagehand: makeStagehand(),
+            page,
+            deathSignal,
+            sessionId: "test",
+            close: vi.fn(async () => undefined),
+            getSessionTimeoutHit: () => HIT,
+          }) as unknown as Awaited<ReturnType<typeof sessionModule.createBrowserSession>>
+      );
+    }
+
+    function runFlow(page: Page, deathSignal?: Promise<never>): Promise<unknown> {
+      return runWithSession(
+        async (session) =>
+          runHealingFlow({
+            stagehand: session.stagehand,
+            page,
+            steps: Array.from({ length: TOTAL_STEPS }, (_, i) => step(i)),
+            logger: testLogger,
+            anthropic: null,
+            rephraseModel: null,
+            uploadFixture: null,
+            deathSignal,
+          }),
+        { maxAttempts: 3 }
+      );
+    }
+
+    it("fails fast without a second session when page.url() throws", async () => {
+      vi.mocked(sessionModule.createBrowserSession).mockReset();
+      const { page, killSession } = makeFakePage({ current: "https://careers.example.org/apply" });
+      killSession();
+      mockSession(page);
+
+      const err = await runFlow(page).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ message: expect.stringMatching(/configured lifetime/) });
+      expect(vi.mocked(sessionModule.createBrowserSession)).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails fast without a second session when deathSignal rejects mid-step", async () => {
+      vi.mocked(sessionModule.createBrowserSession).mockReset();
+      const { page } = makeFakePage({ current: "https://careers.example.org/apply" });
+      guardedObserve.mockResolvedValue([
+        { selector: "input#f", description: "field", method: "fill" },
+      ]);
+      guardedAct.mockImplementation(() => new Promise(() => {}));
+      const deathSignal = new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new SessionTimeoutError("teardown after lifetime")), 10);
+      });
+      deathSignal.catch(() => undefined);
+      mockSession(page, deathSignal);
+
+      const err = await runFlow(page, deathSignal).catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ message: expect.stringMatching(/configured lifetime/) });
+      expect(vi.mocked(sessionModule.createBrowserSession)).toHaveBeenCalledTimes(1);
+    });
   });
 });

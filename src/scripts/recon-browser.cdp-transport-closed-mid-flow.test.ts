@@ -87,7 +87,7 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   };
 });
 
-import { CdpTransportClosedError } from "@/scraper/errors";
+import { CdpTransportClosedError, SessionTimeoutError } from "@/scraper/errors";
 import { createBrowserSession } from "@/scraper/session";
 import { main } from "@/scripts/recon-browser";
 
@@ -360,5 +360,49 @@ describe("recon-browser/main — CDP transport closed mid-flow by Stagehand's ow
     );
 
     exitSpy.mockRestore();
+  });
+
+  describe("lifetime-expired death fails fast with no fresh-session retry", () => {
+    const HIT = { configuredTimeoutSeconds: 900, elapsedSeconds: 899.5 };
+
+    async function expectOneAttemptThenExit(session: Record<string, unknown>): Promise<void> {
+      const { stagehand } = makeFakePage();
+      vi.mocked(createBrowserSession).mockResolvedValue({
+        stagehand,
+        limiter: {} as never,
+        sessionId: "test-session",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+        ...session,
+      } as never);
+      process.argv = flowArgv(TOTAL_STEPS);
+      const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+        throw new Error("process.exit");
+      }) as never);
+      await expect(main()).rejects.toThrow("process.exit");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(createBrowserSession).toHaveBeenCalledTimes(1);
+      expect(loggerStub.error).toHaveBeenCalledWith(
+        expect.stringContaining("BROWSERBASE_SESSION_TIMEOUT_SECONDS")
+      );
+    }
+
+    it("deathSignal rejection with a bare CdpTransportClosedError", async () => {
+      executeStepWithHealingStub.mockImplementation(() => new Promise(() => {}));
+      await expectOneAttemptThenExit({
+        getSessionTimeoutHit: () => HIT,
+        deathSignal: Promise.reject(new CdpTransportClosedError("closed")),
+      });
+    });
+
+    it("a step throwing SessionTimeoutError", async () => {
+      executeStepWithHealingStub.mockRejectedValue(new SessionTimeoutError("page.url timed out"));
+      await expectOneAttemptThenExit({ getSessionTimeoutHit: () => HIT });
+    });
+
+    it("loop fall-through", async () => {
+      executeStepWithHealingStub.mockResolvedValue("ok");
+      await expectOneAttemptThenExit({ getSessionTimeoutHit: () => HIT });
+    });
   });
 });

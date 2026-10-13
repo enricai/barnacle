@@ -5,6 +5,7 @@ import {
   CdpTransportClosedError,
   EmptyResultsError,
   SelectorFailureError,
+  SessionLifetimeExceededError,
   SessionTimeoutError,
   StepVerificationError,
   UnknownScraperError,
@@ -67,6 +68,108 @@ describe("scraper/retry", () => {
       ).rejects.toThrow(/captcha/);
       expect(counter.n).toBe(1);
     });
+
+    it("aborts on SessionLifetimeExceededError without retry or session restart", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new SessionLifetimeExceededError("session lifetime reached");
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/session lifetime reached/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
+    it("aborts on a name-matched SessionLifetimeExceededError from another realm", async () => {
+      const counter = { n: 0 };
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            const foreign = new Error("foreign lifetime");
+            foreign.name = "SessionLifetimeExceededError";
+            throw foreign;
+          },
+          { maxAttempts: 3 }
+        )
+      ).rejects.toThrow(/foreign lifetime/);
+      expect(counter.n).toBe(1);
+    });
+
+    it("aborts on a lifetime death whose message looks like a timeout, without restart", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            throw new SessionLifetimeExceededError("session timed out: lifetime reached");
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/lifetime reached/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
+    it("aborts on a foreign-realm lifetime error even when the classifier would map it to a timeout", async () => {
+      const counter = { n: 0 };
+      const onSessionRestart = vi.fn(async () => {});
+      await expect(
+        withScraperRetry(
+          async () => {
+            counter.n += 1;
+            const foreign = new Error("Timeout: session lifetime exceeded");
+            foreign.name = "SessionLifetimeExceededError";
+            throw foreign;
+          },
+          { maxAttempts: 3, onSessionRestart }
+        )
+      ).rejects.toThrow(/lifetime exceeded/);
+      expect(counter.n).toBe(1);
+      expect(onSessionRestart).not.toHaveBeenCalled();
+    });
+
+    const timeoutShapedLifetimeDeaths: Array<{ name: string; make: () => Error }> = [
+      {
+        name: "SessionTimeoutError-shaped message",
+        make: () => new Error("Timeout 30000ms exceeded: session lifetime reached"),
+      },
+      {
+        name: "CdpTransportClosedError-shaped message",
+        make: () => new CdpTransportClosedError("cdp transport closed: session lifetime reached"),
+      },
+      {
+        name: "SessionTimeoutError instance",
+        make: () => new SessionTimeoutError("session timed out: lifetime reached"),
+      },
+    ];
+
+    for (const c of timeoutShapedLifetimeDeaths) {
+      it(`rejects after exactly one invocation for a lifetime death (${c.name})`, async () => {
+        const counter = { n: 0 };
+        const onSessionRestart = vi.fn(async () => {});
+        await expect(
+          withScraperRetry(
+            async () => {
+              counter.n += 1;
+              const raw = c.make();
+              throw raw instanceof SessionTimeoutError || raw instanceof CdpTransportClosedError
+                ? new SessionLifetimeExceededError(raw.message)
+                : Object.assign(raw, { name: "SessionLifetimeExceededError" });
+            },
+            { maxAttempts: 3, onSessionRestart }
+          )
+        ).rejects.toThrow(/lifetime/);
+        expect(counter.n).toBe(1);
+        expect(onSessionRestart).not.toHaveBeenCalled();
+      });
+    }
 
     it("emits logger.error on CaptchaError so ops can alert on it", async () => {
       loggerStub.error.mockClear();

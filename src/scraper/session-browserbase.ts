@@ -13,7 +13,11 @@ import {
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
-import { classifySessionTeardown, createSessionTeardownDetector } from "@/scraper/session-teardown";
+import {
+  classifySessionTeardown,
+  createDeathClassifier,
+  createSessionTeardownDetector,
+} from "@/scraper/session-teardown";
 import { createSessionLimiter } from "@/scraper/throttle";
 import type { Logger } from "@/types/logging";
 
@@ -232,7 +236,38 @@ export async function createBrowserbaseBrowserSession(
     reportSuppressed: reportSuppressedAisdkErrors,
     getSuppressedCount: getSuppressedAisdkElementIdErrorCount,
   } = makeFilteredStagehandLogger(logger);
-  const { watchLogLine: watchForTeardown, deathSignal } = createSessionTeardownDetector();
+  // Stagehand's own end-of-run teardown also closes the CDP transport, so
+  // the handler must not flag that expected case. `weInitiatedClose` is
+  // flipped at the top of `close()` below, before `stagehand.close()` runs;
+  // only a transport close observed while it's still false is an SDK-
+  // initiated teardown mid-operation, not a consequence of our own close.
+  let weInitiatedClose = false;
+  let cdpTransportClosedError: CdpTransportClosedError | undefined;
+  const configuredTimeoutSeconds =
+    (customSessionParams.timeout as number | undefined) ??
+    config.scraper.browserbaseSessionTimeoutSeconds;
+  let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
+  // Advanced by the flow runner's step loop via `recordStepCompleted` as
+  // each step finishes.
+  let completedStepCount = 0;
+  // Single classification shared by the log-line detector and the transport
+  // listener so the order in which those two signals arrive cannot matter.
+  const classifyLifetime = createDeathClassifier({
+    configuredTimeoutSeconds,
+    toleranceSeconds: TOLERANCE_SECONDS,
+    isOwnClose: () => weInitiatedClose,
+    getElapsedSeconds: () => (Date.now() - sessionStartedAt) / 1000,
+    getCompletedStepCount: () => completedStepCount,
+  });
+  const classifyDeath = (): typeof sessionTimeoutHit => {
+    sessionTimeoutHit = classifyLifetime() ?? sessionTimeoutHit;
+    return sessionTimeoutHit;
+  };
+  const {
+    watchLogLine: watchForTeardown,
+    deathSignal,
+    deathAbortSignal,
+  } = createSessionTeardownDetector({ classifyDeath });
   const stagehandLoggerCallback = (line: StagehandLogLine): void => {
     filteredStagehandLoggerCallback(line);
     watchForTeardown(line);
@@ -300,20 +335,6 @@ export async function createBrowserbaseBrowserSession(
 
   const heartbeat = startCdpTransportHeartbeat(stagehand.context.conn, { logger });
 
-  // Stagehand's own end-of-run teardown also closes the CDP transport, so
-  // the handler must not flag that expected case. `weInitiatedClose` is
-  // flipped at the top of `close()` below, before `stagehand.close()` runs;
-  // only a transport close observed while it's still false is an SDK-
-  // initiated teardown mid-operation, not a consequence of our own close.
-  let weInitiatedClose = false;
-  let cdpTransportClosedError: CdpTransportClosedError | undefined;
-  const configuredTimeoutSeconds =
-    (customSessionParams.timeout as number | undefined) ??
-    config.scraper.browserbaseSessionTimeoutSeconds;
-  let sessionTimeoutHit: { configuredTimeoutSeconds: number; elapsedSeconds: number } | undefined;
-  // Advanced by the flow runner's step loop via `recordStepCompleted` as
-  // each step finishes.
-  let completedStepCount = 0;
   stagehand.context.conn.onTransportClosed((why: string) => {
     if (weInitiatedClose) return;
     cdpTransportClosedError = new CdpTransportClosedError(
@@ -326,9 +347,7 @@ export async function createBrowserbaseBrowserSession(
       completedStepCount,
       toleranceSeconds: TOLERANCE_SECONDS,
     });
-    if (classification.isTimeoutHit) {
-      sessionTimeoutHit = { configuredTimeoutSeconds, elapsedSeconds };
-    }
+    classifyDeath();
     logger.warn(classification.message);
   });
 
@@ -382,6 +401,7 @@ export async function createBrowserbaseBrowserSession(
     getSuppressedAisdkElementIdErrorCount,
     getOutboundIp,
     deathSignal,
+    deathAbortSignal,
     getCdpTransportClosedError,
     getSessionTimeoutHit,
     sessionProxy,

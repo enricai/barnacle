@@ -124,6 +124,43 @@ describe("scraper/pool", () => {
     expect(sessions.every((s) => s.closed)).toBe(true);
   });
 
+  describe("lifetime death", () => {
+    const HIT = { configuredTimeoutSeconds: 60, elapsedSeconds: 60.2 };
+
+    it.each([
+      ["SessionTimeoutError", () => new SessionTimeoutError("t")],
+      ["CdpTransportClosedError", () => new CdpTransportClosedError("c")],
+    ])("fails fast without restart when %s follows a lifetime hit", async (_n, mk) => {
+      const closeCounter = { n: 0 };
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () => ({
+        ...fakeSession(() => {
+          closeCounter.n += 1;
+        }),
+        getSessionTimeoutHit: () => HIT,
+      }));
+      const task = vi.fn(async () => {
+        throw mk();
+      });
+      await expect(runWithSession(task, { maxAttempts: 3 })).rejects.toThrow(/configured lifetime/);
+      expect(task).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(sessionModule.createBrowserSession)).toHaveBeenCalledTimes(1);
+      expect(closeCounter.n).toBe(1);
+    });
+
+    it("still restarts and retries when no lifetime hit was recorded", async () => {
+      vi.mocked(sessionModule.createBrowserSession).mockImplementation(async () => ({
+        ...fakeSession(() => undefined),
+        getSessionTimeoutHit: () => undefined,
+      }));
+      const task = vi
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(new SessionTimeoutError("t"))
+        .mockResolvedValueOnce("ok");
+      await expect(runWithSession(task, { maxAttempts: 3 })).resolves.toBe("ok");
+      expect(vi.mocked(sessionModule.createBrowserSession)).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("poolStats reports the queue shape", () => {
     const stats = poolStats();
     expect(stats.concurrency).toBeGreaterThan(0);

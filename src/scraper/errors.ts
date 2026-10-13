@@ -118,6 +118,25 @@ export class SessionTimeoutError extends ScraperError {
 }
 
 /**
+ * The provider session died because it reached its own configured lifetime.
+ * Non-retryable — a fresh session has the same lifetime, so a flow that
+ * outlasted one can never fit in another; restarting only burns sessions.
+ */
+export class SessionLifetimeExceededError extends ScraperError {
+  constructor(message = "scraper session reached its configured lifetime") {
+    super(message, false);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof SessionLifetimeExceededError`. See {@link isCaptchaError} for why this exists. */
+export function isSessionLifetimeExceededError(err: unknown): err is SessionLifetimeExceededError {
+  return (
+    err instanceof SessionLifetimeExceededError ||
+    (err instanceof Error && err.name === "SessionLifetimeExceededError")
+  );
+}
+
+/**
  * The underlying session's CDP transport was torn down by the SDK itself
  * mid-operation. Distinct from {@link SessionTimeoutError} so downstream code
  * (recon-browser's exit-code gate) can branch on it precisely instead of
@@ -482,6 +501,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "EmptyResultsError",
   "SelectorFailureError",
   "SessionTimeoutError",
+  "SessionLifetimeExceededError",
   "CdpTransportClosedError",
   "UnknownScraperError",
   "StepVerificationError",

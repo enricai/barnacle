@@ -6,6 +6,7 @@ import { SessionTimeoutError } from "@/scraper/errors";
 import { type RetryOptions, withScraperRetry } from "@/scraper/retry";
 import { type BrowserSession, createBrowserSession } from "@/scraper/session";
 import type { BrowserSessionOptions } from "@/scraper/session-shared";
+import { resolveSessionDeathError } from "@/scraper/session-teardown";
 
 const logger = getLogger({ name: "scraper/pool" });
 
@@ -71,7 +72,12 @@ export async function runWithSession<T>(
             );
             t.unref();
           });
-          return Promise.race([task(session), timeout]);
+          try {
+            return await Promise.race([task(session), timeout]);
+          } catch (err) {
+            // Must run before onSessionRestart: closeSession() nulls sessionRef.
+            throw resolveSessionDeathError(sessionRef.session ?? undefined, err);
+          }
         },
         {
           ...retryOptions,

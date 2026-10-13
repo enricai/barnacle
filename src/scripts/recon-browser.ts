@@ -81,6 +81,9 @@ import {
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
+  isCdpTransportClosedError,
+  isSessionLifetimeExceededError,
+  SessionLifetimeExceededError,
   SessionTimeoutError,
   StepVerificationError,
 } from "@/scraper/errors";
@@ -124,7 +127,7 @@ import {
 } from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import { raceAgainstTeardown } from "@/scraper/session-teardown";
+import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
@@ -2998,6 +3001,7 @@ async function main(): Promise<void> {
               : executeStepWithHealing({
                   stagehand,
                   page,
+                  abortSignal: session.deathAbortSignal,
                   frameTarget,
                   step: step.instruction,
                   optional: step.optional,
@@ -3477,10 +3481,9 @@ async function main(): Promise<void> {
       // maxTransportRetries budget re-running the same head of the flow.
       const sessionTimeoutHit = session.getSessionTimeoutHit?.();
       if (sessionTimeoutHit) {
-        logger.error(
-          `Browserbase session hit its timeout (${sessionTimeoutHit.configuredTimeoutSeconds}s) after ${completedSteps.length} steps — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS`
+        throw new SessionLifetimeExceededError(
+          `Browserbase session hit its timeout (${sessionTimeoutHit.configuredTimeoutSeconds}s) after ${completedSteps.length} steps`
         );
-        process.exit(1);
       }
 
       const cdpTransportClosedError = session.getCdpTransportClosedError?.();
@@ -3542,6 +3545,12 @@ async function main(): Promise<void> {
       );
 
       logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
+    } catch (err) {
+      // Runs before the finally closes the session so any error that escaped
+      // the step loop (deathSignal rejection, page.url() timeout, uninitialized
+      // Stagehand) is upgraded to the non-retryable lifetime error when the
+      // session died of its own configured lifetime.
+      throw isSessionLifetimeExceededError(err) ? err : resolveSessionDeathError(session, err);
     } finally {
       // Replay-the-discovered-path: if any replan fired and the user provided
       // a flow file, write the improved plan back so the next run starts
@@ -3599,20 +3608,29 @@ async function main(): Promise<void> {
   // re-thrown unchanged (same instance, same type) once the retry call
   // settles. This is plain error propagation, not a second retry loop.
   let nonTransportError: unknown;
+  let lifetimeError: SessionLifetimeExceededError | undefined;
   try {
     await withScraperRetry(
       async () => {
         try {
           await runFlowAttempt();
         } catch (err) {
-          if (err instanceof CdpTransportClosedError) throw err;
+          if (isSessionLifetimeExceededError(err)) {
+            lifetimeError = err;
+            throw err;
+          }
+          if (isCdpTransportClosedError(err)) throw err;
           nonTransportError = err;
         }
       },
       { maxAttempts: config.scraper.maxTransportRetries }
     );
   } catch (err) {
-    if (err instanceof CdpTransportClosedError) {
+    if (lifetimeError) {
+      logger.error(`${lifetimeError.message} — raise BROWSERBASE_SESSION_TIMEOUT_SECONDS`);
+      process.exit(1);
+    }
+    if (isCdpTransportClosedError(err)) {
       logger.error(
         `Stagehand tore down the CDP transport mid-flow on every attempt (${config.scraper.maxTransportRetries} of ${config.scraper.maxTransportRetries}): ${err.message} — refusing to report success`
       );
