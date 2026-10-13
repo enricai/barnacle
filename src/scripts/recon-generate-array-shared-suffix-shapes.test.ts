@@ -215,6 +215,84 @@ describe("recon-generate CLI — same-suffix array shapes across three drill cap
   }, 60_000);
 });
 
+const EXCLUSIVE_ID_TAGGED = [
+  "red;filterId=colorTag",
+  "xl;filterId=colorTag",
+  "cotton;filterId=colorTag",
+  "sale;filterId=colorTag",
+];
+const EXCLUSIVE_TYPE_TAGGED = [
+  "2026-12;filterType=date",
+  "GARDEN;filterType=theme",
+  "4;filterType=night",
+  "WW;filterType=ship",
+  "SALE;filterType=promo",
+  "XL;filterType=size",
+];
+
+function exclusiveFilterCaptures(): Capture[] {
+  const primary = buildCapture({
+    url: `https://${OWN_BACKEND_HOST}/catalog/search/`,
+    requestPostData: JSON.stringify({ page: 1 }),
+    responseBody: { results: [{ sku: "sku-a" }, { sku: "sku-b" }, { sku: "sku-c" }] },
+    timestamp: "2026-06-01T00:00:00.000Z",
+  });
+  const drill = (sku: string, filters: string[], region: string, timestamp: string): Capture =>
+    buildCapture({
+      url: `${DRILL_URL}?sku=${sku}`,
+      requestPostData: JSON.stringify({
+        currency: "USD",
+        filters,
+        region: "EU",
+        sorts: [{ criteria: "RECOMMENDED", region }],
+      }),
+      responseBody: { results: [{ sku, amount: 19.99 }] },
+      timestamp,
+    });
+  return [
+    primary,
+    drill("sku-a", EXCLUSIVE_ID_TAGGED, "NJ", "2026-06-01T00:00:01.000Z"),
+    drill("sku-b", EXCLUSIVE_ID_TAGGED.slice(0, 2), "NJ", "2026-06-01T00:00:02.000Z"),
+    drill("sku-c", EXCLUSIVE_TYPE_TAGGED, "FL", "2026-06-01T00:00:03.000Z"),
+  ];
+}
+
+describe("recon-generate CLI — mutually exclusive filter arrays with a differing sibling", () => {
+  it("flags only the genuinely varying sibling, never a filters.N slot", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-filters-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(runRoot, exclusiveFilterCaptures());
+
+    const siteId = `exclusive-filters-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(1);
+    expect(output).toContain('body field "sorts.0.region"');
+    expect(output).not.toContain('body field "filters.');
+  }, 60_000);
+});
+
 describe("findFrozenVaryingDrillParams with mutually exclusive filter arrays and a differing sibling", () => {
   const ID_TAGGED = [
     "red;filterId=colorTag",
