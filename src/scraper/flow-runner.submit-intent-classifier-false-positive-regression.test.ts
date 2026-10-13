@@ -6,6 +6,7 @@ import {
   flowHasSubmitSemantics,
   type HealingFlowStep,
   isAdvanceStep,
+  isStepDeclaredNonSubmit,
   isStepSubmitShaped,
   isSubmitIntentStep,
   runHealingFlow,
@@ -236,5 +237,22 @@ describe("classifyStepSubmitIntent — declared non-submit instruction", () => {
         flowHasSubmitSemantics: true,
       })
     ).toBe(true);
+  });
+});
+
+describe("isStepDeclaredNonSubmit", () => {
+  const NEGATED = "Do NOT click Place Order or any control that proceeds to checkout";
+
+  it("is true for a negated guardrail without submitStep", () => {
+    expect(isStepDeclaredNonSubmit({ step: NEGATED, submitStep: false })).toBe(true);
+  });
+
+  it("is false when submitStep is explicitly set", () => {
+    expect(isStepDeclaredNonSubmit({ step: NEGATED, submitStep: true })).toBe(false);
+  });
+
+  it("is false for ordinary and empty instructions", () => {
+    expect(isStepDeclaredNonSubmit({ step: "Click Submit", submitStep: false })).toBe(false);
+    expect(isStepDeclaredNonSubmit({ step: null, submitStep: false })).toBe(false);
   });
 });

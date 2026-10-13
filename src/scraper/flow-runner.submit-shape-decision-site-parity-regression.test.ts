@@ -231,7 +231,7 @@ describe("submit-shape decision sites: step-intent input agreement", () => {
 
   it("the primary and retry decision sites both gate the shape probe on stepDeclaredNonSubmit", () => {
     expect(FLOW_RUNNER_SRC).toContain(
-      'const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";'
+      "const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({ step, submitStep });"
     );
     expect(FLOW_RUNNER_SRC).toContain(
       "isClick && !stepDeclaredNonSubmit && resolvedAction?.selector"

@@ -102,6 +102,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
+  isStepDeclaredNonSubmit,
   latestCaptureIndex,
   logBillingErrorIfPresent,
   parseFillStep,
@@ -1507,6 +1508,10 @@ const SUBMIT_SHAPED_INSTRUCTION_PATTERNS = [
  * one. Pure.
  */
 export function isSubmitShapedInstructionText(instruction: string): boolean {
+  // The loose wording patterns below would seed an explicit `submitStep: true`,
+  // which overrides a declared non-submit intent everywhere downstream; defer
+  // to the same classifier the submit-judge gates read so the two cannot disagree.
+  if (classifyStepSubmitIntent(instruction) === "non-submit") return false;
   const norm = normalizeInstruction(stripNegatedSubmitClauses(instruction));
   return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
 }
@@ -3017,7 +3022,10 @@ async function main(): Promise<void> {
                   emailStepConfig: step.emailStepConfig,
                   allocatedInbox,
                   flowHasSubmitSemantics: flowHasSubmitSemantics({
-                    steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
+                    steps: plan.map((s) => ({
+                      submitStep: s.submitStep === true,
+                      instruction: s.instruction,
+                    })),
                     submitEndpointPattern,
                     requireSubmitEndpointMatch,
                   }),
@@ -3185,8 +3193,10 @@ async function main(): Promise<void> {
           // /tmp/recon/graphql/ during a sweep: some tenants hit this exact
           // failure — only interruption_check + GA tracking POSTs fired, no
           // integrated_apply, yet trailing-grace declared success.
-          const stepDeclaredNonSubmit =
-            !step.submitStep && classifyStepSubmitIntent(step.instruction) === "non-submit";
+          const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({
+            step: step.instruction,
+            submitStep: step.submitStep ?? false,
+          });
           if (step.optional && !stepDeclaredNonSubmit && i >= plan.length - TRAILING_GRACE_WINDOW) {
             // Trailing-grace check: did the submit actually land somewhere in
             // the recent capture history? Ask the same Haiku judge — it has

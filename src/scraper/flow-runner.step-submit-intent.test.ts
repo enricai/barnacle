@@ -110,3 +110,43 @@ describe("scraper/flow-runner isStepSubmitShaped", () => {
     ).toBe(false);
   });
 });
+
+describe("scraper/flow-runner verbatim non-submit guardrail steps", () => {
+  const STEPS = [
+    "In the pricing panel for the selected date, click on a category tab or link (e.g. 'Basic' or 'Premium') to view that category's price. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout.",
+    "Click the 'Continue' control that opens that item's own detail page. This is the selection view showing 'from $' prices; it is NOT checkout. Do NOT click 'Reserve', 'Book Now', 'Pay', 'Continue to Guest Info', or anything that proceeds past selection.",
+    "On the detail page, click the 'Premium' type card to expand its sub-categories and their prices. Do NOT click 'Reserve', 'Book Now', 'Pay', or anything that proceeds past selection.",
+  ];
+
+  it("classifies each guardrail step as non-submit", () => {
+    for (const step of STEPS) {
+      expect(classifyStepSubmitIntent(step)).toBe("non-submit");
+    }
+  });
+
+  it("resolves each guardrail step to not submit-shaped even as the final step", () => {
+    for (const step of STEPS) {
+      expect(
+        isStepSubmitShaped({
+          step,
+          submitStep: false,
+          isFinalStep: true,
+          flowHasSubmitSemantics: true,
+        })
+      ).toBe(false);
+    }
+  });
+
+  it("still resolves a genuine submit step to submit", () => {
+    const step = "Click Submit to place the order";
+    expect(classifyStepSubmitIntent(step)).toBe("submit");
+    expect(
+      isStepSubmitShaped({
+        step,
+        submitStep: false,
+        isFinalStep: false,
+        flowHasSubmitSemantics: false,
+      })
+    ).toBe(true);
+  });
+});

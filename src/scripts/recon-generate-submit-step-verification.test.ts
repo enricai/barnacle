@@ -47,6 +47,30 @@ describe("recon-generate — submit-step verification", () => {
     expect(stepLines[1]).toContain("submitStep: true");
   });
 
+  it("does not force submitStep:true onto a trailing step whose own wording declares it non-submit", () => {
+    const declaresNonSubmit =
+      "Click the optional 'Continue' tab. Do NOT click any control that proceeds to checkout.";
+    const flowSteps = [
+      { step: "Click the Submit Application button", submitStep: true },
+      { step: declaresNonSubmit, optional: true },
+    ];
+    const { code } = emitBrowserFlowTs({ ...submissionOpts, flowSteps });
+    const stepLines = code.split("\n").filter((line) => line.trim().startsWith("{ instruction:"));
+    expect(stepLines).toHaveLength(2);
+    expect(stepLines[1]).toContain("submitStep: false");
+
+    const manifest = JSON.parse(
+      emitConfigManifest({
+        siteId: "recon-site-3",
+        baseUrl: submissionOpts.baseUrl,
+        ...{ flowSteps },
+        isSubmissionFlow: true,
+      })
+    ) as { spec: { flow: { steps: Array<string | { submitStep?: boolean }> } } };
+    const last = manifest.spec.flow.steps.at(-1);
+    expect(typeof last === "string" ? false : (last?.submitStep ?? false)).toBe(false);
+  });
+
   it("does NOT force submitStep on a non-submission (query) flow's last step", () => {
     const { code } = emitBrowserFlowTs({ ...submissionOpts, isSubmissionFlow: false });
     const stepLines = code.split("\n").filter((line) => line.trim().startsWith("{ instruction:"));

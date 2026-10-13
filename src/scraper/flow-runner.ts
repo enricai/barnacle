@@ -1571,8 +1571,9 @@ const NEGATED_SUBMIT_CLAUSE = new RegExp(
   "gi"
 );
 
-/** A positive submit imperative outside any negated clause ("Submit the form."). */
-const LEADING_SUBMIT_IMPERATIVE = /(?:^|[.;]\s*)(?:then\s+)?submit\b/i;
+/** A positive submit imperative outside any negated clause ("Submit the form.", "Place the order."). */
+const LEADING_SUBMIT_IMPERATIVE =
+  /(?:^|[.;]\s*)(?:then\s+)?(?:click\s+(?:on\s+)?(?:the\s+)?['"]?)?(?:submit\b|place\s+(?:the\s+)?order\b|complete\s+(?:the\s+)?(?:order|purchase|application|checkout)\b|finish\s+(?:and\s+)?(?:order|purchase|application|checkout)\b|confirm\s+(?:and\s+)?(?:order|purchase|application)\b|save\s+and\s+continue\b|finali[sz]e\b)/i;
 
 export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
 
@@ -1601,6 +1602,18 @@ export function classifyStepSubmitIntent(instruction: string | null | undefined)
 }
 
 /**
+ * Single derivation of "this step's own instruction declares it non-submit",
+ * so every submit-judge gate honours the veto identically. An explicit
+ * `submitStep` flag always overrides the declaration.
+ */
+export function isStepDeclaredNonSubmit(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+}): boolean {
+  return !params.submitStep && classifyStepSubmitIntent(params.step) === "non-submit";
+}
+
+/**
  * Single seam answering "is this step submit-shaped?": an explicit `submitStep`
  * flag is authoritative, a declared non-submit instruction vetoes every
  * inferred path, otherwise final-step inference or submit-intent wording applies.
@@ -1613,9 +1626,8 @@ export function isStepSubmitShaped(params: {
 }): boolean {
   const { step, submitStep, isFinalStep, flowHasSubmitSemantics: flowSubmit } = params;
   if (submitStep) return true;
-  const intent = classifyStepSubmitIntent(step);
-  if (intent === "non-submit") return false;
-  return (isFinalStep && flowSubmit) || intent === "submit";
+  if (isStepDeclaredNonSubmit({ step, submitStep })) return false;
+  return (isFinalStep && flowSubmit) || classifyStepSubmitIntent(step) === "submit";
 }
 
 /**
@@ -1676,15 +1688,20 @@ export function shouldCaptureSelectionState(params: {
  * callers can stop inferring submit-shape from `isFinalStep` alone.
  */
 export function flowHasSubmitSemantics(params: {
-  steps: Array<{ submitStep: boolean }>;
+  steps: Array<{ submitStep: boolean; instruction?: string | null }>;
   submitEndpointPattern: string | null;
   requireSubmitEndpointMatch: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
-  return hasExplicitSubmitStep
-    ? (steps[steps.length - 1]?.submitStep ?? false)
-    : submitEndpointPattern !== null || requireSubmitEndpointMatch;
+  if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
+  if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
+  // An earlier step whose own wording declares submit already owns the role;
+  // the fallback is only for a self-heal-appended final step.
+  const earlierStepOwnsSubmit = steps
+    .slice(0, -1)
+    .some((s) => classifyStepSubmitIntent(s.instruction) === "submit");
+  return !earlierStepOwnsSubmit;
 }
 
 /**
@@ -10008,7 +10025,7 @@ export async function executeStepWithHealing(params: {
   // Submit, and unfilled required fields produce silent submit failures
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
-  const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";
+  const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({ step, submitStep });
   // Single final-step inference every submit-strictness gate below reads, so a
   // declared non-submit veto cannot be honoured at one site and missed at another.
   const inferredFinalSubmitStep = isFinalStep && !stepDeclaredNonSubmit;
