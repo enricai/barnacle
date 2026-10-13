@@ -214,3 +214,62 @@ describe("recon-generate CLI — same-suffix array shapes across three drill cap
     expect(contract).toContain("/catalog/pricing/");
   }, 60_000);
 });
+
+describe("findFrozenVaryingDrillParams with mutually exclusive filter arrays and a differing sibling", () => {
+  const ID_TAGGED = [
+    "red;filterId=colorTag",
+    "xl;filterId=colorTag",
+    "cotton;filterId=colorTag",
+    "sale;filterId=colorTag",
+  ];
+  const TYPE_TAGGED = [
+    "2026-12;filterType=date",
+    "GARDEN;filterType=theme",
+    "4;filterType=night",
+    "WW;filterType=ship",
+    "SALE;filterType=promo",
+    "XL;filterType=size",
+  ];
+  const body = (filters: string[], region: string): Record<string, unknown> => ({
+    currency: "USD",
+    filters,
+    region: "EU",
+    sorts: [{ criteria: "RECOMMENDED", region }],
+  });
+  const variants = [
+    body(ID_TAGGED, "NJ"),
+    body(ID_TAGGED.slice(0, 3), "NJ"),
+    body(ID_TAGGED.slice(0, 2), "NJ"),
+    body(ID_TAGGED.slice(0, 1), "NJ"),
+    body(TYPE_TAGGED, "FL"),
+    body(TYPE_TAGGED.slice(0, 5), "FL"),
+  ];
+
+  it("never reports a filters.N entry for any ordered pair of shapes", () => {
+    const captures = variants.map((variant) => cap(variant));
+    for (const [capIndex, capture] of captures.entries()) {
+      const rendered = JSON.stringify(variants[capIndex]);
+      const frozen = findFrozenVaryingDrillParams(capture, rendered, captures);
+      expect(
+        frozen.filter((entry) => JSON.stringify(entry).includes("filters")),
+        `capture ${capIndex}`
+      ).toEqual([]);
+    }
+  });
+
+  it("pairs filters leaves of every shape pair only with an identical element", () => {
+    for (const [a, first] of variants.entries()) {
+      for (const [b, second] of variants.entries()) {
+        if (a === b) continue;
+        for (const index of indexesOf(first.filters as string[])) {
+          const leaf = (first.filters as string[])[Number(index)]!;
+          const expected = (second.filters as string[]).includes(leaf) ? leaf : undefined;
+          expect(
+            readComparableBodyLeaf(first, second, ["filters", index]),
+            `${a}->${b}[${index}]`
+          ).toBe(expected);
+        }
+      }
+    }
+  });
+});
