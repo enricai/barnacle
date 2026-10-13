@@ -11359,7 +11359,9 @@ function innermostArrayIndexSegment(body: unknown, path: readonly string[]): num
  * field of an object element) is matched by its identity suffix within the same
  * array, never by index, so differently shaped arrays are not mistaken for one
  * array with a varying slot; an identity the other body lacks yields
- * `undefined`. A plain element of such an array is matched by value, since its
+ * `undefined`. An identity shared by several elements of either array (e.g.
+ * repeated `;tag=x` suffixes) is ambiguous and is paired only by exact value.
+ * A plain element of such an array is matched by value, since its
  * slot says nothing about it once the arrays' shapes differ. Every other path
  * defers to {@link readValueAtPath}.
  */
@@ -11389,7 +11391,14 @@ export function readComparableBodyLeaf(
   const counterparts = otherArray.map((element) => readValueAtPath(element, elementSubpath));
   if (counterparts.includes(leaf)) return leaf;
   if (identity === undefined) return undefined;
-  return counterparts.find((candidate) => arrayElementIdentity(candidate) === identity);
+  const sharesIdentity = (candidate: unknown): boolean =>
+    arrayElementIdentity(candidate) === identity;
+  const ownSharing = ownArray.filter((element) =>
+    sharesIdentity(readValueAtPath(element, elementSubpath))
+  );
+  const otherSharing = counterparts.filter(sharesIdentity);
+  if (ownSharing.length !== 1 || otherSharing.length !== 1) return undefined;
+  return otherSharing[0];
 }
 
 /**
