@@ -9509,6 +9509,30 @@ async function probeChildFrameSubmitFallback(params: {
   return null;
 }
 
+/**
+ * Rejects with the signal's reason as soon as it aborts, so an in-step await
+ * on a torn-down session stops instead of waiting out its own timeout.
+ * Passes the promise through untouched when no signal is supplied.
+ */
+async function raceAbortSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) {
+    work.catch(() => undefined);
+    throw signal.reason;
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    work.catch(() => undefined);
+  }
+}
+
 export async function executeStepWithHealing(params: {
   stagehand: Stagehand;
   page: Page;
@@ -10494,7 +10518,8 @@ export async function executeStepWithHealing(params: {
   // candidate matching the step's instruction we either skip cleanly
   // (optional) or escalate straight to replan (required) — far cheaper than
   // burning 4 attempts on a page that clearly isn't the right one.
-  const probeResult = await probeStepBeforeAttempts({
+  params.abortSignal?.throwIfAborted();
+  const probeResult = await raceAbortSignal(probeStepBeforeAttempts({
     stagehand,
     page,
     step,
@@ -10608,6 +10633,7 @@ export async function executeStepWithHealing(params: {
     const fieldValuesAtFailure = await (frameTarget ?? page)
       .evaluate<FieldValueAtFailure[]>(fieldValuesAtFailureExpr())
       .catch(() => null);
+    params.abortSignal?.throwIfAborted();
     const probeAbsentObservedUnfocused = await guardedObserve(
       stagehand,
       undefined,
@@ -11023,7 +11049,11 @@ export async function executeStepWithHealing(params: {
       }
     }
     if (attempt > 1) {
-      await page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS);
+      await raceAbortSignal(
+        page.waitForTimeout(attempt * ATTEMPT_BACKOFF_MS),
+        params.abortSignal,
+      );
+      params.abortSignal?.throwIfAborted();
     }
 
     const pre = await snapshotPage(
@@ -11138,6 +11168,7 @@ export async function executeStepWithHealing(params: {
       if (attempt === 1) {
         record.technique = "act-string";
         record.instruction = step;
+        params.abortSignal?.throwIfAborted();
         const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
@@ -11479,6 +11510,7 @@ export async function executeStepWithHealing(params: {
           attempt === 4 && triedSelectors.length > 0
             ? { ignoreSelectors: [...triedSelectors], timeout: STEP_WATCHDOG_MS }
             : { timeout: STEP_WATCHDOG_MS };
+        params.abortSignal?.throwIfAborted();
         const candidates = await guardedObserve(
           stagehand,
           step,
@@ -11689,6 +11721,7 @@ export async function executeStepWithHealing(params: {
               };
             }
           }
+          params.abortSignal?.throwIfAborted();
           const result = await guardedAct(
             stagehand,
             overriddenTarget,
@@ -11943,6 +11976,7 @@ export async function executeStepWithHealing(params: {
           record.errorMessage =
             "anthropic billing exhausted (FATAL_BILLING already logged); skipping rephrase";
         } else {
+          params.abortSignal?.throwIfAborted();
           const observedCandidates = await guardedObserve(
             stagehand,
             step,
@@ -11978,6 +12012,7 @@ export async function executeStepWithHealing(params: {
           // frameTarget: for a frame-scoped flow the ambient UI that matters
           // (the wizard's own Save/Close controls) lives inside the iframe
           // alongside the failed step, not in the top document.
+          params.abortSignal?.throwIfAborted();
           const observedUnfocused = await guardedObserve(
             stagehand,
             undefined,
@@ -12017,6 +12052,7 @@ export async function executeStepWithHealing(params: {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
             record.instruction = rephrased;
+            params.abortSignal?.throwIfAborted();
             const result = await guardedAct(
               stagehand,
               rephrased,
@@ -12486,6 +12522,7 @@ export async function executeStepWithHealing(params: {
 
       // Build the unfocused-observe evidence list. Used by the judge to
       // assess whether the page transitioned to a success state.
+      params.abortSignal?.throwIfAborted();
       const unfocusedForJudge = await guardedObserve(
         stagehand,
         undefined,

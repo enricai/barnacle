@@ -73,3 +73,19 @@ describe("flow-runner/executeStepWithHealing session-death abort", () => {
     expect(observe.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });
+
+describe("flow-runner/executeStepWithHealing in-step abort", () => {
+  it("rejects with the death reason when aborted during the pre-cascade probe, with no act calls", async () => {
+    const death = new Error("SessionLifetimeExpired: died mid-probe");
+    const controller = new AbortController();
+    const { act, observe, params } = buildParams(controller.signal);
+    observe.mockImplementation(() => {
+      controller.abort(death);
+      return new Promise(() => undefined);
+    });
+
+    await expect(executeStepWithHealing(params)).rejects.toBe(death);
+    expect(act).not.toHaveBeenCalled();
+    expect(observe).toHaveBeenCalledTimes(1);
+  });
+});
