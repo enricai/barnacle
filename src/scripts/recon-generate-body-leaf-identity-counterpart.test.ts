@@ -47,4 +47,16 @@ describe("readComparableBodyLeaf", () => {
     expect(readComparableBodyLeaf(x, y, ["facets", "1", "token"])).toBe("M;facetType=size");
     expect(readComparableBodyLeaf(x, { facets: [] }, ["facets", "0", "token"])).toBe(undefined);
   });
+
+  it("pairs a duplicated identity only by exact value", () => {
+    const x = { filters: ["a;tag=x", "b;tag=x", "red;facetId=color"] };
+    const y = { filters: ["c;tag=x", "d;tag=x", "red;facetId=color"] };
+    expect(readComparableBodyLeaf(x, y, ["filters", "0"])).toBe(undefined);
+    expect(readComparableBodyLeaf(x, { filters: ["b;tag=x", "q;z=1"] }, ["filters", "0"])).toBe(
+      undefined
+    );
+    expect(readComparableBodyLeaf(x, { filters: ["b;tag=x", "q;z=1"] }, ["filters", "1"])).toBe(
+      "b;tag=x"
+    );
+  });
 });
