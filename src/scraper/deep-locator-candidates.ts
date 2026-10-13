@@ -166,7 +166,7 @@ export interface TaggedPhrase {
  * boundary (`.`/`;`) between the marker and the phrase ends the negation's
  * reach. Parallels the quoted-phrase extraction convention in
  * `parseSelectStep`/`parseRadioStep` (`flow-runner.ts`) — same
- * `/'([^']+)'/g` shape — but here we need ALL quoted phrases plus their
+ * quoting shape — but here we need ALL quoted phrases plus their
  * polarity, not just one option/label pair. Exported so `flow-runner.ts` can
  * re-derive the exact same ranking {@link scoreCandidate} used to sort
  * `deepLocatorCandidates`, to detect a tie for the top rank rather than
@@ -275,6 +275,45 @@ export function scoreCandidate(
   }
   if (isNav || matchesNavText(normalizedText)) return -1;
   return 0;
+}
+
+/** Outcome of {@link vetObserveCandidates}: the best-scoring candidate, its score, and whether the caller should refuse to act on it. */
+export interface ObserveCandidateVerdict<T extends { description: string }> {
+  candidate: T | undefined;
+  score: number;
+  refuse: boolean;
+}
+
+/**
+ * Picks the best observe() candidate for the step's quoted phrases and decides
+ * whether acting on it would hit a control the step did not name. Reuses
+ * {@link scoreCandidate} so the veto can never drift from the ranking tiers;
+ * a lone candidate is enough to refuse, since observe() returns its best
+ * guess even when nothing matches.
+ */
+export function vetObserveCandidates<T extends { description: string }>(
+  candidates: T[],
+  phrases: TaggedPhrase[]
+): ObserveCandidateVerdict<T> {
+  const first = candidates[0];
+  if (!first || phrases.length === 0) return { candidate: first, score: 0, refuse: false };
+  const scored = candidates.map((candidate) => ({
+    candidate,
+    score: scoreCandidate(candidate.description, phrases),
+  }));
+  const best = scored.reduce((a, b) => (b.score > a.score ? b : a));
+  if (best.score < 0) return { candidate: best.candidate, score: best.score, refuse: true };
+  if (best.score > 0) return { candidate: best.candidate, score: best.score, refuse: false };
+  const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
+  const text = normalize(best.candidate.description);
+  const betterExists = scored.some((s) => s.score > 0);
+  // A context phrase ("under the text 'X'") adds a second positive, so require the
+  // candidate to overlap none of them rather than exactly one.
+  const namesNone =
+    positives.length > 0 &&
+    text.length > 0 &&
+    positives.every((p) => !text.includes(p) && !p.includes(text));
+  return { candidate: best.candidate, score: 0, refuse: betterExists || namesNone };
 }
 
 /**

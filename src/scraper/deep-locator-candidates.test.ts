@@ -21,6 +21,7 @@ import {
   extractTaggedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -861,5 +862,80 @@ describe("watchdog-guarded awaits (deepLocator-direct hang bug)", () => {
     expect(loggerStub.warn).toHaveBeenCalledWith(
       expect.stringContaining("deepLocator enumeration")
     );
+  });
+});
+
+describe("extractTaggedPhrases contractions", () => {
+  it("treats a contraction apostrophe as neither opener nor closer", () => {
+    expect(
+      extractTaggedPhrases(
+        "under the text 'Don't have an account yet?', click the 'Create Account' button to switch to account registration"
+      )
+    ).toEqual([
+      { text: "Don't have an account yet?", negated: false },
+      { text: "Create Account", negated: false },
+    ]);
+  });
+
+  it("keeps negation tagging for ordinary quoted lists", () => {
+    expect(extractTaggedPhrases("Do NOT click 'X', 'Y'")).toEqual([
+      { text: "X", negated: true },
+      { text: "Y", negated: true },
+    ]);
+  });
+
+  it("leaves plain quoted phrases unchanged", () => {
+    expect(extractTaggedPhrases("click 'Sign In'")).toEqual([{ text: "Sign In", negated: false }]);
+  });
+
+  it("keeps the negation split for select/Do NOT click", () => {
+    expect(extractTaggedPhrases("select 'Alpha'. Do NOT click 'Omega'")).toEqual([
+      { text: "Alpha", negated: false },
+      { text: "Omega", negated: true },
+    ]);
+  });
+
+  it("ignores a possessive or contraction inside an unquoted word", () => {
+    expect(extractTaggedPhrases("click the user's 'Save' button, don't wait")).toEqual([
+      { text: "Save", negated: false },
+    ]);
+  });
+});
+
+describe("vetObserveCandidates", () => {
+  const create = [{ text: "Create Account", negated: false }];
+  const c = (description: string): { description: string } => ({ description });
+
+  it("refuses a lone candidate naming a different control", () => {
+    expect(vetObserveCandidates([c("Click the Sign in with email button")], create).refuse).toBe(
+      true
+    );
+  });
+
+  it("accepts a lone matching candidate", () => {
+    expect(vetObserveCandidates([c("Click the Create Account button")], create).refuse).toBe(false);
+  });
+
+  it("refuses a lone negated match", () => {
+    const phrases = [{ text: "Create Account", negated: true }];
+    expect(vetObserveCandidates([c("Create Account button")], phrases).refuse).toBe(true);
+  });
+
+  it("accepts a zero-score candidate with empty description", () => {
+    expect(vetObserveCandidates([c("")], create).refuse).toBe(false);
+  });
+
+  it("picks the higher scorer of two candidates", () => {
+    const good = c("Create Account");
+    const verdict = vetObserveCandidates([c("Sign in"), good], create);
+    expect(verdict.candidate).toBe(good);
+    expect(verdict.refuse).toBe(false);
+  });
+
+  it("accepts the first candidate when there are no phrases", () => {
+    const first = c("anything");
+    const verdict = vetObserveCandidates([first, c("other")], []);
+    expect(verdict.candidate).toBe(first);
+    expect(verdict.refuse).toBe(false);
   });
 });
