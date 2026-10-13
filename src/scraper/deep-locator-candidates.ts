@@ -307,13 +307,10 @@ export function vetObserveCandidates<T extends { description: string }>(
   const positives = phrases.filter((p) => !p.negated).map((p) => normalize(p.text));
   const text = normalize(best.candidate.description);
   const betterExists = scored.some((s) => s.score > 0);
-  const [only] = positives;
   const namesNone =
-    positives.length === 1 &&
-    only !== undefined &&
+    positives.length > 0 &&
     text.length > 0 &&
-    !text.includes(only) &&
-    !only.includes(text);
+    positives.every((p) => !text.includes(p) && !p.includes(text));
   return { candidate: best.candidate, score: 0, refuse: betterExists || namesNone };
 }
 
