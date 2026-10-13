@@ -9,7 +9,9 @@ describe("select/radio parsers with apostrophes", () => {
     });
   });
   it("handles a contraction in the radio option and label", () => {
-    expect(parseRadioStep("click the 'I don't know' answer for the question 'What's next?'")).toEqual({
+    expect(
+      parseRadioStep("click the 'I don't know' answer for the question 'What's next?'")
+    ).toEqual({
       option: "I don't know",
       questionLabel: "What's next?",
     });
