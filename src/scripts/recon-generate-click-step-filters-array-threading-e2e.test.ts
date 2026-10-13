@@ -16,17 +16,17 @@ const OWN_BACKEND_HOST = "www.click-step-filters-array-threading-fixture.example
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
-  "MERRY;filterType=theme",
-  "WW;filterType=ship",
-  "GOC;filterType=privateIsland",
+  "PARIS;filterType=destination",
+  "BETA;filterType=theme",
+  "GAMMA;filterType=vendor",
+  "DELTA;filterType=extra",
 ];
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the search bar and select the 'Paris' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the length of stay (number of nights) filter dropdown in the search bar and select the '4' nights option, keeping the other filters that are already applied";
 
 /**
  * Proves, through the real `recon:generate` CLI, that a click-step
@@ -130,12 +130,12 @@ describe("recon-generate CLI — click-step facets threaded into a filters array
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract, contract).toContain("toUpperCase()");
     expect(contract, contract).toMatch(/payload\.nights[^`]*;filterType=night/);
-    expect(contract).not.toContain("BAHAMAS;filterType=destination");
+    expect(contract).not.toContain("PARIS;filterType=destination");
     for (const literal of [
       "2026-12;filterType=date",
-      "MERRY;filterType=theme",
-      "WW;filterType=ship",
-      "GOC;filterType=privateIsland",
+      "BETA;filterType=theme",
+      "GAMMA;filterType=vendor",
+      "DELTA;filterType=extra",
     ]) {
       expect(contract, contract).toContain(literal);
     }
