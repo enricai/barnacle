@@ -71,7 +71,7 @@ describe("flowHasSubmitSemantics with an earlier submit-wording step", () => {
       flowHasSubmitSemantics({
         steps: [
           { submitStep: false, instruction: SUBMIT_WITH_GUARDRAIL },
-          { submitStep: false, instruction: NON_SUBMIT_STEPS[0][1] },
+          { submitStep: false, instruction: NON_SUBMIT_STEPS[0]?.[1] },
         ],
         submitEndpointPattern: "/api/submit",
         requireSubmitEndpointMatch: true,
@@ -83,7 +83,7 @@ describe("flowHasSubmitSemantics with an earlier submit-wording step", () => {
     expect(
       flowHasSubmitSemantics({
         steps: [
-          { submitStep: false, instruction: NON_SUBMIT_STEPS[1][1] },
+          { submitStep: false, instruction: NON_SUBMIT_STEPS[1]?.[1] },
           { submitStep: false, instruction: "Click the final button" },
         ],
         submitEndpointPattern: "/api/submit",
