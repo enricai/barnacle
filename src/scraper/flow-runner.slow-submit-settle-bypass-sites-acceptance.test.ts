@@ -131,7 +131,9 @@ describe("slow submit settle — bypass sites do not click the runner-up", () =>
     const target = {
       url: async () => page.url(),
       evaluate: (expr: string) =>
-        src_isFindForm(expr) ? Promise.resolve(true) : (evaluate(expr) as Promise<unknown>),
+        src_isFindForm(expr)
+          ? Promise.resolve(true)
+          : (evaluate as unknown as (e: string) => Promise<unknown>)(expr),
     };
 
     const submitted = await submitCaptchaGatedForm(
