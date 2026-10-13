@@ -186,6 +186,25 @@ describe("scraper/session-steel teardown-detector composition", () => {
     });
     await assertion;
   });
+
+  it("aborts deathAbortSignal with a CdpTransportClosedError when the logger callback observes a teardown line", async () => {
+    const session = await createSteelBrowserSession();
+    session.deathSignal?.catch(() => undefined);
+
+    const stagehandArg = vi.mocked(Stagehand).mock.calls.at(-1)?.[0] as {
+      logger?: (line: StagehandLogLine) => void;
+    };
+    expect(session.deathAbortSignal?.aborted).toBe(false);
+
+    stagehandArg.logger?.({
+      message: "CDP transport closed",
+      category: "connection",
+      level: 0,
+    });
+
+    expect(session.deathAbortSignal?.aborted).toBe(true);
+    expect(isCdpTransportClosedError(session.deathAbortSignal?.reason)).toBe(true);
+  });
 });
 
 describe("scraper/session-steel CDP-transport-teardown detection", () => {
