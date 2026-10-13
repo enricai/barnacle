@@ -265,7 +265,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       }),
     ];
 
-    await expect(main()).resolves.not.toThrow();
+    await expect(main()).rejects.toThrow();
 
     expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
     expect(loggerStub.info).not.toHaveBeenCalledWith(

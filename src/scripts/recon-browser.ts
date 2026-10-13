@@ -92,13 +92,13 @@ import {
   anthropicModelName,
   type CaptureFn,
   capturesAfterIndex,
+  classifyStepSubmitIntent,
   type EmailStepConfig,
   executeNavigateStep,
   executeStepWithHealing,
   extractGaEventEvidence,
   extractSubmitFailureEvidence,
   type FieldValueAtFailure,
-  classifyStepSubmitIntent,
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
@@ -3187,11 +3187,7 @@ async function main(): Promise<void> {
           // integrated_apply, yet trailing-grace declared success.
           const stepDeclaredNonSubmit =
             !step.submitStep && classifyStepSubmitIntent(step.instruction) === "non-submit";
-          if (
-            step.optional &&
-            !stepDeclaredNonSubmit &&
-            i >= plan.length - TRAILING_GRACE_WINDOW
-          ) {
+          if (step.optional && !stepDeclaredNonSubmit && i >= plan.length - TRAILING_GRACE_WINDOW) {
             // Trailing-grace check: did the submit actually land somewhere in
             // the recent capture history? Ask the same Haiku judge — it has
             // multi-signal reasoning to distinguish real submit POSTs from
