@@ -41,6 +41,7 @@ import {
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
+import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import {
   buildMarkShadowInteractiveDescendantExpr,
   buildUnmarkShadowDescendantExpr,
@@ -5105,8 +5106,9 @@ export async function surfaceAndUpload(params: {
     if (document.querySelector("input[type=file]")) return { present: true };
     const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
     if (dz) return { present: true };
+    const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
-    if (btns.some((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
+    if (btns.some((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
     return { present: false };
   })()`;
   const gate = await pollEnumerate<{ present: boolean }>(
@@ -5229,7 +5231,7 @@ async function clickUploadAffordance(
 ): Promise<boolean> {
   // The browser-side matcher parallels isUploadAffordanceLabel; kept as a literal
   // so the enumerate is a static string (same trust posture as the other
-  // primitives). No external interpolation.
+  // primitives). Only the shared visibility constant is interpolated.
   const expr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isUpload = (raw) => {
@@ -5241,7 +5243,8 @@ async function clickUploadAffordance(
     };
     const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
-    const matches = els.filter((el) => isUpload(el.getAttribute("aria-label") || el.textContent || ""));
+    const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
+    const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
     if (matches.length === 0) return { clicked: false };
     const chosen = matches.find(scoped) || matches[0];
     chosen.click();
