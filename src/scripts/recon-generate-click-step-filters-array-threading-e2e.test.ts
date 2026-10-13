@@ -144,8 +144,10 @@ describe("recon-generate CLI — click-step facets threaded into a filters array
   }, 30_000);
 
   it("reports the nights field when no request body carries a night element", () => {
-    const { contract } = generate(FIVE_ELEMENTS);
+    const { contract, output } = generate(FIVE_ELEMENTS);
 
+    expect(output).toContain("declared payloadField nights is a required schema field");
+    expect(output).not.toContain("declared payloadField destination is a required schema field");
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract).toContain("payload.category");
     expect(unreferencedDeclaredPayloadFields(contract, "", DECLARED_STEPS)).toEqual(["nights"]);

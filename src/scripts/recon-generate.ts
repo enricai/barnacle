@@ -16705,13 +16705,18 @@ async function main(): Promise<void> {
   if (result === null) return; // emit === "config": already written above.
   const final = healUnreferencedUrlFieldsOnce(captures, result, generateFromCaptures);
 
-  for (const field of unreferencedDeclaredPayloadFields(
-    final.contractCode,
-    final.browserFlow.code,
-    flowSteps
-  )) {
+  const unreferencedEverywhere = new Set(
+    unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+  );
+  // A browser-flow splice only changes the instruction text; when the contract
+  // replays HTTP requests, a field none of them carries still has no effect on
+  // the replayed requests and is reported too.
+  const unreferencedInContract = final.contractCode.includes("httpClient(")
+    ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
+    : [...unreferencedEverywhere];
+  for (const field of unreferencedInContract) {
     logger.warn(
-      `declared payloadField ${field} is a required schema field but no emitted request references it`
+      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
     );
   }
 
