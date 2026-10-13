@@ -90,6 +90,10 @@ describe("recon-generate CLI — declared submitEndpointPattern selecting zero c
     expect(output).toContain("browser-flow-only");
     expect(output).toContain("no replayable action sequence");
     expect(output).not.toContain("cross-domain hop");
+
+    expect(output).toContain("using declared submitEndpointPattern");
+    expect(output).not.toContain("ignoring submitEndpointPattern");
+    expect(output).not.toContain("as an undercount");
   }, 30_000);
 
   it("still emits the {query} executeHttp output for a single-step search flow", () => {
