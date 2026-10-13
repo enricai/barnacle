@@ -397,6 +397,21 @@ describe("scoreCandidate — nav demotion + icon-glyph suffix tiers", () => {
     expect(scoreCandidate("Omega", phrases)).toBeLessThan(scoreCandidate("Next", phrases, true));
   });
 
+  it("extracts a quoted phrase containing an inner apostrophe whole", () => {
+    const phrases = extractTaggedPhrases(
+      "under the text 'Don't have an account yet?', click the 'Create Account' button"
+    );
+    expect(phrases).toEqual([
+      { text: "Don't have an account yet?", negated: false },
+      { text: "Create Account", negated: false },
+    ]);
+  });
+
+  it("does not let a negation-like word inside a quoted phrase negate a later phrase", () => {
+    const phrases = extractTaggedPhrases("click the 'Don't miss out' link, then 'Continue'");
+    expect(phrases.map((p) => p.negated)).toEqual([false, false]);
+  });
+
   it("ranks a suffix match (ends-with) above a mid-string containment match", () => {
     const phrases = select("Ward");
     const endsWith = scoreCandidate("Isolation Ward", phrases);
