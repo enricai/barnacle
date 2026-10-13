@@ -3017,7 +3017,10 @@ async function main(): Promise<void> {
                   emailStepConfig: step.emailStepConfig,
                   allocatedInbox,
                   flowHasSubmitSemantics: flowHasSubmitSemantics({
-                    steps: plan.map((s) => ({ submitStep: s.submitStep === true })),
+                    steps: plan.map((s) => ({
+                      submitStep: s.submitStep === true,
+                      instruction: s.instruction,
+                    })),
                     submitEndpointPattern,
                     requireSubmitEndpointMatch,
                   }),

@@ -1687,15 +1687,20 @@ export function shouldCaptureSelectionState(params: {
  * callers can stop inferring submit-shape from `isFinalStep` alone.
  */
 export function flowHasSubmitSemantics(params: {
-  steps: Array<{ submitStep: boolean }>;
+  steps: Array<{ submitStep: boolean; instruction?: string | null }>;
   submitEndpointPattern: string | null;
   requireSubmitEndpointMatch: boolean;
 }): boolean {
   const { steps, submitEndpointPattern, requireSubmitEndpointMatch } = params;
   const hasExplicitSubmitStep = steps.some((s) => s.submitStep);
-  return hasExplicitSubmitStep
-    ? (steps[steps.length - 1]?.submitStep ?? false)
-    : submitEndpointPattern !== null || requireSubmitEndpointMatch;
+  if (hasExplicitSubmitStep) return steps[steps.length - 1]?.submitStep ?? false;
+  if (submitEndpointPattern === null && !requireSubmitEndpointMatch) return false;
+  // An earlier step whose own wording declares submit already owns the role;
+  // the fallback is only for a self-heal-appended final step.
+  const earlierStepOwnsSubmit = steps
+    .slice(0, -1)
+    .some((s) => classifyStepSubmitIntent(s.instruction) === "submit");
+  return !earlierStepOwnsSubmit;
 }
 
 /**
