@@ -21,6 +21,35 @@ const BIOME_BIN = resolve(__dirname, "..", "..", "node_modules", ".bin", "biome"
 describe("emitContractTs — omitExecuteHttp (browser-flow-only) branch", () => {
   const inputBody = { FirstName: "Reginald" };
 
+  it("selects ApplicantContactSchema from spliced payload fields when no body was captured", () => {
+    const base = {
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+    };
+    const withFields = emitContractTs({
+      ...base,
+      payloadFieldNames: new Set(["FirstName", "LastName"]),
+    });
+    expect(withFields).toContain("ApplicantContactSchema.extend(");
+    expect(withFields).toContain("import { ApplicantContactSchema }");
+    expect(withFields).toContain("multipart: true");
+    expect(withFields).toContain("payload.ClickUrl");
+    const without = emitContractTs({ ...base, payloadFieldNames: new Set(["Foo"]) });
+    expect(without).not.toContain("query: z.string().min(1)");
+  });
+
   it("emits no executeHttp method, no {query} field, no hardcoded endpoint, and the standard ApplicantContactSchema bodySchema", () => {
     const source = emitContractTs({
       siteId: "test-site",
