@@ -89,3 +89,20 @@ describe("flow-runner/executeStepWithHealing in-step abort", () => {
     expect(observe).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("flow-runner/executeStepWithHealing backoff abort", () => {
+  it("rejects with the death reason when aborted during the backoff wait, with no further act calls", async () => {
+    const death = new Error("SessionLifetimeExpired: died during backoff");
+    const controller = new AbortController();
+    const { act, params } = buildParams(controller.signal);
+    const waitForTimeout = vi.fn().mockImplementation(() => {
+      controller.abort(death);
+      return new Promise(() => undefined);
+    });
+    (params.page as unknown as { waitForTimeout: unknown }).waitForTimeout = waitForTimeout;
+
+    await expect(executeStepWithHealing(params)).rejects.toBe(death);
+    expect(waitForTimeout).toHaveBeenCalledTimes(1);
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+});
