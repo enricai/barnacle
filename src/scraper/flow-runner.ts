@@ -4018,7 +4018,7 @@ function xpathTailForRetarget(xpath: string): string | null {
  * bar, preserving the previous behavior for every single-match (the common)
  * case.
  */
-const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
+const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -4027,6 +4027,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
     const nodes = [];
     for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
     if (nodes.length <= 1) return nodes[0] || null;
+    if (!preferSubmit) return nodes[0];
     const preferred = nodes.find((el) => isSubmitShaped(el) && !isNegative(accessibleName(el)));
     return preferred || nodes[0];
   })`;
@@ -4426,7 +4427,7 @@ async function resolvedClickTargetIsSubmitShaped(
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     let el = r.singleNodeValue;
     if (!el && ${JSON.stringify(xpathTail)}) {
-      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)});
     }
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
     return isSubmitShaped(el);
@@ -12683,7 +12684,7 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -12706,7 +12707,7 @@ export async function executeStepWithHealing(params: {
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node && ${JSON.stringify(xpathTail)}) {
-                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
               }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
@@ -12812,7 +12813,7 @@ export async function executeStepWithHealing(params: {
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                 let el = r.singleNodeValue;
                 if (!el && ${JSON.stringify(xpathTail)}) {
-                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
                 }
                 return el ? isDisabled(el) : false;
               })()`;
