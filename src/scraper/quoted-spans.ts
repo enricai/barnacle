@@ -1,6 +1,5 @@
 const APOSTROPHE_PLACEHOLDER = "\u0000";
 const APOSTROPHE_BETWEEN_LETTERS = /(?<=[A-Za-z])'(?=[A-Za-z])/g;
-const PLACEHOLDER_PATTERN = /\u0000/g;
 const SINGLE_QUOTED_SPAN = /'([^']+)'/g;
 
 export interface QuotedSpan {
@@ -21,7 +20,7 @@ export function maskApostrophes(text: string): string {
  * Reverses `maskApostrophes` on text captured from a masked string.
  */
 export function restoreApostrophes(text: string): string {
-  return text.replace(PLACEHOLDER_PATTERN, "'");
+  return text.replaceAll(APOSTROPHE_PLACEHOLDER, "'");
 }
 
 /**
