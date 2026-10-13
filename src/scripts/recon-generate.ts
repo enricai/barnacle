@@ -16242,7 +16242,13 @@ async function main(): Promise<void> {
         : new Map<string, StateValue>();
     const actionSteps =
       actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
-    const isSubmissionFlow = actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation);
+    // A multi-step flow whose declared submit pattern selects no captures has no
+    // replayable HTTP sequence, yet is still not a search: treat it as a
+    // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
+    const noReplayableActionFlow = !gql && actionSteps.length === 0 && flowSteps.length > 1;
+    const isSubmissionFlow =
+      noReplayableActionFlow ||
+      (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome
@@ -16348,7 +16354,8 @@ async function main(): Promise<void> {
     // downgrade to the single-endpoint `{query}` branch either, since that's a
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
-    const browserFlowOnly = isSubmissionFlow && actionSteps.some((s) => s.isCrossDomain);
+    const browserFlowOnly =
+      isSubmissionFlow && (noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
     const multiStepBody = browserFlowOnly
       ? undefined
       : isSubmissionFlow
@@ -16470,7 +16477,7 @@ async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (cross-domain hop detected)` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     if (emit === "config") {
