@@ -9942,26 +9942,33 @@ function isExplainedByCorrelatedSiblingField(
   siblingPaths: ReadonlySet<string>
 ): boolean {
   const allBodies = [parsedBody, ...otherBodies];
-  for (const siblingPath of siblingPaths) {
-    const pathSegments = siblingPath.split(".");
+  const siblingReaders: Array<(body: unknown) => string | undefined> = [
+    ...[...siblingPaths].map((siblingPath) => {
+      const pathSegments = siblingPath.split(".");
+      return (body: unknown): string | undefined => {
+        const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
+        return siblingRaw === undefined ? undefined : String(siblingRaw);
+      };
+    }),
+    ...selfDescribingArrayPaths(parsedBody).map((arrayPath) => (body: unknown): string => {
+      const array = readValueAtPath(body, arrayPath);
+      return Array.isArray(array) ? identityShape(array) : ABSENT_ARRAY_SHAPE;
+    }),
+  ];
+  return siblingReaders.some((readSibling) => {
     const pairs: Array<{ siblingValue: string; fieldValue: string }> = [];
-    let sawUnexplainableField = false;
     for (const body of allBodies) {
       const fieldRaw = readComparableBodyLeaf(parsedBody, body, path);
       if (fieldRaw === undefined) continue;
-      const siblingRaw = readComparableBodyLeaf(parsedBody, body, pathSegments);
-      if (siblingRaw === undefined) {
-        // This body has a value for the field we're trying to explain but no
-        // value for the candidate sibling — the sibling can't vouch for it,
-        // so don't let a function fitted over the OTHER bodies paper over it.
-        sawUnexplainableField = true;
-        break;
-      }
-      pairs.push({ siblingValue: String(siblingRaw), fieldValue: String(fieldRaw) });
+      const siblingValue = readSibling(body);
+      // This body has a value for the field we're trying to explain but no
+      // value for the candidate sibling — the sibling can't vouch for it, so
+      // don't let a function fitted over the OTHER bodies paper over it.
+      if (siblingValue === undefined) return false;
+      pairs.push({ siblingValue, fieldValue: String(fieldRaw) });
     }
-    if (sawUnexplainableField) continue;
     const distinctSiblingValues = new Set(pairs.map((p) => p.siblingValue));
-    if (distinctSiblingValues.size < 2) continue;
+    if (distinctSiblingValues.size < 2) return false;
     const siblingToField = new Map<string, string>();
     const isFunction = pairs.every(({ siblingValue, fieldValue }) => {
       const existing = siblingToField.get(siblingValue);
@@ -9971,9 +9978,8 @@ function isExplainedByCorrelatedSiblingField(
       }
       return existing === fieldValue;
     });
-    if (isFunction && siblingToField.size === distinctSiblingValues.size) return true;
-  }
-  return false;
+    return isFunction && siblingToField.size === distinctSiblingValues.size;
+  });
 }
 
 /**
@@ -11355,6 +11361,22 @@ function identityShape(elements: readonly unknown[]): string {
     .map((element) => arrayElementIdentity(element) ?? "")
     .sort()
     .join("\u0000");
+}
+
+const ABSENT_ARRAY_SHAPE = "\u0001absent";
+
+/** Paths of every array in `body` that lists self-describing string elements
+ * (see {@link arrayElementIdentity}). Which identity suffixes such an array
+ * carries is itself a property of the request — a sibling field that differs
+ * only because the array took a different shape is explained by that shape. */
+function selfDescribingArrayPaths(body: unknown, path: readonly string[] = []): string[][] {
+  if (body === null || typeof body !== "object") return [];
+  const children = Object.entries(body).flatMap(([key, child]) =>
+    selfDescribingArrayPaths(child, [...path, key])
+  );
+  const isSelfDescribing =
+    Array.isArray(body) && body.some((element) => arrayElementIdentity(element) !== undefined);
+  return isSelfDescribing ? [[...path], ...children] : children;
 }
 
 /**

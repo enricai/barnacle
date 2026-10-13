@@ -69,6 +69,17 @@ describe("findFrozenVaryingDrillParams with exclusive filter shapes and a differ
     });
   }
 
+  it("explains a differing region by the filter-array shape, but not when the shape is equal", () => {
+    const shapeA = cap(body(ID_TAGGED, "NJ"));
+    const shapeB = cap(body(TYPE_TAGGED, "FL"));
+    const rendered = JSON.stringify(body(ID_TAGGED, "NJ"));
+    expect(findFrozenVaryingDrillParams(shapeA, rendered, [shapeA, shapeB])).toEqual([]);
+    const sameShape = cap(body(ID_TAGGED, "FL"));
+    expect(
+      findFrozenVaryingDrillParams(shapeA, rendered, [shapeA, sameShape]).map((entry) => entry.key)
+    ).toEqual(["sorts.0.region"]);
+  });
+
   it("still reports a genuinely varying unique-key value", () => {
     const a = cap({ ...body(ID_TAGGED, "NJ"), checkin: "2026-12-01" });
     const b = cap({ ...body(TYPE_TAGGED, "FL"), checkin: "2026-12-09" });

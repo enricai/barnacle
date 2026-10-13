@@ -82,11 +82,13 @@ describe("collectRequestBodyValuesByKey with mutually exclusive filters and sibl
     );
   });
 
-  it("does not let a varying sibling explain a slot the other body lacks (only the sibling is frozen)", () => {
+  it("explains a sibling that follows the filter-array shape, but not one that varies at equal shape", () => {
     const a = cap({ tier: "standard", filters: ["red;facetId=color"] });
     const b = cap({ tier: "premium", filters: ["XL;facetType=size"] });
     const rendered = JSON.stringify({ tier: "standard", filters: ["red;facetId=color"] });
-    const frozen = findFrozenVaryingDrillParams(a, rendered, [a, b]);
+    expect(findFrozenVaryingDrillParams(a, rendered, [a, b])).toEqual([]);
+    const sameShape = cap({ tier: "premium", filters: ["red;facetId=color"] });
+    const frozen = findFrozenVaryingDrillParams(a, rendered, [a, sameShape]);
     expect(frozen.map((f) => f.key)).toEqual(["tier"]);
   });
 });

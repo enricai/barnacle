@@ -298,12 +298,55 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     expect(readFileSync(join(siteOutDir, "contract.ts"), "utf8")).toContain("/catalog/pricing/");
   }, 60_000);
 
-  it("flags only the genuinely varying sibling, never a filters.N slot", () => {
+  it("treats a sibling region that follows the filter-array shape as explained", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-filters-"));
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, exclusiveFilterCaptures());
 
     const siteId = `exclusive-filters-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).not.toContain("would freeze a value that varied");
+  }, 60_000);
+
+  it("still flags a sibling region that varies while the filter-array shape does not", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-same-shape-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(
+      runRoot,
+      exclusiveFilterCaptures().map((capture) => ({
+        ...capture,
+        requestPostData:
+          capture.requestPostData?.replace(
+            /"filters":\[[^\]]*\]/,
+            `"filters":${JSON.stringify(EXCLUSIVE_ID_TAGGED)}`
+          ) ?? null,
+      }))
+    );
+
+    const siteId = `exclusive-same-shape-test-${process.pid}`;
     siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
