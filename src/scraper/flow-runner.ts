@@ -13093,6 +13093,9 @@ export async function executeStepWithHealing(params: {
           // three get the same `isPlausibleStepDestination` gate
           // `weakDomSignalsAllowed` already has (bugfix-002) — `retryUrlChanged`
           // already folds the same check in at its own computation above.
+          // An unfired probe with no trusted delivery clicked nothing, so DOM
+          // movement is ambient settling, not this step's effect.
+          const n16ClickDelivered = fired === true || n16TrustedDelivered;
           let retryVerified =
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
@@ -13101,8 +13104,9 @@ export async function executeStepWithHealing(params: {
               retryUrlChanged ||
               (checkboxStateVerified && retryDestinationPlausible) ||
               (retrySelectionStateChanged && retryDestinationPlausible) ||
-              (!retrySubmitShaped && retryVerdict === "effective") ||
-              (weakDomSignalsAllowed &&
+              (n16ClickDelivered && !retrySubmitShaped && retryVerdict === "effective") ||
+              (n16ClickDelivered &&
+                weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
           if (retryVerified) {
