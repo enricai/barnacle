@@ -71,6 +71,7 @@ import {
   matchSingleQuotedPhrases,
   resolveDeepLocatorCandidates,
   scoreCandidate,
+  vetObserveCandidates,
 } from "@/scraper/deep-locator-candidates";
 import { clickFirstActionableCandidate } from "@/scraper/deep-locator-click";
 import { INTERACTIVE_CANDIDATE_SELECTOR } from "@/scraper/deep-locator-scan";
@@ -11767,8 +11768,21 @@ export async function executeStepWithHealing(params: {
             }
           }
         } else {
-          // biome-ignore lint/style/noNonNullAssertion: this else-branch runs only when candidates.length !== 0
-          const target = candidates[0]!;
+          const quotedPhrases =
+            parseFieldLabelTarget(step) || parseSelectStep(step) || parseRadioStep(step)
+              ? []
+              : extractTaggedPhrases(step);
+          const verdict = vetObserveCandidates(candidates, quotedPhrases);
+          if (verdict.refuse || !verdict.candidate) {
+            record.errorMessage = `observe candidate does not match the control named in the step: "${(verdict.candidate?.description ?? "").slice(0, 60)}" (refusing to act on an unscored guess)`;
+            attempts.push(record);
+            failureReasons.push(record.errorMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+            );
+            continue;
+          }
+          const target = verdict.candidate;
           // Deny-list guard: never act on a wizard-exit control (save-and-exit,
           // cancel, restart) for a click/advance step. Record it as tried (so a
           // re-observe with ignoreSelectors surfaces a different candidate) and
