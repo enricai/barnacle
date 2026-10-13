@@ -9450,9 +9450,10 @@ export function extractCodeFromMessage(
  * picks it up as the value to type without any of those parsers needing to
  * know the value came from an inbox rather than the flow's payload.
  */
-function spliceEmailStepFillValue(step: string, code: string): string {
-  return /with\s+'[^']*'/i.test(step)
-    ? step.replace(/with\s+'[^']*'/i, `with '${code}'`)
+export function spliceEmailStepFillValue(step: string, code: string): string {
+  const match = matchAnchored(step, /with\s+'[^']*'/i);
+  return match
+    ? `${step.slice(0, match.start)}with '${code}'${step.slice(match.end)}`
     : `${step} with '${code}'`;
 }
 
