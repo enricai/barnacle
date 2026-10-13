@@ -6921,7 +6921,8 @@ function applyArrayFacetSplicePayloadSubstitutions(
   template: string,
   inputBody: unknown,
   navigateToFacets: readonly NavigateToFacetBinding[],
-  ownedArrayPathKeys: ReadonlySet<string>
+  ownedArrayPathKeys: ReadonlySet<string>,
+  siblingBodies: readonly unknown[] = []
 ): string {
   if (navigateToFacets.length === 0) return template;
   if (inputBody === null || typeof inputBody !== "object") return template;
@@ -6934,10 +6935,53 @@ function applyArrayFacetSplicePayloadSubstitutions(
     ) {
       continue;
     }
-    const expression = renderFacetValueExpression(value, navigateToFacets);
+    const absentFacets = collectSiblingArrayFacets(value, path, siblingBodies, navigateToFacets);
+    const absentFields = new Set(absentFacets.map(({ facet }) => facet.field));
+    const expression = renderFacetValueExpression(
+      [...value, ...absentFacets.map(({ element }) => element)],
+      navigateToFacets.map((facet) =>
+        absentFields.has(facet.field) ? { ...facet, optional: true } : facet
+      )
+    );
     result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
   }
   return result;
+}
+
+/**
+ * Facet-bearing elements that same-endpoint sibling captures carry at the
+ * array `path` but `own` does not. A fold drill re-issues ONE representative
+ * capture per item, so a facet only a dropped sibling's differently shaped
+ * array carried would otherwise never reach the emitted body. Each facet is
+ * taken once, at its first occurrence, and only for facets `own` leaves out.
+ */
+function collectSiblingArrayFacets(
+  own: readonly unknown[],
+  path: readonly string[],
+  siblingBodies: readonly unknown[],
+  facets: readonly NavigateToFacetBinding[]
+): Array<{ element: string; facet: NavigateToFacetBinding }> {
+  const present = new Set(
+    own.flatMap((element) =>
+      typeof element === "string" ? [matchArrayElementFacet(element, facets)?.field] : []
+    )
+  );
+  const key = arrayPathKey(path);
+  const absent: Array<{ element: string; facet: NavigateToFacetBinding }> = [];
+  for (const body of siblingBodies) {
+    if (body === null || typeof body !== "object") continue;
+    for (const { value, path: siblingPath } of walkArrayLeaves(body)) {
+      if (arrayPathKey(siblingPath) !== key) continue;
+      for (const element of value) {
+        if (typeof element !== "string") continue;
+        const facet = matchArrayElementFacet(element, facets);
+        if (facet === undefined || present.has(facet.field)) continue;
+        present.add(facet.field);
+        absent.push({ element, facet });
+      }
+    }
+  }
+  return absent;
 }
 
 /** Whether `value` is, or contains at any depth, an array with a
@@ -7927,6 +7971,21 @@ export function emitMultiStepExecuteHttp(
   // `foldReturnSpec`, not on Pass 1's render) so Pass 1 knows which values to
   // spare per step, mirroring the header-name collection above.
   const joinFieldValuesByStep = new Map<number, Set<string>>();
+  // Request bodies of the absorbed repeat captures of each fold target's
+  // representative drill (see FoldPlan.absorbedIndices): never emitted
+  // themselves, so a facet only their differently shaped arrays carry must be
+  // threaded through the representative's body instead of being dropped.
+  const absorbedSiblingBodiesByStep = new Map<number, unknown[]>();
+  for (const plan of earlyFoldPlans) {
+    for (const target of plan.targets) {
+      const drillEndpoint = endpointKey(actions[target.drillStepIndex]!.capture.url);
+      const siblings = plan.absorbedIndices
+        .map((index) => actions[index]!.capture)
+        .filter((capture) => endpointKey(capture.url) === drillEndpoint)
+        .map((capture) => parseJsonBodyOrNull(capture.requestPostData));
+      absorbedSiblingBodiesByStep.set(target.drillStepIndex, siblings);
+    }
+  }
   for (const plan of earlyFoldPlans) {
     const primaryItems = objectItemsAtPath(
       actions[plan.primaryStepIndex]!.capture.responseBody,
@@ -8085,7 +8144,8 @@ export function emitMultiStepExecuteHttp(
             rawBodyWithFacetSplices,
             parsedBody,
             navigateToFacetOrder,
-            facetArrayPathKeys
+            facetArrayPathKeys,
+            absorbedSiblingBodiesByStep.get(i)
           )
         : rawBodyWithFacetSplices;
     const rawBodyWithScalarFacetSplices =
@@ -11282,27 +11342,54 @@ function arrayElementIdentity(element: unknown): string | undefined {
 }
 
 /**
+ * Index of the innermost path segment that indexes into an array (the array
+ * holding the leaf, or one holding an object element that carries it), or -1.
+ */
+function innermostArrayIndexSegment(body: unknown, path: readonly string[]): number {
+  for (let index = path.length - 1; index >= 0; index--) {
+    if (!/^\d+$/.test(path[index]!)) continue;
+    if (Array.isArray(readValueAtPath(body, path.slice(0, index)))) return index;
+  }
+  return -1;
+}
+
+/**
  * Counterpart of the primitive leaf at `path` in `body`, read from `otherBody`.
- * A leaf that is a self-describing string element of an array is matched by its
- * identity suffix within the same array, never by index, so differently shaped
- * arrays are not mistaken for one array with a varying slot; an identity the
- * other body lacks yields `undefined`. Every other path defers to
- * {@link readValueAtPath}.
+ * A string leaf inside an array of self-describing elements (directly, or as a
+ * field of an object element) is matched by its identity suffix within the same
+ * array, never by index, so differently shaped arrays are not mistaken for one
+ * array with a varying slot; an identity the other body lacks yields
+ * `undefined`. A plain element of such an array is matched by value, since its
+ * slot says nothing about it once the arrays' shapes differ. Every other path
+ * defers to {@link readValueAtPath}.
  */
 export function readComparableBodyLeaf(
   body: unknown,
   otherBody: unknown,
   path: readonly string[]
 ): unknown {
-  const arrayPath = path.slice(0, -1);
-  const parent = readValueAtPath(body, arrayPath);
   const leaf = readValueAtPath(body, path);
-  const identity = Array.isArray(parent) ? arrayElementIdentity(leaf) : undefined;
-  if (identity === undefined) return readValueAtPath(otherBody, path);
-  const otherParent = readValueAtPath(otherBody, arrayPath);
-  if (!Array.isArray(otherParent)) return undefined;
-  if (otherParent.includes(leaf)) return leaf;
-  return otherParent.find((element) => arrayElementIdentity(element) === identity);
+  const arrayEnd = typeof leaf === "string" ? innermostArrayIndexSegment(body, path) : -1;
+  if (arrayEnd === -1) return readValueAtPath(otherBody, path);
+  const arrayPath = path.slice(0, arrayEnd);
+  const elementSubpath = path.slice(arrayEnd + 1);
+  const ownArray = readValueAtPath(body, arrayPath) as unknown[];
+  const otherArray = readValueAtPath(otherBody, arrayPath);
+  const identity = arrayElementIdentity(leaf);
+  const isSelfDescribing = (array: unknown[]): boolean =>
+    array.some((element) => arrayElementIdentity(readValueAtPath(element, elementSubpath)));
+  if (
+    identity === undefined &&
+    !isSelfDescribing(ownArray) &&
+    !(Array.isArray(otherArray) && isSelfDescribing(otherArray))
+  ) {
+    return readValueAtPath(otherBody, path);
+  }
+  if (!Array.isArray(otherArray)) return undefined;
+  const counterparts = otherArray.map((element) => readValueAtPath(element, elementSubpath));
+  if (counterparts.includes(leaf)) return leaf;
+  if (identity === undefined) return undefined;
+  return counterparts.find((candidate) => arrayElementIdentity(candidate) === identity);
 }
 
 /**

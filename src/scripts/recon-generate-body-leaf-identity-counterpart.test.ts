@@ -30,4 +30,21 @@ describe("readComparableBodyLeaf", () => {
     const b = { filters: ["blue;facetId=color"] };
     expect(readComparableBodyLeaf(a, b, ["filters", "0"])).toBe("blue;facetId=color");
   });
+
+  it("matches a plain element of a self-describing array by value, not by slot", () => {
+    const x = { filters: ["in-stock", "red;facetId=color"] };
+    const y = { filters: ["red;facetId=color", "NIGHT;facetType=night", "in-stock"] };
+    expect(readComparableBodyLeaf(x, y, ["filters", "0"])).toBe("in-stock");
+    expect(readComparableBodyLeaf(x, { filters: ["red;facetId=color"] }, ["filters", "0"])).toBe(
+      undefined
+    );
+  });
+
+  it("matches the identity carried by a field of an object element", () => {
+    const x = { facets: [{ token: "red;facetId=color" }, { token: "XL;facetType=size" }] };
+    const y = { facets: [{ token: "M;facetType=size" }, { token: "red;facetId=color" }] };
+    expect(readComparableBodyLeaf(x, y, ["facets", "0", "token"])).toBe("red;facetId=color");
+    expect(readComparableBodyLeaf(x, y, ["facets", "1", "token"])).toBe("M;facetType=size");
+    expect(readComparableBodyLeaf(x, { facets: [] }, ["facets", "0", "token"])).toBe(undefined);
+  });
 });
