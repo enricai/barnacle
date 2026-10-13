@@ -14816,6 +14816,31 @@ export function assertRequiredUrlFieldsReferenced(
   );
 }
 
+/**
+ * Names of the payload fields a flow explicitly declared via `payloadField`
+ * that no emitted request surface reads as `payload.<field>`. The surface is
+ * the emitted contract plus the browser flow: a field only the browser flow
+ * dereferences still changes browser-executed requests, so it counts as
+ * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
+ * so it never counts. Vocabulary-derived fields are out of scope. Reported
+ * rather than thrown because a field the flow declared but the site never
+ * sent is diagnosable, not a broken contract.
+ */
+export function unreferencedDeclaredPayloadFields(
+  contractCode: string,
+  browserFlowCode: string,
+  flowSteps: readonly FlowStepInput[]
+): string[] {
+  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const declared = new Set<string>();
+  for (const step of flowSteps) {
+    if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
+  }
+  return [...declared].filter(
+    (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
+  );
+}
+
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
 type FlowStepInput =
   | string
@@ -16679,6 +16704,16 @@ async function main(): Promise<void> {
   const result = generateFromCaptures(captures);
   if (result === null) return; // emit === "config": already written above.
   const final = healUnreferencedUrlFieldsOnce(captures, result, generateFromCaptures);
+
+  for (const field of unreferencedDeclaredPayloadFields(
+    final.contractCode,
+    final.browserFlow.code,
+    flowSteps
+  )) {
+    logger.warn(
+      `declared payloadField ${field} is a required schema field but no emitted request references it`
+    );
+  }
 
   writeFileSync(`${outDir}/contract.ts`, final.contractCode);
   logger.info(`wrote ${outDir}/contract.ts`);
