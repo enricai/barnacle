@@ -26,6 +26,7 @@ import {
   type FrameTarget,
   probeAttachedFrameTarget,
 } from "@/scraper/frame-target";
+import { findQuotedSpans } from "@/scraper/quoted-spans";
 import { withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-candidates" });
@@ -172,17 +173,16 @@ export interface TaggedPhrase {
  * duplicating this logic.
  */
 export function extractTaggedPhrases(instruction: string): TaggedPhrase[] {
-  const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)].map((m) => m.index);
-  const quoted = [...instruction.matchAll(/'([^']+)'/g)];
-  return quoted.map((m) => {
-    // biome-ignore lint/style/noNonNullAssertion: m.index is always defined for matchAll results
-    const phraseStart = m.index!;
-    const nearestNegationBefore = negationStarts.filter((idx) => idx < phraseStart).at(-1);
+  const spans = findQuotedSpans(instruction);
+  const negationStarts = [...instruction.matchAll(NEGATION_MARKERS)]
+    .map((m) => m.index)
+    .filter((idx) => !spans.some((span) => idx >= span.start && idx < span.end));
+  return spans.map((span) => {
+    const nearestNegationBefore = negationStarts.filter((idx) => idx < span.start).at(-1);
     const negated =
       nearestNegationBefore !== undefined &&
-      !/[.;]/.test(instruction.slice(nearestNegationBefore, phraseStart));
-    // biome-ignore lint/style/noNonNullAssertion: capture group 1 is required by the pattern, so it is present on every match
-    return { text: m[1]!.trim(), negated };
+      !/[.;]/.test(instruction.slice(nearestNegationBefore, span.start));
+    return { text: span.text.trim(), negated };
   });
 }
 
