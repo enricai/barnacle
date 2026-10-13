@@ -92,6 +92,7 @@ import {
   anthropicModelName,
   type CaptureFn,
   capturesAfterIndex,
+  classifyStepSubmitIntent,
   type EmailStepConfig,
   executeNavigateStep,
   executeStepWithHealing,
@@ -1507,6 +1508,10 @@ const SUBMIT_SHAPED_INSTRUCTION_PATTERNS = [
  * one. Pure.
  */
 export function isSubmitShapedInstructionText(instruction: string): boolean {
+  // The loose wording patterns below would seed an explicit `submitStep: true`,
+  // which overrides a declared non-submit intent everywhere downstream; defer
+  // to the same classifier the submit-judge gates read so the two cannot disagree.
+  if (classifyStepSubmitIntent(instruction) === "non-submit") return false;
   const norm = normalizeInstruction(stripNegatedSubmitClauses(instruction));
   return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
 }

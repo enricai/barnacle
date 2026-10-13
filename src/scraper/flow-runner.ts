@@ -1571,8 +1571,9 @@ const NEGATED_SUBMIT_CLAUSE = new RegExp(
   "gi"
 );
 
-/** A positive submit imperative outside any negated clause ("Submit the form."). */
-const LEADING_SUBMIT_IMPERATIVE = /(?:^|[.;]\s*)(?:then\s+)?submit\b/i;
+/** A positive submit imperative outside any negated clause ("Submit the form.", "Place the order."). */
+const LEADING_SUBMIT_IMPERATIVE =
+  /(?:^|[.;]\s*)(?:then\s+)?(?:click\s+(?:on\s+)?(?:the\s+)?['"]?)?(?:submit\b|place\s+(?:the\s+)?order\b|complete\s+(?:the\s+)?(?:order|purchase|application|checkout)\b|finish\s+(?:and\s+)?(?:order|purchase|application|checkout)\b|confirm\s+(?:and\s+)?(?:order|purchase|application)\b|save\s+and\s+continue\b|finali[sz]e\b)/i;
 
 export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
 
