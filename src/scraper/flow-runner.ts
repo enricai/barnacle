@@ -6276,6 +6276,8 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
+      if (verification.page)
+        await settleAfterClick(verification.page, verification.signalCounter, pre.networkCount);
       const post = await snapshotPage(target, verification.signalCounter, verification.page);
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
@@ -6294,6 +6296,12 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
+          if (verification.page)
+            await settleAfterClick(
+              verification.page,
+              verification.signalCounter,
+              post.networkCount
+            );
           const runnerUpPost = await snapshotPage(
             target,
             verification.signalCounter,
