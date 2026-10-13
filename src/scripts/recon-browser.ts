@@ -92,7 +92,6 @@ import {
   anthropicModelName,
   type CaptureFn,
   capturesAfterIndex,
-  classifyStepSubmitIntent,
   type EmailStepConfig,
   executeNavigateStep,
   executeStepWithHealing,
@@ -102,6 +101,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
+  isStepDeclaredNonSubmit,
   latestCaptureIndex,
   logBillingErrorIfPresent,
   parseFillStep,
@@ -3185,8 +3185,10 @@ async function main(): Promise<void> {
           // /tmp/recon/graphql/ during a sweep: some tenants hit this exact
           // failure — only interruption_check + GA tracking POSTs fired, no
           // integrated_apply, yet trailing-grace declared success.
-          const stepDeclaredNonSubmit =
-            !step.submitStep && classifyStepSubmitIntent(step.instruction) === "non-submit";
+          const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({
+            step: step.instruction,
+            submitStep: step.submitStep ?? false,
+          });
           if (step.optional && !stepDeclaredNonSubmit && i >= plan.length - TRAILING_GRACE_WINDOW) {
             // Trailing-grace check: did the submit actually land somewhere in
             // the recent capture history? Ask the same Haiku judge — it has
