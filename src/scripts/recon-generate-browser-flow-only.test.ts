@@ -50,6 +50,32 @@ describe("emitContractTs — omitExecuteHttp (browser-flow-only) branch", () => 
     expect(without).not.toContain("query: z.string().min(1)");
   });
 
+  it("uses ApplicantContactSchema with no {query} field or executeHttp when inputBody is absent and payload fields are applicant-named", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      inputBody: undefined,
+      payloadFieldNames: new Set(["Email", "FirstName", "AddressLine1"]),
+    });
+
+    expect(source).toContain("ApplicantContactSchema.extend(");
+    expect(source).not.toContain("query: z.string().min(1)");
+    expect(source).not.toContain("payload.query");
+    expect(source).not.toContain("async executeHttp(");
+  });
+
   it("emits no executeHttp method, no {query} field, no hardcoded endpoint, and the standard ApplicantContactSchema bodySchema", () => {
     const source = emitContractTs({
       siteId: "test-site",
