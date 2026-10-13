@@ -258,6 +258,46 @@ function exclusiveFilterCaptures(): Capture[] {
 }
 
 describe("recon-generate CLI — mutually exclusive filter arrays with a differing sibling", () => {
+  it("generates contract.ts without a frozen-varying error when siblings are constant", () => {
+    workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-constant-"));
+    const runRoot = join(workDir, "run");
+    writeRunDir(
+      runRoot,
+      exclusiveFilterCaptures().map((capture) => ({
+        ...capture,
+        requestPostData: capture.requestPostData?.replace('"region":"FL"', '"region":"NJ"'),
+      }))
+    );
+
+    const siteId = `exclusive-constant-test-${process.pid}`;
+    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [{ step: "search catalog" }, { step: "drill into pricing", submitStep: true }],
+        submitEndpointPattern: "catalog/pricing",
+        ownBackendHostnames: [OWN_BACKEND_HOST],
+        foldReturn: {
+          endpointPattern: "catalog/pricing",
+          resultsPath: "results",
+          joinFields: ["sku"],
+        },
+      })
+    );
+
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).not.toContain("would freeze a value that varied");
+    expect(readFileSync(join(siteOutDir, "contract.ts"), "utf8")).toContain("/catalog/pricing/");
+  }, 60_000);
+
   it("flags only the genuinely varying sibling, never a filters.N slot", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-exclusive-filters-"));
     const runRoot = join(workDir, "run");
