@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
-import { SUBMIT_SHAPE_EXPR } from "@/scraper/submit-control";
+import { classifyStepSubmitIntent, isStepSubmitShaped } from "@/scraper/flow-runner";
+import { buildRankSubmitCandidatesExpr, SUBMIT_SHAPE_EXPR } from "@/scraper/submit-control";
 
 /**
  * Guards against the audit's chokepoint finding: the bare-in-form-button
@@ -168,4 +169,84 @@ describe("submit-shape decision sites: behavioral parity across a fixture matrix
       expect(evalSubmitShape(target)).toBe(expected);
     }
   );
+});
+
+describe("submit-shape decision sites: step-intent input agreement", () => {
+  const GENUINE = "Click the submit button to create the account";
+  const NEGATED = "Do NOT click any control that proceeds to checkout";
+  const COMBINED = `${NEGATED}. ${GENUINE}`;
+
+  it.each([
+    { name: "real submit phrase", step: GENUINE, intent: "submit" },
+    {
+      name: "submit phrase alongside a negated guardrail clause",
+      step: COMBINED,
+      intent: "submit",
+    },
+    { name: "negated checkout declaration only", step: NEGATED, intent: "non-submit" },
+    { name: "plain step", step: "Click the button to continue", intent: "unspecified" },
+  ])("classifies '$name' as $intent", ({ step, intent }) => {
+    expect(classifyStepSubmitIntent(step)).toBe(intent);
+  });
+
+  it("an explicit submitStep flag stays authoritative even over a negative declaration", () => {
+    const shaped = isStepSubmitShaped({
+      step: NEGATED,
+      submitStep: true,
+      isFinalStep: false,
+      flowHasSubmitSemantics: false,
+    });
+    expect(shaped).toBe(true);
+  });
+
+  it("a genuine submit phrase is submit-shaped without the flag or final-step inference", () => {
+    const shaped = isStepSubmitShaped({
+      step: GENUINE,
+      submitStep: false,
+      isFinalStep: false,
+      flowHasSubmitSemantics: false,
+    });
+    expect(shaped).toBe(true);
+  });
+
+  it("a negative declaration vetoes final-step inference", () => {
+    const shaped = isStepSubmitShaped({
+      step: NEGATED,
+      submitStep: false,
+      isFinalStep: true,
+      flowHasSubmitSemantics: true,
+    });
+    expect(shaped).toBe(false);
+  });
+
+  it("the n+16 retry gate source no longer re-derives intent inline (single predicate)", () => {
+    const retryBody = extractBetween(
+      FLOW_RUNNER_SRC,
+      "const retrySubmitShaped =",
+      "const weakDomSignalsAllowed"
+    );
+    expect(retryBody).toContain("isStepSubmitShaped(");
+    expect(retryBody).not.toContain("classifyStepSubmitIntent(");
+  });
+
+  it("the primary and retry decision sites both gate the shape probe on stepDeclaredNonSubmit", () => {
+    expect(FLOW_RUNNER_SRC).toContain(
+      'const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";'
+    );
+    expect(FLOW_RUNNER_SRC).toContain(
+      "isClick && !stepDeclaredNonSubmit && resolvedAction?.selector"
+    );
+    expect(FLOW_RUNNER_SRC).toContain(
+      "const retryResolvedElementIsSubmitShaped = stepDeclaredNonSubmit"
+    );
+  });
+
+  it("rank tiers still credit a genuine type=submit control that SUBMIT_SHAPE_EXPR also accepts", () => {
+    const window = new Window();
+    window.document.body.innerHTML =
+      '<form><input id="target" type="submit" value="Create" /></form>';
+    const target = window.document.getElementById("target") as unknown as HappyDomElement;
+    expect(evalSubmitShape(target)).toBe(true);
+    expect(buildRankSubmitCandidatesExpr()).toContain('type === "submit"');
+  });
 });

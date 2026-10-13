@@ -2291,6 +2291,22 @@ describe("recon-browser/isSubmitShapedInstructionText", () => {
   it("does not false-positive on unrelated words containing the same substring", () => {
     expect(isSubmitShapedInstructionText("Commit the change to the draft")).toBe(false);
   });
+
+  it("does not read a negated guardrail clause as submit wording", () => {
+    expect(
+      isSubmitShapedInstructionText(
+        "Click a category tab to view its price. Do NOT click Book Now, Reserve, Select, or any control that proceeds to checkout"
+      )
+    ).toBe(false);
+    expect(
+      isSubmitShapedInstructionText("Click the tab. This is not a submit click, do not submit")
+    ).toBe(false);
+  });
+
+  it("still matches a real submit step that also carries a guardrail", () => {
+    expect(isSubmitShapedInstructionText("Click Submit. Do not click Cancel")).toBe(true);
+    expect(isSubmitShapedInstructionText("Submit the form. Do not submit twice")).toBe(true);
+  });
 });
 
 describe("recon-browser/seedSubmitStepFromOwnInstructionText", () => {
@@ -2316,6 +2332,15 @@ describe("recon-browser/seedSubmitStepFromOwnInstructionText", () => {
 
   it("leaves a step with non-submit-shaped text without the flag", () => {
     const steps = [mk("Click Next")];
+    const out = seedSubmitStepFromOwnInstructionText(steps);
+    expect(out[0]!.submitStep).toBeUndefined();
+    expect(out[0]).toBe(steps[0]);
+  });
+
+  it("does not seed submitStep on a step whose guardrail names checkout", () => {
+    const steps = [
+      mk("Click the Inside tab to view prices. Do NOT click any control that proceeds to checkout"),
+    ];
     const out = seedSubmitStepFromOwnInstructionText(steps);
     expect(out[0]!.submitStep).toBeUndefined();
     expect(out[0]).toBe(steps[0]);

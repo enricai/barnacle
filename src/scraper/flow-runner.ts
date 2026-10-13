@@ -1553,6 +1553,72 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
 }
 
 /**
+ * Targets whose negation declares the step is not a submit: a checkout/payment/
+ * order/submit action, or a "proceeds/leads/advances to" phrase naming one.
+ * Bare "do not click Book Now" stays undeclared — the control name alone says
+ * nothing about whether the author means a submit.
+ */
+const SUBMIT_TARGET_SRC =
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
+
+/**
+ * A negation followed, in the same clause, by a submit target ("Do NOT click
+ * ... any control that proceeds to checkout"), or an explicit "this is not a
+ * submit click" / "without submitting" declaration.
+ */
+const NEGATED_SUBMIT_CLAUSE = new RegExp(
+  `\\b(?:do not|don't|dont|never|must not|should not|shouldn't|does not|doesn't|avoid|refrain from)\\b[^.;\\n]*?\\b${SUBMIT_TARGET_SRC}\\b[^.;\\n]*|\\b(?:(?:this|that|it)\\s+(?:is|are)\\s+not|is not|isn't|not)\\s+(?:a|an|the)?\\s*(?:final\\s+|actual\\s+)?(?:submit|submission|checkout|payment|purchase)\\b[^.;\\n]*|\\bwithout\\s+(?:${SUBMIT_TARGET_SRC})\\b[^.;\\n]*`,
+  "gi"
+);
+
+/** A positive submit imperative outside any negated clause ("Submit the form."). */
+const LEADING_SUBMIT_IMPERATIVE = /(?:^|[.;]\s*)(?:then\s+)?submit\b/i;
+
+export type StepSubmitIntent = "submit" | "non-submit" | "unspecified";
+
+/**
+ * The instruction with every negated submit clause blanked, so callers that
+ * match submit wording on the step text (flow-load seeding) read only what the
+ * step positively asks for and never a guardrail ("Do NOT ... proceeds to
+ * checkout"). Pure.
+ */
+export function stripNegatedSubmitClauses(instruction: string): string {
+  return instruction.replace(NEGATED_SUBMIT_CLAUSE, " ");
+}
+
+/**
+ * Reads the step's own instruction for a declared submit intent, so an
+ * explicit "this is NOT a submit/checkout click" can veto inferred submit
+ * shape. A positive submit phrase outside the negated clause keeps "submit"
+ * so a real submit step that mentions a guardrail is not demoted. Pure.
+ */
+export function classifyStepSubmitIntent(instruction: string | null | undefined): StepSubmitIntent {
+  if (!instruction) return "unspecified";
+  const remainder = stripNegatedSubmitClauses(instruction);
+  if (isSubmitIntentStep(remainder) || LEADING_SUBMIT_IMPERATIVE.test(remainder)) return "submit";
+  if (remainder !== instruction) return "non-submit";
+  return isSubmitIntentStep(instruction) ? "submit" : "unspecified";
+}
+
+/**
+ * Single seam answering "is this step submit-shaped?": an explicit `submitStep`
+ * flag is authoritative, a declared non-submit instruction vetoes every
+ * inferred path, otherwise final-step inference or submit-intent wording applies.
+ */
+export function isStepSubmitShaped(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  const { step, submitStep, isFinalStep, flowHasSubmitSemantics: flowSubmit } = params;
+  if (submitStep) return true;
+  const intent = classifyStepSubmitIntent(step);
+  if (intent === "non-submit") return false;
+  return (isFinalStep && flowSubmit) || intent === "submit";
+}
+
+/**
  * Is this flow step's intent to check a checkbox or select a radio option?
  * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
  * from crediting a checkbox/radio-intent step: those signals move whenever ANY
@@ -3976,7 +4042,7 @@ function xpathTailForRetarget(xpath: string): string | null {
  * bar, preserving the previous behavior for every single-match (the common)
  * case.
  */
-const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
+const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
@@ -3985,6 +4051,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail) => {
     const nodes = [];
     for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
     if (nodes.length <= 1) return nodes[0] || null;
+    if (!preferSubmit) return nodes[0];
     const preferred = nodes.find((el) => isSubmitShaped(el) && !isNegative(accessibleName(el)));
     return preferred || nodes[0];
   })`;
@@ -4384,7 +4451,7 @@ async function resolvedClickTargetIsSubmitShaped(
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     let el = r.singleNodeValue;
     if (!el && ${JSON.stringify(xpathTail)}) {
-      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)});
     }
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
     return isSubmitShaped(el);
@@ -9920,7 +9987,9 @@ export async function executeStepWithHealing(params: {
   // Submit, and unfilled required fields produce silent submit failures
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
-  const requireSubmitEndpoint = (isFinalStep || submitStep) && submitEndpointPattern !== null;
+  const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";
+  const requireSubmitEndpoint =
+    (isFinalStep || submitStep) && !stepDeclaredNonSubmit && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
   // scoped click read-back) ONLY for selection/field-answer click steps — never
   // for submit/advance steps, whose own self-toggling buttons must not
@@ -10083,8 +10152,12 @@ export async function executeStepWithHealing(params: {
   // when no solver key is configured or the solve otherwise fails — that
   // propagates out of this function unchanged, so the step fails cleanly
   // instead of silently falling through as if unverified-but-passing.
-  const isSubmitOrFinalStep =
-    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step);
+  const isSubmitOrFinalStep = isStepSubmitShaped({
+    step,
+    submitStep,
+    isFinalStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+  });
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
@@ -10505,7 +10578,12 @@ export async function executeStepWithHealing(params: {
     // submit control in an unrelated same-origin child iframe.
     if (
       !frameTarget?.declaredFrameSelector &&
-      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      })
     ) {
       const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
       if (fallbackTarget) {
@@ -10549,10 +10627,14 @@ export async function executeStepWithHealing(params: {
       probeAbsentObservedUnfocused.length === 0 && frameTarget?.frame
         ? await deepLocatorCandidatesAsActions(page, frameTarget)
         : probeAbsentObservedUnfocused;
-    const targetResolutionDiagnostic =
-      submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
-        ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
-        : null;
+    const targetResolutionDiagnostic = isStepSubmitShaped({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    })
+      ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page)
+      : null;
     const dumpPath =
       onStepFailure?.({
         stepIndex,
@@ -10903,7 +10985,12 @@ export async function executeStepWithHealing(params: {
       const wouldBeTechnique: AttemptRecord["technique"] =
         attempt === 2
           ? attempt1UnreachableViaLightDom &&
-            (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+            isStepSubmitShaped({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            })
             ? "deep-submit-locator"
             : phantomClickAfterAttempt1
               ? "trusted-click-retry"
@@ -10922,8 +11009,12 @@ export async function executeStepWithHealing(params: {
         })),
         advanceUnmovedAfterAttempt1,
         attempt1UnreachableViaLightDom,
-        submitShapedStep:
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+        submitShapedStep: isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
       });
       if (decision.skip) {
         logger.info(
@@ -11076,7 +11167,12 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         attempt1UnreachableViaLightDom &&
-        (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+        isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        })
       ) {
         // Deep submit-control locator: attempt 1 either phantom-clicked
         // (Stagehand reported success but pre/post showed zero effect) or
@@ -11217,7 +11313,12 @@ export async function executeStepWithHealing(params: {
       } else if (
         attempt === 2 &&
         phantomClickAfterAttempt1 &&
-        !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+        !isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        })
       ) {
         // Trusted-click retry: attempt 1 phantom-clicked a NON-submit control —
         // Stagehand reported success but pre/post showed zero effect. On a
@@ -12044,8 +12145,12 @@ export async function executeStepWithHealing(params: {
     // `advanceTransitionBodyPattern` are unaffected.
     const domVerifiedForStep = isDomOnlyAdvanceVerified({
       hasPattern: advanceTransitionBodyPattern !== null,
-      isFinalOrSubmit:
-        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+      isFinalOrSubmit: isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
       isAdvance: isAdvanceStep(step),
       domVerified: domVerified && destinationPlausible,
       networkIsRealAdvance,
@@ -12085,7 +12190,7 @@ export async function executeStepWithHealing(params: {
     // independent of the flow-authored `submitStep` flag. See
     // resolvedClickTargetIsSubmitShaped's doc comment.
     const resolvedElementIsSubmitShaped =
-      isClick && resolvedAction?.selector
+      isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
@@ -12149,10 +12254,12 @@ export async function executeStepWithHealing(params: {
     // gate (requireSubmitEndpoint) will re-litigate the credit below.
     const formValueWeakSignalAllowed =
       !(
-        submitStep ||
-        (isFinalStep && flowHasSubmitSemanticsFlag) ||
-        resolvedElementIsSubmitShaped ||
-        isSubmitIntentStep(step)
+        isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }) || resolvedElementIsSubmitShaped
       ) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
@@ -12274,8 +12381,12 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       elementStateChanged: domVerified && destinationPlausible,
-      isSubmitShapedStep:
-        submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+      isSubmitShapedStep: isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
       destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
@@ -12298,8 +12409,12 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !(submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)) &&
-      domVerifiedForStep;
+      !isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }) && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
@@ -12544,19 +12659,23 @@ export async function executeStepWithHealing(params: {
           // tail node `clickExpr` below is about to click, instead of only
           // ever checking the (possibly unresolvable) primary xpath — see
           // resolvedClickTargetIsSubmitShaped's doc comment.
-          const retryResolvedElementIsSubmitShaped = await resolvedClickTargetIsSubmitShaped(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector,
-            xpathTail
-          );
+          const retryResolvedElementIsSubmitShaped = stepDeclaredNonSubmit
+            ? false
+            : await resolvedClickTargetIsSubmitShaped(
+                frameTarget ?? mainFrameTarget(page),
+                resolvedAction.selector,
+                xpathTail
+              );
           // See resolvedClickUsedXpathTailRetarget's doc comment: flags that
           // this click's target identity came only from the loose tail
           // heuristic, not Stagehand's own resolved selector.
-          const retryClickUsedXpathTailRetarget = await resolvedClickUsedXpathTailRetarget(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector,
-            xpathTail
-          );
+          const retryClickUsedXpathTailRetarget = stepDeclaredNonSubmit
+            ? false
+            : await resolvedClickUsedXpathTailRetarget(
+                frameTarget ?? mainFrameTarget(page),
+                resolvedAction.selector,
+                xpathTail
+              );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
           // delivery can suppress the synthetic `clickActivationExpr`
@@ -12589,7 +12708,7 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -12612,7 +12731,7 @@ export async function executeStepWithHealing(params: {
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node && ${JSON.stringify(xpathTail)}) {
-                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
               }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
@@ -12718,7 +12837,7 @@ export async function executeStepWithHealing(params: {
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                 let el = r.singleNodeValue;
                 if (!el && ${JSON.stringify(xpathTail)}) {
-                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)});
+                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
                 }
                 return el ? isDisabled(el) : false;
               })()`;
@@ -12766,8 +12885,12 @@ export async function executeStepWithHealing(params: {
             }));
           const fallbackDomOnlyAdvance = shouldVetoFallbackAdvance({
             hasPattern: advanceTransitionBodyPattern !== null,
-            isFinalOrSubmit:
-              submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+            isFinalOrSubmit: isStepSubmitShaped({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            }),
             isAdvance: isAdvanceStep(step),
             retryUrlChanged,
             retryNetworkIsRealAdvance,
@@ -12830,12 +12953,16 @@ export async function executeStepWithHealing(params: {
           // treated identically to an explicitly flagged one everywhere this
           // value is read below.
           const retrySubmitShaped =
-            submitStep ||
-            (isFinalStep && flowHasSubmitSemanticsFlag) ||
-            retryResolvedElementIsSubmitShaped ||
-            isSubmitIntentStep(step);
+            isStepSubmitShaped({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!isFinalStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
+            ((!(isFinalStep && !stepDeclaredNonSubmit) &&
+              !submitStep &&
+              !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
@@ -12929,7 +13056,11 @@ export async function executeStepWithHealing(params: {
           // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
           // both of which rely on that carve-out and must stay green).
           const retryDestinationUnconfirmed =
-            isFinalStep && !submitStep && retryUrlChanged && !retryResolvedElementIsSubmitShaped;
+            isFinalStep &&
+            !submitStep &&
+            !stepDeclaredNonSubmit &&
+            retryUrlChanged &&
+            !retryResolvedElementIsSubmitShaped;
           if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {
             // Veto directly rather than routing through the judge below: no
             // endpoint pattern and no submit-shaped element means there is
@@ -13134,7 +13265,12 @@ export async function executeStepWithHealing(params: {
     // error text pattern with 3 distinct rejection messages.
     if (
       record.resolvedMethod === "click" &&
-      (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      })
     ) {
       const live = await extractLivePageFormEvidence(page, frameTarget ?? mainFrameTarget(page), {
         client: anthropic,
@@ -13197,12 +13333,16 @@ export async function executeStepWithHealing(params: {
         // (triedSelectors), which is empty on an "unresolved" verdict, so a
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
-        const escalationTarget =
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
-            ? "escalating attempt 2 to deep-submit-locator"
-            : phantomClickAfterAttempt1
-              ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
-              : "non-submit step — no resolved target for trusted-click-retry; attempt 2 continues the normal ladder";
+        const escalationTarget = isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        })
+          ? "escalating attempt 2 to deep-submit-locator"
+          : phantomClickAfterAttempt1
+            ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
+            : "non-submit step — no resolved target for trusted-click-retry; attempt 2 continues the normal ladder";
         logger.warn(
           `${formatStepPrefix(stepIndex, totalSteps)} ${verdictDescription} on attempt 1 (${record.technique}): ${outcomeDescription}${suppressedCount !== undefined ? `; ${suppressedCount} AISDK elementId errors suppressed this session (corroborating, not causal)` : ""} — ${escalationTarget}`
         );
@@ -13214,8 +13354,12 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep:
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+        isFinalStep: isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -13236,8 +13380,12 @@ export async function executeStepWithHealing(params: {
       // can reorder a later step forward — instead of burning the cascade.
       const advanceStalled = isAdvanceStalled({
         isAdvance: isAdvanceStep(step),
-        isFinalOrSubmit:
-          submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step),
+        isFinalOrSubmit: isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
         hasPattern: advanceTransitionBodyPattern !== null,
         clickFired: record.resolvedMethod === "click" && record.actResultSuccess === true,
         networkFired,
@@ -13266,7 +13414,12 @@ export async function executeStepWithHealing(params: {
   // submit control in an unrelated same-origin child iframe.
   if (
     !frameTarget?.declaredFrameSelector &&
-    (submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step))
+    isStepSubmitShaped({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    })
   ) {
     const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
     if (fallbackTarget) {
@@ -13317,14 +13470,14 @@ export async function executeStepWithHealing(params: {
     cascadeExhaustObservedUnfocused.length === 0 && frameTarget?.frame
       ? await deepLocatorCandidatesAsActions(page, frameTarget)
       : cascadeExhaustObservedUnfocused;
-  const targetResolutionDiagnostic =
-    submitStep || (isFinalStep && flowHasSubmitSemanticsFlag) || isSubmitIntentStep(step)
-      ? await captureTargetResolutionDiagnosticSnapshot(
-          frameTarget,
-          page,
-          lastRankedSubmitCandidates
-        )
-      : null;
+  const targetResolutionDiagnostic = isStepSubmitShaped({
+    step,
+    submitStep,
+    isFinalStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+  })
+    ? await captureTargetResolutionDiagnosticSnapshot(frameTarget, page, lastRankedSubmitCandidates)
+    : null;
   const dumpPath =
     onStepFailure?.({
       stepIndex,

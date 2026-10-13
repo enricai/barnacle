@@ -2,9 +2,11 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  classifyStepSubmitIntent,
   flowHasSubmitSemantics,
   type HealingFlowStep,
   isAdvanceStep,
+  isStepSubmitShaped,
   isSubmitIntentStep,
   runHealingFlow,
 } from "@/scraper/flow-runner";
@@ -190,5 +192,49 @@ describe("flow-runner/runHealingFlow — non-submit advance step keeps the ordin
       .map((call) => String(call[0]))
       .join("\n");
     expect(logged).not.toContain("deep-submit-locator");
+  });
+});
+
+describe("classifyStepSubmitIntent — declared non-submit instruction", () => {
+  it("classifies a step that declares it must not proceed to checkout as non-submit", () => {
+    expect(
+      classifyStepSubmitIntent(
+        "Click a category tab on example.com. Do NOT click 'Book Now' or any control that proceeds to checkout."
+      )
+    ).toBe("non-submit");
+  });
+
+  it("keeps a genuine submit click as submit, even alongside a guardrail", () => {
+    expect(classifyStepSubmitIntent("Click 'submit' to finish")).toBe("submit");
+    expect(
+      classifyStepSubmitIntent(
+        "Click the submit button. Do not click anything that proceeds to checkout."
+      )
+    ).toBe("submit");
+  });
+
+  it("returns unspecified for neutral or empty instructions", () => {
+    expect(classifyStepSubmitIntent("Click the category tab")).toBe("unspecified");
+    expect(classifyStepSubmitIntent(null)).toBe("unspecified");
+  });
+
+  it("vetoes inferred submit shape regardless of final-step or flow flags, but not an explicit submitStep", () => {
+    const step = "Open the details tab. Never click anything that proceeds to checkout.";
+    expect(
+      isStepSubmitShaped({
+        step,
+        submitStep: false,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
+    ).toBe(false);
+    expect(
+      isStepSubmitShaped({
+        step,
+        submitStep: true,
+        isFinalStep: true,
+        flowHasSubmitSemantics: true,
+      })
+    ).toBe(true);
   });
 });

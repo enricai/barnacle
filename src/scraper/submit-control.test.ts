@@ -715,6 +715,23 @@ describe("submit-control/buildRankSubmitCandidatesExpr", () => {
   });
 });
 
+describe("submit-control/buildRankSubmitCandidatesExpr genuine-submit regression guard", () => {
+  it("keeps a genuine type=submit control at tier 3 and still excludes a negative-named sibling", () => {
+    const genuine = makeEl("button", { type: "submit" }, "Pay now");
+    const negative = makeEl("button", { type: "submit" }, "Cancel");
+    const document = makeRoot([negative, genuine]);
+
+    const result = evaluateInFakePage(
+      buildRankSubmitCandidatesExpr(),
+      document
+    ) as SubmitCandidate[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.tier).toBe(3);
+    expect(result[0]?.accessibleName).toBe("pay now");
+  });
+});
+
 describe("submit-control/buildRankSubmitCandidatesExpr non-button-like tier breadth", () => {
   it('ranks a roleless custom-element with accessible name exactly "submit" as tier 2', () => {
     const control = makeEl("app-submit-action", {}, "Submit");

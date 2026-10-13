@@ -5,6 +5,16 @@ import { describe, expect, it, vi } from "vitest";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
+const verifySubmitWithLLM = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-submit")>();
+  return {
+    ...actual,
+    verifySubmitWithLLM: (...args: unknown[]) => verifySubmitWithLLM(...args),
+  };
+});
+
 /**
  * Non-regression companion to bugfix-001's narrowing (2b587a7): a bare,
  * default-type `<button>` merely owned by a `<form>` no longer gets
@@ -126,6 +136,8 @@ function buildPrimaryXPathFixture(params: {
   controlAttrs: string;
   controlText?: string;
   siblingHtml?: string;
+  submitStep?: boolean;
+  stepInstruction?: string;
 }): {
   page: Page;
   stagehand: Stagehand;
@@ -223,7 +235,12 @@ function buildPrimaryXPathFixture(params: {
   void detailsLinkXPath;
 
   const steps: HealingFlowStep[] = [
-    { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
+    {
+      instruction: params.stepInstruction ?? STEP_INSTRUCTION,
+      optional: false,
+      upload: false,
+      submitStep: params.submitStep ?? false,
+    },
     { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
   ];
 
@@ -242,6 +259,8 @@ function buildTailRetargetFixture(params: {
   controlAttrs: string;
   controlText?: string;
   siblingHtml?: string;
+  submitStep?: boolean;
+  stepInstruction?: string;
 }): {
   page: Page;
   stagehand: Stagehand;
@@ -368,7 +387,12 @@ function buildTailRetargetFixture(params: {
   void detailsLinkXPath;
 
   const steps: HealingFlowStep[] = [
-    { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
+    {
+      instruction: params.stepInstruction ?? STEP_INSTRUCTION,
+      optional: false,
+      upload: false,
+      submitStep: params.submitStep ?? false,
+    },
     { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
   ];
 
@@ -443,6 +467,99 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
         buildTailRetargetFixture({
           controlTag: "input",
           controlAttrs: 'type="image" src="go.png" alt="Go"',
+        })
+      );
+    });
+  });
+
+  describe("genuine submit steps keep the veto regardless of target shape (intent-aware gate not over-applied)", () => {
+    it("still vetoes a submitStep-flagged step on a bare, non-submit-shaped button (primary xpath)", async () => {
+      await expectStillVetoed(
+        buildPrimaryXPathFixture({
+          controlTag: "button",
+          controlAttrs: 'type="button"',
+          controlText: "Widget Details",
+          submitStep: true,
+        })
+      );
+    });
+
+    it("still vetoes a submitStep-flagged step on a bare, non-submit-shaped button (tail retarget)", async () => {
+      await expectStillVetoed(
+        buildTailRetargetFixture({
+          controlTag: "button",
+          controlAttrs: 'type="button"',
+          controlText: "Widget Details",
+          submitStep: true,
+        })
+      );
+    });
+
+    it("still invokes verifySubmitWithLLM for a submitStep-flagged step that transitions", async () => {
+      verifySubmitWithLLM.mockReset();
+      verifySubmitWithLLM.mockResolvedValue({
+        verified: true,
+        reason: null,
+        dom_signal: null,
+        url_signal: "/thank-you",
+        rationale: "URL transitioned to the thank-you page",
+      });
+      const fixture = buildPrimaryXPathFixture({
+        controlTag: "button",
+        controlAttrs: 'type="button"',
+        controlText: "Widget Details",
+        submitStep: true,
+      });
+      const originalAct = fixture.stagehand.act as unknown as (...a: unknown[]) => Promise<unknown>;
+      let transitioned = false;
+      (fixture.stagehand as unknown as { act: unknown }).act = async (
+        ...a: unknown[]
+      ): Promise<unknown> => {
+        transitioned = true;
+        return originalAct(...a);
+      };
+      (fixture.page as unknown as { url: () => string }).url = () =>
+        transitioned ? `${BASE_URL}/thank-you` : BASE_URL;
+      await runHealingFlow({
+        stagehand: fixture.stagehand,
+        page: fixture.page,
+        steps: fixture.steps,
+        logger: fixture.logger,
+        submitEndpointPattern: "/submit",
+        anthropic: null,
+        rephraseModel: null,
+        uploadFixture: null,
+      }).catch(() => undefined);
+      expect(verifySubmitWithLLM).toHaveBeenCalled();
+    });
+
+    it("still vetoes a real submit-phrase step with no negative declaration (primary xpath)", async () => {
+      await expectStillVetoed(
+        buildPrimaryXPathFixture({
+          controlTag: "input",
+          controlAttrs: 'type="submit" value="Create"',
+          stepInstruction: "Click the submit button to create the account",
+        })
+      );
+    });
+
+    it("still vetoes a real submit-phrase step with no negative declaration (tail retarget)", async () => {
+      await expectStillVetoed(
+        buildTailRetargetFixture({
+          controlTag: "input",
+          controlAttrs: 'type="submit" value="Create"',
+          stepInstruction: "Click the submit button to create the account",
+        })
+      );
+    });
+
+    it("keeps the veto when a real submit phrase coexists with a negated guardrail clause", async () => {
+      await expectStillVetoed(
+        buildPrimaryXPathFixture({
+          controlTag: "input",
+          controlAttrs: 'type="submit" value="Create"',
+          stepInstruction:
+            "Do not click any control that proceeds to checkout. Click the submit button to create the account",
         })
       );
     });

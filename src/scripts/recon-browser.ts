@@ -111,6 +111,7 @@ import {
   STEP_WATCHDOG_MS,
   selectBodyExcerpt,
   snapshotPage,
+  stripNegatedSubmitClauses,
   TRAILING_GRACE_WINDOW,
   wireSignalCapture,
 } from "@/scraper/flow-runner";
@@ -1499,10 +1500,13 @@ const SUBMIT_SHAPED_INSTRUCTION_PATTERNS = [
  * combination that no longer matches what this particular step does).
  * Matches on word boundaries against normalized (lowercased, whitespace-
  * collapsed) text, mirroring {@link SIGN_IN_PATTERNS}/{@link ACCOUNT_CREATION_PATTERNS},
- * so a phrase like "commit the change" does not false-positive on "submit". Pure.
+ * so a phrase like "commit the change" does not false-positive on "submit".
+ * Negated guardrail clauses ("Do NOT click ... proceeds to checkout") are
+ * blanked first: a step that declares itself not a submit is never seeded as
+ * one. Pure.
  */
 export function isSubmitShapedInstructionText(instruction: string): boolean {
-  const norm = normalizeInstruction(instruction);
+  const norm = normalizeInstruction(stripNegatedSubmitClauses(instruction));
   return SUBMIT_SHAPED_INSTRUCTION_PATTERNS.some((p) => p.test(norm));
 }
 

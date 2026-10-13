@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
+const { verifySubmitWithLLM } = vi.hoisted(() => ({
+  verifySubmitWithLLM: vi.fn(),
+}));
+vi.mock("@/lib/llm/judges/verify-submit", () => ({ verifySubmitWithLLM }));
+
 /**
  * Pins bugfix-003's primary-xpath-hit branch (distinct from the
  * xpathTail-retarget branch covered by
@@ -78,7 +83,13 @@ function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElemen
  * n+16 fallback's PRIMARY xpath (never staled, so the tail-retarget branch is
  * never reached) against a bare `<button>` wrapped in a `<form>`.
  */
-function buildFixture(): {
+const GUARDRAIL_TAB_INSTRUCTION =
+  "Click a plan tier tab. Do NOT click 'Book Now', 'Reserve', 'Select', or any control that proceeds to checkout";
+
+function buildFixture(
+  stepsOverride?: (defaults: HealingFlowStep[]) => HealingFlowStep[],
+  options: { urlChangesOnClick?: boolean; buttonLabel?: string } = {}
+): {
   page: Page;
   stagehand: Stagehand;
   steps: HealingFlowStep[];
@@ -91,12 +102,13 @@ function buildFixture(): {
   document.body.innerHTML = `
     <form id="theForm">
       <div>
-        <button id="theControl">Expand details</button>
+        <button id="theControl">${options.buttonLabel ?? "Expand details"}</button>
       </div>
       <a id="detailsLink" href="#details">Details</a>
     </form>
   `;
 
+  let clicked = false;
   const controlEl = document.getElementById("theControl") as unknown as HappyDomElement;
   const detailsLinkEl = document.getElementById("detailsLink") as unknown as HappyDomElement;
   if (!controlEl || !detailsLinkEl) throw new Error("fixture setup failed");
@@ -109,6 +121,7 @@ function buildFixture(): {
       addEventListener: (type: string, cb: (ev: unknown) => void) => void;
     }
   ).addEventListener("click", () => {
+    clicked = true;
     const marker = document.createElement("div");
     marker.setAttribute("data-expanded", "x".repeat(2000));
     controlEl.appendChild(marker as unknown as HappyDomElement);
@@ -136,7 +149,8 @@ function buildFixture(): {
       ) => unknown;
       return fn(document, win.XPathResult);
     },
-    url: () => BASE_URL,
+    url: () =>
+      clicked && options.urlChangesOnClick ? "https://portal.example.com/dashboard/pro" : BASE_URL,
     title: async () => "Dashboard",
     locator: () => ({
       first: () => ({
@@ -170,10 +184,11 @@ function buildFixture(): {
   } as unknown as Stagehand;
   void detailsLinkXPath;
 
-  const steps: HealingFlowStep[] = [
+  const defaults: HealingFlowStep[] = [
     { instruction: STEP_INSTRUCTION, optional: false, upload: false, submitStep: false },
     { instruction: HARMLESS_SECOND_STEP, optional: true, upload: false, submitStep: false },
   ];
+  const steps = stepsOverride ? stepsOverride(defaults) : defaults;
 
   const { logger, info, warn } = makeLogger();
   return { page, stagehand, steps, logger, info, warn };
@@ -195,5 +210,68 @@ describe("flow-runner resolvedClickTargetIsSubmitShaped — primary-xpath-hit br
 
     expect(result.lastStepIndex).toBe(1);
     expect(info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+  });
+});
+
+describe("flow-runner declared non-submit step never reaches the submit judge", () => {
+  const runFlow = async (
+    fixture: ReturnType<typeof buildFixture>
+  ): Promise<Awaited<ReturnType<typeof runHealingFlow>>> =>
+    runHealingFlow({
+      stagehand: fixture.stagehand,
+      page: fixture.page,
+      steps: fixture.steps,
+      logger: fixture.logger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+      submitEndpointPattern: "/api/submit",
+      requireSubmitEndpointMatch: true,
+    });
+
+  it("does not judge a guardrailed mid-flow tab click and a guardrailed final step", async () => {
+    verifySubmitWithLLM.mockReset();
+    verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    const fixture = buildFixture(
+      (defaults) => [
+        {
+          instruction: GUARDRAIL_TAB_INSTRUCTION,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+        {
+          instruction: GUARDRAIL_TAB_INSTRUCTION,
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      { urlChangesOnClick: true, buttonLabel: "Continue" }
+    );
+
+    const result = await runFlow(fixture);
+
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    expect(result.lastStepIndex).toBe(1);
+    expect(fixture.info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
+  });
+
+  it("control: a genuine submitStep still reaches the judge", async () => {
+    verifySubmitWithLLM.mockReset();
+    verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    const fixture = buildFixture((defaults) => [
+      {
+        instruction: "Click the 'Submit' button",
+        optional: false,
+        upload: false,
+        submitStep: true,
+      },
+      defaults[1] as HealingFlowStep,
+    ]);
+
+    await runFlow(fixture).catch(() => undefined);
+
+    expect(verifySubmitWithLLM).toHaveBeenCalled();
   });
 });
