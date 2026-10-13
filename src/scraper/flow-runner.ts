@@ -4058,20 +4058,52 @@ function xpathTailForRetarget(xpath: string): string | null {
  * Falls back to the first document-order match when no candidate clears that
  * bar, preserving the previous behavior for every single-match (the common)
  * case.
+ *
+ * `phrases` (optional): the step's quoted target phrases. Matches whose text
+ * (innerText/textContent/aria-label, case-insensitive, containment in either
+ * direction) names none of them are dropped, so the loose tag/position tail
+ * cannot hand back an element that is not the named target. An empty list, or
+ * a match with no text at all, is unrestricted.
  */
-const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit) => {
+const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
     const isNegative = ${NEGATIVE_TEXT_EXPR};
     const accessibleName = (el) =>
       (el.getAttribute("aria-label") || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
     const r = document.evaluate("//" + tail, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    const names = (phrases || []).map((p) => String(p).replace(/\\s+/g, " ").trim().toLowerCase()).filter(Boolean);
+    const namesTarget = (el) => {
+      if (names.length === 0) return true;
+      const texts = [el.innerText, el.textContent, el.getAttribute("aria-label")]
+        .map((t) => (t || "").replace(/\\s+/g, " ").trim().toLowerCase())
+        .filter(Boolean);
+      if (texts.length === 0) return true;
+      return texts.some((t) => names.some((n) => t.includes(n) || n.includes(t)));
+    };
     const nodes = [];
-    for (let i = 0; i < r.snapshotLength; i++) nodes.push(r.snapshotItem(i));
+    for (let i = 0; i < r.snapshotLength; i++) {
+      const node = r.snapshotItem(i);
+      if (namesTarget(node)) nodes.push(node);
+    }
     if (nodes.length <= 1) return nodes[0] || null;
     if (!preferSubmit) return nodes[0];
     const preferred = nodes.find((el) => isSubmitShaped(el) && !isNegative(accessibleName(el)));
     return preferred || nodes[0];
   })`;
+
+/**
+ * The quoted, non-negated target phrases a plain click step names, used to
+ * refuse a tail-retargeted element that is not that target. Field-label,
+ * select, and radio steps quote option/label values rather than the clicked
+ * control's own text, so they yield no phrases and keep the unrestricted
+ * retarget.
+ */
+function tailRetargetPhrasesForStep(step: string): string[] {
+  if (parseFieldLabelTarget(step) || parseSelectStep(step) || parseRadioStep(step)) return [];
+  return extractTaggedPhrases(step)
+    .filter((p) => !p.negated)
+    .map((p) => p.text);
+}
 
 /**
  * Resolve any selector a caller might hold into a bare XPath body for
@@ -4455,7 +4487,8 @@ async function resolvedClickTargetStillPresent(
 async function resolvedClickTargetIsSubmitShaped(
   target: FrameTarget,
   selector: string,
-  xpathTail: string | null = null
+  xpathTail: string | null = null,
+  phrases: string[] = []
 ): Promise<boolean> {
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
@@ -4463,7 +4496,7 @@ async function resolvedClickTargetIsSubmitShaped(
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     let el = r.singleNodeValue;
     if (!el && ${JSON.stringify(xpathTail)}) {
-      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)});
+      el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)}, ${JSON.stringify(phrases)});
     }
     const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
     return isSubmitShaped(el);
@@ -4495,14 +4528,16 @@ async function resolvedClickTargetIsSubmitShaped(
 async function resolvedClickUsedXpathTailRetarget(
   target: FrameTarget,
   selector: string,
-  xpathTail: string | null
+  xpathTail: string | null,
+  phrases: string[] = []
 ): Promise<boolean> {
   if (!xpathTail) return false;
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
   const expr = `(() => {
     const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    return r.singleNodeValue === null;
+    if (r.singleNodeValue !== null) return false;
+    return ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)}, ${JSON.stringify(phrases)}) !== null;
   })()`;
   try {
     return (await target.evaluate(expr)) === true;
@@ -12714,12 +12749,14 @@ export async function executeStepWithHealing(params: {
           // tail node `clickExpr` below is about to click, instead of only
           // ever checking the (possibly unresolvable) primary xpath — see
           // resolvedClickTargetIsSubmitShaped's doc comment.
+          const tailPhrases = tailRetargetPhrasesForStep(step);
           const retryResolvedElementIsSubmitShaped = stepDeclaredNonSubmit
             ? false
             : await resolvedClickTargetIsSubmitShaped(
                 frameTarget ?? mainFrameTarget(page),
                 resolvedAction.selector,
-                xpathTail
+                xpathTail,
+                tailPhrases
               );
           // See resolvedClickUsedXpathTailRetarget's doc comment: flags that
           // this click's target identity came only from the loose tail
@@ -12729,7 +12766,8 @@ export async function executeStepWithHealing(params: {
             : await resolvedClickUsedXpathTailRetarget(
                 frameTarget ?? mainFrameTarget(page),
                 resolvedAction.selector,
-                xpathTail
+                xpathTail,
+                tailPhrases
               );
           // Trusted-click delivery for the plain-click branch: attempted
           // BEFORE the resolve/activate expression below (so a successful
@@ -12763,10 +12801,11 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}); } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
+            phraseMismatch?: boolean;
             kind?: string;
             checked?: boolean;
           };
@@ -12786,7 +12825,7 @@ export async function executeStepWithHealing(params: {
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
               let node = r.singleNodeValue;
               if (!node && ${JSON.stringify(xpathTail)}) {
-                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
+                node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)});
               }
               if (!node) return false;
               for (let depth = 0; depth < 6 && node; depth++) {
@@ -12892,7 +12931,7 @@ export async function executeStepWithHealing(params: {
                 const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
                 let el = r.singleNodeValue;
                 if (!el && ${JSON.stringify(xpathTail)}) {
-                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)});
+                  el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)});
                 }
                 return el ? isDisabled(el) : false;
               })()`;
