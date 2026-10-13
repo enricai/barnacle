@@ -1555,12 +1555,11 @@ export function isSubmitIntentStep(instruction: string | null | undefined): bool
 
 /**
  * Targets whose negation declares the step is not a submit: a checkout/payment/
- * order/submit action, or a "proceeds/leads/advances to" phrase naming one.
- * Bare "do not click Book Now" stays undeclared — the control name alone says
- * nothing about whether the author means a submit.
+ * order/submit action, a purchase-action control named directly ("Book Now",
+ * "Reserve", "Add to Cart"), or a "proceeds/leads/advances to" phrase naming one.
  */
 const SUBMIT_TARGET_SRC =
-  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
+  "(?:(?:proceed|advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:\\w+\\s+)?(?:checkout|check ?out|payments?|purchase|order|booking|reservation)|(?:place|complete|finali[sz]e|confirm)(?:s|ing)?\\s+(?:the\\s+|your\\s+|an?\\s+)?(?:order|purchase|booking|reservation|payment|checkout)|(?:advance|move|go|lead|take|navigate|continue)(?:s|ing|es)?\\s+(?:you\\s+)?(?:on\\s+)?(?:to|toward|towards|into|with|past|through)\\s+(?:the\\s+|a\\s+|your\\s+)?(?:next|following|final|last)\\s+(?:step|page|screen|stage)|(?:advance|advances|advancing)\\s+(?:the\\s+|your\\s+)?(?:booking|order|reservation|purchase)|check ?out|book(?:s|ing)? now|reserv(?:e|es|ing)|add(?:s|ing)? to (?:the |your )?(?:cart|basket|bag)|pay(?:ment|ing)?|purchas(?:e|es|ing)|buy(?:s|ing)?|charg(?:e|es|ing)|submit(?:s|ting)?)";
 
 /**
  * A negation followed, in the same clause, by a submit target ("Do NOT click
@@ -9986,8 +9985,11 @@ export async function executeStepWithHealing(params: {
   // (verified 2026-06-15 on one measured tenant's telemetry). Site-agnostic: any flow
   // whose submit is mid-list can mark its submit step explicitly.
   const stepDeclaredNonSubmit = !submitStep && classifyStepSubmitIntent(step) === "non-submit";
+  // Single final-step inference every submit-strictness gate below reads, so a
+  // declared non-submit veto cannot be honoured at one site and missed at another.
+  const inferredFinalSubmitStep = isFinalStep && !stepDeclaredNonSubmit;
   const requireSubmitEndpoint =
-    (isFinalStep || submitStep) && !stepDeclaredNonSubmit && submitEndpointPattern !== null;
+    (inferredFinalSubmitStep || submitStep) && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
   // scoped click read-back) ONLY for selection/field-answer click steps — never
   // for submit/advance steps, whose own self-toggling buttons must not
@@ -12958,9 +12960,7 @@ export async function executeStepWithHealing(params: {
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
           const weakDomSignalsAllowed =
-            ((!(isFinalStep && !stepDeclaredNonSubmit) &&
-              !submitStep &&
-              !retryResolvedElementIsSubmitShaped) ||
+            ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
             !isCheckboxOrRadioIntentStep(step) &&
             !clickTargetIsSelectionMarker;
@@ -13054,9 +13054,8 @@ export async function executeStepWithHealing(params: {
           // and flow-runner.evidence-table-alternating-verdict-regression.test.ts,
           // both of which rely on that carve-out and must stay green).
           const retryDestinationUnconfirmed =
-            isFinalStep &&
+            inferredFinalSubmitStep &&
             !submitStep &&
-            !stepDeclaredNonSubmit &&
             retryUrlChanged &&
             !retryResolvedElementIsSubmitShaped;
           if (retryVerified && retryDestinationUnconfirmed && !requireSubmitEndpoint) {

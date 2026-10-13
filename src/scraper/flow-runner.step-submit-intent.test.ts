@@ -29,6 +29,22 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
     expect(classifyStepSubmitIntent("Submit the form. Do not submit twice")).toBe("submit");
   });
 
+  it("declares non-submit when a negated clause names a purchase-action control", () => {
+    for (const text of [
+      "Do NOT click Book Now",
+      "Click the first date. Do NOT click 'Book Now' or 'Reserve'.",
+      "Do NOT click 'Reserve', 'Book Now', 'Pay', or anything that proceeds past item selection",
+      "Do NOT click 'Add to Cart' or 'Buy Now'",
+    ]) {
+      expect(classifyStepSubmitIntent(text)).toBe("non-submit");
+    }
+    expect(classifyStepSubmitIntent("Click Submit. Do NOT click Cancel.")).toBe("submit");
+    expect(
+      classifyStepSubmitIntent("Click the Submit button to submit the order. Do NOT click Reserve.")
+    ).toBe("submit");
+    expect(classifyStepSubmitIntent("Read the Reserved seating note")).toBe("unspecified");
+  });
+
   it("classifies a click-submit instruction as submit", () => {
     expect(classifyStepSubmitIntent("click submit")).toBe("submit");
   });
@@ -40,7 +56,6 @@ describe("scraper/flow-runner classifyStepSubmitIntent", () => {
 
   it("returns unspecified for plain or bare-negation instructions", () => {
     expect(classifyStepSubmitIntent("Fill the name field")).toBe("unspecified");
-    expect(classifyStepSubmitIntent("Do NOT click Book Now")).toBe("unspecified");
     expect(classifyStepSubmitIntent(null)).toBe("unspecified");
   });
 });
