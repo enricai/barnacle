@@ -35,15 +35,19 @@ import type { Logger } from "@/types/logging";
  * already rejected the attempt) and no attempt is ever credited
  * `verifiedBy: 'view-swap'`.
  *
- * (A large page-wide byte delta that survives the primary gate's veto is
- * still picked up by the executeStepWithHealing `el.click()` n+16 fallback's
- * OWN, separate weak-signal heuristic — a raw nonzero page-wide byte delta,
- * un-gated by `clickedElementStillPresent` — which is a distinct mechanism
- * bugfix-001 does not touch. This test scopes its assertions to the
- * `isClickViewSwapVerified` credit path bugfix-001 actually changed: the
- * click is never `verifiedBy: 'view-swap'`, and the primary gate provably
- * rejects it (forcing the fallback to engage at all) — the report's exact
- * defect.)
+ * A large page-wide byte delta that survives the primary gate's veto used to
+ * still be picked up by the executeStepWithHealing `el.click()` n+16
+ * fallback's OWN, separate weak-signal heuristic — a raw nonzero page-wide
+ * byte delta, un-gated by `clickedElementStillPresent`. That was itself the
+ * defect `recon-n16-fallback-credits-unclicked-or-wrong-element-on-stale-
+ * xpath.md` fixed (#545): the n+16 fallback's `fired` probe correctly finds
+ * nothing to click here (the element the primary attempt just removed), so
+ * its own weak-signal credit is now gated on `fired === true` too and never
+ * engages off the stale delta either. With both gates closed, this fixture's
+ * reset is UNRECOVERABLE — there's nothing left to click on any later
+ * attempt — so the step genuinely exhausts every cascade attempt and
+ * `executeStepWithHealing` throws `StepVerificationError`, matching the
+ * sibling "dead control" test below rather than silently completing.
  *
  * Generic, site-agnostic fixture: a two-panel "Settings" wizard, not any
  * real site or plugin.
@@ -247,7 +251,7 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
 
     const trajectory: { stepIndex: number; verifiedBy: AttemptRecord["verifiedBy"] }[] = [];
 
-    const result = await executeStepWithHealing({
+    const call = executeStepWithHealing({
       stagehand,
       page,
       frameTarget,
@@ -282,17 +286,19 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
       onStepFailure: () => null,
     });
 
-    // Something DID eventually resolve the step (via the n+16 fallback's own
-    // separate weak-signal heuristic — see the module docblock above); the
-    // point under test is HOW it resolved, not whether it did.
-    expect(result).toBe("completed");
+    // The reset is unrecoverable (nothing left to click on any later
+    // attempt), and neither gate may credit it off the stale delta alone —
+    // see the module docblock above — so the cascade genuinely exhausts.
+    await expect(call).rejects.toBeInstanceOf(StepVerificationError);
 
-    // The reset fired exactly once.
+    // The reset fired exactly once: every later attempt's re-click is a
+    // deliberate no-op (the button is gone), matching a real broken control
+    // that only ever fires once.
     expect(resetCount).toBe(1);
 
-    // The report's exact defect: never credited `verifiedBy: 'view-swap'`.
-    expect(trajectory).toHaveLength(1);
-    expect(trajectory[0]?.verifiedBy).not.toBe("view-swap");
+    // No attempt was ever credited `verifiedBy: 'view-swap'` — the report's
+    // exact defect bugfix-001 closed stays closed.
+    expect(trajectory.some((t) => t.verifiedBy === "view-swap")).toBe(false);
 
     // Proof the PRIMARY view-swap gate itself rejected the attempt (not just
     // that some OTHER signal happened to win): the n+16 `el.click()`
