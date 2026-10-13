@@ -265,7 +265,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
       runRoot,
       exclusiveFilterCaptures().map((capture) => ({
         ...capture,
-        requestPostData: capture.requestPostData?.replace('"region":"FL"', '"region":"NJ"'),
+        requestPostData: capture.requestPostData?.replace('"region":"FL"', '"region":"NJ"') ?? null,
       }))
     );
 
