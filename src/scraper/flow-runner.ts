@@ -58,6 +58,7 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
+import { settleAfterClick } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -6275,6 +6276,8 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
+      if (verification.page)
+        await settleAfterClick(verification.page, verification.signalCounter, pre.networkCount);
       const post = await snapshotPage(target, verification.signalCounter, verification.page);
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
@@ -6293,6 +6296,12 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
+          if (verification.page)
+            await settleAfterClick(
+              verification.page,
+              verification.signalCounter,
+              post.networkCount
+            );
           const runnerUpPost = await snapshotPage(
             target,
             verification.signalCounter,
@@ -9531,6 +9540,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
+    await settleAfterClick(page, signalCounter, pre.networkCount);
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -9547,6 +9557,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
+    await settleAfterClick(page, signalCounter, post.networkCount);
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -11337,6 +11348,7 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
+              await settleAfterClick(page, signalCounter, pre.networkCount);
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
                 signalCounter,
@@ -12140,7 +12152,7 @@ export async function executeStepWithHealing(params: {
     // cannot produce a positive signal: verified is forced false and the
     // cascade always falls through to attempt 2. Skip the wasted ~2-3s
     // of timeout + snapshot work and let the cascade try observe-act.
-    if (attempt === 1 && resolvedAction === null) {
+    if (attempt === 1 && resolvedAction === null && record.actResultSuccess !== true) {
       attempts.push(record);
       const reason = record.errorMessage
         ? `attempt 1 fast-skipped (no resolved action): ${record.errorMessage}`
@@ -12150,6 +12162,15 @@ export async function executeStepWithHealing(params: {
     }
 
     await page.waitForTimeout(STEP_PAUSE_MS);
+    // A successful act that reported no actions still ran a click-class action;
+    // judging it before its round-trip lands would cascade onto the advanced page.
+    const mayTriggerRoundTrip =
+      resolvedAction === null
+        ? record.actResultSuccess === true
+        : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    if (mayTriggerRoundTrip) {
+      await settleAfterClick(page, signalCounter, pre.networkCount);
+    }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
 
@@ -12843,6 +12864,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
+          await settleAfterClick(page, signalCounter, pre.networkCount);
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
