@@ -7697,9 +7697,7 @@ export function resolveRecurringNavigateToFacets(
     claimedLiterals.add(literal);
     const known = [facet.value, ...(facet.literals ?? [])];
     if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-    const valueMap = new Map(
-      known.filter((candidate) => candidate.length > 0).map((candidate) => [candidate, literal])
-    );
+    const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
     return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
   });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
@@ -9630,7 +9628,7 @@ function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): s
   const raw = `payload.${facet.field}${fallback}`;
   if (!facet.valueMap || facet.valueMap.size === 0) return raw;
   const entries = JSON.stringify([...facet.valueMap.entries()]);
-  return `(new Map<string, string>(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
+  return `(new Map(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
 }
 
 function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {

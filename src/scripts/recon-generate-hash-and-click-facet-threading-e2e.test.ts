@@ -144,6 +144,31 @@ describe("recon-generate CLI — hash and click facets threaded into a filters a
     expect(contract).toContain('"GAMMA;filterType=island"');
   }, 30_000);
 
+  it("emits a filters body that evaluates as plain JavaScript in whichever vocabulary the caller supplies", () => {
+    const { contract } = generate();
+    const body = [...contract.matchAll(/body: (`.*`),\s*\n\s*schema:/g)]
+      .map((match) => match[1] ?? "")
+      .find((candidate) => candidate.includes("filterType=ship"));
+    expect(body, contract).toBeDefined();
+    const render = (payload: Record<string, string>): { filters: string[] } =>
+      JSON.parse(new Function("payload", `return ${body}`)(payload));
+
+    const declared = { ship: "disney-wish", sailMonth: "december-2026", destination: "Rome" };
+    expect(render(declared).filters).toEqual([
+      "WW;filterType=ship",
+      "2026-12;filterType=date",
+      "ROME;filterType=destination",
+      "BETA;filterType=theme",
+      "GAMMA;filterType=island",
+    ]);
+    const coded = { ship: "XX", sailMonth: "2027-01", destination: "Oslo" };
+    expect(render(coded).filters.slice(0, 3)).toEqual([
+      "XX;filterType=ship",
+      "2027-01;filterType=date",
+      "OSLO;filterType=destination",
+    ]);
+  }, 30_000);
+
   it("emits the facet no request carries as optional and keeps the browser flow reading it", () => {
     const { contract, browserFlow } = generate();
 
