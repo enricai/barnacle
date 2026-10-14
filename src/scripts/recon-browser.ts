@@ -130,11 +130,11 @@ import {
 } from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
-import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
+import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
@@ -3347,7 +3347,11 @@ async function main(): Promise<void> {
                 fieldValuesAtFailure: dump.fieldValuesAtFailure ?? null,
               };
             } catch {
-              return { bodyHtmlAtFailure: null, fieldValuesAtFailure: null, attemptsAtFailure: null };
+              return {
+                bodyHtmlAtFailure: null,
+                fieldValuesAtFailure: null,
+                attemptsAtFailure: null,
+              };
             }
           })();
           const newSteps = filterCompletedFromReplan(

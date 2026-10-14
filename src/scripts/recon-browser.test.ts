@@ -119,6 +119,7 @@ import {
   capturesAfterIndex,
   chooseRequiredSelectOption,
   countSlugPrefixMatches,
+  decideReplanNoProgress,
   dedupeIdenticalSteps,
   dedupeReplanStepsByTarget,
   denormalizeStep,
@@ -144,7 +145,6 @@ import {
   isFlowTruncated,
   isReplanCycle,
   isReplanRegressingAcrossAuthBoundary,
-  decideReplanNoProgress,
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
@@ -7577,7 +7577,10 @@ describe("recon-browser/decideReplanNoProgress", () => {
     origin: "replan",
   });
   const failed = "Click Next to leave Basic Information";
-  const transient = [{ errorMessage: "503 Service Unavailable" }, { errorMessage: "overloaded_error" }];
+  const transient = [
+    { errorMessage: "503 Service Unavailable" },
+    { errorMessage: "Anthropic API is overloaded" },
+  ];
 
   it("retries twice per step on transient attempts, then aborts", () => {
     const counts = new Map<string, number>();
@@ -7589,9 +7592,9 @@ describe("recon-browser/decideReplanNoProgress", () => {
     const counts = new Map<string, number>();
     const sel = [{ errorMessage: "element not found for selector" }];
     expect(decideReplanNoProgress([mk(failed)], failed, sel, counts)).toBe("abort");
-    expect(
-      decideReplanNoProgress([mk(failed)], failed, [...transient, ...sel], counts)
-    ).toBe("abort");
+    expect(decideReplanNoProgress([mk(failed)], failed, [...transient, ...sel], counts)).toBe(
+      "abort"
+    );
   });
 
   it("aborts when the dump is missing or has no attempts", () => {
@@ -7603,7 +7606,12 @@ describe("recon-browser/decideReplanNoProgress", () => {
   it("proceeds when the bridge has a genuinely new step", () => {
     const counts = new Map<string, number>();
     expect(
-      decideReplanNoProgress([mk("Dismiss the cookie banner"), mk(failed)], failed, transient, counts)
+      decideReplanNoProgress(
+        [mk("Dismiss the cookie banner"), mk(failed)],
+        failed,
+        transient,
+        counts
+      )
     ).toBe("proceed");
     expect(counts.size).toBe(0);
   });
