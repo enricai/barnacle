@@ -44,6 +44,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
+import { followNewPage } from "@/scraper/active-page";
 import {
   buildMarkShadowInteractiveDescendantExpr,
   buildUnmarkShadowDescendantExpr,
@@ -9907,6 +9908,11 @@ export async function executeStepWithHealing(params: {
    * byte-identical to today.
    */
   frameTarget?: FrameTarget;
+  /**
+   * Reports the page the cascade adopted after a click opened a new browsing
+   * context, so the caller keeps driving, verifying and capturing that page.
+   */
+  onPageAdopted?: (page: Page) => void;
   step: string;
   /**
    * When true and Stagehand's act+observe finds no candidates, the cascade
@@ -10145,7 +10151,6 @@ export async function executeStepWithHealing(params: {
 }): Promise<"completed" | "skipped"> {
   const {
     stagehand,
-    page,
     optional,
     upload,
     submitStep,
@@ -10197,6 +10202,9 @@ export async function executeStepWithHealing(params: {
   // function keeps reading `frameTarget` unchanged; only its declaration
   // moved so it can be reassigned.
   let frameTarget = params.frameTarget;
+  // Rebound when a click opens a new browsing context, so every later probe,
+  // verifier and key event in the cascade reads the page the click navigated to.
+  let page = params.page;
   let frameReresolveAttempted = false;
   // Emailed-verification hook. Runs FIRST — before upload/select/checkbox/
   // radio/prompt-selector/captcha or any other cascade primitive — so an
@@ -11432,6 +11440,7 @@ export async function executeStepWithHealing(params: {
       params.abortSignal?.throwIfAborted();
     }
 
+    const pagesBeforeAttempt = stagehand.context.pages();
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -12520,6 +12529,15 @@ export async function executeStepWithHealing(params: {
       continue;
     }
 
+    const followedPage = await followNewPage(stagehand.context, page, pagesBeforeAttempt);
+    if (followedPage !== page) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)} click opened a new page; following it`
+      );
+      page = followedPage;
+      frameTarget = undefined;
+      params.onPageAdopted?.(followedPage);
+    }
     await page.waitForTimeout(STEP_PAUSE_MS);
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
