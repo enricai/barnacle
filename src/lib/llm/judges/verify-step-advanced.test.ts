@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { verifyStepAdvancedWithLLM } from "./verify-step-advanced";
+import { STEP_ADVANCED_SYSTEM_PROMPT, verifyStepAdvancedWithLLM } from "./verify-step-advanced";
 
 function fakeClient(parsedOutput: unknown): Anthropic {
   return {
@@ -32,6 +32,37 @@ describe("verifyStepAdvancedWithLLM", () => {
 
   it("returns null for a null client", async () => {
     expect(await verifyStepAdvancedWithLLM({ client: null, input: INPUT })).toBeNull();
+  });
+
+  it("does not call messages.parse for a null client", async () => {
+    const client = fakeClient({ advanced: true, reason: "x" });
+    await verifyStepAdvancedWithLLM({ client: null, input: INPUT });
+    expect(client.messages.parse).not.toHaveBeenCalled();
+  });
+
+  it("passes an advanced=false verdict through", async () => {
+    const parsedOutput = { advanced: false, reason: "same form" };
+    const client = fakeClient(parsedOutput);
+    expect(await verifyStepAdvancedWithLLM({ client, input: INPUT })).toEqual(parsedOutput);
+  });
+
+  it("system prompt asks for one short sentence reason", async () => {
+    const client = fakeClient({ advanced: true, reason: "x" });
+    await verifyStepAdvancedWithLLM({ client, input: INPUT });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+    };
+    expect(args.system).toBe(STEP_ADVANCED_SYSTEM_PROMPT);
+    expect(args.system).toContain("one short sentence");
+  });
+
+  it("title and URL are not part of the input or prompt", async () => {
+    const client = fakeClient({ advanced: true, reason: "x" });
+    await verifyStepAdvancedWithLLM({ client, input: INPUT });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      messages: { content: string }[];
+    };
+    expect(args.messages[0]?.content).not.toMatch(/title|url/i);
   });
 
   it("prompt carries before and after text", async () => {
