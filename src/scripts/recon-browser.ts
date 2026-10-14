@@ -1465,16 +1465,20 @@ const ACCOUNT_CREATION_PATTERNS = [
  * in". Scopes the Sign-In match to the step's own action clause (via
  * `splitIntoActionClauses`, shared with `isPlausibleStepDestination`) so a
  * step that merely mentions sign-in in descriptive context isn't mistaken
- * for one that is itself about signing in. Pure.
+ * for one that is itself about signing in. The completed-steps side is
+ * clause-scoped the same way, so a step that only mentions account creation
+ * in descriptive text (e.g. a wizard step title) isn't mistaken for a
+ * completed account-creation step. Pure.
  */
 export function isReplanRegressingAcrossAuthBoundary(
   newSteps: readonly NormalizedStep[],
   completedSteps: readonly string[]
 ): boolean {
-  const hasAccountCreation = completedSteps.some((s) => {
-    const norm = normalizeInstruction(s);
-    return ACCOUNT_CREATION_PATTERNS.some((p) => p.test(norm));
-  });
+  const hasAccountCreation = completedSteps.some((s) =>
+    splitIntoActionClauses(s).some((clause) =>
+      ACCOUNT_CREATION_PATTERNS.some((p) => p.test(clause))
+    )
+  );
   if (!hasAccountCreation) return false;
   return newSteps.some((s) =>
     splitIntoActionClauses(s.instruction).some((clause) =>
