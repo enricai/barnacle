@@ -231,6 +231,15 @@ export const SUBMIT_VERDICT_SCHEMA = z.discriminatedUnion("verified", [
 ]);
 
 /**
+ * Non-final step advancement verdict. `reason` has no max so an over-long
+ * answer is truncated after parse instead of failing the whole call.
+ */
+export const STEP_ADVANCED_SCHEMA = z.object({
+  advanced: z.boolean(),
+  reason: z.string().min(1),
+});
+
+/**
  * Invalid-field detection verdict. Replaces INVALID_CLASS_RX regex.
  * `present` is the top-level boolean so a downstream consumer can
  * short-circuit on "no invalid fields here" without iterating `fields`.
