@@ -10,7 +10,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { type VerifySubmitInput, verifySubmitWithLLM } from "./verify-submit";
+import {
+  SUBMIT_VERIFY_SYSTEM_PROMPT,
+  type VerifySubmitInput,
+  verifySubmitWithLLM,
+} from "./verify-submit";
 
 function fakeClient(parsedOutput: unknown): Anthropic {
   return {
@@ -47,5 +51,36 @@ describe("verifySubmitWithLLM", () => {
   it("short-circuits to null when the client is null (Bedrock-only)", async () => {
     const result = await verifySubmitWithLLM({ client: null, input: INPUT });
     expect(result).toBeNull();
+  });
+
+  const captured = async (
+    extra: Partial<VerifySubmitInput>
+  ): Promise<{ system: string; user: string }> => {
+    const client = fakeClient({ verified: true, reason: "x" });
+    await verifySubmitWithLLM({ client, input: { ...INPUT, ...extra } });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    return { system: args.system, user: args.messages[0]?.content ?? "" };
+  };
+
+  it("non-final step: prompt carries instruction, visible text and the non-final rule", async () => {
+    const { system, user } = await captured({
+      stepInstruction: "Click Create account",
+      isFinalStep: false,
+      visibleText: "Shipping address step",
+    });
+    expect(user).toContain("Click Create account");
+    expect(user).toContain("Shipping address step");
+    expect(system).toContain("NOT the flow's final submit");
+    expect(system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(true);
+  });
+
+  it("final step: strict rule only, no non-final rule", async () => {
+    const { system } = await captured({ stepInstruction: "Place order", isFinalStep: true });
+    expect(system).toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
+    expect(system).toContain("Strictness rule for verified=true");
+    expect(system).not.toContain("NOT the flow's final submit");
   });
 });
