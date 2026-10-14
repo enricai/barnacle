@@ -6963,12 +6963,13 @@ function applyScalarFacetSplicePayloadSubstitutions(
     const literal = JSON.stringify(value);
     const fallback = facet.optional ? ` ?? ${literal}` : "";
     const casing = facetCaseMethod(String(value), facet);
-    const cased = casing ? `String(payload.${facet.field}${fallback}).${casing}()` : undefined;
+    const expression = facetPayloadExpression(facet, fallback);
+    const cased = casing ? `String(${expression}).${casing}()` : undefined;
     const replacement = cased
       ? `\${JSON.stringify(${cased})}`
       : typeof value === "number" || facet.optional
-        ? `\${JSON.stringify(payload.${facet.field}${fallback})}`
-        : `"\${payload.${facet.field}}"`;
+        ? `\${JSON.stringify(${expression})}`
+        : `"\${${expression}}"`;
     for (const sep of [":", ": "]) {
       if (typeof value === "number") {
         const re = new RegExp(`${sep}${literal}(?![\\w.])`, "g");
@@ -9600,9 +9601,22 @@ function facetCaseMethod(
   return undefined;
 }
 
+/**
+ * JS expression for the value a facet's payload field carries in the code
+ * vocabulary: a kind-keyed alias translates the caller's declared literal
+ * through its `valueMap`, passing an already-coded value through untouched.
+ */
+function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): string {
+  const raw = `payload.${facet.field}${fallback}`;
+  if (!facet.valueMap || facet.valueMap.size === 0) return raw;
+  const entries = JSON.stringify([...facet.valueMap.entries()]);
+  return `(new Map<string, string>(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
+}
+
 function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
   const method = facetCaseMethod(captured, facet);
-  return method ? `\${String(payload.${facet.field}).${method}()}` : `\${payload.${facet.field}}`;
+  const expression = facetPayloadExpression(facet);
+  return method ? `\${String(${expression}).${method}()}` : `\${${expression}}`;
 }
 
 /**
@@ -9620,8 +9634,8 @@ function spliceFacetRecurrenceIntoScalarVariable(
     const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
-      return rendered === `\${payload.${facet.field}}`
-        ? `payload.${facet.field}`
+      return rendered === `\${${facetPayloadExpression(facet)}}`
+        ? facetPayloadExpression(facet)
         : `\`${rendered}\``;
     }
   }
