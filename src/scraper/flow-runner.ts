@@ -7627,7 +7627,9 @@ async function tryPromptSelectorPrimitive(params: {
         if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 120);
       }
       const al = w.getAttribute("aria-label");
-      if (al) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
+      // A trigger's aria-label can merely echo its placeholder ("Select One
+      // Required"), which names no question — defer to the <label>/group lookup.
+      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
