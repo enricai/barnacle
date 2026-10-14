@@ -7634,12 +7634,22 @@ export function resolveRecurringNavigateToFacets(
   const unreachable = declared.filter(
     (facet) => facet.origin !== "step" && !reachable.includes(facet)
   );
-  if (unreachable.length === 0) return resolvedDeclared;
-  const aliased = unreachable.flatMap((facet) => {
+  // Every declared facet also owns the elements of its own kind in the code
+  // vocabulary, whether or not its declared literal recurs: a literal that
+  // recurs in one vocabulary (a hash slug, a quoted label) says nothing about
+  // the same facet's element in another (`WW;filterType=ship`).
+  const claimedLiterals = new Set<string>();
+  const aliased = declared.flatMap((facet) => {
+    if (facet.value.length === 0 && facet.origin === "step") return [];
     const literal = findKindKeyedLiteral(facet, actions);
     if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
-    return [{ ...facet, value: literal, keyedByKind: true }];
+    if (claimedLiterals.has(literal)) return [];
+    claimedLiterals.add(literal);
+    const known = [facet.value, ...(facet.literals ?? [])];
+    if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
+    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
   });
+  if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
   const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
   const withAliases = [...resolvedDeclared, ...aliased];
@@ -7674,7 +7684,6 @@ function findKindKeyedLiteral(
   actions: readonly ActionStep[]
 ): string | undefined {
   if (facet.kind === undefined || facet.kind.length === 0) return undefined;
-  const wanted = normalizeKind(facet.kind);
   const found = new Set<string>();
   for (const { capture } of actions) {
     const values = [
@@ -7683,7 +7692,7 @@ function findKindKeyedLiteral(
     ];
     for (const value of values) {
       const parsed = parseElementKind(value);
-      if (parsed !== undefined && normalizeKind(parsed.kind) === wanted) found.add(parsed.literal);
+      if (parsed !== undefined && kindsMatch(facet.kind, parsed.kind)) found.add(parsed.literal);
     }
   }
   return found.size === 1 ? [...found][0] : undefined;
@@ -9395,7 +9404,7 @@ export function matchFacetRecurrence(
       if (
         elementKind !== undefined &&
         isKindKeyed(facet) &&
-        normalizeKind(facet.kind!) !== normalizeKind(elementKind)
+        !kindsMatch(facet.kind!, elementKind)
       ) {
         return best;
       }
@@ -9436,6 +9445,18 @@ function parseElementKind(element: string): { literal: string; kind: string } | 
 
 function normalizeKind(kind: string): string {
   return deriveFacetKind(kind).replace(/\s+/g, "").replace(/s$/, "");
+}
+
+/**
+ * Whether a declared field's kind names an element's kind: equal after
+ * normalization, or the field's trailing word is the element kind (`sailDate`
+ * names a `date` element), so a field name that adds a qualifier still binds.
+ */
+function kindsMatch(facetKind: string, elementKind: string): boolean {
+  const element = normalizeKind(elementKind);
+  if (normalizeKind(facetKind) === element) return true;
+  const trailing = deriveFacetKind(facetKind).split(" ").pop() ?? "";
+  return element.length > 0 && normalizeKind(trailing) === element;
 }
 
 function isKindKeyed(facet: NavigateToFacetBinding): boolean {
