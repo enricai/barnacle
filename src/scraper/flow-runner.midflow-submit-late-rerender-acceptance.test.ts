@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -13,6 +14,10 @@ import type { Logger } from "@/types/logging";
  * be credited on attempt 1 — while the same shape as the final submit stays
  * uncredited.
  */
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({ advanced: false, reason: "no change" })),
+}));
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({
@@ -239,12 +244,9 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with late text-
     const outcome = await executeStepWithHealing(params(world, false, []));
 
     expect(outcome).toBe("completed");
-    const calls = vi.mocked(verifySubmitWithLLM).mock.calls;
-    for (const [arg] of calls) {
-      expect(arg.input.pageTitle).toBe("Sign In");
-      expect(arg.input.isFinalStep).toBe(false);
-      expect(arg.input.visibleText).toContain(RERENDERED_TEXT);
-    }
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    const calls = vi.mocked(verifyStepAdvancedWithLLM).mock.calls;
+    for (const [arg] of calls) expect(arg.input.afterText).toContain(RERENDERED_TEXT);
   });
 
   it("does not credit the same DOM-only change on the final submit", async () => {

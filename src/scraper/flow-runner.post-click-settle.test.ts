@@ -3,13 +3,20 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
-import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { settleAfterClick } from "@/scraper/click-settle";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({ verified: true, reason: "confirmation visible" })),
+}));
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({
+    advanced: true,
+    reason: "confirmation visible",
+  })),
 }));
 
 const MAX_MS = 15000;
@@ -94,7 +101,7 @@ function resolveXPath(root: HappyDomElement, xp: string): HappyDomElement | null
 
 describe("flow-runner post-click settle end-to-end (8s delayed re-render)", () => {
   it("settles through the delayed re-render and hands the judge the re-rendered text", async () => {
-    vi.mocked(verifySubmitWithLLM).mockClear();
+    vi.mocked(verifyStepAdvancedWithLLM).mockClear();
     const window = new Window({ url: BASE_URL });
     const document = window.document;
     document.body.innerHTML = `
@@ -200,10 +207,10 @@ describe("flow-runner post-click settle end-to-end (8s delayed re-render)", () =
 
     expect(rendered).toBe(true);
     expect(info.some((l) => l.includes("step 1/") && l.includes("succeeded"))).toBe(true);
-    const calls = vi.mocked(verifySubmitWithLLM).mock.calls;
+    const calls = vi.mocked(verifyStepAdvancedWithLLM).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     for (const [arg] of calls) {
-      expect(arg.input.visibleText).toContain(RERENDERED_TEXT);
+      expect(arg.input.afterText).toContain(RERENDERED_TEXT);
       expect(arg.input.stepInstruction).toBe("Click the button to continue");
     }
   });

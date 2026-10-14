@@ -2,9 +2,14 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({ advanced: false, reason: "no change" })),
+}));
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({
@@ -228,6 +233,7 @@ async function run(params: {
 describe.each(MARKUPS)("declared non-submit steps are never judged — %s", (_m, markup) => {
   beforeEach(() => {
     vi.mocked(verifySubmitWithLLM).mockClear();
+    vi.mocked(verifyStepAdvancedWithLLM).mockClear();
   });
 
   describe.each(STEPS)("%s", (_s, instruction) => {
@@ -249,6 +255,7 @@ describe.each(MARKUPS)("declared non-submit steps are never judged — %s", (_m,
         });
         expect(step1Verified).toBe(true);
         expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+        expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
         expect(lines.some((l) => l.includes("submit-judge-rejected"))).toBe(false);
       }
     );

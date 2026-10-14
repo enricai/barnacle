@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -13,6 +14,10 @@ import type { Logger } from "@/types/logging";
  * stale document title, an unchanged HTML size, a replaced clicked control,
  * a late body re-render, and a judge that rejects or is unavailable.
  */
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({ advanced: false, reason: "no change" })),
+}));
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({
@@ -310,6 +315,9 @@ describe("flow-runner mid-flow submit text-advance (no network, stale title, jud
       vi.mocked(verifySubmitWithLLM).mockResolvedValue(
         (sc.verdict === null ? null : { verified: false, reason: "x" }) as never
       );
+      vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue(
+        sc.verdict === null ? null : { advanced: false, reason: "x" }
+      );
       const world = buildWorld(sc);
       const p = {
         ...(params(world, false, []) as object),
@@ -326,6 +334,7 @@ describe("flow-runner mid-flow submit text-advance (no network, stale title, jud
 
   it("does not credit a tooltip-sized text change", async () => {
     vi.mocked(verifySubmitWithLLM).mockResolvedValue({ verified: false, reason: "x" } as never);
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({ advanced: false, reason: "x" });
     const world = buildWorld(noise);
     const p = {
       ...(params(world, false, []) as object),

@@ -39,11 +39,7 @@ Strictness rule for verified=true:
 - When ambiguous, set verified=false with a reason. Be strict, not lax — false positives here mean the engine thinks a submit succeeded when it didn't, and the candidate's application is lost.
 
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
-When verified=false, write a one-sentence reason citing what you'd need to see to be convinced.`;
-
-const NON_FINAL_STEP_RULE = `
-
-This step is NOT the flow's final submit — it is a mid-flow transition (for example creating an account at a store checkout or continuing past a newsletter signup step). The strictness rule above about success-confirmation signals does not apply. Instead, set verified=true when the page demonstrably advanced past the step: the visible text shows the next stage of the flow, or the step's intended result described by the STEP INSTRUCTION. Trust the visible text and the advanced page content over the document title, because a single-page app's title is not evidence and often stays stale. Set verified=false only if the page still shows the same step (or errors) after the click.`;
+When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
 const MAX_VISIBLE_TEXT_CHARS = 3000;
 
@@ -132,10 +128,7 @@ export async function verifySubmitWithLLM(params: {
   if (client === null) return null;
   const result = await callHaikuJudge({
     client,
-    systemPrompt:
-      input.isFinalStep === false
-        ? `${SUBMIT_VERIFY_SYSTEM_PROMPT}${NON_FINAL_STEP_RULE}`
-        : SUBMIT_VERIFY_SYSTEM_PROMPT,
+    systemPrompt: SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
     callType: CALL_TYPE_JUDGE_SUBMIT_VERIFY,

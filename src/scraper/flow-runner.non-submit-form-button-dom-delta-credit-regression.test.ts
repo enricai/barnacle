@@ -5,10 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
-const { verifySubmitWithLLM } = vi.hoisted(() => ({
+const { verifySubmitWithLLM, verifyStepAdvancedWithLLM } = vi.hoisted(() => ({
   verifySubmitWithLLM: vi.fn(),
+  verifyStepAdvancedWithLLM: vi.fn(),
 }));
 vi.mock("@/lib/llm/judges/verify-submit", () => ({ verifySubmitWithLLM }));
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({ verifyStepAdvancedWithLLM }));
 
 /**
  * Pins bugfix-003's primary-xpath-hit branch (distinct from the
@@ -232,6 +234,8 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
   it("does not judge a guardrailed mid-flow tab click and a guardrailed final step", async () => {
     verifySubmitWithLLM.mockReset();
     verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    verifyStepAdvancedWithLLM.mockReset();
+    verifyStepAdvancedWithLLM.mockResolvedValue({ advanced: false, reason: "no change" });
     const fixture = buildFixture(
       (defaults) => [
         {
@@ -253,13 +257,16 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
     const result = await runFlow(fixture);
 
     expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
     expect(result.lastStepIndex).toBe(1);
     expect(fixture.info.some((line) => line.includes("succeeded on attempt 1"))).toBe(true);
   });
 
-  it("control: a genuine submitStep still reaches the judge", async () => {
+  it("control: a genuine non-final submitStep reaches the step-advanced judge, not the final submit judge", async () => {
     verifySubmitWithLLM.mockReset();
     verifySubmitWithLLM.mockResolvedValue({ verified: false, reasoning: "no submit signal" });
+    verifyStepAdvancedWithLLM.mockReset();
+    verifyStepAdvancedWithLLM.mockResolvedValue({ advanced: false, reason: "no change" });
     const fixture = buildFixture((defaults) => [
       {
         instruction: "Click the 'Submit' button",
@@ -272,6 +279,7 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
 
     await runFlow(fixture).catch(() => undefined);
 
-    expect(verifySubmitWithLLM).toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).toHaveBeenCalled();
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
   });
 });

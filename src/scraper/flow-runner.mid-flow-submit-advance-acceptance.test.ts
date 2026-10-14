@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -22,6 +23,13 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
     reason: "order confirmation view visible",
     dom_signal: null,
     url_signal: null,
+  })),
+}));
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({
+    advanced: true,
+    reason: "order confirmation view visible",
   })),
 }));
 
@@ -215,6 +223,10 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
       verified: true,
       reason: "order confirmation view visible",
     } as never);
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: true,
+      reason: "order confirmation view visible",
+    });
   });
 
   it("credits a non-final click whose body re-renders ~8s late with no network, not as phantom", async () => {
@@ -236,6 +248,10 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
       verified: false,
       reason: "nothing changed",
     } as never);
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: false,
+      reason: "nothing changed",
+    });
     const world = buildWorld("Checkout", true);
 
     const outcome = await executeStepWithHealing(params(world, false, [])).catch(() => "threw");
@@ -258,13 +274,12 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
     const outcome = await executeStepWithHealing(params(world, false, [], "/orders"));
 
     expect(outcome).toBe("completed");
-    const calls = vi.mocked(verifySubmitWithLLM).mock.calls;
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    const calls = vi.mocked(verifyStepAdvancedWithLLM).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     for (const [arg] of calls) {
-      expect(arg.input.pageTitle).toBe("Cart");
-      expect(arg.input.isFinalStep).toBe(false);
       expect(arg.input.stepInstruction).toBe(STEP);
-      expect(arg.input.visibleText).toContain(RERENDERED_TEXT);
+      expect(arg.input.afterText).toContain(RERENDERED_TEXT);
     }
   });
 
@@ -283,5 +298,6 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
     const calls = vi.mocked(verifySubmitWithLLM).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     for (const [arg] of calls) expect(arg.input.isFinalStep).toBe(true);
+    expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
   });
 });
