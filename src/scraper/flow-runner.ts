@@ -11440,7 +11440,8 @@ export async function executeStepWithHealing(params: {
       params.abortSignal?.throwIfAborted();
     }
 
-    const pagesBeforeAttempt = stagehand.context.pages();
+    // Hand-built sessions in unit tests carry no browser context; there is no tab to follow.
+    const pagesBeforeAttempt = stagehand.context?.pages() ?? [];
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -12529,7 +12530,9 @@ export async function executeStepWithHealing(params: {
       continue;
     }
 
-    const followedPage = await followNewPage(stagehand.context, page, pagesBeforeAttempt);
+    const followedPage = stagehand.context
+      ? await followNewPage(stagehand.context, page, pagesBeforeAttempt)
+      : page;
     if (followedPage !== page) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} click opened a new page; following it`
