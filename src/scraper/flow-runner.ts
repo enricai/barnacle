@@ -13486,14 +13486,13 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
-          const retryMidFlowSubmit =
-            isMidFlowSubmitShapedStep({
-              step,
-              submitStep,
-              isFinalStep,
-              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-              elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-            });
+          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+          });
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
