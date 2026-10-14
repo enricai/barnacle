@@ -1679,8 +1679,10 @@ export function isMidFlowSubmitShapedStep(params: {
   submitStep: boolean;
   isFinalStep: boolean;
   flowHasSubmitSemantics: boolean;
+  elementSubmitShaped?: boolean;
 }): boolean {
-  return !params.isFinalStep && isStepSubmitShaped(params);
+  if (params.isFinalStep) return false;
+  return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
 /**
@@ -12675,7 +12677,13 @@ export async function executeStepWithHealing(params: {
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
     // ng-invalid marker count grew, or when the landed destination is implausible
     // for the step (see isClickViewSwapVerified's doc comment).
-    const midFlowSubmit = stepIsMidFlowSubmit || (!isFinalStep && resolvedElementIsSubmitShaped);
+    const midFlowSubmit = isMidFlowSubmitShapedStep({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      elementSubmitShaped: resolvedElementIsSubmitShaped,
+    });
     // An element-inferred mid-flow submit joins the exemption the step-derived
     // one already got: a click that never left its URL did not bounce to a gate.
     const midFlowDestinationPlausible =
@@ -13484,8 +13492,8 @@ export async function executeStepWithHealing(params: {
               submitStep,
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            }) ||
-            (!isFinalStep && retryResolvedElementIsSubmitShaped);
+              elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+            });
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
