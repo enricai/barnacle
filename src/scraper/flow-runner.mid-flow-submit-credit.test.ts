@@ -19,20 +19,31 @@ describe("isClickViewSwapVerified mid-flow submit", () => {
     expect(isClickViewSwapVerified(BASE)).toBe(false);
   });
 
-  it("rejects weak signals even with the flag", () => {
-    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, bytesDelta: 600 })).toBe(false);
+  it("credits a text-only advance with no byte delta", () => {
+    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, bytesDelta: 0 })).toBe(true);
+  });
+
+  it("credits an advance that replaced the clicked control", () => {
+    expect(
+      isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, clickedElementStillPresent: false })
+    ).toBe(true);
+  });
+
+  it("rejects when the text is unchanged or the advance judgement is negative", () => {
     expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, textChanged: false })).toBe(
+      false
+    );
+    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, pageAdvanced: false })).toBe(
       false
     );
   });
 
-  it.each([
-    { invalidMarkerDelta: 1 },
-    { clickedElementStillPresent: false },
-    { destinationPlausible: false },
-  ])("vetoes %o even with the flag", (veto) => {
-    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, ...veto })).toBe(false);
-  });
+  it.each([{ invalidMarkerDelta: 1 }, { destinationPlausible: false }])(
+    "vetoes %o even with the flag",
+    (veto) => {
+      expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, ...veto })).toBe(false);
+    }
+  );
 });
 
 describe("isMidFlowSubmitShapedStep", () => {

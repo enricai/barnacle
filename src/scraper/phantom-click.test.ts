@@ -301,16 +301,48 @@ describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
     expect(classifyPhantomClick(makeAttempt(advanced))).toBe("phantom");
   });
 
-  it("stays phantom on a trivial byte delta or unchanged signature", () => {
-    const trivial = { ...advanced, post: { ...advanced.post, bodyHtmlLength: 31000 } };
-    expect(classifyPhantomClick(makeAttempt({ ...trivial, isMidFlowSubmitStep: true }))).toBe(
-      "phantom"
+  it("credits a text swap with an unchanged html size", () => {
+    const swap = {
+      ...advanced,
+      post: {
+        ...advanced.post,
+        bodyHtmlLength: advanced.pre.bodyHtmlLength,
+        visibleTextSignature: `996:${"b".repeat(200)}`,
+      },
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...swap, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
     );
+  });
+
+  it("stays phantom on an unchanged signature or a small mostly-shared text delta", () => {
     const same = {
       ...advanced,
       post: { ...advanced.post, visibleTextSignature: advanced.pre.visibleTextSignature },
     };
     expect(classifyPhantomClick(makeAttempt({ ...same, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+    const tooltip = {
+      pre: {
+        ...advanced.pre,
+        visibleTextSignature: "300:Create your account enter your email and password below",
+      },
+      post: {
+        ...advanced.post,
+        visibleTextSignature: "320:Create your account enter your email and password below",
+      },
+      isSubmitShapedStep: true,
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...tooltip, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+    const reflow = {
+      ...tooltip,
+      pre: { ...tooltip.pre, visibleTextSignature: "77:  Details       " },
+      post: { ...tooltip.post, visibleTextSignature: "47:  Details" },
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...reflow, isMidFlowSubmitStep: true }))).toBe(
       "phantom"
     );
   });

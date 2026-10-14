@@ -210,11 +210,17 @@ export type PhantomClickVerdict =
  */
 export const TRIVIAL_DOM_DELTA_BYTES = 500;
 
-/** Minimum body-HTML byte delta for a mid-flow submit to count as a page advance. */
-export const PAGE_ADVANCE_MIN_BYTES_DELTA = 1000;
-
 /** Minimum visible-text length change for a mid-flow submit to count as a page advance. */
 export const PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA = 100;
+
+/** Relative visible-text length change that also counts as an advance on a short page. */
+export const PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO = 0.3;
+
+/** Floor under the relative rule so a tooltip on a tiny page is not an advance. */
+export const PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA = 30;
+
+/** Word-set similarity below which the visible-text head counts as replaced. */
+export const PAGE_ADVANCE_MAX_HEAD_SIMILARITY = 0.5;
 
 function textLengthOf(signature: string | undefined): number | null {
   if (signature === undefined) return null;
@@ -222,25 +228,49 @@ function textLengthOf(signature: string | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function textHeadWords(signature: string): Set<string> {
+  const head = signature.slice(signature.indexOf(":") + 1).toLowerCase();
+  return new Set(head.split(/\W+/).filter((w) => w !== ""));
+}
+
+function headWordSimilarity(pre: string, post: string): number {
+  const preWords = textHeadWords(pre);
+  const postWords = textHeadWords(post);
+  const union = new Set([...preWords, ...postWords]);
+  if (union.size === 0) return 1;
+  const shared = [...preWords].filter((w) => postWords.has(w)).length;
+  return shared / union.size;
+}
+
 /**
  * Decides whether the page demonstrably advanced (a wizard step swapped
  * content) from pre/post snapshots alone, so a network-free, URL-stable
- * transition is still credited. Requires BOTH a substantial visible-text
- * length change and a significant body-HTML delta, and an actually changed
- * text signature; either alone is reflow/validation noise.
+ * transition is still credited. Visible text is the evidence: a wizard swap
+ * can leave the HTML size nearly unchanged (same-size markup, different
+ * copy), so byte delta is deliberately not required. The text must have
+ * moved substantially — a large absolute or relative length change, or a
+ * head whose words were mostly replaced — so a tooltip or inline validation
+ * line (small, mostly-shared text) is not an advance.
  */
 export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
-  if (pre.visibleTextSignature === undefined || post.visibleTextSignature === undefined) {
-    return false;
-  }
-  if (pre.visibleTextSignature === post.visibleTextSignature) return false;
-  const preLen = textLengthOf(pre.visibleTextSignature);
-  const postLen = textLengthOf(post.visibleTextSignature);
+  const preSig = pre.visibleTextSignature;
+  const postSig = post.visibleTextSignature;
+  if (preSig === undefined || postSig === undefined || preSig === postSig) return false;
+  const preLen = textLengthOf(preSig);
+  const postLen = textLengthOf(postSig);
   if (preLen === null || postLen === null) return false;
-  return (
-    Math.abs(postLen - preLen) >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA &&
-    Math.abs(post.bodyHtmlLength - pre.bodyHtmlLength) >= PAGE_ADVANCE_MIN_BYTES_DELTA
-  );
+  const lengthDelta = Math.abs(postLen - preLen);
+  if (lengthDelta >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA) return true;
+  const similarity = headWordSimilarity(preSig, postSig);
+  // Identical head words mean whitespace/layout reflow, not new copy.
+  if (similarity === 1) return false;
+  if (
+    lengthDelta >= PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA &&
+    lengthDelta / Math.max(preLen, 1) >= PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO
+  ) {
+    return true;
+  }
+  return similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY;
 }
 
 /**

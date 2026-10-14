@@ -95,8 +95,8 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
+  hasPageAdvanced,
   isPlausibleStepDestination,
-  PAGE_ADVANCE_MIN_BYTES_DELTA,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
@@ -2043,10 +2043,13 @@ export function isDomOnlyAdvanceVerified(params: {
  * are unaffected.
  *
  * **Mid-flow submit:** `midFlowSubmit` (see {@link isMidFlowSubmitShapedStep})
- * lets a submit-shaped, non-final step be credited when the text changed and
- * the byte delta clears the shared page-advance threshold, with the same
- * invalid-marker, element-presence and destination vetoes. Omitted, the
- * submit-shaped rejection is unchanged.
+ * lets a submit-shaped, non-final step be credited when `pageAdvanced` (the
+ * shared {@link hasPageAdvanced} judgement of the visible text; defaults to
+ * `textChanged` when omitted) holds — byte delta is not required, since a
+ * wizard swap can keep the HTML size — with the same invalid-marker and
+ * destination vetoes. The clicked control being gone is NOT a veto here: a
+ * wizard advance normally replaces the button along with the page. Omitted,
+ * the submit-shaped rejection is unchanged.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -2060,6 +2063,7 @@ export function isClickViewSwapVerified(params: {
   resolvedElementIsSubmitShaped?: boolean;
   destinationPlausible?: boolean;
   midFlowSubmit?: boolean;
+  pageAdvanced?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2075,13 +2079,14 @@ export function isClickViewSwapVerified(params: {
     resolvedElementIsSubmitShaped = false,
     destinationPlausible,
     midFlowSubmit = false,
+    pageAdvanced = textChanged,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   if (destinationPlausible === false) return false;
   if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) {
     if (isAdvanceWithPattern) return false;
-    if (invalidMarkerDelta > 0 || !clickedElementStillPresent) return false;
-    return textChanged && Math.abs(bytesDelta) >= PAGE_ADVANCE_MIN_BYTES_DELTA;
+    if (invalidMarkerDelta > 0) return false;
+    return textChanged && pageAdvanced;
   }
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
@@ -12486,6 +12491,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible,
       midFlowSubmit,
+      pageAdvanced: hasPageAdvanced(pre, post),
     });
     if (
       clickViewSwapVerified === false &&
@@ -12807,7 +12813,15 @@ export async function executeStepWithHealing(params: {
         captureFn,
       });
 
-      if (judgeVerdict === null) {
+      // A mid-flow transition is credited on the page's own demonstrable
+      // advance (visible text swapped); the judge's final-submit-flavoured
+      // view of a stale title or missing network must not undo it.
+      const midFlowAdvanceCredited = midFlowSubmit && clickViewSwapVerified;
+      if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
+        logger.info(
+          `mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
+        );
+      } else if (judgeVerdict === null) {
         // Bedrock-only deployment or judge call failed entirely. Fall back
         // to the DOM-state probe + requireSubmitEndpointMatch policy: if a
         // submitted-state selector matched and the site didn't require
@@ -13443,7 +13457,13 @@ export async function executeStepWithHealing(params: {
               captureFn,
             });
 
-            if (judgeVerdict === null) {
+            const retryMidFlowAdvanceCredited =
+              retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost);
+            if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
+              logger.info(
+                `n+16 fallback mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
+              );
+            } else if (judgeVerdict === null) {
               // Bedrock-only or judge failed; fall back to DOM-state + policy.
               if (!requireSubmitEndpointMatch && domSubmittedMatch !== null) {
                 logger.info(
