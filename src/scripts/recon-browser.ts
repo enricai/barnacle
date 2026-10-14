@@ -50,14 +50,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
 import { format, formatISO } from "date-fns";
 import { type Element, type HTMLInputElement, type HTMLTextAreaElement, Window } from "happy-dom";
 import { z } from "zod/v4";
-
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
@@ -137,6 +135,7 @@ import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolu
 import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
+import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
@@ -2867,24 +2866,18 @@ async function main(): Promise<void> {
           return new URL(url).origin;
         }
       };
-      const captureStoppers: (() => void)[] = [];
-      const wireCaptureOn = (target: typeof page): void => {
-        captureStoppers.push(
-          wireNetworkCapture(
-            target,
-            counter,
-            signalCounter,
-            recentCaptures,
-            recentCaptureMeta,
-            () => currentPhase,
-            currentPageOrigin
-          )
-        );
-      };
-      const stopCapture = (): void => {
-        for (const stop of captureStoppers) stop();
-      };
-      wireCaptureOn(page);
+      const capture = createCaptureRebinder(page, (target) =>
+        wireNetworkCapture(
+          target,
+          counter,
+          signalCounter,
+          recentCaptures,
+          recentCaptureMeta,
+          () => currentPhase,
+          currentPageOrigin
+        )
+      );
+      const stopCapture = capture.stopAll;
 
       logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
       // A navigation wait that never resolves must not discard the run. Ad-heavy
@@ -3056,7 +3049,7 @@ async function main(): Promise<void> {
                   onPageAdopted: (adopted) => {
                     if (adopted === page) return;
                     page = adopted;
-                    wireCaptureOn(adopted);
+                    capture.adopt(adopted);
                   },
                   abortSignal: session.deathAbortSignal,
                   frameTarget,
