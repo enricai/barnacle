@@ -2,9 +2,14 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: vi.fn(async () => ({ advanced: false, reason: "no change" })),
+}));
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({
@@ -182,6 +187,7 @@ describe.each(MARKUPS)(
   (_name, markup) => {
     beforeEach(() => {
       vi.mocked(verifySubmitWithLLM).mockClear();
+      vi.mocked(verifyStepAdvancedWithLLM).mockClear();
     });
 
     const run = async (
@@ -225,6 +231,7 @@ describe.each(MARKUPS)(
       const { step1Verified, info, warn } = await run(true, false);
       expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
 
@@ -235,6 +242,7 @@ describe.each(MARKUPS)(
       const { step1Verified, info, warn } = await run(false, true);
       expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
 
@@ -242,6 +250,7 @@ describe.each(MARKUPS)(
       const { step1Verified, info, warn } = await run(false, false);
       expect(step1Verified).toBe(true);
       expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
       expect(rejected([...info, ...warn])).toBe(false);
     });
   }
