@@ -77,7 +77,7 @@ describe("verifySubmitWithLLM", () => {
   });
 
   it("final step: a very long reason is not rejected", async () => {
-    const parsedOutput = { verified: true, reason: "confirmation banner shown. ".repeat(400) };
+    const parsedOutput = { verified: false, reason: "no confirmation signal. ".repeat(400) };
     const client = fakeClient(parsedOutput);
     const result = await verifySubmitWithLLM({
       client,

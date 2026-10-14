@@ -166,7 +166,13 @@ describe("callHaikuJudge — maxTokens", () => {
 
 describe("callHaikuJudge — long prose fields", () => {
   it("returns parsed non-null for a real schema with a very long reason", async () => {
-    const verdict = { verified: true, reason: "long rationale. ".repeat(500) };
+    const verdict = {
+      verified: true as const,
+      network_signal: null,
+      dom_signal: null,
+      url_signal: null,
+      rationale: "long rationale. ".repeat(500),
+    };
     expect(SUBMIT_VERDICT_SCHEMA.safeParse(verdict).success).toBe(true);
     const client = fakeClient({ parsedOutput: verdict, rawText: JSON.stringify(verdict) });
     const result = await callHaikuJudge({
