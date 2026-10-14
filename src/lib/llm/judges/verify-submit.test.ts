@@ -77,6 +77,35 @@ describe("verifySubmitWithLLM", () => {
     expect(system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(true);
   });
 
+  it("non-final step: stale title contradicting visible text still yields verified=true", async () => {
+    const parsedOutput = { verified: true, reason: "visible text shows next stage" };
+    const client = fakeClient(parsedOutput);
+    const result = await verifySubmitWithLLM({
+      client,
+      input: {
+        ...INPUT,
+        pageTitle: "Sign In",
+        stepInstruction: "Click Create account",
+        isFinalStep: false,
+        visibleText: "Shipping address",
+      },
+    });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    expect(result).toEqual(parsedOutput);
+    expect(args.messages[0]?.content).toContain("PAGE TITLE: Sign In");
+    expect(args.messages[0]?.content).toContain("Shipping address");
+    expect(args.system).toContain("title is not evidence");
+  });
+
+  it("final step: keeps confirmation-signal requirement and omits the title relaxation", async () => {
+    const { system } = await captured({ isFinalStep: true, pageTitle: "Sign In" });
+    expect(system).toContain("strong DOM/URL/title signal");
+    expect(system).not.toContain("title is not evidence");
+  });
+
   it("final step: strict rule only, no non-final rule", async () => {
     const { system } = await captured({ stepInstruction: "Place order", isFinalStep: true });
     expect(system).toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
