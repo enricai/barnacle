@@ -668,11 +668,14 @@ const PROMPT_VALUE_SELECTORS = [
 ].join(",");
 /**
  * The widget-kit's empty-state value text ("0 items selected") — a filled
- * widget's value node reads the chosen option instead. Matched
+ * widget's value node reads the chosen option instead — as is a generic
+ * placeholder prompt ("Select One", "Choose a country") a trigger button shows
+ * until a value is picked. Matched
  * case-insensitively as a whole phrase so a non-empty selection ("1 item
  * selected, …") is correctly read as filled.
  */
-const PROMPT_EMPTY_VALUE_RX = /^\s*0\s+items?\s+selected\s*$/i;
+const PROMPT_EMPTY_VALUE_RX =
+  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,3}\s*(?:\.{3}|…)?)\s*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
  * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
@@ -746,7 +749,7 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
   if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-  if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
+  if (w.tagName === "BUTTON" && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
