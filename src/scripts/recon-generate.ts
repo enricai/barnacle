@@ -14845,7 +14845,7 @@ export function assertRequiredUrlFieldsReferenced(
  */
 function stripNonCodeText(code: string): string {
   const out: string[] = [];
-  // Each entry is the brace depth at which an open template literal resumes.
+  // Non-negative: brace depth at which a template literal's text resumes; negative: -(depth+1) of an open `${`.
   const templateDepths: number[] = [];
   let depth = 0;
   let i = 0;
@@ -14860,8 +14860,8 @@ function stripNonCodeText(code: string): string {
         templateDepths.pop();
         i++;
       } else if (ch === "$" && next === "{") {
+        templateDepths.push(-(depth + 1));
         depth++;
-        templateDepths.push(-1);
         out.push("{");
         i += 2;
       } else i++;
@@ -14884,7 +14884,7 @@ function stripNonCodeText(code: string): string {
       if (ch === "{") depth++;
       if (ch === "}") {
         depth--;
-        if (templateDepths[templateDepths.length - 1] === -1) templateDepths.pop();
+        if (templateDepths[templateDepths.length - 1] === -(depth + 1)) templateDepths.pop();
       }
       out.push(ch ?? "");
       i++;

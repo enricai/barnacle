@@ -42,3 +42,14 @@ describe("unreferencedDeclaredPayloadFields structural matching", () => {
     ).toEqual([]);
   });
 });
+
+describe("unreferencedDeclaredPayloadFields nested braces", () => {
+  it("keeps scanning code after a block inside a template expression", () => {
+    const code = "go(`a ${[1].map((x) => { return x; })} b`); read(payload.Facet);";
+    expect(
+      unreferencedDeclaredPayloadFields("Facet: z.string(),", code, [
+        { step: "pick", payloadField: "Facet" },
+      ])
+    ).toEqual([]);
+  });
+});
