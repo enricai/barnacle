@@ -38,6 +38,9 @@ const testLogger = {
 const STEP = "confirm the shipping address and continue";
 const XPATH = "xpath=/html[1]/body[1]/div[1]/button[1]";
 
+const PAGE_BEFORE = "996:Skip to main content|Shipping|Review your address|Continue";
+const PAGE_AFTER = "588:Skip to main content|Delivery options|Choose a speed";
+
 let lateSignalMs = 6000;
 
 function makePage(
@@ -49,11 +52,17 @@ function makePage(
     fallbackClicks: number;
     escalatedClicks: number;
     deepRankProbes: number;
-  }
+  },
+  advance: { enabled: boolean } = { enabled: false }
 ): Page {
   return {
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
       const src = String(expr);
+      if (advance.enabled && src.includes("outerHTML") && src.includes("values")) {
+        return clock.fallbackClicks > 0
+          ? { html: 29300, text: PAGE_AFTER, values: "", state: "0:0" }
+          : { html: 31284, text: PAGE_BEFORE, values: "", state: "0:0" };
+      }
       if (src.includes("ranked.sort")) clock.deepRankProbes += 1;
       if (src.includes("XPathResult.FIRST_ORDERED_NODE_TYPE") && src.includes('kind: "click"')) {
         clock.clickAt = clock.now;
@@ -92,11 +101,17 @@ function makePage(
   } as unknown as Page;
 }
 
-async function run(): Promise<{
+interface RunOptions {
+  midFlowAdvance?: boolean;
+  isFinalStep?: boolean;
+}
+
+async function run(options: RunOptions = {}): Promise<{
   attempts: AttemptRecord[];
   threw: boolean;
   clock: { fallbackClicks: number; escalatedClicks: number; deepRankProbes: number };
 }> {
+  const midFlowAdvance = options.midFlowAdvance === true;
   const urls = { current: "https://example.com/checkout/shipping" };
   const counter = { n: 0 };
   const clock = {
@@ -109,15 +124,15 @@ async function run(): Promise<{
   const failures: AttemptRecord[][] = [];
   const threw = await executeStepWithHealing({
     stagehand: {} as unknown as Stagehand,
-    page: makePage(urls, counter, clock),
+    page: makePage(urls, counter, clock, { enabled: midFlowAdvance }),
     step: STEP,
     optional: false,
     upload: false,
-    submitStep: false,
+    submitStep: midFlowAdvance,
     flowHasSubmitSemantics: true,
     stepIndex: 0,
-    totalSteps: () => 1,
-    isFinalStep: true,
+    totalSteps: () => (options.isFinalStep === false ? 2 : 1),
+    isFinalStep: options.isFinalStep ?? true,
     phase: "flow",
     signalCounter: counter,
     recentCaptures: [],
@@ -129,7 +144,7 @@ async function run(): Promise<{
     submitEndpointPattern: null,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,
-    advanceTransitionBodyPattern: "TransitionWorklet",
+    advanceTransitionBodyPattern: midFlowAdvance ? null : "TransitionWorklet",
     successUrlFragments: [],
     successPageTitleHints: [],
     ownBackendHostnames: [],
@@ -175,6 +190,27 @@ describe("flow-runner n+16 fallback — slow click settles before the retry snap
   it("control: with no signal ever arriving the fallback is not credited", async () => {
     lateSignalMs = Number.POSITIVE_INFINITY;
     const { threw } = await run();
+    expect(threw).toBe(true);
+  });
+
+  it("credits a mid-flow submit whose page advanced with no network, with a single click", async () => {
+    lateSignalMs = Number.POSITIVE_INFINITY;
+    const { attempts, threw, clock } = await run({ midFlowAdvance: true, isFinalStep: false });
+    expect(threw).toBe(false);
+    expect(attempts).toEqual([]);
+    expect(clock.fallbackClicks).toBe(1);
+    expect(clock.escalatedClicks).toBe(1);
+    expect(clock.deepRankProbes).toBe(0);
+    const logs = vi
+      .mocked(testLogger.info)
+      .mock.calls.concat(vi.mocked(testLogger.warn).mock.calls)
+      .map((c) => String(c[0]));
+    expect(logs.some((l) => l.includes("phantom-click-exhausted"))).toBe(false);
+  });
+
+  it("control: the same DOM change on the final step is not credited via DOM alone", async () => {
+    lateSignalMs = Number.POSITIVE_INFINITY;
+    const { threw } = await run({ midFlowAdvance: true, isFinalStep: true });
     expect(threw).toBe(true);
   });
 });
