@@ -46,6 +46,55 @@ describe("isClickViewSwapVerified mid-flow submit", () => {
   );
 });
 
+describe("isClickViewSwapVerified mid-flow submit with an unreported gesture", () => {
+  const advance = { ...BASE, midFlowSubmit: true, bytesDelta: 0 };
+
+  it("credits a successful act that listed no resolved action", () => {
+    expect(isClickViewSwapVerified({ ...advance, resolvedAction: null, actSucceeded: true })).toBe(
+      true
+    );
+  });
+
+  it("does not credit an act that did not succeed", () => {
+    expect(isClickViewSwapVerified({ ...advance, resolvedAction: null })).toBe(false);
+  });
+
+  it("credits a non-click, non-state-class method but not a state-class one", () => {
+    expect(isClickViewSwapVerified({ ...advance, resolvedAction: { method: "press" } })).toBe(true);
+    expect(isClickViewSwapVerified({ ...advance, resolvedAction: { method: "fill" } })).toBe(false);
+  });
+
+  it("keeps the vetoes when the action is unreported", () => {
+    expect(
+      isClickViewSwapVerified({
+        ...advance,
+        resolvedAction: null,
+        actSucceeded: true,
+        destinationPlausible: false,
+      })
+    ).toBe(false);
+    expect(
+      isClickViewSwapVerified({
+        ...advance,
+        resolvedAction: null,
+        actSucceeded: true,
+        textChanged: false,
+      })
+    ).toBe(false);
+  });
+
+  it("never credits an unreported action on a non-mid-flow step", () => {
+    expect(
+      isClickViewSwapVerified({
+        ...advance,
+        midFlowSubmit: false,
+        resolvedAction: null,
+        actSucceeded: true,
+      })
+    ).toBe(false);
+  });
+});
+
 describe("isMidFlowSubmitShapedStep", () => {
   const step = { step: "Click Create Account", flowHasSubmitSemantics: true };
 

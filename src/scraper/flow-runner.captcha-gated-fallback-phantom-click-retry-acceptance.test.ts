@@ -40,6 +40,7 @@ const testLogger = {
 
 const REVIEW_URL = "https://forms.example.com/apply/review";
 const CONFIRMATION_URL = "https://forms.example.com/apply/confirmation";
+const SWAPPED_TEXT_LENGTH = 400;
 
 /**
  * Fake application-form DOM + Stagehand `Page`. The rank-submit-candidates
@@ -48,8 +49,14 @@ const CONFIRMATION_URL = "https://forms.example.com/apply/confirmation";
  * runner-up (deepIndex 1) flips `page.url()` — the top pick (deepIndex 0)
  * is a phantom: it reports `clicked: true` with zero observable effect.
  */
-function makeFakePage(): { page: Page; runnerUpClicked: { n: number } } {
+function makeFakePage(options: { topPickSwapsText?: boolean } = {}): {
+  page: Page;
+  runnerUpClicked: { n: number };
+  clicks: number[];
+} {
   const runnerUpClicked = { n: 0 };
+  const clicks: number[] = [];
+  const textSwapped = { value: false };
 
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
     const src = String(expr);
@@ -66,15 +73,21 @@ function makeFakePage(): { page: Page; runnerUpClicked: { n: number } } {
       ];
     }
     if (src.includes("deepElements") && src.includes("clicked: true")) {
-      if (src.includes("all[1]")) runnerUpClicked.n += 1;
+      const isRunnerUp = src.includes("all[1]");
+      clicks.push(isRunnerUp ? 1 : 0);
+      if (isRunnerUp) runnerUpClicked.n += 1;
+      else if (options.topPickSwapsText) textSwapped.value = true;
       return { clicked: true };
     }
+    if (src.includes("b.outerHTML"))
+      return textSwapped.value
+        ? { html: 0, text: `${SWAPPED_TEXT_LENGTH}:Thanks for registering` }
+        : { html: 0, text: "0:" };
     if (src.includes("dispatchEvent")) return undefined;
     if (src.includes("getAttribute")) {
       return { siteKey: "10000000-ffff-ffff-ffff-000000000001", isInvisible: true };
     }
     if (src === "navigator.userAgent") return "test-agent/1.0";
-    if (src.includes("outerHTML")) return { html: 0, text: "0:" };
     if (src.includes("isInvalid(el)")) return 0;
     return null;
   });
@@ -83,6 +96,9 @@ function makeFakePage(): { page: Page; runnerUpClicked: { n: number } } {
     evaluate,
     url: () => (runnerUpClicked.n > 0 ? CONFIRMATION_URL : REVIEW_URL),
     title: vi.fn().mockResolvedValue(""),
+    getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+    mainFrameId: () => "main",
+    sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -92,7 +108,28 @@ function makeFakePage(): { page: Page; runnerUpClicked: { n: number } } {
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
   } as unknown as Page;
 
-  return { page, runnerUpClicked };
+  return { page, runnerUpClicked, clicks };
+}
+
+/**
+ * Stagehand whose `act()` resolves nothing (the "unresolved" verdict), which
+ * escalates a submit-shaped step straight to the deep-submit-locator rather
+ * than the captcha-gated fallback.
+ */
+function makeUnresolvedStagehand(): Stagehand {
+  return {
+    act: vi.fn().mockResolvedValue({
+      success: false,
+      message: "no actionable element found",
+      actionDescription: "could not resolve Register",
+      actions: [{ selector: "button#register", description: "Register", method: "click" }],
+    }),
+    observe: vi
+      .fn()
+      .mockResolvedValue([
+        { selector: "button#register", description: "Register", method: "click" },
+      ]),
+  } as unknown as Stagehand;
 }
 
 function baseParams(
@@ -164,5 +201,48 @@ describe("flow-runner/executeStepWithHealing — captcha-gated fallback phantom-
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("navigation to a new origin/path confirmed the advance")
     );
+  });
+
+  it("credits a mid-flow Register submit whose top pick swapped the page text with unchanged html size, without clicking the runner-up", async () => {
+    const { page, runnerUpClicked, clicks } = makeFakePage({ topPickSwapsText: true });
+    const trajectory: {
+      stepIndex: number;
+      verifiedBy: AttemptRecord["verifiedBy"];
+      targetId?: string;
+    }[] = [];
+
+    const result = await executeStepWithHealing({
+      ...baseParams(page, makeUnresolvedStagehand(), trajectory),
+      step: "Click Register to create the account",
+      isFinalStep: false,
+      captchaGated: false,
+    });
+
+    expect(result).toBe("completed");
+    expect(runnerUpClicked.n).toBe(0);
+    expect(clicks).toEqual([0]);
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("phantom-clicked; retrying runner-up")
+    );
+  });
+
+  it("does not credit the same text swap on the final step via DOM alone, and retries the runner-up", async () => {
+    const { page, runnerUpClicked } = makeFakePage({ topPickSwapsText: true });
+    const trajectory: {
+      stepIndex: number;
+      verifiedBy: AttemptRecord["verifiedBy"];
+      targetId?: string;
+    }[] = [];
+
+    const result = await executeStepWithHealing({
+      ...baseParams(page, makeUnresolvedStagehand(), trajectory),
+      step: "Click Register to create the account",
+      isFinalStep: true,
+      captchaGated: false,
+    });
+
+    expect(runnerUpClicked.n).toBeGreaterThan(0);
+    expect(result).toBe("completed");
+    expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "url" }]);
   });
 });

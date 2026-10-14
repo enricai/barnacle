@@ -249,6 +249,60 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with late text-
     for (const [arg] of calls) expect(arg.input.afterText).toContain(RERENDERED_TEXT);
   });
 
+  it("credits the step when the header flips immediately and the body re-renders a few seconds later", async () => {
+    const world = buildWorld("Sign up");
+    vi.mocked(testLogger.info).mockClear();
+    vi.mocked(testLogger.warn).mockClear();
+    const trajectory: unknown[] = [];
+
+    const outcome = await executeStepWithHealing(params(world, false, trajectory));
+
+    expect(outcome).toBe("completed");
+    expect(world.state.rendered).toBe(true);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(world.counter.n).toBe(0);
+    expect(trajectory).toHaveLength(1);
+    const logs = vi
+      .mocked(testLogger.info)
+      .mock.calls.concat(vi.mocked(testLogger.warn).mock.calls)
+      .map((c) => String(c[0]));
+    expect(logs.some((l) => /phantom|replan/i.test(l))).toBe(false);
+  });
+
+  it("does not hang the step on a stale document title: title stays 'Sign In' yet the step is credited", async () => {
+    const world = buildWorld("Sign In");
+    const trajectory: unknown[] = [];
+
+    const outcome = await executeStepWithHealing(params(world, false, trajectory));
+
+    expect(outcome).toBe("completed");
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(trajectory).toHaveLength(1);
+    expect(await world.page.title()).toBe("Sign In");
+  });
+
+  it("does not credit a genuine no-op click", async () => {
+    vi.mocked(verifySubmitWithLLM).mockResolvedValue({
+      verified: false,
+      reason: "nothing changed",
+    } as never);
+    const world = buildWorld("Sign up");
+    world.act.mockImplementation(async () => ({
+      success: true,
+      message: "clicked",
+      actionDescription: "clicked",
+      actions: [],
+    }));
+    const trajectory: unknown[] = [];
+
+    const outcome = await executeStepWithHealing(params(world, false, trajectory)).catch(
+      () => "threw"
+    );
+
+    expect(outcome).not.toBe("completed");
+    expect(trajectory).toHaveLength(0);
+  });
+
   it("does not credit the same DOM-only change on the final submit", async () => {
     vi.mocked(verifySubmitWithLLM).mockResolvedValue({
       verified: false,

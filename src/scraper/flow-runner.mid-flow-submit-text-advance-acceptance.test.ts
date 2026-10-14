@@ -218,8 +218,48 @@ function params(
   } as never;
 }
 
+const REPORT_STEP =
+  "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
+
 const long = (s: string, n: number) => `<p>${s.repeat(n)}</p>`;
 const scenarios: Scenario[] = [
+  {
+    name: "credits the step: report step, header flip + 41% shrink, stale title",
+    step: REPORT_STEP,
+    submitStep: true,
+    initial: `<div><h1 id="hdr">Sign In</h1><div id="out">${long("Welcome back please enter credentials. ", 20)}</div><button id="theControl" type="submit">Create Account</button></div>`,
+    mutate: (d) => {
+      byId(d, "hdr").textContent = "Creating your account";
+      byId(d, "out").innerHTML = long("Welcome back please enter credentials. ", 12);
+    },
+  },
+  {
+    name: "credits the mid-flow step for a different page transition (different text, growth instead of shrink, different stale title)",
+    step: REPORT_STEP,
+    submitStep: true,
+    title: "Join Now",
+    initial: `<div><h1 id="hdr">Join</h1><div id="out"><p>Short</p></div><button id="theControl" type="submit">Create Account</button></div>`,
+    mutate: (d) => {
+      byId(d, "hdr").textContent = "Check your inbox";
+      byId(d, "out").innerHTML = long("A confirmation code was sent to your address. ", 10);
+    },
+  },
+  {
+    name: "credits the report step when body re-renders late with stale title",
+    step: REPORT_STEP,
+    submitStep: true,
+    title: "Sign In",
+    initial: `<div><h1 id="hdr">Sign In</h1><div id="out">${long("Enter your credentials now please. ", 8)}</div><button id="theControl" type="submit">Create Account</button></div>`,
+    mutate: (d) => {
+      byId(d, "hdr").textContent = "Creating";
+    },
+    later: {
+      afterMs: 8000,
+      fn: (d) => {
+        d.body.innerHTML = `<div><h1>Welcome</h1>${long("Your account is ready. ", 3)}</div>`;
+      },
+    },
+  },
   {
     name: "header flips immediately, body re-renders 3s later, button replaced",
     step: "Click the 'Create Account' button to create the account",
@@ -339,6 +379,35 @@ describe("flow-runner mid-flow submit text-advance (no network, stale title, jud
     const p = {
       ...(params(world, false, []) as object),
       step: noise.step,
+      submitStep: true,
+    } as never;
+    const outcome = await executeStepWithHealing(p).catch(() => "threw");
+    expect(outcome).not.toBe("completed");
+  });
+
+  it("does not credit a genuine no-op click on the report step", async () => {
+    vi.mocked(verifySubmitWithLLM).mockResolvedValue({ verified: false, reason: "x" } as never);
+    const world = buildWorld({
+      ...noise,
+      step: REPORT_STEP,
+      mutate: () => {},
+    });
+    const p = {
+      ...(params(world, false, []) as object),
+      step: REPORT_STEP,
+      submitStep: true,
+    } as never;
+    const outcome = await executeStepWithHealing(p).catch(() => "threw");
+    expect(outcome).not.toBe("completed");
+  });
+
+  it("does not credit the report step's DOM-only change on the final step", async () => {
+    vi.mocked(verifySubmitWithLLM).mockResolvedValue({ verified: false, reason: "x" } as never);
+    const sc = scenarios[0] as Scenario;
+    const world = buildWorld(sc);
+    const p = {
+      ...(params(world, true, []) as object),
+      step: REPORT_STEP,
       submitStep: true,
     } as never;
     const outcome = await executeStepWithHealing(p).catch(() => "threw");

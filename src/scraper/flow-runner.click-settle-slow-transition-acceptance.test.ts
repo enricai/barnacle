@@ -97,6 +97,30 @@ function makeVirtualPage(lateAtMs: number | null): VirtualPage {
   };
 }
 
+/** Header flips ~2s after the click (inside the step pause); the body re-renders ~8s after it. The network counter never moves. */
+function makeHeaderThenBodyPage(): VirtualPage {
+  const vp = makeVirtualPage(null);
+  const clock = vp.clock;
+  let clickedAt: number | null = null;
+  (vp.page.evaluate as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("outerHTML")) {
+        const elapsed = clickedAt === null ? 0 : clock.now - clickedAt;
+        if (clickedAt === null || elapsed < 2000) return { html: 1200, text: "1:step one" };
+        if (elapsed < 8000) return { html: 1300, text: "2:step two header" };
+        return { html: 9000, text: "3:step two header and form body" };
+      }
+      if (src.includes("isInvalid")) return 0;
+      return null;
+    }
+  );
+  vp.markActStarted = (): void => {
+    clickedAt = clock.now;
+  };
+  return vp;
+}
+
 function baseParams(
   vp: VirtualPage,
   overrides: Record<string, unknown> = {}
@@ -189,5 +213,28 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
 
     expect(guardedAct).toHaveBeenCalledTimes(1);
     expect(vp.settlePolls()).toBe(IDLE_GIVE_UP_MS / 1000);
+  });
+
+  it("credits a mid-flow step whose header flips during the pause and body re-renders ~8s later with no network signal", async () => {
+    const vp = makeHeaderThenBodyPage();
+    guardedAct.mockImplementation(async () => {
+      vp.markActStarted();
+      return CLICK_RESULT;
+    });
+    guardedObserve.mockImplementation(async () =>
+      vp.actStarted()
+        ? []
+        : [{ selector: "css=button#load-report", description: "Load Report", method: "click" }]
+    );
+    const trajectory: { stepIndex: number; verifiedBy: string | null }[] = [];
+
+    const outcome = await executeStepWithHealing(
+      baseParams(vp, { trajectory, submitStep: true, isFinalStep: false }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(vp.signalCounter.n).toBe(0);
+    expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0 })]);
   });
 });

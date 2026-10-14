@@ -1679,8 +1679,10 @@ export function isMidFlowSubmitShapedStep(params: {
   submitStep: boolean;
   isFinalStep: boolean;
   flowHasSubmitSemantics: boolean;
+  elementSubmitShaped?: boolean;
 }): boolean {
-  return !params.isFinalStep && isStepSubmitShaped(params);
+  if (params.isFinalStep) return false;
+  return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
 /**
@@ -2110,7 +2112,10 @@ export function isNullVerdictAdvanceCredited(params: {
  * `textChanged` when omitted) holds — byte delta is not required, since a
  * wizard swap can keep the HTML size — with the same invalid-marker and
  * destination vetoes. The clicked control being gone is NOT a veto here: a
- * wizard advance normally replaces the button along with the page. Omitted,
+ * wizard advance normally replaces the button along with the page. The
+ * credit also holds when Stagehand reported a successful act with no
+ * resolved action (`actSucceeded`) or a non-click, non-state-class method.
+ * Omitted,
  * the submit-shaped rejection is unchanged.
  */
 export function isClickViewSwapVerified(params: {
@@ -2126,6 +2131,7 @@ export function isClickViewSwapVerified(params: {
   destinationPlausible?: boolean;
   midFlowSubmit?: boolean;
   pageAdvanced?: boolean;
+  actSucceeded?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2142,14 +2148,28 @@ export function isClickViewSwapVerified(params: {
     destinationPlausible,
     midFlowSubmit = false,
     pageAdvanced = textChanged,
+    actSucceeded = false,
   } = params;
+  // The page advancing is the evidence for a mid-flow submit, so it does not
+  // depend on how Stagehand reported the gesture: a successful act that
+  // listed no actions, or a non-state-class method, still ran a click-class
+  // action. Mirrors the settle gate's `mayTriggerRoundTrip`.
+  const midFlowActRan =
+    resolvedAction === null ? actSucceeded : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+  if (
+    midFlowSubmit &&
+    midFlowActRan &&
+    destinationPlausible !== false &&
+    !isAdvanceWithPattern &&
+    invalidMarkerDelta <= 0 &&
+    textChanged &&
+    pageAdvanced
+  ) {
+    return true;
+  }
   if (resolvedAction?.method !== "click") return false;
   if (destinationPlausible === false) return false;
-  if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) {
-    if (isAdvanceWithPattern) return false;
-    if (invalidMarkerDelta > 0) return false;
-    return textChanged && pageAdvanced;
-  }
+  if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) return false;
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
   // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
@@ -6512,7 +6532,8 @@ export async function submitCaptchaGatedForm(
           verification.page,
           verification.signalCounter,
           pre.networkCount,
-          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
+          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
+          pre.visibleTextSignature
         );
       const post = await snapshotPage(target, verification.signalCounter, verification.page);
       const verdict = classifyPhantomClick({
@@ -6543,7 +6564,8 @@ export async function submitCaptchaGatedForm(
               verification.signalCounter,
               post.networkCount,
               async () =>
-                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
+                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
+              post.visibleTextSignature
             );
           const runnerUpPost = await snapshotPage(
             target,
@@ -9784,10 +9806,16 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-      const snap = await snapshotPage(target, signalCounter);
-      return snap.visibleTextSignature;
-    });
+    await settleAfterClick(
+      page,
+      signalCounter,
+      pre.networkCount,
+      async () => {
+        const snap = await snapshotPage(target, signalCounter);
+        return snap.visibleTextSignature;
+      },
+      pre.visibleTextSignature
+    );
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -9809,10 +9837,16 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, post.networkCount, async () => {
-      const snap = await snapshotPage(target, signalCounter);
-      return snap.visibleTextSignature;
-    });
+    await settleAfterClick(
+      page,
+      signalCounter,
+      post.networkCount,
+      async () => {
+        const snap = await snapshotPage(target, signalCounter);
+        return snap.visibleTextSignature;
+      },
+      post.visibleTextSignature
+    );
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -11624,13 +11658,19 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-                const snap = await snapshotPage(
-                  frameTarget ?? mainFrameTarget(page),
-                  signalCounter
-                );
-                return snap.visibleTextSignature;
-              });
+              await settleAfterClick(
+                page,
+                signalCounter,
+                pre.networkCount,
+                async () => {
+                  const snap = await snapshotPage(
+                    frameTarget ?? mainFrameTarget(page),
+                    signalCounter
+                  );
+                  return snap.visibleTextSignature;
+                },
+                pre.visibleTextSignature
+              );
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
                 signalCounter,
@@ -12489,10 +12529,16 @@ export async function executeStepWithHealing(params: {
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     if (mayTriggerRoundTrip) {
       const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-        const snap = await snapshotPage(settleTarget, signalCounter);
-        return snap.visibleTextSignature;
-      });
+      await settleAfterClick(
+        page,
+        signalCounter,
+        pre.networkCount,
+        async () => {
+          const snap = await snapshotPage(settleTarget, signalCounter);
+          return snap.visibleTextSignature;
+        },
+        pre.visibleTextSignature
+      );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
@@ -12649,7 +12695,13 @@ export async function executeStepWithHealing(params: {
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
     // ng-invalid marker count grew, or when the landed destination is implausible
     // for the step (see isClickViewSwapVerified's doc comment).
-    const midFlowSubmit = stepIsMidFlowSubmit || (!isFinalStep && resolvedElementIsSubmitShaped);
+    const midFlowSubmit = isMidFlowSubmitShapedStep({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      elementSubmitShaped: resolvedElementIsSubmitShaped,
+    });
     // An element-inferred mid-flow submit joins the exemption the step-derived
     // one already got: a click that never left its URL did not bounce to a gate.
     const midFlowDestinationPlausible =
@@ -12668,6 +12720,7 @@ export async function executeStepWithHealing(params: {
       destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
       pageAdvanced: hasPageAdvanced(pre, post),
+      actSucceeded: record.actResultSuccess === true,
     });
     if (
       clickViewSwapVerified === false &&
@@ -13232,10 +13285,16 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-            const snap = await snapshotPage(n16FallbackTarget, signalCounter);
-            return snap.visibleTextSignature;
-          });
+          await settleAfterClick(
+            page,
+            signalCounter,
+            pre.networkCount,
+            async () => {
+              const snap = await snapshotPage(n16FallbackTarget, signalCounter);
+              return snap.visibleTextSignature;
+            },
+            pre.visibleTextSignature
+          );
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
@@ -13446,14 +13505,13 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
-          const retryMidFlowSubmit =
-            isMidFlowSubmitShapedStep({
-              step,
-              submitStep,
-              isFinalStep,
-              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            }) ||
-            (!isFinalStep && retryResolvedElementIsSubmitShaped);
+          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+          });
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
