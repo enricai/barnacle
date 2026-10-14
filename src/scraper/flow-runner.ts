@@ -103,7 +103,6 @@ import {
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
-import { installSameTabNavigation } from "@/scraper/same-tab-navigation";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
@@ -11378,6 +11377,25 @@ export async function executeStepWithHealing(params: {
       return { delivered: false, reason: "threw", message: toErrorMessage(err) };
     }
   };
+  // Baseline is per step, not per attempt, so a tab opened by a click whose
+  // attempt then failed is still new to the next attempt. Hand-built sessions in
+  // unit tests carry no browser context (or one without a page list); there is no
+  // tab to follow.
+  const followableContext = (): Parameters<typeof followNewPage<Page>>[0] | null =>
+    typeof stagehand.context?.pages === "function" ? stagehand.context : null;
+  let knownPages = followableContext()?.pages() ?? [];
+  const adoptOpenedPage = async (discoverWaitMs?: number): Promise<boolean> => {
+    const context = followableContext();
+    if (!context) return false;
+    const followed = await followNewPage(context, page, knownPages, discoverWaitMs);
+    if (followed === page) return false;
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} click opened a new page; following it`);
+    page = followed;
+    frameTarget = undefined;
+    knownPages = context.pages();
+    params.onPageAdopted?.(followed);
+    return true;
+  };
   let phantomClickAfterAttempt1 = false;
   let attempt1UnreachableViaLightDom = false;
   // Last candidate list the deep-submit-locator itself ranked this step, if
@@ -11441,10 +11459,9 @@ export async function executeStepWithHealing(params: {
       params.abortSignal?.throwIfAborted();
     }
 
-    // Hand-built sessions in unit tests carry no browser context; there is no tab to follow.
-    const pagesBeforeAttempt = stagehand.context?.pages() ?? [];
-    // A click that targets a new tab would strand the driven page; keep it in this tab.
-    await installSameTabNavigation(frameTarget ?? mainFrameTarget(page));
+    // A click from an earlier attempt that errored after opening a tab leaves the
+    // run on the stale page; pick the tab up before measuring anything.
+    await adoptOpenedPage(0);
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -12533,17 +12550,10 @@ export async function executeStepWithHealing(params: {
       continue;
     }
 
-    const followedPage = stagehand.context
-      ? await followNewPage(stagehand.context, page, pagesBeforeAttempt)
-      : page;
-    if (followedPage !== page) {
-      logger.info(
-        `${formatStepPrefix(stepIndex, totalSteps)} click opened a new page; following it`
-      );
-      page = followedPage;
-      frameTarget = undefined;
-      params.onPageAdopted?.(followedPage);
-    }
+    // A fill/select/type action cannot open a tab, so skip the discovery wait for it.
+    await adoptOpenedPage(
+      resolvedAction && STATE_CLASS_METHODS.has(resolvedAction.method ?? "") ? 0 : undefined
+    );
     await page.waitForTimeout(STEP_PAUSE_MS);
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
@@ -13276,6 +13286,7 @@ export async function executeStepWithHealing(params: {
             checked?: boolean;
           };
           const fired = probeResult.fired;
+          if (fired) await adoptOpenedPage();
           // Vacuous-click guard for the n+16 fallback. Same rationale as
           // verifyDomEffect's click case: a checkbox/radio input's .checked
           // property can flip true via CDP click even when the input lives on
@@ -13300,7 +13311,7 @@ export async function executeStepWithHealing(params: {
               }
               return false;
             })()`;
-            ancestorStillInvalid = (await n16FallbackTarget
+            ancestorStillInvalid = (await (frameTarget ?? mainFrameTarget(page))
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
@@ -13314,7 +13325,7 @@ export async function executeStepWithHealing(params: {
             signalCounter,
             pre.networkCount,
             async () => {
-              const snap = await snapshotPage(n16FallbackTarget, signalCounter);
+              const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
               return snap.visibleTextSignature;
             },
             pre.visibleTextSignature
