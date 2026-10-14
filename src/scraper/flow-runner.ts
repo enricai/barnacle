@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
+import type { z } from "zod/v4";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { generateObject } from "ai";
 import { format, isValid, parse } from "date-fns";
@@ -31,8 +32,9 @@ import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { type VerifySubmitInput, verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
-import { REPHRASE_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
+import { REPHRASE_RESPONSE_SCHEMA, type SUBMIT_VERDICT_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
 import {
   captureLlmCall,
@@ -58,7 +60,7 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
-import { settleAfterClick } from "@/scraper/click-settle";
+import { type SettlePage, settleAfterClick } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -3251,6 +3253,67 @@ export async function buildSubmitJudgeStepContext(params: {
     isFinalStep: params.isFinalStep,
     visibleText: await probeVisibleTextForJudge(params.target),
   };
+}
+
+type SubmitVerdict = z.infer<typeof SUBMIT_VERDICT_SCHEMA>;
+
+/**
+ * Single entry for both submit-verification judge sites. The final step keeps
+ * the strict submit judge; a non-final step is judged on whether the page
+ * advanced, against the settled post-click text, because the page is still
+ * mid-transition when the click returns and a pre-transition read would make
+ * a successful advance look like no change.
+ */
+export async function judgeStepOutcome(params: {
+  client: Anthropic | null;
+  captureFn?: JudgeCaptureFn;
+  step: string;
+  isFinalStep: boolean;
+  page: SettlePage;
+  target: FrameTarget;
+  signalCounter: { n: number };
+  preNetworkCount: number;
+  preVisibleTextSignature: string;
+  submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
+}): Promise<SubmitVerdict | null> {
+  const { client, captureFn, step, isFinalStep, target } = params;
+  if (isFinalStep) {
+    return verifySubmitWithLLM({
+      client,
+      input: {
+        ...(await buildSubmitJudgeStepContext({ step, isFinalStep, target })),
+        ...params.submitInput,
+      },
+      captureFn,
+    });
+  }
+  await settleAfterClick(params.page, params.signalCounter, params.preNetworkCount, () =>
+    probeVisibleTextForJudge(target)
+  );
+  const afterText = await probeVisibleTextForJudge(target);
+  const colon = params.preVisibleTextSignature.indexOf(":");
+  const beforeText =
+    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1);
+  const verdict = await verifyStepAdvancedWithLLM({
+    client,
+    input: {
+      stepInstruction: step,
+      beforeText,
+      afterText,
+      invalidMarkerCount: params.submitInput.invalidMarkerCount,
+    },
+    captureFn,
+  });
+  if (verdict === null) return null;
+  return verdict.advanced
+    ? {
+        verified: true,
+        network_signal: null,
+        dom_signal: null,
+        url_signal: null,
+        rationale: verdict.reason,
+      }
+    : { verified: false, reason: verdict.reason };
 }
 
 /**
@@ -12845,14 +12908,17 @@ export async function executeStepWithHealing(params: {
       }).catch(() => "");
       const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
-      const judgeVerdict = await verifySubmitWithLLM({
+      const judgeVerdict = await judgeStepOutcome({
         client: anthropic,
-        input: {
-          ...(await buildSubmitJudgeStepContext({
-            step,
-            isFinalStep,
-            target: frameTarget ?? mainFrameTarget(page),
-          })),
+        captureFn,
+        step,
+        isFinalStep,
+        page,
+        target: frameTarget ?? mainFrameTarget(page),
+        signalCounter,
+        preNetworkCount: pre.networkCount,
+        preVisibleTextSignature: pre.visibleTextSignature,
+        submitInput: {
           pageUrl: post.url,
           pageTitle,
           unfocusedObserve: unfocusedForJudge.map((a) => ({
@@ -12866,8 +12932,7 @@ export async function executeStepWithHealing(params: {
           successPageTitleHints,
           submittedStateSelectors: matchedSubmittedSelectors,
         },
-        captureFn,
-      });
+        });
 
       // A mid-flow transition is credited on the page's own demonstrable
       // advance (visible text swapped); the judge's final-submit-flavoured
@@ -13489,14 +13554,17 @@ export async function executeStepWithHealing(params: {
             }).catch(() => "");
             const matchedSubmittedSelectors = domSubmittedMatch !== null ? [domSubmittedMatch] : [];
 
-            const judgeVerdict = await verifySubmitWithLLM({
+            const judgeVerdict = await judgeStepOutcome({
               client: anthropic,
-              input: {
-                ...(await buildSubmitJudgeStepContext({
-                  step,
-                  isFinalStep,
-                  target: frameTarget ?? mainFrameTarget(page),
-                })),
+              captureFn,
+              step,
+              isFinalStep,
+              page,
+              target: frameTarget ?? mainFrameTarget(page),
+              signalCounter,
+              preNetworkCount: pre.networkCount,
+              preVisibleTextSignature: pre.visibleTextSignature,
+              submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,
                 unfocusedObserve: unfocusedForJudge.map((a) => ({
@@ -13510,8 +13578,7 @@ export async function executeStepWithHealing(params: {
                 successPageTitleHints,
                 submittedStateSelectors: matchedSubmittedSelectors,
               },
-              captureFn,
-            });
+              });
 
             const retryMidFlowAdvanceCredited =
               retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost);
