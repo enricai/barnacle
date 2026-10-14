@@ -80,19 +80,23 @@ function makeFixture(hasShadowDescendant: boolean): {
   let clickCount = 0;
 
   const makeLocator = (): FrameTarget["locator"] =>
-    vi.fn().mockImplementation((selector: string) => ({
-      first: () => ({
-        click: async () => {
-          clickedSelectors.push(selector);
-          clickCount += 1;
-          if (clickCount >= 2) {
-            urls.current = "https://apply.acme.example/onboard/a/2";
-          }
-        },
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }));
+    vi.fn().mockImplementation((selector: string) => {
+      const click = async (): Promise<void> => {
+        clickedSelectors.push(selector);
+        clickCount += 1;
+        if (clickCount >= 2) {
+          urls.current = "https://apply.acme.example/onboard/a/2";
+        }
+      };
+      return {
+        click,
+        first: () => ({
+          click,
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      };
+    });
 
   const makeEvaluate = (): FrameTarget["evaluate"] =>
     vi.fn().mockImplementation(async (exprArg: unknown) => {
@@ -101,6 +105,7 @@ function makeFixture(hasShadowDescendant: boolean): {
         return hasShadowDescendant ? { found: true } : { found: false };
       }
       if (src.includes("removeAttribute")) return undefined;
+      if (src.includes('block: "center"')) return { state: "hit" };
       // Every other evaluate() call in the cascade (pre/post DOM snapshots,
       // submit-shape probes, etc.) reads a flat, unchanging signal so attempt
       // 1's own trusted n+16 click classifies as a phantom (zero DOM delta).

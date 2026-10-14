@@ -104,12 +104,6 @@ import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
-  CENTRE_AND_HIT_TEST_FN,
-  type CentredHitTestResult,
-  clickAfterCentredHitTest,
-  clickCentredTrusted,
-} from "@/scraper/trusted-click";
-import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
   NEGATIVE_TEXT_EXPR,
@@ -120,7 +114,12 @@ import {
   captureTargetResolutionDiagnosticSnapshot,
   type TargetResolutionDiagnosticSnapshot,
 } from "@/scraper/target-resolution-diagnostic";
-import { clickCentredTrusted } from "@/scraper/trusted-click";
+import {
+  CENTRE_AND_HIT_TEST_FN,
+  type CentredHitTestResult,
+  clickAfterCentredHitTest,
+  clickCentredTrusted,
+} from "@/scraper/trusted-click";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
@@ -931,7 +930,8 @@ const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
  * Builds an in-page expression that finds the marker-stamped element, piercing
  * open shadow roots (plain `querySelector` cannot), and centre + hit-tests it.
  */
-function buildDeepMarkerCentreExpr(markerSelector: string): string {
+
+export function buildDeepMarkerCentreExpr(markerSelector: string): string {
   return `(() => {
     const sel = ${JSON.stringify(markerSelector)};
     const find = (root) => {

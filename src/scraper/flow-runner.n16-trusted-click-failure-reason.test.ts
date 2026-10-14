@@ -36,10 +36,12 @@ function makeLogger(): { logger: Logger; infoLines: string[] } {
 function makePageWithClick(click: () => Promise<void>): Page {
   const session = { on: () => {}, off: () => {} };
   return {
-    evaluate: async () => ({ fired: false }),
+    evaluate: async (expr: unknown) =>
+      String(expr).includes('block: "center"') ? { state: "hit" } : { fired: false },
     url: () => BASE_URL,
     title: async () => "Wizard — Step 1",
     locator: () => ({
+      click,
       first: () => ({
         click,
         isChecked: async () => false,
