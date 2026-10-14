@@ -432,6 +432,23 @@ describe("scraper/phantom-click report snapshot pair", () => {
     ).toBe("effective");
   });
 
+  it("treats isMidFlowSubmitStep as submit-shaped on its own, crediting the advance", () => {
+    expect(classifyPhantomClick(makeAttempt({ pre, post, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
+    );
+  });
+
+  it("does not let a mid-flow submit ride a byte-only reflow", () => {
+    const reflow = {
+      ...post,
+      bodyHtmlLength: 40000,
+      visibleTextSignature: pre.visibleTextSignature,
+    };
+    expect(
+      classifyPhantomClick(makeAttempt({ pre, post: reflow, isMidFlowSubmitStep: true }))
+    ).toBe("phantom");
+  });
+
   it("keeps the final-step verdict phantom when isMidFlowSubmitStep is false", () => {
     expect(classifyPhantomClick(makeAttempt({ ...attempt, isMidFlowSubmitStep: false }))).toBe(
       "phantom"

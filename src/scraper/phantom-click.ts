@@ -47,7 +47,8 @@ export interface PhantomClickAttempt {
    * True when a submit-shaped step is NOT the flow's final submit (e.g. an
    * account-creation transition in a wizard). Such a step is credited when
    * {@link hasPageAdvanced} holds even with no network/URL/title signal.
-   * Ignored unless `isSubmitShapedStep` is also true.
+   * Implies `isSubmitShapedStep`: a mid-flow submit is submit-shaped by
+   * definition, so callers need not set both for it to be held to submit rules.
    */
   isMidFlowSubmitStep?: boolean;
   /**
@@ -299,17 +300,16 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   if (!attempt.destinationPlausible) return "phantom";
 
   const urlChanged = hasOriginOrPathChanged(attempt.pre.url, attempt.post.url);
+  const midFlowSubmit = attempt.isMidFlowSubmitStep === true;
+  const submitShaped = attempt.isSubmitShapedStep === true || midFlowSubmit;
   // Element-scoped selection flip; not on a submit-shaped step, which must
   // prove itself via network/URL or the deep-submit escalation is defeated.
-  const elementStateChanged = !attempt.isSubmitShapedStep && attempt.elementStateChanged === true;
+  const elementStateChanged = !submitShaped && attempt.elementStateChanged === true;
   // A submit-shaped step likewise ignores a mere DOM-byte reflow.
   const bytesChangedSignificantly =
-    !attempt.isSubmitShapedStep && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
+    !submitShaped && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
-  const midFlowAdvanced =
-    attempt.isSubmitShapedStep === true &&
-    attempt.isMidFlowSubmitStep === true &&
-    hasPageAdvanced(attempt.pre, attempt.post);
+  const midFlowAdvanced = midFlowSubmit && hasPageAdvanced(attempt.pre, attempt.post);
 
   const hasEffect =
     networkDelta !== 0 ||
