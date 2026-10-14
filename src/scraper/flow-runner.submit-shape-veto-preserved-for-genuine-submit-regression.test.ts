@@ -6,6 +6,11 @@ import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 const verifySubmitWithLLM = vi.hoisted(() => vi.fn());
+const verifyStepAdvancedWithLLM = vi.hoisted(() => vi.fn());
+
+vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
+  verifyStepAdvancedWithLLM: (...args: unknown[]) => verifyStepAdvancedWithLLM(...args),
+}));
 
 vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-submit")>();
@@ -495,14 +500,12 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
       );
     });
 
-    it("still invokes verifySubmitWithLLM for a submitStep-flagged step that transitions", async () => {
+    it("still invokes the step-advanced judge for a non-final submitStep-flagged step that transitions", async () => {
       verifySubmitWithLLM.mockReset();
-      verifySubmitWithLLM.mockResolvedValue({
-        verified: true,
-        reason: null,
-        dom_signal: null,
-        url_signal: "/thank-you",
-        rationale: "URL transitioned to the thank-you page",
+      verifyStepAdvancedWithLLM.mockReset();
+      verifyStepAdvancedWithLLM.mockResolvedValue({
+        advanced: true,
+        reason: "URL transitioned to the thank-you page",
       });
       const fixture = buildPrimaryXPathFixture({
         controlTag: "button",
@@ -530,7 +533,8 @@ describe("flow-runner submit-shape veto — genuinely submit-shaped controls rem
         rephraseModel: null,
         uploadFixture: null,
       }).catch(() => undefined);
-      expect(verifySubmitWithLLM).toHaveBeenCalled();
+      expect(verifyStepAdvancedWithLLM).toHaveBeenCalled();
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
     });
 
     it("still vetoes a real submit-phrase step with no negative declaration (primary xpath)", async () => {
