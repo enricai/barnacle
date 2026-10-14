@@ -44,6 +44,7 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
+import { followNewPage } from "@/scraper/active-page";
 import {
   buildMarkShadowInteractiveDescendantExpr,
   buildUnmarkShadowDescendantExpr,
@@ -9907,6 +9908,11 @@ export async function executeStepWithHealing(params: {
    * byte-identical to today.
    */
   frameTarget?: FrameTarget;
+  /**
+   * Reports the page the cascade adopted after a click opened a new browsing
+   * context, so the caller keeps driving, verifying and capturing that page.
+   */
+  onPageAdopted?: (page: Page) => void;
   step: string;
   /**
    * When true and Stagehand's act+observe finds no candidates, the cascade
@@ -10145,7 +10151,6 @@ export async function executeStepWithHealing(params: {
 }): Promise<"completed" | "skipped"> {
   const {
     stagehand,
-    page,
     optional,
     upload,
     submitStep,
@@ -10197,6 +10202,9 @@ export async function executeStepWithHealing(params: {
   // function keeps reading `frameTarget` unchanged; only its declaration
   // moved so it can be reassigned.
   let frameTarget = params.frameTarget;
+  // Rebound when a click opens a new browsing context, so every later probe,
+  // verifier and key event in the cascade reads the page the click navigated to.
+  let page = params.page;
   let frameReresolveAttempted = false;
   // Emailed-verification hook. Runs FIRST — before upload/select/checkbox/
   // radio/prompt-selector/captcha or any other cascade primitive — so an
@@ -11369,6 +11377,25 @@ export async function executeStepWithHealing(params: {
       return { delivered: false, reason: "threw", message: toErrorMessage(err) };
     }
   };
+  // Baseline is per step, not per attempt, so a tab opened by a click whose
+  // attempt then failed is still new to the next attempt. Hand-built sessions in
+  // unit tests carry no browser context (or one without a page list); there is no
+  // tab to follow.
+  const followableContext = (): Parameters<typeof followNewPage<Page>>[0] | null =>
+    typeof stagehand.context?.pages === "function" ? stagehand.context : null;
+  let knownPages = followableContext()?.pages() ?? [];
+  const adoptOpenedPage = async (discoverWaitMs?: number): Promise<boolean> => {
+    const context = followableContext();
+    if (!context) return false;
+    const followed = await followNewPage(context, page, knownPages, discoverWaitMs);
+    if (followed === page) return false;
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} click opened a new page; following it`);
+    page = followed;
+    frameTarget = undefined;
+    knownPages = context.pages();
+    params.onPageAdopted?.(followed);
+    return true;
+  };
   let phantomClickAfterAttempt1 = false;
   let attempt1UnreachableViaLightDom = false;
   // Last candidate list the deep-submit-locator itself ranked this step, if
@@ -11432,6 +11459,9 @@ export async function executeStepWithHealing(params: {
       params.abortSignal?.throwIfAborted();
     }
 
+    // A click from an earlier attempt that errored after opening a tab leaves the
+    // run on the stale page; pick the tab up before measuring anything.
+    await adoptOpenedPage(0);
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -12520,6 +12550,10 @@ export async function executeStepWithHealing(params: {
       continue;
     }
 
+    // A fill/select/type action cannot open a tab, so skip the discovery wait for it.
+    await adoptOpenedPage(
+      resolvedAction && STATE_CLASS_METHODS.has(resolvedAction.method ?? "") ? 0 : undefined
+    );
     await page.waitForTimeout(STEP_PAUSE_MS);
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
@@ -13252,6 +13286,7 @@ export async function executeStepWithHealing(params: {
             checked?: boolean;
           };
           const fired = probeResult.fired;
+          if (fired) await adoptOpenedPage();
           // Vacuous-click guard for the n+16 fallback. Same rationale as
           // verifyDomEffect's click case: a checkbox/radio input's .checked
           // property can flip true via CDP click even when the input lives on
@@ -13276,7 +13311,7 @@ export async function executeStepWithHealing(params: {
               }
               return false;
             })()`;
-            ancestorStillInvalid = (await n16FallbackTarget
+            ancestorStillInvalid = (await (frameTarget ?? mainFrameTarget(page))
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
@@ -13290,7 +13325,7 @@ export async function executeStepWithHealing(params: {
             signalCounter,
             pre.networkCount,
             async () => {
-              const snap = await snapshotPage(n16FallbackTarget, signalCounter);
+              const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
               return snap.visibleTextSignature;
             },
             pre.visibleTextSignature
@@ -14262,6 +14297,8 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
   const counter = { n: 0 };
+  // Rebound when a step's click opens a new tab, so later steps drive that page.
+  let activePage = page;
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
@@ -14270,20 +14307,23 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
-  const stopCapture = wireSignalCapture(page, {
-    counter,
-    signalCounter,
-    recentCaptures,
-    recentCaptureMeta,
-    getCurrentPhase: () => "flow",
-    getCurrentPageOrigin: () => {
-      try {
-        return new URL(page.url()).origin;
-      } catch {
-        return "";
-      }
-    },
-  });
+  const wireCapture = (target: Page): (() => void) =>
+    wireSignalCapture(target, {
+      counter,
+      signalCounter,
+      recentCaptures,
+      recentCaptureMeta,
+      getCurrentPhase: () => "flow",
+      getCurrentPageOrigin: () => {
+        try {
+          return new URL(activePage.url()).origin;
+        } catch {
+          return "";
+        }
+      },
+    });
+  // Listeners on earlier pages stay wired (a prior tab can still emit) and all stop on exit.
+  const stopFns: (() => void)[] = [wireCapture(page)];
 
   const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
     steps,
@@ -14323,7 +14363,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // legitimately-absent optional step, and the flow's own step count
       // never quietly reaches `steps.length` past the point of death.
       try {
-        page.url();
+        activePage.url();
       } catch (err) {
         throw new SessionTimeoutError(
           `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${steps.length} steps completed`
@@ -14336,7 +14376,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       let stepPromise: Promise<"completed" | "skipped">;
       if (s.navigateTo !== undefined) {
         stepPromise = executeNavigateStep({
-          page,
+          page: activePage,
           url: s.navigateTo,
           optional: s.optional,
           logger,
@@ -14348,11 +14388,16 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
         // falls back to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
-        const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+        const frameTarget = await resolveFrameTarget(activePage, deps.frameSelector);
         await waitForChildFrameReady(frameTarget);
         stepPromise = executeStepWithHealing({
           stagehand,
-          page,
+          page: activePage,
+          onPageAdopted: (adopted) => {
+            if (adopted === activePage) return;
+            activePage = adopted;
+            stopFns.push(wireCapture(adopted));
+          },
           abortSignal: deps.abortSignal,
           step: s.instruction,
           optional: s.optional,
@@ -14398,7 +14443,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // runHealingFlow resolve as if the flow succeeded. Mirrors the same
       // gate in recon-browser.ts's step loop.
       try {
-        page.url();
+        activePage.url();
       } catch (err) {
         throw new SessionTimeoutError(
           `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) after step ${i} of ${steps.length} resolved`
@@ -14416,7 +14461,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       }
     }
   } finally {
-    stopCapture();
+    for (const stop of stopFns) stop();
   }
 
   return { submitVerified, submitStepSkipped, lastStepIndex };

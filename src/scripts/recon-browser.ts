@@ -50,14 +50,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
 import { format, formatISO } from "date-fns";
 import { type Element, type HTMLInputElement, type HTMLTextAreaElement, Window } from "happy-dom";
 import { z } from "zod/v4";
-
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
@@ -137,6 +135,7 @@ import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolu
 import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
+import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
@@ -2851,30 +2850,34 @@ async function main(): Promise<void> {
     const transientStepRetries = new Map<string, number>();
     try {
       const stagehand = session.stagehand;
-      const page = await stagehand.context.awaitActivePage();
+      let page = await stagehand.context.awaitActivePage();
 
       // Phase label is mutated between flow steps so the single CDP listener
       // always tags captures with the currently active phase.
       let currentPhase = "home";
-      const stopCapture = wireNetworkCapture(
-        page,
-        counter,
-        signalCounter,
-        recentCaptures,
-        recentCaptureMeta,
-        () => currentPhase,
-        () => {
-          // Live read so SPA history navigation between captures stays accurate.
-          // Fallback to the initial url on parse failure (e.g. about:blank early
-          // in the goto cycle) so we don't accidentally mark a capture as
-          // cross-origin and miss the user-action signal.
-          try {
-            return new URL(page.url()).origin;
-          } catch {
-            return new URL(url).origin;
-          }
+      // Live read so SPA history navigation between captures stays accurate.
+      // Fallback to the initial url on parse failure (e.g. about:blank early
+      // in the goto cycle) so we don't accidentally mark a capture as
+      // cross-origin and miss the user-action signal.
+      const currentPageOrigin = (): string => {
+        try {
+          return new URL(page.url()).origin;
+        } catch {
+          return new URL(url).origin;
         }
+      };
+      const capture = createCaptureRebinder(page, (target) =>
+        wireNetworkCapture(
+          target,
+          counter,
+          signalCounter,
+          recentCaptures,
+          recentCaptureMeta,
+          () => currentPhase,
+          currentPageOrigin
+        )
       );
+      const stopCapture = capture.stopAll;
 
       logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
       // A navigation wait that never resolves must not discard the run. Ad-heavy
@@ -3043,6 +3046,11 @@ async function main(): Promise<void> {
               : executeStepWithHealing({
                   stagehand,
                   page,
+                  onPageAdopted: (adopted) => {
+                    if (adopted === page) return;
+                    page = adopted;
+                    capture.adopt(adopted);
+                  },
                   abortSignal: session.deathAbortSignal,
                   frameTarget,
                   step: step.instruction,
