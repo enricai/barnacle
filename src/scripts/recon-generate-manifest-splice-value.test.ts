@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import { parseFillStep } from "@/scraper/flow-runner";
 import { emitConfigManifest } from "@/scripts/recon-generate";
@@ -70,5 +71,54 @@ describe("emitConfigManifest — buildManifestInstruction splices the fill VALUE
     expect(firstStepText(manifestStr)).toBe(
       "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with '{{ .request.FirstName }}'"
     );
+  });
+});
+
+describe("emitConfigManifest — spec.multipart follows the shared Resume-contract decision", () => {
+  const base = {
+    siteId: "acme-demo",
+    baseUrl: "https://apply.acme.example",
+    isSubmissionFlow: true,
+  };
+  const uploadFlow = [
+    "Fill in the City field with 'Dallas'",
+    { step: "Upload the resume", upload: true },
+    { step: "Click Submit", submitStep: true },
+  ];
+  const specOf = (manifestStr: string): ReturnType<typeof CONFIG_PLUGIN_MANIFEST.parse>["spec"] =>
+    CONFIG_PLUGIN_MANIFEST.parse(JSON.parse(manifestStr)).spec;
+
+  it("emits multipart: true for an upload step in a flow with the Resume contract", () => {
+    const spec = specOf(
+      emitConfigManifest({ ...base, flowSteps: uploadFlow, hasMultipartStep: true })
+    );
+
+    expect(spec.multipart).toBe(true);
+  });
+
+  it("emits multipart: true when the Resume contract is inferred from the input body", () => {
+    const spec = specOf(
+      emitConfigManifest({ ...base, flowSteps: uploadFlow, inputBody: { Email: "a@b.c" } })
+    );
+
+    expect(spec.multipart).toBe(true);
+  });
+
+  it("emits no multipart without an upload step", () => {
+    const spec = specOf(
+      emitConfigManifest({
+        ...base,
+        flowSteps: ["Fill in the City field with 'Dallas'"],
+        hasMultipartStep: true,
+      })
+    );
+
+    expect(spec.multipart).toBeUndefined();
+  });
+
+  it("emits no multipart without the Resume contract", () => {
+    const spec = specOf(emitConfigManifest({ ...base, flowSteps: uploadFlow }));
+
+    expect(spec.multipart).toBeUndefined();
   });
 });

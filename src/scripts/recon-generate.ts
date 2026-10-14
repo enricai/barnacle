@@ -15394,6 +15394,10 @@ export function emitConfigManifest(opts: {
    * forcing so the config-plugin runtime's `runHealingFlow` submitStep
    * verification (`src/plugins/config-plugin.ts`) actually gates it. */
   isSubmissionFlow?: boolean;
+  /** Whether the flow has a multipart upload action — same input the `.ts` emitter takes. */
+  hasMultipartStep?: boolean;
+  /** Browser-flow-only site (no executeHttp); feeds the shared Resume-contract decision. */
+  omitExecuteHttp?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15408,6 +15412,8 @@ export function emitConfigManifest(opts: {
     recoveredFields,
     httpModulePath,
     isSubmissionFlow = false,
+    hasMultipartStep = false,
+    omitExecuteHttp,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
@@ -15498,6 +15504,19 @@ export function emitConfigManifest(opts: {
       .map((name) => [name, requestProperties[name]])
   );
 
+  // Same decision emitBrowserFlowTs makes: only a flow that uploads AND whose
+  // contract carries Resume fields is multipart, so buildUploadFixture agrees.
+  const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const contractCarriesResume =
+    hasMultipartStep ||
+    contractUsesApplicantContactSchema({
+      inputBody,
+      omitExecuteHttp,
+      isSubmissionFlow,
+      payloadFieldNames,
+    });
+  const multipart = hasUploadStep && contractCarriesResume;
+
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -15505,6 +15524,7 @@ export function emitConfigManifest(opts: {
     spec: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
+      ...(multipart ? { multipart: true } : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -17016,6 +17036,8 @@ async function main(): Promise<void> {
           inputBody,
           recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
           isSubmissionFlow,
+          hasMultipartStep,
+          omitExecuteHttp: browserFlowOnly,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
