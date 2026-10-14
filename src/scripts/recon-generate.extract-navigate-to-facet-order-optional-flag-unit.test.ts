@@ -27,7 +27,7 @@ describe("extractNavigateToFacetOrder — optional flag threading", () => {
       { step: "browse inventory search" },
     ]);
 
-    expect(bindings).toEqual([
+    expect(bindings.map(({ value, field, optional }) => ({ value, field, optional }))).toEqual([
       { value: "widgets", field: "Category", optional: false },
       { value: "east", field: "Region", optional: true },
     ]);

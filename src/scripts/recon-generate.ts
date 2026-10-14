@@ -371,18 +371,8 @@ export function extractNavigateToHashFragmentValue(
 function walkNavigateToFacets(
   flowSteps: FlowStepInput[],
   env: NodeJS.ProcessEnv
-): Array<{
-  value: string | null;
-  field: string;
-  optional: boolean;
-  origin: NavigateToFacetOrigin;
-}> {
-  const facets: Array<{
-    value: string | null;
-    field: string;
-    optional: boolean;
-    origin: NavigateToFacetOrigin;
-  }> = [];
+): WalkedNavigateToFacet[] {
+  const facets: WalkedNavigateToFacet[] = [];
   let baselineHash: string | undefined;
   for (const step of flowSteps) {
     if (typeof step === "string") continue;
@@ -393,6 +383,9 @@ function walkNavigateToFacets(
           field: step.payloadField,
           optional: step.optional === true,
           origin: "step",
+          literals: collectStepFacetLiterals(step.step, env),
+          kind: deriveFacetKind(step.payloadField),
+          kindHints: [],
         });
       }
       continue;
@@ -405,11 +398,90 @@ function walkNavigateToFacets(
         field: step.payloadField,
         optional: step.optional === true,
         origin: "navigateTo",
+        literals: collectHashFacetLiterals(step.navigateTo, baselineHash),
+        kind: deriveFacetKind(step.payloadField),
+        kindHints: collectHashFacetKindHints(step.navigateTo, baselineHash),
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
   }
   return facets;
+}
+
+interface WalkedNavigateToFacet {
+  value: string | null;
+  field: string;
+  optional: boolean;
+  origin: NavigateToFacetOrigin;
+  literals: string[];
+  kind: string;
+  kindHints: string[];
+}
+
+/**
+ * Derives a facet's element kind from its declared field name (`tripLength`
+ * and `TripLength` both yield `trip length`), so a matcher can tell which
+ * captured element a literal belongs to without any site vocabulary.
+ */
+function deriveFacetKind(field: string): string {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\s]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function uniqueLiterals(primary: string | null, others: readonly string[]): string[] {
+  return [...new Set([...(primary === null ? [] : [primary]), ...others])].filter(
+    (literal) => literal.length > 0
+  );
+}
+
+function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): string[] {
+  const primary = extractStepPersonaValue(instruction, env);
+  return uniqueLiterals(
+    primary,
+    findQuotedSpans(instruction).map((span) => span.text)
+  );
+}
+
+function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
+  const primary = extractNavigateToHashFragmentValue(url, previousHash);
+  const hashIndex = url.indexOf("#");
+  const rawTokens =
+    hashIndex === -1 || previousHash === undefined
+      ? []
+      : splitHashTokens(url.slice(hashIndex + 1)).filter(
+          (token) => !splitHashTokens(previousHash).includes(token)
+        );
+  return uniqueLiterals(primary, rawTokens);
+}
+
+/**
+ * Further element kinds a facet's own hash names (`ship` in `#/ship/<slug>` or
+ * `ship=<slug>`, `ports` in `ports_<slug>`), for a field name that does not
+ * itself name the element kind. Kept beside the binding rather than on it so
+ * the binding's declared shape stays the contract callers build and compare.
+ */
+const FACET_KIND_HINTS = new WeakMap<NavigateToFacetBinding, readonly string[]>();
+
+/**
+ * Element kinds a hash facet's own tokens name: the key of a `key=value` pair,
+ * the path segment ahead of the value, and the `<kind>_` prefix of a slug.
+ */
+function collectHashFacetKindHints(url: string, previousHash: string | undefined): string[] {
+  const hashIndex = url.indexOf("#");
+  if (hashIndex === -1) return [];
+  const previousTokens = new Set(previousHash === undefined ? [] : splitHashTokens(previousHash));
+  const tokens = splitHashTokens(url.slice(hashIndex + 1));
+  const fresh = tokens.filter((token) => !previousTokens.has(token));
+  const valueToken = fresh[fresh.length - 1] ?? tokens[tokens.length - 1];
+  if (valueToken === undefined) return [];
+  const value = stripHashKeyPrefix(valueToken);
+  const keyOfPair = valueToken.includes("=") ? valueToken.slice(0, valueToken.indexOf("=")) : "";
+  const ahead = tokens[tokens.indexOf(valueToken) - 1] ?? "";
+  const slugPrefix = value.includes("_") ? value.slice(0, value.indexOf("_")) : "";
+  return [keyOfPair, ahead, slugPrefix].filter((hint) => /^[A-Za-z][A-Za-z0-9 _-]*$/.test(hint));
 }
 
 function splitHashTokens(hash: string): string[] {
@@ -522,6 +594,14 @@ export interface NavigateToFacetBinding {
    * a non-navigateTo step's quoted instruction value. Step-origin facets carry
    * no transition slot, so they never enter positional correlation. */
   readonly origin?: NavigateToFacetOrigin;
+  /** Every literal the facet takes, primary `value` first, then alternate
+   * vocabulary literals (other quoted spans, raw hash tokens). */
+  readonly literals?: readonly string[];
+  /** Element kind named by the declared field, lowercased and space-joined. */
+  readonly kind?: string;
+  /** Set on a facet whose `value` was read from a captured kind-suffixed
+   * element, so it only matches elements of its own kind. */
+  readonly keyedByKind?: boolean;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -548,12 +628,18 @@ export function extractNavigateToFacetOrder(
 ): NavigateToFacetBinding[] {
   return walkNavigateToFacets(flowSteps, env)
     .filter((facet) => facet.origin === "navigateTo" || facet.value !== null)
-    .map((facet) => ({
-      value: facet.value ?? "",
-      field: facet.field,
-      optional: facet.optional,
-      ...(facet.origin === "step" ? { origin: facet.origin } : {}),
-    }));
+    .map((facet) => {
+      const binding: NavigateToFacetBinding = {
+        value: facet.value ?? "",
+        field: facet.field,
+        optional: facet.optional,
+        literals: facet.literals,
+        kind: facet.kind,
+        ...(facet.origin === "step" ? { origin: facet.origin } : {}),
+      };
+      if (facet.kindHints.length > 0) FACET_KIND_HINTS.set(binding, facet.kindHints);
+      return binding;
+    });
 }
 
 /**
@@ -7453,6 +7539,16 @@ function parseUrlQueryParams(url: string): Map<string, string> {
   return params;
 }
 
+/** Every query value of a URL, repeated keys included (`?f=a&f=b`), where
+ * {@link parseUrlQueryParams} keeps only the last per key. */
+function parseUrlQueryValues(url: string): string[] {
+  try {
+    return [...new URL(url).searchParams.values()];
+  } catch {
+    return [];
+  }
+}
+
 /** Parses a captured JSON request body into its string leaf values. Returns
  * an empty array when the body is absent or not valid JSON. */
 function parseBodyLeafValues(requestPostData: string | null): string[] {
@@ -7582,23 +7678,80 @@ export function resolveRecurringNavigateToFacets(
   const unreachable = declared.filter(
     (facet) => facet.origin !== "step" && !reachable.includes(facet)
   );
-  if (unreachable.length === 0) return resolvedDeclared;
+  // Every declared facet also owns the elements of its own kind in the code
+  // vocabulary, whether or not its declared literal recurs: a literal that
+  // recurs in one vocabulary (a hash slug, a quoted label) says nothing about
+  // the same facet's element in another (`WW;filterType=ship`).
+  const claimedLiterals = new Set<string>();
+  const aliased = declared.flatMap((facet) => {
+    if (facet.value.length === 0 && facet.origin === "step") return [];
+    const literal = findKindKeyedLiteral(facet, actions);
+    if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
+    if (claimedLiterals.has(literal)) return [];
+    claimedLiterals.add(literal);
+    const known = [facet.value, ...(facet.literals ?? [])];
+    if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
+    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
+  });
+  if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
+  const aliasedFields = new Set(aliased.map(({ field }) => field));
+  const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
+  const withAliases = [...resolvedDeclared, ...aliased];
+  if (awaiting.length === 0) return withAliases;
   const correlated = correlateUnreachableNavigateToFacets(
-    unreachable,
+    awaiting,
     actions,
-    reachable.map(({ value }) => value)
+    [...reachable, ...aliased].map(({ value }) => value)
   );
-  if (correlated === null) return resolvedDeclared;
+  if (correlated === null) return withAliases;
   const bodies = actions
     .map(({ capture }) => capture.requestPostData)
     .filter((body): body is string => typeof body === "string" && body.length > 0);
-  const extras = unreachable.flatMap((facet) => {
+  const extras = awaiting.flatMap((facet) => {
     const diffed = correlated.get(facet.field);
     if (diffed === undefined || diffed.length === 0) return [];
     if (declared.some(({ value }) => value === diffed)) return [];
     return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
   });
-  return [...resolvedDeclared, ...extras];
+  return [...withAliases, ...extras];
+}
+
+/**
+ * The literal a facet takes in the code vocabulary: the captured request
+ * element (query value or body string leaf) whose `<literal><delim>key=<kind>`
+ * suffix names the facet's own kind. Derived from the traffic itself, so it
+ * never depends on how many other facets or transitions the flow declared.
+ * Returns `undefined` unless exactly one distinct literal carries the kind.
+ */
+function findKindKeyedLiteral(
+  facet: NavigateToFacetBinding,
+  actions: readonly ActionStep[]
+): string | undefined {
+  const byTier = new Map<number, Set<string>>();
+  const sameMonth = new Set<string>();
+  const facetMonths = new Set(
+    [facet.value, ...(facet.literals ?? [])]
+      .map((literal) => monthCodeOf(literal))
+      .filter((code): code is string => code !== undefined)
+  );
+  for (const { capture } of actions) {
+    const values = [
+      ...parseUrlQueryValues(capture.url),
+      ...parseBodyLeafValues(capture.requestPostData),
+    ];
+    for (const value of values) {
+      const parsed = parseElementKind(value);
+      if (parsed === undefined) continue;
+      const tier = kindMatchTier(facet, parsed.kind);
+      if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
+      const month = monthCodeOf(parsed.literal);
+      if (month !== undefined && facetMonths.has(month)) sameMonth.add(parsed.literal);
+    }
+  }
+  const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
+  if (closest !== undefined && closest.size === 1) return [...closest][0];
+  const sameMonthInKind = [...(closest ?? sameMonth)].filter((literal) => sameMonth.has(literal));
+  return sameMonthInKind.length === 1 ? sameMonthInKind[0] : undefined;
 }
 
 /**
@@ -9295,27 +9448,131 @@ function matchArrayElementFacet(
  * `allowDelimiterSuffix`, a literal followed by a non-alphanumeric delimiter
  * suffix also matches. The longest literal wins.
  */
-function matchFacetRecurrence(
+export function matchFacetRecurrence(
   text: string,
   facets: readonly NavigateToFacetBinding[],
   options: { allowDelimiterSuffix: boolean }
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const elementKind = parseElementKind(text)?.kind;
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-      const literal = facet.value;
-      const same = (candidate: string): boolean =>
-        ignoreCase ? candidate.toLowerCase() === literal.toLowerCase() : candidate === literal;
-      const matches =
-        same(text) ||
-        (options.allowDelimiterSuffix &&
-          literal.length > 0 &&
-          same(text.slice(0, literal.length)) &&
-          !isAlnum(text[literal.length]));
-      if (!matches) return best;
-      return best === undefined || literal.length > best.value.length ? facet : best;
+      const readFromElement =
+        facet.keyedByKind === true && parseElementKind(text)?.literal === facet.value;
+      if (
+        elementKind !== undefined &&
+        isKindKeyed(facet) &&
+        !readFromElement &&
+        !kindsMatch(facet, elementKind)
+      ) {
+        return best;
+      }
+      const literal = [facet.value, ...(facet.literals ?? [])]
+        .filter((candidate) => {
+          const same = (value: string): boolean =>
+            ignoreCase ? value.toLowerCase() === candidate.toLowerCase() : value === candidate;
+          return (
+            candidate.length > 0 &&
+            (same(text) ||
+              (options.allowDelimiterSuffix &&
+                same(text.slice(0, candidate.length)) &&
+                !isAlnum(text[candidate.length])))
+          );
+        })
+        .reduce<string | undefined>(
+          (longest, candidate) =>
+            longest === undefined || candidate.length > longest.length ? candidate : longest,
+          undefined
+        );
+      const matchedLiteral = literal;
+      if (matchedLiteral === undefined) return best;
+      const matched = matchedLiteral === facet.value ? facet : { ...facet, value: matchedLiteral };
+      return best === undefined || matchedLiteral.length > best.value.length ? matched : best;
     }, undefined);
   return pick(false) ?? pick(true);
+}
+
+/**
+ * Splits an element of the grammar `<literal><delim><key>=<kind>` into its
+ * literal and kind, or returns `undefined` when the element carries no kind
+ * suffix. Structural only — no key or kind vocabulary is assumed.
+ */
+function parseElementKind(element: string): { literal: string; kind: string } | undefined {
+  const parsed = /^(.+)[;&|,]([^;&|,=]+)=([^;&|,=]+)$/.exec(element);
+  return parsed ? { literal: parsed[1]!, kind: parsed[3]! } : undefined;
+}
+
+function normalizeKind(kind: string): string {
+  return deriveFacetKind(kind).replace(/\s+/g, "").replace(/s$/, "");
+}
+
+const KIND_NOISE_WORDS = new Set(["facet", "filter", "field", "value", "option", "selection"]);
+
+/**
+ * How closely a facet names an element's kind, 0 when it does not: 1 for the
+ * declared field (qualifier words such as `facet` dropped) or a hash-named
+ * hint equal to the kind, 2 when the field's trailing word is the kind
+ * (`sailDate` names a `date` element), 3 when any other word of the field is.
+ * A caller picking an element for the facet takes the closest tier, so a field
+ * naming two kinds still resolves to the one it ends with.
+ */
+function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 1 | 2 | 3 {
+  const element = normalizeKind(elementKind);
+  if (element.length === 0 || facet.kind === undefined) return 0;
+  const words = deriveFacetKind(facet.kind).split(" ");
+  const meaningful = words.filter((word) => !KIND_NOISE_WORDS.has(word));
+  const named = meaningful.length > 0 ? meaningful : words;
+  if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
+  if ((FACET_KIND_HINTS.get(facet) ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
+  if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
+  return named.some((word) => normalizeKind(word) === element) ? 3 : 0;
+}
+
+function kindsMatch(facet: NavigateToFacetBinding, elementKind: string): boolean {
+  return kindMatchTier(facet, elementKind) > 0;
+}
+
+const MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+];
+
+/**
+ * Normalizes a month written as a slug or label (`december-2026`, `Dec 2026`,
+ * `2026-12`) to `YYYY-MM`, so the same month matches across vocabularies.
+ */
+function monthCodeOf(literal: string): string | undefined {
+  const text = literal.trim();
+  const iso = /^(\d{4})[-/](0[1-9]|1[0-2])$/.exec(text);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const named =
+    /^([A-Za-z]{3,9})[\s_/-]+(\d{4})$/.exec(text) ?? /^(\d{4})[\s_/-]+([A-Za-z]{3,9})$/.exec(text);
+  if (!named) return undefined;
+  const yearFirst = /^\d{4}$/.test(named[1]!);
+  const name = (yearFirst ? named[2]! : named[1]!).toLowerCase();
+  const year = yearFirst ? named[1]! : named[2]!;
+  const index = MONTH_NAMES.findIndex(
+    (month) => month === name || (name.length === 3 && month.startsWith(name))
+  );
+  return index === -1 ? undefined : `${year}-${String(index + 1).padStart(2, "0")}`;
+}
+
+function isKindKeyed(facet: NavigateToFacetBinding): boolean {
+  return (
+    facet.kind !== undefined &&
+    facet.kind.length > 0 &&
+    (facet.origin === "step" || facet.keyedByKind === true)
+  );
 }
 
 /**
@@ -14789,21 +15046,76 @@ export function assertRequiredUrlFieldsReferenced(
 }
 
 /**
+ * Blank comments and plain string literals so a `payload.<name>` mention inside
+ * prose or an unrelated string is not mistaken for a read. Template-literal
+ * text is blanked but its `${…}` expressions are kept, because the browser flow
+ * splices fields as `${payload.X}`.
+ */
+function stripNonCodeText(code: string): string {
+  const out: string[] = [];
+  // Non-negative: brace depth at which a template literal's text resumes; negative: -(depth+1) of an open `${`.
+  const templateDepths: number[] = [];
+  let depth = 0;
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    const next = code[i + 1];
+    const inTemplateText =
+      templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === depth;
+    if (inTemplateText) {
+      if (ch === "\\") i += 2;
+      else if (ch === "`") {
+        templateDepths.pop();
+        i++;
+      } else if (ch === "$" && next === "{") {
+        templateDepths.push(-(depth + 1));
+        depth++;
+        out.push("{");
+        i += 2;
+      } else i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < code.length && code[i] !== "\n") i++;
+    } else if (ch === "/" && next === "*") {
+      const end = code.indexOf("*/", i + 2);
+      i = end === -1 ? code.length : end + 2;
+    } else if (ch === '"' || ch === "'") {
+      i++;
+      while (i < code.length && code[i] !== ch && code[i] !== "\n") i += code[i] === "\\" ? 2 : 1;
+      i++;
+      out.push('""');
+    } else if (ch === "`") {
+      templateDepths.push(depth);
+      i++;
+    } else {
+      if (ch === "{") depth++;
+      if (ch === "}") {
+        depth--;
+        if (templateDepths[templateDepths.length - 1] === -(depth + 1)) templateDepths.pop();
+      }
+      out.push(ch ?? "");
+      i++;
+    }
+  }
+  return out.join("");
+}
+
+/**
  * Names of the payload fields a flow explicitly declared via `payloadField`
  * that no emitted request surface reads as `payload.<field>`. The surface is
  * the emitted contract plus the browser flow: a field only the browser flow
  * dereferences still changes browser-executed requests, so it counts as
  * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
- * so it never counts. Vocabulary-derived fields are out of scope. Reported
- * rather than thrown because a field the flow declared but the site never
- * sent is diagnosable, not a broken contract.
+ * so it never counts. Vocabulary-derived fields are out of scope. The caller fails generation on fields
+ * unreferenced everywhere, since they would be required yet ignored.
  */
 export function unreferencedDeclaredPayloadFields(
   contractCode: string,
   browserFlowCode: string,
   flowSteps: readonly FlowStepInput[]
 ): string[] {
-  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const emittedCode = `${stripNonCodeText(contractCode)}\n${stripNonCodeText(browserFlowCode)}`;
   const declared = new Set<string>();
   for (const step of flowSteps) {
     if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);

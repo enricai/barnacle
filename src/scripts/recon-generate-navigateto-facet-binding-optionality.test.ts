@@ -17,7 +17,9 @@ describe("extractNavigateToFacetOrder — binding.optional reflects the step's o
       },
     ]);
 
-    expect(bindings).toEqual([{ value: "acme", field: "Brand", optional: true }]);
+    expect(bindings.map(({ value, field, optional }) => ({ value, field, optional }))).toEqual([
+      { value: "acme", field: "Brand", optional: true },
+    ]);
   });
 
   it("sets optional: false for a structurally identical step without optional:true", () => {
@@ -29,7 +31,9 @@ describe("extractNavigateToFacetOrder — binding.optional reflects the step's o
       },
     ]);
 
-    expect(bindings).toEqual([{ value: "acme", field: "Brand", optional: false }]);
+    expect(bindings.map(({ value, field, optional }) => ({ value, field, optional }))).toEqual([
+      { value: "acme", field: "Brand", optional: false },
+    ]);
   });
 
   it("sets optional: false for a step explicitly declared optional:false", () => {
@@ -42,6 +46,8 @@ describe("extractNavigateToFacetOrder — binding.optional reflects the step's o
       },
     ]);
 
-    expect(bindings).toEqual([{ value: "acme", field: "Brand", optional: false }]);
+    expect(bindings.map(({ value, field, optional }) => ({ value, field, optional }))).toEqual([
+      { value: "acme", field: "Brand", optional: false },
+    ]);
   });
 });

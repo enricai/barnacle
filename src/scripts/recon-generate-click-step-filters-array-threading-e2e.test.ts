@@ -141,6 +141,27 @@ describe("recon-generate CLI — click-step facets threaded into a filters array
     }
     expect(contract).toContain("payload.category");
     expect(unreferencedDeclaredPayloadFields(contract, "", DECLARED_STEPS)).toEqual([]);
+    const order = [
+      ";filterType=date",
+      ";filterType=destination",
+      ";filterType=theme",
+      ";filterType=vendor",
+      ";filterType=extra",
+      ";filterType=night",
+    ].map((kind) => contract.indexOf(kind));
+    expect(
+      order.every((at) => at >= 0),
+      contract
+    ).toBe(true);
+    expect(order, "captured element order is preserved").toEqual([...order].sort((a, b) => a - b));
+  }, 30_000);
+
+  it("threads both facets into the quote-bar filters expression of the six-element body", () => {
+    const { contract } = generate(SIX_ELEMENTS);
+    const filtersExpression = contract.slice(contract.indexOf("filters"));
+
+    expect(filtersExpression).toContain("payload.destination");
+    expect(filtersExpression).toContain("payload.nights");
   }, 30_000);
 
   it("reports the nights field when no request body carries a night element", () => {

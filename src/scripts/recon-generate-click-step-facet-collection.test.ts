@@ -17,8 +17,21 @@ const flow = [
 describe("click-step facet collection", () => {
   it("collects click facets in flow order with step origin", () => {
     expect(extractNavigateToFacetOrder(flow, {})).toEqual([
-      { value: "category-gadgets", field: "Kind", optional: false },
-      { value: "Widgets", field: "Category", optional: false, origin: "step" },
+      {
+        value: "category-gadgets",
+        field: "Kind",
+        optional: false,
+        literals: ["category-gadgets"],
+        kind: "kind",
+      },
+      {
+        value: "Widgets",
+        field: "Category",
+        optional: false,
+        origin: "step",
+        literals: ["Widgets"],
+        kind: "category",
+      },
     ]);
   });
 
@@ -63,5 +76,21 @@ describe("step-origin facets in resolveRecurringNavigateToFacets", () => {
     const declared = extractNavigateToFacetOrder(flow, {});
     const resolved = resolveRecurringNavigateToFacets(declared, [miss as never]);
     expect(resolved.map((f) => f.field)).not.toContain("Category");
+  });
+});
+
+describe("facet literal set and kind", () => {
+  it("exposes literals and kind for click-step facets", () => {
+    const bindings = extractNavigateToFacetOrder(
+      [
+        { step: "click the 'Bahamas' destination option", payloadField: "destination" },
+        { step: "click the '4' nights option", payloadField: "tripLength" },
+      ],
+      {}
+    );
+    expect(bindings.map((b) => [b.value, b.literals, b.kind])).toEqual([
+      ["Bahamas", ["Bahamas"], "destination"],
+      ["4", ["4"], "trip length"],
+    ]);
   });
 });
