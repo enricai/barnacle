@@ -3175,6 +3175,26 @@ export async function probeLeafInvalidContainers(target: FrameTarget): Promise<L
 }
 
 /**
+ * Reads live body text for the submit judge, because a SPA's page title often
+ * stays stale after a mid-flow transition. Failure yields "" so the judge
+ * simply reasons without it.
+ */
+async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
+  try {
+    const text = await withWatchdog(
+      () => target.evaluate(`(() => (document.body ? document.body.innerText || "" : ""))()`),
+      {
+        timeoutMs: config.scraper.frameEvaluateTimeoutMs,
+        label: "flow-runner: submit-verification visible text probe",
+      }
+    );
+    return typeof text === "string" ? text.slice(0, 3000) : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Render a list of structured leaf-invalid records as the numbered evidence
  * lines the prompt's FORM FIELDS section expects. Surfaces label + framework
  * + input tag + visible error text in one line so the LLM can disambiguate
@@ -12654,6 +12674,9 @@ export async function executeStepWithHealing(params: {
       const judgeVerdict = await verifySubmitWithLLM({
         client: anthropic,
         input: {
+          stepInstruction: step,
+          isFinalStep,
+          visibleText: await probeVisibleTextForJudge(frameTarget ?? mainFrameTarget(page)),
           pageUrl: post.url,
           pageTitle,
           unfocusedObserve: unfocusedForJudge.map((a) => ({
@@ -13271,6 +13294,9 @@ export async function executeStepWithHealing(params: {
             const judgeVerdict = await verifySubmitWithLLM({
               client: anthropic,
               input: {
+                stepInstruction: step,
+                isFinalStep,
+                visibleText: await probeVisibleTextForJudge(frameTarget ?? mainFrameTarget(page)),
                 pageUrl: retryPost.url,
                 pageTitle,
                 unfocusedObserve: unfocusedForJudge.map((a) => ({
