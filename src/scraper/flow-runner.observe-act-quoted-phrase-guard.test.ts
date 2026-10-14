@@ -228,6 +228,30 @@ describe("flow-runner/executeStepWithHealing — observe-act quoted-phrase guard
     expect(loggedLines().some((l) => l.includes(REFUSAL))).toBe(false);
   });
 
+  it("acts on a loose fill step whose quoted value does not name the control", async () => {
+    const urls = { current: "https://apply.acme.example/login" };
+    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    guardedObserve.mockResolvedValue([candidate("Job Title textbox in the Section 1 section")]);
+    actSucceedsOnTarget(urls);
+
+    await runStep("Fill in the Job Title field in Section 1 with 'Registered Nurse'", urls);
+
+    expect(targetCalls().length).toBeGreaterThan(0);
+    expect(loggedLines().some((l) => l.includes(REFUSAL))).toBe(false);
+  });
+
+  it("still refuses a click step whose quoted button is not named by the candidate", async () => {
+    const urls = { current: "https://apply.acme.example/login" };
+    resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
+    guardedObserve.mockResolvedValue([candidate("Click the Sign in with email button")]);
+    guardedAct.mockResolvedValue(CLICK_FAILURE);
+
+    await runStep("Click the 'Create Account' button", urls);
+
+    expect(targetCalls()).toHaveLength(0);
+    expect(loggedLines().some((l) => l.includes(REFUSAL))).toBe(true);
+  });
+
   it("refuses the wrong candidate again at attempt 4 after attempt 3 fails", async () => {
     const urls = { current: "https://apply.acme.example/login" };
     resolveFrameTarget.mockResolvedValue(makeChildFrameTarget(urls));
