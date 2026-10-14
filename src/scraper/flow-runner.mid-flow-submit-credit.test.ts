@@ -22,7 +22,7 @@ describe("isClickViewSwapVerified mid-flow submit", () => {
   it("rejects weak signals even with the flag", () => {
     expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, bytesDelta: 600 })).toBe(false);
     expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, textChanged: false })).toBe(
-      false,
+      false
     );
   });
 
@@ -53,7 +53,7 @@ describe("isMidFlowSubmitShapedStep", () => {
         submitStep: false,
         isFinalStep: false,
         flowHasSubmitSemantics: false,
-      }),
+      })
     ).toBe(false);
   });
 });
