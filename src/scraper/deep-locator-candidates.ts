@@ -755,7 +755,8 @@ interface ResolvableLocator extends TrustedClickable {
  */
 async function clickLocatorCentred(locator: ResolvableLocator, label: string): Promise<void> {
   const session = locator.frame?.session;
-  if (typeof locator.resolveNode !== "function" || !session) {
+  const resolveNode = locator.resolveNode?.bind(locator);
+  if (!resolveNode || !session) {
     await locator.click();
     return;
   }
