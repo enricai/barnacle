@@ -6326,7 +6326,12 @@ export async function injectCaptchaTokenAndSubmit(
 export async function submitCaptchaGatedForm(
   target: FrameTarget,
   responseField = "h-captcha-response",
-  verification?: { signalCounter: { n: number }; page?: Page; step: string }
+  verification?: {
+    signalCounter: { n: number };
+    page?: Page;
+    step: string;
+    isMidFlowSubmitStep?: boolean;
+  }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
     const responseField = ${JSON.stringify(responseField)};
@@ -6359,13 +6364,19 @@ export async function submitCaptchaGatedForm(
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
       if (verification.page)
-        await settleAfterClick(verification.page, verification.signalCounter, pre.networkCount);
+        await settleAfterClick(
+          verification.page,
+          verification.signalCounter,
+          pre.networkCount,
+          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
+        );
       const post = await snapshotPage(target, verification.signalCounter, verification.page);
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
         pre,
         post,
         isSubmitShapedStep: true,
+        isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
         destinationPlausible: isPlausibleStepDestination(verification.step, post.url),
       });
       if (verdict !== "phantom") return true;
@@ -6382,7 +6393,9 @@ export async function submitCaptchaGatedForm(
             await settleAfterClick(
               verification.page,
               verification.signalCounter,
-              post.networkCount
+              post.networkCount,
+              async () =>
+                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
             );
           const runnerUpPost = await snapshotPage(
             target,
@@ -6394,6 +6407,7 @@ export async function submitCaptchaGatedForm(
             pre: post,
             post: runnerUpPost,
             isSubmitShapedStep: true,
+            isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
             destinationPlausible: isPlausibleStepDestination(verification.step, runnerUpPost.url),
           });
           if (runnerUpVerdict !== "phantom") return true;
@@ -9569,8 +9583,9 @@ async function probeChildFrameSubmitFallback(params: {
   page: Page;
   signalCounter: { n: number };
   step: string;
+  isMidFlowSubmitStep?: boolean;
 }): Promise<FrameTarget | null> {
-  const { page, signalCounter, step } = params;
+  const { page, signalCounter, step, isMidFlowSubmitStep } = params;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
   // all and doesn't implement this pair, which is indistinguishable here from
@@ -9623,13 +9638,17 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, pre.networkCount);
+    await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
+      const snap = await snapshotPage(target, signalCounter);
+      return snap.visibleTextSignature;
+    });
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
       post,
       isSubmitShapedStep: true,
+      isMidFlowSubmitStep,
       destinationPlausible: isPlausibleStepDestination(step, post.url),
     });
     if (verdict !== "phantom") return target;
@@ -9640,13 +9659,17 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, post.networkCount);
+    await settleAfterClick(page, signalCounter, post.networkCount, async () => {
+      const snap = await snapshotPage(target, signalCounter);
+      return snap.visibleTextSignature;
+    });
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
       post: runnerUpPost,
       isSubmitShapedStep: true,
+      isMidFlowSubmitStep,
       destinationPlausible: isPlausibleStepDestination(step, runnerUpPost.url),
     });
     if (runnerUpVerdict !== "phantom") return target;
@@ -10491,6 +10514,12 @@ export async function executeStepWithHealing(params: {
               signalCounter,
               page,
               step,
+              isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+                step,
+                submitStep,
+                isFinalStep,
+                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+              }),
             });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
@@ -10760,7 +10789,17 @@ export async function executeStepWithHealing(params: {
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       })
     ) {
-      const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
+      const fallbackTarget = await probeChildFrameSubmitFallback({
+      page,
+      signalCounter,
+      step,
+      isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
+    });
       if (fallbackTarget) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
@@ -11431,7 +11470,10 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              await settleAfterClick(page, signalCounter, pre.networkCount);
+              await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
+                const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
+                return snap.visibleTextSignature;
+              });
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
                 signalCounter,
@@ -11445,6 +11487,12 @@ export async function executeStepWithHealing(params: {
                 // stray selection flip must not mask a top-pick phantom and skip
                 // the runner-up retry.
                 isSubmitShapedStep: true,
+                isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+                  step,
+                  submitStep,
+                  isFinalStep,
+                  flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                }),
                 destinationPlausible: isPlausibleStepDestination(step, midPost.url),
               });
               if (topVerdict === "phantom") {
@@ -13674,7 +13722,17 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     })
   ) {
-    const fallbackTarget = await probeChildFrameSubmitFallback({ page, signalCounter, step });
+    const fallbackTarget = await probeChildFrameSubmitFallback({
+      page,
+      signalCounter,
+      step,
+      isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }),
+    });
     if (fallbackTarget) {
       logger.info(
         `${formatStepPrefix(stepIndex, totalSteps)} cascade-exhausted: no candidate resolvable in the declared/main frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
