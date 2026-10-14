@@ -3844,8 +3844,7 @@ export async function fillTextDatepickerInput(
   // Strategy 2 — open-and-pick. Required for picker-only widgets (the reported
   // month/year picker ignores typed input entirely).
   try {
-    const locator = target.locator(selector).first();
-    await locator.click();
+    await clickCentredTrusted(target, selector, { label: "date input" });
   } catch {
     return { filled: false, postValue: "", strategy: "none" };
   }
@@ -7542,7 +7541,7 @@ async function tryRadioPrimitive(params: {
  *      detached / non-MUI radios that already commit that way).
  * Returns whether the commit stuck; false → caller falls through to the cascade.
  */
-async function applyRadioSelection(
+export async function applyRadioSelection(
   target: FrameTarget,
   gi: number,
   ri: number,
@@ -7574,7 +7573,7 @@ async function applyRadioSelection(
   const inputSel = hint.id ? buildRadioIdXPath(hint.id) : hint.xpath ? `xpath=${hint.xpath}` : null;
   if (inputSel) {
     try {
-      await target.locator(inputSel).first().click();
+      await clickCentredTrusted(target, inputSel, { label: "radio input" });
       if (await readback()) return true;
     } catch {
       // fall through to the next tier
@@ -7584,10 +7583,9 @@ async function applyRadioSelection(
   // Tier B — trusted click on the associated label (MUI hides the real input).
   if (hint.id) {
     try {
-      await target
-        .locator(`xpath=//label[@for=${JSON.stringify(hint.id)}]`)
-        .first()
-        .click();
+      await clickCentredTrusted(target, `xpath=//label[@for=${JSON.stringify(hint.id)}]`, {
+        label: "radio label",
+      });
       if (await readback()) return true;
     } catch {
       // fall through to the synthetic backstop
