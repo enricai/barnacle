@@ -930,7 +930,6 @@ const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
  * Builds an in-page expression that finds the marker-stamped element, piercing
  * open shadow roots (plain `querySelector` cannot), and centre + hit-tests it.
  */
-
 export function buildDeepMarkerCentreExpr(markerSelector: string): string {
   return `(() => {
     const sel = ${JSON.stringify(markerSelector)};
