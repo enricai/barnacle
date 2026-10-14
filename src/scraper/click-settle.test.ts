@@ -87,4 +87,25 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, async () => "same", "same");
     expect(f.polls()).toBe(14);
   });
+
+  it("does not return between a header flip and a later body re-render", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 8 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
+    expect(f.polls()).toBeGreaterThan(8);
+    expect(f.polls()).toBeLessThanOrEqual(15);
+  });
+
+  it("treats a change that landed before the first poll as activity versus the pre-click baseline", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      async () => "example.com after",
+      "example.com pre"
+    );
+    expect(f.polls()).toBe(10);
+  });
 });
