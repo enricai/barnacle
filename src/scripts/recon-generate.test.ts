@@ -27,6 +27,7 @@ import {
   type FoldReturnSpec,
   firstEndpointCapture,
   gatherResponseBodySamples,
+  harvestPersonaBindings,
   identifyNoiseCapturesForFields,
   indexStateValues,
   inferZodSchemaFromSamples,
@@ -3285,6 +3286,26 @@ describe("resolveStepPayloadField — Select answer must match the field's known
     expect(
       resolveStepPayloadField(steps[1]!, undefined, false, TEST_RECRUITING_VOCABULARY, known)
     ).toBe("MobilePhone");
+  });
+});
+
+describe("fill-step field gate — shared by known values and persona bindings", () => {
+  const ENV = {} as NodeJS.ProcessEnv;
+  const OPTED_OUT = {
+    step: "Fill in the Job Title field in Work Experience 1 with 'Registered Nurse'",
+    payloadFieldNone: true,
+  };
+
+  it("keeps an opted-out fill step out of both known values and bindings", () => {
+    const steps = [OPTED_OUT];
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+  });
+
+  it("keeps a vocabulary-excluded fill step out of known values", () => {
+    const steps = ["Fill in the Employer field with 'Acme Hospital'"];
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
   });
 });
 
