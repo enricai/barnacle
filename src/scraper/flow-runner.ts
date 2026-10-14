@@ -12981,7 +12981,10 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleAfterClick(page, signalCounter, pre.networkCount);
+          await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
+            const snap = await snapshotPage(n16FallbackTarget, signalCounter);
+            return snap.visibleTextSignature;
+          });
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
@@ -13192,6 +13195,14 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
+          const retryMidFlowSubmit =
+            isMidFlowSubmitShapedStep({
+              step,
+              submitStep,
+              isFinalStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            }) ||
+            (!isFinalStep && retryResolvedElementIsSubmitShaped);
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
@@ -13215,7 +13226,8 @@ export async function executeStepWithHealing(params: {
             pre,
             post: retryPost,
             elementStateChanged: retrySelectionStateChanged,
-            isSubmitShapedStep: retrySubmitShaped,
+            isSubmitShapedStep: retryMidFlowSubmit || retrySubmitShaped,
+            isMidFlowSubmitStep: retryMidFlowSubmit,
             destinationPlausible: retryDestinationPlausible,
           });
           // Destination-plausibility audit of every remaining disjunct in
@@ -13243,7 +13255,9 @@ export async function executeStepWithHealing(params: {
               (n16ClickDelivered && retryUrlChanged) ||
               (checkboxStateVerified && retryDestinationPlausible) ||
               (retrySelectionStateChanged && retryDestinationPlausible) ||
-              (n16ClickDelivered && !retrySubmitShaped && retryVerdict === "effective") ||
+              (n16ClickDelivered &&
+                (!retrySubmitShaped || retryMidFlowSubmit) &&
+                retryVerdict === "effective") ||
               (n16ClickDelivered &&
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
@@ -13357,9 +13371,11 @@ export async function executeStepWithHealing(params: {
             const judgeVerdict = await verifySubmitWithLLM({
               client: anthropic,
               input: {
-                stepInstruction: step,
-                isFinalStep,
-                visibleText: await probeVisibleTextForJudge(frameTarget ?? mainFrameTarget(page)),
+                ...(await buildSubmitJudgeStepContext({
+                  step,
+                  isFinalStep,
+                  target: frameTarget ?? mainFrameTarget(page),
+                })),
                 pageUrl: retryPost.url,
                 pageTitle,
                 unfocusedObserve: unfocusedForJudge.map((a) => ({
