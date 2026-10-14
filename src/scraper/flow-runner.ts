@@ -9786,10 +9786,16 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-      const snap = await snapshotPage(target, signalCounter);
-      return snap.visibleTextSignature;
-    }, pre.visibleTextSignature);
+    await settleAfterClick(
+      page,
+      signalCounter,
+      pre.networkCount,
+      async () => {
+        const snap = await snapshotPage(target, signalCounter);
+        return snap.visibleTextSignature;
+      },
+      pre.visibleTextSignature
+    );
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -9811,10 +9817,16 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    await settleAfterClick(page, signalCounter, post.networkCount, async () => {
-      const snap = await snapshotPage(target, signalCounter);
-      return snap.visibleTextSignature;
-    }, post.visibleTextSignature);
+    await settleAfterClick(
+      page,
+      signalCounter,
+      post.networkCount,
+      async () => {
+        const snap = await snapshotPage(target, signalCounter);
+        return snap.visibleTextSignature;
+      },
+      post.visibleTextSignature
+    );
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -11626,13 +11638,19 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-                const snap = await snapshotPage(
-                  frameTarget ?? mainFrameTarget(page),
-                  signalCounter
-                );
-                return snap.visibleTextSignature;
-              }, pre.visibleTextSignature);
+              await settleAfterClick(
+                page,
+                signalCounter,
+                pre.networkCount,
+                async () => {
+                  const snap = await snapshotPage(
+                    frameTarget ?? mainFrameTarget(page),
+                    signalCounter
+                  );
+                  return snap.visibleTextSignature;
+                },
+                pre.visibleTextSignature
+              );
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
                 signalCounter,
@@ -12491,10 +12509,16 @@ export async function executeStepWithHealing(params: {
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     if (mayTriggerRoundTrip) {
       const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-        const snap = await snapshotPage(settleTarget, signalCounter);
-        return snap.visibleTextSignature;
-      }, pre.visibleTextSignature);
+      await settleAfterClick(
+        page,
+        signalCounter,
+        pre.networkCount,
+        async () => {
+          const snap = await snapshotPage(settleTarget, signalCounter);
+          return snap.visibleTextSignature;
+        },
+        pre.visibleTextSignature
+      );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
@@ -13234,10 +13258,16 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             !ancestorStillInvalid;
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-            const snap = await snapshotPage(n16FallbackTarget, signalCounter);
-            return snap.visibleTextSignature;
-          }, pre.visibleTextSignature);
+          await settleAfterClick(
+            page,
+            signalCounter,
+            pre.networkCount,
+            async () => {
+              const snap = await snapshotPage(n16FallbackTarget, signalCounter);
+              return snap.visibleTextSignature;
+            },
+            pre.visibleTextSignature
+          );
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
