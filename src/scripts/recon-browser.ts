@@ -2856,25 +2856,35 @@ async function main(): Promise<void> {
       // Phase label is mutated between flow steps so the single CDP listener
       // always tags captures with the currently active phase.
       let currentPhase = "home";
-      const stopCapture = wireNetworkCapture(
-        page,
-        counter,
-        signalCounter,
-        recentCaptures,
-        recentCaptureMeta,
-        () => currentPhase,
-        () => {
-          // Live read so SPA history navigation between captures stays accurate.
-          // Fallback to the initial url on parse failure (e.g. about:blank early
-          // in the goto cycle) so we don't accidentally mark a capture as
-          // cross-origin and miss the user-action signal.
-          try {
-            return new URL(page.url()).origin;
-          } catch {
-            return new URL(url).origin;
-          }
+      // Live read so SPA history navigation between captures stays accurate.
+      // Fallback to the initial url on parse failure (e.g. about:blank early
+      // in the goto cycle) so we don't accidentally mark a capture as
+      // cross-origin and miss the user-action signal.
+      const currentPageOrigin = (): string => {
+        try {
+          return new URL(page.url()).origin;
+        } catch {
+          return new URL(url).origin;
         }
-      );
+      };
+      const captureStoppers: (() => void)[] = [];
+      const wireCaptureOn = (target: typeof page): void => {
+        captureStoppers.push(
+          wireNetworkCapture(
+            target,
+            counter,
+            signalCounter,
+            recentCaptures,
+            recentCaptureMeta,
+            () => currentPhase,
+            currentPageOrigin
+          )
+        );
+      };
+      const stopCapture = (): void => {
+        for (const stop of captureStoppers) stop();
+      };
+      wireCaptureOn(page);
 
       logger.info(`navigating to ${url} (waitUntil: ${GOTO_WAIT_UNTIL})`);
       // A navigation wait that never resolves must not discard the run. Ad-heavy
@@ -3044,7 +3054,9 @@ async function main(): Promise<void> {
                   stagehand,
                   page,
                   onPageAdopted: (adopted) => {
+                    if (adopted === page) return;
                     page = adopted;
+                    wireCaptureOn(adopted);
                   },
                   abortSignal: session.deathAbortSignal,
                   frameTarget,
