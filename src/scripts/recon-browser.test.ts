@@ -144,6 +144,7 @@ import {
   isFlowTruncated,
   isReplanCycle,
   isReplanRegressingAcrossAuthBoundary,
+  decideReplanNoProgress,
   isReplanReproposingFailedStep,
   isStructurallyBlocked,
   isSubmitRevealedInvalid,
@@ -7565,5 +7566,45 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
     await assertion;
 
     expect(titleFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recon-browser/decideReplanNoProgress", () => {
+  const mk = (instruction: string): NormalizedStep => ({
+    instruction,
+    optional: false,
+    upload: false,
+    origin: "replan",
+  });
+  const failed = "Click Next to leave Basic Information";
+  const transient = [{ errorMessage: "503 Service Unavailable" }, { errorMessage: "overloaded_error" }];
+
+  it("retries twice per step on transient attempts, then aborts", () => {
+    const counts = new Map<string, number>();
+    const run = (): string => decideReplanNoProgress([mk(failed)], failed, transient, counts);
+    expect([run(), run(), run()]).toEqual(["retry", "retry", "abort"]);
+  });
+
+  it("aborts immediately on non-transient or mixed attempts", () => {
+    const counts = new Map<string, number>();
+    const sel = [{ errorMessage: "element not found for selector" }];
+    expect(decideReplanNoProgress([mk(failed)], failed, sel, counts)).toBe("abort");
+    expect(
+      decideReplanNoProgress([mk(failed)], failed, [...transient, ...sel], counts)
+    ).toBe("abort");
+  });
+
+  it("aborts when the dump is missing or has no attempts", () => {
+    const counts = new Map<string, number>();
+    expect(decideReplanNoProgress([mk(failed)], failed, null, counts)).toBe("abort");
+    expect(decideReplanNoProgress([mk(failed)], failed, [], counts)).toBe("abort");
+  });
+
+  it("proceeds when the bridge has a genuinely new step", () => {
+    const counts = new Map<string, number>();
+    expect(
+      decideReplanNoProgress([mk("Dismiss the cookie banner"), mk(failed)], failed, transient, counts)
+    ).toBe("proceed");
+    expect(counts.size).toBe(0);
   });
 });
