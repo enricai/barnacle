@@ -602,6 +602,11 @@ export interface NavigateToFacetBinding {
   /** Set on a facet whose `value` was read from a captured kind-suffixed
    * element, so it only matches elements of its own kind. */
   readonly keyedByKind?: boolean;
+  /** Set on a kind-keyed alias: maps each literal the caller's declared
+   * vocabulary uses for the facet to the literal the captured traffic uses
+   * for it, so a renderer can translate the caller's value instead of
+   * emitting it raw into a code-vocabulary element. */
+  readonly valueMap?: ReadonlyMap<string, string>;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -6958,12 +6963,13 @@ function applyScalarFacetSplicePayloadSubstitutions(
     const literal = JSON.stringify(value);
     const fallback = facet.optional ? ` ?? ${literal}` : "";
     const casing = facetCaseMethod(String(value), facet);
-    const cased = casing ? `String(payload.${facet.field}${fallback}).${casing}()` : undefined;
+    const expression = facetPayloadExpression(facet, fallback);
+    const cased = casing ? `String(${expression}).${casing}()` : undefined;
     const replacement = cased
       ? `\${JSON.stringify(${cased})}`
       : typeof value === "number" || facet.optional
-        ? `\${JSON.stringify(payload.${facet.field}${fallback})}`
-        : `"\${payload.${facet.field}}"`;
+        ? `\${JSON.stringify(${expression})}`
+        : `"\${${expression}}"`;
     for (const sep of [":", ": "]) {
       if (typeof value === "number") {
         const re = new RegExp(`${sep}${literal}(?![\\w.])`, "g");
@@ -7691,7 +7697,8 @@ export function resolveRecurringNavigateToFacets(
     claimedLiterals.add(literal);
     const known = [facet.value, ...(facet.literals ?? [])];
     if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
+    const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
+    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
   });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
@@ -7734,6 +7741,11 @@ function findKindKeyedLiteral(
       .map((literal) => monthCodeOf(literal))
       .filter((code): code is string => code !== undefined)
   );
+  const yearlessMonths = new Set(
+    [facet.value, ...(facet.literals ?? [])]
+      .map((literal) => bareMonthNumberOf(literal))
+      .filter((month): month is string => month !== undefined)
+  );
   for (const { capture } of actions) {
     const values = [
       ...parseUrlQueryValues(capture.url),
@@ -7745,7 +7757,12 @@ function findKindKeyedLiteral(
       const tier = kindMatchTier(facet, parsed.kind);
       if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
       const month = monthCodeOf(parsed.literal);
-      if (month !== undefined && facetMonths.has(month)) sameMonth.add(parsed.literal);
+      if (
+        month !== undefined &&
+        (facetMonths.has(month) || yearlessMonths.has(month.slice("YYYY-".length)))
+      ) {
+        sameMonth.add(parsed.literal);
+      }
     }
   }
   const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
@@ -9567,6 +9584,16 @@ function monthCodeOf(literal: string): string | undefined {
   return index === -1 ? undefined : `${year}-${String(index + 1).padStart(2, "0")}`;
 }
 
+/** Month number (`12`) of a month written without a year (`december`, `Dec`),
+ * so a facet whose literal names only the month still matches a dated element. */
+function bareMonthNumberOf(literal: string): string | undefined {
+  const name = literal.trim().toLowerCase();
+  const index = MONTH_NAMES.findIndex(
+    (month) => month === name || (name.length === 3 && month.startsWith(name))
+  );
+  return index === -1 ? undefined : String(index + 1).padStart(2, "0");
+}
+
 function isKindKeyed(facet: NavigateToFacetBinding): boolean {
   return (
     facet.kind !== undefined &&
@@ -9592,9 +9619,22 @@ function facetCaseMethod(
   return undefined;
 }
 
+/**
+ * JS expression for the value a facet's payload field carries in the code
+ * vocabulary: a kind-keyed alias translates the caller's declared literal
+ * through its `valueMap`, passing an already-coded value through untouched.
+ */
+function facetPayloadExpression(facet: NavigateToFacetBinding, fallback = ""): string {
+  const raw = `payload.${facet.field}${fallback}`;
+  if (!facet.valueMap || facet.valueMap.size === 0) return raw;
+  const entries = JSON.stringify([...facet.valueMap.entries()]);
+  return `(new Map(${entries}).get(String(payload.${facet.field})) ?? ${raw})`;
+}
+
 function renderFacetPayloadValue(captured: string, facet: NavigateToFacetBinding): string {
   const method = facetCaseMethod(captured, facet);
-  return method ? `\${String(payload.${facet.field}).${method}()}` : `\${payload.${facet.field}}`;
+  const expression = facetPayloadExpression(facet);
+  return method ? `\${String(${expression}).${method}()}` : `\${${expression}}`;
 }
 
 /**
@@ -9612,8 +9652,8 @@ function spliceFacetRecurrenceIntoScalarVariable(
     const facet = matchFacetRecurrence(String(value), facets, { allowDelimiterSuffix: false });
     if (facet !== undefined) {
       const rendered = renderFacetPayloadValue(String(value), facet);
-      return rendered === `\${payload.${facet.field}}`
-        ? `payload.${facet.field}`
+      return rendered === `\${${facetPayloadExpression(facet)}}`
+        ? facetPayloadExpression(facet)
         : `\`${rendered}\``;
     }
   }
@@ -15107,8 +15147,9 @@ function stripNonCodeText(code: string): string {
  * the emitted contract plus the browser flow: a field only the browser flow
  * dereferences still changes browser-executed requests, so it counts as
  * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
- * so it never counts. Vocabulary-derived fields are out of scope. The caller fails generation on fields
- * unreferenced everywhere, since they would be required yet ignored.
+ * so it never counts. Vocabulary-derived fields are out of scope. The generator emits the
+ * fields no emitted request reads as optional schema fields, since a required field nothing
+ * sends only burdens callers.
  */
 export function unreferencedDeclaredPayloadFields(
   contractCode: string,
@@ -15122,6 +15163,27 @@ export function unreferencedDeclaredPayloadFields(
   }
   return [...declared].filter(
     (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
+  );
+}
+
+/**
+ * Declared payload fields the emitted requests never read. When the contract
+ * replays HTTP requests only those count (the browser flow just changes
+ * instruction text); a browser-only contract counts the browser flow too.
+ * These are emitted optional so no caller has to supply a value that nothing
+ * sends.
+ */
+function unreadDeclaredPayloadFields(
+  contractCode: string,
+  browserFlowCode: string,
+  flowSteps: readonly FlowStepInput[]
+): Set<string> {
+  return new Set(
+    unreferencedDeclaredPayloadFields(
+      contractCode,
+      contractCode.includes("httpClient(") ? "" : browserFlowCode,
+      flowSteps
+    )
   );
 }
 
@@ -15160,11 +15222,20 @@ function escapeForTemplateLiteral(segment: string): string {
  * own choice so the browser-flow and HTTP-body emitters never disagree on
  * which quoted span is the persona value.
  */
-function buildStepInstructionExpr(instruction: string, field: string | null): string {
+function buildStepInstructionExpr(
+  instruction: string,
+  field: string | null,
+  capturedFallback = false
+): string {
   if (field === null) return JSON.stringify(instruction);
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${field}}${escapeForTemplateLiteral(site.after)}\``;
+  const captured = pickedQuotedValue(instruction);
+  const read =
+    capturedFallback && captured !== null
+      ? `payload.${field} ?? ${JSON.stringify(captured)}`
+      : `payload.${field}`;
+  return `\`${escapeForTemplateLiteral(site.before)}\${${read}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15523,6 +15594,11 @@ export function emitBrowserFlowTs(opts: {
    * plugin keeps the same cross-origin iframe capability the recon flow used.
    * Omitted (undefined) preserves today's main-frame-only generation. */
   frameSelector?: string;
+  /** Optional payload fields whose splice falls back to the value the recon
+   * run captured, so a caller who omits a field the HTTP path never reads
+   * still drives the browser fallback with a real value rather than
+   * `undefined`. */
+  capturedFallbackFields?: ReadonlySet<string>;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15535,6 +15611,7 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep = false,
     vocabulary,
     frameSelector,
+    capturedFallbackFields = new Set<string>(),
     env = process.env,
   } = opts;
 
@@ -15543,6 +15620,9 @@ export function emitBrowserFlowTs(opts: {
     vocabulary,
     env
   );
+  for (const field of capturedFallbackFields) {
+    if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+  }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
@@ -15602,7 +15682,11 @@ export function emitBrowserFlowTs(opts: {
     const instructionExpr =
       composite !== null
         ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
-        : buildStepInstructionExpr(instruction, field);
+        : buildStepInstructionExpr(
+            instruction,
+            field,
+            field !== null && capturedFallbackFields.has(field)
+          );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
@@ -16972,11 +17056,43 @@ async function main(): Promise<void> {
       fallbackGateSpec,
     };
 
-    const contractCode = emitContractTs(contractOpts);
+    const firstContractCode = emitContractTs(contractOpts);
+    const unread = unreadDeclaredPayloadFields(firstContractCode, browserFlow.code, flowSteps);
+    // A field no emitted request reads must not be required of callers. The
+    // browser fallback keeps splicing it, from the captured value when the
+    // caller omits it, so the field still takes effect when supplied.
+    const settled =
+      unread.size === 0
+        ? { browserFlow, contractOpts, contractCode: firstContractCode }
+        : (() => {
+            const fallbackBrowserFlow = emitBrowserFlowTs({
+              siteId,
+              pascal,
+              baseUrl,
+              flowSteps,
+              isSubmissionFlow,
+              hasMultipartStep,
+              vocabulary,
+              frameSelector,
+              capturedFallbackFields: unread,
+            });
+            const optionalized = {
+              ...contractOpts,
+              optionalPayloadFieldNames: new Set([
+                ...fallbackBrowserFlow.optionalPayloadFieldNames,
+                ...unread,
+              ]),
+            };
+            return {
+              browserFlow: fallbackBrowserFlow,
+              contractOpts: optionalized,
+              contractCode: emitContractTs(optionalized),
+            };
+          })();
     return {
-      contractCode,
-      contractOpts,
-      browserFlow,
+      contractCode: settled.contractCode,
+      contractOpts: settled.contractOpts,
+      browserFlow: settled.browserFlow,
       auxFiles,
       resolvedPool: actionCaptures,
       isSubmissionFlow,
@@ -16992,15 +17108,13 @@ async function main(): Promise<void> {
   const unreferencedEverywhere = new Set(
     unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
   );
-  // A browser-flow splice only changes the instruction text; when the contract
-  // replays HTTP requests, a field none of them carries still has no effect on
-  // the replayed requests and is reported too.
-  const unreferencedInContract = final.contractCode.includes("httpClient(")
-    ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
-    : [...unreferencedEverywhere];
-  for (const field of unreferencedInContract) {
+  for (const field of unreadDeclaredPayloadFields(
+    final.contractCode,
+    final.browserFlow.code,
+    flowSteps
+  )) {
     logger.warn(
-      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
+      `declared payloadField ${field} is read by no emitted request; emitted as optional schema field${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
     );
   }
 

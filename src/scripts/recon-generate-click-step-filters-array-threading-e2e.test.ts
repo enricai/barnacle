@@ -86,7 +86,7 @@ const DECLARED_STEPS = [
   { step: NIGHTS_STEP, payloadField: "nights" },
 ];
 
-function generate(filters: string[]): { contract: string; output: string } {
+function generate(filters: string[]): { contract: string; browserFlow: string; output: string } {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-click-step-filters-array-"));
   const runRoot = join(workDir, "run");
   writeRunDir(runRoot, buildCaptures(filters));
@@ -120,7 +120,11 @@ function generate(filters: string[]): { contract: string; output: string } {
   );
   const output = `${result.stdout}\n${result.stderr}`;
   expect(result.status, output).toBe(0);
-  return { contract: readFileSync(join(siteOutDir, "contract.ts"), "utf8"), output };
+  return {
+    contract: readFileSync(join(siteOutDir, "contract.ts"), "utf8"),
+    browserFlow: readFileSync(join(siteOutDir, "flows", "browser-flow.ts"), "utf8"),
+    output,
+  };
 }
 
 describe("recon-generate CLI — click-step facets threaded into a filters array", () => {
@@ -164,13 +168,15 @@ describe("recon-generate CLI — click-step facets threaded into a filters array
     expect(filtersExpression).toContain("payload.nights");
   }, 30_000);
 
-  it("reports the nights field when no request body carries a night element", () => {
-    const { contract, output } = generate(FIVE_ELEMENTS);
+  it("emits nights optional and falls back to the captured value when no request body carries a night element", () => {
+    const { contract, browserFlow, output } = generate(FIVE_ELEMENTS);
 
-    expect(output).toContain("declared payloadField nights is a required schema field");
-    expect(output).not.toContain("declared payloadField destination is a required schema field");
+    expect(output).toContain("declared payloadField nights is read by no emitted request");
+    expect(output).not.toContain("declared payloadField destination is read by no emitted request");
+    expect(contract).toMatch(/nights: z\.string\(\)\.optional\(\)/);
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract).toContain("payload.category");
-    expect(unreferencedDeclaredPayloadFields(contract, "", DECLARED_STEPS)).toEqual(["nights"]);
+    expect(browserFlow).toContain('payload.nights ?? "4"');
+    expect(unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS)).toEqual([]);
   }, 30_000);
 });
