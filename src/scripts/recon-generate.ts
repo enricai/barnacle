@@ -247,6 +247,32 @@ export function resolveStepPayloadField(
 }
 
 /**
+ * The single decision for which payload field a fill step carries: the
+ * vocabulary/explicit field, else the instruction's own label — never when the
+ * author opted out (`payloadFieldNone`) or the vocabulary excludes the step.
+ * Shared so known-field and persona-binding registration cannot drift apart.
+ */
+function fieldForFillStep(
+  step: FlowStepInput,
+  vocabulary: ReconVocabulary,
+  knownFieldValues?: ReadonlyMap<string, string>
+): string | null {
+  const isObj = typeof step !== "string";
+  const instruction = isObj ? step.step : step;
+  const vocabField = resolveStepPayloadField(
+    instruction,
+    isObj ? step.payloadField : undefined,
+    isObj ? step.payloadFieldNone : undefined,
+    vocabulary,
+    knownFieldValues
+  );
+  if (vocabField !== null) return vocabField;
+  if (isObj && step.payloadFieldNone) return null;
+  if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
+  return deriveFillLabelField(instruction);
+}
+
+/**
  * Field→value pairs the flow establishes unambiguously via a Fill/Enter/Type
  * step — the applicant's own datum, per {@link deriveFillLabelField}'s same
  * self-describing grammar. {@link resolveStepPayloadField} uses this to verify
@@ -265,13 +291,7 @@ export function buildKnownFieldValues(
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field =
-      resolveStepPayloadField(
-        instruction,
-        isObj ? step.payloadField : undefined,
-        isObj ? step.payloadFieldNone : undefined,
-        vocabulary
-      ) ?? deriveFillLabelField(instruction);
+    const field = fieldForFillStep(step, vocabulary);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -559,23 +579,7 @@ export function harvestPersonaBindings(
     // downstream header/body templates is the URL's own hash-derived
     // fragment, not anything extractStepPersonaValue could find in `step.step`.
     if (isObj && step.navigateTo !== undefined) continue;
-    const vocabField = resolveStepPayloadField(
-      instruction,
-      isObj ? step.payloadField : undefined,
-      isObj ? step.payloadFieldNone : undefined,
-      vocabulary,
-      knownFieldValues
-    );
-    // Vocabulary wins outright. Only on a miss do we fall back to deriving the
-    // field from the instruction's own label — and never when the author opted
-    // the step out (`payloadFieldNone`) or the vocabulary explicitly excluded it.
-    const field =
-      vocabField ??
-      (isObj && step.payloadFieldNone
-        ? null
-        : vocabulary.exclusions.some((rx) => rx.test(instruction))
-          ? null
-          : deriveFillLabelField(instruction));
+    const field = fieldForFillStep(step, vocabulary, knownFieldValues);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
