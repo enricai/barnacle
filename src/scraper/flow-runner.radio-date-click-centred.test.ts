@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { FrameTarget } from "@/scraper/frame-target";
 import { applyRadioSelection, fillTextDatepickerInput } from "@/scraper/flow-runner";
+import type { FrameTarget } from "@/scraper/frame-target";
 
 interface Harness {
   target: FrameTarget;
