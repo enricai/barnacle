@@ -14838,21 +14838,75 @@ export function assertRequiredUrlFieldsReferenced(
 }
 
 /**
+ * Blank comments and plain string literals so a `payload.<name>` mention inside
+ * prose or an unrelated string is not mistaken for a read. Template-literal
+ * text is blanked but its `${…}` expressions are kept, because the browser flow
+ * splices fields as `${payload.X}`.
+ */
+function stripNonCodeText(code: string): string {
+  const out: string[] = [];
+  // Each entry is the brace depth at which an open template literal resumes.
+  const templateDepths: number[] = [];
+  let depth = 0;
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    const next = code[i + 1];
+    const inTemplateText = templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === depth;
+    if (inTemplateText) {
+      if (ch === "\\") i += 2;
+      else if (ch === "`") {
+        templateDepths.pop();
+        i++;
+      } else if (ch === "$" && next === "{") {
+        depth++;
+        templateDepths.push(-1);
+        out.push("{");
+        i += 2;
+      } else i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < code.length && code[i] !== "\n") i++;
+    } else if (ch === "/" && next === "*") {
+      const end = code.indexOf("*/", i + 2);
+      i = end === -1 ? code.length : end + 2;
+    } else if (ch === '"' || ch === "'") {
+      i++;
+      while (i < code.length && code[i] !== ch && code[i] !== "\n") i += code[i] === "\\" ? 2 : 1;
+      i++;
+      out.push('""');
+    } else if (ch === "`") {
+      templateDepths.push(depth);
+      i++;
+    } else {
+      if (ch === "{") depth++;
+      if (ch === "}") {
+        depth--;
+        if (templateDepths[templateDepths.length - 1] === -1) templateDepths.pop();
+      }
+      out.push(ch);
+      i++;
+    }
+  }
+  return out.join("");
+}
+
+/**
  * Names of the payload fields a flow explicitly declared via `payloadField`
  * that no emitted request surface reads as `payload.<field>`. The surface is
  * the emitted contract plus the browser flow: a field only the browser flow
  * dereferences still changes browser-executed requests, so it counts as
  * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
- * so it never counts. Vocabulary-derived fields are out of scope. Reported
- * rather than thrown because a field the flow declared but the site never
- * sent is diagnosable, not a broken contract.
+ * so it never counts. Vocabulary-derived fields are out of scope. The caller fails generation on fields
+ * unreferenced everywhere, since they would be required yet ignored.
  */
 export function unreferencedDeclaredPayloadFields(
   contractCode: string,
   browserFlowCode: string,
   flowSteps: readonly FlowStepInput[]
 ): string[] {
-  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  const emittedCode = `${stripNonCodeText(contractCode)}\n${stripNonCodeText(browserFlowCode)}`;
   const declared = new Set<string>();
   for (const step of flowSteps) {
     if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
@@ -16735,9 +16789,15 @@ async function main(): Promise<void> {
   const unreferencedInContract = final.contractCode.includes("httpClient(")
     ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
     : [...unreferencedEverywhere];
+  if (unreferencedEverywhere.size > 0) {
+    throw new Error(
+      `recon-generate: declared payloadField(s) ${[...unreferencedEverywhere].join(", ")} are required schema fields ` +
+        `but no emitted request or browser flow references them — drop the payloadField or capture a request that carries it`
+    );
+  }
   for (const field of unreferencedInContract) {
     logger.warn(
-      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
+      `declared payloadField ${field} is a required schema field but no emitted HTTP request references it (only the browser flow splices it)`
     );
   }
 

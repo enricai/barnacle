@@ -22,3 +22,23 @@ describe("unreferencedDeclaredPayloadFields", () => {
     expect(unreferencedDeclaredPayloadFields(contract, "", steps)).toEqual([]);
   });
 });
+
+describe("unreferencedDeclaredPayloadFields structural matching", () => {
+  const contract = "Facet: z.string(),";
+  const steps = [{ step: "pick", payloadField: "Facet" }];
+
+  it("ignores payload mentions inside strings and comments", () => {
+    expect(
+      unreferencedDeclaredPayloadFields(contract, 'log("payload.Facet"); // payload.Facet', steps)
+    ).toEqual(["Facet"]);
+    expect(unreferencedDeclaredPayloadFields(contract, "/* payload.Facet */", steps)).toEqual([
+      "Facet",
+    ]);
+  });
+
+  it("counts a template-literal splice", () => {
+    expect(unreferencedDeclaredPayloadFields(contract, "go(`pick ${payload.Facet}`)", steps)).toEqual(
+      []
+    );
+  });
+});
