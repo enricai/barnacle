@@ -24,9 +24,11 @@ import {
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
+  extractStepPersonaValue,
   type FoldReturnSpec,
   firstEndpointCapture,
   gatherResponseBodySamples,
+  harvestPersonaBindings,
   identifyNoiseCapturesForFields,
   indexStateValues,
   inferZodSchemaFromSamples,
@@ -3288,6 +3290,26 @@ describe("resolveStepPayloadField — Select answer must match the field's known
   });
 });
 
+describe("fill-step field gate — shared by known values and persona bindings", () => {
+  const ENV = {} as NodeJS.ProcessEnv;
+  const OPTED_OUT = {
+    step: "Fill in the Job Title field in Work Experience 1 with 'Registered Nurse'",
+    payloadFieldNone: true,
+  };
+
+  it("keeps an opted-out fill step out of both known values and bindings", () => {
+    const steps = [OPTED_OUT];
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+  });
+
+  it("keeps a vocabulary-excluded fill step out of known values", () => {
+    const steps = ["Fill in the Employer field with 'Acme Hospital'"];
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+  });
+});
+
 describe("resolveStepPayloadField — override + opt-out + no-constant", () => {
   it("honors an explicit payloadField override", () => {
     expect(resolveStepPayloadField("Click the Continue button", "FirstName")).toBe("FirstName");
@@ -3415,6 +3437,41 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
     expect(code).toContain("uploadFixture: null");
     expect(code).toContain("TODO: this flow uploads");
   });
+
+  it("wires uploadFixture for a body-less browser-flow-only submission with a spliced FirstName", () => {
+    const opts = {
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: true,
+      hasMultipartStep: false,
+      vocabulary: TEST_RECRUITING_VOCABULARY,
+      flowSteps: ["Fill in the First Name field with 'Reginald'", ...uploadFlow],
+    };
+    const { code, payloadFieldNames } = emitBrowserFlowTs(opts);
+    expect(payloadFieldNames.has("FirstName")).toBe(true);
+    expect(code).toContain("Buffer.from(payload.Resume)");
+    expect(code).toContain('payload.ResumeContentType ?? "application/pdf"');
+  });
+
+  it.each([
+    ["First Name", "'Reginald'", "FirstName"],
+    ["City", "'Dallas'", "City"],
+  ])(
+    "wires uploadFixture from a spliced %s with no inputBody and no multipart step",
+    (label, value, field) => {
+      const { code, payloadFieldNames } = emitBrowserFlowTs({
+        siteId: "s",
+        pascal: "S",
+        baseUrl: "https://x",
+        isSubmissionFlow: true,
+        vocabulary: TEST_RECRUITING_VOCABULARY,
+        flowSteps: [`Fill in the ${label} field with ${value}`, ...uploadFlow],
+      });
+      expect(payloadFieldNames.has(field)).toBe(true);
+      expect(code).toContain("Buffer.from(payload.Resume)");
+    }
+  );
 });
 
 describe("emitBrowserFlowTs — navigateTo step", () => {
@@ -5304,5 +5361,38 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     const baseUrl = deriveBaseUrl([siblingSubdomainMinority, ...loginBackendMajority], []);
 
     expect(baseUrl).toBe("https://login.example.com");
+  });
+});
+
+describe("pickValueSpan — select verb anywhere in the instruction", () => {
+  const env = {} as NodeJS.ProcessEnv;
+
+  it("extracts the answer after a mid-sentence select verb, not the label span", () => {
+    expect(
+      extractStepPersonaValue(
+        "In the 'Region' prompt selector, select 'Texas' and confirm the 'Region' field now shows Texas",
+        env
+      )
+    ).toBe("Texas");
+  });
+
+  it("keeps the leading-verb and Fill behavior unchanged", () => {
+    expect(extractStepPersonaValue("Select 'TX' in the 'Region' prompt selector", env)).toBe("TX");
+    expect(extractStepPersonaValue("Fill in the 'Region' field with 'Texas'", env)).toBe("Texas");
+  });
+
+  it("keeps a phone-code label literal when the vocabulary excludes it", () => {
+    const vocabulary: ReconVocabulary = {
+      ...TEST_RECRUITING_VOCABULARY,
+      exclusions: [/country phone code/i],
+    };
+    expect(
+      resolveStepPayloadField(
+        "Select '+1' in the Country Phone Code list",
+        undefined,
+        false,
+        vocabulary
+      )
+    ).toBeNull();
   });
 });

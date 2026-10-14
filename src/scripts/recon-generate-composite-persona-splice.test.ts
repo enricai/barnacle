@@ -63,7 +63,7 @@ describe("emitBrowserFlowTs — composite persona value splice (FirstName + Last
     });
     const block = flowStepsBlock(code);
 
-    expect(block).toContain(`\${payload.LastName} \${payload.FirstName}`);
+    expect(block).toContain(`'\${payload.LastName} \${payload.FirstName}'`);
     expect(block).not.toContain("'Reconaldo Reginald'");
   });
 

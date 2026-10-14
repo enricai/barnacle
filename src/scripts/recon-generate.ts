@@ -96,22 +96,61 @@ const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
  */
 const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 
+const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
+
+/**
+ * Quoted spans of a flow-step instruction. The runtime parsers only understand
+ * single quotes, so a double-quoted span is consulted only when the step has no
+ * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
+ * double-quoted-only step still has a spliceable value instead of being skipped.
+ */
+function findInstructionSpans(instruction: string): QuotedSpan[] {
+  const single = findQuotedSpans(instruction);
+  if (single.length > 0) return single;
+  return Array.from(instruction.matchAll(DOUBLE_QUOTED_SPAN), (match) => ({
+    text: match[1] ?? "",
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+}
+
+/**
+ * A quoted span that names the widget or question a step targets rather than
+ * the value it carries: followed by a widget noun ("'State' prompt selector"),
+ * or introduced by "for"/"from" ("for the 'State' question").
+ */
+function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
+  const before = instruction.slice(Math.max(0, span.start - 25), span.start);
+  const after = instruction.slice(span.end);
+  return (
+    /^\s*(?:prompt\s+selector|selector|dropdown|drop-down|multiselect|typeahead|field|question|list|menu|widget)\b/i.test(
+      after
+    ) || /\b(?:for|from)(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before)
+  );
+}
+
 /**
  * Picks which quoted span in an instruction is the persona VALUE, per the
  * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
- * ANSWER first, then the question, so the value is the FIRST quoted span; a
- * `Fill`/`Enter`/`Type` step names the field label first and the value last,
- * so it is the LAST quoted span.
+ * ANSWER after the verb (wherever the verb sits, so a leading context phrase
+ * does not hide it), so the value is the first span following the verb that is
+ * not a widget label — "choose the 'State' field, then choose 'Texas'" must
+ * yield Texas, not the label. Any other step (`Fill`/`Enter`/`Type`) names the
+ * field label first and the value last, so it is the LAST quoted span.
  */
 function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
-  return /^\s*(select|choose|pick)\b/i.test(instruction) ? spans[0]! : spans[spans.length - 1]!;
+  const verb = /\b(select|choose|pick)\b/i.exec(instruction);
+  const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
+  const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
+  return answer ?? spans[spans.length - 1]!;
 }
 
 /**
  * Locates the splice site in a flow-step instruction as `{ before, matched,
  * after }` slices of the ORIGINAL instruction — a reserved `${RECON_*}` env
  * token when present (preferred, since it names its own site unambiguously),
- * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule.
+ * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule
+ * (its quote delimiters stay in `before`/`after`, so a splice remains quoted).
  * This is the position-aware counterpart to {@link extractStepPersonaValue}:
  * that function only needs the extracted string, this one needs the actual
  * before/after slices so a template literal can be rebuilt around the site.
@@ -129,13 +168,13 @@ function locateSpliceSite(
       after: instruction.slice(envToken.index + envToken[0].length),
     };
   }
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const span = pickValueSpan(instruction, spans);
   return {
-    before: instruction.slice(0, span.start),
-    matched: instruction.slice(span.start, span.end),
-    after: instruction.slice(span.end),
+    before: instruction.slice(0, span.start + 1),
+    matched: instruction.slice(span.start + 1, span.end - 1),
+    after: instruction.slice(span.end - 1),
   };
 }
 
@@ -147,7 +186,7 @@ function locateSpliceSite(
  * can never be mistaken for the data it merely mentions.
  */
 function namesAControl(instruction: string): boolean {
-  return findQuotedSpans(instruction).some((span) =>
+  return findInstructionSpans(instruction).some((span) =>
     /^\s*(button|link|tab)\b/i.test(instruction.slice(span.end))
   );
 }
@@ -155,7 +194,7 @@ function namesAControl(instruction: string): boolean {
 /** The quoted VALUE a Select/Choose/Fill step carries, per {@link pickValueSpan}'s
  * grammar rule — used to validate a vocabulary match's ANSWER, not just its label. */
 function pickedQuotedValue(instruction: string): string | null {
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
@@ -218,7 +257,7 @@ export function resolveStepPayloadField(
   // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
   // this step would replace, so it is spliceable on its own.
   const hasQuotedConstant =
-    findQuotedSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
+    findInstructionSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
@@ -247,6 +286,32 @@ export function resolveStepPayloadField(
 }
 
 /**
+ * The single decision for which payload field a fill step carries: the
+ * vocabulary/explicit field, else the instruction's own label — never when the
+ * author opted out (`payloadFieldNone`) or the vocabulary excludes the step.
+ * Shared so known-field and persona-binding registration cannot drift apart.
+ */
+function fieldForFillStep(
+  step: FlowStepInput,
+  vocabulary: ReconVocabulary,
+  knownFieldValues?: ReadonlyMap<string, string>
+): string | null {
+  const isObj = typeof step !== "string";
+  const instruction = isObj ? step.step : step;
+  const vocabField = resolveStepPayloadField(
+    instruction,
+    isObj ? step.payloadField : undefined,
+    isObj ? step.payloadFieldNone : undefined,
+    vocabulary,
+    knownFieldValues
+  );
+  if (vocabField !== null) return vocabField;
+  if (isObj && step.payloadFieldNone) return null;
+  if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
+  return deriveFillLabelField(instruction);
+}
+
+/**
  * Field→value pairs the flow establishes unambiguously via a Fill/Enter/Type
  * step — the applicant's own datum, per {@link deriveFillLabelField}'s same
  * self-describing grammar. {@link resolveStepPayloadField} uses this to verify
@@ -265,13 +330,7 @@ export function buildKnownFieldValues(
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field =
-      resolveStepPayloadField(
-        instruction,
-        isObj ? step.payloadField : undefined,
-        isObj ? step.payloadFieldNone : undefined,
-        vocabulary
-      ) ?? deriveFillLabelField(instruction);
+    const field = fieldForFillStep(step, vocabulary);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -320,7 +379,7 @@ export function extractStepPersonaValue(
     const resolved = env[envToken[1]!];
     if (resolved) return resolved;
   }
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
@@ -441,7 +500,7 @@ function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): 
   const primary = extractStepPersonaValue(instruction, env);
   return uniqueLiterals(
     primary,
-    findQuotedSpans(instruction).map((span) => span.text)
+    findInstructionSpans(instruction).map((span) => span.text)
   );
 }
 
@@ -515,7 +574,7 @@ function stripHashKeyPrefix(token: string): string {
  */
 export function deriveFillLabelField(instruction: string): string | null {
   if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) return null;
-  if (findQuotedSpans(instruction).length === 0) return null;
+  if (findInstructionSpans(instruction).length === 0) return null;
   const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
     instruction
   )?.[1];
@@ -559,23 +618,7 @@ export function harvestPersonaBindings(
     // downstream header/body templates is the URL's own hash-derived
     // fragment, not anything extractStepPersonaValue could find in `step.step`.
     if (isObj && step.navigateTo !== undefined) continue;
-    const vocabField = resolveStepPayloadField(
-      instruction,
-      isObj ? step.payloadField : undefined,
-      isObj ? step.payloadFieldNone : undefined,
-      vocabulary,
-      knownFieldValues
-    );
-    // Vocabulary wins outright. Only on a miss do we fall back to deriving the
-    // field from the instruction's own label — and never when the author opted
-    // the step out (`payloadFieldNone`) or the vocabulary explicitly excluded it.
-    const field =
-      vocabField ??
-      (isObj && step.payloadFieldNone
-        ? null
-        : vocabulary.exclusions.some((rx) => rx.test(instruction))
-          ? null
-          : deriveFillLabelField(instruction));
+    const field = fieldForFillStep(step, vocabulary, knownFieldValues);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -662,7 +705,7 @@ export function resolveCompositePersonaFields(
   instruction: string,
   knownFieldValues: ReadonlyMap<string, string>
 ): { fieldA: string; fieldB: string } | null {
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   if (value.length === 0) return null;
@@ -4485,7 +4528,7 @@ export function buildSelectOptionResolutions(
     // returns first-quote when the sentence STARTS with select/choose/pick; a
     // dropdown step phrased "On the X step, select 'No' in the '…?' dropdown"
     // starts with "On", so read the first quote directly here for id= steps.
-    const firstQuoteText = findQuotedSpans(instruction)[0]?.text;
+    const firstQuoteText = findInstructionSpans(instruction)[0]?.text;
     const firstQuoteLabel = firstQuoteText ? firstQuoteText : null;
     const label = idMatch ? firstQuoteLabel : extractStepPersonaValue(instruction, env);
     if (label === null) continue;
@@ -13697,6 +13740,53 @@ function declaredSchemaCoversAccessorShape(declared: string, shape: AccessorShap
   );
 }
 
+const applicantContactFieldNames = new Set([
+  "FirstName",
+  "LastName",
+  "Phone",
+  "AddressLine",
+  "City",
+  "State",
+  "PostalCode",
+  "Country",
+  "County",
+  "Resume",
+  "ResumeContentType",
+  "ResumeFilename",
+  "ResumeBase64",
+]);
+const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
+const applicantContactEvidenceFieldNamesLower = new Set(
+  [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
+);
+
+/**
+ * Single source of truth for "the contract extends ApplicantContactSchema", so
+ * the contract and browser-flow emitters can't disagree about whether the
+ * payload carries Resume fields.
+ */
+export function contractUsesApplicantContactSchema(opts: {
+  inputBody?: unknown;
+  isSubmissionFlow?: boolean;
+  payloadFieldNames?: Set<string>;
+}): boolean {
+  const { inputBody, isSubmissionFlow, payloadFieldNames } = opts;
+  // A body-less submission flow has no inputBody to inspect; the payload fields
+  // its steps splice are the only evidence, whether or not it also has an HTTP
+  // path (the browser-flow emitter can't know which the contract will take).
+  if (inputBody != null) {
+    return [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
+      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+    );
+  }
+  return (
+    isSubmissionFlow === true &&
+    [...(payloadFieldNames ?? [])].some((name) =>
+      applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
+    )
+  );
+}
+
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
@@ -13967,37 +14057,11 @@ export function emitContractTs(opts: {
   // one of ApplicantContactSchema's own field names (case-insensitively,
   // checked at any depth via walkAllPrimitiveLeaves) before the template
   // applies (see recon-generate-payload-schema-mismatch.md).
-  const applicantContactFieldNames = new Set([
-    "FirstName",
-    "LastName",
-    "Phone",
-    "AddressLine",
-    "City",
-    "State",
-    "PostalCode",
-    "Country",
-    "County",
-    "Resume",
-    "ResumeContentType",
-    "ResumeFilename",
-    "ResumeBase64",
-  ]);
-  const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
-  const applicantContactEvidenceFieldNamesLower = new Set(
-    [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
-  );
-  // A browser-flow-only submission with no captured body has no inputBody to
-  // inspect; the payload fields its steps splice are the only evidence.
-  const usesApplicantContactSchema =
-    inputBody != null
-      ? [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
-          path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
-        )
-      : omitExecuteHttp &&
-        isSubmissionFlow &&
-        [...(payloadFieldNames ?? [])].some((name) =>
-          applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
-        );
+  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    payloadFieldNames,
+  });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(name);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
@@ -15361,6 +15425,8 @@ export function emitConfigManifest(opts: {
    * forcing so the config-plugin runtime's `runHealingFlow` submitStep
    * verification (`src/plugins/config-plugin.ts`) actually gates it. */
   isSubmissionFlow?: boolean;
+  /** Whether the flow has a multipart upload action — same input the `.ts` emitter takes. */
+  hasMultipartStep?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15375,6 +15441,7 @@ export function emitConfigManifest(opts: {
     recoveredFields,
     httpModulePath,
     isSubmissionFlow = false,
+    hasMultipartStep = false,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
@@ -15465,6 +15532,18 @@ export function emitConfigManifest(opts: {
       .map((name) => [name, requestProperties[name]])
   );
 
+  // Same decision emitBrowserFlowTs makes: only a flow that uploads AND whose
+  // contract carries Resume fields is multipart, so buildUploadFixture agrees.
+  const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const contractCarriesResume =
+    hasMultipartStep ||
+    contractUsesApplicantContactSchema({
+      inputBody,
+      isSubmissionFlow,
+      payloadFieldNames,
+    });
+  const multipart = hasUploadStep && contractCarriesResume;
+
   const manifest = {
     apiVersion: CONFIG_PLUGIN_API_VERSION,
     kind: CONFIG_PLUGIN_KIND,
@@ -15472,6 +15551,7 @@ export function emitConfigManifest(opts: {
     spec: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
+      ...(multipart ? { multipart: true } : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -15587,6 +15667,9 @@ export function emitBrowserFlowTs(opts: {
   flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
+  /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
+   * here, after payload fields are accumulated, to match the contract emitter. */
+  inputBody?: unknown;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside, from the recon flow file's object-form `frameSelector`. Matches
@@ -15609,6 +15692,7 @@ export function emitBrowserFlowTs(opts: {
     flowSteps,
     isSubmissionFlow,
     hasMultipartStep = false,
+    inputBody,
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
@@ -15624,6 +15708,13 @@ export function emitBrowserFlowTs(opts: {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
   }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const contractCarriesResume =
+    hasMultipartStep ||
+    contractUsesApplicantContactSchema({
+      inputBody,
+      isSubmissionFlow,
+      payloadFieldNames,
+    });
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
@@ -15722,7 +15813,7 @@ export function emitBrowserFlowTs(opts: {
   // a null + TODO so the generated module still typechecks; the operator adds
   // the multipart contract fields and wires the fixture during hand-finish.
   const uploadFixtureExpr =
-    hasUploadStep && hasMultipartStep
+    hasUploadStep && contractCarriesResume
       ? `{
     buffer: Buffer.from(payload.Resume),
     name: payload.ResumeFilename ?? "resume.pdf",
@@ -16969,6 +17060,7 @@ async function main(): Promise<void> {
           inputBody,
           recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
           isSubmissionFlow,
+          hasMultipartStep,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -16996,6 +17088,7 @@ async function main(): Promise<void> {
       flowSteps,
       isSubmissionFlow,
       hasMultipartStep,
+      inputBody,
       vocabulary,
       frameSelector,
     });
