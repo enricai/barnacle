@@ -74,4 +74,17 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, async () => `t${f.polls()}`);
     expect(f.polls()).toBe(15);
   });
+
+  it("counts a flip before settle start and waits for a later body re-render", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 9 ? "body" : "header");
+    await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
+    expect(f.polls()).toBeGreaterThan(9);
+  });
+
+  it("still gives up at 14 polls when text matches the pre-click baseline", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(f.page, f.counter, 0, async () => "same", "same");
+    expect(f.polls()).toBe(14);
+  });
 });

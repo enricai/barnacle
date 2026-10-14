@@ -6512,7 +6512,8 @@ export async function submitCaptchaGatedForm(
           verification.page,
           verification.signalCounter,
           pre.networkCount,
-          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
+          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
+          pre.visibleTextSignature
         );
       const post = await snapshotPage(target, verification.signalCounter, verification.page);
       const verdict = classifyPhantomClick({
@@ -6543,7 +6544,8 @@ export async function submitCaptchaGatedForm(
               verification.signalCounter,
               post.networkCount,
               async () =>
-                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature
+                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
+              post.visibleTextSignature
             );
           const runnerUpPost = await snapshotPage(
             target,
@@ -9787,7 +9789,7 @@ async function probeChildFrameSubmitFallback(params: {
     await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
       const snap = await snapshotPage(target, signalCounter);
       return snap.visibleTextSignature;
-    });
+    }, pre.visibleTextSignature);
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -9812,7 +9814,7 @@ async function probeChildFrameSubmitFallback(params: {
     await settleAfterClick(page, signalCounter, post.networkCount, async () => {
       const snap = await snapshotPage(target, signalCounter);
       return snap.visibleTextSignature;
-    });
+    }, post.visibleTextSignature);
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
@@ -11630,7 +11632,7 @@ export async function executeStepWithHealing(params: {
                   signalCounter
                 );
                 return snap.visibleTextSignature;
-              });
+              }, pre.visibleTextSignature);
               const midPost = await snapshotPage(
                 frameTarget ?? mainFrameTarget(page),
                 signalCounter,
@@ -12492,7 +12494,7 @@ export async function executeStepWithHealing(params: {
       await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
         const snap = await snapshotPage(settleTarget, signalCounter);
         return snap.visibleTextSignature;
-      });
+      }, pre.visibleTextSignature);
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
@@ -13235,7 +13237,7 @@ export async function executeStepWithHealing(params: {
           await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
             const snap = await snapshotPage(n16FallbackTarget, signalCounter);
             return snap.visibleTextSignature;
-          });
+          }, pre.visibleTextSignature);
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
             signalCounter,

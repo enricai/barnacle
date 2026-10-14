@@ -9,7 +9,7 @@ export interface SettleCounter {
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
 const IDLE_GIVE_UP_MS = 14000;
-const TEXT_QUIET_POLLS = 7;
+const TEXT_QUIET_POLLS = 9;
 const MAX_MS = 15000;
 
 /**
@@ -24,7 +24,8 @@ export async function settleAfterClick(
   page: SettlePage,
   counter: SettleCounter,
   preCount: number,
-  readText?: () => Promise<string>
+  readText?: () => Promise<string>,
+  preText?: string
 ): Promise<void> {
   const safeRead = async (): Promise<string | undefined> => {
     if (!readText) return undefined;
@@ -34,9 +35,10 @@ export async function settleAfterClick(
       return undefined;
     }
   };
-  let lastText = await safeRead();
-  let textMoved = false;
-  let seen = counter.n > preCount;
+  const startText = await safeRead();
+  let lastText = preText ?? startText;
+  let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
+  let seen = counter.n > preCount || textMoved;
   let last = counter.n;
   let quiet = 0;
   let elapsed = 0;
