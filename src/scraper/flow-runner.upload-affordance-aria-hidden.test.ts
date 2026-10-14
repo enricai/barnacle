@@ -1,8 +1,9 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { surfaceAndUpload } from "@/scraper/flow-runner";
+import { isUploadAffordanceLabel, surfaceAndUpload } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { UPLOAD_AFFORDANCE_MATCHER_EXPR } from "@/scraper/upload-affordance-expr";
 import type { Logger } from "@/types/logging";
 
 const logger = {
@@ -96,5 +97,24 @@ describe("upload affordance aria-hidden decoys", () => {
     install([only]);
     expect(run(click as string)).toEqual({ clicked: false });
     expect(only.click).not.toHaveBeenCalled();
+  });
+
+  it("accepts singular and plural select-file labels, still rejects decliners", () => {
+    expect(isUploadAffordanceLabel("Select files")).toBe(true);
+    expect(isUploadAffordanceLabel("Select file")).toBe(true);
+    expect(isUploadAffordanceLabel("upload later")).toBe(false);
+    expect(isUploadAffordanceLabel("no file")).toBe(false);
+    expect(isUploadAffordanceLabel("remove file")).toBe(false);
+  });
+
+  it("gate and click expressions embed the shared vocabulary source", async () => {
+    const exprs = await captureExprs();
+    const gate = exprs.find((e) => e.includes("present: true"));
+    const click = exprs.find((e) => e.includes("chosen.click()"));
+    expect(gate).toContain(UPLOAD_AFFORDANCE_MATCHER_EXPR);
+    expect(click).toContain(UPLOAD_AFFORDANCE_MATCHER_EXPR);
+    const only = btn("Select files", false);
+    install([only]);
+    expect(run(click as string)).toMatchObject({ clicked: true });
   });
 });
