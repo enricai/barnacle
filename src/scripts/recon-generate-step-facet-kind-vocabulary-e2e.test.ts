@@ -176,14 +176,10 @@ describe("recon-generate CLI — step facets in a kind-suffixed array vocabulary
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
-    expect(contract).toContain(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source
-      "...(payload.ShipFacet ? [`${payload.ShipFacet};filterType=ship`] : [])"
-    );
-    expect(contract).toContain(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source
-      "...(payload.sailDate ? [`${payload.sailDate};filterType=date`] : [])"
-    );
+    expect(contract).toContain('[["harbor-star","WW"]]).get(String(payload.ShipFacet))');
+    expect(contract).toMatch(/\.\.\.\(payload\.ShipFacet \? \[`[^`]*;filterType=ship`\] : \[\]\)/);
+    expect(contract).toContain('[["december-2026","2026-12"');
+    expect(contract).toMatch(/\.\.\.\(payload\.sailDate \? \[`[^`]*;filterType=date`\] : \[\]\)/);
     expect(contract).toContain('"2027-01;filterType=date"');
     expect(contract).not.toContain('"WW;filterType=ship"');
     expect(contract).not.toContain('"2026-12;filterType=date"');

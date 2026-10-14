@@ -7743,6 +7743,11 @@ function findKindKeyedLiteral(
       .map((literal) => monthCodeOf(literal))
       .filter((code): code is string => code !== undefined)
   );
+  const yearlessMonths = new Set(
+    [facet.value, ...(facet.literals ?? [])]
+      .map((literal) => bareMonthNumberOf(literal))
+      .filter((month): month is string => month !== undefined)
+  );
   for (const { capture } of actions) {
     const values = [
       ...parseUrlQueryValues(capture.url),
@@ -7754,7 +7759,12 @@ function findKindKeyedLiteral(
       const tier = kindMatchTier(facet, parsed.kind);
       if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
       const month = monthCodeOf(parsed.literal);
-      if (month !== undefined && facetMonths.has(month)) sameMonth.add(parsed.literal);
+      if (
+        month !== undefined &&
+        (facetMonths.has(month) || yearlessMonths.has(month.slice("YYYY-".length)))
+      ) {
+        sameMonth.add(parsed.literal);
+      }
     }
   }
   const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
@@ -9574,6 +9584,16 @@ function monthCodeOf(literal: string): string | undefined {
     (month) => month === name || (name.length === 3 && month.startsWith(name))
   );
   return index === -1 ? undefined : `${year}-${String(index + 1).padStart(2, "0")}`;
+}
+
+/** Month number (`12`) of a month written without a year (`december`, `Dec`),
+ * so a facet whose literal names only the month still matches a dated element. */
+function bareMonthNumberOf(literal: string): string | undefined {
+  const name = literal.trim().toLowerCase();
+  const index = MONTH_NAMES.findIndex(
+    (month) => month === name || (name.length === 3 && month.startsWith(name))
+  );
+  return index === -1 ? undefined : String(index + 1).padStart(2, "0");
 }
 
 function isKindKeyed(facet: NavigateToFacetBinding): boolean {
