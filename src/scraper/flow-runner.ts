@@ -14283,6 +14283,8 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
   const counter = { n: 0 };
+  // Rebound when a step's click opens a new tab, so later steps drive that page.
+  let activePage = page;
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
@@ -14344,7 +14346,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // legitimately-absent optional step, and the flow's own step count
       // never quietly reaches `steps.length` past the point of death.
       try {
-        page.url();
+        activePage.url();
       } catch (err) {
         throw new SessionTimeoutError(
           `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) — aborting after ${i} of ${steps.length} steps completed`
@@ -14357,7 +14359,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       let stepPromise: Promise<"completed" | "skipped">;
       if (s.navigateTo !== undefined) {
         stepPromise = executeNavigateStep({
-          page,
+          page: activePage,
           url: s.navigateTo,
           optional: s.optional,
           logger,
@@ -14369,11 +14371,14 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         // reachable, paralleling the recon CLI's per-step resolution. `resolveFrameTarget`
         // falls back to the main-frame target when `frameSelector` is null/unresolvable,
         // so this is a no-op for every flow that doesn't declare one.
-        const frameTarget = await resolveFrameTarget(page, deps.frameSelector);
+        const frameTarget = await resolveFrameTarget(activePage, deps.frameSelector);
         await waitForChildFrameReady(frameTarget);
         stepPromise = executeStepWithHealing({
           stagehand,
-          page,
+          page: activePage,
+          onPageAdopted: (adopted) => {
+            activePage = adopted;
+          },
           abortSignal: deps.abortSignal,
           step: s.instruction,
           optional: s.optional,
@@ -14419,7 +14424,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       // runHealingFlow resolve as if the flow succeeded. Mirrors the same
       // gate in recon-browser.ts's step loop.
       try {
-        page.url();
+        activePage.url();
       } catch (err) {
         throw new SessionTimeoutError(
           `${formatStepPrefix(i, () => steps.length)} session appears closed/dead (page.url() threw: ${toErrorMessage(err)}) after step ${i} of ${steps.length} resolved`
