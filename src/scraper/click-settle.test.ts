@@ -54,4 +54,24 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 2);
     expect(f.polls()).toBe(3);
   });
+
+  it("waits for a text-only re-render in a checkout wizard that moves no counter", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 8 ? "step 3" : f.polls() >= 1 ? "step 2" : "step 1");
+    await settleAfterClick(f.page, f.counter, 0, async () => text());
+    expect(f.polls()).toBeGreaterThan(8);
+    expect(f.polls()).toBeLessThanOrEqual(15);
+  });
+
+  it("still gives up at 14 polls when text never changes", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(f.page, f.counter, 0, async () => "same");
+    expect(f.polls()).toBe(14);
+  });
+
+  it("stops at the max when text changes continuously", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(f.page, f.counter, 0, async () => `t${f.polls()}`);
+    expect(f.polls()).toBe(15);
+  });
 });

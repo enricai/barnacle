@@ -12,6 +12,8 @@ export interface PhantomClickSnapshot {
   url: string;
   /** `document.body.outerHTML.length`. */
   bodyHtmlLength: number;
+  /** `<len>:<first-200-chars>` of visible text, as in flow-runner's StepSnapshot. */
+  visibleTextSignature?: string;
 }
 
 export interface PhantomClickAttempt {
@@ -41,6 +43,13 @@ export interface PhantomClickAttempt {
    * so non-submit callers and existing tests are unchanged; defaults to false.
    */
   isSubmitShapedStep?: boolean;
+  /**
+   * True when a submit-shaped step is NOT the flow's final submit (e.g. an
+   * account-creation transition in a wizard). Such a step is credited when
+   * {@link hasPageAdvanced} holds even with no network/URL/title signal.
+   * Ignored unless `isSubmitShapedStep` is also true.
+   */
+  isMidFlowSubmitStep?: boolean;
   /**
    * Mirrors flow-runner's own `isPlausibleStepDestination` gate on its
    * `urlChanged`/`retryUrlChanged` signals: false when the post-URL landed
@@ -167,9 +176,19 @@ export function splitIntoActionClauses(instruction: string): string[] {
  * mistaken for a step that is itself about signing in. Fails open (returns
  * true) on an unparseable postUrl, matching {@link hasOriginOrPathChanged}'s
  * own try/catch style, since an unparseable URL gives no basis for a
- * sign-in-shaped veto.
+ * sign-in-shaped veto. When `preUrl` is given and the origin/path did not
+ * change, the page did not navigate, so no destination veto applies: a
+ * mid-flow account-creation step on an unchanged sign-in URL is still judged
+ * on its own evidence.
  */
-export function isPlausibleStepDestination(stepInstruction: string, postUrl: string): boolean {
+export function isPlausibleStepDestination(
+  stepInstruction: string,
+  postUrl: string,
+  preUrl?: string
+): boolean {
+  // A click that never left its page cannot have bounced to an auth gate; an
+  // account-creation step on a sign-in URL is the page's own transition.
+  if (preUrl !== undefined && !hasOriginOrPathChanged(preUrl, postUrl)) return true;
   const pathname = (() => {
     try {
       return new URL(postUrl).pathname;
@@ -201,6 +220,69 @@ export type PhantomClickVerdict =
  */
 export const TRIVIAL_DOM_DELTA_BYTES = 500;
 
+/** Minimum visible-text length change for a mid-flow submit to count as a page advance. */
+export const PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA = 100;
+
+/** Relative visible-text length change that also counts as an advance on a short page. */
+export const PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO = 0.3;
+
+/** Floor under the relative rule so a tooltip on a tiny page is not an advance. */
+export const PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA = 30;
+
+/** Word-set similarity below which the visible-text head counts as replaced. */
+export const PAGE_ADVANCE_MAX_HEAD_SIMILARITY = 0.5;
+
+function textLengthOf(signature: string | undefined): number | null {
+  if (signature === undefined) return null;
+  const match = /^(\d+):/.exec(signature);
+  return match ? Number(match[1]) : null;
+}
+
+function textHeadWords(signature: string): Set<string> {
+  const head = signature.slice(signature.indexOf(":") + 1).toLowerCase();
+  return new Set(head.split(/\W+/).filter((w) => w !== ""));
+}
+
+function headWordSimilarity(pre: string, post: string): number {
+  const preWords = textHeadWords(pre);
+  const postWords = textHeadWords(post);
+  const union = new Set([...preWords, ...postWords]);
+  if (union.size === 0) return 1;
+  const shared = [...preWords].filter((w) => postWords.has(w)).length;
+  return shared / union.size;
+}
+
+/**
+ * Decides whether the page demonstrably advanced (a wizard step swapped
+ * content) from pre/post snapshots alone, so a network-free, URL-stable
+ * transition is still credited. Visible text is the evidence: a wizard swap
+ * can leave the HTML size nearly unchanged (same-size markup, different
+ * copy), so byte delta is deliberately not required. The text must have
+ * moved substantially — a large absolute or relative length change, or a
+ * head whose words were mostly replaced — so a tooltip or inline validation
+ * line (small, mostly-shared text) is not an advance.
+ */
+export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
+  const preSig = pre.visibleTextSignature;
+  const postSig = post.visibleTextSignature;
+  if (preSig === undefined || postSig === undefined || preSig === postSig) return false;
+  const preLen = textLengthOf(preSig);
+  const postLen = textLengthOf(postSig);
+  if (preLen === null || postLen === null) return false;
+  const lengthDelta = Math.abs(postLen - preLen);
+  if (lengthDelta >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA) return true;
+  const similarity = headWordSimilarity(preSig, postSig);
+  // Identical head words mean whitespace/layout reflow, not new copy.
+  if (similarity === 1) return false;
+  if (
+    lengthDelta >= PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA &&
+    lengthDelta / Math.max(preLen, 1) >= PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO
+  ) {
+    return true;
+  }
+  return similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY;
+}
+
 /**
  * Classifies one cascade attempt as `phantom` (Stagehand claimed success but
  * pre/post shows zero network, zero URL change, and only trivial DOM
@@ -224,7 +306,16 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const bytesChangedSignificantly =
     !attempt.isSubmitShapedStep && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
+  const midFlowAdvanced =
+    attempt.isSubmitShapedStep === true &&
+    attempt.isMidFlowSubmitStep === true &&
+    hasPageAdvanced(attempt.pre, attempt.post);
+
   const hasEffect =
-    networkDelta !== 0 || urlChanged || elementStateChanged || bytesChangedSignificantly;
+    networkDelta !== 0 ||
+    urlChanged ||
+    elementStateChanged ||
+    bytesChangedSignificantly ||
+    midFlowAdvanced;
   return hasEffect ? "effective" : "phantom";
 }

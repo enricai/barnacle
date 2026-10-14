@@ -3209,6 +3209,7 @@ async function main(): Promise<void> {
             const trailingGraceVerdict = await verifySubmitWithLLM({
               client: anthropic,
               input: {
+                isFinalStep: true,
                 // A dead session throws synchronously here too — fall back to ""
                 // rather than let the trailing-grace check itself crash the run.
                 pageUrl: ((): string => {

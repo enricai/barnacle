@@ -235,6 +235,26 @@ describe("isPlausibleStepDestination", () => {
     ).toBe(true);
   });
 
+  it("does not veto when the click never left its sign-in-shaped URL", () => {
+    expect(
+      isPlausibleStepDestination(
+        "click the Create Account button",
+        "https://x.com/login?step=2",
+        "https://x.com/login"
+      )
+    ).toBe(true);
+  });
+
+  it("still vetoes a bounce from a non-sign-in page to a sign-in-shaped one", () => {
+    expect(
+      isPlausibleStepDestination(
+        "click the Create Account button",
+        "https://x.com/login",
+        "https://x.com/apply"
+      )
+    ).toBe(false);
+  });
+
   it("fails open on an unparseable postUrl", () => {
     expect(isPlausibleStepDestination("click the Create Account button", "not-a-url")).toBe(true);
   });
@@ -272,4 +292,86 @@ describe("scraper/phantom-click classifyPhantomClick gates every effect signal o
       );
     }
   );
+});
+
+describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
+  const advanced = {
+    pre: {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 31284,
+      visibleTextSignature: `996:${"a".repeat(200)}`,
+    },
+    post: {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 29300,
+      visibleTextSignature: `588:${"b".repeat(200)}`,
+    },
+    isSubmitShapedStep: true,
+  };
+
+  it("credits a mid-flow submit whose page demonstrably advanced", () => {
+    expect(classifyPhantomClick(makeAttempt({ ...advanced, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
+    );
+  });
+
+  it("stays phantom for the final submit with the same pre/post", () => {
+    expect(classifyPhantomClick(makeAttempt(advanced))).toBe("phantom");
+  });
+
+  it("credits a text swap with an unchanged html size", () => {
+    const swap = {
+      ...advanced,
+      post: {
+        ...advanced.post,
+        bodyHtmlLength: advanced.pre.bodyHtmlLength,
+        visibleTextSignature: `996:${"b".repeat(200)}`,
+      },
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...swap, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
+    );
+  });
+
+  it("stays phantom on an unchanged signature or a small mostly-shared text delta", () => {
+    const same = {
+      ...advanced,
+      post: { ...advanced.post, visibleTextSignature: advanced.pre.visibleTextSignature },
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...same, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+    const tooltip = {
+      pre: {
+        ...advanced.pre,
+        visibleTextSignature: "300:Create your account enter your email and password below",
+      },
+      post: {
+        ...advanced.post,
+        visibleTextSignature: "320:Create your account enter your email and password below",
+      },
+      isSubmitShapedStep: true,
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...tooltip, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+    const reflow = {
+      ...tooltip,
+      pre: { ...tooltip.pre, visibleTextSignature: "77:  Details       " },
+      post: { ...tooltip.post, visibleTextSignature: "47:  Details" },
+    };
+    expect(classifyPhantomClick(makeAttempt({ ...reflow, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+  });
+
+  it("stays phantom when the destination is implausible", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ ...advanced, isMidFlowSubmitStep: true, destinationPlausible: false })
+      )
+    ).toBe("phantom");
+  });
 });

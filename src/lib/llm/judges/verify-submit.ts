@@ -41,12 +41,24 @@ Strictness rule for verified=true:
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
 When verified=false, write a one-sentence reason citing what you'd need to see to be convinced.`;
 
+const NON_FINAL_STEP_RULE = `
+
+This step is NOT the flow's final submit — it is a mid-flow transition (for example creating an account at a store checkout or continuing past a newsletter signup step). The strictness rule above about success-confirmation signals does not apply. Instead, set verified=true when the page demonstrably advanced past the step: the visible text shows the next stage of the flow, or the step's intended result described by the STEP INSTRUCTION. Trust the visible text and the advanced page content over the document title, because a single-page app's title is not evidence and often stays stale. Set verified=false only if the page still shows the same step (or errors) after the click.`;
+
+const MAX_VISIBLE_TEXT_CHARS = 3000;
+
 /**
  * Site-supplied evidence and criteria for the submit-verifier. The engine
  * is fully site-agnostic; this object is built from the parsed flow file
  * and the in-flight cascade state.
  */
 export interface VerifySubmitInput {
+  /** The step's instruction, so the judge knows what this click was meant to do. */
+  stepInstruction?: string;
+  /** Defaults to true (strict final-submit judging) when omitted. */
+  isFinalStep?: boolean;
+  /** Bounded slice of live visible page text; fresher evidence than the title. */
+  visibleText?: string;
   pageUrl: string;
   pageTitle: string;
   unfocusedObserve: { description: string; selector: string }[];
@@ -67,9 +79,23 @@ export interface VerifySubmitInput {
  * the empirical-replay prototype that proved this works on production cases.
  */
 function buildVerifySubmitPrompt(input: VerifySubmitInput): string {
+  const stepContext =
+    input.stepInstruction === undefined
+      ? ""
+      : `STEP INSTRUCTION: ${input.stepInstruction}
+FINAL STEP OF FLOW: ${input.isFinalStep === false ? "no" : "yes"}
+
+`;
+  const visibleText =
+    input.visibleText === undefined || input.visibleText === ""
+      ? ""
+      : `
+VISIBLE TEXT (live, truncated):
+${input.visibleText.slice(0, MAX_VISIBLE_TEXT_CHARS)}
+`;
   return `Did the submit succeed?
 
-PAGE URL: ${input.pageUrl}
+${stepContext}PAGE URL: ${input.pageUrl}
 PAGE TITLE: ${input.pageTitle}
 
 NETWORK REQUESTS IN ATTEMPT WINDOW (method, status, url):
@@ -78,7 +104,7 @@ ${
     ? input.networkCaptures.map((c) => `  ${c.method} ${c.status} ${c.url}`).join("\n")
     : "  (none)"
 }
-
+${visibleText}
 UNFOCUSED OBSERVE (xpaths the agent can see on the page right now):
 ${input.unfocusedObserve.map((o, i) => `  ${i + 1}. ${o.description} — ${o.selector}`).join("\n")}
 
@@ -106,7 +132,10 @@ export async function verifySubmitWithLLM(params: {
   if (client === null) return null;
   const result = await callHaikuJudge({
     client,
-    systemPrompt: SUBMIT_VERIFY_SYSTEM_PROMPT,
+    systemPrompt:
+      input.isFinalStep === false
+        ? `${SUBMIT_VERIFY_SYSTEM_PROMPT}${NON_FINAL_STEP_RULE}`
+        : SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
     callType: CALL_TYPE_JUDGE_SUBMIT_VERIFY,
