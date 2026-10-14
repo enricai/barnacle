@@ -59,16 +59,16 @@ describe("facet matching by literal set and element kind", () => {
 
   it("does not let a short keyed literal over-match another kind's element", () => {
     expect(
-      matchFacetRecurrence("bahamas-cruises;filterId=urlFriendlyId", facets, {
+      matchFacetRecurrence("bahamas-trips;filterId=urlFriendlyId", facets, {
         allowDelimiterSuffix: true,
       })
     ).toBeUndefined();
   });
 
   it("still binds an unkeyed hash facet's literal element of any suffix kind", () => {
-    const hash = [hashFacet("destination", "bahamas-cruises", "destination")];
+    const hash = [hashFacet("destination", "bahamas-trips", "destination")];
     expect(
-      matchFacetRecurrence("bahamas-cruises;filterId=urlFriendlyId", hash, {
+      matchFacetRecurrence("bahamas-trips;filterId=urlFriendlyId", hash, {
         allowDelimiterSuffix: true,
       })?.field
     ).toBe("destination");
