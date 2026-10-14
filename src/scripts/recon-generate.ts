@@ -9383,7 +9383,7 @@ function matchArrayElementFacet(
  * `allowDelimiterSuffix`, a literal followed by a non-alphanumeric delimiter
  * suffix also matches. The longest literal wins.
  */
-function matchFacetRecurrence(
+export function matchFacetRecurrence(
   text: string,
   facets: readonly NavigateToFacetBinding[],
   options: { allowDelimiterSuffix: boolean }
@@ -9399,7 +9399,7 @@ function matchFacetRecurrence(
       ) {
         return best;
       }
-      const literal = (facet.literals ?? [facet.value])
+      const literal = [facet.value, ...(facet.literals ?? [])]
         .filter((candidate) => {
           const same = (value: string): boolean =>
             ignoreCase ? value.toLowerCase() === candidate.toLowerCase() : value === candidate;
