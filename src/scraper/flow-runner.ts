@@ -4181,10 +4181,24 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
  * retarget.
  */
 function tailRetargetPhrasesForStep(step: string): string[] {
-  if (parseFieldLabelTarget(step) || parseSelectStep(step) || parseRadioStep(step)) return [];
+  if (stepQuotesValueNotControlName(step)) return [];
   return extractTaggedPhrases(step)
     .filter((p) => !p.negated)
     .map((p) => p.text);
+}
+
+/**
+ * True when the step's quoted text is a value (fill/select/radio/field-label)
+ * rather than the clicked control's own name, however loosely the prose is
+ * phrased. Shared so every quoted-phrase guard exempts the same steps.
+ */
+function stepQuotesValueNotControlName(step: string): boolean {
+  return Boolean(
+    parseFieldLabelTarget(step) ||
+      parseFillValueIntent(step) ||
+      parseSelectStep(step) ||
+      parseRadioStep(step)
+  );
 }
 
 /**
@@ -11915,10 +11929,9 @@ export async function executeStepWithHealing(params: {
             }
           }
         } else {
-          const quotedPhrases =
-            parseFieldLabelTarget(step) || parseSelectStep(step) || parseRadioStep(step)
-              ? []
-              : extractTaggedPhrases(step);
+          const quotedPhrases = stepQuotesValueNotControlName(step)
+            ? []
+            : extractTaggedPhrases(step);
           const verdict = vetObserveCandidates(candidates, quotedPhrases);
           if (verdict.refuse || !verdict.candidate) {
             record.errorMessage = `observe candidate does not match the control named in the step: "${(verdict.candidate?.description ?? "").slice(0, 60)}" (refusing to act on an unscored guess)`;
