@@ -96,20 +96,53 @@ const RESERVED_ENV_TOKEN = /\$\{RECON_[A-Z0-9_]*\}/;
  */
 const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 
+const DOUBLE_QUOTED_SPAN = /"([^"]+)"/g;
+
+/**
+ * Quoted spans of a flow-step instruction. The runtime parsers only understand
+ * single quotes, so a double-quoted span is consulted only when the step has no
+ * single-quoted one — a mixed instruction keeps its single-quote grammar, and a
+ * double-quoted-only step still has a spliceable value instead of being skipped.
+ */
+function findInstructionSpans(instruction: string): QuotedSpan[] {
+  const single = findQuotedSpans(instruction);
+  if (single.length > 0) return single;
+  return Array.from(instruction.matchAll(DOUBLE_QUOTED_SPAN), (match) => ({
+    text: match[1] ?? "",
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+}
+
+/**
+ * A quoted span that names the widget or question a step targets rather than
+ * the value it carries: followed by a widget noun ("'State' prompt selector"),
+ * or introduced by "for"/"from" ("for the 'State' question").
+ */
+function namesAWidgetLabel(instruction: string, span: QuotedSpan): boolean {
+  const before = instruction.slice(Math.max(0, span.start - 25), span.start);
+  const after = instruction.slice(span.end);
+  return (
+    /^\s*(?:prompt\s+selector|selector|dropdown|drop-down|multiselect|typeahead|field|question|list|menu|widget)\b/i.test(
+      after
+    ) || /\b(?:for|from)(?:\s+the)?(?:\s+(?:question|answer))?\s*$/i.test(before)
+  );
+}
+
 /**
  * Picks which quoted span in an instruction is the persona VALUE, per the
  * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
- * ANSWER right after the verb (wherever the verb sits, so a leading context
- * phrase does not hide it), so the value is the first quoted span following
- * the verb; any other step (`Fill`/`Enter`/`Type`) names the field label first
- * and the value last, so it is the LAST quoted span.
+ * ANSWER after the verb (wherever the verb sits, so a leading context phrase
+ * does not hide it), so the value is the first span following the verb that is
+ * not a widget label — "choose the 'State' field, then choose 'Texas'" must
+ * yield Texas, not the label. Any other step (`Fill`/`Enter`/`Type`) names the
+ * field label first and the value last, so it is the LAST quoted span.
  */
 function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
   const verb = /\b(select|choose|pick)\b/i.exec(instruction);
-  const afterVerb = verb
-    ? spans.find((span) => span.start >= verb.index + verb[0].length)
-    : undefined;
-  return afterVerb ?? spans[spans.length - 1]!;
+  const afterVerb = verb ? spans.filter((span) => span.start >= verb.index + verb[0].length) : [];
+  const answer = afterVerb.find((span) => !namesAWidgetLabel(instruction, span)) ?? afterVerb[0];
+  return answer ?? spans[spans.length - 1]!;
 }
 
 /**
@@ -135,7 +168,7 @@ function locateSpliceSite(
       after: instruction.slice(envToken.index + envToken[0].length),
     };
   }
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const span = pickValueSpan(instruction, spans);
   return {
@@ -153,7 +186,7 @@ function locateSpliceSite(
  * can never be mistaken for the data it merely mentions.
  */
 function namesAControl(instruction: string): boolean {
-  return findQuotedSpans(instruction).some((span) =>
+  return findInstructionSpans(instruction).some((span) =>
     /^\s*(button|link|tab)\b/i.test(instruction.slice(span.end))
   );
 }
@@ -161,7 +194,7 @@ function namesAControl(instruction: string): boolean {
 /** The quoted VALUE a Select/Choose/Fill step carries, per {@link pickValueSpan}'s
  * grammar rule — used to validate a vocabulary match's ANSWER, not just its label. */
 function pickedQuotedValue(instruction: string): string | null {
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
@@ -224,7 +257,7 @@ export function resolveStepPayloadField(
   // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
   // this step would replace, so it is spliceable on its own.
   const hasQuotedConstant =
-    findQuotedSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
+    findInstructionSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
@@ -346,7 +379,7 @@ export function extractStepPersonaValue(
     const resolved = env[envToken[1]!];
     if (resolved) return resolved;
   }
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   return value.length > 0 ? value : null;
@@ -467,7 +500,7 @@ function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): 
   const primary = extractStepPersonaValue(instruction, env);
   return uniqueLiterals(
     primary,
-    findQuotedSpans(instruction).map((span) => span.text)
+    findInstructionSpans(instruction).map((span) => span.text)
   );
 }
 
@@ -541,7 +574,7 @@ function stripHashKeyPrefix(token: string): string {
  */
 export function deriveFillLabelField(instruction: string): string | null {
   if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) return null;
-  if (findQuotedSpans(instruction).length === 0) return null;
+  if (findInstructionSpans(instruction).length === 0) return null;
   const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
     instruction
   )?.[1];
@@ -672,7 +705,7 @@ export function resolveCompositePersonaFields(
   instruction: string,
   knownFieldValues: ReadonlyMap<string, string>
 ): { fieldA: string; fieldB: string } | null {
-  const spans = findQuotedSpans(instruction);
+  const spans = findInstructionSpans(instruction);
   if (spans.length === 0) return null;
   const value = pickValueSpan(instruction, spans).text;
   if (value.length === 0) return null;
@@ -4495,7 +4528,7 @@ export function buildSelectOptionResolutions(
     // returns first-quote when the sentence STARTS with select/choose/pick; a
     // dropdown step phrased "On the X step, select 'No' in the '…?' dropdown"
     // starts with "On", so read the first quote directly here for id= steps.
-    const firstQuoteText = findQuotedSpans(instruction)[0]?.text;
+    const firstQuoteText = findInstructionSpans(instruction)[0]?.text;
     const firstQuoteLabel = firstQuoteText ? firstQuoteText : null;
     const label = idMatch ? firstQuoteLabel : extractStepPersonaValue(instruction, env);
     if (label === null) continue;

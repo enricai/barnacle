@@ -71,3 +71,31 @@ describe("pickValueSpan — Country Phone Code exclusion", () => {
     expect(code).toContain("payload.Country");
   });
 });
+
+describe("pickValueSpan — widget labels after the verb", () => {
+  it("splices the answer, not the label, when a later choose follows a labelled field", () => {
+    const code = emit("Choose the 'State' field and then choose 'Texas' from the list");
+    expect(code).toContain("'State' field");
+    expect(code).toContain("choose '${payload.State}' from the list");
+    expect(code).not.toContain("'Texas'");
+  });
+
+  it("splices the answer when the label is introduced by 'from' and the answer trails", () => {
+    const code = emit("Please choose, from the 'State' prompt selector, the answer 'Texas'");
+    expect(code).toContain("from the 'State' prompt selector");
+    expect(code).toContain("the answer '${payload.State}'");
+  });
+});
+
+describe("double-quoted values", () => {
+  it("keeps the double quotes around a spliced fill value", () => {
+    const code = emit('Fill in the City field with "Dallas"');
+    expect(code).toContain('with "${payload.City}"');
+    expect(code).not.toContain("Dallas");
+  });
+
+  it("prefers single-quoted spans when an instruction mixes both", () => {
+    const code = emit(`Fill in the "City" field with 'Dallas'`);
+    expect(code).toContain(`"City" field with '\${payload.City}'`);
+  });
+});
