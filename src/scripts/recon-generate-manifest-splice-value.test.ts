@@ -37,7 +37,7 @@ describe("emitConfigManifest — buildManifestInstruction splices the fill VALUE
     });
 
     expect(firstStepText(manifestStr)).toBe(
-      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with {{ .request.FirstName }}"
+      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with '{{ .request.FirstName }}'"
     );
   });
 
@@ -55,7 +55,7 @@ describe("emitConfigManifest — buildManifestInstruction splices the fill VALUE
     });
 
     expect(firstStepText(manifestStr)).toBe(
-      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with {{ .request.FirstName }}"
+      "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with '{{ .request.FirstName }}'"
     );
   });
 });
