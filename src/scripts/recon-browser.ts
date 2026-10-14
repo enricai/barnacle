@@ -134,6 +134,7 @@ import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
+import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
@@ -1396,6 +1397,32 @@ export function isReplanReproposingFailedStep(
   return newSteps.every(
     (s) => stepSignature(s.instruction) === failedSig && !hasCompoundBridgeClause(s.instruction)
   );
+}
+
+/** Max times one step may be re-run after a provider-only failure cascade. */
+export const MAX_TRANSIENT_STEP_RETRIES = 2;
+
+/**
+ * Cause-aware wrapper over {@link isReplanReproposingFailedStep}: a re-proposal
+ * of only the failed step is a guaranteed re-fail for a real selector/page
+ * problem, but a legitimate bounded re-run when every recorded attempt failed
+ * on a transient provider error. Retries are counted per step signature in
+ * `retryCounts` (mutated on "retry"); once exhausted, or when the dump is
+ * missing/empty/mixed, the original abort stands.
+ */
+export function decideReplanNoProgress(
+  newSteps: readonly NormalizedStep[],
+  failedStep: string,
+  attempts: ReadonlyArray<{ errorMessage?: string | null }> | null | undefined,
+  retryCounts: Map<string, number>
+): "proceed" | "retry" | "abort" {
+  if (!isReplanReproposingFailedStep(newSteps, failedStep)) return "proceed";
+  if (!attempts || !summarizeAttemptTransience(attempts).all) return "abort";
+  const sig = stepSignature(failedStep);
+  const used = retryCounts.get(sig) ?? 0;
+  if (used >= MAX_TRANSIENT_STEP_RETRIES) return "abort";
+  retryCounts.set(sig, used + 1);
+  return "retry";
 }
 
 /**
@@ -2821,6 +2848,7 @@ async function main(): Promise<void> {
     // rather than a previous attempt's partially-replanned plan.
     const plan: NormalizedStep[] = [];
     const replanEvents: ReplanEvent[] = [];
+    const transientStepRetries = new Map<string, number>();
     try {
       const stagehand = session.stagehand;
       const page = await stagehand.context.awaitActivePage();
@@ -3306,18 +3334,24 @@ async function main(): Promise<void> {
           // failed step's re-emission. originalRemaining is re-appended below.
           // The untruncated failure-time DOM re-verifies completed fills so a
           // silently-reset field isn't trusted as still-completed.
-          const { bodyHtmlAtFailure, fieldValuesAtFailure } = (() => {
+          const { bodyHtmlAtFailure, fieldValuesAtFailure, attemptsAtFailure } = (() => {
             try {
               const dump = JSON.parse(readFileSync(dumpPath, "utf8")) as {
                 bodyOuterHtml?: string | null;
                 fieldValuesAtFailure?: FieldValueAtFailure[] | null;
+                attempts?: { errorMessage?: string | null }[];
               };
               return {
+                attemptsAtFailure: dump.attempts ?? null,
                 bodyHtmlAtFailure: dump.bodyOuterHtml ?? null,
                 fieldValuesAtFailure: dump.fieldValuesAtFailure ?? null,
               };
             } catch {
-              return { bodyHtmlAtFailure: null, fieldValuesAtFailure: null };
+              return {
+                bodyHtmlAtFailure: null,
+                fieldValuesAtFailure: null,
+                attemptsAtFailure: null,
+              };
             }
           })();
           const newSteps = filterCompletedFromReplan(
@@ -3345,7 +3379,18 @@ async function main(): Promise<void> {
           // cascade on the identical click that just exhausted it. Abort now
           // instead of waiting REPLAN_CYCLE_THRESHOLD repeats for the cycle
           // detector — that many dead cascades cost minutes of wall-clock.
-          if (isReplanReproposingFailedStep(newSteps, step.instruction)) {
+          const noProgressDecision = decideReplanNoProgress(
+            newSteps,
+            step.instruction,
+            attemptsAtFailure,
+            transientStepRetries
+          );
+          if (noProgressDecision === "retry") {
+            logger.warn(
+              `replan #${replanIndex} re-proposed the failed step after provider-transient errors only; allowing bounded re-run`
+            );
+          }
+          if (noProgressDecision === "abort") {
             const noProgressMessage = `replan #${replanIndex} re-proposed only the just-failed step ("${step.instruction.slice(0, 60)}") with no new bridge; resuming would re-fail identically — aborting`;
             logger.error(noProgressMessage);
             throw new StepVerificationError(noProgressMessage, "replan-cycle-detected");

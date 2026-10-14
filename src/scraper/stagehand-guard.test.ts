@@ -649,3 +649,69 @@ describe("guard timeouts", () => {
     await assertion;
   });
 });
+
+describe("transient provider retry", () => {
+  const TRANSIENT = "An internal server error occurred";
+  const OBSERVED = [{ selector: "#a", description: "a" }];
+  const ACTED = { success: true, message: "ok", actionDescription: "x", actions: [] };
+
+  it("observe retries a transient error once then succeeds", async () => {
+    const observe = vi.fn().mockRejectedValueOnce(new Error(TRANSIENT)).mockResolvedValue(OBSERVED);
+    const result = await guardedObserve({ observe } as unknown as Stagehand, "find a");
+    expect(result).toHaveLength(1);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.success).toBe(true);
+  });
+
+  it("observe surfaces a persistent transient error after two retries", async () => {
+    const observe = vi.fn().mockRejectedValue(new Error(TRANSIENT));
+    await expect(guardedObserve({ observe } as unknown as Stagehand, "find a")).rejects.toThrow(
+      TRANSIENT
+    );
+    expect(observe).toHaveBeenCalledTimes(3);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.success).toBe(false);
+  });
+
+  it("observe does not retry a non-transient error", async () => {
+    const observe = vi.fn().mockRejectedValue(new Error("selector not found"));
+    await expect(guardedObserve({ observe } as unknown as Stagehand, "find a")).rejects.toThrow(
+      "selector not found"
+    );
+    expect(observe).toHaveBeenCalledTimes(1);
+  });
+
+  it("act retries only the transient error and acts once on success", async () => {
+    const act = vi.fn().mockRejectedValueOnce(new Error(TRANSIENT)).mockResolvedValue(ACTED);
+    await guardedAct({ act } as unknown as Stagehand, "click");
+    expect(act).toHaveBeenCalledTimes(2);
+    const okAct = vi.fn().mockResolvedValue(ACTED);
+    await guardedAct({ act: okAct } as unknown as Stagehand, "click");
+    expect(okAct).toHaveBeenCalledTimes(1);
+  });
+
+  it("act does not retry a StagehandSchemaError", async () => {
+    const act = vi.fn().mockResolvedValue({ bogus: true });
+    await expect(guardedAct({ act } as unknown as Stagehand, "click")).rejects.toBeInstanceOf(
+      StagehandSchemaError
+    );
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it("extract mirrors observe", async () => {
+    const extract = vi.fn().mockRejectedValueOnce(new Error(TRANSIENT)).mockResolvedValue({ n: 1 });
+    const result = await guardedExtract(
+      { extract } as unknown as Stagehand,
+      "get n",
+      z.object({ n: z.number() })
+    );
+    expect(result).toEqual({ n: 1 });
+    expect(extract).toHaveBeenCalledTimes(2);
+    const bad = vi.fn().mockRejectedValue(new Error("selector not found"));
+    await expect(
+      guardedExtract({ extract: bad } as unknown as Stagehand, "get n", z.object({}))
+    ).rejects.toThrow();
+    expect(bad).toHaveBeenCalledTimes(1);
+  });
+});

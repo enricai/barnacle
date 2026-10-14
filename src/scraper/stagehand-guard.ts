@@ -47,6 +47,7 @@ import type {
   ObserveOptions,
   Stagehand,
 } from "@browserbasehq/stagehand";
+import pRetry from "p-retry";
 import { z } from "zod/v4";
 
 import {
@@ -60,6 +61,7 @@ import {
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
 import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
+import { isTransientProviderError } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 
 /**
@@ -78,6 +80,27 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
  * `guardedObserve` from this module, so importing back would cycle.
  */
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
+
+const TRANSIENT_RETRIES = 2;
+const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
+
+/**
+ * Retries a Stagehand call that failed with a transient provider error so a
+ * blip is not recorded as a failed technique. Wrap it OUTSIDE `withWatchdog`:
+ * each try gets its own watchdog timeout and the backoff is not charged to it.
+ * Safe for `act` because the provider 5xx is raised during Stagehand's
+ * inference request, before it performs any page action; the narrow
+ * classifier never matches selector, timeout, or schema errors raised after
+ * one.
+ */
+function retryTransient<T>(call: () => Promise<T>): Promise<T> {
+  return pRetry(call, {
+    retries: TRANSIENT_RETRIES,
+    minTimeout: TRANSIENT_RETRY_MIN_TIMEOUT_MS,
+    randomize: false,
+    shouldRetry: ({ error }) => isTransientProviderError(error),
+  });
+}
 
 /**
  * Zod parallel of Stagehand's public `Action` shape (from
@@ -221,10 +244,12 @@ export async function guardedAct(
     // `stagehand.act` to a variable then calling it as a standalone function
     // loses `this` in strict mode, which crashes inside Stagehand's
     // `withInstanceLogContext(this.instanceId, ...)` wrapper on entry.
-    const raw = await withWatchdog(
-      () =>
-        typeof input === "string" ? stagehand.act(input, options) : stagehand.act(input, options),
-      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
+    const raw = await retryTransient(() =>
+      withWatchdog(
+        () =>
+          typeof input === "string" ? stagehand.act(input, options) : stagehand.act(input, options),
+        { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
+      )
     );
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
@@ -315,14 +340,19 @@ export async function guardedObserve(
   try {
     // Match Stagehand's overloads: pass instruction only when defined, so
     // the SDK falls through to its no-arg/options-only path otherwise.
-    const raw = await withWatchdog(
-      () =>
-        instruction === undefined
-          ? scopedOptions === undefined
-            ? stagehand.observe()
-            : stagehand.observe(scopedOptions)
-          : stagehand.observe(instruction, scopedOptions),
-      { timeoutMs: scopedOptions?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-observe" }
+    const raw = await retryTransient(() =>
+      withWatchdog(
+        () =>
+          instruction === undefined
+            ? scopedOptions === undefined
+              ? stagehand.observe()
+              : stagehand.observe(scopedOptions)
+            : stagehand.observe(instruction, scopedOptions),
+        {
+          timeoutMs: scopedOptions?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
+          label: "stagehand-observe",
+        }
+      )
     );
     const latencyMs = performance.now() - t0;
     const parsed = z.array(ACTION_SCHEMA).safeParse(raw);
@@ -414,14 +444,16 @@ export async function guardedExtract<T extends z.ZodTypeAny>(
     // the cleanest public-API way to express "whatever overload-2 expects."
     // The `as unknown` step is needed because TS won't accept a single
     // direct cast across the entire overload set.
-    const raw = await withWatchdog(
-      () =>
-        stagehand.extract(
-          instruction,
-          schema as unknown as Parameters<typeof stagehand.extract>[1],
-          frameScopedOptions(options, frameTarget)
-        ),
-      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-extract" }
+    const raw = await retryTransient(() =>
+      withWatchdog(
+        () =>
+          stagehand.extract(
+            instruction,
+            schema as unknown as Parameters<typeof stagehand.extract>[1],
+            frameScopedOptions(options, frameTarget)
+          ),
+        { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-extract" }
+      )
     );
     const latencyMs = performance.now() - t0;
     const parsed = schema.safeParse(raw);

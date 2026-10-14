@@ -6,7 +6,9 @@ import { resolveStepPayloadField } from "@/scripts/recon-generate";
 /**
  * A FROZEN GOLDEN COPY of the recruiting vocabulary, not a live import of the
  * consumer's preset — barnacle cannot depend on autoapply, so parity is measured
- * out-of-band (both yield 65/65 over the fixture below).
+ * out-of-band (both yielded 65/65 over the fixture below until the engine's
+ * apostrophe-aware tokenizer stopped mis-pairing possessives as a quoted span,
+ * which dropped one wrong County→City splice; re-measure autoapply's side).
  *
  * The freeze is the point: this pins the splice behaviour the three shipped ATS
  * plugins were generated against, so an engine change that moves it fails here.
@@ -81,8 +83,16 @@ describe("shipped ATS flows — splice replay", () => {
     expect(steps).toHaveLength(429);
   });
 
-  it("splices exactly 65 steps — no silent regression", () => {
-    expect(resolved.filter((r) => r.field !== null)).toHaveLength(65);
+  it("splices exactly 64 steps — no silent regression", () => {
+    expect(resolved.filter((r) => r.field !== null)).toHaveLength(64);
+  });
+
+  it("does not splice a County step whose possessives once paired as a quoted span", () => {
+    // "the candidate's county (... the job's hospital city/state)" carries no
+    // quoted constant; mis-pairing the two apostrophes used to fake one, and the
+    // City row then bound the County field to the caller's city.
+    const county = resolved.find((r) => r.instruction.startsWith("If a County field is visible"));
+    expect(county?.field).toBeNull();
   });
 
   it("keeps the two dropdown steps that carry no quoted constant", () => {

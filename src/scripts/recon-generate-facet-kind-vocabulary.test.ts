@@ -92,10 +92,10 @@ describe("resolveRecurringNavigateToFacets code-vocabulary literal", () => {
 describe("resolveRecurringNavigateToFacets alias for every declared facet", () => {
   it("adds the code-vocabulary literal for a hash facet whose slug also recurs", () => {
     const resolved = resolveRecurringNavigateToFacets(
-      [hashFacet("ship", "disney-wish", "ship"), hashFacet("date", "december-2026", "date")],
+      [hashFacet("ship", "harbor-star", "ship"), hashFacet("date", "december-2026", "date")],
       [
         actionWith([
-          "disney-wish;filterId=urlFriendlyId",
+          "harbor-star;filterId=urlFriendlyId",
           "WW;filterType=ship",
           "december-2026;filterId=urlFriendlyId",
           "2026-12;filterType=date",
@@ -103,7 +103,7 @@ describe("resolveRecurringNavigateToFacets alias for every declared facet", () =
       ]
     );
     expect(resolved.map(({ field, value }) => [field, value])).toEqual([
-      ["ship", "disney-wish"],
+      ["ship", "harbor-star"],
       ["date", "december-2026"],
       ["ship", "WW"],
       ["date", "2026-12"],
@@ -136,7 +136,7 @@ describe("resolveRecurringNavigateToFacets alias for every declared facet", () =
 describe("resolveRecurringNavigateToFacets kind naming beyond the bare field", () => {
   it("drops qualifier words from the field name when naming the element kind", () => {
     const resolved = resolveRecurringNavigateToFacets(
-      [stepFacet("ShipFacet", "Disney Wish", "ship facet")],
+      [stepFacet("ShipFacet", "Harbor Star", "ship facet")],
       [actionWith(["WW;filterType=ship", "x;filterType=theme"])]
     );
     expect(resolved.map(({ field, value }) => [field, value])).toEqual([["ShipFacet", "WW"]]);
