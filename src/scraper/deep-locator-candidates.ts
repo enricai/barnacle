@@ -761,7 +761,7 @@ async function clickLocatorCentred(locator: ResolvableLocator, label: string): P
     return;
   }
   const evaluateOnElement = async (functionDeclaration: string): Promise<CentredHitTestResult> => {
-    const { objectId } = await locator.resolveNode!();
+    const { objectId } = await resolveNode();
     if (!objectId) return { state: "missing" };
     try {
       const res = (await session.send("Runtime.callFunctionOn", {
