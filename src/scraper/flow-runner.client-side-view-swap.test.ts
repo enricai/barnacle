@@ -381,6 +381,72 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(false);
   });
 
+  it("credits a text-changing +1250B reveal with no network when the clicked control is gone", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 1250,
+      textChanged: true,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("rejects an 8000B DOM shrink when the clicked control is gone", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -8000,
+      textChanged: true,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("rejects a zero-delta, unchanged-text click when the clicked control is gone", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 0,
+      textChanged: false,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(false);
+  });
+
+  it("credits a 6000B shrink when the clicked control is confirmed present", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: -6000,
+      textChanged: true,
+      clickedElementStillPresent: true,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("rejects a growth reveal with the control gone when destinationPlausible is false", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 1250,
+      textChanged: true,
+      clickedElementStillPresent: false,
+      destinationPlausible: false,
+    });
+    expect(result).toBe(false);
+  });
+
   /**
    * Still credits the symmetric shrink-toggle (PR #409) when the clicked
    * control's continued presence is EXPLICITLY confirmed — the genuine local
