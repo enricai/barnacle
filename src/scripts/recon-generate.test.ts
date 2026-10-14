@@ -3436,6 +3436,23 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
     expect(code).toContain("uploadFixture: null");
     expect(code).toContain("TODO: this flow uploads");
   });
+
+  it("wires uploadFixture for a body-less browser-flow-only submission with a spliced FirstName", () => {
+    const opts = {
+      siteId: "s",
+      pascal: "S",
+      baseUrl: "https://x",
+      isSubmissionFlow: true,
+      omitExecuteHttp: true,
+      hasMultipartStep: false,
+      vocabulary: TEST_RECRUITING_VOCABULARY,
+      flowSteps: ["Fill in the First Name field with 'Reginald'", ...uploadFlow],
+    };
+    const { code, payloadFieldNames } = emitBrowserFlowTs(opts);
+    expect(payloadFieldNames.has("FirstName")).toBe(true);
+    expect(code).toContain("Buffer.from(payload.Resume)");
+    expect(code).toContain('payload.ResumeContentType ?? "application/pdf"');
+  });
 });
 
 describe("emitBrowserFlowTs — navigateTo step", () => {
