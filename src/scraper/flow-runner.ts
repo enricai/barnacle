@@ -675,7 +675,7 @@ const PROMPT_VALUE_SELECTORS = [
  * selected, …") is correctly read as filled.
  */
 const PROMPT_EMPTY_VALUE_RX =
-  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,3}\s*(?:\.{3}|…)?)\s*$/i;
+  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)\s*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
  * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
