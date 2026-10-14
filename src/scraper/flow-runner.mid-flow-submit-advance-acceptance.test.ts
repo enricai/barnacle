@@ -301,3 +301,98 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
     expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
   });
 });
+
+describe("flow-runner mid-flow submit acceptance (child-frame fallback)", () => {
+  const CHILD_URL = "https://example.org/embedded-checkout";
+  const PRE_TEXT_LENGTH = 1000;
+  const POST_TEXT_LENGTH = 590;
+
+  function buildChildFrameWorld(): {
+    world: World;
+    child: { evaluate: ReturnType<typeof vi.fn> };
+    clicks: { n: number };
+  } {
+    const clicks = { n: 0 };
+    const child = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const src = String(expr);
+        if (expr === "location.href") return CHILD_URL;
+        if (src.includes("ranked.sort")) {
+          return [{ deepIndex: 2, tier: 3, tag: "button", accessibleName: "place order" }];
+        }
+        if (src.includes('__mouse("click"')) {
+          clicks.n++;
+          return { clicked: true };
+        }
+        if (src.includes("outerHTML")) {
+          return clicks.n === 0
+            ? { html: 4096, text: `${PRE_TEXT_LENGTH}:Checkout Review your order` }
+            : { html: 4096, text: `${POST_TEXT_LENGTH}:Order placed Thanks` };
+        }
+        return null;
+      }),
+    };
+    const page = {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const src = String(expr);
+        if (src.includes("ranked.sort")) return [];
+        if (src.includes('__mouse("click"')) return { clicked: false };
+        if (src.includes("outerHTML")) return { html: 4096, text: "0:" };
+        if (src.includes("isInvalid(el)")) return 0;
+        return null;
+      }),
+      url: () => URL,
+      title: vi.fn().mockResolvedValue("Checkout"),
+      locator: vi.fn().mockReturnValue({
+        first: () => ({
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+      mainFrameId: () => "main",
+      sendCDP: vi.fn().mockResolvedValue({ body: "{}", base64Encoded: false }),
+      frames: () => [child],
+    } as unknown as Page;
+    const stagehand = {
+      act: vi.fn().mockResolvedValue({
+        success: false,
+        message: "no candidates resolved",
+        actionDescription: "click",
+        actions: [{ selector: "button#place", description: "place", method: "click" }],
+      }),
+      observe: vi
+        .fn()
+        .mockResolvedValue([{ selector: "button#place", description: "place", method: "click" }]),
+    } as unknown as Stagehand;
+    const world = { page, stagehand, counter: { n: 0 } } as unknown as World;
+    return { world, child, clicks };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("credits a non-final submit whose child-frame text shrank ~41% with no network, with one click and no phantom", async () => {
+    const { world, clicks } = buildChildFrameWorld();
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(outcome).toBe("completed");
+    expect(clicks.n).toBe(1);
+    expect(world.counter.n).toBe(0);
+    const logs = logsOf();
+    expect(logs.some((l) => l.includes("same-origin child iframe surfaced"))).toBe(true);
+    expect(logs.some((l) => l.includes("phantom-click-exhausted"))).toBe(false);
+  });
+
+  it("does not credit the same DOM-only change on the final step", async () => {
+    const { world } = buildChildFrameWorld();
+
+    const outcome = await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
+
+    expect(outcome).not.toBe("completed");
+    expect(logsOf().some((l) => l.includes("same-origin child iframe surfaced"))).toBe(false);
+  });
+});
