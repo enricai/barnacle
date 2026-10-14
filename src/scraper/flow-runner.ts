@@ -4180,7 +4180,7 @@ const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `((tail, preferSubmit, phrases) => {
  * control's own text, so they yield no phrases and keep the unrestricted
  * retarget.
  */
-function tailRetargetPhrasesForStep(step: string): string[] {
+export function tailRetargetPhrasesForStep(step: string): string[] {
   if (stepQuotesValueNotControlName(step)) return [];
   return extractTaggedPhrases(step)
     .filter((p) => !p.negated)
@@ -4192,7 +4192,7 @@ function tailRetargetPhrasesForStep(step: string): string[] {
  * rather than the clicked control's own name, however loosely the prose is
  * phrased. Shared so every quoted-phrase guard exempts the same steps.
  */
-function stepQuotesValueNotControlName(step: string): boolean {
+export function stepQuotesValueNotControlName(step: string): boolean {
   return Boolean(
     parseFieldLabelTarget(step) ||
       parseFillValueIntent(step) ||
