@@ -2264,6 +2264,42 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary", () => {
       )
     ).toBe(true);
   });
+
+  describe("clause-scoped completed-side classification", () => {
+    const bridge = [mk("Click the 'Sign In' button")];
+
+    it("does not fire when 'Create Account' appears only in a descriptive title", () => {
+      expect(
+        isReplanRegressingAcrossAuthBoundary(bridge, [
+          "On the Create Account page, click the 'Continue with email' button",
+        ])
+      ).toBe(false);
+    });
+
+    it("fires when the completed step submits the account creation form", () => {
+      expect(
+        isReplanRegressingAcrossAuthBoundary(bridge, [
+          "On the account registration form (Email Address, Password already filled), click the Create Account button to submit the account creation form",
+        ])
+      ).toBe(true);
+    });
+
+    it("fires when the completed step clicks Create Account to switch forms", () => {
+      expect(
+        isReplanRegressingAcrossAuthBoundary(bridge, [
+          "Click the Create Account button to switch to the registration form",
+        ])
+      ).toBe(true);
+    });
+
+    it("does not fire for a cookie consent dismissal", () => {
+      expect(
+        isReplanRegressingAcrossAuthBoundary(bridge, [
+          "If a cookie consent banner is shown, click Accept or Agree to dismiss it",
+        ])
+      ).toBe(false);
+    });
+  });
 });
 
 describe("recon-browser/isSubmitShapedInstructionText", () => {
