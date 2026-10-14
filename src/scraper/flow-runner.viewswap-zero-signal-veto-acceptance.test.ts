@@ -128,7 +128,7 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     const window = new Window({ url: BASE_URL });
     const document = window.document;
     document.body.innerHTML = `
-      <div class="settingsWizard">
+      <div class="settingsWizard" data-pre-reset-padding="${"x".repeat(12_000)}">
         <h1>Settings</h1>
         <button id="advancedOptionsBtn" aria-label="Advanced Options"></button>
       </div>
@@ -141,8 +141,9 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     // Padding lives in a non-rendered attribute (not innerText), so the
     // reset's huge byte delta does NOT flip `textChanged` — isolating the
     // report's exact "network=false url=false dom=false" shape from the
-    // OTHER (already-fixed) reveal branch that requires textChanged.
-    const RESET_PADDING = "x".repeat(12_000);
+    // OTHER (already-fixed) reveal branch that requires textChanged. The
+    // padding sits on the pre-reset page so the reset SHRINKS the DOM: the
+    // absence veto only applies when the DOM did not grow.
 
     // The button's click handler performs a full client-side RESET: it
     // replaces the ENTIRE body (including the button itself) with an
@@ -157,7 +158,7 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
       }
     ).addEventListener("click", () => {
       resetCount += 1;
-      document.body.innerHTML = `<div class="welcomeScreen" data-reset-padding="${RESET_PADDING}"><h1>Settings</h1></div>`;
+      document.body.innerHTML = `<div class="welcomeScreen"><h1>Settings</h1></div>`;
     });
 
     const documentElement = document.documentElement as unknown as HappyDomElement;

@@ -68,6 +68,7 @@ describe("isClickViewSwapVerified destination-plausibility veto", () => {
     expect(
       isClickViewSwapVerified({
         ...baseParams,
+        bytesDelta: -12_000,
         destinationPlausible: true,
         clickedElementStillPresent: false,
       })
