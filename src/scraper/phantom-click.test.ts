@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import {
   classifyPhantomClick,
+  hasPageAdvanced,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
 } from "@/scraper/phantom-click";
@@ -371,6 +372,74 @@ describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
     expect(
       classifyPhantomClick(
         makeAttempt({ ...advanced, isMidFlowSubmitStep: true, destinationPlausible: false })
+      )
+    ).toBe("phantom");
+  });
+});
+
+describe("scraper/phantom-click report snapshot pair", () => {
+  const pre = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 31284,
+    visibleTextSignature: "996:Skip to main content|Sign In|Careers Home|Back to Job Posting",
+  };
+  const post = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 29300,
+    visibleTextSignature:
+      "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home",
+  };
+  const attempt = { pre, post, isSubmitShapedStep: true };
+
+  it("hasPageAdvanced credits the shrinking signed-in chrome swap", () => {
+    expect(hasPageAdvanced(pre, post)).toBe(true);
+  });
+
+  it("hasPageAdvanced credits a text-growing variant with different labels", () => {
+    const grown = {
+      ...post,
+      visibleTextSignature: "1204:Skip to main content|Review|Education|Experience|Submit Application",
+    };
+    expect(hasPageAdvanced(pre, grown)).toBe(true);
+  });
+
+  it("hasPageAdvanced rejects tooltip-sized noise, identical and missing signatures", () => {
+    const base = { ...pre, visibleTextSignature: "300:Create your account enter your email" };
+    const noisy = { ...base, visibleTextSignature: "320:Create your account enter your email" };
+    expect(hasPageAdvanced(base, noisy)).toBe(false);
+    expect(hasPageAdvanced(pre, pre)).toBe(false);
+    expect(hasPageAdvanced(pre, { ...post, visibleTextSignature: undefined })).toBe(false);
+  });
+
+  it("is not phantom for a mid-flow submit step", () => {
+    expect(classifyPhantomClick(makeAttempt({ ...attempt, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
+    );
+  });
+
+  it("is not phantom for a growth variant with different labels", () => {
+    const grown = {
+      ...post,
+      bodyHtmlLength: 40000,
+      visibleTextSignature: "1204:Skip to main content|Review|Education|Experience|Submit Application",
+    };
+    expect(
+      classifyPhantomClick(makeAttempt({ ...attempt, post: grown, isMidFlowSubmitStep: true }))
+    ).toBe("effective");
+  });
+
+  it("keeps the final-step verdict phantom when isMidFlowSubmitStep is false", () => {
+    expect(classifyPhantomClick(makeAttempt({ ...attempt, isMidFlowSubmitStep: false }))).toBe(
+      "phantom"
+    );
+  });
+
+  it("stays phantom for an identical-snapshot no-op mid-flow", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post: { ...pre }, isSubmitShapedStep: true, isMidFlowSubmitStep: true })
       )
     ).toBe("phantom");
   });
