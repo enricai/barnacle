@@ -131,3 +131,60 @@ describe("resolveRecurringNavigateToFacets alias for every declared facet", () =
     ]);
   });
 });
+
+describe("resolveRecurringNavigateToFacets kind naming beyond the bare field", () => {
+  it("drops qualifier words from the field name when naming the element kind", () => {
+    const resolved = resolveRecurringNavigateToFacets(
+      [stepFacet("ShipFacet", "Disney Wish", "ship facet")],
+      [actionWith(["WW;filterType=ship", "x;filterType=theme"])]
+    );
+    expect(resolved.map(({ field, value }) => [field, value])).toEqual([["ShipFacet", "WW"]]);
+  });
+
+  it("reads the element kind from the facet's own hash when the field names none", () => {
+    const resolved = resolveRecurringNavigateToFacets(
+      [{ ...hashFacet("destination", "ports_castaway-cay", "destination"), kindHints: ["ports"] }],
+      [actionWith(["GOC;filterType=port", "x;filterType=theme"])]
+    );
+    expect(resolved.map(({ field, value }) => [field, value])).toEqual([["destination", "GOC"]]);
+  });
+
+  it("picks the same month's element among several elements of the date kind", () => {
+    const resolved = resolveRecurringNavigateToFacets(
+      [hashFacet("sailDate", "december-2026", "sail date")],
+      [actionWith(["2027-01;filterType=date", "2026-12;filterType=date"])]
+    );
+    expect(resolved.map(({ field, value }) => [field, value])).toEqual([
+      ["sailDate", "december-2026"],
+      ["sailDate", "2026-12"],
+    ]);
+  });
+
+  it("binds a month facet to its date element even when the field names another kind", () => {
+    const resolved = resolveRecurringNavigateToFacets(
+      [hashFacet("month", "december-2026", "month")],
+      [actionWith(["2026-12;filterType=date", "2027-01;filterType=date"])]
+    );
+    const alias = resolved.find(({ value }) => value === "2026-12");
+    expect(alias?.field).toBe("month");
+    expect(
+      matchFacetRecurrence("2026-12;filterType=date", resolved, { allowDelimiterSuffix: true })
+        ?.field
+    ).toBe("month");
+  });
+
+  it("finds a kind-tagged element behind a repeated query key", () => {
+    const action = {
+      capture: {
+        url: "https://example.com/api?filters=BS;filterType=destination&filters=4;filterType=night",
+        requestPostData: null,
+        requestHeaders: {},
+      },
+    } as unknown as Actions[number];
+    const resolved = resolveRecurringNavigateToFacets(
+      [stepFacet("destination", "Bahamas", "destination")],
+      [action]
+    );
+    expect(resolved.map(({ value }) => value)).toEqual(["BS"]);
+  });
+});

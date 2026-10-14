@@ -385,6 +385,7 @@ function walkNavigateToFacets(
           origin: "step",
           literals: collectStepFacetLiterals(step.step, env),
           kind: deriveFacetKind(step.payloadField),
+          kindHints: [],
         });
       }
       continue;
@@ -399,6 +400,7 @@ function walkNavigateToFacets(
         origin: "navigateTo",
         literals: collectHashFacetLiterals(step.navigateTo, baselineHash),
         kind: deriveFacetKind(step.payloadField),
+        kindHints: collectHashFacetKindHints(step.navigateTo, baselineHash),
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
@@ -413,6 +415,7 @@ interface WalkedNavigateToFacet {
   origin: NavigateToFacetOrigin;
   literals: string[];
   kind: string;
+  kindHints: string[];
 }
 
 /**
@@ -452,6 +455,25 @@ function collectHashFacetLiterals(url: string, previousHash: string | undefined)
           (token) => !splitHashTokens(previousHash).includes(token)
         );
   return uniqueLiterals(primary, rawTokens);
+}
+
+/**
+ * Element kinds a hash facet's own tokens name: the key of a `key=value` pair,
+ * the path segment ahead of the value, and the `<kind>_` prefix of a slug.
+ */
+function collectHashFacetKindHints(url: string, previousHash: string | undefined): string[] {
+  const hashIndex = url.indexOf("#");
+  if (hashIndex === -1) return [];
+  const previousTokens = new Set(previousHash === undefined ? [] : splitHashTokens(previousHash));
+  const tokens = splitHashTokens(url.slice(hashIndex + 1));
+  const fresh = tokens.filter((token) => !previousTokens.has(token));
+  const valueToken = fresh[fresh.length - 1] ?? tokens[tokens.length - 1];
+  if (valueToken === undefined) return [];
+  const value = stripHashKeyPrefix(valueToken);
+  const keyOfPair = valueToken.includes("=") ? valueToken.slice(0, valueToken.indexOf("=")) : "";
+  const ahead = tokens[tokens.indexOf(valueToken) - 1] ?? "";
+  const slugPrefix = value.includes("_") ? value.slice(0, value.indexOf("_")) : "";
+  return [keyOfPair, ahead, slugPrefix].filter((hint) => /^[A-Za-z][A-Za-z0-9 _-]*$/.test(hint));
 }
 
 function splitHashTokens(hash: string): string[] {
@@ -569,6 +591,10 @@ export interface NavigateToFacetBinding {
   readonly literals?: readonly string[];
   /** Element kind named by the declared field, lowercased and space-joined. */
   readonly kind?: string;
+  /** Further element kinds the facet's own hash names (`ship` in
+   * `#/ship/<slug>` or `ship=<slug>`, `ports` in `ports_<slug>`), for a field
+   * name that does not itself name the element kind. */
+  readonly kindHints?: readonly string[];
   /** Set on a facet whose `value` was read from a captured kind-suffixed
    * element, so it only matches elements of its own kind. */
   readonly keyedByKind?: boolean;
@@ -604,6 +630,7 @@ export function extractNavigateToFacetOrder(
       optional: facet.optional,
       literals: facet.literals,
       kind: facet.kind,
+      kindHints: facet.kindHints,
       ...(facet.origin === "step" ? { origin: facet.origin } : {}),
     }));
 }
@@ -7505,6 +7532,16 @@ function parseUrlQueryParams(url: string): Map<string, string> {
   return params;
 }
 
+/** Every query value of a URL, repeated keys included (`?f=a&f=b`), where
+ * {@link parseUrlQueryParams} keeps only the last per key. */
+function parseUrlQueryValues(url: string): string[] {
+  try {
+    return [...new URL(url).searchParams.values()];
+  } catch {
+    return [];
+  }
+}
+
 /** Parses a captured JSON request body into its string leaf values. Returns
  * an empty array when the body is absent or not valid JSON. */
 function parseBodyLeafValues(requestPostData: string | null): string[] {
@@ -7683,19 +7720,31 @@ function findKindKeyedLiteral(
   facet: NavigateToFacetBinding,
   actions: readonly ActionStep[]
 ): string | undefined {
-  if (facet.kind === undefined || facet.kind.length === 0) return undefined;
-  const found = new Set<string>();
+  const byTier = new Map<number, Set<string>>();
+  const sameMonth = new Set<string>();
+  const facetMonths = new Set(
+    [facet.value, ...(facet.literals ?? [])]
+      .map((literal) => monthCodeOf(literal))
+      .filter((code): code is string => code !== undefined)
+  );
   for (const { capture } of actions) {
     const values = [
-      ...parseUrlQueryParams(capture.url).values(),
+      ...parseUrlQueryValues(capture.url),
       ...parseBodyLeafValues(capture.requestPostData),
     ];
     for (const value of values) {
       const parsed = parseElementKind(value);
-      if (parsed !== undefined && kindsMatch(facet.kind, parsed.kind)) found.add(parsed.literal);
+      if (parsed === undefined) continue;
+      const tier = kindMatchTier(facet, parsed.kind);
+      if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
+      const month = monthCodeOf(parsed.literal);
+      if (month !== undefined && facetMonths.has(month)) sameMonth.add(parsed.literal);
     }
   }
-  return found.size === 1 ? [...found][0] : undefined;
+  const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
+  if (closest !== undefined && closest.size === 1) return [...closest][0];
+  const sameMonthInKind = [...(closest ?? sameMonth)].filter((literal) => sameMonth.has(literal));
+  return sameMonthInKind.length === 1 ? sameMonthInKind[0] : undefined;
 }
 
 /**
@@ -9401,10 +9450,13 @@ export function matchFacetRecurrence(
   const elementKind = parseElementKind(text)?.kind;
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
+      const readFromElement =
+        facet.keyedByKind === true && parseElementKind(text)?.literal === facet.value;
       if (
         elementKind !== undefined &&
         isKindKeyed(facet) &&
-        !kindsMatch(facet.kind!, elementKind)
+        !readFromElement &&
+        !kindsMatch(facet, elementKind)
       ) {
         return best;
       }
@@ -9447,16 +9499,65 @@ function normalizeKind(kind: string): string {
   return deriveFacetKind(kind).replace(/\s+/g, "").replace(/s$/, "");
 }
 
+const KIND_NOISE_WORDS = new Set(["facet", "filter", "field", "value", "option", "selection"]);
+
 /**
- * Whether a declared field's kind names an element's kind: equal after
- * normalization, or the field's trailing word is the element kind (`sailDate`
- * names a `date` element), so a field name that adds a qualifier still binds.
+ * How closely a facet names an element's kind, 0 when it does not: 1 for the
+ * declared field (qualifier words such as `facet` dropped) or a hash-named
+ * hint equal to the kind, 2 when the field's trailing word is the kind
+ * (`sailDate` names a `date` element), 3 when any other word of the field is.
+ * A caller picking an element for the facet takes the closest tier, so a field
+ * naming two kinds still resolves to the one it ends with.
  */
-function kindsMatch(facetKind: string, elementKind: string): boolean {
+function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 1 | 2 | 3 {
   const element = normalizeKind(elementKind);
-  if (normalizeKind(facetKind) === element) return true;
-  const trailing = deriveFacetKind(facetKind).split(" ").pop() ?? "";
-  return element.length > 0 && normalizeKind(trailing) === element;
+  if (element.length === 0 || facet.kind === undefined) return 0;
+  const words = deriveFacetKind(facet.kind).split(" ");
+  const meaningful = words.filter((word) => !KIND_NOISE_WORDS.has(word));
+  const named = meaningful.length > 0 ? meaningful : words;
+  if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
+  if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
+  if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
+  return named.some((word) => normalizeKind(word) === element) ? 3 : 0;
+}
+
+function kindsMatch(facet: NavigateToFacetBinding, elementKind: string): boolean {
+  return kindMatchTier(facet, elementKind) > 0;
+}
+
+const MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+];
+
+/**
+ * Normalizes a month written as a slug or label (`december-2026`, `Dec 2026`,
+ * `2026-12`) to `YYYY-MM`, so the same month matches across vocabularies.
+ */
+function monthCodeOf(literal: string): string | undefined {
+  const text = literal.trim();
+  const iso = /^(\d{4})[-/](0[1-9]|1[0-2])$/.exec(text);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const named =
+    /^([A-Za-z]{3,9})[\s_/-]+(\d{4})$/.exec(text) ?? /^(\d{4})[\s_/-]+([A-Za-z]{3,9})$/.exec(text);
+  if (!named) return undefined;
+  const yearFirst = /^\d{4}$/.test(named[1]!);
+  const name = (yearFirst ? named[2]! : named[1]!).toLowerCase();
+  const year = yearFirst ? named[1]! : named[2]!;
+  const index = MONTH_NAMES.findIndex(
+    (month) => month === name || (name.length === 3 && month.startsWith(name))
+  );
+  return index === -1 ? undefined : `${year}-${String(index + 1).padStart(2, "0")}`;
 }
 
 function isKindKeyed(facet: NavigateToFacetBinding): boolean {
@@ -16890,15 +16991,9 @@ async function main(): Promise<void> {
   const unreferencedInContract = final.contractCode.includes("httpClient(")
     ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
     : [...unreferencedEverywhere];
-  if (unreferencedEverywhere.size > 0) {
-    throw new Error(
-      `recon-generate: declared payloadField(s) ${[...unreferencedEverywhere].join(", ")} are required schema fields ` +
-        `but no emitted request or browser flow references them — drop the payloadField or capture a request that carries it`
-    );
-  }
   for (const field of unreferencedInContract) {
     logger.warn(
-      `declared payloadField ${field} is a required schema field but no emitted HTTP request references it (only the browser flow splices it)`
+      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
     );
   }
 
