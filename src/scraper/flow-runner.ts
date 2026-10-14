@@ -103,6 +103,7 @@ import {
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
+import { installSameTabNavigation } from "@/scraper/same-tab-navigation";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
@@ -11442,6 +11443,8 @@ export async function executeStepWithHealing(params: {
 
     // Hand-built sessions in unit tests carry no browser context; there is no tab to follow.
     const pagesBeforeAttempt = stagehand.context?.pages() ?? [];
+    // A click that targets a new tab would strand the driven page; keep it in this tab.
+    await installSameTabNavigation(frameTarget ?? mainFrameTarget(page));
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
