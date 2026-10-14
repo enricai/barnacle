@@ -89,11 +89,15 @@ FINAL STEP OF FLOW: ${input.isFinalStep === false ? "no" : "yes"}
 VISIBLE TEXT (live, truncated):
 ${input.visibleText.slice(0, MAX_VISIBLE_TEXT_CHARS)}
 `;
+  const isNonFinal = input.isFinalStep === false;
+  const titleLine = isNonFinal ? "" : `PAGE TITLE: ${input.pageTitle}\n`;
+  const titleHintsLine = isNonFinal
+    ? ""
+    : `- Success page title hints: ${JSON.stringify(input.successPageTitleHints)}\n`;
   return `Did the submit succeed?
 
 ${stepContext}PAGE URL: ${input.pageUrl}
-PAGE TITLE: ${input.pageTitle}
-
+${titleLine}
 NETWORK REQUESTS IN ATTEMPT WINDOW (method, status, url):
 ${
   input.networkCaptures.length > 0
@@ -109,8 +113,7 @@ DOM INVALID-MARKER COUNT: ${input.invalidMarkerCount} (form fields still showing
 SITE CRITERIA:
 - Own-backend hostnames: ${JSON.stringify(input.ownBackendHostnames)}
 - Success URL fragments: ${JSON.stringify(input.successUrlFragments)}
-- Success page title hints: ${JSON.stringify(input.successPageTitleHints)}
-- Submitted-state selectors (DOM components that indicate post-submit state): ${JSON.stringify(input.submittedStateSelectors)}`;
+${titleHintsLine}- Submitted-state selectors (DOM components that indicate post-submit state): ${JSON.stringify(input.submittedStateSelectors)}`;
 }
 
 /**
