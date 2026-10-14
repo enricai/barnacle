@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ReconVocabulary } from "@/recon/vocabulary";
+import { parseFillStep } from "@/scraper/flow-runner";
 import { emitConfigManifest } from "@/scripts/recon-generate";
 
 /** Recruiting-domain test vocabulary, exercised only by this unit test. */
@@ -39,6 +40,18 @@ describe("emitConfigManifest — buildManifestInstruction splices the fill VALUE
     expect(firstStepText(manifestStr)).toBe(
       "Fill in the Legal Name First Name field (data-automation-id='legalName--firstName') with '{{ .request.FirstName }}'"
     );
+  });
+
+  it("emits an instruction parseFillStep accepts once rendered with a value", () => {
+    const manifestStr = emitConfigManifest({
+      siteId: "acme-demo",
+      displayName: "AcmeDemo",
+      baseUrl: "https://apply.acme.example",
+      flowSteps: [{ step: "Fill in the City field with 'Dallas'", payloadField: "City" }],
+    });
+    const rendered = firstStepText(manifestStr).replace("{{ .request.City }}", "Ada");
+
+    expect(parseFillStep(rendered)?.value).toBe("Ada");
   });
 
   it("lands on the same site when the field is vocabulary-resolved rather than explicit", () => {
