@@ -14886,7 +14886,7 @@ function stripNonCodeText(code: string): string {
         depth--;
         if (templateDepths[templateDepths.length - 1] === -1) templateDepths.pop();
       }
-      out.push(ch);
+      out.push(ch ?? "");
       i++;
     }
   }
