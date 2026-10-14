@@ -1965,6 +1965,27 @@ export function isDomOnlyAdvanceVerified(params: {
 }
 
 /**
+ * Decides whether a non-final submit-shaped step is credited when the outcome
+ * judge returned no verdict. An unavailable judge is missing evidence, not a
+ * rejection, so strong structural click signals (a real network advance or a
+ * demonstrable page advance) credit the step instead of failing it and
+ * re-clicking at the same position. Final steps and weak-signal cases return
+ * false and keep the DOM-state fallback / failure path.
+ */
+export function isNullVerdictAdvanceCredited(params: {
+  midFlowSubmit: boolean;
+  judgeUnavailable: boolean;
+  networkAdvanced: boolean;
+  pageAdvanced: boolean;
+  invalidMarkerCount: number;
+}): boolean {
+  if (!params.midFlowSubmit || !params.judgeUnavailable || params.invalidMarkerCount > 0) {
+    return false;
+  }
+  return params.networkAdvanced || params.pageAdvanced;
+}
+
+/**
  * Client-side view-swap verification gate. Credits a click that produces
  * substantial DOM growth with zero network as a verified step outcome when
  * the step is a plain client-side reveal (not a submit/final step, not an
@@ -12937,7 +12958,15 @@ export async function executeStepWithHealing(params: {
       // A mid-flow transition is credited on the page's own demonstrable
       // advance (visible text swapped); the judge's final-submit-flavoured
       // view of a stale title or missing network must not undo it.
-      const midFlowAdvanceCredited = midFlowSubmit && clickViewSwapVerified;
+      const midFlowAdvanceCredited =
+        (midFlowSubmit && clickViewSwapVerified) ||
+        isNullVerdictAdvanceCredited({
+          midFlowSubmit,
+          judgeUnavailable: judgeVerdict === null,
+          networkAdvanced: networkIsRealAdvance,
+          pageAdvanced: hasPageAdvanced(pre, post),
+          invalidMarkerCount,
+        });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
           `mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
@@ -13581,7 +13610,14 @@ export async function executeStepWithHealing(params: {
             });
 
             const retryMidFlowAdvanceCredited =
-              retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost);
+              (retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost)) ||
+              isNullVerdictAdvanceCredited({
+                midFlowSubmit: retryMidFlowSubmit,
+                judgeUnavailable: judgeVerdict === null,
+                networkAdvanced: retryNetworkFired && retryDestinationPlausible,
+                pageAdvanced: hasPageAdvanced(pre, retryPost),
+                invalidMarkerCount,
+              });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
               logger.info(
                 `n+16 fallback mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
