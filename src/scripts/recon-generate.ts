@@ -371,18 +371,8 @@ export function extractNavigateToHashFragmentValue(
 function walkNavigateToFacets(
   flowSteps: FlowStepInput[],
   env: NodeJS.ProcessEnv
-): Array<{
-  value: string | null;
-  field: string;
-  optional: boolean;
-  origin: NavigateToFacetOrigin;
-}> {
-  const facets: Array<{
-    value: string | null;
-    field: string;
-    optional: boolean;
-    origin: NavigateToFacetOrigin;
-  }> = [];
+): WalkedNavigateToFacet[] {
+  const facets: WalkedNavigateToFacet[] = [];
   let baselineHash: string | undefined;
   for (const step of flowSteps) {
     if (typeof step === "string") continue;
@@ -393,6 +383,8 @@ function walkNavigateToFacets(
           field: step.payloadField,
           optional: step.optional === true,
           origin: "step",
+          literals: collectStepFacetLiterals(step.step, env),
+          kind: deriveFacetKind(step.payloadField),
         });
       }
       continue;
@@ -405,11 +397,61 @@ function walkNavigateToFacets(
         field: step.payloadField,
         optional: step.optional === true,
         origin: "navigateTo",
+        literals: collectHashFacetLiterals(step.navigateTo, baselineHash),
+        kind: deriveFacetKind(step.payloadField),
       });
     }
     if (currentHash !== undefined) baselineHash = currentHash;
   }
   return facets;
+}
+
+interface WalkedNavigateToFacet {
+  value: string | null;
+  field: string;
+  optional: boolean;
+  origin: NavigateToFacetOrigin;
+  literals: string[];
+  kind: string;
+}
+
+/**
+ * Derives a facet's element kind from its declared field name (`tripLength`
+ * and `TripLength` both yield `trip length`), so a matcher can tell which
+ * captured element a literal belongs to without any site vocabulary.
+ */
+function deriveFacetKind(field: string): string {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\s]+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function uniqueLiterals(primary: string | null, others: readonly string[]): string[] {
+  return [...new Set([...(primary === null ? [] : [primary]), ...others])].filter(
+    (literal) => literal.length > 0
+  );
+}
+
+function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): string[] {
+  const primary = extractStepPersonaValue(instruction, env);
+  return uniqueLiterals(
+    primary,
+    findQuotedSpans(instruction).map((span) => span.text)
+  );
+}
+
+function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
+  const primary = extractNavigateToHashFragmentValue(url, previousHash);
+  const hashIndex = url.indexOf("#");
+  const rawTokens =
+    hashIndex === -1 || previousHash === undefined
+      ? []
+      : splitHashTokens(url.slice(hashIndex + 1)).filter(
+          (token) => !splitHashTokens(previousHash).includes(token)
+        );
+  return uniqueLiterals(primary, rawTokens);
 }
 
 function splitHashTokens(hash: string): string[] {
@@ -522,6 +564,11 @@ export interface NavigateToFacetBinding {
    * a non-navigateTo step's quoted instruction value. Step-origin facets carry
    * no transition slot, so they never enter positional correlation. */
   readonly origin?: NavigateToFacetOrigin;
+  /** Every literal the facet takes, primary `value` first, then alternate
+   * vocabulary literals (other quoted spans, raw hash tokens). */
+  readonly literals: readonly string[];
+  /** Element kind named by the declared field, lowercased and space-joined. */
+  readonly kind: string;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -552,6 +599,8 @@ export function extractNavigateToFacetOrder(
       value: facet.value ?? "",
       field: facet.field,
       optional: facet.optional,
+      literals: facet.literals,
+      kind: facet.kind,
       ...(facet.origin === "step" ? { origin: facet.origin } : {}),
     }));
 }
