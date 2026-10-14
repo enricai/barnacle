@@ -17034,6 +17034,21 @@ async function main(): Promise<void> {
   const unreferencedEverywhere = new Set(
     unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
   );
+  // A field nothing reads must not be required of callers; re-emit it optional.
+  // Browser-flow-only references stay required because they still take effect.
+  if (unreferencedEverywhere.size > 0) {
+    const optionalPayloadFieldNames = new Set([
+      ...(final.contractOpts.optionalPayloadFieldNames ?? []),
+      ...unreferencedEverywhere,
+    ]);
+    final.contractOpts = { ...final.contractOpts, optionalPayloadFieldNames };
+    final.contractCode = emitContractTs(final.contractOpts);
+    for (const field of unreferencedEverywhere) {
+      logger.warn(
+        `declared payloadField ${field} is read by no emitted request; emitted as optional schema field`
+      );
+    }
+  }
   // A browser-flow splice only changes the instruction text; when the contract
   // replays HTTP requests, a field none of them carries still has no effect on
   // the replayed requests and is reported too.
