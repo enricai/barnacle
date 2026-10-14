@@ -400,7 +400,8 @@ describe("scraper/phantom-click report snapshot pair", () => {
   it("hasPageAdvanced credits a text-growing variant with different labels", () => {
     const grown = {
       ...post,
-      visibleTextSignature: "1204:Skip to main content|Review|Education|Experience|Submit Application",
+      visibleTextSignature:
+        "1204:Skip to main content|Review|Education|Experience|Submit Application",
     };
     expect(hasPageAdvanced(pre, grown)).toBe(true);
   });
@@ -423,7 +424,8 @@ describe("scraper/phantom-click report snapshot pair", () => {
     const grown = {
       ...post,
       bodyHtmlLength: 40000,
-      visibleTextSignature: "1204:Skip to main content|Review|Education|Experience|Submit Application",
+      visibleTextSignature:
+        "1204:Skip to main content|Review|Education|Experience|Submit Application",
     };
     expect(
       classifyPhantomClick(makeAttempt({ ...attempt, post: grown, isMidFlowSubmitStep: true }))
