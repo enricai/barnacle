@@ -98,7 +98,7 @@ import {
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
-import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
+import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
