@@ -10790,16 +10790,16 @@ export async function executeStepWithHealing(params: {
       })
     ) {
       const fallbackTarget = await probeChildFrameSubmitFallback({
-      page,
-      signalCounter,
-      step,
-      isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+        page,
+        signalCounter,
         step,
-        submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-      }),
-    });
+        isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
+      });
       if (fallbackTarget) {
         logger.info(
           `${formatStepPrefix(stepIndex, totalSteps)} probe-absent: no candidate in the resolved frame, but a same-origin child iframe surfaced a submit-shaped candidate — clicked and verified there instead of failing`
@@ -11471,7 +11471,10 @@ export async function executeStepWithHealing(params: {
             const runnerUp = ranked[1];
             if (runnerUp) {
               await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
-                const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
+                const snap = await snapshotPage(
+                  frameTarget ?? mainFrameTarget(page),
+                  signalCounter
+                );
                 return snap.visibleTextSignature;
               });
               const midPost = await snapshotPage(

@@ -216,6 +216,23 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with late text-
     expect(logs.some((l) => l.includes("phantom-click-exhausted"))).toBe(false);
   });
 
+  it("mid-flow advance with no network stops the cascade after attempt 1", async () => {
+    const world = buildWorld("Sign up");
+    vi.mocked(testLogger.info).mockClear();
+    vi.mocked(testLogger.warn).mockClear();
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(outcome).toBe("completed");
+    expect(world.counter.n).toBe(0);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    const logs = vi
+      .mocked(testLogger.info)
+      .mock.calls.concat(vi.mocked(testLogger.warn).mock.calls)
+      .map((c) => String(c[0]));
+    expect(logs.some((l) => /deep-submit-locator|llm-rephrase|attempt 2/.test(l))).toBe(false);
+  });
+
   it("hands the judge the re-rendered text for a stale-title non-final step", async () => {
     const world = buildWorld("Sign In");
 
