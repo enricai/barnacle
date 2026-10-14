@@ -131,7 +131,7 @@ interface World {
   postMetrics: () => { text: number; bytes: number };
 }
 
-function buildWorld(sc: Scenario): World {
+function buildWorld(sc: Scenario, actions: "click" | "none" = "click"): World {
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `<div><h1 id="hdr">${sc.hdrBefore}</h1><div id="out"></div><button id="theControl" type="button">Create Account</button></div>`;
@@ -199,7 +199,10 @@ function buildWorld(sc: Scenario): World {
       success: true,
       message: "clicked",
       actionDescription: "clicked",
-      actions: [{ selector: `xpath=${controlXPath}`, description: "control", method: "click" }],
+      actions:
+        actions === "none"
+          ? []
+          : [{ selector: `xpath=${controlXPath}`, description: "control", method: "click" }],
     };
   });
   const stagehand = {
@@ -313,6 +316,18 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     expect(world.rendered()).toBe(true);
     expect(outcome).toBe("completed");
     expect(world.act).toHaveBeenCalledTimes(1);
+  });
+
+  it("credits the advance when Stagehand reports success with no resolved action", async () => {
+    const world = buildWorld(REPORT, "none");
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(outcome).toBe("completed");
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))).toBe(
+      false
+    );
   });
 
   it("does not credit the same DOM-only advance on the final step", async () => {

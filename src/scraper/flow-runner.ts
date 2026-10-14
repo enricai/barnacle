@@ -2112,7 +2112,10 @@ export function isNullVerdictAdvanceCredited(params: {
  * `textChanged` when omitted) holds — byte delta is not required, since a
  * wizard swap can keep the HTML size — with the same invalid-marker and
  * destination vetoes. The clicked control being gone is NOT a veto here: a
- * wizard advance normally replaces the button along with the page. Omitted,
+ * wizard advance normally replaces the button along with the page. The
+ * credit also holds when Stagehand reported a successful act with no
+ * resolved action (`actSucceeded`) or a non-click, non-state-class method.
+ * Omitted,
  * the submit-shaped rejection is unchanged.
  */
 export function isClickViewSwapVerified(params: {
@@ -2128,6 +2131,7 @@ export function isClickViewSwapVerified(params: {
   destinationPlausible?: boolean;
   midFlowSubmit?: boolean;
   pageAdvanced?: boolean;
+  actSucceeded?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2144,14 +2148,28 @@ export function isClickViewSwapVerified(params: {
     destinationPlausible,
     midFlowSubmit = false,
     pageAdvanced = textChanged,
+    actSucceeded = false,
   } = params;
+  // The page advancing is the evidence for a mid-flow submit, so it does not
+  // depend on how Stagehand reported the gesture: a successful act that
+  // listed no actions, or a non-state-class method, still ran a click-class
+  // action. Mirrors the settle gate's `mayTriggerRoundTrip`.
+  const midFlowActRan =
+    resolvedAction === null ? actSucceeded : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+  if (
+    midFlowSubmit &&
+    midFlowActRan &&
+    destinationPlausible !== false &&
+    !isAdvanceWithPattern &&
+    invalidMarkerDelta <= 0 &&
+    textChanged &&
+    pageAdvanced
+  ) {
+    return true;
+  }
   if (resolvedAction?.method !== "click") return false;
   if (destinationPlausible === false) return false;
-  if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) {
-    if (isAdvanceWithPattern) return false;
-    if (invalidMarkerDelta > 0) return false;
-    return textChanged && pageAdvanced;
-  }
+  if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) return false;
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
   // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
@@ -12702,6 +12720,7 @@ export async function executeStepWithHealing(params: {
       destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
       pageAdvanced: hasPageAdvanced(pre, post),
+      actSucceeded: record.actResultSuccess === true,
     });
     if (
       clickViewSwapVerified === false &&
