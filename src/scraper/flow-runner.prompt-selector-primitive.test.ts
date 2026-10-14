@@ -192,6 +192,27 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("centres the trigger and the option before each trusted click", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks, centres } = buildPromptWidgetHarness({
+      html: WIDGET_KIT_HTML,
+      popupByWidgetId: { "src-widget": { options: ["Yes", "No"] } },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'How Did You Hear About Us?' select 'No'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(centres).toHaveLength(clicks.length);
+  });
+
   it("resolves a near-standard button[aria-haspopup=listbox] widget with NO widget-kit value attributes", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
