@@ -273,3 +273,51 @@ describe("scraper/phantom-click classifyPhantomClick gates every effect signal o
     }
   );
 });
+
+describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
+  const advanced = {
+    pre: {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 31284,
+      visibleTextSignature: `996:${"a".repeat(200)}`,
+    },
+    post: {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 29300,
+      visibleTextSignature: `588:${"b".repeat(200)}`,
+    },
+    isSubmitShapedStep: true,
+  };
+
+  it("credits a mid-flow submit whose page demonstrably advanced", () => {
+    expect(classifyPhantomClick(makeAttempt({ ...advanced, isMidFlowSubmitStep: true }))).toBe(
+      "effective"
+    );
+  });
+
+  it("stays phantom for the final submit with the same pre/post", () => {
+    expect(classifyPhantomClick(makeAttempt(advanced))).toBe("phantom");
+  });
+
+  it("stays phantom on a trivial byte delta or unchanged signature", () => {
+    const trivial = { ...advanced, post: { ...advanced.post, bodyHtmlLength: 31000 } };
+    expect(classifyPhantomClick(makeAttempt({ ...trivial, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+    const same = { ...advanced, post: { ...advanced.post, visibleTextSignature: advanced.pre.visibleTextSignature } };
+    expect(classifyPhantomClick(makeAttempt({ ...same, isMidFlowSubmitStep: true }))).toBe(
+      "phantom"
+    );
+  });
+
+  it("stays phantom when the destination is implausible", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ ...advanced, isMidFlowSubmitStep: true, destinationPlausible: false })
+      )
+    ).toBe("phantom");
+  });
+});
+
