@@ -2024,12 +2024,18 @@ export function isDomOnlyAdvanceVerified(params: {
  * page), which also nets a large negative byte delta with zero network/url
  * and no text-signature match. A reset replaces the clicked control itself
  * along with everything else, whereas a genuine same-page toggle leaves the
- * clicked control in place. `clickedElementStillPresent` — whether the
+ * clicked control in place. A click-driven view swap (a login-to-registration
+ * form swap, a chooser-to-form swap) also removes its own trigger because the
+ * trigger belonged to the replaced view, but it GROWS the DOM, whereas a reset
+ * reverts to an earlier, smaller screen. The veto therefore keys on absence
+ * combined with a DOM that did not grow (`bytesDelta <= 0`), not on absence
+ * alone. `clickedElementStillPresent` — whether the
  * resolved click target can still be found in the post-click DOM, from a
  * best-effort live probe — is `false` only on POSITIVE proof of absence;
  * when the probe can't run (non-xpath selector, evaluate failure) it stays
  * at its default `true` so it never manufactures a veto out of missing
- * information. Only a confirmed `false` blocks the credit.
+ * information. Only a confirmed `false` paired with a non-growing DOM blocks
+ * the credit.
  *
  * **Destination-plausibility veto:** none of the signals above look at
  * WHERE the click landed. A non-submit click that bounces to a page
@@ -2106,7 +2112,7 @@ export function isClickViewSwapVerified(params: {
   if (isAdvanceWithPattern) return false;
   if (networkDelta !== 0) return false;
   if (invalidMarkerDelta > 0) return false;
-  if (!clickedElementStillPresent) return false;
+  if (!clickedElementStillPresent && bytesDelta <= 0) return false;
   if (Math.abs(bytesDelta) >= VIEW_SWAP_MIN_BYTES) return true;
   return textChanged && Math.abs(bytesDelta) >= VIEW_SWAP_REVEAL_MIN_BYTES;
 }
@@ -4506,7 +4512,10 @@ async function readElementSelectionFingerprint(
  * own xpath still resolve to a node in the post-click DOM? A same-page
  * toggle (a settings-page tab switcher swapping its panel content) leaves
  * the clicked control itself in place; a full client-side reset that reverts
- * to an earlier screen replaces it along with everything else. Returns
+ * to an earlier screen replaces it along with everything else. A view swap
+ * (e.g. a login-to-registration form swap) also removes its trigger, so
+ * absence only vetoes when the DOM did not grow; the caller applies that
+ * direction check. Returns
  * `true` — never veto — whenever presence genuinely can't be determined (a
  * non-xpath selector, an evaluate failure): only a positive `false` read
  * back from the DOM counts as proof of absence.
@@ -12479,9 +12488,10 @@ export async function executeStepWithHealing(params: {
     // Zero-signal reset veto input for the view-swap gate below. Read only
     // for a resolved click with a usable selector — a page reset that reverts
     // to an earlier screen (recon-viewswap-false-pass-on-zero-signal-click.md)
-    // replaces the clicked control along with everything else, while a
-    // genuine same-page toggle (a settings-page tab switcher) leaves it in
-    // place. See isClickViewSwapVerified's doc comment.
+    // replaces the clicked control along with everything else and shrinks
+    // the DOM, while a genuine same-page toggle leaves it in place and a
+    // view swap removes it but grows the DOM (absence vetoes only when
+    // bytesDelta <= 0). See isClickViewSwapVerified's doc comment.
     const clickedElementStillPresent =
       isClick && resolvedAction?.selector
         ? await resolvedClickTargetStillPresent(
