@@ -111,7 +111,8 @@ function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): Quote
  * Locates the splice site in a flow-step instruction as `{ before, matched,
  * after }` slices of the ORIGINAL instruction — a reserved `${RECON_*}` env
  * token when present (preferred, since it names its own site unambiguously),
- * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule.
+ * otherwise the quoted VALUE span per {@link pickValueSpan}'s verb-class rule
+ * (its quote delimiters stay in `before`/`after`, so a splice remains quoted).
  * This is the position-aware counterpart to {@link extractStepPersonaValue}:
  * that function only needs the extracted string, this one needs the actual
  * before/after slices so a template literal can be rebuilt around the site.
@@ -133,9 +134,9 @@ function locateSpliceSite(
   if (spans.length === 0) return null;
   const span = pickValueSpan(instruction, spans);
   return {
-    before: instruction.slice(0, span.start),
-    matched: instruction.slice(span.start, span.end),
-    after: instruction.slice(span.end),
+    before: instruction.slice(0, span.start + 1),
+    matched: instruction.slice(span.start + 1, span.end - 1),
+    after: instruction.slice(span.end - 1),
   };
 }
 
