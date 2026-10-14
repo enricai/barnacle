@@ -13734,20 +13734,19 @@ const applicantContactEvidenceFieldNamesLower = new Set(
  */
 export function contractUsesApplicantContactSchema(opts: {
   inputBody?: unknown;
-  omitExecuteHttp?: boolean;
   isSubmissionFlow?: boolean;
   payloadFieldNames?: Set<string>;
 }): boolean {
-  const { inputBody, omitExecuteHttp, isSubmissionFlow, payloadFieldNames } = opts;
-  // A browser-flow-only submission with no captured body has no inputBody to
-  // inspect; the payload fields its steps splice are the only evidence.
+  const { inputBody, isSubmissionFlow, payloadFieldNames } = opts;
+  // A body-less submission flow has no inputBody to inspect; the payload fields
+  // its steps splice are the only evidence, whether or not it also has an HTTP
+  // path (the browser-flow emitter can't know which the contract will take).
   if (inputBody != null) {
     return [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
       path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
     );
   }
   return (
-    omitExecuteHttp === true &&
     isSubmissionFlow === true &&
     [...(payloadFieldNames ?? [])].some((name) =>
       applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
@@ -14027,7 +14026,6 @@ export function emitContractTs(opts: {
   // applies (see recon-generate-payload-schema-mismatch.md).
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
-    omitExecuteHttp,
     isSubmissionFlow,
     payloadFieldNames,
   });
@@ -15396,8 +15394,6 @@ export function emitConfigManifest(opts: {
   isSubmissionFlow?: boolean;
   /** Whether the flow has a multipart upload action — same input the `.ts` emitter takes. */
   hasMultipartStep?: boolean;
-  /** Browser-flow-only site (no executeHttp); feeds the shared Resume-contract decision. */
-  omitExecuteHttp?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15413,7 +15409,6 @@ export function emitConfigManifest(opts: {
     httpModulePath,
     isSubmissionFlow = false,
     hasMultipartStep = false,
-    omitExecuteHttp,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
@@ -15511,7 +15506,6 @@ export function emitConfigManifest(opts: {
     hasMultipartStep ||
     contractUsesApplicantContactSchema({
       inputBody,
-      omitExecuteHttp,
       isSubmissionFlow,
       payloadFieldNames,
     });
@@ -15643,7 +15637,6 @@ export function emitBrowserFlowTs(opts: {
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
-  omitExecuteHttp?: boolean;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside, from the recon flow file's object-form `frameSelector`. Matches
@@ -15667,7 +15660,6 @@ export function emitBrowserFlowTs(opts: {
     isSubmissionFlow,
     hasMultipartStep = false,
     inputBody,
-    omitExecuteHttp = false,
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
@@ -15687,7 +15679,6 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep ||
     contractUsesApplicantContactSchema({
       inputBody,
-      omitExecuteHttp,
       isSubmissionFlow,
       payloadFieldNames,
     });
@@ -17037,7 +17028,6 @@ async function main(): Promise<void> {
           recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
           isSubmissionFlow,
           hasMultipartStep,
-          omitExecuteHttp: browserFlowOnly,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -17066,7 +17056,6 @@ async function main(): Promise<void> {
       isSubmissionFlow,
       hasMultipartStep,
       inputBody,
-      omitExecuteHttp: browserFlowOnly,
       vocabulary,
       frameSelector,
     });

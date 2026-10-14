@@ -3444,7 +3444,6 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
       pascal: "S",
       baseUrl: "https://x",
       isSubmissionFlow: true,
-      omitExecuteHttp: true,
       hasMultipartStep: false,
       vocabulary: TEST_RECRUITING_VOCABULARY,
       flowSteps: ["Fill in the First Name field with 'Reginald'", ...uploadFlow],
@@ -3454,6 +3453,25 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
     expect(code).toContain("Buffer.from(payload.Resume)");
     expect(code).toContain('payload.ResumeContentType ?? "application/pdf"');
   });
+
+  it.each([
+    ["First Name", "'Reginald'", "FirstName"],
+    ["City", "'Dallas'", "City"],
+  ])(
+    "wires uploadFixture from a spliced %s with no inputBody and no multipart step",
+    (label, value, field) => {
+      const { code, payloadFieldNames } = emitBrowserFlowTs({
+        siteId: "s",
+        pascal: "S",
+        baseUrl: "https://x",
+        isSubmissionFlow: true,
+        vocabulary: TEST_RECRUITING_VOCABULARY,
+        flowSteps: [`Fill in the ${label} field with ${value}`, ...uploadFlow],
+      });
+      expect(payloadFieldNames.has(field)).toBe(true);
+      expect(code).toContain("Buffer.from(payload.Resume)");
+    }
+  );
 });
 
 describe("emitBrowserFlowTs — navigateTo step", () => {
