@@ -39,3 +39,19 @@ describe("recon-browser/isReplanRegressingAcrossAuthBoundary contextual sign-in 
     ).toBe(true);
   });
 });
+
+describe("recon-browser/isReplanRegressingAcrossAuthBoundary contextual account-creation mention", () => {
+  const signIn = [mk("Click the 'Log In' button to continue")];
+
+  it("does not treat a completed step that only mentions account creation descriptively as account creation", () => {
+    expect(
+      isReplanRegressingAcrossAuthBoundary(signIn, [
+        "Open the help menu, which sits beside the create account link, and select FAQ",
+      ])
+    ).toBe(false);
+  });
+
+  it("still vetoes when a completed step's own action clause creates an account", () => {
+    expect(isReplanRegressingAcrossAuthBoundary(signIn, ["Click 'Create Account'"])).toBe(true);
+  });
+});
