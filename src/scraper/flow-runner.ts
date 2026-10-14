@@ -8016,21 +8016,11 @@ async function commitPromptOption(params: {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-      const buttonValue = ${BUTTON_VALUE_EXPR};
-      const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+      const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "" };
-      // Value via the union: aria-activedescendant, own input value, a <button>'s
-      // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
-      // selection-label node (empty-state phrase treated as no value).
-      const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-      const adText = adid && document.getElementById(adid) ? norm(optionLabel(document.getElementById(adid))) : "";
-      const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
-      const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
-      const lblRaw = lbl ? (lbl.textContent || "") : "";
-      const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
-      const text = adText || own || lblText;
+      const text = currentText(w, valueSel, emptyRx);
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
@@ -8152,8 +8142,10 @@ export async function hasUnfilledRequiredControlForStep(
 ): Promise<boolean> {
   const label = extractRequiredControlProbeLabel(instruction);
   if (!label) return false;
-  const expr = `((label, triggerSel) => {
+  const expr = `((label, triggerSel, valueSel, emptyRxSrc, emptyRxFlags) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+    const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
     const want = norm(label);
     if (!want) return false;
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
@@ -8172,6 +8164,7 @@ export async function hasUnfilledRequiredControlForStep(
       if (!el) return false;
       if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
       if (isInvalid(el)) return true;
+      if (el.matches && el.matches(triggerSel)) return currentText(el, valueSel, emptyRx) === "";
       const v = ("value" in el) ? el.value : "";
       return !v || String(v).trim() === "";
     };
@@ -8222,7 +8215,7 @@ export async function hasUnfilledRequiredControlForStep(
       if (txt && (txt.includes(want) || want.includes(txt))) return true;
     }
     return false;
-  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
+  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
