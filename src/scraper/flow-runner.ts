@@ -96,6 +96,7 @@ import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
   isPlausibleStepDestination,
+  PAGE_ADVANCE_MIN_BYTES_DELTA,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
@@ -1634,6 +1635,20 @@ export function isStepSubmitShaped(params: {
 }
 
 /**
+ * Submit-shaped but NOT the flow's final step: a mid-flow advancing submit
+ * (e.g. account creation) that can be credited on a demonstrable page advance
+ * instead of needing the final submit's network/URL proof.
+ */
+export function isMidFlowSubmitShapedStep(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  return !params.isFinalStep && isStepSubmitShaped(params);
+}
+
+/**
  * Is this flow step's intent to check a checkbox or select a radio option?
  * Used to veto a weak page-wide DOM signal (htmlDelta/textChanged/formValueChanged)
  * from crediting a checkbox/radio-intent step: those signals move whenever ANY
@@ -2026,6 +2041,12 @@ export function isDomOnlyAdvanceVerified(params: {
  * no-veto behavior — matching the sibling `destinationPlausible` param on
  * `classifyPhantomClick` — so existing/future callers that don't thread it
  * are unaffected.
+ *
+ * **Mid-flow submit:** `midFlowSubmit` (see {@link isMidFlowSubmitShapedStep})
+ * lets a submit-shaped, non-final step be credited when the text changed and
+ * the byte delta clears the shared page-advance threshold, with the same
+ * invalid-marker, element-presence and destination vetoes. Omitted, the
+ * submit-shaped rejection is unchanged.
  */
 export function isClickViewSwapVerified(params: {
   resolvedAction: { method?: string | null } | null;
@@ -2038,6 +2059,7 @@ export function isClickViewSwapVerified(params: {
   clickedElementStillPresent?: boolean;
   resolvedElementIsSubmitShaped?: boolean;
   destinationPlausible?: boolean;
+  midFlowSubmit?: boolean;
 }): boolean {
   const VIEW_SWAP_MIN_BYTES = config.scraper.viewSwapMinBytesThreshold;
   const VIEW_SWAP_REVEAL_MIN_BYTES = config.scraper.viewSwapRevealMinBytesThreshold;
@@ -2052,9 +2074,15 @@ export function isClickViewSwapVerified(params: {
     clickedElementStillPresent = true,
     resolvedElementIsSubmitShaped = false,
     destinationPlausible,
+    midFlowSubmit = false,
   } = params;
   if (resolvedAction?.method !== "click") return false;
   if (destinationPlausible === false) return false;
+  if (midFlowSubmit && (submitStep || resolvedElementIsSubmitShaped)) {
+    if (isAdvanceWithPattern) return false;
+    if (invalidMarkerDelta > 0 || !clickedElementStillPresent) return false;
+    return textChanged && Math.abs(bytesDelta) >= PAGE_ADVANCE_MIN_BYTES_DELTA;
+  }
   // Only the step's own explicit submitStep flag identifies the step that
   // actually needs network/URL verification — mirrors the submit-judge
   // gate's hasSubmitTransitionSignal discipline (see 5763ac2). Inferring
