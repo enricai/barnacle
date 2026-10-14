@@ -31,7 +31,7 @@ import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
 import { judgeModalPriorityWithLLM } from "@/lib/llm/judges/modal-priority";
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
-import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
+import { type VerifySubmitInput, verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { REPHRASE_RESPONSE_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
 import {
@@ -3220,6 +3220,23 @@ async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/**
+ * Shared step-context slice of the submit judge's input, so every judge call
+ * site tells the judge what the step was meant to do, whether it is the final
+ * submit, and what the page shows now.
+ */
+export async function buildSubmitJudgeStepContext(params: {
+  step: string;
+  isFinalStep: boolean;
+  target: FrameTarget;
+}): Promise<Pick<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">> {
+  return {
+    stepInstruction: params.step,
+    isFinalStep: params.isFinalStep,
+    visibleText: await probeVisibleTextForJudge(params.target),
+  };
 }
 
 /**
@@ -12248,7 +12265,11 @@ export async function executeStepWithHealing(params: {
         ? record.actResultSuccess === true
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     if (mayTriggerRoundTrip) {
-      await settleAfterClick(page, signalCounter, pre.networkCount);
+      const settleTarget = frameTarget ?? mainFrameTarget(page);
+      await settleAfterClick(page, signalCounter, pre.networkCount, async () => {
+        const snap = await snapshotPage(settleTarget, signalCounter);
+        return snap.visibleTextSignature;
+      });
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
     record.post = post;
@@ -12394,6 +12415,14 @@ export async function executeStepWithHealing(params: {
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
     // ng-invalid marker count grew, or when the landed destination is implausible
     // for the step (see isClickViewSwapVerified's doc comment).
+    const midFlowSubmit =
+      isMidFlowSubmitShapedStep({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }) ||
+      (!isFinalStep && resolvedElementIsSubmitShaped);
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -12405,6 +12434,7 @@ export async function executeStepWithHealing(params: {
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
       destinationPlausible,
+      midFlowSubmit,
     });
     if (
       clickViewSwapVerified === false &&
@@ -12570,12 +12600,15 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       elementStateChanged: domVerified && destinationPlausible,
-      isSubmitShapedStep: isStepSubmitShaped({
-        step,
-        submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-      }),
+      isSubmitShapedStep:
+        midFlowSubmit ||
+        isStepSubmitShaped({
+          step,
+          submitStep,
+          isFinalStep,
+          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        }),
+      isMidFlowSubmitStep: midFlowSubmit,
       destinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
@@ -12702,9 +12735,11 @@ export async function executeStepWithHealing(params: {
       const judgeVerdict = await verifySubmitWithLLM({
         client: anthropic,
         input: {
-          stepInstruction: step,
-          isFinalStep,
-          visibleText: await probeVisibleTextForJudge(frameTarget ?? mainFrameTarget(page)),
+          ...(await buildSubmitJudgeStepContext({
+            step,
+            isFinalStep,
+            target: frameTarget ?? mainFrameTarget(page),
+          })),
           pageUrl: post.url,
           pageTitle,
           unfocusedObserve: unfocusedForJudge.map((a) => ({
