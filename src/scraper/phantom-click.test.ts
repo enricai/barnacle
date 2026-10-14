@@ -235,6 +235,26 @@ describe("isPlausibleStepDestination", () => {
     ).toBe(true);
   });
 
+  it("does not veto when the click never left its sign-in-shaped URL", () => {
+    expect(
+      isPlausibleStepDestination(
+        "click the Create Account button",
+        "https://x.com/login?step=2",
+        "https://x.com/login"
+      )
+    ).toBe(true);
+  });
+
+  it("still vetoes a bounce from a non-sign-in page to a sign-in-shaped one", () => {
+    expect(
+      isPlausibleStepDestination(
+        "click the Create Account button",
+        "https://x.com/login",
+        "https://x.com/apply"
+      )
+    ).toBe(false);
+  });
+
   it("fails open on an unparseable postUrl", () => {
     expect(isPlausibleStepDestination("click the Create Account button", "not-a-url")).toBe(true);
   });

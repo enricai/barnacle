@@ -176,9 +176,19 @@ export function splitIntoActionClauses(instruction: string): string[] {
  * mistaken for a step that is itself about signing in. Fails open (returns
  * true) on an unparseable postUrl, matching {@link hasOriginOrPathChanged}'s
  * own try/catch style, since an unparseable URL gives no basis for a
- * sign-in-shaped veto.
+ * sign-in-shaped veto. When `preUrl` is given and the origin/path did not
+ * change, the page did not navigate, so no destination veto applies: a
+ * mid-flow account-creation step on an unchanged sign-in URL is still judged
+ * on its own evidence.
  */
-export function isPlausibleStepDestination(stepInstruction: string, postUrl: string): boolean {
+export function isPlausibleStepDestination(
+  stepInstruction: string,
+  postUrl: string,
+  preUrl?: string
+): boolean {
+  // A click that never left its page cannot have bounced to an auth gate; an
+  // account-creation step on a sign-in URL is the page's own transition.
+  if (preUrl !== undefined && !hasOriginOrPathChanged(preUrl, postUrl)) return true;
   const pathname = (() => {
     try {
       return new URL(postUrl).pathname;

@@ -6382,7 +6382,11 @@ export async function submitCaptchaGatedForm(
         post,
         isSubmitShapedStep: true,
         isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
-        destinationPlausible: isPlausibleStepDestination(verification.step, post.url),
+        destinationPlausible: isPlausibleStepDestination(
+          verification.step,
+          post.url,
+          verification.isMidFlowSubmitStep ? pre.url : undefined
+        ),
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -6413,7 +6417,11 @@ export async function submitCaptchaGatedForm(
             post: runnerUpPost,
             isSubmitShapedStep: true,
             isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
-            destinationPlausible: isPlausibleStepDestination(verification.step, runnerUpPost.url),
+            destinationPlausible: isPlausibleStepDestination(
+              verification.step,
+              runnerUpPost.url,
+              verification.isMidFlowSubmitStep ? post.url : undefined
+            ),
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
@@ -9654,7 +9662,11 @@ async function probeChildFrameSubmitFallback(params: {
       post,
       isSubmitShapedStep: true,
       isMidFlowSubmitStep,
-      destinationPlausible: isPlausibleStepDestination(step, post.url),
+      destinationPlausible: isPlausibleStepDestination(
+        step,
+        post.url,
+        isMidFlowSubmitStep ? pre.url : undefined
+      ),
     });
     if (verdict !== "phantom") return target;
 
@@ -9675,7 +9687,11 @@ async function probeChildFrameSubmitFallback(params: {
       post: runnerUpPost,
       isSubmitShapedStep: true,
       isMidFlowSubmitStep,
-      destinationPlausible: isPlausibleStepDestination(step, runnerUpPost.url),
+      destinationPlausible: isPlausibleStepDestination(
+        step,
+        runnerUpPost.url,
+        isMidFlowSubmitStep ? post.url : undefined
+      ),
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -11501,7 +11517,18 @@ export async function executeStepWithHealing(params: {
                   isFinalStep,
                   flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 }),
-                destinationPlausible: isPlausibleStepDestination(step, midPost.url),
+                destinationPlausible: isPlausibleStepDestination(
+                  step,
+                  midPost.url,
+                  isMidFlowSubmitShapedStep({
+                    step,
+                    submitStep,
+                    isFinalStep,
+                    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                  })
+                    ? pre.url
+                    : undefined
+                ),
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -12338,7 +12365,17 @@ export async function executeStepWithHealing(params: {
     const networkFired = post.networkCount > pre.networkCount;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
-    const destinationPlausible = isPlausibleStepDestination(step, post.url);
+    const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    });
+    const destinationPlausible = isPlausibleStepDestination(
+      step,
+      post.url,
+      stepIsMidFlowSubmit ? pre.url : undefined
+    );
     const urlChanged = hasOriginOrPathChanged(pre.url, post.url) && destinationPlausible;
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
@@ -12471,14 +12508,12 @@ export async function executeStepWithHealing(params: {
     // cascade to a 5-attempt failure and global replan. Vetoed when the click's
     // ng-invalid marker count grew, or when the landed destination is implausible
     // for the step (see isClickViewSwapVerified's doc comment).
-    const midFlowSubmit =
-      isMidFlowSubmitShapedStep({
-        step,
-        submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-      }) ||
-      (!isFinalStep && resolvedElementIsSubmitShaped);
+    const midFlowSubmit = stepIsMidFlowSubmit || (!isFinalStep && resolvedElementIsSubmitShaped);
+    // An element-inferred mid-flow submit joins the exemption the step-derived
+    // one already got: a click that never left its URL did not bounce to a gate.
+    const midFlowDestinationPlausible =
+      destinationPlausible ||
+      (midFlowSubmit && isPlausibleStepDestination(step, post.url, pre.url));
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -12489,7 +12524,7 @@ export async function executeStepWithHealing(params: {
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
-      destinationPlausible,
+      destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
       pageAdvanced: hasPageAdvanced(pre, post),
     });
@@ -12666,7 +12701,7 @@ export async function executeStepWithHealing(params: {
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         }),
       isMidFlowSubmitStep: midFlowSubmit,
-      destinationPlausible,
+      destinationPlausible: midFlowDestinationPlausible,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
