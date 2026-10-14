@@ -27,6 +27,11 @@ import {
   probeAttachedFrameTarget,
 } from "@/scraper/frame-target";
 import { findQuotedSpans } from "@/scraper/quoted-spans";
+import {
+  type CentredHitTestResult,
+  clickAfterCentredHitTest,
+  type TrustedClickable,
+} from "@/scraper/trusted-click";
 import { withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-candidates" });
@@ -724,10 +729,52 @@ export async function clickDeepLocatorCandidate(
   }
 
   const scaledCallTimeoutMs = callTimeoutMs + index * DEEP_LOCATOR_CLICK_INDEX_ROUND_TRIP_MS;
-  await withWatchdog(() => page.deepLocator(hopSelector).nth(index).click(), {
-    timeoutMs: scaledCallTimeoutMs,
-    label: `deepLocator click() for ${hopSelector} nth=${index}`,
-  });
+  await withWatchdog(
+    () =>
+      clickLocatorCentred(
+        page.deepLocator(hopSelector).nth(index) as ResolvableLocator,
+        `${hopSelector} nth=${index}`
+      ),
+    {
+      timeoutMs: scaledCallTimeoutMs,
+      label: `deepLocator click() for ${hopSelector} nth=${index}`,
+    }
+  );
+}
+
+interface ResolvableLocator extends TrustedClickable {
+  resolveNode?: () => Promise<{ objectId?: string }>;
+  frame?: { session?: { send: (method: string, params?: object) => Promise<unknown> } };
+}
+
+/**
+ * Centres the deep-locator target and hit-tests its click point before the
+ * trusted click, via `resolveNode().objectId` + `Runtime.callFunctionOn` (the
+ * top-window helper cannot reach an iframe/OOPIF). A locator exposing no
+ * resolvable node or session degrades to a plain `click()`.
+ */
+async function clickLocatorCentred(locator: ResolvableLocator, label: string): Promise<void> {
+  const session = locator.frame?.session;
+  const resolveNode = locator.resolveNode?.bind(locator);
+  if (!resolveNode || !session) {
+    await locator.click();
+    return;
+  }
+  const evaluateOnElement = async (functionDeclaration: string): Promise<CentredHitTestResult> => {
+    const { objectId } = await resolveNode();
+    if (!objectId) return { state: "missing" };
+    try {
+      const res = (await session.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration,
+        returnByValue: true,
+      })) as { result?: { value?: CentredHitTestResult } };
+      return res.result?.value ?? { state: "missing" };
+    } finally {
+      await session.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+    }
+  };
+  await clickAfterCentredHitTest(locator, evaluateOnElement, { label });
 }
 
 /**

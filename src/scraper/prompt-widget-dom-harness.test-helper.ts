@@ -105,6 +105,7 @@ export function buildPromptWidgetHarness(params: {
   target: FrameTarget;
   window: Window;
   clicks: string[];
+  centres: string[];
   fills: { selector: string; value: string }[];
 } {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
@@ -253,7 +254,10 @@ export function buildPromptWidgetHarness(params: {
     }
   };
 
-  const locator = (selector: string) => ({
+  const locator = (selector: string): Record<string, unknown> => ({
+    click: async (): Promise<void> => {
+      await (locator(selector).first as () => { click: () => Promise<void> })().click();
+    },
     count: async (): Promise<number> => {
       try {
         return document.querySelectorAll(selector).length;
@@ -394,7 +398,17 @@ export function buildPromptWidgetHarness(params: {
     }),
   });
 
-  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
+  const centres: string[] = [];
+  const evaluate = async (expr: unknown): Promise<unknown> => {
+    const source = String(expr);
+    // happy-dom has no layout, so `elementFromPoint` cannot hit-test; record the
+    // centring pass and report a hit so the trusted click proceeds.
+    if (source.includes('scrollIntoView({ block: "center"')) {
+      centres.push(source);
+      return { state: "hit" };
+    }
+    return runExpr(source);
+  };
 
   const page = {
     evaluate,
@@ -414,5 +428,5 @@ export function buildPromptWidgetHarness(params: {
     declaredFrameSelector: null,
   } as unknown as FrameTarget;
 
-  return { page, target, window, clicks, fills };
+  return { page, target, window, clicks, centres, fills };
 }

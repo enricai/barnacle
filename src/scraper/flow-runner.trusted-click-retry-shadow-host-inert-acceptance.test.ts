@@ -73,26 +73,33 @@ function makeFixture(hasShadowDescendant: boolean): {
   page: Page;
   frameTarget: FrameTarget;
   clickedSelectors: string[];
+  events: string[];
   getUrl: () => string;
 } {
   const urls = { current: "https://apply.acme.example/onboard/a/1" };
   const clickedSelectors: string[] = [];
+  const events: string[] = [];
   let clickCount = 0;
 
   const makeLocator = (): FrameTarget["locator"] =>
-    vi.fn().mockImplementation((selector: string) => ({
-      first: () => ({
-        click: async () => {
-          clickedSelectors.push(selector);
-          clickCount += 1;
-          if (clickCount >= 2) {
-            urls.current = "https://apply.acme.example/onboard/a/2";
-          }
-        },
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }));
+    vi.fn().mockImplementation((selector: string) => {
+      const click = async (): Promise<void> => {
+        clickedSelectors.push(selector);
+        events.push("click");
+        clickCount += 1;
+        if (clickCount >= 2) {
+          urls.current = "https://apply.acme.example/onboard/a/2";
+        }
+      };
+      return {
+        click,
+        first: () => ({
+          click,
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
+        }),
+      };
+    });
 
   const makeEvaluate = (): FrameTarget["evaluate"] =>
     vi.fn().mockImplementation(async (exprArg: unknown) => {
@@ -101,6 +108,10 @@ function makeFixture(hasShadowDescendant: boolean): {
         return hasShadowDescendant ? { found: true } : { found: false };
       }
       if (src.includes("removeAttribute")) return undefined;
+      if (src.includes('block: "center"')) {
+        events.push("centre");
+        return { state: "hit" };
+      }
       // Every other evaluate() call in the cascade (pre/post DOM snapshots,
       // submit-shape probes, etc.) reads a flat, unchanging signal so attempt
       // 1's own trusted n+16 click classifies as a phantom (zero DOM delta).
@@ -127,7 +138,7 @@ function makeFixture(hasShadowDescendant: boolean): {
     title: () => Promise.resolve("Onboard"),
   };
 
-  return { page, frameTarget, clickedSelectors, getUrl: () => urls.current };
+  return { page, frameTarget, clickedSelectors, events, getUrl: () => urls.current };
 }
 
 describe("flow-runner/executeStepWithHealing — trusted-click-retry resolves into a shadow-DOM host's real interactive descendant", () => {
@@ -234,5 +245,43 @@ describe("flow-runner/executeStepWithHealing — trusted-click-retry resolves in
         (line) => line.includes("trusted-click-retry") && line.includes("shadow descendant")
       )
     ).toBe(false);
+  });
+
+  it.each([
+    ["shadow descendant", true],
+    ["plain host", false],
+  ])("records the centring evaluate before every trusted click (%s)", async (_label, hasShadow) => {
+    const { page, frameTarget, events } = makeFixture(hasShadow);
+    resolveFrameTarget.mockResolvedValue(frameTarget);
+    guardedObserve.mockResolvedValue([
+      { selector: HOST_XPATH, description: "card widget", method: "click" },
+    ]);
+    guardedAct.mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: "card widget",
+      actions: [{ selector: HOST_XPATH, description: "card widget", method: "click" }],
+    });
+
+    await runHealingFlow({
+      stagehand: makeStagehand(),
+      page,
+      steps: [
+        {
+          instruction: "Click the card widget to continue",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    const clickIdx = events.flatMap((e, i) => (e === "click" ? [i] : []));
+    expect(clickIdx.length).toBeGreaterThanOrEqual(2);
+    for (const i of clickIdx) expect(events[i - 1]).toBe("centre");
   });
 });

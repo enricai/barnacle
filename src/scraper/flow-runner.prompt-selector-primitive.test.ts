@@ -192,6 +192,56 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     );
   });
 
+  it("centres the trigger and the option before each trusted click", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, clicks, centres } = buildPromptWidgetHarness({
+      html: WIDGET_KIT_HTML,
+      popupByWidgetId: { "src-widget": { options: ["Yes", "No"] } },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'How Did You Hear About Us?' select 'No'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(centres).toHaveLength(clicks.length);
+  });
+
+  it("centres before each click on an unfilled 'Select One' aria-label trigger in a question fieldset", async () => {
+    const stagehandAct = vi.fn();
+    const html = `
+<div>
+  <fieldset>
+    <legend><span>Do you have a valid driver licence?</span></legend>
+    <button id="licenceTrigger" aria-haspopup="listbox" aria-label=" Select One Required" type="button" aria-invalid="true">Select One</button>
+  </fieldset>
+</div>`;
+    const { page, target, clicks, centres, window } = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { licenceTrigger: { options: ["Yes", "No"] } },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "In the 'Do you have a valid driver licence?' Select One dropdown, select 'No'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(clicks.length).toBeGreaterThanOrEqual(2);
+    expect(centres).toHaveLength(clicks.length);
+    expect(window.document.querySelector("#licenceTrigger")?.textContent?.trim()).toBe("No");
+  });
+
   it("resolves a near-standard button[aria-haspopup=listbox] widget with NO widget-kit value attributes", async () => {
     const stagehandAct = vi.fn();
     const { page, target } = buildPromptWidgetHarness({
