@@ -99,12 +99,17 @@ const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 /**
  * Picks which quoted span in an instruction is the persona VALUE, per the
  * grammar recon-flow steps use: a `Select`/`Choose`/`Pick` step names the
- * ANSWER first, then the question, so the value is the FIRST quoted span; a
- * `Fill`/`Enter`/`Type` step names the field label first and the value last,
- * so it is the LAST quoted span.
+ * ANSWER right after the verb (wherever the verb sits, so a leading context
+ * phrase does not hide it), so the value is the first quoted span following
+ * the verb; any other step (`Fill`/`Enter`/`Type`) names the field label first
+ * and the value last, so it is the LAST quoted span.
  */
 function pickValueSpan(instruction: string, spans: readonly QuotedSpan[]): QuotedSpan {
-  return /^\s*(select|choose|pick)\b/i.test(instruction) ? spans[0]! : spans[spans.length - 1]!;
+  const verb = /\b(select|choose|pick)\b/i.exec(instruction);
+  const afterVerb = verb
+    ? spans.find((span) => span.start >= verb.index + verb[0].length)
+    : undefined;
+  return afterVerb ?? spans[spans.length - 1]!;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
+  extractStepPersonaValue,
   type FoldReturnSpec,
   firstEndpointCapture,
   gatherResponseBodySamples,
@@ -5342,5 +5343,38 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
     const baseUrl = deriveBaseUrl([siblingSubdomainMinority, ...loginBackendMajority], []);
 
     expect(baseUrl).toBe("https://login.example.com");
+  });
+});
+
+describe("pickValueSpan — select verb anywhere in the instruction", () => {
+  const env = {} as NodeJS.ProcessEnv;
+
+  it("extracts the answer after a mid-sentence select verb, not the label span", () => {
+    expect(
+      extractStepPersonaValue(
+        "In the 'Region' prompt selector, select 'Texas' and confirm the 'Region' field now shows Texas",
+        env
+      )
+    ).toBe("Texas");
+  });
+
+  it("keeps the leading-verb and Fill behavior unchanged", () => {
+    expect(extractStepPersonaValue("Select 'TX' in the 'Region' prompt selector", env)).toBe("TX");
+    expect(extractStepPersonaValue("Fill in the 'Region' field with 'Texas'", env)).toBe("Texas");
+  });
+
+  it("keeps a phone-code label literal when the vocabulary excludes it", () => {
+    const vocabulary: ReconVocabulary = {
+      ...TEST_RECRUITING_VOCABULARY,
+      exclusions: [/country phone code/i],
+    };
+    expect(
+      resolveStepPayloadField(
+        "Select '+1' in the Country Phone Code list",
+        undefined,
+        false,
+        vocabulary
+      )
+    ).toBeNull();
   });
 });
