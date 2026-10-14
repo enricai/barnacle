@@ -46,7 +46,8 @@ afterEach(() => {
 
 function generate(
   captures: Capture[],
-  flow: Record<string, unknown>
+  flow: Record<string, unknown>,
+  emit: "ts" | "config" = "ts"
 ): { output: string; contract: string } {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-no-replayable-action-e2e-"));
   const runRoot = join(workDir, "run");
@@ -59,12 +60,18 @@ function generate(
 
   const result = spawnSync(
     TSX_BIN,
-    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+    [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", emit, "--force"],
     { cwd: REPO_ROOT, encoding: "utf8" }
   );
   const output = `${result.stdout}\n${result.stderr}`;
   expect(result.status, output).toBe(0);
-  return { output, contract: readFileSync(join(siteOutDir, "contract.ts"), "utf8") };
+  return {
+    output,
+    contract: readFileSync(
+      join(siteOutDir, emit === "ts" ? "contract.ts" : `${siteId}.plugin.json`),
+      "utf8"
+    ),
+  };
 }
 
 describe("recon-generate CLI — declared submitEndpointPattern selecting zero captures", () => {
@@ -94,6 +101,28 @@ describe("recon-generate CLI — declared submitEndpointPattern selecting zero c
     expect(output).toContain("using declared submitEndpointPattern");
     expect(output).not.toContain("ignoring submitEndpointPattern");
     expect(output).not.toContain("as an undercount");
+  }, 30_000);
+
+  it("emits a config manifest with no httpModule and no query property for the same flow", () => {
+    const { contract } = generate(
+      buildWizardCheckoutCaptures(),
+      {
+        steps: [
+          { step: "open the loan application form" },
+          { step: "enter first name", payloadField: "FirstName" },
+          { step: "enter last name", payloadField: "LastName" },
+          { step: "submit the loan application", submitStep: true },
+        ],
+        submitEndpointPattern: "/submitApplication",
+      },
+      "config"
+    );
+
+    const manifest = JSON.parse(contract);
+    expect(manifest.spec.httpModule).toBeUndefined();
+    const properties = Object.keys(manifest.spec.request?.properties ?? {});
+    expect(properties).toEqual(expect.arrayContaining(["FirstName", "LastName"]));
+    expect(properties).not.toContain("query");
   }, 30_000);
 
   it("still emits the {query} executeHttp output for a single-step search flow", () => {
