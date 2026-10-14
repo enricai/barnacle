@@ -569,6 +569,9 @@ export interface NavigateToFacetBinding {
   readonly literals?: readonly string[];
   /** Element kind named by the declared field, lowercased and space-joined. */
   readonly kind?: string;
+  /** Set on a facet whose `value` was read from a captured kind-suffixed
+   * element, so it only matches elements of its own kind. */
+  readonly keyedByKind?: boolean;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -7632,22 +7635,58 @@ export function resolveRecurringNavigateToFacets(
     (facet) => facet.origin !== "step" && !reachable.includes(facet)
   );
   if (unreachable.length === 0) return resolvedDeclared;
+  const aliased = unreachable.flatMap((facet) => {
+    const literal = findKindKeyedLiteral(facet, actions);
+    if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
+    return [{ ...facet, value: literal, keyedByKind: true }];
+  });
+  const aliasedFields = new Set(aliased.map(({ field }) => field));
+  const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
+  const withAliases = [...resolvedDeclared, ...aliased];
+  if (awaiting.length === 0) return withAliases;
   const correlated = correlateUnreachableNavigateToFacets(
-    unreachable,
+    awaiting,
     actions,
-    reachable.map(({ value }) => value)
+    [...reachable, ...aliased].map(({ value }) => value)
   );
-  if (correlated === null) return resolvedDeclared;
+  if (correlated === null) return withAliases;
   const bodies = actions
     .map(({ capture }) => capture.requestPostData)
     .filter((body): body is string => typeof body === "string" && body.length > 0);
-  const extras = unreachable.flatMap((facet) => {
+  const extras = awaiting.flatMap((facet) => {
     const diffed = correlated.get(facet.field);
     if (diffed === undefined || diffed.length === 0) return [];
     if (declared.some(({ value }) => value === diffed)) return [];
     return bindsWithoutCollisionIn(bodies, diffed) ? [{ ...facet, value: diffed }] : [];
   });
-  return [...resolvedDeclared, ...extras];
+  return [...withAliases, ...extras];
+}
+
+/**
+ * The literal a facet takes in the code vocabulary: the captured request
+ * element (query value or body string leaf) whose `<literal><delim>key=<kind>`
+ * suffix names the facet's own kind. Derived from the traffic itself, so it
+ * never depends on how many other facets or transitions the flow declared.
+ * Returns `undefined` unless exactly one distinct literal carries the kind.
+ */
+function findKindKeyedLiteral(
+  facet: NavigateToFacetBinding,
+  actions: readonly ActionStep[]
+): string | undefined {
+  if (facet.kind === undefined || facet.kind.length === 0) return undefined;
+  const wanted = normalizeKind(facet.kind);
+  const found = new Set<string>();
+  for (const { capture } of actions) {
+    const values = [
+      ...parseUrlQueryParams(capture.url).values(),
+      ...parseBodyLeafValues(capture.requestPostData),
+    ];
+    for (const value of values) {
+      const parsed = parseElementKind(value);
+      if (parsed !== undefined && normalizeKind(parsed.kind) === wanted) found.add(parsed.literal);
+    }
+  }
+  return found.size === 1 ? [...found][0] : undefined;
 }
 
 /**
@@ -9350,21 +9389,61 @@ function matchFacetRecurrence(
   options: { allowDelimiterSuffix: boolean }
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  const elementKind = parseElementKind(text)?.kind;
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-      const literal = facet.value;
-      const same = (candidate: string): boolean =>
-        ignoreCase ? candidate.toLowerCase() === literal.toLowerCase() : candidate === literal;
-      const matches =
-        same(text) ||
-        (options.allowDelimiterSuffix &&
-          literal.length > 0 &&
-          same(text.slice(0, literal.length)) &&
-          !isAlnum(text[literal.length]));
-      if (!matches) return best;
-      return best === undefined || literal.length > best.value.length ? facet : best;
+      if (
+        elementKind !== undefined &&
+        isKindKeyed(facet) &&
+        normalizeKind(facet.kind!) !== normalizeKind(elementKind)
+      ) {
+        return best;
+      }
+      const literal = (facet.literals ?? [facet.value])
+        .filter((candidate) => {
+          const same = (value: string): boolean =>
+            ignoreCase ? value.toLowerCase() === candidate.toLowerCase() : value === candidate;
+          return (
+            candidate.length > 0 &&
+            (same(text) ||
+              (options.allowDelimiterSuffix &&
+                same(text.slice(0, candidate.length)) &&
+                !isAlnum(text[candidate.length])))
+          );
+        })
+        .reduce<string | undefined>(
+          (longest, candidate) =>
+            longest === undefined || candidate.length > longest.length ? candidate : longest,
+          undefined
+        );
+      const matchedLiteral = literal;
+      if (matchedLiteral === undefined) return best;
+      const matched = matchedLiteral === facet.value ? facet : { ...facet, value: matchedLiteral };
+      return best === undefined || matchedLiteral.length > best.value.length ? matched : best;
     }, undefined);
   return pick(false) ?? pick(true);
+}
+
+/**
+ * Splits an element of the grammar `<literal><delim><key>=<kind>` into its
+ * literal and kind, or returns `undefined` when the element carries no kind
+ * suffix. Structural only — no key or kind vocabulary is assumed.
+ */
+function parseElementKind(element: string): { literal: string; kind: string } | undefined {
+  const parsed = /^(.+)[;&|,]([^;&|,=]+)=([^;&|,=]+)$/.exec(element);
+  return parsed ? { literal: parsed[1]!, kind: parsed[3]! } : undefined;
+}
+
+function normalizeKind(kind: string): string {
+  return deriveFacetKind(kind).replace(/\s+/g, "").replace(/s$/, "");
+}
+
+function isKindKeyed(facet: NavigateToFacetBinding): boolean {
+  return (
+    facet.kind !== undefined &&
+    facet.kind.length > 0 &&
+    (facet.origin === "step" || facet.keyedByKind === true)
+  );
 }
 
 /**
