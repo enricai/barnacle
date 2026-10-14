@@ -156,7 +156,7 @@ export const REPHRASE_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
   }),
   z.object({
     outcome: z.literal("impossible"),
-    reason: z.string().min(1).max(200),
+    reason: z.string().min(1),
   }),
 ]);
 
@@ -173,7 +173,7 @@ export const REPHRASE_RESPONSE_SCHEMA = z.discriminatedUnion("outcome", [
 export const PATCH_RESPONSE_SCHEMA = z.object({
   anchor: z.string().min(1),
   replacement: z.string(),
-  strategy: z.string().min(1).max(120),
+  strategy: z.string().min(1),
   pivot_reason: z.string().nullable(),
 });
 
@@ -184,11 +184,11 @@ export const PATCH_RESPONSE_SCHEMA = z.object({
  */
 export const JUDGE_VERDICT_SCHEMA = z.object({
   schemaOk: z.boolean(),
-  schemaRationale: z.string().min(1).max(400),
+  schemaRationale: z.string().min(1),
   factuallyGrounded: z.boolean(),
-  factualRationale: z.string().min(1).max(400),
+  factualRationale: z.string().min(1),
   hallucinationFree: z.boolean(),
-  hallucinationRationale: z.string().min(1).max(400),
+  hallucinationRationale: z.string().min(1),
   worstOffender: z.enum(["schema", "factual", "hallucination"]).nullable().optional(),
 });
 
@@ -220,13 +220,13 @@ export const SUBMIT_VERDICT_SCHEMA = z.discriminatedUnion("verified", [
         method: z.string().max(16),
       })
       .nullable(),
-    dom_signal: z.string().max(200).nullable(),
-    url_signal: z.string().max(200).nullable(),
-    rationale: z.string().min(1).max(400),
+    dom_signal: z.string().nullable(),
+    url_signal: z.string().nullable(),
+    rationale: z.string().min(1),
   }),
   z.object({
     verified: z.literal(false),
-    reason: z.string().min(1).max(400),
+    reason: z.string().min(1),
   }),
 ]);
 
@@ -268,7 +268,7 @@ export const INVALID_FIELDS_SCHEMA = z.object({
  */
 export const MODAL_PRIORITY_SCHEMA = z.object({
   priorityIndices: z.array(z.number().int().min(0)).max(50),
-  rationale: z.string().min(1).max(400),
+  rationale: z.string().min(1),
 });
 
 /**
@@ -284,7 +284,7 @@ export const ERROR_MESSAGES_SCHEMA = z.object({
   messages: z
     .array(
       z.object({
-        text: z.string().min(1).max(400),
+        text: z.string().min(1),
         fieldHint: z.string().nullable(),
         severity: z.enum(["error", "warning", "info"]),
       })
@@ -308,5 +308,5 @@ export const SELECT_OPTION_SCHEMA = z.object({
   /** Index into that dropdown's options — which option to choose. Null when
    *  selectIndex is null. */
   optionIndex: z.number().int().min(0).nullable(),
-  reason: z.string().min(1).max(400),
+  reason: z.string().min(1),
 });

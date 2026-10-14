@@ -6,7 +6,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
+import {
+  ERROR_MESSAGES_SCHEMA,
+  JUDGE_VERDICT_SCHEMA,
+  MODAL_PRIORITY_SCHEMA,
+  PATCH_RESPONSE_SCHEMA,
+  RECON_FLOW_STEP_SCHEMA,
+  REPHRASE_RESPONSE_SCHEMA,
+  SELECT_OPTION_SCHEMA,
+  SUBMIT_VERDICT_SCHEMA,
+} from "@/lib/llm/schemas";
 
 describe("RECON_FLOW_STEP_SCHEMA captchaGated marker", () => {
   it("defaults captchaGated to false when absent from an object step", () => {
@@ -135,5 +144,67 @@ describe("RECON_FLOW_STEP_SCHEMA navigateTo field", () => {
     const parsed = RECON_FLOW_STEP_SCHEMA.parse({ step: "click submit" });
 
     expect((parsed as { navigateTo?: unknown }).navigateTo).toBeUndefined();
+  });
+});
+
+describe("LLM prose fields are uncapped", () => {
+  const LONG = "x".repeat(900);
+
+  it("parses a 900-char prose field on every judge schema", () => {
+    expect(
+      SUBMIT_VERDICT_SCHEMA.safeParse({
+        verified: true,
+        network_signal: null,
+        dom_signal: LONG,
+        url_signal: LONG,
+        rationale: LONG,
+      }).success
+    ).toBe(true);
+    expect(SUBMIT_VERDICT_SCHEMA.safeParse({ verified: false, reason: LONG }).success).toBe(true);
+    expect(
+      SELECT_OPTION_SCHEMA.safeParse({ selectIndex: 0, optionIndex: 0, reason: LONG }).success
+    ).toBe(true);
+    expect(MODAL_PRIORITY_SCHEMA.safeParse({ priorityIndices: [0], rationale: LONG }).success).toBe(
+      true
+    );
+    expect(
+      ERROR_MESSAGES_SCHEMA.safeParse({
+        messages: [{ text: LONG, fieldHint: null, severity: "error" }],
+      }).success
+    ).toBe(true);
+    expect(
+      JUDGE_VERDICT_SCHEMA.safeParse({
+        schemaOk: true,
+        schemaRationale: LONG,
+        factuallyGrounded: true,
+        factualRationale: LONG,
+        hallucinationFree: true,
+        hallucinationRationale: LONG,
+      }).success
+    ).toBe(true);
+    expect(
+      PATCH_RESPONSE_SCHEMA.safeParse({
+        anchor: "a",
+        replacement: "b",
+        strategy: LONG,
+        pivot_reason: null,
+      }).success
+    ).toBe(true);
+    expect(
+      REPHRASE_RESPONSE_SCHEMA.safeParse({ outcome: "impossible", reason: LONG }).success
+    ).toBe(true);
+  });
+
+  it("still enforces min(1) and array count bounds", () => {
+    expect(SUBMIT_VERDICT_SCHEMA.safeParse({ verified: false, reason: "" }).success).toBe(false);
+    expect(
+      ERROR_MESSAGES_SCHEMA.safeParse({
+        messages: Array.from({ length: 51 }, () => ({
+          text: "e",
+          fieldHint: null,
+          severity: "error",
+        })),
+      }).success
+    ).toBe(false);
   });
 });

@@ -39,7 +39,7 @@ Strictness rule for verified=true:
 - When ambiguous, set verified=false with a reason. Be strict, not lax — false positives here mean the engine thinks a submit succeeded when it didn't, and the candidate's application is lost.
 
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
-When verified=false, write a one-sentence reason citing what you'd need to see to be convinced.`;
+When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
 const NON_FINAL_STEP_RULE = `
 
