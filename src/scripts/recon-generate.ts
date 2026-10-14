@@ -566,9 +566,9 @@ export interface NavigateToFacetBinding {
   readonly origin?: NavigateToFacetOrigin;
   /** Every literal the facet takes, primary `value` first, then alternate
    * vocabulary literals (other quoted spans, raw hash tokens). */
-  readonly literals: readonly string[];
+  readonly literals?: readonly string[];
   /** Element kind named by the declared field, lowercased and space-joined. */
-  readonly kind: string;
+  readonly kind?: string;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
