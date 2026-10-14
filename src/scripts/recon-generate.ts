@@ -217,7 +217,8 @@ export function resolveStepPayloadField(
   if (namesAControl(instruction)) return null;
   // A quoted literal or a reserved ${RECON_*} env token IS the recon constant
   // this step would replace, so it is spliceable on its own.
-  const hasQuotedConstant = /'[^']*'/.test(instruction) || RESERVED_ENV_TOKEN.test(instruction);
+  const hasQuotedConstant =
+    findQuotedSpans(instruction).length > 0 || RESERVED_ENV_TOKEN.test(instruction);
   // A dropdown step carries no constant to replace, so a label match alone can't
   // tell "select the test candidate's state" (the caller's data) from "select the
   // neighborhood from the Country dropdown" (a facet that merely says Country).
@@ -442,7 +443,7 @@ function stripHashKeyPrefix(token: string): string {
  */
 export function deriveFillLabelField(instruction: string): string | null {
   if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) return null;
-  if (!/'[^']*'/.test(instruction)) return null;
+  if (findQuotedSpans(instruction).length === 0) return null;
   const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
     instruction
   )?.[1];
