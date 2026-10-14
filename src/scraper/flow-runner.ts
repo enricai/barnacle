@@ -13610,7 +13610,9 @@ export async function executeStepWithHealing(params: {
             });
 
             const retryMidFlowAdvanceCredited =
-              (retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost)) ||
+              (retryMidFlowSubmit &&
+                retryVerdict === "effective" &&
+                hasPageAdvanced(pre, retryPost)) ||
               isNullVerdictAdvanceCredited({
                 midFlowSubmit: retryMidFlowSubmit,
                 judgeUnavailable: judgeVerdict === null,
