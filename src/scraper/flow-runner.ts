@@ -114,6 +114,7 @@ import {
   captureTargetResolutionDiagnosticSnapshot,
   type TargetResolutionDiagnosticSnapshot,
 } from "@/scraper/target-resolution-diagnostic";
+import { clickCentredTrusted } from "@/scraper/trusted-click";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
@@ -7925,7 +7926,7 @@ async function tryPromptSelectorPrimitive(params: {
         // Fall back to the container selector.
       }
       try {
-        await target.locator(triggerSel).first().click();
+        await clickCentredTrusted(target, triggerSel, { label: "prompt-selector trigger" });
       } catch (err) {
         logger.info(
           `prompt-selector primitive: trigger click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
@@ -8119,7 +8120,7 @@ async function commitPromptOption(params: {
 
     const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${chosenOption.oIdx}"]`;
     try {
-      await target.locator(optionSel).first().click();
+      await clickCentredTrusted(target, optionSel, { label: "prompt-selector option" });
     } catch (err) {
       logger.info(
         `prompt-selector primitive: option click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
