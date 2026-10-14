@@ -5619,13 +5619,49 @@ async function clickUploadAffordance(
 }
 
 /**
+ * Push the fixture to Browserbase's session uploads endpoint, because a remote
+ * browser cannot read a path on this host. Returns the path the remote
+ * browser sees, or null when the upload is rejected.
+ */
+async function uploadFixtureToRemoteSession(
+  sessionId: string,
+  fixture: UploadFixture,
+  logger: Logger
+): Promise<string | null> {
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([new Uint8Array(fixture.buffer)], { type: fixture.mimeType }),
+    fixture.name
+  );
+  try {
+    const res = await fetch(
+      `${config.scraper.browserbaseBaseUrl}/v1/sessions/${sessionId}/uploads`,
+      {
+        method: "POST",
+        headers: { "X-BB-API-Key": config.scraper.browserbaseApiKey ?? "" },
+        body: form,
+      }
+    );
+    if (!res.ok) {
+      logger.warn(`upload primitive: remote session upload failed (status=${res.status})`);
+      return null;
+    }
+    return `/tmp/.uploads/${fixture.name}`;
+  } catch (err) {
+    logger.warn(`upload primitive: remote session upload threw: ${toErrorMessage(err)}`);
+    return null;
+  }
+}
+
+/**
  * Complete a native-chooser upload the recon intercepted via CDP. CDP's
  * `DOM.setFileInputFiles` takes filesystem PATHS (not buffers), so it uses the
  * on-disk fixture path when available and otherwise writes the buffer to a temp
  * file. Targets the intercepted input by `backendNodeId`, then verifies via the
  * shared upload-network signal.
  */
-async function setFilesViaCdp(params: {
+export async function setFilesViaCdp(params: {
   page: Page;
   /** Frame the intercepted chooser's input lives in — scopes the filename-chip fallback check below. */
   target: FrameTarget;
@@ -5635,6 +5671,8 @@ async function setFilesViaCdp(params: {
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
+  /** When set, the browser is remote and the fixture is pushed via the session uploads API. */
+  browserbaseSessionId?: string;
 }): Promise<boolean> {
   const {
     page,
@@ -5645,11 +5683,15 @@ async function setFilesViaCdp(params: {
     logger,
     signalCounter,
     recentCaptureMeta,
+    browserbaseSessionId,
   } = params;
   // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
   // to a temp file (tiny — a few KB) so the path is always valid regardless of
   // where the recon loaded the fixture from.
-  const path = writeFixtureToTempFile(fixture);
+  const path = browserbaseSessionId
+    ? await uploadFixtureToRemoteSession(browserbaseSessionId, fixture, logger)
+    : writeFixtureToTempFile(fixture);
+  if (path === null) return false;
   try {
     await session.send("DOM.setFileInputFiles", { files: [path], backendNodeId });
   } catch (err) {
