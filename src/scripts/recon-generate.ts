@@ -15149,8 +15149,9 @@ function stripNonCodeText(code: string): string {
  * the emitted contract plus the browser flow: a field only the browser flow
  * dereferences still changes browser-executed requests, so it counts as
  * referenced. The schema declaration (`Field: z.…`) is not a `payload.` read,
- * so it never counts. Vocabulary-derived fields are out of scope. The caller fails generation on fields
- * unreferenced everywhere, since they would be required yet ignored.
+ * so it never counts. Vocabulary-derived fields are out of scope. The generator emits the
+ * fields no emitted request reads as optional schema fields, since a required field nothing
+ * sends only burdens callers.
  */
 export function unreferencedDeclaredPayloadFields(
   contractCode: string,
@@ -15164,6 +15165,27 @@ export function unreferencedDeclaredPayloadFields(
   }
   return [...declared].filter(
     (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
+  );
+}
+
+/**
+ * Declared payload fields the emitted requests never read. When the contract
+ * replays HTTP requests only those count (the browser flow just changes
+ * instruction text); a browser-only contract counts the browser flow too.
+ * These are emitted optional so no caller has to supply a value that nothing
+ * sends.
+ */
+function unreadDeclaredPayloadFields(
+  contractCode: string,
+  browserFlowCode: string,
+  flowSteps: readonly FlowStepInput[]
+): Set<string> {
+  return new Set(
+    unreferencedDeclaredPayloadFields(
+      contractCode,
+      contractCode.includes("httpClient(") ? "" : browserFlowCode,
+      flowSteps
+    )
   );
 }
 
@@ -15202,11 +15224,20 @@ function escapeForTemplateLiteral(segment: string): string {
  * own choice so the browser-flow and HTTP-body emitters never disagree on
  * which quoted span is the persona value.
  */
-function buildStepInstructionExpr(instruction: string, field: string | null): string {
+function buildStepInstructionExpr(
+  instruction: string,
+  field: string | null,
+  capturedFallback = false
+): string {
   if (field === null) return JSON.stringify(instruction);
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${field}}${escapeForTemplateLiteral(site.after)}\``;
+  const captured = pickedQuotedValue(instruction);
+  const read =
+    capturedFallback && captured !== null
+      ? `payload.${field} ?? ${JSON.stringify(captured)}`
+      : `payload.${field}`;
+  return `\`${escapeForTemplateLiteral(site.before)}\${${read}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15565,6 +15596,11 @@ export function emitBrowserFlowTs(opts: {
    * plugin keeps the same cross-origin iframe capability the recon flow used.
    * Omitted (undefined) preserves today's main-frame-only generation. */
   frameSelector?: string;
+  /** Optional payload fields whose splice falls back to the value the recon
+   * run captured, so a caller who omits a field the HTTP path never reads
+   * still drives the browser fallback with a real value rather than
+   * `undefined`. */
+  capturedFallbackFields?: ReadonlySet<string>;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15577,6 +15613,7 @@ export function emitBrowserFlowTs(opts: {
     hasMultipartStep = false,
     vocabulary,
     frameSelector,
+    capturedFallbackFields = new Set<string>(),
     env = process.env,
   } = opts;
 
@@ -15585,6 +15622,9 @@ export function emitBrowserFlowTs(opts: {
     vocabulary,
     env
   );
+  for (const field of capturedFallbackFields) {
+    if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
+  }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
@@ -15644,7 +15684,11 @@ export function emitBrowserFlowTs(opts: {
     const instructionExpr =
       composite !== null
         ? buildCompositeStepInstructionExpr(instruction, composite.fieldA, composite.fieldB)
-        : buildStepInstructionExpr(instruction, field);
+        : buildStepInstructionExpr(
+            instruction,
+            field,
+            field !== null && capturedFallbackFields.has(field)
+          );
     const upload = isObj ? step.upload === true : false;
     const submitStep = isObj ? step.submitStep === true : false;
     return `  { instruction: ${instructionExpr}, optional: ${optional}, upload: ${upload}, submitStep: ${submitStep} },`;
@@ -17014,11 +17058,43 @@ async function main(): Promise<void> {
       fallbackGateSpec,
     };
 
-    const contractCode = emitContractTs(contractOpts);
+    const firstContractCode = emitContractTs(contractOpts);
+    const unread = unreadDeclaredPayloadFields(firstContractCode, browserFlow.code, flowSteps);
+    // A field no emitted request reads must not be required of callers. The
+    // browser fallback keeps splicing it, from the captured value when the
+    // caller omits it, so the field still takes effect when supplied.
+    const settled =
+      unread.size === 0
+        ? { browserFlow, contractOpts, contractCode: firstContractCode }
+        : (() => {
+            const fallbackBrowserFlow = emitBrowserFlowTs({
+              siteId,
+              pascal,
+              baseUrl,
+              flowSteps,
+              isSubmissionFlow,
+              hasMultipartStep,
+              vocabulary,
+              frameSelector,
+              capturedFallbackFields: unread,
+            });
+            const optionalized = {
+              ...contractOpts,
+              optionalPayloadFieldNames: new Set([
+                ...fallbackBrowserFlow.optionalPayloadFieldNames,
+                ...unread,
+              ]),
+            };
+            return {
+              browserFlow: fallbackBrowserFlow,
+              contractOpts: optionalized,
+              contractCode: emitContractTs(optionalized),
+            };
+          })();
     return {
-      contractCode,
-      contractOpts,
-      browserFlow,
+      contractCode: settled.contractCode,
+      contractOpts: settled.contractOpts,
+      browserFlow: settled.browserFlow,
       auxFiles,
       resolvedPool: actionCaptures,
       isSubmissionFlow,
@@ -17034,30 +17110,13 @@ async function main(): Promise<void> {
   const unreferencedEverywhere = new Set(
     unreferencedDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
   );
-  // A field nothing reads must not be required of callers; re-emit it optional.
-  // Browser-flow-only references stay required because they still take effect.
-  if (unreferencedEverywhere.size > 0) {
-    const optionalPayloadFieldNames = new Set([
-      ...(final.contractOpts.optionalPayloadFieldNames ?? []),
-      ...unreferencedEverywhere,
-    ]);
-    final.contractOpts = { ...final.contractOpts, optionalPayloadFieldNames };
-    final.contractCode = emitContractTs(final.contractOpts);
-    for (const field of unreferencedEverywhere) {
-      logger.warn(
-        `declared payloadField ${field} is read by no emitted request; emitted as optional schema field`
-      );
-    }
-  }
-  // A browser-flow splice only changes the instruction text; when the contract
-  // replays HTTP requests, a field none of them carries still has no effect on
-  // the replayed requests and is reported too.
-  const unreferencedInContract = final.contractCode.includes("httpClient(")
-    ? unreferencedDeclaredPayloadFields(final.contractCode, "", flowSteps)
-    : [...unreferencedEverywhere];
-  for (const field of unreferencedInContract) {
+  for (const field of unreadDeclaredPayloadFields(
+    final.contractCode,
+    final.browserFlow.code,
+    flowSteps
+  )) {
     logger.warn(
-      `declared payloadField ${field} is a required schema field but no emitted request references it${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
+      `declared payloadField ${field} is read by no emitted request; emitted as optional schema field${unreferencedEverywhere.has(field) ? "" : " (only the browser flow splices it)"}`
     );
   }
 

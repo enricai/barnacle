@@ -99,7 +99,7 @@ describe("recon-generate CLI — explicit payloadField stays required even when 
             payloadField: "Category",
             optional: true,
           },
-          { step: `select the ${FACET_FRAGMENT} facet`, payloadField: "Facet", optional: true },
+          { step: `select the '${FACET_FRAGMENT}' facet`, payloadField: "Facet", optional: true },
           { step: "browse catalog search" },
           { step: "submit catalog search", submitStep: true },
         ],
