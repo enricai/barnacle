@@ -306,7 +306,10 @@ describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
     expect(classifyPhantomClick(makeAttempt({ ...trivial, isMidFlowSubmitStep: true }))).toBe(
       "phantom"
     );
-    const same = { ...advanced, post: { ...advanced.post, visibleTextSignature: advanced.pre.visibleTextSignature } };
+    const same = {
+      ...advanced,
+      post: { ...advanced.post, visibleTextSignature: advanced.pre.visibleTextSignature },
+    };
     expect(classifyPhantomClick(makeAttempt({ ...same, isMidFlowSubmitStep: true }))).toBe(
       "phantom"
     );
@@ -320,4 +323,3 @@ describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
     ).toBe("phantom");
   });
 });
-
