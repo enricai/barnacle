@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { findQuotedSpans, maskApostrophes, restoreApostrophes } from "@/scraper/quoted-spans";
+import {
+  findQuotedSpans,
+  maskApostrophes,
+  matchAnchored,
+  restoreApostrophes,
+} from "@/scraper/quoted-spans";
 
 describe("quoted-spans", () => {
   it("ignores contraction apostrophes inside a quoted phrase", () => {
@@ -25,5 +30,17 @@ describe("quoted-spans", () => {
     const masked = maskApostrophes(input);
     expect(masked).toHaveLength(input.length);
     expect(restoreApostrophes(masked)).toBe(input);
+  });
+
+  it("matchAnchored returns whole spans with apostrophes restored", () => {
+    const input = "select 'Women's health' in the 'Don't know?' list";
+    const match = matchAnchored(input, /^select '([^']+)' in the '([^']+)' list/);
+    expect(match?.groups).toEqual([input, "Women's health", "Don't know?"]);
+    expect(match?.start).toBe(0);
+    expect(match?.end).toBe(input.length);
+  });
+
+  it("matchAnchored returns null when the pattern does not match", () => {
+    expect(matchAnchored("click 'Go'", /^select '([^']+)'/)).toBeNull();
   });
 });

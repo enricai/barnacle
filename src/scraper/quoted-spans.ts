@@ -34,3 +34,28 @@ export function findQuotedSpans(text: string): QuotedSpan[] {
     end: (match.index ?? 0) + match[0].length,
   }));
 }
+
+export interface AnchoredMatch {
+  /** Full match followed by capture groups, apostrophes restored; unmatched groups are `undefined`. */
+  groups: (string | undefined)[];
+  start: number;
+  end: number;
+}
+
+/**
+ * Runs an anchored-verb regex over the apostrophe-masked instruction so every
+ * parser shares one tokenizer: a letter-flanked apostrophe never ends a quoted
+ * span. `start`/`end` index the ORIGINAL string (masking preserves length).
+ */
+export function matchAnchored(text: string, pattern: RegExp): AnchoredMatch | null {
+  const match = pattern.exec(maskApostrophes(text));
+  if (!match) return null;
+  const start = match.index;
+  return {
+    groups: Array.from(match, (group) =>
+      group === undefined ? undefined : restoreApostrophes(group)
+    ),
+    start,
+    end: start + match[0].length,
+  };
+}
