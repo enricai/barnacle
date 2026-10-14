@@ -36,6 +36,8 @@ function makeNewPage(url: string): { page: Page; goto: ReturnType<typeof vi.fn> 
     waitForTimeout: async (): Promise<void> => {},
     on: () => {},
     off: () => {},
+    getSessionForFrame: () => ({ on: () => {}, off: () => {} }),
+    mainFrameId: () => "main",
   } as unknown as Page;
   return { page, goto };
 }
