@@ -37,8 +37,8 @@ describe("unreferencedDeclaredPayloadFields structural matching", () => {
   });
 
   it("counts a template-literal splice", () => {
-    expect(unreferencedDeclaredPayloadFields(contract, "go(`pick ${payload.Facet}`)", steps)).toEqual(
-      []
-    );
+    expect(
+      unreferencedDeclaredPayloadFields(contract, "go(`pick ${payload.Facet}`)", steps)
+    ).toEqual([]);
   });
 });

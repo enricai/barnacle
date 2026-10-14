@@ -14852,7 +14852,8 @@ function stripNonCodeText(code: string): string {
   while (i < code.length) {
     const ch = code[i];
     const next = code[i + 1];
-    const inTemplateText = templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === depth;
+    const inTemplateText =
+      templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === depth;
     if (inTemplateText) {
       if (ch === "\\") i += 2;
       else if (ch === "`") {
