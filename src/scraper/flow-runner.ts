@@ -19,10 +19,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type Anthropic from "@anthropic-ai/sdk";
-import type { z } from "zod/v4";
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { generateObject } from "ai";
 import { format, isValid, parse } from "date-fns";
+import type { z } from "zod/v4";
 
 import { config } from "@/config";
 import { toErrorMessage } from "@/lib/errors";
@@ -12932,7 +12932,7 @@ export async function executeStepWithHealing(params: {
           successPageTitleHints,
           submittedStateSelectors: matchedSubmittedSelectors,
         },
-        });
+      });
 
       // A mid-flow transition is credited on the page's own demonstrable
       // advance (visible text swapped); the judge's final-submit-flavoured
@@ -13578,7 +13578,7 @@ export async function executeStepWithHealing(params: {
                 successPageTitleHints,
                 submittedStateSelectors: matchedSubmittedSelectors,
               },
-              });
+            });
 
             const retryMidFlowAdvanceCredited =
               retryMidFlowSubmit && retryVerdict === "effective" && hasPageAdvanced(pre, retryPost);

@@ -17,7 +17,7 @@ import { judgeStepOutcome } from "@/scraper/flow-runner";
 
 function fakeTarget(reads: string[]): { evaluate: () => Promise<string> } {
   let i = 0;
-  return { evaluate: async () => reads[Math.min(i++, reads.length - 1)] };
+  return { evaluate: async () => reads[Math.min(i++, reads.length - 1)] ?? "" };
 }
 
 const SUBMIT_INPUT = {
@@ -53,10 +53,10 @@ describe("judgeStepOutcome", () => {
       params(false, ["Create account", "Loading", "Shipping", "Shipping"])
     );
     expect(submitJudge).not.toHaveBeenCalled();
-    const input = stepJudge.mock.calls[0][0].input;
-    expect(input.beforeText).toBe("Create account");
-    expect(input.afterText).toBe("Shipping");
-    expect(input.invalidMarkerCount).toBe(2);
+    const input = stepJudge.mock.calls[0]?.[0].input;
+    expect(input?.beforeText).toBe("Create account");
+    expect(input?.afterText).toBe("Shipping");
+    expect(input?.invalidMarkerCount).toBe(2);
     expect(verdict).toMatchObject({ verified: true, rationale: "moved on" });
   });
 
@@ -75,7 +75,11 @@ describe("judgeStepOutcome", () => {
     submitJudge.mockResolvedValue({ verified: false, reason: "r" });
     await judgeStepOutcome(params(true, ["body"]));
     expect(stepJudge).not.toHaveBeenCalled();
-    const input = submitJudge.mock.calls[0][0].input;
-    expect(input).toMatchObject({ isFinalStep: true, visibleText: "body", stepInstruction: "click continue" });
+    const input = submitJudge.mock.calls[0]?.[0].input;
+    expect(input).toMatchObject({
+      isFinalStep: true,
+      visibleText: "body",
+      stepInstruction: "click continue",
+    });
   });
 });
