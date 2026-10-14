@@ -2851,7 +2851,7 @@ async function main(): Promise<void> {
     const transientStepRetries = new Map<string, number>();
     try {
       const stagehand = session.stagehand;
-      const page = await stagehand.context.awaitActivePage();
+      let page = await stagehand.context.awaitActivePage();
 
       // Phase label is mutated between flow steps so the single CDP listener
       // always tags captures with the currently active phase.
@@ -3043,6 +3043,9 @@ async function main(): Promise<void> {
               : executeStepWithHealing({
                   stagehand,
                   page,
+                  onPageAdopted: (adopted) => {
+                    page = adopted;
+                  },
                   abortSignal: session.deathAbortSignal,
                   frameTarget,
                   step: step.instruction,
