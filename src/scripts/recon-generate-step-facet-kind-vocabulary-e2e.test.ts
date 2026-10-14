@@ -149,13 +149,13 @@ describe("recon-generate CLI — step facets in a kind-suffixed array vocabulary
         steps: [
           {
             step: "open the ship",
-            navigateTo: `${base}/ship/disney-wish`,
+            navigateTo: `${base}/ship/harbor-star`,
             payloadField: "ShipFacet",
             optional: true,
           },
           {
             step: "open the month",
-            navigateTo: `${base}/ship/disney-wish/date/december-2026`,
+            navigateTo: `${base}/ship/harbor-star/date/december-2026`,
             payloadField: "sailDate",
             optional: true,
           },

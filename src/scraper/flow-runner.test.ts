@@ -991,6 +991,15 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     };
     const stagehandObserve = (params.stagehand as unknown as { observe: ReturnType<typeof vi.fn> })
       .observe;
+    // The observe candidate must name the step's quoted control, or
+    // vetObserveCandidates refuses it before attempt 2 ever reaches act.
+    stagehandObserve.mockResolvedValue([
+      {
+        selector: "label#contingent-no",
+        description: "Click the 'No' label for Are you currently a Contingent Worker?",
+        method: "click",
+      },
+    ]);
 
     await expect(executeStepWithHealing(params)).rejects.toMatchObject({
       name: "StepVerificationError",
@@ -1035,6 +1044,15 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     };
     const stagehandObserve = (params.stagehand as unknown as { observe: ReturnType<typeof vi.fn> })
       .observe;
+    // The observe candidate must name the step's quoted control, or
+    // vetObserveCandidates refuses it before attempt 2 ever reaches act.
+    stagehandObserve.mockResolvedValue([
+      {
+        selector: "div#review-panel",
+        description: "Click the 'Review' summary panel",
+        method: "click",
+      },
+    ]);
 
     await expect(executeStepWithHealing(params)).rejects.toMatchObject({
       name: "StepVerificationError",
