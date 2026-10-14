@@ -14293,20 +14293,23 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitStepSkipped = false;
   let lastStepIndex = -1;
 
-  const stopCapture = wireSignalCapture(page, {
-    counter,
-    signalCounter,
-    recentCaptures,
-    recentCaptureMeta,
-    getCurrentPhase: () => "flow",
-    getCurrentPageOrigin: () => {
-      try {
-        return new URL(page.url()).origin;
-      } catch {
-        return "";
-      }
-    },
-  });
+  const wireCapture = (target: Page): (() => void) =>
+    wireSignalCapture(target, {
+      counter,
+      signalCounter,
+      recentCaptures,
+      recentCaptureMeta,
+      getCurrentPhase: () => "flow",
+      getCurrentPageOrigin: () => {
+        try {
+          return new URL(activePage.url()).origin;
+        } catch {
+          return "";
+        }
+      },
+    });
+  // Listeners on earlier pages stay wired (a prior tab can still emit) and all stop on exit.
+  const stopFns: (() => void)[] = [wireCapture(page)];
 
   const flowHasSubmitSemanticsFlag = flowHasSubmitSemantics({
     steps,
@@ -14377,7 +14380,9 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
           stagehand,
           page: activePage,
           onPageAdopted: (adopted) => {
+            if (adopted === activePage) return;
             activePage = adopted;
+            stopFns.push(wireCapture(adopted));
           },
           abortSignal: deps.abortSignal,
           step: s.instruction,
@@ -14442,7 +14447,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       }
     }
   } finally {
-    stopCapture();
+    for (const stop of stopFns) stop();
   }
 
   return { submitVerified, submitStepSkipped, lastStepIndex };
