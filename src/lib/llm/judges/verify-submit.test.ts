@@ -75,4 +75,15 @@ describe("verifySubmitWithLLM", () => {
     expect(system).toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
     expect(system).toContain("Strictness rule for verified=true");
   });
+
+  it("final step: a very long reason is not rejected", async () => {
+    const parsedOutput = { verified: true, reason: "confirmation banner shown. ".repeat(400) };
+    const client = fakeClient(parsedOutput);
+    const result = await verifySubmitWithLLM({
+      client,
+      input: { ...INPUT, isFinalStep: true },
+    });
+    expect(result).not.toBeNull();
+    expect(result).toEqual(parsedOutput);
+  });
 });

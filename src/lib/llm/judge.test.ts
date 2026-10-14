@@ -27,6 +27,7 @@ vi.mock("@/lib/telemetry/call-capture", async () => {
 });
 
 import { callHaikuJudge } from "./judge";
+import { SUBMIT_VERDICT_SCHEMA } from "./schemas";
 
 const TEST_SCHEMA = z.object({
   ok: z.boolean(),
@@ -160,5 +161,22 @@ describe("callHaikuJudge — maxTokens", () => {
       maxTokens: 128,
     });
     expect(fakeParse).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 128 }));
+  });
+});
+
+describe("callHaikuJudge — long prose fields", () => {
+  it("returns parsed non-null for a real schema with a very long reason", async () => {
+    const verdict = { verified: true, reason: "long rationale. ".repeat(500) };
+    expect(SUBMIT_VERDICT_SCHEMA.safeParse(verdict).success).toBe(true);
+    const client = fakeClient({ parsedOutput: verdict, rawText: JSON.stringify(verdict) });
+    const result = await callHaikuJudge({
+      client,
+      systemPrompt: "You judge.",
+      userPrompt: "Is this OK?",
+      schema: SUBMIT_VERDICT_SCHEMA,
+      callType: "test-judge",
+    });
+    expect(result).not.toBeNull();
+    expect(result?.parsed).toEqual(verdict);
   });
 });
