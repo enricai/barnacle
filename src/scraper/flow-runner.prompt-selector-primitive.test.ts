@@ -2,7 +2,7 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { executeStepWithHealing, verifyPromptSelectorCommitted } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
@@ -526,6 +526,57 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
     expect(testLogger.info).toHaveBeenCalledWith(
       expect.stringContaining("resolved by prompt-selector primitive")
     );
+  });
+
+  it("resolves a combined open-then-select step on a placeholder-labelled trigger and reads the chosen label back", async () => {
+    const stagehandAct = vi.fn();
+    const html = `
+<div>
+  <div role="group" aria-labelledby="referral-section">
+    <span id="referral-section">Referral</span>
+    <label for="referralTrigger"><span>Were you referred by a manager?</span></label>
+    <button id="referralTrigger" aria-haspopup="listbox" aria-label=" Select One Required" type="button" aria-invalid="true">Select One</button>
+  </div>
+</div>`;
+    const { page, target, window } = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { referralTrigger: { options: ["Yes", "No"] } },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "Under the question 'Were you referred by a manager?', click the dropdown button beneath it to open the options list, then select 'No' (the dropdown button must end up showing No)",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("no unfilled prompt widget")
+    );
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("resolved by prompt-selector primitive")
+    );
+    expect(window.document.querySelector("#referralTrigger")?.textContent?.trim()).toBe("No");
+  });
+
+  it("does not credit a bare open-only click on a placeholder trigger as committed", async () => {
+    const html = `<div><button id="referralTrigger" aria-haspopup="listbox" aria-label=" Select One Required" type="button">Select One</button></div>`;
+    const { page, target } = buildPromptWidgetHarness({
+      html,
+      popupByWidgetId: { referralTrigger: { options: ["Yes", "No"] } },
+    });
+    await (page as { locator: (s: string) => { first: () => { click: () => Promise<void> } } })
+      .locator("#referralTrigger")
+      .first()
+      .click();
+
+    const result = await verifyPromptSelectorCommitted(target, "//*[@id='referralTrigger']");
+    expect(result).toEqual({ isPromptWidget: true, committed: false });
   });
 
   it("commits a value on the multiselect-typeahead/chip widget shape (FILL phrasing)", async () => {

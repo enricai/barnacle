@@ -669,11 +669,14 @@ const PROMPT_VALUE_SELECTORS = [
 ].join(",");
 /**
  * The widget-kit's empty-state value text ("0 items selected") — a filled
- * widget's value node reads the chosen option instead. Matched
+ * widget's value node reads the chosen option instead — as is a generic
+ * placeholder prompt ("Select One", "Choose a country") a trigger button shows
+ * until a value is picked. Matched
  * case-insensitively as a whole phrase so a non-empty selection ("1 item
  * selected, …") is correctly read as filled.
  */
-const PROMPT_EMPTY_VALUE_RX = /^\s*0\s+items?\s+selected\s*$/i;
+const PROMPT_EMPTY_VALUE_RX =
+  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)\s*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
  * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
@@ -747,7 +750,7 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
   if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-  if (w.tagName === "BUTTON" && buttonValue(w).trim()) return norm(buttonValue(w));
+  if (w.tagName === "BUTTON" && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
@@ -7725,7 +7728,9 @@ async function tryPromptSelectorPrimitive(params: {
         if (parts.length) return parts.join(" ").replace(/\\s+/g, " ").trim().slice(0, 120);
       }
       const al = w.getAttribute("aria-label");
-      if (al) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
+      // A trigger's aria-label can merely echo its placeholder ("Select One
+      // Required"), which names no question — defer to the <label>/group lookup.
+      if (al && !emptyRx.test(al.replace(/\\s*required\\s*$/i, ""))) return al.replace(/\\s+/g, " ").trim().slice(0, 120);
       const labelledIds = [w.id, ...Array.from(w.querySelectorAll("[id]")).map((e) => e.id)].filter(Boolean);
       for (const id of labelledIds) {
         const lab = document.querySelector("label[for='" + (window.CSS && CSS.escape ? CSS.escape(id) : id) + "']");
@@ -8114,21 +8119,11 @@ async function commitPromptOption(params: {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-      const buttonValue = ${BUTTON_VALUE_EXPR};
-      const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+      const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "" };
-      // Value via the union: aria-activedescendant, own input value, a <button>'s
-      // own value text (popup-pollution-safe, see BUTTON_VALUE_EXPR), or a
-      // selection-label node (empty-state phrase treated as no value).
-      const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
-      const adText = adid && document.getElementById(adid) ? norm(optionLabel(document.getElementById(adid))) : "";
-      const own = w.tagName === "INPUT" ? norm(w.value || "") : w.tagName === "BUTTON" ? norm(buttonValue(w)) : "";
-      const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
-      const lblRaw = lbl ? (lbl.textContent || "") : "";
-      const lblText = lblRaw.trim() && !emptyRx.test(lblRaw.trim()) ? norm(lblRaw) : "";
-      const text = adText || own || lblText;
+      const text = currentText(w, valueSel, emptyRx);
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
       let stillInvalid = false;
@@ -8250,8 +8245,10 @@ export async function hasUnfilledRequiredControlForStep(
 ): Promise<boolean> {
   const label = extractRequiredControlProbeLabel(instruction);
   if (!label) return false;
-  const expr = `((label, triggerSel) => {
+  const expr = `((label, triggerSel, valueSel, emptyRxSrc, emptyRxFlags) => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
+    const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
     const want = norm(label);
     if (!want) return false;
     const isInvalid = ${INVALID_MARKER_EL_EXPR};
@@ -8270,6 +8267,7 @@ export async function hasUnfilledRequiredControlForStep(
       if (!el) return false;
       if (el.getAttribute && el.getAttribute("aria-invalid") === "true") return true;
       if (isInvalid(el)) return true;
+      if (el.matches && el.matches(triggerSel)) return currentText(el, valueSel, emptyRx) === "";
       const v = ("value" in el) ? el.value : "";
       return !v || String(v).trim() === "";
     };
@@ -8320,7 +8318,7 @@ export async function hasUnfilledRequiredControlForStep(
       if (txt && (txt.includes(want) || want.includes(txt))) return true;
     }
     return false;
-  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
+  })(${JSON.stringify(label)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)})`;
   try {
     return (await target.evaluate(expr)) === true;
   } catch {
