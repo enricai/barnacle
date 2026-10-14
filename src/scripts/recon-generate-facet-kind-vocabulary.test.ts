@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractNavigateToFacetOrder,
   matchFacetRecurrence,
   type NavigateToFacetBinding,
   resolveRecurringNavigateToFacets,
@@ -143,10 +144,19 @@ describe("resolveRecurringNavigateToFacets kind naming beyond the bare field", (
 
   it("reads the element kind from the facet's own hash when the field names none", () => {
     const resolved = resolveRecurringNavigateToFacets(
-      [{ ...hashFacet("destination", "ports_castaway-cay", "destination"), kindHints: ["ports"] }],
+      extractNavigateToFacetOrder([
+        {
+          step: "open the port",
+          navigateTo: "https://example.com/#/search/ports_castaway-cay",
+          payloadField: "destination",
+        },
+      ]),
       [actionWith(["GOC;filterType=port", "x;filterType=theme"])]
     );
-    expect(resolved.map(({ field, value }) => [field, value])).toEqual([["destination", "GOC"]]);
+    expect(resolved.map(({ field, value }) => [field, value])).toEqual([
+      ["destination", "ports_castaway-cay"],
+      ["destination", "GOC"],
+    ]);
   });
 
   it("picks the same month's element among several elements of the date kind", () => {

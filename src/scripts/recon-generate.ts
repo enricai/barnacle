@@ -458,6 +458,14 @@ function collectHashFacetLiterals(url: string, previousHash: string | undefined)
 }
 
 /**
+ * Further element kinds a facet's own hash names (`ship` in `#/ship/<slug>` or
+ * `ship=<slug>`, `ports` in `ports_<slug>`), for a field name that does not
+ * itself name the element kind. Kept beside the binding rather than on it so
+ * the binding's declared shape stays the contract callers build and compare.
+ */
+const FACET_KIND_HINTS = new WeakMap<NavigateToFacetBinding, readonly string[]>();
+
+/**
  * Element kinds a hash facet's own tokens name: the key of a `key=value` pair,
  * the path segment ahead of the value, and the `<kind>_` prefix of a slug.
  */
@@ -591,10 +599,6 @@ export interface NavigateToFacetBinding {
   readonly literals?: readonly string[];
   /** Element kind named by the declared field, lowercased and space-joined. */
   readonly kind?: string;
-  /** Further element kinds the facet's own hash names (`ship` in
-   * `#/ship/<slug>` or `ship=<slug>`, `ports` in `ports_<slug>`), for a field
-   * name that does not itself name the element kind. */
-  readonly kindHints?: readonly string[];
   /** Set on a facet whose `value` was read from a captured kind-suffixed
    * element, so it only matches elements of its own kind. */
   readonly keyedByKind?: boolean;
@@ -624,15 +628,18 @@ export function extractNavigateToFacetOrder(
 ): NavigateToFacetBinding[] {
   return walkNavigateToFacets(flowSteps, env)
     .filter((facet) => facet.origin === "navigateTo" || facet.value !== null)
-    .map((facet) => ({
-      value: facet.value ?? "",
-      field: facet.field,
-      optional: facet.optional,
-      literals: facet.literals,
-      kind: facet.kind,
-      kindHints: facet.kindHints,
-      ...(facet.origin === "step" ? { origin: facet.origin } : {}),
-    }));
+    .map((facet) => {
+      const binding: NavigateToFacetBinding = {
+        value: facet.value ?? "",
+        field: facet.field,
+        optional: facet.optional,
+        literals: facet.literals,
+        kind: facet.kind,
+        ...(facet.origin === "step" ? { origin: facet.origin } : {}),
+      };
+      if (facet.kindHints.length > 0) FACET_KIND_HINTS.set(binding, facet.kindHints);
+      return binding;
+    });
 }
 
 /**
@@ -9516,7 +9523,7 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
   const meaningful = words.filter((word) => !KIND_NOISE_WORDS.has(word));
   const named = meaningful.length > 0 ? meaningful : words;
   if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
-  if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
+  if ((FACET_KIND_HINTS.get(facet) ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
   if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
   return named.some((word) => normalizeKind(word) === element) ? 3 : 0;
 }
