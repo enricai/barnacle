@@ -355,13 +355,26 @@ describe("flow-runner/isClickViewSwapVerified — client-side view-swap gate", (
     expect(result).toBe(false);
   });
 
-  it("rejects a small text-changing reveal when the clicked element itself is confirmed gone post-click", () => {
+  it("credits a text-changing reveal that grows the DOM even when the clicked trigger is gone (login-to-registration view swap)", () => {
     const result = isClickViewSwapVerified({
       resolvedAction: { method: "click" },
       submitStep: false,
       isAdvanceWithPattern: false,
       networkDelta: 0,
       bytesDelta: 789,
+      textChanged: true,
+      clickedElementStillPresent: false,
+    });
+    expect(result).toBe(true);
+  });
+
+  it("rejects a text-changing zero-growth swap when the clicked element is gone", () => {
+    const result = isClickViewSwapVerified({
+      resolvedAction: { method: "click" },
+      submitStep: false,
+      isAdvanceWithPattern: false,
+      networkDelta: 0,
+      bytesDelta: 0,
       textChanged: true,
       clickedElementStillPresent: false,
     });
