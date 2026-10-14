@@ -104,6 +104,12 @@ import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
+  CENTRE_AND_HIT_TEST_FN,
+  type CentredHitTestResult,
+  clickAfterCentredHitTest,
+  clickCentredTrusted,
+} from "@/scraper/trusted-click";
+import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
   NEGATIVE_TEXT_EXPR,
@@ -920,6 +926,30 @@ const ATTEMPT_BACKOFF_MS = 1_000;
  * actionable.
  */
 const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
+
+/**
+ * Builds an in-page expression that finds the marker-stamped element, piercing
+ * open shadow roots (plain `querySelector` cannot), and centre + hit-tests it.
+ */
+function buildDeepMarkerCentreExpr(markerSelector: string): string {
+  return `(() => {
+    const sel = ${JSON.stringify(markerSelector)};
+    const find = (root) => {
+      const hit = root.querySelector(sel);
+      if (hit) return hit;
+      for (const n of root.querySelectorAll("*")) {
+        if (n.shadowRoot) {
+          const r = find(n.shadowRoot);
+          if (r) return r;
+        }
+      }
+      return null;
+    };
+    const el = find(document);
+    if (!el) return { state: "missing" };
+    return (${CENTRE_AND_HIT_TEST_FN}).call(el);
+  })()`;
+}
 /**
  * Per-step watchdog passed as Stagehand's native `timeout` on every
  * `act()`/`observe()`. Stagehand's `ensureTimeRemaining()` checks the
@@ -11178,7 +11208,7 @@ export async function executeStepWithHealing(params: {
       if (!frameTarget?.frame) {
         const topWindowTarget = frameTarget ?? mainFrameTarget(page);
         try {
-          await withWatchdog(() => topWindowTarget.locator(selector).first().click(), {
+          await withWatchdog(() => clickCentredTrusted(topWindowTarget, selector), {
             timeoutMs: N16_TRUSTED_CLICK_TIMEOUT_MS,
             label: "n+16 fallback: trusted click delivery",
           });
@@ -11687,7 +11717,15 @@ export async function executeStepWithHealing(params: {
               : { found: false };
             if (markResult.found) {
               try {
-                await topWindowTarget.locator(`[${markerAttr}="${markerValue}"]`).first().click();
+                const markerSelector = `[${markerAttr}="${markerValue}"]`;
+                await clickAfterCentredHitTest(
+                  topWindowTarget.locator(markerSelector),
+                  () =>
+                    topWindowTarget.evaluate<CentredHitTestResult>(
+                      buildDeepMarkerCentreExpr(markerSelector)
+                    ),
+                  { label: markerSelector }
+                );
                 clickedShadowDescendant = true;
               } finally {
                 await topWindowTarget
@@ -11697,7 +11735,7 @@ export async function executeStepWithHealing(params: {
                   .catch(() => undefined);
               }
             } else {
-              await topWindowTarget.locator(topWindowSelector).first().click();
+              await clickCentredTrusted(topWindowTarget, topWindowSelector);
             }
           } catch (err) {
             const failureMessage = `trusted-click-retry: top-window trusted click threw ${toErrorMessage(err)}`;
