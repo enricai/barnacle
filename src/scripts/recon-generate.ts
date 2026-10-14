@@ -602,6 +602,11 @@ export interface NavigateToFacetBinding {
   /** Set on a facet whose `value` was read from a captured kind-suffixed
    * element, so it only matches elements of its own kind. */
   readonly keyedByKind?: boolean;
+  /** Set on a kind-keyed alias: maps each literal the caller's declared
+   * vocabulary uses for the facet to the literal the captured traffic uses
+   * for it, so a renderer can translate the caller's value instead of
+   * emitting it raw into a code-vocabulary element. */
+  readonly valueMap?: ReadonlyMap<string, string>;
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -7691,7 +7696,10 @@ export function resolveRecurringNavigateToFacets(
     claimedLiterals.add(literal);
     const known = [facet.value, ...(facet.literals ?? [])];
     if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
+    const valueMap = new Map(
+      known.filter((candidate) => candidate.length > 0).map((candidate) => [candidate, literal])
+    );
+    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
   });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
