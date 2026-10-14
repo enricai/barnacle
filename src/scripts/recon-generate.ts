@@ -13702,6 +13702,54 @@ function declaredSchemaCoversAccessorShape(declared: string, shape: AccessorShap
   );
 }
 
+const applicantContactFieldNames = new Set([
+  "FirstName",
+  "LastName",
+  "Phone",
+  "AddressLine",
+  "City",
+  "State",
+  "PostalCode",
+  "Country",
+  "County",
+  "Resume",
+  "ResumeContentType",
+  "ResumeFilename",
+  "ResumeBase64",
+]);
+const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
+const applicantContactEvidenceFieldNamesLower = new Set(
+  [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
+);
+
+/**
+ * Single source of truth for "the contract extends ApplicantContactSchema", so
+ * the contract and browser-flow emitters can't disagree about whether the
+ * payload carries Resume fields.
+ */
+export function contractUsesApplicantContactSchema(opts: {
+  inputBody?: unknown;
+  omitExecuteHttp?: boolean;
+  isSubmissionFlow?: boolean;
+  payloadFieldNames?: Set<string>;
+}): boolean {
+  const { inputBody, omitExecuteHttp, isSubmissionFlow, payloadFieldNames } = opts;
+  // A browser-flow-only submission with no captured body has no inputBody to
+  // inspect; the payload fields its steps splice are the only evidence.
+  if (inputBody != null) {
+    return [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
+      path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
+    );
+  }
+  return (
+    omitExecuteHttp === true &&
+    isSubmissionFlow === true &&
+    [...(payloadFieldNames ?? [])].some((name) =>
+      applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
+    )
+  );
+}
+
 /** Generates a complete contract.ts source string for a plugin — exported so
  * unit tests can drive the emitter directly without spawning the CLI. */
 export function emitContractTs(opts: {
@@ -13972,37 +14020,12 @@ export function emitContractTs(opts: {
   // one of ApplicantContactSchema's own field names (case-insensitively,
   // checked at any depth via walkAllPrimitiveLeaves) before the template
   // applies (see recon-generate-payload-schema-mismatch.md).
-  const applicantContactFieldNames = new Set([
-    "FirstName",
-    "LastName",
-    "Phone",
-    "AddressLine",
-    "City",
-    "State",
-    "PostalCode",
-    "Country",
-    "County",
-    "Resume",
-    "ResumeContentType",
-    "ResumeFilename",
-    "ResumeBase64",
-  ]);
-  const baseContractFieldNames = new Set(["Email", "ClickUrl", "Answers"]);
-  const applicantContactEvidenceFieldNamesLower = new Set(
-    [...applicantContactFieldNames, ...baseContractFieldNames].map((name) => name.toLowerCase())
-  );
-  // A browser-flow-only submission with no captured body has no inputBody to
-  // inspect; the payload fields its steps splice are the only evidence.
-  const usesApplicantContactSchema =
-    inputBody != null
-      ? [...walkAllPrimitiveLeaves(inputBody)].some(({ path }) =>
-          path.some((segment) => applicantContactEvidenceFieldNamesLower.has(segment.toLowerCase()))
-        )
-      : omitExecuteHttp &&
-        isSubmissionFlow &&
-        [...(payloadFieldNames ?? [])].some((name) =>
-          applicantContactEvidenceFieldNamesLower.has(name.toLowerCase())
-        );
+  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+    inputBody,
+    omitExecuteHttp,
+    isSubmissionFlow,
+    payloadFieldNames,
+  });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
     usesApplicantContactSchema && applicantContactFieldNames.has(name);
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
@@ -15592,6 +15615,10 @@ export function emitBrowserFlowTs(opts: {
   flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
+  /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
+   * here, after payload fields are accumulated, to match the contract emitter. */
+  inputBody?: unknown;
+  omitExecuteHttp?: boolean;
   vocabulary?: ReconVocabulary;
   /** CSS selector of a cross-origin `<iframe>` the flow's target elements live
    * inside, from the recon flow file's object-form `frameSelector`. Matches
@@ -15614,6 +15641,8 @@ export function emitBrowserFlowTs(opts: {
     flowSteps,
     isSubmissionFlow,
     hasMultipartStep = false,
+    inputBody,
+    omitExecuteHttp = false,
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
@@ -15629,6 +15658,14 @@ export function emitBrowserFlowTs(opts: {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
   }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
+  const contractCarriesResume =
+    hasMultipartStep ||
+    contractUsesApplicantContactSchema({
+      inputBody,
+      omitExecuteHttp,
+      isSubmissionFlow,
+      payloadFieldNames,
+    });
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
@@ -15727,7 +15764,7 @@ export function emitBrowserFlowTs(opts: {
   // a null + TODO so the generated module still typechecks; the operator adds
   // the multipart contract fields and wires the fixture during hand-finish.
   const uploadFixtureExpr =
-    hasUploadStep && hasMultipartStep
+    hasUploadStep && contractCarriesResume
       ? `{
     buffer: Buffer.from(payload.Resume),
     name: payload.ResumeFilename ?? "resume.pdf",
@@ -17001,6 +17038,8 @@ async function main(): Promise<void> {
       flowSteps,
       isSubmissionFlow,
       hasMultipartStep,
+      inputBody,
+      omitExecuteHttp: browserFlowOnly,
       vocabulary,
       frameSelector,
     });
