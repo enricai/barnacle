@@ -89,6 +89,31 @@ describe("verifySubmitWithLLM", () => {
     expect(args.messages[0]?.content).toContain("Shipping address");
   });
 
+  it("gives the judge the live visible text rather than only the stale document title", async () => {
+    const parsedOutput = { verified: true, reason: "visible text shows the next stage" };
+    const client = fakeClient(parsedOutput);
+    const result = await verifySubmitWithLLM({
+      client,
+      input: {
+        ...INPUT,
+        pageTitle: "Sign In",
+        stepInstruction: "Click Sign in",
+        isFinalStep: false,
+        visibleText: "Settings Candidate Home",
+      },
+    });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    const user = args.messages[0]?.content ?? "";
+    expect(result).toEqual(parsedOutput);
+    expect(user).toContain("Settings Candidate Home");
+    expect(user).toContain("Click Sign in");
+    expect(user).not.toContain("Sign In");
+    expect(args.system).toContain("title is not evidence");
+  });
+
   it("final step: prompt still presents title and title hints as evidence", async () => {
     const { user } = await captured({ isFinalStep: true, pageTitle: "Sign In" });
     expect(user).toContain("PAGE TITLE: Sign In");
