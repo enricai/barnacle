@@ -122,6 +122,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
+  hasPageAdvanced,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
@@ -1466,6 +1467,25 @@ export function hasPageAlreadyAdvancedPastStep(
   if (start === null || current === null) return false;
   if (start === current) return false;
   return isPlausibleStepDestination(stepInstruction, currentUrl);
+}
+
+/**
+ * DOM-advance counterpart of {@link hasPageAlreadyAdvancedPastStep} for
+ * non-final submit-shaped steps, whose SPA wizards swap content without a URL
+ * change. Reuses the shared {@link hasPageAdvanced} judgement over the
+ * step-start and live visible-text signatures; a final step is never credited
+ * here because its completion is owned by the submit-destination judge.
+ */
+export function hasSubmitStepDomAdvanced(
+  isFinalStep: boolean,
+  preVisibleTextSignature: string | undefined,
+  liveVisibleTextSignature: string | undefined
+): boolean {
+  if (isFinalStep) return false;
+  return hasPageAdvanced(
+    { networkCount: 0, url: "", bodyHtmlLength: 0, visibleTextSignature: preVisibleTextSignature },
+    { networkCount: 0, url: "", bodyHtmlLength: 0, visibleTextSignature: liveVisibleTextSignature }
+  );
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
@@ -3020,6 +3040,10 @@ async function main(): Promise<void> {
         // in-frame navigation would otherwise be invisible to the top-level
         // page.url() this used to read.
         const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
+        const textAtStepStart = step.submitStep
+          ? (await snapshotPage(frameTarget, signalCounter).catch(() => undefined))
+              ?.visibleTextSignature
+          : undefined;
         // A child frame CDP has just attached to may still be sitting on
         // about:blank (the moment right after Target.setAutoAttach fires and
         // before the OOPIF's own navigation lands). waitForSpaReady above only
@@ -3198,10 +3222,19 @@ async function main(): Promise<void> {
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
-          if (
+          const urlAdvanced =
             !step.submitStep &&
-            hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction)
-          ) {
+            hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
+          const domAdvanced =
+            !urlAdvanced &&
+            step.submitStep === true &&
+            hasSubmitStepDomAdvanced(
+              i === plan.length - 1,
+              textAtStepStart,
+              (await snapshotPage(frameTarget, signalCounter).catch(() => undefined))
+                ?.visibleTextSignature
+            );
+          if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
             );
