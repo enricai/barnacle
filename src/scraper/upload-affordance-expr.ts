@@ -28,3 +28,28 @@ export const UPLOAD_AFFORDANCE_MATCHER_EXPR = `((raw) => {
   if (new RegExp(${JSON.stringify(NO_FILE_SOURCE)}).test(t)) return false;
   return new RegExp(${JSON.stringify(POSITIVE_SOURCE)}).test(t);
 })`;
+
+const DROP_ZONE_ATTRIBUTES = ["data-testid", "data-test", "data-test-id", "data-qa", "data-cy", "id"];
+
+/**
+ * Single drop-zone selector list shared by the render-gate and the synthetic
+ * drag-drop so the two cannot disagree about what a drop area is. Besides
+ * class substrings and custom tags it matches drop areas identified only by an
+ * attribute (e.g. `data-testid="file-drop-area"`).
+ */
+export const DROP_ZONE_SELECTORS: readonly string[] = [
+  "uapp-upload",
+  "app-upload",
+  "uapp-resume-upload",
+  "[class*='dropzone']",
+  "[class*='drop-zone']",
+  "[class*='file-drop']",
+  "[class*='upload-zone']",
+  "[class*='uapp-upload']",
+  "[class*='ResumeUpload']",
+  "[class*='resumeUpload']",
+  "[class*='resume-upload']",
+  ...DROP_ZONE_ATTRIBUTES.flatMap((attr) =>
+    ["file", "upload"].map((word) => `[${attr}*='drop' i][${attr}*='${word}' i]`)
+  ),
+];

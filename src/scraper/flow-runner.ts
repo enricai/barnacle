@@ -124,6 +124,7 @@ import {
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
 import {
+  DROP_ZONE_SELECTORS,
   matchesUploadAffordanceVocabulary,
   UPLOAD_AFFORDANCE_MATCHER_EXPR,
 } from "@/scraper/upload-affordance-expr";
@@ -5369,12 +5370,12 @@ export async function surfaceAndUpload(params: {
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
   // target to appear — a dropzone, an upload-affordance button, or an
   // <input type=file> — so every downstream strategy runs against a rendered
-  // widget. Static evaluate literal (no interpolation); dropzone list parallels
+  // widget. Dropzone list is the shared DROP_ZONE_SELECTORS used by
   // simulateDragDropUpload and the button matcher parallels clickUploadAffordance.
   const targetExpr = `(() => {
     const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
     if (document.querySelector("input[type=file]")) return { present: true };
-    const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
+    const dz = document.querySelector(${JSON.stringify(DROP_ZONE_SELECTORS.join(","))});
     if (dz) return { present: true };
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
@@ -8486,19 +8487,7 @@ export async function simulateDragDropUpload(
     const fileName = ${JSON.stringify(fixture.name)};
     const fileType = ${JSON.stringify(fixture.mimeType)};
     const base64 = ${JSON.stringify(base64)};
-    const dropZoneSelectors = [
-      "uapp-upload",
-      "app-upload",
-      "uapp-resume-upload",
-      "[class*='dropzone']",
-      "[class*='drop-zone']",
-      "[class*='file-drop']",
-      "[class*='upload-zone']",
-      "[class*='uapp-upload']",
-      "[class*='ResumeUpload']",
-      "[class*='resumeUpload']",
-      "[class*='resume-upload']",
-    ];
+    const dropZoneSelectors = ${JSON.stringify(DROP_ZONE_SELECTORS)};
     let dropZone = null;
     for (const sel of dropZoneSelectors) {
       const el = document.querySelector(sel);
