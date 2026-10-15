@@ -33,6 +33,7 @@ describe("spliceFacetsIntoArrayVariable (via emitContractTs end-to-end)", () => 
       ],
     });
 
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain("`${payload.slug};filterId=urlFriendlyId`");
     expect(contract).toContain(JSON.stringify("widget-static"));
   });
@@ -64,6 +65,7 @@ describe("spliceFacetsIntoArrayVariable (via emitContractTs end-to-end)", () => 
     });
 
     expect(contract).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "...(payload.slug ? [`${payload.slug};filterId=urlFriendlyId`] : [])"
     );
     expect(contract).not.toContain("undefined");

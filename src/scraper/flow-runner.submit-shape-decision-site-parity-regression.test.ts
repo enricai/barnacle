@@ -132,6 +132,7 @@ describe("submit-shape decision sites: source-level parity", () => {
       "async function resolvedClickTargetIsSubmitShaped(",
       "\n}\n"
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(fnBody).toContain("const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};");
   });
 
@@ -141,6 +142,7 @@ describe("submit-shape decision sites: source-level parity", () => {
       "const XPATH_TAIL_RETARGET_RESOLVE_FN_SRC = `",
       "  })`;"
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(constBody).toContain("const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};");
   });
 });

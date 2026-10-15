@@ -44,6 +44,7 @@ describe("spliceFacetRecurrenceIntoScalarVariable (via emitContractTs)", () => {
       flowSteps: FLOW_STEPS,
     });
 
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain("`kind:${payload.slug}|color:red`");
   });
 });

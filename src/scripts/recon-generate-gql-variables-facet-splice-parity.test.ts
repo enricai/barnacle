@@ -9,6 +9,7 @@ describe("renderGqlVariablesExpr facet splice parity with REST", () => {
       new Set(),
       [{ field: "widgetId", value: "widget-x", optional: false }]
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(expr).toContain("`${payload.widgetId};id=1`");
     expect(expr).not.toContain('"widget-x;id=1"');
   });

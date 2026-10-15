@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Exercises the reported failure shape directly: a REST search-term `query`
@@ -108,13 +109,13 @@ describe("isGraphQL() — coincidental query-field VALUE regex match vs. genuine
     );
 
     const siteId = `coincidental-query-field-value-regex-rest-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowConfig(siteOutDir);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -141,13 +142,13 @@ describe("isGraphQL() — coincidental query-field VALUE regex match vs. genuine
     }
 
     const siteId = `coincidental-query-field-value-regex-graphql-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowConfig(siteOutDir);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

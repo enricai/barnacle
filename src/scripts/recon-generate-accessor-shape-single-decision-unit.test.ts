@@ -13,6 +13,7 @@ const BASE_OPTS = {
   gqlQuery: null,
   endpointPath: "/api/example",
   auxFiles: [],
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
   multiStepBody: 'const b = `${JSON.stringify({ c: payload.items["0"]!.criteria })}`;',
 };
 

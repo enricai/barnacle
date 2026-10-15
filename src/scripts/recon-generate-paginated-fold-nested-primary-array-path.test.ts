@@ -11,6 +11,10 @@ import {
   indexStateValues,
   resolveApplicableFoldPlans,
 } from "@/scripts/recon-generate";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { extractExecuteHttpBodyFromContract } from "@/scripts/recon-generate-execute-http-harness.test-helper";
 
 const BASE = "https://api.example.com";
@@ -176,7 +180,7 @@ describe("paginated GraphQL fold onto a primaryArrayPath deeper than the paginat
       foldReturnSpec: NESTED_GROUP_SPEC,
     });
 
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     const tsconfigPath = join(REPO_ROOT, `tsconfig.paginated-nested-fold-tsc.${process.pid}.json`);
     try {
       mkdirSync(join(siteOutDir, "flows"), { recursive: true });
@@ -203,12 +207,13 @@ export async function run${pascal}BrowserFlow(
             incremental: false,
             tsBuildInfoFile: null,
             paths: {
+              "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
               "@/*": ["./src/*"],
               "@test/*": ["./test/*"],
               "@enricai/barnacle/*": ["./src/*"],
             },
           },
-          include: [`src/sites/${siteId}/**/*.ts`],
+          include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
         })
       );
 

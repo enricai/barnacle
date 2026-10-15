@@ -1,5 +1,25 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
+
+const REAL_SITES = resolve(__dirname, "./src/sites");
+const RECON_GENERATE_SITES = resolve(__dirname, "./tmp/recon-generate/src/sites");
+
+// Plugins emitted by recon-generate tests live under RECON_GENERATE_CWD
+// (src/scripts/recon-generate-cwd.test-helper.ts) but import their own files as
+// `@/sites/<siteId>/...`, which the `@` alias has already pointed at the real
+// src/sites by the time this runs; re-root those imports onto the scratch tree.
+const reconGenerateSitesResolver: Plugin = {
+  name: "recon-generate-sites",
+  enforce: "pre",
+  async resolveId(source, importer) {
+    if (!importer?.startsWith(RECON_GENERATE_SITES) || !source.startsWith(`${REAL_SITES}/`)) {
+      return null;
+    }
+    return this.resolve(RECON_GENERATE_SITES + source.slice(REAL_SITES.length), importer, {
+      skipSelf: true,
+    });
+  },
+};
 
 export default defineConfig({
   test: {
@@ -39,6 +59,7 @@ export default defineConfig({
     pool: "forks",
     maxWorkers: "50%",
   },
+  plugins: [reconGenerateSitesResolver],
   resolve: {
     alias: {
       "@": resolve(__dirname, "./src"),

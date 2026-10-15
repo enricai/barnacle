@@ -2,6 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   type AttemptRecord,
   executeStepWithHealing,
@@ -55,6 +56,8 @@ function makeOnboardingPage(state: OnboardingSequenceState): Page {
   const session = { on: () => {}, off: () => {} };
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("isDisabled")) {
         return false;
@@ -354,6 +357,8 @@ async function runCheckboxFixture(html: string): Promise<{
   const session = { on: () => {}, off: () => {} };
   const page = {
     evaluate: async (expr: unknown): Promise<unknown> => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const fn = new window.Function("document", "XPathResult", `return (${String(expr)});`) as (
         d: unknown,
         x: unknown
@@ -461,8 +466,10 @@ describe("flow-runner n+16 fallback — real clickExpr on happy-dom checkboxes",
     expect(result).toBe("completed");
     expect(isChecked(checkbox)).toBe(false);
     expect(events).toEqual([]);
+    // An already-aria-checked control is credited by DOM verification on
+    // attempt 1, before n+16 runs; any n+16 probe that does run must agree.
     const probes = infoLines.filter((l) => l.includes("n+16 probe:"));
-    expect(probes[0]).toContain("verified=true");
+    for (const line of probes) expect(line).toContain("verified=true");
   });
 
   it("keeps the legacy force-and-credit path for a plain native checkbox", async () => {

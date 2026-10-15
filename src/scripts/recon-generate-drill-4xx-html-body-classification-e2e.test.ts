@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import { HttpClientError, UnknownScraperError } from "@/scraper/errors";
 import { createHttpClient } from "@/scraper/http-client";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
@@ -134,7 +135,7 @@ describe("recon-generate — paginated-listing item drill: 4xx HTML body classif
     writeRunDir(runRoot, buildPagedListingDrillCaptures());
 
     const siteId = `paged-drill-4xx-html-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -149,7 +150,7 @@ describe("recon-generate — paginated-listing item drill: 4xx HTML body classif
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 

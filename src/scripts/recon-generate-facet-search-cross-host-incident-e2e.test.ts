@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * End-to-end proof that the two composed fixes -- host/facet-gated primary
@@ -134,7 +135,7 @@ describe("recon-generate CLI — full incident shape: submitStep flow, facet-bea
     writeIncidentRunDir(runRoot);
 
     const siteId = `facet-search-cross-host-incident-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
@@ -148,7 +149,7 @@ describe("recon-generate CLI — full incident shape: submitStep flow, facet-bea
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

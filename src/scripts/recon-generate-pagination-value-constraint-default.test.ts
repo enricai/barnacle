@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Proves the emitted `PAGE_SIZE` default prefers a consumer-declared
@@ -129,7 +130,7 @@ function runGenerate(runRoot: string, siteId: string, extraArgs: string[]) {
       "--force",
       ...extraArgs,
     ],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -150,7 +151,7 @@ describe("recon-generate CLI — PAGE_SIZE default prefers a declared value-cons
     const constraintsPath = writeValueConstraintsModule(workDir, "count", 50);
 
     const siteId = `pagination-value-constraint-gql-test-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(runRoot, siteId, ["--value-constraints", constraintsPath]);
@@ -167,7 +168,7 @@ describe("recon-generate CLI — PAGE_SIZE default prefers a declared value-cons
     writeGqlPagedRunDir(runRoot);
 
     const siteId = `pagination-value-constraint-gql-none-test-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(runRoot, siteId, []);
@@ -186,7 +187,7 @@ describe("recon-generate CLI — PAGE_SIZE default prefers a declared value-cons
     const constraintsPath = writeValueConstraintsModule(workDir, "count", 50);
 
     const siteId = `pagination-value-constraint-rest-test-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(runRoot, siteId, ["--value-constraints", constraintsPath]);
@@ -203,7 +204,7 @@ describe("recon-generate CLI — PAGE_SIZE default prefers a declared value-cons
     writeRestPagedRunDir(runRoot);
 
     const siteId = `pagination-value-constraint-rest-none-test-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(runRoot, siteId, []);

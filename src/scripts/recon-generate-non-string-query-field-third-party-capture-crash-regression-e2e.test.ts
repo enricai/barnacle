@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Pins the reported `query.replace is not a function` crash: a third-party
@@ -111,7 +112,7 @@ describe("recon-generate CLI — third-party capture with a non-string (object) 
     writeIncidentRunDir(runRoot);
 
     const siteId = `non-string-query-field-crash-regression-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
@@ -125,7 +126,7 @@ describe("recon-generate CLI — third-party capture with a non-string (object) 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

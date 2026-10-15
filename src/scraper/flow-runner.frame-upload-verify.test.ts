@@ -1,6 +1,6 @@
 import type { Action, Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   attachToSurfacedInput,
   dispatchJqueryChangeEvent,
@@ -48,7 +48,9 @@ function makeChildTarget(evaluateImpl: (expr: unknown) => Promise<unknown>): Fra
 /** Fake `Page` whose `evaluate` is a distinct spy from the child target's, so a call reaching it (instead of the child target) is detectable. */
 function makeFakePage(): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         setInputFiles: vi.fn().mockResolvedValue(undefined),
@@ -195,6 +197,10 @@ describe("flow-runner/verifyDomEffect — change-dispatch frame targeting", () =
     expect(hit).toBe(true);
     // dispatchJqueryChangeEvent's evaluate must have gone through the same
     // child target verifyDomEffect used for target.locator(selector), not page.
-    expect(dispatchEvaluate).toHaveBeenCalledTimes(1);
+    // The fill readback also evaluates on this target, so match the dispatch
+    // expression itself rather than the call count.
+    expect(dispatchEvaluate).toHaveBeenCalledWith(
+      expect.stringContaining("new Event('change', { bubbles: true })")
+    );
   });
 });
