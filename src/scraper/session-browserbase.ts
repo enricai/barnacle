@@ -1,3 +1,4 @@
+import Browserbase from "@browserbasehq/sdk";
 import { AISdkClient, type ModelConfiguration, Stagehand } from "@browserbasehq/stagehand";
 
 import { config } from "@/config";
@@ -132,6 +133,23 @@ export function makeOutboundIpAccessor(
 }
 
 /**
+ * Releases the Browserbase session explicitly because `keepAlive: true` leaves
+ * teardown to us; failures are logged so they never mask the rest of close().
+ */
+async function releaseBrowserbaseSession(sessionId: string): Promise<void> {
+  if (sessionId === "unknown") return;
+  try {
+    const client = new Browserbase({ apiKey: config.scraper.browserbaseApiKey });
+    await client.sessions.update(sessionId, {
+      projectId: config.scraper.browserbaseProjectId,
+      status: "REQUEST_RELEASE",
+    });
+  } catch (err) {
+    logger.warn(`browserbase release failed for session ${sessionId}: ${toErrorMessage(err)}`);
+  }
+}
+
+/**
  * Spins up one Browserbase cloud session with the configured Stagehand LLM.
  *
  * Why Browserbase (and why it's the default): Stagehand v3 has five distinct
@@ -142,8 +160,10 @@ export function makeOutboundIpAccessor(
  * code path Stagehand validates first.
  *
  * Session lifecycle: Stagehand owns Browserbase session creation when
- * `env: "BROWSERBASE"` is set. `stagehand.close()` releases the session;
- * no separate Browserbase SDK release call is needed (unlike Steel).
+ * `env: "BROWSERBASE"` is set, but because the session is created with
+ * `keepAlive: true`, `stagehand.close()` does NOT release it. `close()`
+ * therefore explicitly issues `sessions.update(..., REQUEST_RELEASE)` through
+ * the Browserbase SDK; a failed release is logged and never aborts teardown.
  *
  * Viewport rotation: forwarded via `fingerprint.screen.{min,max}{Width,Height}`
  * pinned to the chosen viewport. The min/max bracket forces Browserbase's
@@ -383,6 +403,7 @@ export async function createBrowserbaseBrowserSession(
     } catch (err) {
       logger.warn(`stagehand close failed for session ${sessionId}: ${toErrorMessage(err)}`);
     }
+    await releaseBrowserbaseSession(sessionId);
     await limiter.stop({ dropWaitingJobs: true });
     reportSuppressedAisdkErrors();
   };
