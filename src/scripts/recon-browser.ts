@@ -88,6 +88,7 @@ import {
 import {
   type AttemptRecord,
   anthropicModelName,
+  buildSubmitJudgeStepContext,
   type CaptureFn,
   capturesAfterIndex,
   classifyStepSubmitIntent,
@@ -3282,7 +3283,11 @@ async function main(): Promise<void> {
             const trailingGraceVerdict = await verifySubmitWithLLM({
               client: anthropic,
               input: {
-                isFinalStep: true,
+                ...(await buildSubmitJudgeStepContext({
+                  step: step.instruction,
+                  isFinalStep: i === plan.length - 1,
+                  target: mainFrameTarget(page),
+                })),
                 // A dead session throws synchronously here too — fall back to ""
                 // rather than let the trailing-grace check itself crash the run.
                 pageUrl: ((): string => {

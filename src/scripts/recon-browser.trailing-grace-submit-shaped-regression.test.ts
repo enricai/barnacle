@@ -190,6 +190,10 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
     await expect(main()).resolves.not.toThrow();
 
     expect(verifySubmitWithLLMStub).toHaveBeenCalled();
+    const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
+    expect(judgeInput.stepInstruction).toBe("Place the order");
+    expect(judgeInput.isFinalStep).toBe(true);
+    expect(judgeInput).toHaveProperty("visibleText");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
