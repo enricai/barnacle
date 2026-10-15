@@ -1,4 +1,4 @@
-import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
@@ -127,7 +127,9 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     const originalFill = (page as { locator: (s: string) => { first: () => unknown } }).locator;
     const pageWithChips = page as { locator: typeof originalFill };
     pageWithChips.locator = (selector: string) => {
-      const loc = originalFill(selector) as { first: () => { fill?: (v: string) => Promise<void> } };
+      const loc = originalFill(selector) as {
+        first: () => { fill?: (v: string) => Promise<void> };
+      };
       const first = loc.first();
       const fill = first.fill?.bind(first);
       if (!fill) return loc;
