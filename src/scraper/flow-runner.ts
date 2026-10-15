@@ -8350,9 +8350,9 @@ async function commitPromptOption(params: {
     // stamped index can now point at a different item: re-stamp and re-resolve
     // the matched option by text, then click the index from that fresh read.
     const wantChosenText = norm(chosenOption.text);
-    const fresh = (await target
-      .evaluate(enumerateOptionsExpr)
-      .catch(() => null)) as { options?: { oIdx: number; text: string }[] } | null;
+    const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
+      options?: { oIdx: number; text: string }[];
+    } | null;
     const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
     const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
     if (!freshOption) {
