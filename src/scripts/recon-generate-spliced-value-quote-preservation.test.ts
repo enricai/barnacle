@@ -19,7 +19,7 @@ const VOCAB: ReconVocabulary = {
   ],
 };
 
-const PAYLOAD_CITY = `$${"{payload.City}"}`;
+const PAYLOAD_CITY = `$${"{escapeQuotedValue(payload.City)}"}`;
 const PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
 
 function flowStepsBlock(code: string): string {
@@ -69,7 +69,7 @@ describe("spliced persona values keep their quote delimiters", () => {
       "Type 'Reconaldo Reginald' into the digital signature field",
     ]);
 
-    expect(block).toContain(`'$${"{payload.LastName}"} $${"{payload.FirstName}"}'`);
+    expect(block).toContain(`'$${"{escapeQuotedValue(payload.LastName)}"} $${"{escapeQuotedValue(payload.FirstName)}"}'`);
   });
 
   it("emitConfigManifest keeps quotes around the request template", () => {
