@@ -7084,7 +7084,7 @@ function applyArrayFacetSplicePayloadSubstitutions(
     const absentFacets = collectSiblingArrayFacets(value, path, siblingBodies, navigateToFacets);
     const absentFields = new Set(absentFacets.map(({ facet }) => facet.field));
     const expression = renderFacetValueExpression(
-      [...value, ...absentFacets.map(({ element }) => element)],
+      insertAbsentFacetElements(value, absentFacets),
       navigateToFacets.map((facet) =>
         absentFields.has(facet.field) ? { ...facet, optional: true } : facet
       )
@@ -7092,6 +7092,41 @@ function applyArrayFacetSplicePayloadSubstitutions(
     result = replaceJsonArrayOccurrences(result, value, `\${JSON.stringify(${expression})}`);
   }
   return result;
+}
+
+interface SiblingArrayFacet {
+  element: string;
+  facet: NavigateToFacetBinding;
+  before: readonly unknown[];
+  after: readonly unknown[];
+}
+
+/**
+ * Inserts each sibling-only element next to its nearest neighbour that `own`
+ * (or an earlier insertion) also carries, so the emitted order follows the
+ * capture it came from. With no shared neighbour it is appended.
+ */
+function insertAbsentFacetElements(
+  own: readonly unknown[],
+  absent: readonly SiblingArrayFacet[]
+): unknown[] {
+  const merged = [...own];
+  const indexOfElement = (target: unknown): number =>
+    merged.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(target));
+  for (const { element, before, after } of absent) {
+    const previous = [...before]
+      .reverse()
+      .map(indexOfElement)
+      .find((index) => index >= 0);
+    if (previous !== undefined) {
+      merged.splice(previous + 1, 0, element);
+      continue;
+    }
+    const next = after.map(indexOfElement).find((index) => index >= 0);
+    if (next === undefined) merged.push(element);
+    else merged.splice(next, 0, element);
+  }
+  return merged;
 }
 
 /**
@@ -7106,24 +7141,29 @@ function collectSiblingArrayFacets(
   path: readonly string[],
   siblingBodies: readonly unknown[],
   facets: readonly NavigateToFacetBinding[]
-): Array<{ element: string; facet: NavigateToFacetBinding }> {
+): SiblingArrayFacet[] {
   const present = new Set(
     own.flatMap((element) =>
       typeof element === "string" ? [matchArrayElementFacet(element, facets)?.field] : []
     )
   );
   const key = arrayPathKey(path);
-  const absent: Array<{ element: string; facet: NavigateToFacetBinding }> = [];
+  const absent: SiblingArrayFacet[] = [];
   for (const body of siblingBodies) {
     if (body === null || typeof body !== "object") continue;
     for (const { value, path: siblingPath } of walkArrayLeaves(body)) {
       if (arrayPathKey(siblingPath) !== key) continue;
-      for (const element of value) {
+      for (const [index, element] of value.entries()) {
         if (typeof element !== "string") continue;
         const facet = matchArrayElementFacet(element, facets);
         if (facet === undefined || present.has(facet.field)) continue;
         present.add(facet.field);
-        absent.push({ element, facet });
+        absent.push({
+          element,
+          facet,
+          before: value.slice(0, index),
+          after: value.slice(index + 1),
+        });
       }
     }
   }
@@ -7733,7 +7773,6 @@ export function resolveRecurringNavigateToFacets(
   // the same facet's element in another (`WW;filterType=ship`).
   const claimedLiterals = new Set<string>();
   const aliased = declared.flatMap((facet) => {
-    if (facet.value.length === 0 && facet.origin === "step") return [];
     const literal = findKindKeyedLiteral(facet, actions);
     if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
     if (claimedLiterals.has(literal)) return [];
