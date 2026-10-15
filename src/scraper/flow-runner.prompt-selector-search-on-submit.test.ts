@@ -124,25 +124,39 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
         "country-widget": { options: OPTIONS, searchOnSubmit: true },
       },
     });
-    const originalFill = (page as { locator: (s: string) => { first: () => unknown } }).locator;
-    const pageWithChips = page as { locator: typeof originalFill };
-    pageWithChips.locator = (selector: string) => {
-      const loc = originalFill(selector) as {
-        first: () => { fill?: (v: string) => Promise<void> };
+    let chipsInjected = 0;
+    type Loc = { first: () => { fill?: (v: string) => Promise<void> } };
+    const withChips =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          first: () => {
+            const el = loc.first();
+            const fill = el.fill?.bind(el);
+            if (!fill) return el;
+            return {
+              ...el,
+              fill: async (value: string): Promise<void> => {
+                await fill(value);
+                const list = window.document.querySelector(
+                  "[data-test-popup-for] [role='listbox']"
+                );
+                const chip = window.document.createElement("li");
+                chip.setAttribute("role", "option");
+                chip.textContent = "Finland";
+                list?.appendChild(chip);
+                if (list) chipsInjected += 1;
+              },
+            };
+          },
+        };
       };
-      const first = loc.first();
-      const fill = first.fill?.bind(first);
-      if (!fill) return loc;
-      first.fill = async (value: string): Promise<void> => {
-        await fill(value);
-        const list = window.document.querySelector("[data-test-popup-for] [role='listbox']");
-        const chip = window.document.createElement("li");
-        chip.setAttribute("role", "option");
-        chip.textContent = "Finland";
-        list?.appendChild(chip);
-      };
-      return { ...loc, first: () => first };
-    };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = withChips(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = withChips(targetLoc.locator);
     const merged = {
       ...baseParams(page as unknown as Page, stagehandAct, ""),
       frameTarget: target,
@@ -154,6 +168,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     );
 
     expect(result).toBe("completed");
+    expect(chipsInjected).toBeGreaterThan(0);
     expect(enterKeyDowns(cdpEvents)).toBe(1);
     const committed = window.document.querySelector(
       "[data-automation-id='promptSelectionLabel']"
