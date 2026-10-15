@@ -147,5 +147,13 @@ describe("recon-generate CLI — declared facets with no request evidence", () =
       unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS),
       "navigateTo steps are never spliced into the browser flow, so only region stays unread; it is optional and warned"
     ).toEqual(["region"]);
+    expect(
+      unreferencedDeclaredPayloadFields(
+        contract,
+        browserFlow,
+        DECLARED_STEPS.filter((step) => step.payloadField !== "region")
+      ),
+      "the click-declared nights facet is read by the browser flow fallback, so no other declared facet is unreferenced"
+    ).toEqual([]);
   }, 30_000);
 });
