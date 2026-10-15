@@ -5562,18 +5562,23 @@ export async function surfaceAndUpload(params: {
     const p = paramsIn as { backendNodeId?: number } | undefined;
     if (p && typeof p.backendNodeId === "number") chooserBackendNodeId = p.backendNodeId;
   };
-  // ARM native-chooser interception BEFORE the click. Page.fileChooserOpened
+  // ARM native-chooser interception BEFORE the click, but only once an affordance
+  // is resolved — a no-affordance outcome must not touch CDP. Page.fileChooserOpened
   // only carries a backendNodeId while interception is enabled; without it a
   // chooser-opening click would pop a real OS dialog and hang the run.
-  await session.send("Page.enable").catch(() => {});
-  await session
-    .send("Page.setInterceptFileChooserDialog", { enabled: true })
-    .catch((e: unknown) =>
-      logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
-    );
-  session.on("Page.fileChooserOpened", onChooser);
+  let armed = false;
+  const armChooserInterception = async (): Promise<void> => {
+    armed = true;
+    await session.send("Page.enable").catch(() => {});
+    await session
+      .send("Page.setInterceptFileChooserDialog", { enabled: true })
+      .catch((e: unknown) =>
+        logger.warn(`upload primitive: chooser-intercept arm failed: ${toErrorMessage(e)}`)
+      );
+    session.on("Page.fileChooserOpened", onChooser);
+  };
   try {
-    if (!(await clickUploadAffordance(page, target, logger))) return false;
+    if (!(await clickUploadAffordance(page, target, logger, armChooserInterception))) return false;
     // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
     // click, no chooser, no input.
     if (
@@ -5629,8 +5634,10 @@ export async function surfaceAndUpload(params: {
     }
     return false;
   } finally {
-    session.off("Page.fileChooserOpened", onChooser);
-    await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    if (armed) {
+      session.off("Page.fileChooserOpened", onChooser);
+      await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+    }
   }
 }
 
@@ -5645,12 +5652,15 @@ const UPLOAD_AFFORDANCE_MARKER = "data-barnacle-upload-affordance";
  * matching control was clicked.
  *
  * Takes both `page` (for `pollEnumerate`'s `waitForTimeout`) and `target`
- * (the frame the enumerate/click runs against).
+ * (the frame the enumerate/click runs against). `beforeClick` runs only after
+ * an affordance is marked and immediately before the trusted click, so callers
+ * can arm side effects (CDP chooser interception) only when there is a click.
  */
 export async function clickUploadAffordance(
   page: Page,
   target: FrameTarget,
-  logger: Logger
+  logger: Logger,
+  beforeClick?: () => Promise<void>
 ): Promise<boolean> {
   // The browser-side matcher is the shared upload-affordance vocabulary; the enumerate stays
   // a static string (same trust posture as the other
@@ -5681,6 +5691,7 @@ export async function clickUploadAffordance(
     }
     // A trusted CDP click is required: an in-page el.click() never opens a file chooser.
     try {
+      await beforeClick?.();
       await target.locator(markerSelector).first().click();
     } finally {
       await target
