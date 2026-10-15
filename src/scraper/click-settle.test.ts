@@ -23,8 +23,7 @@ describe("settleAfterClick", () => {
       if (p === 6) c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0);
-    expect(f.polls()).toBeGreaterThan(6);
-    expect(f.polls()).toBeLessThanOrEqual(60);
+    expect(f.polls()).toBe(9);
   });
 
   it("returns after activity at ~11s plus quiet polls", async () => {
@@ -32,8 +31,7 @@ describe("settleAfterClick", () => {
       if (p === 11) c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0);
-    expect(f.polls()).toBeGreaterThan(11);
-    expect(f.polls()).toBeLessThanOrEqual(60);
+    expect(f.polls()).toBe(14);
   });
 
   it("gives up when no activity ever appears", async () => {
@@ -61,8 +59,7 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 8 ? "step 3" : f.polls() >= 1 ? "step 2" : "step 1");
     await settleAfterClick(f.page, f.counter, 0, async () => text());
-    expect(f.polls()).toBeGreaterThan(8);
-    expect(f.polls()).toBeLessThanOrEqual(60);
+    expect(f.polls()).toBe(17);
   });
 
   it("still gives up at 14 polls when text never changes", async () => {
@@ -95,8 +92,7 @@ describe("settleAfterClick", () => {
     const text = (): string =>
       f.polls() >= 8 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
     await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
-    expect(f.polls()).toBeGreaterThan(8);
-    expect(f.polls()).toBeLessThanOrEqual(60);
+    expect(f.polls()).toBe(17);
   });
 
   it("treats a change that landed before the first poll as activity versus the pre-click baseline", async () => {
