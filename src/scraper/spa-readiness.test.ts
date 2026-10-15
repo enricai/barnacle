@@ -1,7 +1,7 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { waitForSpaReady } from "@/scraper/spa-readiness";
+import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import type { Logger } from "@/types/logging";
 
 const testLogger = {
@@ -103,5 +103,35 @@ describe("spa-readiness/waitForSpaReady", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("spa-readiness/regateSpaAfterOriginChange", () => {
+  const fast = { timeoutMs: 20, pollMs: 5 };
+
+  function pageWithReload(bodyLengths: number[]): { page: Page; reload: ReturnType<typeof vi.fn> } {
+    const { page } = fakePage(bodyLengths);
+    const reload = vi.fn().mockResolvedValue(undefined);
+    (page as unknown as { reload: unknown }).reload = reload;
+    return { page, reload };
+  }
+
+  it("does not reload when the body renders on the first wait", async () => {
+    const { page, reload } = pageWithReload([9000]);
+    await regateSpaAfterOriginChange(page, testLogger, fast);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("reloads once with domcontentloaded when the body stays an empty shell", async () => {
+    const { page, reload } = pageWithReload([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9000]);
+    await regateSpaAfterOriginChange(page, testLogger, fast);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledWith({ waitUntil: "domcontentloaded" });
+  });
+
+  it("reloads exactly once and does not throw when still empty after reload", async () => {
+    const { page, reload } = pageWithReload([10]);
+    await expect(regateSpaAfterOriginChange(page, testLogger, fast)).resolves.toBeUndefined();
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

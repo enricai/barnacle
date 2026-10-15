@@ -67,3 +67,43 @@ export async function waitForSpaReady(
     `spa readiness: body still ${bodyLength} chars after ${timeoutMs}ms — proceeding with possibly incomplete page`
   );
 }
+
+/** Below this body length after the readiness wait, the page is treated as an empty shell. */
+const SPA_EMPTY_SHELL_BODY_LENGTH = 1_000;
+
+/**
+ * Re-gate SPA hydration after a mid-flow origin change, with one reload of recovery.
+ * `waitForSpaReady` proceeds silently on a shell page; a cross-origin hop that landed
+ * on an empty shell (e.g. a redirect from app.example.com to login.example.net whose
+ * client bundle never booted) would otherwise let every later step probe nothing.
+ * Reloads at most once and never throws.
+ */
+export async function regateSpaAfterOriginChange(
+  page: Page,
+  logger: Logger,
+  opts: { timeoutMs?: number; pollMs?: number; minBodyLength?: number } = {}
+): Promise<void> {
+  await waitForSpaReady(page, logger, opts);
+  const bodyLength = await readBodyLengthOnce(page, opts.pollMs ?? SPA_READINESS_POLL_MS);
+  if (bodyLength >= SPA_EMPTY_SHELL_BODY_LENGTH) {
+    return;
+  }
+  logger.warn(
+    `spa readiness: body ${bodyLength} chars < ${SPA_EMPTY_SHELL_BODY_LENGTH} after origin change — reloading once`
+  );
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+  } catch (err) {
+    logger.warn(`spa readiness: reload failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  await waitForSpaReady(page, logger, opts);
+}
+
+async function readBodyLengthOnce(page: Page, timeoutMs: number): Promise<number> {
+  const raw = await withWatchdog(
+    () => page.evaluate("document.body ? document.body.outerHTML.length : 0"),
+    { timeoutMs, label: "flow-runner: spa origin re-gate body-length probe" }
+  ).catch(() => 0);
+  return typeof raw === "number" ? raw : 0;
+}
