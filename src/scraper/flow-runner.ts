@@ -5317,7 +5317,27 @@ async function tryUploadPrimitive(params: {
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  return attachToSurfacedInput({ page, target, fixture, logger, signalCounter, recentCaptureMeta });
+  const attached = await attachToSurfacedInput({
+    page,
+    target,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+  });
+  if (attached) return true;
+  logger.info(
+    "upload primitive: existing input did not take the file; attempting click-to-surface"
+  );
+  return surfaceAndUpload({
+    page,
+    target,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+    browserbaseSessionId: params.browserbaseSessionId,
+  });
 }
 
 /**
