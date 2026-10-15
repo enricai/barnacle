@@ -5905,7 +5905,8 @@ export function resolveSegmentedDateGroup(
 
 const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
 
-const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
+/** Exported so tests can run the real DOM enumeration against markup. */
+export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
   const stale = document.querySelectorAll("[" + attr + "]");
   stale.forEach((el) => el.removeAttribute(attr));
