@@ -119,7 +119,12 @@ describe("upload affordance aria-hidden decoys", () => {
         );
       },
       locator: (sel: string) => ({
-        first: () => ({ click: () => (calls.push(`click ${sel}`), click()) }),
+        first: () => ({
+          click: () => {
+            calls.push(`click ${sel}`);
+            return click();
+          },
+        }),
       }),
     } as unknown as FrameTarget;
     const page = { waitForTimeout: () => Promise.resolve() } as unknown as Page;
