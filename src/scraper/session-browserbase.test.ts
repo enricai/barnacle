@@ -510,8 +510,8 @@ describe("createBrowserbaseBrowserSession close() release", () => {
       projectId: "bb-project",
       status: "REQUEST_RELEASE",
     });
-    expect(instance.close.mock.invocationCallOrder[0]).toBeLessThan(
-      bbUpdate.mock.invocationCallOrder[0]
+    expect(instance.close.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
+      bbUpdate.mock.invocationCallOrder[0] ?? 0
     );
   });
 
