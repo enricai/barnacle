@@ -45,7 +45,7 @@ describe("settleAfterClick", () => {
       c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0);
-    expect(f.polls()).toBe(15);
+    expect(f.polls()).toBe(60);
   });
 
   it("counts activity already present versus preCount as seen", async () => {
@@ -60,7 +60,7 @@ describe("settleAfterClick", () => {
     const text = (): string => (f.polls() >= 8 ? "step 3" : f.polls() >= 1 ? "step 2" : "step 1");
     await settleAfterClick(f.page, f.counter, 0, async () => text());
     expect(f.polls()).toBeGreaterThan(8);
-    expect(f.polls()).toBeLessThanOrEqual(15);
+    expect(f.polls()).toBeLessThanOrEqual(60);
   });
 
   it("still gives up at 14 polls when text never changes", async () => {
@@ -72,7 +72,7 @@ describe("settleAfterClick", () => {
   it("stops at the max when text changes continuously", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0, async () => `t${f.polls()}`);
-    expect(f.polls()).toBe(15);
+    expect(f.polls()).toBe(60);
   });
 
   it("counts a flip before settle start and waits for a later body re-render", async () => {
@@ -94,7 +94,7 @@ describe("settleAfterClick", () => {
       f.polls() >= 8 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
     await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
     expect(f.polls()).toBeGreaterThan(8);
-    expect(f.polls()).toBeLessThanOrEqual(15);
+    expect(f.polls()).toBeLessThanOrEqual(60);
   });
 
   it("treats a change that landed before the first poll as activity versus the pre-click baseline", async () => {
@@ -107,5 +107,20 @@ describe("settleAfterClick", () => {
       "example.com pre"
     );
     expect(f.polls()).toBe(10);
+  });
+
+  it("returns only after a body re-render ~8s after a header flip plus the quiet window", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 9 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
+    expect(f.polls()).toBe(18);
+  });
+
+  it("awaits a re-render landing past the old 15s total while activity continues", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 20 ? "body" : `header ${f.polls()}`);
+    await settleAfterClick(f.page, f.counter, 0, async () => text(), "example.com pre");
+    expect(f.polls()).toBe(29);
   });
 });
