@@ -8160,6 +8160,14 @@ async function tryPromptSelectorPrimitive(params: {
         promptOptionsNameOption(r, option)
       );
     }
+    if (optionsFiltered?.optionsPresent) {
+      optionsFiltered = await readStablePromptOptions<FilteredRead>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        optionsFiltered
+      );
+    }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
         `prompt-selector primitive: filtered popup for ${optLabel} rendered no options; falling through`
@@ -8185,6 +8193,35 @@ async function tryPromptSelectorPrimitive(params: {
     );
     return null;
   }
+}
+
+/** Cap on re-reads while waiting for the filtered list to stop changing. */
+const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
+
+/**
+ * Re-reads the filtered list until two consecutive reads carry identical
+ * ordered option text, so the committer never picks from a list that is still
+ * re-rendering. The last read is returned because each read re-marks the live
+ * nodes; an earlier read's marks may point at detached elements. Bounded: after
+ * the cap the latest read is returned as-is.
+ */
+async function readStablePromptOptions<T extends { options?: { text: string }[] }>(
+  page: Page,
+  target: FrameTarget,
+  enumerateOptionsExpr: string,
+  initial: T
+): Promise<T> {
+  const key = (r: T): string => JSON.stringify((r?.options ?? []).map((o) => o.text));
+  let current = initial;
+  for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+    const next = (await target.evaluate(enumerateOptionsExpr)) as T;
+    const stable = key(next) === key(current);
+    current = next;
+    if (stable) return current;
+  }
+  logger.info("prompt-selector primitive: filtered list still changing after stable-read cap");
+  return current;
 }
 
 /** Cap on trusted Enter submits for a search-on-submit prompt selector. */
