@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { FrameTarget } from "@/scraper/frame-target";
 import {
   CENTRE_AND_HIT_TEST_FN,
-  centreSelectorForClick,
   type CentredHitTestResult,
+  centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
