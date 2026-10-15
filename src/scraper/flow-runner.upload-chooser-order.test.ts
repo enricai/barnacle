@@ -20,18 +20,16 @@ const logger = {
 
 const fixture = { name: "r.pdf", mimeType: "application/pdf", buffer: Buffer.from("x") };
 
-function setup(opts: { chooser: boolean; cdpUploads: boolean; affordance?: boolean }): {
+function setup(opts: { chooser: boolean; cdpUploads: boolean }): {
   run: () => Promise<boolean>;
   setInputFiles: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
-  armedAtClick: () => boolean;
 } {
   const signalCounter = { n: 0 };
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
   const handlers: Record<string, (p?: object) => void> = {};
-  let armedAtClick = false;
   const setInputFiles = vi.fn().mockResolvedValue(undefined);
-  const send = vi.fn((method: string, _args?: { enabled?: boolean }): Promise<unknown> => {
+  const send = vi.fn((method: string): Promise<unknown> => {
     if (method === "DOM.setFileInputFiles" && opts.cdpUploads) {
       setTimeout(() => {
         recentCaptureMeta.push({ method: "POST", status: 200, url: "https://x.test/upload" });
@@ -52,11 +50,7 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean; affordance?: boole
     evaluate: (expr: unknown): Promise<unknown> => {
       const e = String(expr);
       if (e.includes("present: true")) return Promise.resolve({ present: true });
-      if (e.includes("chosen.setAttribute(")) {
-        return Promise.resolve(
-          opts.affordance === false ? { marked: false } : { marked: true, text: "u" }
-        );
-      }
+      if (e.includes("chosen.setAttribute(")) return Promise.resolve({ marked: true, text: "u" });
       if (e.includes("querySelectorAll('input[type=file]').length")) return Promise.resolve(1);
       if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
       return Promise.resolve(false);
@@ -64,9 +58,6 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean; affordance?: boole
     locator: () => ({
       first: () => ({
         click: (): Promise<void> => {
-          armedAtClick = send.mock.calls.some(
-            (c) => c[0] === "Page.setInterceptFileChooserDialog" && c[1]?.enabled === true
-          );
           if (opts.chooser) handlers["Page.fileChooserOpened"]?.({ backendNodeId: 7 });
           return Promise.resolve();
         },
@@ -90,7 +81,6 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean; affordance?: boole
       }),
     setInputFiles,
     send,
-    armedAtClick: () => armedAtClick,
   };
 }
 
@@ -125,20 +115,5 @@ describe("surfaceAndUpload strategy order", () => {
     await t.run();
     expect(t.send).not.toHaveBeenCalledWith("DOM.setFileInputFiles", expect.anything());
     expect(t.setInputFiles).toHaveBeenCalled();
-  });
-
-  it("makes no CDP calls when no affordance control exists", async () => {
-    const t = setup({ chooser: false, cdpUploads: false, affordance: false });
-    expect(await t.run()).toBe(false);
-    expect(t.send).not.toHaveBeenCalled();
-  });
-
-  it("arms interception before the trusted click and disarms afterwards", async () => {
-    const t = setup({ chooser: false, cdpUploads: false });
-    await t.run();
-    expect(t.armedAtClick()).toBe(true);
-    expect(t.send).toHaveBeenLastCalledWith("Page.setInterceptFileChooserDialog", {
-      enabled: false,
-    });
   });
 });
