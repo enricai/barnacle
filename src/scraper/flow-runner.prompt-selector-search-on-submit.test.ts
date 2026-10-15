@@ -1,0 +1,161 @@
+import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
+import type { Logger } from "@/types/logging";
+
+vi.mock("@/lib/llm/judges/select-option", () => ({
+  judgeSelectOptionWithLLM: vi.fn(),
+}));
+
+/**
+ * A typeahead that renders only a "No Items." placeholder after the filter is
+ * typed and loads real options on a trusted Enter keyDown. The primitive must
+ * send that Enter, then commit the requested option from the loaded list.
+ */
+
+const testLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Logger;
+
+const SEARCH_ON_SUBMIT_HTML = `
+<div data-automation-id="residencePage">
+  <div role="group" aria-labelledby="residence-section">
+    <span id="residence-section">Residence</span>
+    <div data-automation-id="formField-country">
+      <label for="country--country"><span>Country of residence</span></label>
+      <div id="country-widget" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+        <div data-automation-id="multiselectInputContainer">
+          <input id="country--country" data-uxi-widget-type="selectinput" type="text"
+                 placeholder="Search" aria-required="true" aria-invalid="true" value="" />
+        </div>
+        <div data-automation-id="promptSelectionLabel"></div>
+        <div aria-live="polite" data-automation-id="promptAriaInstruction">0 items selected</div>
+      </div>
+    </div>
+  </div>
+</div>`;
+
+const OPTIONS = ["Norway", "Sweden", "Denmark"];
+
+function baseParams(page: Page, stagehandAct: ReturnType<typeof vi.fn>, step: string) {
+  const stagehand = {
+    act: stagehandAct,
+    observe: vi.fn().mockResolvedValue([]),
+  } as unknown as Stagehand;
+  return {
+    stagehand,
+    page,
+    step,
+    optional: false,
+    upload: false,
+    submitStep: false,
+    stepIndex: 3,
+    phase: "apply",
+    signalCounter: { n: 0 },
+    recentCaptures: [],
+    recentCaptureMeta: [],
+    anthropic: null,
+    rephraseModel: null,
+    logger: testLogger,
+    captureFn: vi.fn().mockResolvedValue(undefined),
+    uploadFixture: null,
+    isFinalStep: false,
+    submitEndpointPattern: null,
+    submittedStateSelectors: [],
+    requireSubmitEndpointMatch: false,
+    advanceTransitionBodyPattern: null,
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    ownBackendHostnames: [],
+    knownErrorClassPrefixes: [],
+    wizardExitButtonLabels: [],
+  };
+}
+
+function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number {
+  return cdpEvents.filter((e) => {
+    const p = e.params as { type?: string; key?: string } | undefined;
+    return e.method === "Input.dispatchKeyEvent" && p?.type === "keyDown" && p.key === "Enter";
+  }).length;
+}
+
+describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends Enter when the post-fill list is only a placeholder, then commits the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": { options: OPTIONS, searchOnSubmit: true },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    expect(committed).toBe("Sweden");
+  });
+
+  it("still sends Enter when the list shows non-matching chips, then commits the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": { options: OPTIONS, searchOnSubmit: true },
+      },
+    });
+    const originalFill = (page as { locator: (s: string) => { first: () => unknown } }).locator;
+    const pageWithChips = page as { locator: typeof originalFill };
+    pageWithChips.locator = (selector: string) => {
+      const loc = originalFill(selector) as { first: () => { fill?: (v: string) => Promise<void> } };
+      const first = loc.first();
+      const fill = first.fill?.bind(first);
+      if (!fill) return loc;
+      first.fill = async (value: string): Promise<void> => {
+        await fill(value);
+        const list = window.document.querySelector("[data-test-popup-for] [role='listbox']");
+        const chip = window.document.createElement("li");
+        chip.setAttribute("role", "option");
+        chip.textContent = "Finland";
+        list?.appendChild(chip);
+      };
+      return { ...loc, first: () => first };
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    expect(committed).toBe("Sweden");
+  });
+});
