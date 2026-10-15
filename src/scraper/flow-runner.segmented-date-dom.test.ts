@@ -134,3 +134,44 @@ describe("segmented date hidden group beside visible group", () => {
     }
   );
 });
+
+describe("segmented date unquoted and lone targets", () => {
+  const spins = `<input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" />`;
+  const group = (title: string, label: string, helper = ""): string =>
+    `<section><h3>${title}</h3>${helper}<div role="group" aria-label="${label}">${spins}</div></section>`;
+
+  it("resolves unquoted field wording by the group's own label", () => {
+    const groups = enumerate(group("Work Experience 1", "From") + group("Work Experience 1", "To"));
+    expect(
+      resolveSegmentedDateGroup("type '012020' into the Work Experience 1 From date", groups)
+    ).toBe(0);
+    expect(resolveSegmentedDateGroup("Enter 122024 as the Work Experience 1 To date", groups)).toBe(
+      1
+    );
+  });
+
+  it("fills the only group when the step names no field", () => {
+    const groups = enumerate(group("Dates", "Period"));
+    expect(resolveSegmentedDateGroup("type '012020'", groups)).toBe(0);
+  });
+
+  it("never lands a To value in the visible From group when To is not rendered", () => {
+    const groups = enumerate(
+      group("Work Experience 1", "From") + `<div hidden>${group("Work Experience 1", "To")}</div>`
+    );
+    expect(
+      resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", groups)
+    ).toBeNull();
+    expect(
+      resolveSegmentedDateGroup("type '122024' into the Work Experience 1 To date", groups)
+    ).toBeNull();
+  });
+
+  it("ignores prose helper text mentioning from or to", () => {
+    const helper = "<p>Enter dates from your first day to your last day</p>";
+    const groups = enumerate(group("Work Experience 1", "From", helper));
+    expect(
+      resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", groups)
+    ).toBeNull();
+  });
+});

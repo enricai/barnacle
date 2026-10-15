@@ -6006,6 +6006,17 @@ const SEGMENTED_DATE_VALUE_RE = /^[\d/.\s-]+$/;
 const SEGMENTED_DATE_MIN_DIGITS = 4;
 const SEGMENTED_DATE_MAX_DIGITS = 8;
 const SEGMENTED_DATE_KEY_DELAY_MS = 50;
+const SEGMENTED_DATE_FIELD_WORDS = new Set([
+  "from",
+  "to",
+  "start",
+  "end",
+  "since",
+  "until",
+  "through",
+  "begin",
+  "finish",
+]);
 const SEGMENTED_DATE_STOPWORDS = new Set([
   "a",
   "an",
@@ -6101,22 +6112,35 @@ export function resolveSegmentedDateGroup(
 ): number | null {
   const value = parseSegmentedDateValue(instruction);
   if (!value) return null;
-  const phrases = findQuotedSpans(instruction)
-    .map((s) => segmentedDateTokens(s.text.trim()).join(" "))
-    .filter((p) => p && p !== segmentedDateTokens(value.valueSpan).join(" "));
-  if (phrases.length === 0) return null;
-  const stepTokens = new Set(segmentedDateTokens(instruction));
+  const valueTokens = segmentedDateTokens(value.valueSpan).join(" ");
+  const quoted = findQuotedSpans(instruction)
+    .map((s) => segmentedDateTokens(s.text.trim()))
+    .filter((t) => t.length > 0 && t.join(" ") !== valueTokens);
+  const stepTokens = segmentedDateTokens(
+    instruction.replace(value.valueSpan, " barnaclevalue ")
+  ).filter((t, i, all) => !(t === "to" && all[i + 1] === "barnaclevalue"));
+  const targets = quoted.length > 0 ? quoted : [stepTokens];
+  const contains = (hay: readonly string[], needle: readonly string[]): boolean => {
+    for (let i = 0; i + needle.length <= hay.length; i++) {
+      if (needle.every((t, j) => hay[i + j] === t)) return true;
+    }
+    return false;
+  };
+  const compatible = (group: SegmentedDateGroup): boolean =>
+    group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
+    value.digits.length;
+  const stepSet = new Set(stepTokens);
   let best = -1;
   let bestScore = -1;
   let tied = false;
   groups.forEach((group, index) => {
-    const widths = group.segmentMaxes.map((max) => String(max).length);
-    if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
-    const own = ` ${segmentedDateTokens(group.label ?? "").join(" ")} `;
-    if (!phrases.some((p) => own.includes(` ${p} `))) return;
+    if (!compatible(group)) return;
+    const own = segmentedDateTokens(group.label ?? group.context);
+    if (own.length === 0) return;
+    if (!targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))) return;
     const sectionTokens = new Set(segmentedDateTokens(group.section ?? ""));
     const score = [...sectionTokens].filter(
-      (t) => stepTokens.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
+      (t) => stepSet.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
     ).length;
     if (score > bestScore) {
       best = index;
@@ -6126,7 +6150,12 @@ export function resolveSegmentedDateGroup(
       tied = true;
     }
   });
-  return best < 0 || tied ? null : best;
+  if (best >= 0) return tied ? null : best;
+  // A step that names no field at all can only mean the one date widget on the
+  // page; a named field that matched no label must never fall back to it.
+  if (quoted.length > 0 || stepTokens.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t))) return null;
+  const only = groups.flatMap((g, i) => (compatible(g) && !g.nested ? [i] : []));
+  return only.length === 1 ? (only[0] ?? null) : null;
 }
 
 const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
