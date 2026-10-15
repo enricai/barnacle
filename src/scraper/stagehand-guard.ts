@@ -50,7 +50,8 @@ import type {
 } from "@browserbasehq/stagehand";
 import pRetry from "p-retry";
 import { z } from "zod/v4";
-
+import { toErrorMessage } from "@/lib/errors";
+import { getLogger } from "@/lib/logging";
 import {
   detokenize,
   redactPii,
@@ -67,8 +68,14 @@ import {
   CALL_TYPE_STAGEHAND_EXTRACT,
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
-import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
+import {
+  buildHopSelector,
+  type FrameTarget,
+  mainFrameTarget,
+  resolveFrameTarget,
+} from "@/scraper/frame-target";
 import { isTransientProviderError } from "@/scraper/transient-provider-error";
+import { centreSelectorForClick } from "@/scraper/trusted-click";
 import { withWatchdog } from "@/scraper/watchdog";
 import type { SensitiveVariables } from "@/types/pii-redaction";
 
@@ -88,6 +95,8 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
  * `guardedObserve` from this module, so importing back would cycle.
  */
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
+
+const logger = getLogger({ name: "scraper/stagehand-guard" });
 
 const TRANSIENT_RETRIES = 2;
 const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
@@ -250,6 +259,96 @@ function frameScopedOptions<T extends { selector?: string }>(
 }
 
 /**
+ * Resolves a string act instruction to the Action Stagehand would click so it
+ * can be centred first. Scoped to the step's frame the same way
+ * `guardedObserve` is, so an in-frame control is not resolved against the top
+ * document. Resolution is best-effort: when `observe` is unavailable, throws,
+ * or finds nothing, Stagehand's own string `act` resolves internally exactly
+ * as before.
+ */
+async function resolveClickAction(
+  stagehand: Stagehand,
+  instruction: string,
+  options: ActOptions | undefined,
+  frameTarget: FrameTarget | undefined
+): Promise<Action | undefined> {
+  if (typeof stagehand.observe !== "function") return undefined;
+  const observeOptions = frameScopedOptions<ObserveOptions>(
+    options?.timeout ? { timeout: options.timeout } : {},
+    frameTarget
+  );
+  const observed = await withWatchdog(() => stagehand.observe(instruction, observeOptions), {
+    timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
+    label: "stagehand-observe",
+  });
+  return observed[0];
+}
+
+/**
+ * Stagehand's `act` clicks the content-box centre after only a
+ * `scrollIntoViewIfNeeded`, so a sticky overlay swallows the click. Centre +
+ * hit-test the click target first so Stagehand's own scroll is a no-op. String
+ * instructions are resolved via `observe` for the pre-centring only and still
+ * reach `act` as the original string, so downstream method/argument handling
+ * is unchanged. Frame-hop (`>>`) selectors are centred in the child frame they
+ * resolve to. Best-effort by design: a target that cannot be resolved or
+ * centred is logged and left to Stagehand's own delivery, because a click that
+ * lands on an overlay is caught as a phantom by the healing ladder and retried
+ * through the centred trusted-click path, whereas failing here would turn an
+ * act that would have run into a hard attempt failure. Non-click actions are
+ * skipped since there is no click point to clear.
+ */
+async function preCentreClickTarget(
+  stagehand: Stagehand,
+  input: string | Action,
+  options: ActOptions | undefined,
+  frameTarget: FrameTarget | undefined
+): Promise<void> {
+  try {
+    const page =
+      typeof stagehand.context?.activePage === "function"
+        ? stagehand.context.activePage()
+        : undefined;
+    const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
+    if (!target) return;
+    const action =
+      typeof input === "string"
+        ? await resolveClickAction(stagehand, input, options, frameTarget)
+        : input;
+    if (action?.method !== "click") return;
+    await centreAction(page, target, action);
+  } catch (err) {
+    logger.warn(`pre-centring skipped: ${toErrorMessage(err)}`);
+  }
+}
+
+/**
+ * Centres and hit-tests an Action's click target, resolving a `>>` frame hop
+ * to the child frame the tail selector lives in.
+ */
+async function centreAction(
+  page: ReturnType<NonNullable<Stagehand["context"]>["activePage"]> | undefined,
+  target: FrameTarget,
+  action: Action
+): Promise<void> {
+  const hopAt = action.selector.lastIndexOf(">>");
+  if (hopAt === -1) {
+    await centreSelectorForClick(target, action.selector, { label: action.selector });
+    return;
+  }
+  if (!page) {
+    throw new Error(`no active page to resolve frame hop for ${action.selector}`);
+  }
+  const hopTarget = await resolveFrameTarget(page, action.selector.slice(0, hopAt).trim());
+  if (hopTarget.declaredFrameSelector) {
+    throw new Error(`frame ${hopTarget.declaredFrameSelector} not attached; cannot centre click`);
+  }
+  await centreSelectorForClick(hopTarget, action.selector.slice(hopAt + 2).trim(), {
+    label: action.selector,
+  });
+}
+
+/**
  * Schema-guarded wrapper around Stagehand's `act`. Same signature as the
  * underlying call: accepts either an instruction string or a structured
  * `Action` (from a prior `observe`). On the happy path, returns Stagehand's
@@ -261,8 +360,9 @@ function frameScopedOptions<T extends { selector?: string }>(
  * receives the same `timeout` as before, but a call that ignores it and hangs
  * now fails the attempt instead of blocking the step forever.
  *
- * Accepts the same trailing `frameTarget` param as `guardedObserve`/
- * `guardedExtract` for signature symmetry, but does not forward it into
+ * Click targets are centred and hit-tested before Stagehand acts (see
+ * `preCentreClickTarget`); a given `frameTarget` scopes that pass. The
+ * trailing `frameTarget` param is not forwarded into
  * `ActOptions` — `ActOptions` has no `selector` field, and its `page`
  * override only accepts a full Playwright/Puppeteer/Patchright/understudy
  * `Page`, not the `Frame` handle `FrameTarget.frame` exposes (the
@@ -278,7 +378,7 @@ export async function guardedAct(
   input: string | Action,
   options?: ActOptions,
   captureFn?: StagehandCaptureFn,
-  _frameTarget?: FrameTarget
+  frameTarget?: FrameTarget
 ): Promise<ActResult> {
   const callId = randomUUID();
   // Request values travel as Stagehand `variables`, substituted only when
@@ -291,6 +391,7 @@ export async function guardedAct(
   const userContent = actInstructionOf(sendInput);
   const t0 = performance.now();
   try {
+    await preCentreClickTarget(stagehand, sendInput, sendOptions, frameTarget);
     // Stagehand's `act` has two overloads (string and Action) that share the
     // same runtime implementation (dispatch is via `isObserveResult` inside
     // Stagehand). The two branches LOOK identical but TS can't resolve the

@@ -49,6 +49,7 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean }): {
     frame: { session },
     evaluate: (expr: unknown): Promise<unknown> => {
       const e = String(expr);
+      if (e.includes("scrollIntoView")) return Promise.resolve({ state: "hit" });
       if (e.includes("present: true")) return Promise.resolve({ present: true });
       if (e.includes("chosen.setAttribute(")) return Promise.resolve({ marked: true, text: "u" });
       if (e.includes("querySelectorAll('input[type=file]').length")) return Promise.resolve(1);
@@ -56,13 +57,11 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean }): {
       return Promise.resolve(false);
     },
     locator: () => ({
-      first: () => ({
-        click: (): Promise<void> => {
-          if (opts.chooser) handlers["Page.fileChooserOpened"]?.({ backendNodeId: 7 });
-          return Promise.resolve();
-        },
-        setInputFiles,
-      }),
+      click: (): Promise<void> => {
+        if (opts.chooser) handlers["Page.fileChooserOpened"]?.({ backendNodeId: 7 });
+        return Promise.resolve();
+      },
+      first: () => ({ setInputFiles }),
     }),
     url: () => Promise.resolve("https://x.example.com"),
     title: () => Promise.resolve("x"),

@@ -6,6 +6,7 @@ import {
   centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
+  firstMatchClickable,
 } from "@/scraper/trusted-click";
 
 function fakeTarget(results: CentredHitTestResult[], order: string[]): FrameTarget {
@@ -102,5 +103,18 @@ describe("centreSelectorForClick", () => {
       /occluded by header#sticky after 2 attempts/
     );
     expect(order).toEqual(["evaluate", "evaluate"]);
+  });
+});
+
+describe("firstMatchClickable", () => {
+  it("clicks a self-clicking locator directly", () => {
+    const locator = { click: vi.fn(), first: vi.fn() };
+    expect(firstMatchClickable(locator as never)).toBe(locator);
+    expect(locator.first).not.toHaveBeenCalled();
+  });
+
+  it("narrows a first()-only locator to its first match", () => {
+    const first = { click: vi.fn() };
+    expect(firstMatchClickable({ first: () => first } as never)).toBe(first);
   });
 });

@@ -715,3 +715,83 @@ describe("transient provider retry", () => {
     expect(bad).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("guardedAct pre-centring", () => {
+  const ACT_OK = { success: true, message: "ok", actionDescription: "d", actions: [] };
+
+  function fakeClickStagehand(actions: Action[]): {
+    sh: Stagehand;
+    order: string[];
+  } {
+    const order: string[] = [];
+    const page = {
+      evaluate: vi.fn(async () => {
+        order.push("centre");
+        return { state: "hit" };
+      }),
+      locator: vi.fn(),
+      url: () => "",
+      title: async () => "",
+    };
+    const sh = {
+      context: { activePage: () => page },
+      observe: vi.fn().mockResolvedValue(actions),
+      act: vi.fn(async () => {
+        order.push("act");
+        return ACT_OK;
+      }),
+    } as unknown as Stagehand;
+    return { sh, order };
+  }
+
+  it("centres a click Action before stagehand.act", async () => {
+    const action: Action = { selector: "xpath=//button", description: "b", method: "click" };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
+  it("resolves a string instruction via observe to centre it, then acts on the original string", async () => {
+    const action: Action = { selector: "#go", description: "go", method: "click" };
+    const { sh, order } = fakeClickStagehand([action]);
+    await guardedAct(sh, "click go");
+    expect(order).toEqual(["centre", "act"]);
+    expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe("click go");
+  });
+
+  it("scopes the string-instruction resolution to the step's frame", async () => {
+    const { sh } = fakeClickStagehand([]);
+    const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
+    await guardedAct(sh, "click go", { timeout: 5000 }, undefined, frameTarget);
+    expect(sh.observe).toHaveBeenCalledWith("click go", {
+      timeout: 5000,
+      selector: "iframe#apply_frame >> *",
+    });
+  });
+
+  it("still acts when the click point stays occluded after centring", async () => {
+    const action: Action = { selector: "#go", description: "go", method: "click" };
+    const { sh } = fakeClickStagehand([action]);
+    const frameTarget = fakeMainFrameTarget();
+    vi.mocked(frameTarget.evaluate).mockResolvedValue({ state: "occluded", occluder: "div#bar" });
+    await guardedAct(sh, "click go", undefined, undefined, frameTarget);
+    expect(sh.act).toHaveBeenCalledWith("click go", undefined);
+  });
+
+  it("acts without centring when the stagehand context exposes no active page", async () => {
+    const sh = {
+      context: {},
+      observe: vi.fn().mockResolvedValue([]),
+      act: vi.fn().mockResolvedValue(ACT_OK),
+    } as unknown as Stagehand;
+    await guardedAct(sh, "click go");
+    expect(sh.act).toHaveBeenCalledWith("click go", undefined);
+  });
+
+  it("does not centre a non-click Action", async () => {
+    const action: Action = { selector: "#i", description: "f", method: "fill", arguments: ["x"] };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["act"]);
+  });
+});

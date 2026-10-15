@@ -74,10 +74,27 @@ export const CENTRE_AND_HIT_TEST_FN = `function () {
 }`;
 
 /**
- * Centre + hit-test loop without the click, for callers whose click is issued
- * later by Stagehand itself: leaves the target centred and verified
- * unobstructed so that click lands on the intended control. Retries re-centre
- * because a lazy-loaded layout shift or a sticky bar can move between passes.
+ * Thrown by {@link centreAndHitTest} when no pass lands on the target. `state`
+ * lets callers tell an occluder (never click) from a target the evaluating
+ * document cannot see (Stagehand may still resolve it across a frame or shadow
+ * boundary).
+ */
+export class CentredClickError extends Error {
+  constructor(
+    message: string,
+    readonly state: "occluded" | "missing"
+  ) {
+    super(message);
+    this.name = "CentredClickError";
+  }
+}
+
+/**
+ * Centre + hit-test until the click point lands on the target, without
+ * clicking. Lets callers whose click is delivered elsewhere (e.g. a Stagehand
+ * `Locator.click()` that re-scrolls and clicks the content-box centre) still
+ * guarantee a clear click point first. Retries re-centre because a lazy-loaded
+ * layout shift or a sticky bar can move between passes.
  *
  * @throws when the target is missing or still occluded after all attempts.
  */
@@ -89,19 +106,18 @@ export async function centreAndHitTest(
   const label = opts.label ?? "target";
   let last: CentredHitTestResult = { state: "missing" };
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    last = await evaluateOnElement(CENTRE_AND_HIT_TEST_FN);
-    if (typeof last?.state !== "string") {
-      throw new TypeError(`hit-test probe for ${label} returned no state`);
-    }
+    const result = await evaluateOnElement(CENTRE_AND_HIT_TEST_FN);
+    last = result?.state === "hit" || result?.state === "occluded" ? result : { state: "missing" };
     if (last.state === "hit") return;
     logger.warn(
       `click point for ${label} not on target (${last.state}${last.occluder ? `, covered by ${last.occluder}` : ""}), attempt: ${attempt}/${attempts}`
     );
   }
-  throw new Error(
+  throw new CentredClickError(
     last.state === "missing"
       ? `centred click: ${label} is not in the document`
-      : `centred click: ${label} is occluded by ${last.occluder ?? "another element"} after ${attempts} attempts`
+      : `centred click: ${label} is occluded by ${last.occluder ?? "another element"} after ${attempts} attempts`,
+    last.state === "missing" ? "missing" : "occluded"
   );
 }
 
@@ -139,6 +155,16 @@ function buildSelectorExpression(selector: string): string {
 }
 
 /**
+ * Resolves the handle a trusted click is delivered on. A locator that clicks
+ * itself is used directly; one that only exposes `first()` (the shape every
+ * trusted click used before the centring helper existed) is narrowed to its
+ * first match.
+ */
+export function firstMatchClickable(locator: ReturnType<FrameTarget["locator"]>): TrustedClickable {
+  return typeof locator.click === "function" ? locator : locator.first();
+}
+
+/**
  * Trusted-clicks `selector` inside a main-frame or child-frame `FrameTarget`
  * after centring it and confirming the click point hits it.
  */
@@ -149,7 +175,7 @@ export async function clickCentredTrusted(
 ): Promise<void> {
   const expression = buildSelectorExpression(selector);
   await clickAfterCentredHitTest(
-    target.locator(selector),
+    firstMatchClickable(target.locator(selector)),
     () => target.evaluate<CentredHitTestResult>(expression),
     { label: selector, ...opts }
   );

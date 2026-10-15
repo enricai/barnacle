@@ -131,6 +131,7 @@ import {
   centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
+  firstMatchClickable,
 } from "@/scraper/trusted-click";
 import {
   FIND_DROP_ZONE_EXPR,
@@ -5710,7 +5711,7 @@ export async function clickUploadAffordance(
     }
     // A trusted CDP click is required: an in-page el.click() never opens a file chooser.
     try {
-      await target.locator(markerSelector).first().click();
+      await clickCentredTrusted(target, markerSelector, { label: "upload affordance" });
     } finally {
       await target
         .evaluate(
@@ -12378,7 +12379,13 @@ export async function executeStepWithHealing(params: {
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
         await preCentreNaturalLanguageClick(step);
-        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
+        const result = await guardedAct(
+          stagehand,
+          step,
+          { timeout: STEP_WATCHDOG_MS },
+          captureFn,
+          frameTarget ?? mainFrameTarget(page)
+        );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
@@ -12673,7 +12680,7 @@ export async function executeStepWithHealing(params: {
               try {
                 const markerSelector = `[${markerAttr}="${markerValue}"]`;
                 await clickAfterCentredHitTest(
-                  topWindowTarget.locator(markerSelector),
+                  firstMatchClickable(topWindowTarget.locator(markerSelector)),
                   () =>
                     topWindowTarget.evaluate<CentredHitTestResult>(
                       buildDeepMarkerCentreExpr(markerSelector)
@@ -13008,7 +13015,8 @@ export async function executeStepWithHealing(params: {
             stagehand,
             overriddenTarget,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            frameTarget ?? mainFrameTarget(page)
           );
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
@@ -13343,7 +13351,8 @@ export async function executeStepWithHealing(params: {
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              frameTarget ?? mainFrameTarget(page)
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;

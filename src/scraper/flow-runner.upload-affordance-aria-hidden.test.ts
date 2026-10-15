@@ -114,17 +114,16 @@ describe("upload affordance aria-hidden decoys", () => {
       evaluate: (expr: unknown): Promise<unknown> => {
         const e = String(expr);
         calls.push(e);
+        if (e.includes("scrollIntoView")) return Promise.resolve({ state: "hit" });
         return Promise.resolve(
           e.includes("removeAttribute") ? undefined : { marked: true, text: "upload" }
         );
       },
       locator: (sel: string) => ({
-        first: () => ({
-          click: () => {
-            calls.push(`click ${sel}`);
-            return click();
-          },
-        }),
+        click: () => {
+          calls.push(`click ${sel}`);
+          return click();
+        },
       }),
     } as unknown as FrameTarget;
     const page = { waitForTimeout: () => Promise.resolve() } as unknown as Page;
