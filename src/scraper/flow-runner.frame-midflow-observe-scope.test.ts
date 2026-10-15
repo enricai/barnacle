@@ -63,6 +63,7 @@ function makeFakeChildFrame(getChildUrl: () => string) {
     evaluate: async (expr: unknown) => {
       if (expr === "location.href") return getChildUrl();
       if (expr === "document.readyState") return "complete";
+      if (String(expr).includes("scrollIntoView")) return { state: "hit" };
       return null;
     },
     locator: () => ({
@@ -92,6 +93,7 @@ function makeMutableFakePage(
     url: getTopUrl,
     title: async () => "the top-window site Careers",
     evaluate: async (expr: unknown) => {
+      if (String(expr).includes("scrollIntoView")) return { state: "hit" };
       const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
       const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
       if (selector !== FRAME_SELECTOR || !attached) return { matched: false, src: null };
