@@ -1,7 +1,12 @@
 import type { Page } from "@browserbasehq/stagehand";
+import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isUploadAffordanceLabel, surfaceAndUpload } from "@/scraper/flow-runner";
+import {
+  isUploadAffordanceLabel,
+  simulateDragDropUpload,
+  surfaceAndUpload,
+} from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
 
@@ -90,4 +95,38 @@ describe("surfaceAndUpload with a lazily-mounted input behind a 'Select files' b
     expect(dom.inputMounted()).toBe(true);
     expect(setInputFiles).toHaveBeenCalledTimes(1);
   }, 30_000);
+});
+
+describe("simulateDragDropUpload with an attribute-identified drop zone", () => {
+  it("drops the fixture on a zone matched only by data-testid", async () => {
+    const window = new Window();
+    window.document.body.innerHTML = `<div data-testid="File-Drop-Area"></div>`;
+    const zone = window.document.querySelector("[data-testid]") as unknown as {
+      addEventListener: (n: string, f: () => void) => void;
+    };
+    const seen: string[] = [];
+    for (const n of ["dragenter", "dragover", "drop"]) zone.addEventListener(n, () => seen.push(n));
+    const globals = {
+      document: window.document,
+      File: window.File,
+      DataTransfer: window.DataTransfer,
+      DragEvent: window.DragEvent,
+    };
+    const target = {
+      evaluate: (expr: string): Promise<unknown> => {
+        const names = Object.keys(globals);
+        const fn = new Function(...names, `return ${expr};`);
+        return fn(...Object.values(globals));
+      },
+    } as unknown as FrameTarget;
+
+    const ok = await simulateDragDropUpload(
+      target,
+      { name: "r.pdf", mimeType: "application/pdf", buffer: Buffer.from("x") },
+      logger
+    );
+
+    expect(ok).toBe(true);
+    expect(seen).toEqual(["dragenter", "dragover", "drop"]);
+  });
 });
