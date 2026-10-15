@@ -175,6 +175,18 @@ export async function centreAndHitTest(
 }
 
 /**
+ * Hit test (centres the target first) for primitives that deliver their own trusted click:
+ * true only when `elementFromPoint` at the content-box centre is `sel`'s
+ * element or inside it, so a leftover popup over the field is detectable
+ * before the click is spent on it.
+ */
+export async function isClickPointUnobscured(target: FrameTarget, sel: string): Promise<boolean> {
+  const expression = buildSelectorExpression(sel);
+  const result = await target.evaluate<CentredHitTestResult>(expression).catch(() => null);
+  return result?.state === "hit";
+}
+
+/**
  * Core loop shared by every entry point: centre + hit-test until the point
  * lands on the target, then click exactly once.
  *

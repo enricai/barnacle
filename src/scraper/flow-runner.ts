@@ -9001,6 +9001,52 @@ async function sendTrustedEnter(page: Page): Promise<void> {
   await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
 }
 
+/** Dispatches a trusted Escape to the focused element via CDP, closing a popup left open. */
+async function sendTrustedEscape(page: Page): Promise<void> {
+  const key = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 };
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", ...key });
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+}
+
+/**
+ * Counts rendered listbox / activeListContainer popups other than the chip
+ * list; an emptied ("No Items.") popup still counts because it paints over
+ * neighbouring fields just the same.
+ */
+const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
+  const visible = (el) => {
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
+      const cs = getComputedStyle(n);
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
+    }
+    return true;
+  };
+  const sel = '[role="listbox"], [data-automation-id="activeListContainer"]';
+  return Array.from(document.querySelectorAll(sel)).filter(
+    (el) => !el.matches('[data-automation-id="selectedItemList"]') && !el.closest('[data-automation-id="selectedItemList"]') && visible(el)
+  ).length;
+})()`;
+
+/**
+ * Closes any popup still painted after a verified commit so it cannot
+ * intercept the next field's click. Best-effort: Escape failures are logged.
+ */
+async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const count = (await target.evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR).catch(() => 0)) as number;
+    if (!count) return;
+    logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
+    try {
+      await sendTrustedEscape(page);
+    } catch (err) {
+      logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
+      return;
+    }
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+  }
+}
+
 /**
  * Phase 3 of {@link tryPromptSelectorPrimitive}: given the popup's rendered
  * (possibly filtered) option list, match the requested option — deterministic
@@ -9249,14 +9295,16 @@ async function commitPromptOption(params: {
       }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
     })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
-    const readback = (await target
-      .evaluate(readbackExpr)
-      .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
-      ok: boolean;
-      id: string;
-      stillInvalid: boolean;
-      committed?: string;
-    };
+    type PromptReadback = { ok: boolean; id: string; stillInvalid: boolean; committed?: string };
+    const runReadback = async (): Promise<PromptReadback> =>
+      (await target
+        .evaluate(readbackExpr)
+        .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as PromptReadback;
+    let readback = await runReadback();
+    if (readback?.ok) {
+      await dismissLeftoverPromptPopups(page, target);
+      readback = await runReadback();
+    }
     if (!readback?.ok && readback?.committed) {
       logger.info(
         `prompt-selector primitive: committed "${readback.committed.slice(0, 40)}" instead of "${chosenOption.text.slice(0, 40)}" for ${optLabel}; falling through`
