@@ -481,3 +481,37 @@ describe("emitContractTs — forced browser-flow-only with a non-evidence inputB
     expect(source).not.toContain("context.baseUrl,");
   });
 });
+
+describe("emitContractTs — account-creation retry policy and execute() context", () => {
+  const base = {
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://api.example.com",
+    baseHeaders: {},
+    minTime: 100,
+    safeRps: 10,
+    responseBody: {},
+    gql: false,
+    gqlQuery: null,
+    endpointPath: "/apply",
+    auxFiles: [],
+    multiStepBody: undefined,
+    omitExecuteHttp: true,
+    isSubmissionFlow: true,
+    inputBody: { vendorKey: "x" },
+    payloadFieldNames: new Set(["FirstName"]),
+  };
+
+  it("emits maxAttempts: 1 with a why-comment only for account-creating flows", () => {
+    expect(emitContractTs({ ...base, createsAccount: true })).toMatch(
+      /\/\/ A retry would re-register[^\n]*\n\s+maxAttempts: 1,/
+    );
+    expect(emitContractTs(base)).not.toContain("maxAttempts");
+  });
+
+  it("declares _context and drops the hot-path comment when execute reads payload.ClickUrl", () => {
+    const source = emitContractTs(base);
+    expect(source).toMatch(/_context: SitePluginContext/);
+    expect(source).not.toContain("invoked only when hot path fails");
+  });
+});
