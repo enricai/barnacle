@@ -111,6 +111,7 @@ import {
   type FieldValueAtFailure,
   type HealingFlowStep,
   runHealingFlow,
+  UPLOAD_AFFORDANCE_RE,
 } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
 import {
@@ -5295,6 +5296,8 @@ describe("recon-browser/isUploadAffordanceLabel", () => {
       "Upload a Resume/CV",
       "Browse",
       "Select File",
+      "Select files",
+      "Select Files",
       "Choose File",
       "Select files",
       "Choose Files",
@@ -5307,6 +5310,14 @@ describe("recon-browser/isUploadAffordanceLabel", () => {
       "  UPLOAD  ",
       "Click here to upload a resume",
     ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(true);
+    }
+  });
+
+  it("in-page matcher built from UPLOAD_AFFORDANCE_RE.source accepts the same plural labels", () => {
+    const inPage = new RegExp(UPLOAD_AFFORDANCE_RE.source);
+    for (const label of ["select file", "select files", "choose files"]) {
+      expect(inPage.test(label)).toBe(true);
       expect(isUploadAffordanceLabel(label)).toBe(true);
     }
   });
