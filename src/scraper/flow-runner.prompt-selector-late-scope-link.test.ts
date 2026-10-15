@@ -100,6 +100,25 @@ describe("flow-runner/tryPromptSelectorPrimitive late scope link", () => {
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('selected "City 17"'));
   });
 
+  it("does not treat a stale document-scoped listbox as already open", async () => {
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: HTML,
+      popupByWidgetId: {
+        b: { options: CITIES, portaled: true, linkAfterOpen: true, linkDelayMs: 40 },
+      },
+    });
+
+    const result = await executeStepWithHealing(
+      buildParams(withRealWaits(page as never), target, "for 'Arrival city' select 'City 3'")
+    );
+
+    expect(result).toBe("completed");
+    expect(testLogger.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("already open with rendered options")
+    );
+    expect(window.document.getElementById("b")?.textContent).toBe("City 3");
+  });
+
   it("still commits from a never-linked document-scoped popup after the poll budget", async () => {
     const { page, target, window } = buildPromptWidgetHarness({
       html: HTML,
