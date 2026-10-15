@@ -132,6 +132,7 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
   firstMatchClickable,
+  isClickPointUnobscured,
 } from "@/scraper/trusted-click";
 import {
   FIND_DROP_ZONE_EXPR,
@@ -6357,9 +6358,11 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         // scrolling is best-effort; the key events only need the segment focused
       }
       try {
-        await clickCentredTrusted(target, selector, { label: "date segment" });
+        if (await isClickPointUnobscured(target, selector)) {
+          await clickCentredTrusted(target, selector, { label: "date segment" });
+        }
       } catch {
-        // click unavailable or occluded; focus below is what the key events need
+        // click unavailable; focus below is what the key events need
       }
       await target.evaluate(
         `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el && document.activeElement !== el) el.focus(); })()`
