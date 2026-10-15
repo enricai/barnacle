@@ -772,6 +772,31 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   return "";
 })`;
 /**
+ * Browser-side expression resolving ONE trigger-union hit to its widget
+ * container. A single widget often matches {@link PROMPT_TRIGGER_SELECTORS} more
+ * than once (e.g. an outer container AND its inner filter input both carry
+ * `data-uxi-widget-type`), so prefer a real interactive ancestor, else the
+ * OUTERMOST widget-kit container on the ancestor chain (so the inner input and
+ * its container collapse to the same node), else the element itself. Shared by
+ * widget enumeration and the option-scope ownership filter so both agree on what
+ * "a widget" is — including widgets that are already committed and so never
+ * stamped with the enumeration mark.
+ */
+const PROMPT_WIDGET_CONTAINER_EXPR = `((el) => {
+  const interactive = el.closest("button,[role='button'],[role='combobox']");
+  if (interactive) return interactive;
+  const kitSel = "[data-uxi-widget-type='selectinput'],[data-uxi-widget-type='multiselect'],[data-automation-id='multiSelectContainer']";
+  let container = el;
+  let node = el.closest(kitSel);
+  while (node) {
+    container = node;
+    const up = node.parentElement && node.parentElement.closest(kitSel);
+    if (!up || up === node) break;
+    node = up;
+  }
+  return container;
+})`;
+/**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
  * standard and most libraries (MUI/Radix/react-select) render the listbox in a
@@ -8234,6 +8259,7 @@ async function tryPromptSelectorPrimitive(params: {
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
+    const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
     const seen = new Set();
     const resolved = [];
     for (const el of triggers) {
@@ -8243,18 +8269,7 @@ async function tryPromptSelectorPrimitive(params: {
       // interactive ancestor, else the OUTERMOST widget-kit container on the
       // ancestor chain (so the inner input and its container collapse to the
       // same node), else the element itself.
-      const interactive = el.closest("button,[role='button'],[role='combobox']");
-      let container = interactive || el;
-      if (!interactive) {
-        const kitSel = "[data-uxi-widget-type='selectinput'],[data-uxi-widget-type='multiselect'],[data-automation-id='multiSelectContainer']";
-        let node = el.closest(kitSel);
-        while (node) {
-          container = node;
-          const up = node.parentElement && node.parentElement.closest(kitSel);
-          if (!up || up === node) break;
-          node = up;
-        }
-      }
+      const container = containerOf(el);
       if (seen.has(container)) continue;
       seen.add(container);
       resolved.push(container);
@@ -8369,7 +8384,7 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
 
-    const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
+    const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel, triggerSel) => {
       const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
       if (!w) return { optionsPresent: false };
@@ -8389,9 +8404,14 @@ async function tryPromptSelectorPrimitive(params: {
       const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
       // Under the document fallback, ownership is structural: anything inside a
       // different widget's container (one that neither contains nor is contained
-      // by this widget) is foreign — e.g. another widget's committed chips.
+      // by this widget) is foreign — e.g. another widget's committed chips or
+      // search input. Foreign widgets are resolved from the trigger union rather
+      // than the enumeration mark, because a COMMITTED sibling is never marked
+      // (only unfilled widgets are) yet its chips are the likeliest leak.
+      const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
       const foreignRoots = scope === document
-        ? Array.from(document.querySelectorAll("[" + widgetMarkAttr + "]")).filter((o) => o !== w && !o.contains(w) && !w.contains(o))
+        ? Array.from(new Set(Array.from(document.querySelectorAll(triggerSel)).map(containerOf)))
+            .filter((o) => o !== w && !o.contains(w) && !w.contains(o))
         : [];
       const isOwned = (el) => !foreignRoots.some((o) => o.contains(el));
       const all = Array.from(scope.querySelectorAll(optionSel)).filter(isOwned);
@@ -8399,7 +8419,9 @@ async function tryPromptSelectorPrimitive(params: {
       // keep only leaf-most option nodes with their own text so we don't double
       // count or address a wrapper.
       const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
-      const searchInput = scope === document ? w.querySelector(searchSel) : scope.querySelector(searchSel);
+      const searchInput = scope === document
+        ? (w.matches(searchSel) ? w : w.querySelector(searchSel))
+        : Array.from(scope.querySelectorAll(searchSel)).find(isOwned) || null;
       // Mark the scoped filter input so the Node-side fill addresses THIS
       // widget's input (Playwright's locator can't re-run the scope resolution).
       if (searchInput) searchInput.setAttribute(markAttr + "-search", "1");
@@ -8423,7 +8445,7 @@ async function tryPromptSelectorPrimitive(params: {
       // that resolved to THIS widget's own inline subtree or its own
       // aria-controls/aria-owns target counts.
       return { optionsPresent: true, searchable: !!searchInput, options, scopeIsDocument: scope === document };
-    })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
+    })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
 
     type EnumerateOptionsResult = {
       optionsPresent: boolean;
