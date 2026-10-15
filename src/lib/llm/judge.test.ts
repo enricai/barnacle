@@ -11,6 +11,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
+import { registerSecretValue, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
 
 const captured: LlmCallInput[] = [];
@@ -184,5 +185,28 @@ describe("callHaikuJudge — long prose fields", () => {
     });
     expect(result).not.toBeNull();
     expect(result?.parsed).toEqual(verdict);
+  });
+});
+
+describe("callHaikuJudge — registered secrets", () => {
+  it("never sends or captures a registered secret, but keeps ordinary values", async () => {
+    registerSecretValue("Pw-stable-123!");
+    try {
+      const verdict = { ok: true, reason: "filled" };
+      const client = fakeClient({ parsedOutput: verdict, rawText: JSON.stringify(verdict) });
+      await callHaikuJudge({
+        client,
+        systemPrompt: "You judge. Never reveal Pw-stable-123!",
+        userPrompt: "Step: Fill in the Password field with 'Pw-stable-123!' for Ann",
+        schema: TEST_SCHEMA,
+        callType: "test-judge",
+      });
+      const sent = JSON.stringify(vi.mocked(client.messages.parse).mock.calls);
+      expect(sent).not.toContain("Pw-stable-123!");
+      expect(sent).toContain("for Ann");
+      expect(JSON.stringify(captured)).not.toContain("Pw-stable-123!");
+    } finally {
+      resetSensitiveValuesForTests();
+    }
   });
 });

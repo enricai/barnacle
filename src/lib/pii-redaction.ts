@@ -23,6 +23,8 @@ import type { RedactionPolicy, SensitiveVariables, TokenizedText } from "@/types
 
 const MIN_WORD_LENGTH = 2;
 const MIN_LITERAL_LENGTH = 4;
+/** Registry key prefix for {@link registerSecretValue} entries. */
+const SECRET_KEY_PREFIX = "secret:";
 const MIN_DIGITS = 4;
 const DEFAULT_RELEASE_GRACE_MS = 10 * 60 * 1000;
 /** Upper bound on any registration — far beyond a run's task timeout, so a run that never releases (crash) still ages out. */
@@ -253,11 +255,30 @@ export function releaseSensitiveValues(
 export function registerSecretValue(value: string, ttlMs: number = MAX_REGISTRATION_TTL_MS): void {
   if (value.length < MIN_LITERAL_LENGTH) return;
   registry.set(
-    `secret:${value}`,
+    `${SECRET_KEY_PREFIX}${value}`,
     [{ ...literalMatcher(value, "Secret"), tokenScope: "anywhere" }],
     { ttl: ttlMs }
   );
   compiled = null;
+}
+
+/**
+ * Replaces only the registered secrets (see {@link registerSecretValue}) in
+ * `text` with `<Secret>`. For prompts that must keep the applicant's ordinary
+ * values — an LLM judge deciding whether "Ann" landed in First Name needs
+ * "Ann" — but must never carry a credential.
+ */
+export function redactSecrets(text: string): string {
+  if (registry.size === 0 || text.length === 0) return text;
+  let out = text;
+  for (const [key, matchers] of registry.entries()) {
+    if (!key.startsWith(SECRET_KEY_PREFIX)) continue;
+    for (const { pattern, label } of matchers) {
+      pattern.lastIndex = 0;
+      out = out.replace(pattern, `<${label}>`);
+    }
+  }
+  return out;
 }
 
 /**

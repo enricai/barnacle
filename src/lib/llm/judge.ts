@@ -33,6 +33,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { z } from "zod/v4";
 
 import { getLogger } from "@/lib/logging";
+import { redactSecrets } from "@/lib/pii-redaction";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -92,13 +93,15 @@ export async function callHaikuJudge<T extends z.ZodTypeAny>(
 ): Promise<HaikuJudgeResult<T> | null> {
   const {
     client,
-    systemPrompt,
-    userPrompt,
     schema,
     callType,
     maxTokens = DEFAULT_MAX_TOKENS,
     captureFn = captureLlmCall,
   } = params;
+  // A judge never needs a credential to rule on a step, and the prompt is also
+  // what telemetry captures — so registered secrets go no further than here.
+  const systemPrompt = redactSecrets(params.systemPrompt);
+  const userPrompt = redactSecrets(params.userPrompt);
 
   if (userPrompt.length > LARGE_PROMPT_WARN_CHARS) {
     logger.warn(
