@@ -96,25 +96,19 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
       },
     });
     const clickedTexts: string[] = [];
-    type Loc = { first: () => { click: () => Promise<void> } };
+    type Loc = { click: () => Promise<void> };
     const recording =
       (original: (s: string) => unknown) =>
       (selector: string): unknown => {
         const loc = original(selector) as Loc;
         return {
           ...loc,
-          first: () => {
-            const el = loc.first();
-            return {
-              ...el,
-              click: async (): Promise<void> => {
-                const node = window.document.querySelector(selector);
-                if (node?.getAttribute("role") === "option") {
-                  clickedTexts.push(node.textContent?.trim() ?? "");
-                }
-                await el.click();
-              },
-            };
+          click: async (): Promise<void> => {
+            const node = window.document.querySelector(selector);
+            if (node?.getAttribute("role") === "option") {
+              clickedTexts.push(node.textContent?.trim() ?? "");
+            }
+            await loc.click();
           },
         };
       };
