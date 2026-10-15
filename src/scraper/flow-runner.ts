@@ -8909,7 +8909,9 @@ function promptOptionsNameOption(
   if (want === "") return true;
   return (result?.options ?? []).some((o) => {
     const text = normPromptOptionText(o.text);
-    if (text === "" || PROMPT_PLACEHOLDER_RE.test(text)) return false;
+    if (text === "") return false;
+    if (text === want) return true;
+    if (PROMPT_PLACEHOLDER_RE.test(text)) return false;
     return text.includes(want) || want.includes(text);
   });
 }
