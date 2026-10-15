@@ -8407,7 +8407,7 @@ async function tryPromptSelectorPrimitive(params: {
       // is typed into — report the popup as present (with searchable=true) so the
       // caller types the filter first, rather than falling through as "no popup".
       if (opts.length === 0) {
-        return searchInput ? { optionsPresent: true, searchable: true, options: [] } : { optionsPresent: false };
+        return searchInput ? { optionsPresent: true, searchable: true, options: [], scopeIsDocument: scope === document } : { optionsPresent: false };
       }
       const options = [];
       for (let i = 0; i < opts.length; i++) {
