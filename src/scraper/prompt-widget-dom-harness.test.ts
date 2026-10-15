@@ -1,4 +1,4 @@
-import type { Document, Element } from "happy-dom";
+import type { Document, Element, Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
@@ -200,5 +200,53 @@ describe("prompt-widget-dom-harness: search-on-submit", () => {
     await p.waitForTimeout(100);
     expect(optionTexts(doc)).toEqual(["Parnu", "Parow"]);
     expect(Array.from(doc.querySelectorAll("[role='option']"))).toEqual(nodes);
+  });
+});
+
+describe("prompt-widget-dom-harness: unlinked-scope shapes", () => {
+  type Clicker = { locator: (s: string) => { first: () => { click: () => Promise<void> } } };
+  const triggerOf = (w: Window): Element | null => w.document.querySelector("#widget-a button");
+
+  it("portaled default links the trigger by aria-controls", async () => {
+    const { page, window } = buildPromptWidgetHarness({
+      html: WIDGET_HTML,
+      popupByWidgetId: { "widget-a": { options: ["Home"], portaled: true } },
+    });
+    await (page as Clicker).locator("#widget-a button").first().click();
+    expect(triggerOf(window)?.getAttribute("aria-controls")).toBe("portal-widget-a");
+  });
+
+  it("unlinkedPortal portals the popup with no aria-controls on the trigger", async () => {
+    const { page, window } = buildPromptWidgetHarness({
+      html: WIDGET_HTML,
+      popupByWidgetId: { "widget-a": { options: ["Home"], portaled: true, unlinkedPortal: true } },
+    });
+    await (page as Clicker).locator("#widget-a button").first().click();
+    expect(triggerOf(window)?.hasAttribute("aria-controls")).toBe(false);
+    const popup = window.document.querySelector('[data-test-popup-for="widget-a"]');
+    expect(popup?.parentElement).toBe(window.document.body);
+  });
+
+  it("linkAfterOpen sets aria-controls only after the open click returns", async () => {
+    const { page, window } = buildPromptWidgetHarness({
+      html: WIDGET_HTML,
+      popupByWidgetId: {
+        "widget-a": { options: ["Home"], portaled: true, linkAfterOpen: true, linkDelayMs: 20 },
+      },
+    });
+    await (page as Clicker).locator("#widget-a button").first().click();
+    expect(triggerOf(window)?.hasAttribute("aria-controls")).toBe(false);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(triggerOf(window)?.getAttribute("aria-controls")).toBe("portal-widget-a");
+  });
+
+  it("committedChip renders a selectedItemList chip inside the widget", async () => {
+    const { page, window } = buildPromptWidgetHarness({
+      html: WIDGET_HTML,
+      popupByWidgetId: { "widget-a": { options: ["Home"], committedChip: "Mobile" } },
+    });
+    await (page as Clicker).locator("#widget-a button").first().click();
+    const chip = window.document.querySelector("#widget-a [data-automation-id='selectedItemList']");
+    expect(chip?.textContent?.trim()).toBe("Mobile");
   });
 });

@@ -97,6 +97,25 @@ export interface PopupSpec {
    * modeling a list that re-renders N times while reusing its DOM nodes.
    */
   reuseRenders?: string[][];
+  /**
+   * With `portaled`, never link the trigger to the popup (no `aria-controls`/
+   * `aria-owns`) — models a popup portaled to `document.body` that scope
+   * resolution can only find by proximity/role, not by id-ref.
+   */
+  unlinkedPortal?: boolean;
+  /**
+   * With `portaled`, set the trigger's `aria-controls` only AFTER the open
+   * click has returned (on a timer), as libraries that wire it up post-mount
+   * do. A fresh read right after the click sees no link yet.
+   */
+  linkAfterOpen?: boolean;
+  /** Delay in ms before `linkAfterOpen` sets `aria-controls` (default 0). */
+  linkDelayMs?: number;
+  /**
+   * Text of a committed `selectedItemList` chip rendered inside the widget
+   * when it opens, modeling a sibling widget that already carries a value.
+   */
+  committedChip?: string;
 }
 
 /**
@@ -237,7 +256,17 @@ export function buildPromptWidgetHarness(params: {
       })
       .join("");
     wrap.innerHTML = `<ul role="listbox">${searchHtml}${optsHtml}</ul>`;
-    if (state.spec.portaled) {
+    if (state.spec.committedChip && !widgetEl.querySelector("[data-test-committed-chip]")) {
+      const chip = document.createElement("ul");
+      chip.setAttribute("data-automation-id", "selectedItemList");
+      chip.setAttribute("data-test-committed-chip", "");
+      chip.innerHTML = `<li data-automation-id="selectedItem">${state.spec.committedChip}</li>`;
+      widgetEl.appendChild(chip);
+    }
+    if (state.spec.portaled && state.spec.unlinkedPortal) {
+      wrap.id = `portal-${widgetEl.id}`;
+      document.body.appendChild(wrap);
+    } else if (state.spec.portaled) {
       // Portal to document.body and link via aria-controls (Radix/MUI/react-select).
       const popupId = `portal-${widgetEl.id}`;
       wrap.id = popupId;
@@ -251,6 +280,11 @@ export function buildPromptWidgetHarness(params: {
         decoy.setAttribute("role", "status");
         document.body.appendChild(decoy);
         trigger.setAttribute("aria-controls", `${decoyId} ${popupId}`);
+      } else if (state.spec.linkAfterOpen) {
+        setTimeout(
+          () => trigger.setAttribute("aria-controls", popupId),
+          state.spec.linkDelayMs ?? 0
+        );
       } else {
         trigger.setAttribute("aria-controls", popupId);
       }
