@@ -65,7 +65,7 @@ function buildHarness(params: { announce: Announce; commits: string; recycle?: b
     announce(params.commits);
   };
 
-const runExpr = (expr: string): unknown => {
+  const runExpr = (expr: string): unknown => {
     const fn = new window.Function("document", "window", "CSS", `return (${expr});`) as (
       d: unknown,
       w: unknown,
@@ -83,6 +83,7 @@ const runExpr = (expr: string): unknown => {
   };
 
   const locator = (selector: string) => ({
+    click: async (): Promise<void> => locator(selector).first().click(),
     count: async (): Promise<number> => {
       try {
         return document.querySelectorAll(selector).length;
@@ -112,7 +113,11 @@ const runExpr = (expr: string): unknown => {
     }),
   });
 
-  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
+  // happy-dom has no layout, so the trusted-click hit test is reported as a hit.
+  const evaluate = async (expr: unknown): Promise<unknown> =>
+    String(expr).includes('scrollIntoView({ block: "center"')
+      ? { state: "hit" }
+      : runExpr(String(expr));
 
   const page = {
     evaluate,
@@ -167,7 +172,6 @@ function baseParams(page: Page, stagehand: Stagehand, step: string, frameTarget:
   };
 }
 
-
 async function run(h: { page: unknown; target: FrameTarget }): Promise<{
   result: unknown;
   trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[];
@@ -208,9 +212,7 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
   it("rejects a wrong commit read from selectedItemList", async () => {
     const { trajectory } = await run(buildHarness({ announce: "chip", commits: "Beta" }));
     expect(trajectory).toEqual([]);
-    expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('instead of "Alpha"')
-    );
+    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('instead of "Alpha"'));
   });
 
   it("keeps the existing union when nothing is readable", async () => {
