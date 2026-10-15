@@ -9518,15 +9518,27 @@ export function matchFacetRecurrence(
   options: { allowDelimiterSuffix: boolean }
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  const elementKind = parseElementKind(text)?.kind;
+  const parsedElement = parseElementKind(text);
+  const elementKind = parsedElement?.kind;
+  // A kind no declared facet names (an identifier format such as
+  // `<slug>;filterId=urlFriendlyId`) cannot belong to another facet, so the
+  // kind gate only protects elements some facet claims; a whole-literal
+  // match there still binds the facet whose literal the element carries.
+  const kindUnclaimed =
+    elementKind !== undefined && !facets.some((candidate) => kindsMatch(candidate, elementKind));
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-      const readFromElement =
-        facet.keyedByKind === true && parseElementKind(text)?.literal === facet.value;
+      const readFromElement = facet.keyedByKind === true && parsedElement?.literal === facet.value;
+      const ownsUnclaimedKind =
+        kindUnclaimed &&
+        [facet.value, ...(facet.literals ?? [])].some(
+          (known) => known.toLowerCase() === parsedElement?.literal.toLowerCase()
+        );
       if (
         elementKind !== undefined &&
         isKindKeyed(facet) &&
         !readFromElement &&
+        !ownsUnclaimedKind &&
         !kindsMatch(facet, elementKind)
       ) {
         return best;
