@@ -9037,7 +9037,7 @@ const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
  * Closes any popup still painted after a verified commit so it cannot
  * intercept the next field's click. Best-effort: Escape failures are logged.
  */
-async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
+export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const count = (await target
       .evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR)
