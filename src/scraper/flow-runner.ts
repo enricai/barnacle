@@ -4061,7 +4061,8 @@ export async function verifyFillReadback(
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
-    if (el.getAttribute && el.getAttribute("role") === "spinbutton") {
+    const siblings = el.parentElement ? el.parentElement.querySelectorAll("[role='spinbutton']").length : 0;
+    if (el.getAttribute && el.getAttribute("role") === "spinbutton" && siblings > 1) {
       return { outcome: "segment", postValue: el.value || el.getAttribute("aria-valuenow") || "", tag };
     }
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
