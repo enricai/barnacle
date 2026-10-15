@@ -31,6 +31,7 @@ interface OnboardingSequenceState {
   fallbackClickFired: boolean;
   uploadDocsStepReached: boolean;
   clickExprSources: string[];
+  probeChecked?: boolean;
 }
 
 /**
@@ -61,13 +62,21 @@ function makeOnboardingPage(state: OnboardingSequenceState): Page {
           state.bodyHtmlLength += 240;
         }
         state.clickExprSources.push(src);
-        return { fired: true, kind: "checkbox", checked: false, ariaManaged: true };
+        return {
+          fired: true,
+          kind: "checkbox",
+          checked: state.probeChecked ?? false,
+          ariaManaged: true,
+        };
       }
       if (src.includes("outerHTML") && src.includes("innerText")) {
         return {
           html: state.bodyHtmlLength,
           text: `${state.bodyHtmlLength}:${state.visibleText}`,
         };
+      }
+      if (src.includes("depth < 6") && state.fallbackClickFired) {
+        return true;
       }
       if (src.includes("isInvalid(el)")) return 0;
       return null;
@@ -242,6 +251,33 @@ describe("flow-runner n+16 aria-managed checkbox rejection (offline fixture, no 
     expect(state.clickExprSources.length).toBeGreaterThan(0);
     const src = state.clickExprSources[0] ?? "";
     expect(src).toContain('getAttribute("aria-checked")');
+    expect(src.indexOf("ariaManaged: true")).toBeLessThan(src.indexOf("el.checked = true"));
+  });
+
+  it("credits an aria-checked true checkbox without toggling it, ignoring a stale invalid ancestor", async () => {
+    const state: OnboardingSequenceState = {
+      url: BASE_URL,
+      bodyHtmlLength: 42_000,
+      visibleText: "",
+      continueClickCount: 0,
+      fallbackClickFired: false,
+      uploadDocsStepReached: false,
+      clickExprSources: [],
+      probeChecked: true,
+    };
+
+    await runHealingFlow({
+      stagehand: makeOnboardingStagehand(state),
+      page: makeOnboardingPage(state),
+      steps: ONBOARDING_STEPS,
+      logger: SILENT_LOGGER,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    });
+
+    expect(state.uploadDocsStepReached).toBe(true);
+    const src = state.clickExprSources[0] ?? "";
     expect(src.indexOf("ariaManaged: true")).toBeLessThan(src.indexOf("el.checked = true"));
   });
 });
