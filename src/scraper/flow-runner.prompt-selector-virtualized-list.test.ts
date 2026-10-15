@@ -261,4 +261,44 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     expect(outcome).not.toBe("completed");
     expect(outcome).toBeInstanceOf(StepVerificationError);
   });
+
+  it("withholds the click when a re-render lands between the centring pass and the click", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    let rebound = false;
+    const originalEvaluate = target.evaluate.bind(target) as (e: unknown) => Promise<unknown>;
+    (target as unknown as { evaluate: (e: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ): Promise<unknown> => {
+      const nodes = Array.from(window.document.querySelectorAll("[role='option']"));
+      if (String(expr).includes("scrollIntoView") && !rebound && nodes.length > 1) {
+        rebound = true;
+        const texts = nodes.map((n) => n.textContent?.trim() ?? "");
+        nodes.forEach((n, i) => {
+          const text = texts[(i + 1) % texts.length] ?? "";
+          n.textContent = text;
+          n.setAttribute("data-automation-label", text);
+        });
+      }
+      return originalEvaluate(expr);
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(rebound).toBe(true);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Sweden");
+  });
 });

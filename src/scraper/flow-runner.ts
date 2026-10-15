@@ -8926,7 +8926,7 @@ function normPromptOptionText(s: string): string {
 
 /** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
 const PROMPT_PLACEHOLDER_RE =
-  /^(no\b|nothing\b|none$|loading|searching|type to search|press enter|hit enter|search for|\.\.\.)/;
+  /^(no\b|nothing\b|none$|loading|searching|type to search|press enter|hit enter|search for|\.\.\.)|\b(no (results?|items?|matches|options?|data|records)|not found|nothing found|0 results?)\b/;
 
 /**
  * Detects whether the list already names the requested option, so the submit
@@ -9077,9 +9077,20 @@ async function commitPromptOption(params: {
       }
       const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.nodeId ?? freshOption.oIdx}"]`;
       try {
+        const expectedDomText = freshOption.domText ?? wantChosenText;
         await clickCentredTrusted(target, optionSel, {
           label: "prompt-selector option",
-          expectText: freshOption.domText ?? wantChosenText,
+          expectText: expectedDomText,
+          verifyBeforeClick: async () =>
+            (await target
+              .evaluate(
+                `((sel, want) => {
+                  const el = document.querySelector(sel);
+                  if (!el || !el.isConnected) return false;
+                  return (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
+                })(${JSON.stringify(optionSel)}, ${JSON.stringify(expectedDomText)})`
+              )
+              .catch(() => null)) !== false,
         });
         clicked = true;
       } catch (err) {

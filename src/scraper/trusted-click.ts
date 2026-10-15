@@ -47,6 +47,13 @@ export interface CentredTrustedClickOptions {
    * different item mid-scroll. A mismatch withholds the click.
    */
   expectText?: string;
+  /**
+   * Re-checks the target's identity in a separate call after the centring pass
+   * and immediately before the click, so a re-render that landed while the
+   * centring call was in flight (or that no in-page check could see) still
+   * withholds the click. Resolving `false` is reported as an identity mismatch.
+   */
+  verifyBeforeClick?: () => Promise<boolean>;
 }
 
 /**
@@ -138,7 +145,13 @@ export async function centreAndHitTest(
       result?.state === "hit" || result?.state === "occluded" || result?.state === "mismatch"
         ? result
         : { state: "missing" };
-    if (last.state === "hit") return;
+    if (last.state === "hit") {
+      if (opts.verifyBeforeClick && !(await opts.verifyBeforeClick())) {
+        last = { state: "mismatch" };
+        break;
+      }
+      return;
+    }
     if (last.state === "mismatch") break;
     logger.warn(
       `click point for ${label} not on target (${last.state}${last.occluder ? `, covered by ${last.occluder}` : ""}), attempt: ${attempt}/${attempts}`

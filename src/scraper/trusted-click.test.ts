@@ -120,6 +120,26 @@ describe("firstMatchClickable", () => {
   });
 });
 
+describe("verifyBeforeClick", () => {
+  it("withholds the click as an identity mismatch when the pre-click check fails", async () => {
+    const click = vi.fn(async () => {});
+    await expect(
+      clickAfterCentredHitTest({ click }, async () => ({ state: "hit" }), {
+        verifyBeforeClick: async () => false,
+      })
+    ).rejects.toThrow(/identity mismatch/);
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("clicks once the pre-click check passes", async () => {
+    const click = vi.fn(async () => {});
+    await clickAfterCentredHitTest({ click }, async () => ({ state: "hit" }), {
+      verifyBeforeClick: async () => true,
+    });
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("identity expectation", () => {
   it("withholds the click and reports a mismatch", async () => {
     const click = vi.fn(async () => {});
