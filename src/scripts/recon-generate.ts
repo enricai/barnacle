@@ -7632,7 +7632,7 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  * cannot skew the pool size away from the count of facets awaiting a value.
  */
 function collectNewlyAppearingRequestValueTransitions(
-  actions: readonly ActionStep[],
+  actions: readonly Pick<ActionStep, "capture">[],
   explainedLiterals: readonly string[] = []
 ): string[][] {
   const seenGlobally = new Set<string>();
@@ -7710,7 +7710,7 @@ function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = f
  */
 export function resolveRecurringNavigateToFacets(
   declared: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[]
+  actions: readonly Pick<ActionStep, "capture">[]
 ): NavigateToFacetBinding[] {
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
@@ -7775,7 +7775,7 @@ export function resolveRecurringNavigateToFacets(
  */
 function findKindKeyedLiteral(
   facet: NavigateToFacetBinding,
-  actions: readonly ActionStep[]
+  actions: readonly Pick<ActionStep, "capture">[]
 ): string | undefined {
   const byTier = new Map<number, Set<string>>();
   const sameMonth = new Set<string>();
@@ -7800,8 +7800,12 @@ function findKindKeyedLiteral(
       const tier = kindMatchTier(facet, parsed.kind);
       if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
       const month = monthCodeOf(parsed.literal);
+      const isOwnLiteral = [facet.value, ...(facet.literals ?? [])].some(
+        (known) => known.toLowerCase() === parsed.literal.toLowerCase()
+      );
       if (
         month !== undefined &&
+        !isOwnLiteral &&
         (facetMonths.has(month) || yearlessMonths.has(month.slice("YYYY-".length)))
       ) {
         sameMonth.add(parsed.literal);
@@ -7837,7 +7841,7 @@ function findKindKeyedLiteral(
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[],
+  actions: readonly Pick<ActionStep, "capture">[],
   explainedLiterals: readonly string[]
 ): ReadonlyMap<string, string> | null {
   const transitions = collectNewlyAppearingRequestValueTransitions(actions, explainedLiterals);
@@ -9514,15 +9518,27 @@ export function matchFacetRecurrence(
   options: { allowDelimiterSuffix: boolean }
 ): NavigateToFacetBinding | undefined {
   const isAlnum = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9]/.test(ch);
-  const elementKind = parseElementKind(text)?.kind;
+  const parsedElement = parseElementKind(text);
+  const elementKind = parsedElement?.kind;
+  // A kind no declared facet names (an identifier format such as
+  // `<slug>;filterId=urlFriendlyId`) cannot belong to another facet, so the
+  // kind gate only protects elements some facet claims; a whole-literal
+  // match there still binds the facet whose literal the element carries.
+  const kindUnclaimed =
+    elementKind !== undefined && !facets.some((candidate) => kindsMatch(candidate, elementKind));
   const pick = (ignoreCase: boolean): NavigateToFacetBinding | undefined =>
     facets.reduce<NavigateToFacetBinding | undefined>((best, facet) => {
-      const readFromElement =
-        facet.keyedByKind === true && parseElementKind(text)?.literal === facet.value;
+      const readFromElement = facet.keyedByKind === true && parsedElement?.literal === facet.value;
+      const ownsUnclaimedKind =
+        kindUnclaimed &&
+        [facet.value, ...(facet.literals ?? [])].some(
+          (known) => known.toLowerCase() === parsedElement?.literal.toLowerCase()
+        );
       if (
         elementKind !== undefined &&
         isKindKeyed(facet) &&
         !readFromElement &&
+        !ownsUnclaimedKind &&
         !kindsMatch(facet, elementKind)
       ) {
         return best;
@@ -14553,9 +14569,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
+  // A single-primary flow compiles no action steps, so its captured traffic
+  // is the only place a declared facet's kind-suffixed element can be found.
   const navigateToFacets = resolveRecurringNavigateToFacets(
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
-    actionSteps
+    actionSteps.length > 0 ? actionSteps : allCaptures.map((capture) => ({ capture }))
   );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
