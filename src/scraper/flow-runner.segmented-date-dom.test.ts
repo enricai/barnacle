@@ -108,3 +108,29 @@ describe("segmented date own label and visibility", () => {
     expect(groups[1]?.label).not.toContain("Flight");
   });
 });
+
+describe("segmented date hidden group beside visible group", () => {
+  const spins = `<input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" />`;
+  const work = (toAttrs: string): string =>
+    `<section aria-labelledby="w"><h3 id="w">Work Experience 1</h3>` +
+    `<div role="group" aria-label="From">${spins}</div>` +
+    `<div ${toAttrs}><div role="group" aria-label="To">${spins}</div></div></section>`;
+  const edu = (label: string): string =>
+    `<section aria-labelledby="e${label}"><h3 id="e${label}">Education 1</h3><div role="group" aria-label="${label}"><input role="spinbutton" aria-valuemax="9999" /></div></section>`;
+
+  it.each(['style="display:none"', "hidden"])(
+    "never resolves a hidden 'To' group to the visible 'From' group (%s)",
+    (attrs) => {
+      const groups = enumerate(work(attrs) + edu("From") + edu("To"));
+      expect(groups.map((g) => g.label)).toEqual(["From", "From", "To"]);
+      expect(
+        resolveSegmentedDateGroup("'To' date in Work Experience 1, '012021'", groups)
+      ).toBeNull();
+      expect(resolveSegmentedDateGroup("'From' date in Work Experience 1, '012020'", groups)).toBe(
+        0
+      );
+      expect(resolveSegmentedDateGroup("'From' date of Education 1, '2016'", groups)).toBe(1);
+      expect(resolveSegmentedDateGroup("'To' date of Education 1, '2020'", groups)).toBe(2);
+    }
+  );
+});
