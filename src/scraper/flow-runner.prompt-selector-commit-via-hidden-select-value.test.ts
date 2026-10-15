@@ -3,6 +3,7 @@ import type { Element } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 
+import { maskValueShape } from "@/lib/pii-redaction";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -291,7 +292,9 @@ describe("flow-runner/commitPromptOption corroborates an ambiguous opener readba
 
     expect(stepResult).toBe("completed");
     expect(trajectory).toEqual([{ stepIndex: 20, verifiedBy: "dom", targetId: "src-widget" }]);
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining(`selected "${OPTION}"`));
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(`selected "${maskValueShape(OPTION)}"`)
+    );
     // Resolved via the primitive's own DOM verification, never the act cascade.
     expect(stagehandAct).not.toHaveBeenCalled();
     expect(stagehandObserve).not.toHaveBeenCalled();
