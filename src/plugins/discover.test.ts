@@ -20,6 +20,8 @@ const FIXTURE = {
   malformedNoMeta: path.join(FIXTURES_DIR, "malformed-no-meta.js"),
   malformedExecuteNotFn: path.join(FIXTURES_DIR, "malformed-execute-not-fn.js"),
   malformedBodySchema: path.join(FIXTURES_DIR, "malformed-bodyschema-not-zod.js"),
+  malformedRedaction: path.join(FIXTURES_DIR, "malformed-redaction-policy.js"),
+  validRedaction: path.join(FIXTURES_DIR, "valid-redaction-policy.js"),
   apiVersionMismatch: path.join(FIXTURES_DIR, "apiversion-mismatch.js"),
   duplicateSiteId: path.join(FIXTURES_DIR, "duplicate-siteid.js"),
   validConfig: path.join(FIXTURES_DIR, "valid-config.plugin.json"),
@@ -161,11 +163,28 @@ describe("loadPlugins — config manifest (.plugin.json)", () => {
   });
 });
 
+describe("loadPlugins — meta.redaction", () => {
+  it("loads a plugin with a well-formed redaction policy unchanged", async () => {
+    const { plugins } = await loadPlugins([FIXTURE.validRedaction], {
+      baseDir: process.cwd(),
+      strict: true,
+      seenSiteIds: freshSeen(),
+    });
+
+    expect(plugins[0]?.meta.redaction).toEqual({
+      persistKeys: ["orderId"],
+      wordKeys: ["fullName"],
+      digitKeys: ["phone"],
+    });
+  });
+});
+
 describe("loadPlugins — malformed fixtures in non-strict mode", () => {
   const MALFORMED: Array<{ name: string; fixturePath: string }> = [
     { name: "missing meta", fixturePath: FIXTURE.malformedNoMeta },
     { name: "execute not a function", fixturePath: FIXTURE.malformedExecuteNotFn },
     { name: "bodySchema not a Zod schema", fixturePath: FIXTURE.malformedBodySchema },
+    { name: "redaction field not an array", fixturePath: FIXTURE.malformedRedaction },
   ];
 
   for (const { name, fixturePath } of MALFORMED) {
@@ -189,6 +208,7 @@ describe("loadPlugins — malformed fixtures in strict mode", () => {
     { name: "missing meta", fixturePath: FIXTURE.malformedNoMeta },
     { name: "execute not a function", fixturePath: FIXTURE.malformedExecuteNotFn },
     { name: "bodySchema not a Zod schema", fixturePath: FIXTURE.malformedBodySchema },
+    { name: "redaction field not an array", fixturePath: FIXTURE.malformedRedaction },
   ];
 
   for (const { name, fixturePath } of MALFORMED) {
