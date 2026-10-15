@@ -82,4 +82,52 @@ describe("flow-runner/tryPromptSelectorPrimitive enumerate widget isolation (doc
     expect(doc.getElementById("a--input")?.hasAttribute(SEARCH_MARK)).toBe(false);
     expect(doc.getElementById("chip-a")?.hasAttribute(OPTION_MARK)).toBe(false);
   });
+
+  it("waits for a late aria-controls link rather than reading document-wide chips", async () => {
+    const stagehand = {
+      act: vi.fn(),
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: HTML,
+      popupByWidgetId: {
+        b: { options: ["Porto"], portaled: true, linkAfterOpen: true, linkDelayMs: 300 },
+      },
+    });
+
+    await executeStepWithHealing({
+      stagehand,
+      page: page as unknown as Page,
+      frameTarget: target,
+      step: "for 'Arrival city' select 'Porto'",
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 1,
+      phase: "apply",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      captureFn: vi.fn().mockResolvedValue(undefined),
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      trajectory: [],
+    } as never);
+
+    const doc = window.document;
+    expect(doc.getElementById("chip-a")?.hasAttribute(OPTION_MARK)).toBe(false);
+    expect(doc.getElementById("a--input")?.hasAttribute(SEARCH_MARK)).toBe(false);
+  });
 });
