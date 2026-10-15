@@ -100,7 +100,6 @@ function makeFakePage(urls: { current: string }): {
   };
 }
 
-
 function runWith(page: Page, stagehand: Stagehand): Promise<unknown> {
   return runHealingFlow({
     stagehand,
