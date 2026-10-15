@@ -157,7 +157,7 @@ describe("segmented date unquoted and lone targets", () => {
 
   it("never lands a To value in the visible From group when To is not rendered", () => {
     const groups = enumerate(
-      group("Work Experience 1", "From") + `<div hidden>${group("Work Experience 1", "To")}</div>`
+      `${group("Work Experience 1", "From")}<div hidden>${group("Work Experience 1", "To")}</div>`
     );
     expect(
       resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", groups)

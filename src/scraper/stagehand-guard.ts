@@ -75,7 +75,7 @@ import {
   resolveFrameTarget,
 } from "@/scraper/frame-target";
 import { isTransientProviderError } from "@/scraper/transient-provider-error";
-import { CentredClickError, centreSelectorForClick } from "@/scraper/trusted-click";
+import { centreSelectorForClick } from "@/scraper/trusted-click";
 import { withWatchdog } from "@/scraper/watchdog";
 import type { SensitiveVariables } from "@/types/pii-redaction";
 
