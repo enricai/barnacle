@@ -5574,6 +5574,8 @@ export async function surfaceAndUpload(params: {
   }
 }
 
+const UPLOAD_AFFORDANCE_MARKER = "data-barnacle-upload-affordance";
+
 /**
  * Locate and click the resume-upload affordance in the page DOM. Uses a DOM
  * enumerate (NOT Stagehand observe, which returns [] for these MUI buttons)
@@ -5585,7 +5587,7 @@ export async function surfaceAndUpload(params: {
  * Takes both `page` (for `pollEnumerate`'s `waitForTimeout`) and `target`
  * (the frame the enumerate/click runs against).
  */
-async function clickUploadAffordance(
+export async function clickUploadAffordance(
   page: Page,
   target: FrameTarget,
   logger: Logger
@@ -5600,24 +5602,35 @@ async function clickUploadAffordance(
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
-    if (matches.length === 0) return { clicked: false };
+    if (matches.length === 0) return { marked: false };
     const chosen = matches.find(scoped) || matches[0];
-    chosen.click();
-    return { clicked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
+    chosen.setAttribute("${UPLOAD_AFFORDANCE_MARKER}", "");
+    return { marked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
   })()`;
+  const markerSelector = `[${UPLOAD_AFFORDANCE_MARKER}]`;
   try {
-    const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
+    const result = (await pollEnumerate<{ marked: boolean; text?: string }>(
       page,
       target,
       expr,
-      (r) => r?.clicked === true
-    )) ?? { clicked: false };
-    if (result.clicked) {
-      logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
-      return true;
+      (r) => r?.marked === true
+    )) ?? { marked: false };
+    if (!result.marked) {
+      logger.info("upload primitive: no upload affordance button found in DOM");
+      return false;
     }
-    logger.info("upload primitive: no upload affordance button found in DOM");
-    return false;
+    // A trusted CDP click is required: an in-page el.click() never opens a file chooser.
+    try {
+      await target.locator(markerSelector).first().click();
+    } finally {
+      await target
+        .evaluate(
+          `document.querySelectorAll(${JSON.stringify(markerSelector)}).forEach((el) => el.removeAttribute("${UPLOAD_AFFORDANCE_MARKER}"))`
+        )
+        .catch(() => {});
+    }
+    logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
+    return true;
   } catch (err) {
     logger.warn(`upload primitive: affordance click threw: ${toErrorMessage(err)}`);
     return false;
