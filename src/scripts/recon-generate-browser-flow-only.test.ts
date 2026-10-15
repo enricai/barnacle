@@ -452,3 +452,32 @@ describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
     expect(parseBrowserFlowOnlyOptIn("nope")).toBe(false);
   });
 });
+
+describe("emitContractTs — forced browser-flow-only with a non-evidence inputBody", () => {
+  it("emits the applicant contract and enters the flow on payload.ClickUrl", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      inputBody: { vendorKey: "x" },
+      payloadFieldNames: new Set(["FirstName"]),
+    });
+    expect(source).toContain("ApplicantContactSchema.extend(");
+    expect(source).toContain("ClickUrl: z.string().min(1)");
+    expect(source).toContain("Answers:");
+    expect(source).not.toContain("async executeHttp(");
+    expect(source).toMatch(/BrowserFlow\(session\.stagehand, payload\.ClickUrl,/);
+    expect(source).not.toContain("context.baseUrl,");
+  });
+});
