@@ -717,6 +717,11 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      */
     ownBackendHostnames: z.array(z.string().min(1)).optional(),
     /**
+     * Declares the ATS cannot be replayed as raw HTTP, so the generator emits
+     * a browser-flow-only plugin regardless of HTTP analysis.
+     */
+    browserFlowOnly: z.boolean().optional(),
+    /**
      * Optional site-specific class-name prefixes that wrap form/error
      * state. The Haiku invalid-fields judge uses these as additional
      * structural evidence beyond framework-conventional patterns

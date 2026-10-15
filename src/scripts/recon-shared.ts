@@ -274,6 +274,27 @@ export function readOwnBackendHostnames(flowFile: string): string[] {
 }
 
 /**
+ * Reads the explicit top-level `browserFlowOnly` opt-in out of a recon flow file.
+ *
+ * Mirrors `readOwnBackendHostnames`: tolerant of a missing/malformed file and
+ * the legacy bare-array shape, and only a literal `true` opts in.
+ */
+export function readBrowserFlowOnly(flowFile: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(flowFile, "utf8"));
+    if (Array.isArray(parsed)) return false;
+    return (parsed as { browserFlowOnly?: unknown } | null)?.browserFlowOnly === true;
+  } catch (err) {
+    logger.warn(
+      `flow file '${flowFile}' unreadable for browserFlowOnly, browser-flow-only opt-in disabled: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return false;
+  }
+}
+
+/**
  * Counts how often each response header appears across successful replays.
  * Infrastructure headers that are never load-bearing on the request side are
  * excluded so the caller sees only candidates worth committing as BASE_HEADERS.
