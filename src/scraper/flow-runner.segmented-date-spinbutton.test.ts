@@ -192,6 +192,18 @@ describe("segmented date primitive", () => {
     expect(order.indexOf("scroll")).toBeLessThan(order.indexOf("keyDown"));
   });
 
+  it("types nothing when the targeted field's own label is not among the groups", async () => {
+    const { target, page, sent } = harness([GROUPS[1] as SegmentedDateGroup], [1, 2020]);
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBeNull();
+    expect(sent).toHaveLength(0);
+  });
+
   it("returns null when segments ignore key events", async () => {
     const { target, page } = harness(GROUPS, [0, 0]);
     expect(

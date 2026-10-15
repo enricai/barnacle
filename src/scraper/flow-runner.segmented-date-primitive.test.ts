@@ -59,6 +59,7 @@ describe("trySegmentedDateSpinbuttonPrimitive", () => {
     });
     expect(id).not.toBeNull();
     expect(sent.filter((s) => s.endsWith("keyDown"))).toHaveLength(6);
+    expect(sent.some((s) => s.startsWith("Input.insertText"))).toBe(false);
   });
 
   it("returns null when segments ignore key events", async () => {
