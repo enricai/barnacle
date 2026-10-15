@@ -9074,15 +9074,15 @@ async function commitPromptOption(params: {
     if (!clicked) return null;
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-    const isRequestedLeaf = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
+    const isRequestedOption = norm(chosenOption.text) === wantOpt;
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
-      if (!w) return { ok: false, id: "" };
+      if (!w) return { ok: false, id: "", stillInvalid: false };
       const text = currentText(w, valueSel, emptyRx);
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
@@ -9136,14 +9136,12 @@ async function commitPromptOption(params: {
           cnode = cnode.parentElement;
         }
       }
-      // A category click may leave the widget's aria-invalid unset until final
-      // submit, so !stillInvalid alone only counts as success when this click
-      // landed on the requested leaf option, not an intermediate category.
-      return { ok: textMatches || (isRequestedLeaf && !stillInvalid) || hiddenSelectMatches, id: w.id || "" };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedLeaf)})`;
-    const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
+      return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
+    const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
       ok: boolean;
       id: string;
+      stillInvalid: boolean;
     };
     if (readback?.ok) {
       logger.info(
@@ -9177,6 +9175,14 @@ async function commitPromptOption(params: {
         `prompt-selector primitive: selection for ${optLabel} did not commit; falling through to cascade`
       );
       return null;
+    }
+    // Category click on the requested option: the drill itself is the observed
+    // effect, and it never commits a value, so only a widget not flagged invalid counts.
+    if (isRequestedOption && !readback.stillInvalid) {
+      logger.info(
+        `prompt-selector primitive: requested option "${chosenOption.text.slice(0, 40)}" for ${optLabel} opened a new option set (${matchReason})`
+      );
+      return readback?.id ?? "";
     }
     logger.info(
       `prompt-selector primitive: click for ${optLabel} drilled the popup to a new option set; re-matching at the new level`
