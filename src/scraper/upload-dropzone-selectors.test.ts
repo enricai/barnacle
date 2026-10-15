@@ -14,7 +14,7 @@ describe("DROP_ZONE_SELECTORS", () => {
 });
 
 describe("DROP_ZONE_SELECTORS against a DOM", () => {
-  const query = (html: string): Element | null => {
+  const query = (html: string): unknown => {
     const window = new Window();
     window.document.body.innerHTML = html;
     return window.document.querySelector(DROP_ZONE_SELECTORS.join(","));
