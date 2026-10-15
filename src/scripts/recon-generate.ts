@@ -1615,6 +1615,12 @@ export function deriveBaseUrl(
   const candidates = captures.filter((c) =>
     isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
   );
+  if (candidates.length === 0) {
+    const captured = [...new Set(captures.map((c) => captureHostname(c.url)))].join(", ");
+    throw new Error(
+      `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`
+    );
+  }
   return dominantHostOrigin(candidates);
 }
 
@@ -1627,7 +1633,9 @@ function firstCaptureOrigin(captures: Capture[]): string {
       // try next
     }
   }
-  return "https://example.com";
+  throw new Error(
+    `no capture has a parseable URL to derive a base URL from (${captures.length} candidate captures)`
+  );
 }
 
 /**
