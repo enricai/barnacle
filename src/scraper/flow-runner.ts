@@ -5892,6 +5892,134 @@ export function resolveSegmentedDateGroup(
   return bestScore === 0 || tied ? null : best;
 }
 
+const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
+
+const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
+  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
+  const stale = document.querySelectorAll("[" + attr + "]");
+  stale.forEach((el) => el.removeAttribute(attr));
+  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']"));
+  if (spins.length === 0) return { groups: [] };
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const byContainer = new Map();
+  for (const el of spins) {
+    const box = el.closest("fieldset,[role='group']") || el.parentElement;
+    if (!byContainer.has(box)) byContainer.set(box, []);
+    byContainer.get(box).push(el);
+  }
+  const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
+    const ref = id ? document.getElementById(id) : null;
+    return ref ? norm(ref.textContent) : "";
+  }).join(" ");
+  const contextOf = (box) => {
+    const parts = [];
+    let node = box;
+    for (let depth = 0; depth < 4 && node && node !== document.body; depth++) {
+      const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+      if (legend) parts.push(norm(legend.textContent));
+      parts.push(norm(node.getAttribute("aria-label")));
+      parts.push(idText(node.getAttribute("aria-labelledby")));
+      node = node.parentElement;
+    }
+    return parts.filter(Boolean).join(" ");
+  };
+  const groups = [];
+  let gi = 0;
+  byContainer.forEach((segs, box) => {
+    segs.forEach((seg, si) => seg.setAttribute(attr, gi + ":" + si));
+    groups.push({
+      segmentMaxes: segs.map((seg) => Number(seg.getAttribute("aria-valuemax"))),
+      context: contextOf(box) + " " + segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).join(" "),
+    });
+    gi++;
+  });
+  return { groups };
+})()`;
+
+const SEGMENTED_DATE_CLEAR_EXPR = `(() => {
+  document.querySelectorAll("[${SEGMENTED_DATE_MARKER_ATTR}]").forEach((el) => el.removeAttribute(${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)}));
+})()`;
+
+/**
+ * Type a date into a multi-segment `role=spinbutton` widget with real CDP key
+ * events, then verify every segment numerically.
+ *
+ * Why this exists: such widgets keep each segment's value in component state
+ * driven by `keydown`/`beforeinput`; `fill`/`insertText` bypasses that and
+ * garbles the segments. Returns a marker id on commit, or null on no
+ * spinbuttons, an unresolvable group, or any segment mismatch so the caller
+ * falls through to the cascade.
+ */
+export async function trySegmentedDateSpinbuttonPrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<string | null> {
+  const { page, target, instruction, logger } = params;
+  const value = parseSegmentedDateValue(instruction);
+  if (!value) return null;
+  const sendCDP = (method: string, args: object): Promise<unknown> =>
+    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
+  try {
+    const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
+      groups: SegmentedDateGroup[];
+    };
+    if (!enumerated?.groups?.length) return null;
+    const gi = resolveSegmentedDateGroup(instruction, enumerated.groups);
+    if (gi === null) {
+      logger.info("segmented date primitive: no unambiguous group; falling through");
+      await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
+      return null;
+    }
+    const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
+    const widths = maxes.map((max) => String(max).length);
+    const expected = widths.map((w, i) =>
+      Number(
+        value.digits.slice(
+          widths.slice(0, i).reduce((a, b) => a + b, 0),
+          widths.slice(0, i + 1).reduce((a, b) => a + b, 0)
+        )
+      )
+    );
+    const first = `[${SEGMENTED_DATE_MARKER_ATTR}="${gi}:0"]`;
+    try {
+      await clickCentredTrusted(target, first, { label: "date segment" });
+    } catch {
+      await target.evaluate(`document.querySelector(${JSON.stringify(first)})?.focus()`);
+    }
+    for (const digit of value.digits) {
+      const keyArgs = {
+        key: digit,
+        code: `Digit${digit}`,
+        windowsVirtualKeyCode: 48 + Number(digit),
+      };
+      await sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: digit, ...keyArgs });
+      await sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...keyArgs });
+    }
+    const actual = (await target.evaluate(`(() => {
+      const segs = Array.from(document.querySelectorAll("[${SEGMENTED_DATE_MARKER_ATTR}^='${gi}:']"));
+      return segs.map((s) => Number(s.getAttribute("aria-valuenow") ?? s.value));
+    })()`)) as number[];
+    await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
+    const ok =
+      Array.isArray(actual) &&
+      actual.length === expected.length &&
+      actual.every((n, i) => n === expected[i]);
+    if (!ok) {
+      logger.info(
+        `segmented date primitive: readback ${JSON.stringify(actual)} != ${JSON.stringify(expected)}; falling through`
+      );
+      return null;
+    }
+    logger.info(`segmented date primitive: committed segments ${JSON.stringify(actual)}`);
+    return `segmented-date-${gi}`;
+  } catch (err) {
+    logger.warn(`segmented date primitive: threw: ${toErrorMessage(err)}; falling through`);
+    return null;
+  }
+}
+
 /**
  * Parse a single-choice RADIO flow step into the option to click and (when
  * present) the question label that scopes which radio group it targets.
