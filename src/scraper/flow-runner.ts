@@ -8442,6 +8442,13 @@ async function tryPromptSelectorPrimitive(params: {
     // an unrelated widget's stale/leftover popup elsewhere on the page as
     // "already open"); a genuinely closed popup falls through to the normal
     // open-click + poll path below unchanged.
+    // A popup whose aria-controls link lands after the click is not yet
+    // resolvable; a document-scoped read would credit a sibling widget's
+    // content, so keep polling until a non-document scope resolves. The poll
+    // returns the last read when the budget runs out, so a popup that
+    // genuinely has no linkage still resolves through the document fallback.
+    const isOwnScopePopup = (r: EnumerateOptionsResult): boolean =>
+      r?.optionsPresent === true && r.scopeIsDocument !== true;
     const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
     const alreadyOpen =
       precheck?.optionsPresent === true &&
@@ -8486,7 +8493,7 @@ async function tryPromptSelectorPrimitive(params: {
           page,
           target,
           enumerateOptionsExpr,
-          (r) => r?.optionsPresent === true
+          isOwnScopePopup
         );
     if (!optionsInitial?.optionsPresent) {
       logger.info(
@@ -8520,10 +8527,13 @@ async function tryPromptSelectorPrimitive(params: {
       // to its popup), falling back to the union only if the mark is absent.
       const scopedSearchSel = `[${PROMPT_OPTION_MARK_ATTR}-search="1"]`;
       const marked = await target.locator(scopedSearchSel).count();
-      await target
-        .locator(marked > 0 ? scopedSearchSel : PROMPT_SEARCH_SELECTORS)
-        .first()
-        .fill(option);
+      if (marked === 0) {
+        logger.info(
+          `prompt-selector primitive: no filter input owned by the widget for ${optLabel}; falling through`
+        );
+        return null;
+      }
+      await target.locator(scopedSearchSel).first().fill(option);
     } catch (err) {
       logger.info(
         `prompt-selector primitive: filter-input type failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
@@ -8531,16 +8541,11 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    type FilteredRead = {
-      optionsPresent: boolean;
-      searchable?: boolean;
-      options?: { oIdx: number; text: string }[];
-    };
-    let optionsFiltered = await pollEnumerate<FilteredRead>(
+    let optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
       page,
       target,
       enumerateOptionsExpr,
-      (r) => r?.optionsPresent === true
+      isOwnScopePopup
     );
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
@@ -8562,12 +8567,15 @@ async function tryPromptSelectorPrimitive(params: {
         break;
       }
       await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-      optionsFiltered = await pollEnumerate<FilteredRead>(page, target, enumerateOptionsExpr, (r) =>
-        promptOptionsNameOption(r, option)
+      optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
       );
     }
     if (optionsFiltered?.optionsPresent) {
-      optionsFiltered = await readStablePromptOptions<FilteredRead>(
+      optionsFiltered = await readStablePromptOptions<EnumerateOptionsResult>(
         page,
         target,
         enumerateOptionsExpr,
@@ -8870,8 +8878,12 @@ async function commitPromptOption(params: {
       .catch(() => ({ optionsPresent: false }))) as {
       optionsPresent: boolean;
       options?: { oIdx: number; text: string }[];
+      scopeIsDocument?: boolean;
     };
-    const newOptions = reEnumerated?.optionsPresent ? (reEnumerated.options ?? []) : [];
+    const newOptions =
+      reEnumerated?.optionsPresent && reEnumerated.scopeIsDocument !== true
+        ? (reEnumerated.options ?? [])
+        : [];
     const drilled = newOptions.length > 0 && optionSetKey(newOptions) !== optionSetKey(options);
     if (!drilled) {
       logger.info(
