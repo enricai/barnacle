@@ -1,8 +1,9 @@
-import type { Page } from "@browserbasehq/stagehand";
+import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  executeStepWithHealing,
   isUploadAffordanceLabel,
   simulateDragDropUpload,
   surfaceAndUpload,
@@ -94,6 +95,72 @@ describe("surfaceAndUpload with a lazily-mounted input behind a 'Select files' b
     expect(ok).toBe(true);
     expect(dom.inputMounted()).toBe(true);
     expect(setInputFiles).toHaveBeenCalledTimes(1);
+  }, 30_000);
+});
+
+describe("tryUploadPrimitive end-to-end with a lazily-mounted input behind 'Select files'", () => {
+  afterEach(() => {
+    delete g.document;
+    delete g.getComputedStyle;
+  });
+
+  it("attaches once via the click-to-surface path without reaching the generic cascade", async () => {
+    const dom = installLazyUploader("Select files");
+    const setInputFiles = vi.fn().mockResolvedValue(undefined);
+    const evaluate = vi.fn((expr: unknown): Promise<unknown> => {
+      const e = String(expr);
+      if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
+      if (e.includes("el.files.length > 0")) return Promise.resolve(dom.inputMounted() ? 1 : 0);
+      return Promise.resolve(run(e));
+    });
+    const target = {
+      frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
+      frameSelector: null,
+      evaluate,
+      locator: () => ({ first: () => ({ setInputFiles }) }),
+      url: () => Promise.resolve("https://careers.example.com/apply"),
+      title: () => Promise.resolve("Apply"),
+    } as unknown as FrameTarget;
+    const act = vi.fn();
+    const page = {
+      waitForTimeout: () => new Promise((r) => setTimeout(r, 1)),
+      url: () => "https://careers.example.com/apply",
+      act,
+    } as unknown as Page;
+
+    await executeStepWithHealing({
+      stagehand: {} as unknown as Stagehand,
+      page,
+      step: "Upload the resume",
+      optional: false,
+      upload: true,
+      submitStep: false,
+      stepIndex: 0,
+      totalSteps: () => 1,
+      phase: "flow",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger,
+      uploadFixture: { name: "r.pdf", mimeType: "application/pdf", buffer: Buffer.from("x") },
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      frameTarget: target,
+    } as never);
+
+    expect(dom.inputMounted()).toBe(true);
+    expect(setInputFiles).toHaveBeenCalledTimes(1);
+    expect(act).not.toHaveBeenCalled();
   }, 30_000);
 });
 
