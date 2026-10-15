@@ -85,6 +85,18 @@ export interface PopupSpec {
    * only reflects that after the fact rather than being written directly.
    */
   syncsHiddenSelectId?: string;
+  /**
+   * Models a typeahead that renders only a "No Items." placeholder after the
+   * filter is filled and real options only once a trusted Enter keyDown arrives
+   * via `page.sendCDP("Input.dispatchKeyEvent", ...)`. Filling again resets it.
+   */
+  searchOnSubmit?: boolean;
+  /**
+   * With `searchOnSubmit`, successive label sets applied IN PLACE (same option
+   * nodes, different text) — one per `page.waitForTimeout` call after Enter —
+   * modeling a list that re-renders N times while reusing its DOM nodes.
+   */
+  reuseRenders?: string[][];
 }
 
 /**
@@ -107,6 +119,7 @@ export function buildPromptWidgetHarness(params: {
   clicks: string[];
   centres: string[];
   fills: { selector: string; value: string }[];
+  cdpEvents: { method: string; params: unknown }[];
 } {
   const window = new Window({ url: "https://careers.example.com/apply/job/1" });
   const document = window.document;
@@ -130,6 +143,7 @@ export function buildPromptWidgetHarness(params: {
   }
   const clicks: string[] = [];
   const fills: { selector: string; value: string }[] = [];
+  const cdpEvents: { method: string; params: unknown }[] = [];
 
   const optionLabel = (o: PopupOption): string => (typeof o === "string" ? o : o.label);
   const optionDrillTo = (o: PopupOption): PopupSpec | undefined =>
@@ -141,7 +155,14 @@ export function buildPromptWidgetHarness(params: {
 
   // Per-widget popup runtime state, keyed by the widget element the marker
   // attribute resolves to.
-  const openState = new Map<string, { spec: PopupSpec; filter: string }>();
+  interface PopupState {
+    spec: PopupSpec;
+    filter: string;
+    submitted?: boolean;
+    renderStep?: number;
+  }
+
+  const openState = new Map<string, PopupState>();
 
   const g = window as unknown as Record<string, unknown>;
   g.window = window;
@@ -165,27 +186,31 @@ export function buildPromptWidgetHarness(params: {
       ? widgetEl
       : widgetEl.querySelector("button,[role='combobox']") || widgetEl;
 
-  const renderPopup = (widgetEl: Element, state: { spec: PopupSpec; filter: string }): void => {
+  const renderPopup = (widgetEl: Element, state: PopupState): void => {
     // Remove any prior popup for this widget.
     const existing = document.querySelector(`[data-test-popup-for="${widgetEl.id}"]`);
     existing?.remove();
     const wrap = document.createElement("div");
     wrap.setAttribute("data-test-popup-for", widgetEl.id);
-    const shown = state.spec.searchable
-      ? state.filter
-        ? state.spec.options.filter((o) =>
-            optionLabel(o).toLowerCase().includes(state.filter.toLowerCase())
-          )
-        : []
-      : state.spec.options;
+    const typeahead = state.spec.searchable || state.spec.searchOnSubmit;
+    const awaitingSubmit = state.spec.searchOnSubmit && !state.submitted;
+    const shown = awaitingSubmit
+      ? []
+      : typeahead
+        ? state.filter
+          ? state.spec.options.filter((o) =>
+              optionLabel(o).toLowerCase().includes(state.filter.toLowerCase())
+            )
+          : []
+        : state.spec.options;
     // A searchable widget filters via the widget's OWN trigger input (as the
     // real widget-kit DOM does — the trigger input IS the filter), not a
     // separate search box. Mark that input so a fill re-renders this popup.
-    if (state.spec.searchable) {
+    if (typeahead) {
       const triggerInput = widgetEl.querySelector("input");
       if (triggerInput) triggerInput.setAttribute("data-test-filter", widgetEl.id);
     }
-    const searchHtml = "";
+    const searchHtml = awaitingSubmit ? `<li data-test-placeholder="true">No Items.</li>` : "";
     const optsHtml = shown
       .map((o, i) => {
         const label = optionLabel(o);
@@ -211,7 +236,7 @@ export function buildPromptWidgetHarness(params: {
         }
       })
       .join("");
-    wrap.innerHTML = `${searchHtml}<ul role="listbox">${optsHtml}</ul>`;
+    wrap.innerHTML = `<ul role="listbox">${searchHtml}${optsHtml}</ul>`;
     if (state.spec.portaled) {
       // Portal to document.body and link via aria-controls (Radix/MUI/react-select).
       const popupId = `portal-${widgetEl.id}`;
@@ -390,6 +415,8 @@ export function buildPromptWidgetHarness(params: {
         const state = openState.get(ownerId);
         if (state && owner) {
           state.filter = value;
+          state.submitted = false;
+          state.renderStep = 0;
           renderPopup(owner, state);
         }
       },
@@ -397,6 +424,9 @@ export function buildPromptWidgetHarness(params: {
       inputValue: async (): Promise<string> => "",
     }),
   });
+
+  const widgetIdOf = (state: PopupState): string =>
+    Array.from(openState.entries()).find(([, s]) => s === state)?.[0] ?? "";
 
   const centres: string[] = [];
   const evaluate = async (expr: unknown): Promise<unknown> => {
@@ -415,7 +445,36 @@ export function buildPromptWidgetHarness(params: {
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     locator,
-    waitForTimeout: async (): Promise<void> => undefined,
+    waitForTimeout: async (): Promise<void> => {
+      for (const state of openState.values()) {
+        const renders = state.spec.reuseRenders;
+        const step = state.renderStep ?? 0;
+        if (!state.submitted || !renders || step >= renders.length) continue;
+        const popup = document.querySelector(`[data-test-popup-for="${widgetIdOf(state)}"]`);
+        const nodes = Array.from(popup?.querySelectorAll("[role='option']") ?? []);
+        nodes.forEach((node, i) => {
+          const text = renders[step]?.[i];
+          if (text === undefined) return;
+          node.textContent = text;
+          node.setAttribute("data-automation-label", text);
+        });
+        state.renderStep = step + 1;
+      }
+    },
+    sendCDP: async (method: string, cdpParams?: unknown): Promise<void> => {
+      cdpEvents.push({ method, params: cdpParams });
+      const p = cdpParams as { type?: string; key?: string } | undefined;
+      if (method !== "Input.dispatchKeyEvent" || p?.type !== "keyDown" || p.key !== "Enter") {
+        return;
+      }
+      for (const [id, state] of openState) {
+        const owner = document.getElementById(id);
+        if (!state.spec.searchOnSubmit || !owner) continue;
+        state.submitted = true;
+        state.renderStep = 0;
+        renderPopup(owner, state);
+      }
+    },
   };
 
   const target = {
@@ -428,5 +487,5 @@ export function buildPromptWidgetHarness(params: {
     declaredFrameSelector: null,
   } as unknown as FrameTarget;
 
-  return { page, target, window, clicks, centres, fills };
+  return { page, target, window, clicks, centres, fills, cdpEvents };
 }

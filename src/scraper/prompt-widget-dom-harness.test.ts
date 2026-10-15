@@ -1,4 +1,4 @@
-import type { Element } from "happy-dom";
+import type { Document, Element } from "happy-dom";
 import { describe, expect, it } from "vitest";
 
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
@@ -117,5 +117,88 @@ describe("prompt-widget-dom-harness: empty-own-label option shapes", () => {
     );
     expect(labelsA).toEqual(["Home", "Mobile"]);
     expect(labelsB).toEqual(["Home", "Other"]);
+  });
+});
+
+describe("prompt-widget-dom-harness: search-on-submit", () => {
+  type Page = {
+    locator: (s: string) => {
+      first: () => { click: () => Promise<void>; fill: (v: string) => Promise<void> };
+    };
+    sendCDP: (m: string, p: unknown) => Promise<void>;
+    waitForTimeout: (ms: number) => Promise<void>;
+  };
+  const HTML = `
+<div id="widget-a" data-uxi-widget-type="multiselect">
+  <input type="text" />
+  <button type="button">Open</button>
+</div>`;
+  const optionTexts = (doc: Document): (string | undefined)[] =>
+    Array.from(doc.querySelectorAll("[role='option']")).map((o: Element) => o.textContent?.trim());
+  const enter = { type: "keyDown", key: "Enter" };
+
+  it("shows a placeholder until a trusted Enter keyDown, then real options", async () => {
+    const { page, window, cdpEvents } = buildPromptWidgetHarness({
+      html: HTML,
+      popupByWidgetId: {
+        "widget-a": { options: ["Paris", "Parma", "Oslo"], searchOnSubmit: true },
+      },
+    });
+    const p = page as Page;
+    await p.locator("#widget-a button").first().click();
+    await p.locator("#widget-a input").first().fill("par");
+
+    const doc = window.document;
+    expect(optionTexts(doc)).toEqual([]);
+    expect(doc.body.textContent).toContain("No Items.");
+
+    await p.sendCDP("Input.dispatchKeyEvent", enter);
+    expect(optionTexts(doc)).toEqual(["Paris", "Parma"]);
+    expect(doc.body.textContent).not.toContain("No Items.");
+    expect(cdpEvents).toEqual([{ method: "Input.dispatchKeyEvent", params: enter }]);
+  });
+
+  it("ignores non-Enter key events", async () => {
+    const { page, window, cdpEvents } = buildPromptWidgetHarness({
+      html: HTML,
+      popupByWidgetId: { "widget-a": { options: ["Paris"], searchOnSubmit: true } },
+    });
+    const p = page as Page;
+    await p.locator("#widget-a button").first().click();
+    await p.locator("#widget-a input").first().fill("par");
+    await p.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", key: "a" });
+
+    expect(optionTexts(window.document)).toEqual([]);
+    expect(cdpEvents).toHaveLength(1);
+  });
+
+  it("mutates reused option nodes on each waitForTimeout after Enter", async () => {
+    const { page, window } = buildPromptWidgetHarness({
+      html: HTML,
+      popupByWidgetId: {
+        "widget-a": {
+          options: ["Paris", "Parma"],
+          searchOnSubmit: true,
+          reuseRenders: [
+            ["Parker", "Parral"],
+            ["Parnu", "Parow"],
+          ],
+        },
+      },
+    });
+    const p = page as Page;
+    await p.locator("#widget-a button").first().click();
+    await p.locator("#widget-a input").first().fill("par");
+    await p.sendCDP("Input.dispatchKeyEvent", enter);
+
+    const doc = window.document;
+    const nodes = Array.from(doc.querySelectorAll("[role='option']"));
+    await p.waitForTimeout(100);
+    expect(optionTexts(doc)).toEqual(["Parker", "Parral"]);
+    await p.waitForTimeout(100);
+    expect(optionTexts(doc)).toEqual(["Parnu", "Parow"]);
+    await p.waitForTimeout(100);
+    expect(optionTexts(doc)).toEqual(["Parnu", "Parow"]);
+    expect(Array.from(doc.querySelectorAll("[role='option']"))).toEqual(nodes);
   });
 });
