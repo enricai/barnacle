@@ -1,4 +1,4 @@
-import { Window } from "happy-dom";
+import { type Document, type HTMLInputElement, Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
 import { parseCheckStateStep, tryCheckboxStatePrimitive } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -24,7 +24,7 @@ function setup(
     locator: (sel: string) => ({
       click: async (): Promise<void> => {
         clicks.push(sel);
-        const el = window.document.querySelector(sel) as unknown as HTMLElement;
+        const el = window.document.querySelector(sel) as unknown as import("happy-dom").HTMLElement;
         const box =
           el.tagName === "INPUT" ? el : (el.querySelector("input") as HTMLInputElement | null);
         if (flipOnClick && box)
