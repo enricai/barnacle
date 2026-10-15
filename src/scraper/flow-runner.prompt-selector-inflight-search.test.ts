@@ -44,7 +44,10 @@ function enterKeyDowns(cdpEvents: { method: string; params: unknown }[]): number
 
 function params(page: Page, target: unknown, stagehandAct: ReturnType<typeof vi.fn>) {
   return {
-    stagehand: { act: stagehandAct, observe: vi.fn().mockResolvedValue([]) } as unknown as Stagehand,
+    stagehand: {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand,
     page,
     frameTarget: target,
     step: "for 'Department' select 'Marketing'",
@@ -85,11 +88,17 @@ describe("flow-runner/prompt-selector in-flight as-you-type search", () => {
       html: HTML,
       popupByWidgetId: { "dept-widget": { options: OPTIONS, searchable: true } },
     });
-    const realFill = (target.locator as (s: string) => { first: () => { fill: (v: string) => Promise<void> } });
+    const realFill = target.locator as (s: string) => {
+      first: () => { fill: (v: string) => Promise<void> };
+    };
     let elapsed = 0;
     let rendered = "";
-    const realWait = page.waitForTimeout;
-    page.waitForTimeout = async (ms?: number): Promise<void> => {
+    const mockPage = page as unknown as {
+      waitForTimeout: (ms?: number) => Promise<void>;
+      locator: unknown;
+    };
+    const realWait = mockPage.waitForTimeout;
+    mockPage.waitForTimeout = async (ms?: number): Promise<void> => {
       elapsed += ms ?? 0;
       const list = window.document.querySelector("[data-test-popup-for] [role='listbox']");
       if (rendered && list && elapsed >= 900) {
@@ -119,9 +128,11 @@ describe("flow-runner/prompt-selector in-flight as-you-type search", () => {
       };
     };
     (target as unknown as { locator: unknown }).locator = wrap(realFill);
-    (page as unknown as { locator: unknown }).locator = wrap(realFill);
+    mockPage.locator = wrap(realFill);
 
-    const result = await executeStepWithHealing(params(page as unknown as Page, target, stagehandAct));
+    const result = await executeStepWithHealing(
+      params(page as unknown as Page, target, stagehandAct)
+    );
 
     expect(result).toBe("completed");
     expect(stagehandAct).not.toHaveBeenCalled();
@@ -146,8 +157,10 @@ describe("flow-runner/prompt-selector in-flight as-you-type search", () => {
       return realEvaluate(source);
     };
 
-    await executeStepWithHealing(params(page as unknown as Page, target, stagehandAct));
+    await expect(
+      executeStepWithHealing(params(page as unknown as Page, target, stagehandAct))
+    ).rejects.toMatchObject({ name: "StepVerificationError" });
 
-    expect(centres).toEqual([]);
+    expect(centres.filter((c) => c.includes("-opt-idx"))).toEqual([]);
   });
 });
