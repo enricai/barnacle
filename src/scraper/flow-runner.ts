@@ -5688,7 +5688,8 @@ async function uploadFixtureToRemoteSession(
         body: form,
       }
     );
-    if (!res.ok) {
+    const accepted = res.ok ?? (res.status >= 200 && res.status < 300);
+    if (!accepted) {
       logger.warn(`upload primitive: remote session upload failed (status=${res.status})`);
       return null;
     }

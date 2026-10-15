@@ -144,6 +144,8 @@ describe("upload affordance aria-hidden decoys", () => {
     expect(isUploadAffordanceLabel("Decline to upload files")).toBe(false);
     expect(isUploadAffordanceLabel("No files")).toBe(false);
     expect(isUploadAffordanceLabel("Remove files")).toBe(false);
+    expect(isUploadAffordanceLabel("Add files")).toBe(true);
+    expect(isUploadAffordanceLabel("Choose Files to attach")).toBe(true);
   });
 
   it("gate and click expressions embed the shared vocabulary source", async () => {
