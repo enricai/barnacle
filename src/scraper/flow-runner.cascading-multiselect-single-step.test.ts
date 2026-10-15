@@ -110,7 +110,30 @@ function buildCascadeHarness(): {
     rendered = "closed";
   };
 
+  const rectIds = new Map<number, Element>();
+  const rectIdOf = new WeakMap<object, number>();
+  const stubRect = (el: Element): void => {
+    if (rectIdOf.has(el)) return;
+    const id = rectIds.size + 1;
+    rectIds.set(id, el);
+    rectIdOf.set(el, id);
+    Object.defineProperty(el, "getBoundingClientRect", {
+      value: () => ({
+        left: id * 10,
+        right: id * 10 + 10,
+        top: 0,
+        bottom: 10,
+        width: 10,
+        height: 10,
+      }),
+    });
+  };
+  Object.defineProperty(document, "elementFromPoint", {
+    value: (x: number): Element | null => rectIds.get(Math.floor(x / 10)) ?? null,
+  });
+
   const runExpr = (expr: string): unknown => {
+    for (const el of Array.from(document.querySelectorAll("*"))) stubRect(el as Element);
     const fn = new window.Function("document", "window", "CSS", `return (${expr});`) as (
       d: unknown,
       w: unknown,
@@ -121,21 +144,23 @@ function buildCascadeHarness(): {
 
   const resolveFirst = (selector: string): Element | null => {
     try {
-      return document.querySelector(selector);
+      const el = document.querySelector(selector);
+      if (el) stubRect(el);
+      return el;
     } catch {
       return null;
     }
   };
 
-  const locator = (selector: string) => ({
-    count: async (): Promise<number> => {
-      try {
-        return document.querySelectorAll(selector).length;
-      } catch {
-        return 0;
-      }
-    },
-    first: () => ({
+  const locator = (selector: string) => {
+    const handle = {
+      count: async (): Promise<number> => {
+        try {
+          return document.querySelectorAll(selector).length;
+        } catch {
+          return 0;
+        }
+      },
       click: async (): Promise<void> => {
         clicks.push(selector);
         const el = resolveFirst(selector);
@@ -164,8 +189,10 @@ function buildCascadeHarness(): {
       fill: async (): Promise<void> => undefined,
       isChecked: async (): Promise<boolean> => false,
       inputValue: async (): Promise<string> => "",
-    }),
-  });
+      first: (): unknown => handle,
+    };
+    return handle;
+  };
 
   const evaluate = async (expr: unknown): Promise<unknown> =>
     answerCentreHitTest(expr) ?? runExpr(String(expr));
