@@ -13298,13 +13298,14 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { const __ac = el.getAttribute("aria-checked"); if (__ac === "true" || __ac === "false") return { fired: true, kind: "checkbox", checked: __ac === "true", ariaManaged: true }; el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
             phraseMismatch?: boolean;
             kind?: string;
             checked?: boolean;
+            ariaManaged?: boolean;
           };
           const fired = probeResult.fired;
           if (fired) await adoptOpenedPage();
@@ -13317,7 +13318,11 @@ export async function executeStepWithHealing(params: {
           // ancestor-invalid signal through prevents the cascade from
           // advancing past a vacuous click.
           let ancestorStillInvalid = false;
-          if (probeResult.kind === "checkbox" && probeResult.checked === true) {
+          if (
+            probeResult.kind === "checkbox" &&
+            probeResult.checked === true &&
+            probeResult.ariaManaged !== true
+          ) {
             const ancestorInvalidExpr = `(() => {
               const isInvalid = ${INVALID_MARKER_EL_EXPR};
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
@@ -13336,10 +13341,17 @@ export async function executeStepWithHealing(params: {
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
+          // An aria-managed box is never forced, so the framework's own
+          // aria-checked decides; a stale invalid ancestor is not consulted.
+          const forcedCheckboxRejected =
+            probeResult.kind === "checkbox" &&
+            (probeResult.ariaManaged === true
+              ? probeResult.checked !== true
+              : ancestorStillInvalid);
           const checkboxStateVerified =
             probeResult.kind === "checkbox" &&
             probeResult.checked === true &&
-            !ancestorStillInvalid;
+            (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
           await settleAfterClick(
             page,
@@ -13616,6 +13628,7 @@ export async function executeStepWithHealing(params: {
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
+            !forcedCheckboxRejected &&
             ((n16ClickDelivered && retryNetworkFired && retryDestinationPlausible) ||
               (n16ClickDelivered && retryUrlChanged) ||
               (checkboxStateVerified && retryDestinationPlausible) ||
