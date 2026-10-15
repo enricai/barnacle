@@ -8387,12 +8387,19 @@ async function tryPromptSelectorPrimitive(params: {
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
       const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
-      const all = Array.from(scope.querySelectorAll(optionSel));
+      // Under the document fallback, ownership is structural: anything inside a
+      // different widget's container (one that neither contains nor is contained
+      // by this widget) is foreign — e.g. another widget's committed chips.
+      const foreignRoots = scope === document
+        ? Array.from(document.querySelectorAll("[" + widgetMarkAttr + "]")).filter((o) => o !== w && !o.contains(w) && !w.contains(o))
+        : [];
+      const isOwned = (el) => !foreignRoots.some((o) => o.contains(el));
+      const all = Array.from(scope.querySelectorAll(optionSel)).filter(isOwned);
       // A union hit may be an ancestor of another (e.g. role=listbox > li > p):
       // keep only leaf-most option nodes with their own text so we don't double
       // count or address a wrapper.
       const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
-      const searchInput = scope.querySelector(searchSel);
+      const searchInput = scope === document ? w.querySelector(searchSel) : scope.querySelector(searchSel);
       // Mark the scoped filter input so the Node-side fill addresses THIS
       // widget's input (Playwright's locator can't re-run the scope resolution).
       if (searchInput) searchInput.setAttribute(markAttr + "-search", "1");
