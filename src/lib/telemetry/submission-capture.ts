@@ -1,7 +1,7 @@
 /**
  * Append-only NDJSON sink for dispatch submission envelopes. One line per
  * plugin invocation captures the outcome — siteId, requestId, an allowlisted
- * summary of the inbound payload (never applicant PII or résumé bytes),
+ * summary of the request body (only the keys the plugin declares persistable),
  * status, audit payload, error message, duration, plus the opaque `joinKeys`
  * bag and the `kind:"submit"` dimension — so downstream tooling (ETL, jq,
  * ad-hoc queries) can answer "what did we submit for jobId X on date Y, and
@@ -21,7 +21,7 @@ import type { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
-import { NON_PII_PAYLOAD_KEYS, redactPiiDeep } from "@/lib/pii-redaction";
+import { redactionPolicyFor, redactPiiDeep } from "@/lib/pii-redaction";
 import { submitRecordSchema } from "@/lib/telemetry/reconciliation-record";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
 import type { InboundPayloadSummary } from "@/types/pii-redaction";
@@ -46,18 +46,21 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
 export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind">;
 
 /**
- * Reduces a request body to what telemetry consumers actually read, because
- * the raw body is applicant PII (and the full résumé) and the sink lands in
- * long-retention S3 storage. Non-object bodies collapse to `null`.
+ * Reduces a request body to what telemetry consumers read, because the raw
+ * body can carry personal data and the sink lands in long-retention S3
+ * storage. Only the plugin's declared `persistKeys` keep their values; every
+ * other key is recorded by name in `fieldsPresent`. Non-object bodies
+ * collapse to `null`.
  */
-export function summarizeInboundPayload(payload: unknown): InboundPayloadSummary | null {
+export function summarizeInboundPayload(
+  payload: unknown,
+  persistKeys: readonly string[] = []
+): InboundPayloadSummary | null {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
   const summary: InboundPayloadSummary = { fieldsPresent: [] };
   for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
     if (value === undefined || value === null || value === "") continue;
-    // Allowlisted keys are what downstream reconciliation joins on (af-qa's CI
-    // enrichment looks rows up by `scenario`); everything else is applicant data.
-    if (NON_PII_PAYLOAD_KEYS.has(key) && (typeof value === "string" || typeof value === "number")) {
+    if (persistKeys.includes(key) && (typeof value === "string" || typeof value === "number")) {
       summary[key] = value;
       continue;
     }
@@ -99,7 +102,10 @@ export async function captureSubmissionEnvelope(
   const sinkPath = opts.sinkPath ?? config.telemetry.submissionsNdjsonPath;
   const sample = redactPiiDeep({
     ...input,
-    inboundPayload: summarizeInboundPayload(input.inboundPayload),
+    inboundPayload: summarizeInboundPayload(
+      input.inboundPayload,
+      redactionPolicyFor(input.siteId)?.persistKeys
+    ),
     kind: "submit",
     ts: formatISO(new Date()),
   }) as SubmissionEnvelopeSample;

@@ -18,7 +18,7 @@ export function replyWithError(
   metrics?: DispatchMetrics
 ): void {
   // Error messages and per-step metrics embed step instructions, which carry
-  // applicant values; scrub them before they leave the process.
+  // request values; scrub them before they leave the process.
   const envelope = buildErrorEnvelope(code, redactPii(message), detailType);
   const body = metrics ? { ...envelope, metrics: redactPiiDeep(metrics) } : envelope;
   void reply.status(statusOverride ?? httpStatusForCode(code)).send(body);

@@ -312,9 +312,9 @@ export async function createBrowserbaseBrowserSession(
           } as ModelConfiguration),
       llmClient,
       // Off: the cache keys on instruction text, and instructions can still
-      // carry applicant values the guard leaves literal (City, answers,
-      // replayed observe actions), which a cache entry would persist on
-      // Browserbase's side.
+      // carry request values the guard leaves literal (keys outside the
+      // plugin's tokenizeKeys, replayed observe actions), which a cache entry
+      // would persist on Browserbase's side.
       serverCache: false,
       selfHeal: false,
       // Stagehand spawns an out-of-process crash supervisor whenever

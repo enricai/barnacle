@@ -1,11 +1,13 @@
 /**
- * Value-aware PII redaction for every string barnacle writes out (logs,
- * telemetry NDJSON/S3, error envelopes).
+ * Value-aware redaction of request data from every string barnacle writes out
+ * (logs, telemetry NDJSON/S3, error envelopes).
  *
- * Flow instructions, log lines and error messages carry applicant values as
- * free text ("Fill in the Email field with 'x@y.com'"), so key-based
- * redaction (pino `redact`) never sees them. Instead, each dispatch registers
- * its inbound payload's values here and every sink scrubs occurrences of them.
+ * Flow instructions, log lines and error messages carry request values as free
+ * text ("Fill in the Email field with 'x@y.com'"), so key-based redaction (pino
+ * `redact`) never sees them. Instead, each dispatch registers its request
+ * body's values here and every sink scrubs occurrences of them. How each field
+ * is matched comes from the plugin's {@link RedactionPolicy}; the engine itself
+ * knows no field names.
  *
  * The registry is process-global rather than request-scoped: pooled browser
  * sessions and Stagehand callbacks log outside the request's async context,
@@ -13,49 +15,14 @@
  * harmless over-redaction.
  */
 
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import { LRUCache } from "lru-cache";
 
-import type { SensitiveVariables, TokenizedText } from "@/types/pii-redaction";
+import type { RedactionPolicy, SensitiveVariables, TokenizedText } from "@/types/pii-redaction";
 
-/**
- * Inbound-payload keys that are job/attribution identifiers rather than
- * applicant data. Safe to persist verbatim and never redacted.
- */
-export const NON_PII_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
-  "JobId",
-  "jobId",
-  "ClickUrl",
-  "BaseUrl",
-  "TrackingUrl",
-  "scenario",
-]);
-
-/**
- * Keys whose values are matched case-insensitively on word boundaries:
- * sites and LLMs re-case names and addresses ("SMITH", "smith"), and these
- * are short enough that substring matching would over-trigger.
- */
-const IDENTITY_KEYS: ReadonlySet<string> = new Set([
-  "FirstName",
-  "LastName",
-  "Email",
-  "AddressLine",
-  "City",
-  "County",
-  "PostalCode",
-]);
-
-/** Identity keys whose values typeahead/autocomplete steps must see verbatim. */
-const NEVER_TOKENIZED_KEYS: ReadonlySet<string> = new Set(["City", "County"]);
-
-/** Keys holding phone numbers, matched in any common US formatting. */
-const PHONE_KEY = /phone/i;
-
-/** Binary/encoded résumé content: never appears as text in logs. */
-const SKIPPED_KEYS: ReadonlySet<string> = new Set(["Resume", "ResumeBase64"]);
-
-const MIN_IDENTITY_LENGTH = 2;
-const MIN_OTHER_LENGTH = 4;
+const MIN_WORD_LENGTH = 2;
+const MIN_LITERAL_LENGTH = 4;
+const MIN_DIGITS = 4;
 const DEFAULT_RELEASE_GRACE_MS = 10 * 60 * 1000;
 /** Upper bound on any registration — far beyond a run's task timeout, so a run that never releases (crash) still ages out. */
 const MAX_REGISTRATION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -64,13 +31,11 @@ const MAX_REGISTRY_ENTRIES = 10_000;
 const MAX_DEEP_REDACT_DEPTH = 6;
 
 /**
- * Which values {@link tokenizeSensitiveValues} may swap for a Stagehand
- * `%variable%`: "anywhere" values (emails, phones, secrets, values with a
- * digit/space/@) cannot be mistaken for instruction words; "value-span"
- * values (bare names) only where the instruction supplies a value, so a nurse
- * named "Will" doesn't turn "Will you require sponsorship?" into a token.
- * City/County and free-form answers are never tokenized — typeahead and
- * select steps need the literal text to pick a matching option.
+ * Where {@link tokenizeSensitiveValues} may swap a value for a Stagehand
+ * `%variable%`: "anywhere" for values that cannot be mistaken for instruction
+ * words (containing a digit, `@` or whitespace, digit-matched values, minted
+ * secrets); "value-span" for bare words, only where the instruction supplies a
+ * value; "never" for keys the plugin did not list in `tokenizeKeys`.
  */
 type TokenScope = "anywhere" | "value-span" | "never";
 
@@ -80,6 +45,8 @@ interface SensitiveMatcher {
   valueLength: number;
   tokenScope: TokenScope;
 }
+
+type BaseMatcher = Omit<SensitiveMatcher, "tokenScope">;
 
 let compiled: SensitiveMatcher[] | null = null;
 
@@ -91,76 +58,127 @@ const registry = new LRUCache<string, SensitiveMatcher[]>({
   },
 });
 
+const policies = new Map<string, RedactionPolicy>();
+
+/**
+ * Records a plugin's redaction policy so sinks that only see a `siteId`
+ * (submission telemetry) can apply it. Called once per plugin at route
+ * registration.
+ */
+export function registerRedactionPolicy(siteId: string, policy: RedactionPolicy | undefined): void {
+  if (policy) policies.set(siteId, policy);
+  else policies.delete(siteId);
+}
+
+/** The policy a plugin declared, or `undefined` (fail-closed defaults). */
+export function redactionPolicyFor(siteId: string): RedactionPolicy | undefined {
+  return policies.get(siteId);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function identityTokenScope(value: string, label: string): TokenScope {
-  if (NEVER_TOKENIZED_KEYS.has(label)) return "never";
-  return label === "Email" || /[\d@\s]/.test(value) ? "anywhere" : "value-span";
-}
-
-function identityMatcher(value: string, label: string): SensitiveMatcher {
+function wordMatcher(value: string, label: string): BaseMatcher {
   return {
     pattern: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "giu"),
     label,
     valueLength: value.length,
-    tokenScope: identityTokenScope(value, label),
   };
 }
 
-function phoneMatcher(value: string, label: string): SensitiveMatcher | null {
-  const digits = value.replace(/\D/g, "").slice(-10);
-  if (digits.length !== 10) return null;
-  const [area, exchange, line] = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6)];
+const DIGIT_SEPARATOR = "[\\s().\\-]*";
+
+function digitRun(digits: string): string {
+  return digits.split("").join(DIGIT_SEPARATOR);
+}
+
+/**
+ * Matches a value by its digits however they are formatted. An international
+ * (`+…`) value also matches its national number with or without the country
+ * code, and its national format (e.g. a UK trunk `0`), since country codes
+ * vary in length and only a numbering-plan library can split them.
+ */
+function digitMatcher(value: string, label: string): BaseMatcher | null {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < MIN_DIGITS) return null;
+  const alternatives = new Set([digitRun(digits)]);
+  const phone = value.trim().startsWith("+") ? parsePhoneNumberFromString(value) : undefined;
+  if (phone) {
+    alternatives.add(
+      `(?:\\+?${phone.countryCallingCode}${DIGIT_SEPARATOR})?(?:\\(0\\)${DIGIT_SEPARATOR})?${digitRun(phone.nationalNumber)}`
+    );
+    alternatives.add(digitRun(phone.formatNational().replace(/\D/g, "")));
+  }
   return {
-    pattern: new RegExp(
-      `(?<!\\d)(?:\\+?1[\\s.-]?)?\\(?${area}\\)?[\\s.-]?${exchange}[\\s.-]?${line}(?!\\d)`,
-      "g"
-    ),
+    // The optional leading "+(" is consumed so "(555) 123-4567" is replaced whole.
+    pattern: new RegExp(`(?<!\\d)\\+?\\(?(?:${[...alternatives].join("|")})(?!\\d)`, "g"),
     label,
     valueLength: value.length,
-    tokenScope: "anywhere",
   };
 }
 
-function literalMatcher(
+function literalMatcher(value: string, label: string): BaseMatcher {
+  return { pattern: new RegExp(escapeRegExp(value), "g"), label, valueLength: value.length };
+}
+
+type MatchKind = "word" | "digit" | "literal";
+
+function baseMatcherFor(kind: MatchKind, value: string, label: string): BaseMatcher | null {
+  if (kind === "digit") return digitMatcher(value, label) ?? literalMatcher(value, label);
+  if (kind === "word") return value.length >= MIN_WORD_LENGTH ? wordMatcher(value, label) : null;
+  return value.length >= MIN_LITERAL_LENGTH ? literalMatcher(value, label) : null;
+}
+
+function tokenScopeFor(kind: MatchKind, value: string, tokenize: boolean): TokenScope {
+  if (!tokenize) return "never";
+  return kind === "digit" || /[\d@\s]/.test(value) ? "anywhere" : "value-span";
+}
+
+function matcherFor(
+  kind: MatchKind,
   value: string,
   label: string,
-  tokenScope: TokenScope = "never"
-): SensitiveMatcher {
-  return {
-    pattern: new RegExp(escapeRegExp(value), "g"),
-    label,
-    valueLength: value.length,
-    tokenScope,
-  };
+  tokenize: boolean
+): SensitiveMatcher | null {
+  const base = baseMatcherFor(kind, value, label);
+  return base ? { ...base, tokenScope: tokenScopeFor(kind, value, tokenize) } : null;
 }
 
-function collectMatchers(value: unknown, topKey: string, out: SensitiveMatcher[]): void {
+function collectMatchers(
+  value: unknown,
+  kind: MatchKind,
+  label: string,
+  tokenize: boolean,
+  out: SensitiveMatcher[]
+): void {
   if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (PHONE_KEY.test(topKey)) {
-      const matcher = phoneMatcher(trimmed, topKey);
-      if (matcher) out.push(matcher);
-      return;
-    }
-    if (IDENTITY_KEYS.has(topKey)) {
-      if (trimmed.length >= MIN_IDENTITY_LENGTH) out.push(identityMatcher(trimmed, topKey));
-      return;
-    }
-    if (trimmed.length >= MIN_OTHER_LENGTH) out.push(literalMatcher(trimmed, topKey));
+    const matcher = matcherFor(kind, value.trim(), label, tokenize);
+    if (matcher) out.push(matcher);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectMatchers(item, topKey, out);
+    for (const item of value) collectMatchers(item, kind, label, tokenize, out);
     return;
   }
   if (value !== null && typeof value === "object" && !Buffer.isBuffer(value)) {
     for (const nested of Object.values(value as Record<string, unknown>)) {
-      collectMatchers(nested, topKey, out);
+      collectMatchers(nested, kind, label, tokenize, out);
     }
   }
+}
+
+function matchKindFor(key: string, policy: RedactionPolicy | undefined): MatchKind | null {
+  if (
+    policy?.persistKeys?.includes(key) ||
+    policy?.publicKeys?.includes(key) ||
+    policy?.skipKeys?.includes(key)
+  ) {
+    return null;
+  }
+  if (policy?.digitKeys?.includes(key)) return "digit";
+  if (policy?.wordKeys?.includes(key)) return "word";
+  return "literal";
 }
 
 function activeMatchers(): SensitiveMatcher[] {
@@ -171,16 +189,22 @@ function activeMatchers(): SensitiveMatcher[] {
 }
 
 /**
- * Registers a dispatch's inbound payload so its values are scrubbed from all
- * output until {@link releaseSensitiveValues} plus a grace period — the
- * payload is the one place the engine knows which strings are applicant PII.
+ * Registers a request body so its values are scrubbed from all output until
+ * {@link releaseSensitiveValues} plus a grace period. The body is the one
+ * place the engine sees the caller's data; the plugin's policy says how each
+ * field should be matched, and unlisted fields are matched as literals.
  */
-export function registerSensitiveValues(runId: string, payload: unknown): void {
+export function registerSensitiveValues(
+  runId: string,
+  payload: unknown,
+  policy?: RedactionPolicy
+): void {
   if (payload === null || typeof payload !== "object") return;
   const matchers: SensitiveMatcher[] = [];
   for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
-    if (NON_PII_PAYLOAD_KEYS.has(key) || SKIPPED_KEYS.has(key)) continue;
-    collectMatchers(value, key, matchers);
+    const kind = matchKindFor(key, policy);
+    const tokenize = policy?.tokenizeKeys?.includes(key) ?? false;
+    if (kind) collectMatchers(value, kind, key, tokenize, matchers);
   }
   registry.set(runId, matchers, { ttl: MAX_REGISTRATION_TTL_MS });
   compiled = null;
@@ -209,8 +233,12 @@ export function releaseSensitiveValues(
  * written out either.
  */
 export function registerSecretValue(value: string, ttlMs: number = MAX_REGISTRATION_TTL_MS): void {
-  if (value.length < MIN_OTHER_LENGTH) return;
-  registry.set(`secret:${value}`, [literalMatcher(value, "Secret", "anywhere")], { ttl: ttlMs });
+  if (value.length < MIN_LITERAL_LENGTH) return;
+  registry.set(
+    `secret:${value}`,
+    [{ ...literalMatcher(value, "Secret"), tokenScope: "anywhere" }],
+    { ttl: ttlMs }
+  );
   compiled = null;
 }
 
@@ -266,8 +294,8 @@ export function redactPiiDeep(value: unknown, depth = 0): unknown {
 /**
  * Reduces a typed/selected value to its shape (`Aaaa`, `99/99/9999`) for
  * diagnostics: format mismatches stay debuggable (and usable as rephrase
- * evidence) without the applicant's value — including short answers like
- * "Yes" to EEO questions that are too common to register for redaction.
+ * evidence) without the value itself — including short answers like "Yes"
+ * that are too common to register for redaction.
  */
 export function maskValueShape(text: string, maxLength = 40): string {
   return text
@@ -376,5 +404,6 @@ export function unresolvedTokens(text: string, variables: SensitiveVariables): s
 /** Test-only: clears the registry between cases. */
 export function resetSensitiveValuesForTests(): void {
   registry.clear();
+  policies.clear();
   compiled = null;
 }

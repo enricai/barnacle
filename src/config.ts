@@ -121,9 +121,9 @@ export interface AppConfig {
     /**
      * Whether Browserbase keeps its CDP session log and video recording.
      * Off by default because both capture what the flow types — every
-     * applicant field and generated password lands in `Input.insertText`
+     * request value and generated password lands in `Input.insertText`
      * params on Browserbase's side. Turn on (BROWSERBASE_SESSION_ARTIFACTS)
-     * only for local/recon debugging with non-applicant data.
+     * only for local/recon debugging with non-sensitive data.
      */
     browserbaseSessionArtifacts: boolean;
     /**

@@ -1,8 +1,8 @@
 /**
- * End-to-end guard that applicant values never leave the process through
+ * End-to-end guard that request values never leave the process through
  * telemetry or the error reply: a real Fastify app (app.inject), a real
  * dispatch(), and the real calls/submissions NDJSON writers on disk. The test
- * plugin behaves like a failing browser flow — it embeds the applicant's
+ * plugin behaves like a failing browser flow — it embeds the request's
  * values and a generated password in an instruction, captures it as an LLM
  * call, then fails with that instruction in the error message.
  */
@@ -30,6 +30,7 @@ import { registerRoutes } from "@/plugins/loader";
 import { StepVerificationError } from "@/scraper/errors";
 import type { SitePlugin, SitePluginResult } from "@/site-plugin";
 import type { Logger } from "@/types/logging";
+import type { RedactionPolicy } from "@/types/pii-redaction";
 
 const sinkPaths = vi.hoisted(() => ({
   submissions: "/tmp/pii-redaction-e2e-unset-submissions.ndjson",
@@ -59,15 +60,15 @@ vi.mock("@/config", async () => {
 
 const cfgStub = { scraper: { siteBaseUrls: {} } } as unknown as AppConfig;
 
-const APPLICANT = {
+const REQUEST = {
   JobId: "JOB-424242",
   FirstName: "Sentinelfirst",
   LastName: "Sentinellast",
-  Email: "sentinel.applicant@example.com",
+  Email: "sentinel.requester@example.com",
   Phone: "+15559876543",
 };
 
-const APPLICANT_SCHEMA = z.object({
+const REQUEST_SCHEMA = z.object({
   JobId: z.string(),
   FirstName: z.string(),
   LastName: z.string(),
@@ -75,14 +76,20 @@ const APPLICANT_SCHEMA = z.object({
   Phone: z.string(),
 });
 
+const REDACTION: RedactionPolicy = {
+  persistKeys: ["JobId"],
+  wordKeys: ["FirstName", "LastName", "Email"],
+  digitKeys: ["Phone"],
+};
+
 const SENTINELS = [
   /Sentinelfirst/i,
   /Sentinellast/i,
-  /sentinel\.applicant@example\.com/i,
+  /sentinel\.requester@example\.com/i,
   /5559876543/,
 ];
 
-describe("dispatch() keeps applicant values out of telemetry and error replies", () => {
+describe("dispatch() keeps request values out of telemetry and error replies", () => {
   let tmpDir: string;
   const preservedEnv = {
     DEV_BYPASS_AUTH: process.env.DEV_BYPASS_AUTH,
@@ -127,12 +134,13 @@ describe("dispatch() keeps applicant values out of telemetry and error replies",
       meta: {
         siteId: "pii-e2e",
         displayName: "PII E2E",
-        bodySchema: APPLICANT_SCHEMA,
+        bodySchema: REQUEST_SCHEMA,
         responseSchema: z.object({ verified: z.boolean() }),
+        redaction: REDACTION,
       },
       execute: vi.fn(),
       executeHttp: async (payload): Promise<SitePluginResult<unknown>> => {
-        const p = payload as typeof APPLICANT;
+        const p = payload as typeof REQUEST;
         generated.password = generateThrowawayPassword();
         const instruction = `Fill in Email with '${p.Email}', Phone with '${p.Phone}', name '${p.FirstName.toUpperCase()} ${p.LastName}', Password with '${generated.password}'`;
         await captureLlmCall({
@@ -160,7 +168,7 @@ describe("dispatch() keeps applicant values out of telemetry and error replies",
     const response = await app.inject({
       method: "POST",
       url: "/v1/pii-e2e/run",
-      payload: APPLICANT,
+      payload: REQUEST,
     });
     await app.close();
 
@@ -193,15 +201,16 @@ describe("dispatch() keeps applicant values out of telemetry and error replies",
       meta: {
         siteId: "pii-e2e",
         displayName: "PII E2E",
-        bodySchema: APPLICANT_SCHEMA,
+        bodySchema: REQUEST_SCHEMA,
         responseSchema: z.object({ verified: z.boolean() }),
+        redaction: REDACTION,
         extraRoutes: [
           {
             method: "post",
             path: "/v1/pii-e2e/follow-up",
-            bodySchema: APPLICANT_SCHEMA,
+            bodySchema: REQUEST_SCHEMA,
             handler: async (request): Promise<unknown> => {
-              const body = request.body as typeof APPLICANT;
+              const body = request.body as typeof REQUEST;
               request.log.info(`follow-up for ${body.Email} (${body.FirstName} ${body.LastName})`);
               throw new StepVerificationError(`follow-up rejected ${body.Email} ${body.Phone}`);
             },
@@ -218,7 +227,7 @@ describe("dispatch() keeps applicant values out of telemetry and error replies",
     const response = await app.inject({
       method: "POST",
       url: "/v1/pii-e2e/follow-up",
-      payload: APPLICANT,
+      payload: REQUEST,
     });
     await app.close();
 

@@ -132,7 +132,7 @@ describe("segmented date widget sharing a fieldset", () => {
       i.getAttribute("aria-valuenow")
     );
     expect(vals).toEqual([null, "2020"]);
-    // Dates are applicant data (birth, graduation): only their shape is logged.
+    // Dates can be personal data (birth dates): only their shape is logged.
     expect(info).toHaveBeenCalledWith("segmented date primitive: committed segments [9999]");
     expect(info.mock.calls.flat().join("\n")).not.toContain("2020");
   });

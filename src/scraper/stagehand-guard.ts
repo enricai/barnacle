@@ -281,7 +281,7 @@ export async function guardedAct(
   _frameTarget?: FrameTarget
 ): Promise<ActResult> {
   const callId = randomUUID();
-  // Applicant values travel as Stagehand `variables`, substituted only when
+  // Request values travel as Stagehand `variables`, substituted only when
   // the action is performed. An `Action` (from observe) is replayed without
   // an LLM, so it keeps its literal arguments.
   const tokenized =

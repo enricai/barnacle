@@ -29,7 +29,11 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
-import { registerSensitiveValues, releaseSensitiveValues } from "@/lib/pii-redaction";
+import {
+  registerRedactionPolicy,
+  registerSensitiveValues,
+  releaseSensitiveValues,
+} from "@/lib/pii-redaction";
 import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
 import { type HotPathErrorTelemetry, RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
@@ -388,7 +392,7 @@ export async function dispatch<TResult>(
   const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
-  registerSensitiveValues(context.requestId, payload);
+  registerSensitiveValues(context.requestId, payload, plugin.meta.redaction);
 
   try {
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
@@ -542,6 +546,7 @@ export async function registerRoutes(
 
   for (const plugin of plugins) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
+    registerRedactionPolicy(plugin.meta.siteId, plugin.meta.redaction);
 
     app.post(
       routePath,
@@ -667,9 +672,8 @@ function registerExtraRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        // Extra routes carry applicant data too (resume answers, OTP emails) and
-        // bypass dispatch(), so they register their body for redaction here.
-        registerSensitiveValues(request.id, body);
+        // Extra routes bypass dispatch(), so they register their body here.
+        registerSensitiveValues(request.id, body, plugin.meta.redaction);
         try {
           const result = await route.handler(
             {

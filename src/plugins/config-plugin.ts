@@ -48,6 +48,16 @@ const jsonSchemaFragment = z.record(z.string(), z.unknown());
 /** Failure-class names a manifest can name in `spec.browserFallbackGate.skipOn`, matching `classifyDispatchError`'s tags in `src/plugins/loader.ts`. */
 const FALLBACK_GATE_FAILURE_CLASSES = ["schema_drift", "bot_challenge", "server_error"] as const;
 
+/** Declarative mirror of `SitePluginMeta.redaction` (see `RedactionPolicy`). */
+const redactionPolicySchema = z.object({
+  persistKeys: z.array(z.string()).optional(),
+  publicKeys: z.array(z.string()).optional(),
+  skipKeys: z.array(z.string()).optional(),
+  wordKeys: z.array(z.string()).optional(),
+  digitKeys: z.array(z.string()).optional(),
+  tokenizeKeys: z.array(z.string()).optional(),
+});
+
 const browserFallbackGateSchema = z.object({
   skipOn: z.array(z.enum(FALLBACK_GATE_FAILURE_CLASSES)).min(1),
 });
@@ -108,6 +118,8 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
      * fallback should be skipped. Absent means today's unconditional cascade.
      */
     browserFallbackGate: browserFallbackGateSchema.optional(),
+    /** How request fields are redacted and which are persisted; see `SitePluginMeta.redaction`. */
+    redaction: redactionPolicySchema.optional(),
   }),
 });
 
@@ -341,6 +353,7 @@ export async function buildConfigPlugin(
         browserbaseSessionCreateParams: spec.browserbaseSessionCreateParams,
       }),
       ...(browserFallbackGate !== undefined && { browserFallbackGate }),
+      ...(spec.redaction !== undefined && { redaction: spec.redaction }),
     },
     ...(executeHttp && { executeHttp }),
     async execute(

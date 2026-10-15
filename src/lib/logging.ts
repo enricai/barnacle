@@ -65,7 +65,7 @@ const formatters = {
 type LogFunction = (obj: unknown, ...args: unknown[]) => void;
 
 /**
- * Scrubs registered applicant values from every argument before pino formats
+ * Scrubs registered request values from every argument before pino formats
  * the line. `redact` only matches object keys; log messages are interpolated
  * strings, so values have to be matched by content. Child loggers (e.g.
  * Fastify's `request.log`) inherit pino hooks. Exported for direct testing.

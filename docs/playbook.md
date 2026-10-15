@@ -108,23 +108,25 @@ Total runtime: 20–40 minutes for a typical flow, fully unattended.
 
 `createBrowserSession()` (`src/scraper/session.ts`) constructs Stagehand with
 `serverCache: false` on Browserbase (the cache keys on instruction text, and
-instructions can still carry applicant values left literal — City, answers,
-replayed observe actions — which a cache entry would persist server-side) and
+instructions can still carry request values the guard leaves literal — keys
+outside the plugin's `tokenizeKeys`, replayed observe actions — which a cache
+entry would persist server-side) and
 `selfHeal: false` — Stagehand's built-in heal only catches Playwright throws,
 not silent semantic misses ("clicked the wrong thing, returned success"),
 which recon's own verify-and-retry cascade handles (1c). The runtime fallback
 uses a separate whole-flow retry via `withScraperRetry`
 (`src/scraper/retry.ts`), verified by Zod.
 
-Flow steps may splice applicant values into instructions; before Stagehand's
+Flow steps may splice request values into instructions; before Stagehand's
 LLM sees one, `guardedAct`/`guardedObserve` (`src/scraper/stagehand-guard.ts`)
-swap each tokenizable registered value for a `%Name%` token and pass it as a
-Stagehand `variables` entry, substituted only when the action is performed
-(`tokenizeSensitiveValues` in `src/lib/pii-redaction.ts`). Emails, phones,
-generated passwords and values with a digit/space/@ are tokenized anywhere;
-bare names only in a value position ("… with 'Ann'"); City/County and
-dropdown answers stay literal so select and typeahead steps can match them.
-The attempt-5 rephrase prompt is tokenized the same way.
+swap the values of the keys a plugin lists in `meta.redaction.tokenizeKeys`
+(plus generated secrets) for `%Name%` tokens and pass them as Stagehand
+`variables`, substituted only when the action is performed
+(`tokenizeSensitiveValues` in `src/lib/pii-redaction.ts`). Values containing a
+digit, `@` or whitespace are tokenized anywhere; others only in a value
+position ("… with 'Ann'"), so a value that is also an instruction word is left
+alone. Keys not listed stay literal, so select and typeahead steps can still
+match options. The attempt-5 rephrase prompt is tokenized the same way.
 
 This factory is shared with the runtime dispatch path (`src/plugins/loader.ts`
 — 5B/5D), so every Browserbase-backed session also exposes a memoized

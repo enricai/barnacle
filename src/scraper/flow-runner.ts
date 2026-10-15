@@ -437,8 +437,8 @@ export function wireSignalCapture(
       }
     }
 
-    // Query strings carry form GETs and analytics beacons (often applicant
-    // fields); origin + path is enough to follow the request sequence.
+    // Query strings carry form GETs and analytics beacons (often form-field
+    // values); origin + path is enough to follow the request sequence.
     logger.info(
       `captured [${capture.status}] ${capture.method} ${req.url.split("?")[0]} → ${filename}`
     );
@@ -2806,7 +2806,7 @@ ${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
-  // Applicant values reach the rephrase LLM only as %tokens%; the rewrite is
+  // Request values reach the rephrase LLM only as %tokens%; the rewrite is
   // resolved back before the cascade acts on it (which re-tokenizes it for
   // Stagehand). A rewrite citing a token we never issued is unusable.
   const { text: prompt, variables } = tokenizeSensitiveValues(rawPrompt);
@@ -10366,7 +10366,7 @@ export function spliceEmailStepFillValue(step: string, code: string): string {
 
 /**
  * Masks a typed/selected value for logs and attempt diagnostics. Values are
- * applicant answers (or the emailStep-extracted single-use code spliced into
+ * caller-supplied answers (or the emailStep-extracted single-use code spliced into
  * the step, see {@link spliceEmailStepFillValue}), so only their shape is
  * kept — enough to debug format mismatches, never the value itself.
  */
