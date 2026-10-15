@@ -43,7 +43,7 @@ When verified=false, write a one short sentence reason (keep it brief) citing wh
 
 const NON_FINAL_STEP_RULE = `
 
-This is NOT the final step of the flow. For a non-final step the document title of a single-page app is not evidence: it often stays stale across steps. Visible text decides; if the visible text shows the page advanced, verified=true even when the title or URL did not change.`;
+This is NOT the final step of the flow. For a non-final step a stale document title is not evidence (a single-page app's title often stays the same across steps). Visible text decides; if the visible text shows the page advanced, verified=true even when the title or URL did not change.`;
 
 const MAX_VISIBLE_TEXT_CHARS = 3000;
 
