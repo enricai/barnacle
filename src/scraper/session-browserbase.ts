@@ -311,9 +311,10 @@ export async function createBrowserbaseBrowserSession(
             fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
           } as ModelConfiguration),
       llmClient,
-      // Off: the cache keys on instruction text, and flow instructions carry
-      // applicant values, so it never hits on value-bearing steps and would
-      // only persist those values on Browserbase's side.
+      // Off: the cache keys on instruction text, and instructions can still
+      // carry applicant values the guard leaves literal (City, answers,
+      // replayed observe actions), which a cache entry would persist on
+      // Browserbase's side.
       serverCache: false,
       selfHeal: false,
       // Stagehand spawns an out-of-process crash supervisor whenever

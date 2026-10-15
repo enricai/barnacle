@@ -155,6 +155,11 @@ duration of the run, and every log line, telemetry record and error reply is
 scrubbed of those values (`<Email>`, `<FirstName>`, …). Passwords from
 `generateThrowawayPassword()` register themselves.
 
+Stagehand instructions are tokenized too: `guardedAct`/`guardedObserve` swap
+registered values for `%Name%` tokens before Stagehand's LLM sees them
+(City/County and dropdown answers stay literal so option matching still works;
+see [the playbook](playbook.md) §1a).
+
 Two cases core cannot see:
 
 - **Secrets your plugin mints itself** — e.g. an account password derived from a
