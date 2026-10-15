@@ -40,7 +40,7 @@ describe("judgeStepOutcome text length unit", () => {
   it("strips the length prefix and collapses whitespace in beforeText", async () => {
     stepJudge.mockResolvedValue({ advanced: true, reason: "y" });
     await run("x", "5000:a  b\n\n c");
-    expect(stepJudge.mock.calls[0][0].input.beforeText).toBe("a b c");
+    expect(stepJudge.mock.calls[0]?.[0]?.input.beforeText).toBe("a b c");
   });
 
   it("settles on the raw length for bodies over 3000 chars", async () => {
@@ -50,6 +50,6 @@ describe("judgeStepOutcome text length unit", () => {
     const pre = `${body.length}:${body.slice(0, 200)}`;
     await run(body, pre);
     expect(waits).toEqual([]);
-    expect(stepJudge.mock.calls[0][0].input.beforeText).toBe(body.slice(0, 200));
+    expect(stepJudge.mock.calls[0]?.[0]?.input.beforeText).toBe(body.slice(0, 200));
   });
 });
