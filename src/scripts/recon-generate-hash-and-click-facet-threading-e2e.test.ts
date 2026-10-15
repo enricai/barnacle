@@ -28,7 +28,7 @@ const NIGHTS_STEP =
   "Open the length of stay (number of nights) filter dropdown in the search bar and select the '4' nights option, keeping the other filters that are already applied";
 
 /**
- * Pins that hash-slug facets (`disney-wish`, `december-2026`) and click-step
+ * Pins that hash-slug facets (`alpha-ship`, `december-2026`) and click-step
  * facets all rewrite their own kind-suffixed `filters` elements, that kinds no
  * payloadField declares stay literal, and that a declared facet no request
  * carries is emitted optional instead of a required field nothing reads.
@@ -81,7 +81,7 @@ afterEach(() => {
 
 const DECLARED_STEPS = [
   { step: "navigate", payloadField: "ship" },
-  { step: "navigate", payloadField: "sailMonth" },
+  { step: "navigate", payloadField: "departMonth" },
   { step: DESTINATION_STEP, payloadField: "destination" },
   { step: NIGHTS_STEP, payloadField: "nights" },
 ];
@@ -100,13 +100,13 @@ function generate(): { contract: string; browserFlow: string } {
       steps: [
         {
           step: "navigate to the ship page",
-          navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/disney-wish`,
+          navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/alpha-ship`,
           payloadField: "ship",
         },
         {
           step: "navigate to the ship's sailing month",
-          navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/disney-wish/december-2026`,
-          payloadField: "sailMonth",
+          navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/alpha-ship/december-2026`,
+          payloadField: "departMonth",
         },
         { step: DESTINATION_STEP, payloadField: "destination" },
         { step: NIGHTS_STEP, payloadField: "nights" },
@@ -131,11 +131,11 @@ function generate(): { contract: string; browserFlow: string } {
 }
 
 describe("recon-generate CLI — hash and click facets threaded into a filters array", () => {
-  it("threads ship, sailMonth and destination into their elements and leaves undeclared kinds literal", () => {
+  it("threads ship, departMonth and destination into their elements and leaves undeclared kinds literal", () => {
     const { contract } = generate();
 
     expect(contract, contract).toMatch(/payload\.ship[^`]*;filterType=ship/);
-    expect(contract, contract).toMatch(/payload\.sailMonth[^`]*;filterType=date/);
+    expect(contract, contract).toMatch(/payload\.departMonth[^`]*;filterType=date/);
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     for (const replaced of ["WW;filterType=ship", "2026-12;filterType=date", "PARIS;filterType"]) {
       expect(contract).not.toContain(replaced);
@@ -153,7 +153,7 @@ describe("recon-generate CLI — hash and click facets threaded into a filters a
     const render = (payload: Record<string, string>): { filters: string[] } =>
       JSON.parse(new Function("payload", `return ${body}`)(payload));
 
-    const declared = { ship: "disney-wish", sailMonth: "december-2026", destination: "Rome" };
+    const declared = { ship: "alpha-ship", departMonth: "december-2026", destination: "Rome" };
     expect(render(declared).filters).toEqual([
       "WW;filterType=ship",
       "2026-12;filterType=date",
@@ -161,7 +161,7 @@ describe("recon-generate CLI — hash and click facets threaded into a filters a
       "BETA;filterType=theme",
       "GAMMA;filterType=island",
     ]);
-    const coded = { ship: "XX", sailMonth: "2027-01", destination: "Oslo" };
+    const coded = { ship: "XX", departMonth: "2027-01", destination: "Oslo" };
     expect(render(coded).filters.slice(0, 3)).toEqual([
       "XX;filterType=ship",
       "2027-01;filterType=date",
