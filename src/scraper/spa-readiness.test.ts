@@ -132,6 +132,19 @@ describe("spa-readiness/regateSpaAfterOriginChange", () => {
     expect(reload).toHaveBeenCalledWith({ waitUntil: "domcontentloaded" });
   });
 
+  it("runs the readiness poll again after the reload", async () => {
+    const { page, reload } = pageWithReload([10]);
+    let evaluatesAtReload = -1;
+    reload.mockImplementation(async () => {
+      evaluatesAtReload = (page.evaluate as ReturnType<typeof vi.fn>).mock.calls.length;
+    });
+    await regateSpaAfterOriginChange(page, testLogger, fast);
+    expect(evaluatesAtReload).toBeGreaterThan(0);
+    expect((page.evaluate as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(
+      evaluatesAtReload
+    );
+  });
+
   it("reloads exactly once and does not throw when still empty after reload", async () => {
     const { page, reload } = pageWithReload([10]);
     await expect(regateSpaAfterOriginChange(page, testLogger, fast)).resolves.toBeUndefined();
