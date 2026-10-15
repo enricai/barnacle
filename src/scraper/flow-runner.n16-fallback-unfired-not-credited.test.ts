@@ -90,6 +90,13 @@ function buildHarness(elementPresent: boolean) {
     p.textContent = `settling ${settles}`;
     document.body.appendChild(p);
   };
+  // One byte per tick keeps ambient churn below the view-swap reveal floor
+  // however many polls the post-click settle runs, so only n+16 gating decides.
+  const ambient = document.createElement("p");
+  document.body.appendChild(ambient);
+  const tick = (): void => {
+    ambient.textContent = `${ambient.textContent ?? ""}.`;
+  };
   (
     continueEl as unknown as {
       addEventListener: (type: string, cb: (ev: unknown) => void) => void;
@@ -135,7 +142,7 @@ function buildHarness(elementPresent: boolean) {
       }),
     }),
     waitForTimeout: async () => {
-      if (!elementPresent) grow();
+      if (!elementPresent) tick();
     },
     getSessionForFrame: () => session,
     mainFrameId: () => "main",
