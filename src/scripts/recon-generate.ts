@@ -7114,7 +7114,10 @@ function insertAbsentFacetElements(
   const indexOfElement = (target: unknown): number =>
     merged.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(target));
   for (const { element, before, after } of absent) {
-    const previous = [...before].reverse().map(indexOfElement).find((index) => index >= 0);
+    const previous = [...before]
+      .reverse()
+      .map(indexOfElement)
+      .find((index) => index >= 0);
     if (previous !== undefined) {
       merged.splice(previous + 1, 0, element);
       continue;
@@ -7155,7 +7158,12 @@ function collectSiblingArrayFacets(
         const facet = matchArrayElementFacet(element, facets);
         if (facet === undefined || present.has(facet.field)) continue;
         present.add(facet.field);
-        absent.push({ element, facet, before: value.slice(0, index), after: value.slice(index + 1) });
+        absent.push({
+          element,
+          facet,
+          before: value.slice(0, index),
+          after: value.slice(index + 1),
+        });
       }
     }
   }
