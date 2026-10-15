@@ -7733,7 +7733,6 @@ export function resolveRecurringNavigateToFacets(
   // the same facet's element in another (`WW;filterType=ship`).
   const claimedLiterals = new Set<string>();
   const aliased = declared.flatMap((facet) => {
-    if (facet.value.length === 0 && facet.origin === "step") return [];
     const literal = findKindKeyedLiteral(facet, actions);
     if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
     if (claimedLiterals.has(literal)) return [];
