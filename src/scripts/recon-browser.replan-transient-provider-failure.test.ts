@@ -44,6 +44,7 @@ vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 // orthogonal to the cascade-budget/replan-cycle abort signature under test.
 vi.mock("@/scraper/spa-readiness", () => ({
   waitForSpaReady: vi.fn().mockResolvedValue(undefined),
+  regateSpaAfterOriginChange: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { createBrowserSessionStub } = vi.hoisted(() => ({
