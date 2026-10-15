@@ -1,6 +1,13 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Element as HappyDomElement } from "happy-dom";
+import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
-import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
+import {
+  type AttemptRecord,
+  executeStepWithHealing,
+  type HealingFlowStep,
+  runHealingFlow,
+} from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /** n+16 fallback: an aria-managed checkbox the framework left unchecked vetoes retryVerified. */
@@ -279,5 +286,203 @@ describe("flow-runner n+16 aria-managed checkbox rejection (offline fixture, no 
     expect(state.uploadDocsStepReached).toBe(true);
     const src = state.clickExprSources[0] ?? "";
     expect(src.indexOf("ariaManaged: true")).toBeLessThan(src.indexOf("el.checked = true"));
+  });
+});
+
+const AGREE_STEP = "Check the 'I agree' checkbox";
+const FORM_URL = "https://apply.example.com/application/consent";
+
+function absoluteXPathFor(el: HappyDomElement): string {
+  const steps: string[] = [];
+  let node: HappyDomElement | null = el;
+  while (node) {
+    const current: HappyDomElement = node;
+    const parent: HappyDomElement | null = current.parentElement;
+    if (!parent) {
+      steps.unshift(`${current.tagName.toLowerCase()}[1]`);
+      break;
+    }
+    const idx =
+      Array.from(parent.children)
+        .filter((c: HappyDomElement) => c.tagName === current.tagName)
+        .indexOf(current) + 1;
+    steps.unshift(`${current.tagName.toLowerCase()}[${idx}]`);
+    node = parent;
+  }
+  return `/${steps.join("/")}`;
+}
+
+function resolveAbsoluteXPath(root: HappyDomElement, xp: string): HappyDomElement | null {
+  let current: HappyDomElement | null = root;
+  for (const step of xp.split("/").filter(Boolean).slice(1)) {
+    const match = /^([a-zA-Z0-9]+)\[(\d+)\]$/.exec(step);
+    if (!match || !current) return null;
+    const tag = match[1]?.toUpperCase();
+    const kids: HappyDomElement[] = Array.from(current.children).filter(
+      (c: HappyDomElement) => c.tagName === tag
+    );
+    current = kids[Number(match[2]) - 1] ?? null;
+  }
+  return current;
+}
+
+/** Runs the real n+16 `clickExpr` against a live happy-dom checkbox whose handlers ignore synthetic events. */
+async function runCheckboxFixture(html: string): Promise<{
+  result: "completed" | "failed";
+  checkbox: HappyDomElement;
+  events: string[];
+  infoLines: string[];
+  attempts: AttemptRecord[][];
+}> {
+  const window = new Window({ url: FORM_URL });
+  const document = window.document;
+  document.body.innerHTML = html;
+  const checkbox = document.getElementById("agree") as unknown as HappyDomElement;
+  const xpath = absoluteXPathFor(checkbox);
+  const events: string[] = [];
+  for (const type of ["click", "change"]) {
+    (
+      checkbox as unknown as { addEventListener: (t: string, cb: () => void) => void }
+    ).addEventListener(type, () => events.push(type));
+  }
+  const root = document.documentElement as unknown as HappyDomElement;
+  const win = window as unknown as { XPathResult?: unknown };
+  win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
+  (document as unknown as { evaluate: (e: string) => { singleNodeValue: unknown } }).evaluate = (
+    expr: string
+  ) => ({ singleNodeValue: expr.startsWith("//") ? null : resolveAbsoluteXPath(root, expr) });
+  const session = { on: () => {}, off: () => {} };
+  const page = {
+    evaluate: async (expr: unknown): Promise<unknown> => {
+      const fn = new window.Function("document", "XPathResult", `return (${String(expr)});`) as (
+        d: unknown,
+        x: unknown
+      ) => unknown;
+      return fn(document, win.XPathResult);
+    },
+    url: () => FORM_URL,
+    title: async () => "Consent",
+    locator: () => ({
+      first: () => ({
+        click: async () => {
+          throw new Error("not actionable");
+        },
+        isChecked: async () => false,
+        inputValue: async () => "",
+      }),
+    }),
+    waitForTimeout: async () => {},
+    getSessionForFrame: () => session,
+    mainFrameId: () => "main",
+    sendCDP: async () => ({ body: "{}", base64Encoded: false }),
+  } as unknown as Page;
+  const stagehand = {
+    act: vi.fn().mockResolvedValue({
+      success: true,
+      message: "clicked",
+      actionDescription: AGREE_STEP,
+      actions: [{ selector: `xpath=${xpath}`, description: "I agree", method: "click" }],
+    }),
+    observe: vi
+      .fn()
+      .mockImplementation(async (instruction?: unknown) =>
+        typeof instruction === "string"
+          ? []
+          : [{ selector: "xpath=//probe-presence", description: "probe-presence" }]
+      ),
+  } as unknown as Stagehand;
+  const infoLines: string[] = [];
+  const logger = {
+    info: vi.fn((m: string) => infoLines.push(m)),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  const attempts: AttemptRecord[][] = [];
+  const args = {
+    stagehand,
+    page,
+    step: AGREE_STEP,
+    optional: false,
+    upload: false,
+    submitStep: false,
+    flowHasSubmitSemantics: false,
+    stepIndex: 0,
+    totalSteps: () => 2,
+    phase: "flow",
+    signalCounter: { n: 0 },
+    recentCaptures: [],
+    recentCaptureMeta: [],
+    anthropic: null,
+    rephraseModel: null,
+    logger,
+    uploadFixture: null,
+    isFinalStep: false,
+    submitEndpointPattern: null,
+    submittedStateSelectors: [],
+    requireSubmitEndpointMatch: false,
+    advanceTransitionBodyPattern: null,
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    ownBackendHostnames: [],
+    knownErrorClassPrefixes: [],
+    wizardExitButtonLabels: [],
+    onStepFailure: (a: { attempts: AttemptRecord[] }) => {
+      attempts.push(a.attempts);
+      return null;
+    },
+  } as never;
+  const result = await executeStepWithHealing(args).then(
+    () => "completed" as const,
+    () => "failed" as const
+  );
+  return { result, checkbox, events, infoLines, attempts };
+}
+
+const isChecked = (el: HappyDomElement): boolean => (el as unknown as { checked: boolean }).checked;
+
+describe("flow-runner n+16 fallback — real clickExpr on happy-dom checkboxes", () => {
+  it("never forces or credits an aria-checked=false checkbox whose handler ignores synthetic events", async () => {
+    const { result, checkbox, events, infoLines } = await runCheckboxFixture(
+      `<div><input id="agree" type="checkbox" aria-checked="false" aria-invalid="true"></div>`
+    );
+    expect(result).toBe("failed");
+    expect(isChecked(checkbox)).toBe(false);
+    expect(events).toEqual([]);
+    const probes = infoLines.filter((l) => l.includes("n+16 probe:"));
+    expect(probes.length).toBeGreaterThan(0);
+    for (const line of probes) expect(line).toContain("verified=false");
+  });
+
+  it("credits aria-checked=true without toggling or dispatching, despite a stale aria-invalid", async () => {
+    const { result, checkbox, events, infoLines } = await runCheckboxFixture(
+      `<div><input id="agree" type="checkbox" aria-checked="true" aria-invalid="true"></div>`
+    );
+    expect(result).toBe("completed");
+    expect(isChecked(checkbox)).toBe(false);
+    expect(events).toEqual([]);
+    const probes = infoLines.filter((l) => l.includes("n+16 probe:"));
+    expect(probes[0]).toContain("verified=true");
+  });
+
+  it("keeps the legacy force-and-credit path for a plain native checkbox", async () => {
+    const { result, checkbox, events } = await runCheckboxFixture(
+      `<div><input id="agree" type="checkbox"></div>`
+    );
+    expect(result).toBe("completed");
+    expect(isChecked(checkbox)).toBe(true);
+    expect(events).toContain("click");
+    expect(events).toContain("change");
+  });
+
+  it("keeps the legacy ancestor-invalid veto for a native checkbox under a stale invalid ancestor", async () => {
+    const { result, checkbox, infoLines } = await runCheckboxFixture(
+      `<div aria-invalid="true"><input id="agree" type="checkbox"></div>`
+    );
+    expect(result).toBe("failed");
+    expect(isChecked(checkbox)).toBe(true);
+    const probes = infoLines.filter((l) => l.includes("n+16 probe:"));
+    expect(probes.length).toBeGreaterThan(0);
+    for (const line of probes) expect(line).toContain("verified=false");
   });
 });
