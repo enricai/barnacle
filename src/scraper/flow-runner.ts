@@ -5252,6 +5252,8 @@ async function tryUploadPrimitive(params: {
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
   signalCounter: { n: number };
+  /** Set on a Browserbase session so native-chooser uploads push the fixture to the remote browser. */
+  browserbaseSessionId?: string;
   /**
    * Tail of the recent-capture-meta window. Used to verify the post-upload
    * network signal is actually an upload-related POST (URL contains
@@ -5309,6 +5311,7 @@ async function tryUploadPrimitive(params: {
       logger,
       signalCounter,
       recentCaptureMeta,
+      browserbaseSessionId: params.browserbaseSessionId,
     });
     if (surfaced) return true;
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
@@ -5448,8 +5451,10 @@ export async function surfaceAndUpload(params: {
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
+  browserbaseSessionId?: string;
 }): Promise<boolean> {
-  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta, browserbaseSessionId } =
+    params;
   // Render-gate: the input-less strategies below (drag-drop is one-shot, the
   // affordance click resolves what's in the DOM) all race the async widget
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
@@ -5559,6 +5564,7 @@ export async function surfaceAndUpload(params: {
         logger,
         signalCounter,
         recentCaptureMeta,
+        browserbaseSessionId,
       });
     }
     return false;
@@ -11004,6 +11010,7 @@ export async function executeStepWithHealing(params: {
       fixture: uploadFixture,
       logger,
       signalCounter,
+      browserbaseSessionId: stagehand.browserbaseSessionID,
       recentCaptureMeta,
     })
   ) {
