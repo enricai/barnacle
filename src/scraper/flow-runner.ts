@@ -44,6 +44,10 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
+import {
+  matchesUploadAffordanceVocabulary,
+  UPLOAD_AFFORDANCE_MATCHER_EXPR,
+} from "@/scraper/upload-affordance-expr";
 import { followNewPage } from "@/scraper/active-page";
 import {
   buildMarkShadowInteractiveDescendantExpr,
@@ -5120,13 +5124,7 @@ async function waitForUploadNetworkSignal(params: {
  * surface path never fires a skip/decline/submit control.
  */
 export function isUploadAffordanceLabel(label: string): boolean {
-  const norm = label.replace(/\s+/g, " ").trim().toLowerCase();
-  if (norm.length === 0) return false;
-  if (/\b(later|skip|without|remove|delete|cancel)\b/.test(norm)) return false;
-  if (/\bno file\b/.test(norm)) return false;
-  return /\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\/cv)\b/.test(
-    norm
-  );
+  return matchesUploadAffordanceVocabulary(label);
 }
 
 /**
@@ -5374,14 +5372,7 @@ export async function surfaceAndUpload(params: {
   // widget. Static evaluate literal (no interpolation); dropzone list parallels
   // simulateDragDropUpload and the button matcher parallels clickUploadAffordance.
   const targetExpr = `(() => {
-    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isUpload = (raw) => {
-      const t = norm(raw);
-      if (!t) return false;
-      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
-      if (/\\bno file\\b/.test(t)) return false;
-      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
-    };
+    const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
     if (document.querySelector("input[type=file]")) return { present: true };
     const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
     if (dz) return { present: true };
@@ -5508,18 +5499,12 @@ async function clickUploadAffordance(
   target: FrameTarget,
   logger: Logger
 ): Promise<boolean> {
-  // The browser-side matcher parallels isUploadAffordanceLabel; kept as a literal
-  // so the enumerate is a static string (same trust posture as the other
-  // primitives). Only the shared visibility constant is interpolated.
+  // The browser-side matcher is the shared upload-affordance vocabulary; the enumerate stays
+  // a static string (same trust posture as the other
+  // primitives); only shared constants are interpolated.
   const expr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isUpload = (raw) => {
-      const t = norm(raw);
-      if (!t) return false;
-      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
-      if (/\\bno file\\b/.test(t)) return false;
-      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
-    };
+    const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
     const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
