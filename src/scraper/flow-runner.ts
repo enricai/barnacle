@@ -8655,7 +8655,14 @@ async function tryPromptSelectorPrimitive(params: {
       for (let i = 0; i < opts.length; i++) {
         opts[i].setAttribute(markAttr, String(i));
         const label = optionLabel(opts[i]);
-        options.push({ oIdx: i, text: label });
+        const ids = window.__bclOptionNodeIds || (window.__bclOptionNodeIds = { map: new WeakMap(), next: 0 });
+        if (!ids.map.has(opts[i])) ids.map.set(opts[i], ids.next++);
+        options.push({
+          oIdx: i,
+          text: label,
+          nodeId: ids.map.get(opts[i]),
+          domText: (opts[i].textContent || "").replace(/\\s+/g, " ").trim(),
+        });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
       // popup from the document-wide last-resort fallback in
@@ -8670,7 +8677,7 @@ async function tryPromptSelectorPrimitive(params: {
     type EnumerateOptionsResult = {
       optionsPresent: boolean;
       searchable?: boolean;
-      options?: { oIdx: number; text: string }[];
+      options?: PromptOptionRead[];
       scopeIsDocument?: boolean;
     };
     // Pre-check (single evaluate, no polling): a PRIOR primitive call on this
@@ -8783,12 +8790,13 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    let optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
-      page,
-      target,
-      enumerateOptionsExpr,
-      isOwnScopePopup
-    );
+    let optionsFiltered: EnumerateOptionsResult | null =
+      await pollEnumerate<EnumerateOptionsResult>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        isOwnScopePopup
+      );
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
     for (
@@ -8829,7 +8837,7 @@ async function tryPromptSelectorPrimitive(params: {
     }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
-        `prompt-selector primitive: filtered popup for ${optLabel} rendered no options; falling through`
+        `prompt-selector primitive: filtered popup for ${optLabel} rendered no stable options; falling through`
       );
       return null;
     }
@@ -8858,19 +8866,27 @@ async function tryPromptSelectorPrimitive(params: {
 const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
 
 /**
- * Re-reads the filtered list until two consecutive reads carry identical
- * ordered option text, so the committer never picks from a list that is still
- * re-rendering. The last read is returned because each read re-marks the live
- * nodes; an earlier read's marks may point at detached elements. Bounded: after
- * the cap the latest read is returned as-is.
+ * One enumerated option. `nodeId` is the in-page identity of the stamped node
+ * and `domText` its own text content (what the click-time identity check sees).
  */
-async function readStablePromptOptions<T extends { options?: { text: string }[] }>(
+type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string };
+
+/**
+ * Re-reads the filtered list until two consecutive reads carry identical
+ * ordered option text AND node identity, so a virtualized list that reuses
+ * nodes is never treated as settled. The last read is returned because each
+ * read re-marks the live nodes; an earlier read's marks may point at detached
+ * elements. Returns null when the list is still changing at the cap, so the
+ * committer is never handed an unsettled list.
+ */
+async function readStablePromptOptions<T extends { options?: PromptOptionRead[] }>(
   page: Page,
   target: FrameTarget,
   enumerateOptionsExpr: string,
   initial: T
-): Promise<T> {
-  const key = (r: T): string => JSON.stringify((r?.options ?? []).map((o) => o.text));
+): Promise<T | null> {
+  const key = (r: T): string =>
+    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.nodeId ?? null]));
   let current = initial;
   for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
@@ -8880,8 +8896,11 @@ async function readStablePromptOptions<T extends { options?: { text: string }[] 
     if (stable) return current;
   }
   logger.info("prompt-selector primitive: filtered list still changing after stable-read cap");
-  return current;
+  return null;
 }
+
+/** Cap on click-time re-resolves when the stamped node is re-bound mid-scroll. */
+const PROMPT_SELECTOR_MAX_CLICK_RESOLVES = 3;
 
 /** Cap on trusted Enter submits for a search-on-submit prompt selector. */
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
@@ -8953,7 +8972,7 @@ async function commitPromptOption(params: {
   option: string;
   questionLabel: string | null;
   chosen: { wIdx: number; label: string };
-  optionsResult: { options?: { oIdx: number; text: string }[] };
+  optionsResult: { options?: PromptOptionRead[] };
   enumerateOptionsExpr: string;
 }): Promise<string | null> {
   const {
@@ -9019,30 +9038,40 @@ async function commitPromptOption(params: {
     const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
 
     // A virtualized list may reuse nodes between the read and the click, so the
-    // stamped index can now point at a different item: re-stamp and re-resolve
-    // the matched option by text, then click the index from that fresh read.
+    // stamped index can point at a different item. Each attempt re-stamps and
+    // re-resolves the matched option by text, and the click itself asserts the
+    // node still carries that item's text after the centring scroll; a mismatch
+    // re-resolves instead of clicking.
     const wantChosenText = norm(chosenOption.text);
-    const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
-      options?: { oIdx: number; text: string }[];
-    } | null;
-    const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
-    const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
-    if (!freshOption) {
-      logger.info(
-        `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
-      );
-      return null;
+    let clicked = false;
+    for (let attempt = 0; attempt < PROMPT_SELECTOR_MAX_CLICK_RESOLVES && !clicked; attempt++) {
+      const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
+        options?: PromptOptionRead[];
+      } | null;
+      const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+      const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
+      if (!freshOption) {
+        logger.info(
+          `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
+        );
+        return null;
+      }
+      const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
+      try {
+        await clickCentredTrusted(target, optionSel, {
+          label: "prompt-selector option",
+          expectText: freshOption.domText ?? wantChosenText,
+        });
+        clicked = true;
+      } catch (err) {
+        const mismatch = toErrorMessage(err).includes("identity mismatch");
+        logger.info(
+          `prompt-selector primitive: option click ${mismatch ? "withheld" : "failed"} for ${optLabel}: ${toErrorMessage(err)}; ${mismatch ? "re-resolving" : "falling through"}`
+        );
+        if (!mismatch) return null;
+      }
     }
-
-    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
-    try {
-      await clickCentredTrusted(target, optionSel, { label: "prompt-selector option" });
-    } catch (err) {
-      logger.info(
-        `prompt-selector primitive: option click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
-      );
-      return null;
-    }
+    if (!clicked) return null;
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
     const isRequestedLeaf = norm(chosenOption.text) === wantOpt;

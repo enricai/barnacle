@@ -159,4 +159,43 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     )?.textContent;
     expect(committed).toBe("Sweden");
   });
+
+  it("never clicks a node that scrollIntoView re-binds to another item, and re-resolves to the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    const clickedTexts: string[] = [];
+    let rebound = false;
+    const originalEvaluate = target.evaluate.bind(target) as (e: unknown) => Promise<unknown>;
+    (target as unknown as { evaluate: (e: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ): Promise<unknown> => {
+      const source = String(expr);
+      const selector = /querySelector\("(\[data-bcl-prompt-opt-idx=[^\]]*\])"\)/.exec(source)?.[1];
+      if (!source.includes("scrollIntoView") || !selector) return originalEvaluate(expr);
+      const node = window.document.querySelector(selector.replace(/\\"/g, '"'));
+      if (!node) return { state: "missing" };
+      if (!rebound && node.textContent?.trim() === "Sweden") {
+        rebound = true;
+        node.textContent = "Denmark";
+      }
+      const expected = /actual !== "([^"]*)"/.exec(source)?.[1];
+      const actual = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (expected !== undefined && actual !== expected) return { state: "mismatch" };
+      clickedTexts.push(actual);
+      return { state: "hit" };
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    await executeStepWithHealing(merged as unknown as Parameters<typeof executeStepWithHealing>[0]);
+
+    expect(rebound).toBe(true);
+    expect(clickedTexts).not.toContain("Denmark");
+  });
 });
