@@ -8,10 +8,20 @@ import {
 import type { FrameTarget } from "@/scraper/frame-target";
 
 const GROUPS: SegmentedDateGroup[] = [
-  { segmentMaxes: [12, 9999], context: "Work Experience 1 From" },
-  { segmentMaxes: [12, 9999], context: "Work Experience 1 To" },
-  { segmentMaxes: [9999], context: "Education 1 From" },
-  { segmentMaxes: [9999], context: "Education 1 To" },
+  {
+    segmentMaxes: [12, 9999],
+    context: "Work Experience 1 From",
+    label: "From",
+    section: "Work Experience 1",
+  },
+  {
+    segmentMaxes: [12, 9999],
+    context: "Work Experience 1 To",
+    label: "To",
+    section: "Work Experience 1",
+  },
+  { segmentMaxes: [9999], context: "Education 1 From", label: "From", section: "Education 1" },
+  { segmentMaxes: [9999], context: "Education 1 To", label: "To", section: "Education 1" },
 ];
 
 const WORK_FROM = "'From' date in Work Experience 1, '012020'";
@@ -160,6 +170,40 @@ describe("segmented date primitive", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("scrolls the first segment into view before any key event is sent", async () => {
+    const order: string[] = [];
+    const { target } = harness(GROUPS, [1, 2020]);
+    const base = target.evaluate as unknown as (expr: string) => Promise<unknown>;
+    (target as unknown as { evaluate: (expr: string) => Promise<unknown> }).evaluate = async (
+      expr: string
+    ) => {
+      if (expr.includes('scrollIntoView({ block: "center"') && expr.includes("0:0")) {
+        order.push("scroll");
+      }
+      return base(expr);
+    };
+    const page = {
+      sendCDP: async (_m: string, a: { type: string }) => {
+        order.push(a.type);
+      },
+    } as never;
+    await trySegmentedDateSpinbuttonPrimitive({ page, target, logger, instruction: WORK_FROM });
+    expect(order[0]).toBe("scroll");
+    expect(order.indexOf("scroll")).toBeLessThan(order.indexOf("keyDown"));
+  });
+
+  it("types nothing when the targeted field's own label is not among the groups", async () => {
+    const { target, page, sent } = harness([GROUPS[1] as SegmentedDateGroup], [1, 2020]);
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBeNull();
+    expect(sent).toHaveLength(0);
+  });
+
   it("returns null when segments ignore key events", async () => {
     const { target, page } = harness(GROUPS, [0, 0]);
     expect(
@@ -243,7 +287,7 @@ describe("segmented date primitive delivery", () => {
       page,
       target,
       logger,
-      instruction: "type '012020' into the Work Experience From date",
+      instruction: "type '012020' into the Work Experience 1 'From' date",
     });
     expect(id).toBe("segmented-date-0");
     expect(typed.map((t) => t.text)).toEqual(["01", "2020"]);
@@ -260,7 +304,7 @@ describe("segmented date primitive delivery", () => {
       page,
       target,
       logger,
-      instruction: "Enter 012020 as the Work Experience 1 From date",
+      instruction: "Enter 012020 as the Work Experience 1 'From' date",
     });
     expect(id).toBe("segmented-date-0");
   });

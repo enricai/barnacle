@@ -6005,8 +6005,18 @@ export function parseFillValueIntent(instruction: string): { value: string } | n
 const SEGMENTED_DATE_VALUE_RE = /^[\d/.\s-]+$/;
 const SEGMENTED_DATE_MIN_DIGITS = 4;
 const SEGMENTED_DATE_MAX_DIGITS = 8;
-const SEGMENTED_DATE_QUOTED_WEIGHT = 3;
 const SEGMENTED_DATE_KEY_DELAY_MS = 50;
+const SEGMENTED_DATE_FIELD_WORDS = new Set([
+  "from",
+  "to",
+  "start",
+  "end",
+  "since",
+  "until",
+  "through",
+  "begin",
+  "finish",
+]);
 const SEGMENTED_DATE_STOPWORDS = new Set([
   "a",
   "an",
@@ -6031,8 +6041,12 @@ const SEGMENTED_DATE_STOPWORDS = new Set([
 export interface SegmentedDateGroup {
   /** `aria-valuemax` of each segment, in DOM order (e.g. `[12, 9999]`). */
   segmentMaxes: readonly number[];
-  /** Visible label/heading text surrounding the group (e.g. "Work Experience 1 From"). */
+  /** Section heading/ancestor text and the group's own label combined (e.g. "Work Experience 1 From"). */
   context: string;
+  /** The group's own label only (its fieldset legend, form-field label, aria-label or segment labelledby text), e.g. "From". */
+  label?: string;
+  /** Heading/ancestor text surrounding the group, excluding its own label, e.g. "Work Experience 1". */
+  section?: string;
   /** True for a per-wrapper subset of a larger container's segments; never picked on width alone. */
   nested?: boolean;
 }
@@ -6086,9 +6100,11 @@ function segmentedDateTokens(text: string): string[] {
 /**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
- * digit count are dropped; the rest are scored by quoted-phrase and step-word
- * hits against their context. Returns the index into `groups`, or `null` on a
- * tie or zero score — guessing a group would write a date into the wrong field.
+ * digit count are dropped. A group is only eligible when a quoted target field
+ * from the step (e.g. 'From') matches its OWN label; the surrounding section
+ * text only breaks ties between eligible groups. Returns the index into
+ * `groups`, or `null` when nothing matches or the best match is tied — writing
+ * a date into a group that merely fits the width would corrupt another field.
  */
 export function resolveSegmentedDateGroup(
   instruction: string,
@@ -6096,40 +6112,50 @@ export function resolveSegmentedDateGroup(
 ): number | null {
   const value = parseSegmentedDateValue(instruction);
   if (!value) return null;
-  const spans = findQuotedSpans(instruction);
-  const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
-  const stepWords = new Set(
-    segmentedDateTokens(
-      spans.reduceRight((rest, s) => `${rest.slice(0, s.start)} ${rest.slice(s.end)}`, instruction)
-    ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
-  );
+  const valueTokens = segmentedDateTokens(value.valueSpan).join(" ");
+  const quoted = findQuotedSpans(instruction)
+    .map((s) => segmentedDateTokens(s.text.trim()))
+    .filter((t) => t.length > 0 && t.join(" ") !== valueTokens);
+  const stepTokens = segmentedDateTokens(
+    instruction.replace(value.valueSpan, " barnaclevalue ")
+  ).filter((t, i, all) => !(t === "to" && all[i + 1] === "barnaclevalue"));
+  const targets = quoted.length > 0 ? quoted : [stepTokens];
+  const contains = (hay: readonly string[], needle: readonly string[]): boolean => {
+    for (let i = 0; i + needle.length <= hay.length; i++) {
+      if (needle.every((t, j) => hay[i + j] === t)) return true;
+    }
+    return false;
+  };
+  const compatible = (group: SegmentedDateGroup): boolean =>
+    group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
+    value.digits.length;
+  const stepSet = new Set(stepTokens);
   let best = -1;
-  let bestScore = 0;
+  let bestScore = -1;
   let tied = false;
-  const compatible: number[] = [];
   groups.forEach((group, index) => {
-    const widths = group.segmentMaxes.map((max) => String(max).length);
-    if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
-    compatible.push(index);
-    const tokens = segmentedDateTokens(group.context);
-    const joined = ` ${tokens.join(" ")} `;
-    const phraseHits = phrases.filter((p) =>
-      joined.includes(` ${segmentedDateTokens(p).join(" ")} `)
+    if (!compatible(group)) return;
+    const own = segmentedDateTokens(group.label ?? group.context);
+    if (own.length === 0) return;
+    if (!targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))) return;
+    const sectionTokens = new Set(segmentedDateTokens(group.section ?? ""));
+    const score = [...sectionTokens].filter(
+      (t) => stepSet.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
     ).length;
-    const wordHits = tokens.filter((t, i) => stepWords.has(t) && tokens.indexOf(t) === i).length;
-    const score = phraseHits * SEGMENTED_DATE_QUOTED_WEIGHT + wordHits;
     if (score > bestScore) {
       best = index;
       bestScore = score;
       tied = false;
-    } else if (score === bestScore && score > 0) {
+    } else if (score === bestScore) {
       tied = true;
     }
   });
-  // Only one group can hold this many digits, so there is nothing to confuse it
-  // with even when its label shares no words with the step.
-  if (compatible.length === 1 && !groups[compatible[0] ?? -1]?.nested) return compatible[0] ?? null;
-  return bestScore === 0 || tied ? null : best;
+  if (best >= 0) return tied ? null : best;
+  // A step that names no field at all can only mean the one date widget on the
+  // page; a named field that matched no label must never fall back to it.
+  if (quoted.length > 0 || stepTokens.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t))) return null;
+  const only = groups.flatMap((g, i) => (compatible(g) && !g.nested ? [i] : []));
+  return only.length === 1 ? (only[0] ?? null) : null;
 }
 
 const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
@@ -6139,7 +6165,16 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
   const stale = document.querySelectorAll("[" + attr + "]");
   stale.forEach((el) => el.removeAttribute(attr));
-  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']"));
+  const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
+  const isHidden = (el) => {
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      if (hiddenAttr(node)) return true;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return true;
+    }
+    return false;
+  };
+  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']")).filter((el) => !isHidden(el));
   if (spins.length === 0) return { groups: [] };
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const byContainer = new Map();
@@ -6152,23 +6187,36 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const ref = id ? document.getElementById(id) : null;
     return ref ? norm(ref.textContent) : "";
   }).join(" ");
-  const contextOf = (box) => {
-    const parts = [];
-    let node = box;
-    for (let depth = 0; depth < 4 && node && node !== document.body; depth++) {
-      const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
-      if (legend) parts.push(norm(legend.textContent));
-      parts.push(norm(node.getAttribute("aria-label")));
-      parts.push(idText(node.getAttribute("aria-labelledby")));
-      let prevSib = node.previousElementSibling;
-      for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
-        if (!prevSib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) continue;
-        parts.push(norm(prevSib.textContent));
-        break;
-      }
-      node = node.parentElement;
+  const headingSibling = (node) => {
+    let prevSib = node.previousElementSibling;
+    for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
+      if (prevSib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) return norm(prevSib.textContent);
     }
-    return parts.filter(Boolean).join(" ");
+    return "";
+  };
+  const legendOf = (node) => {
+    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+    return legend ? norm(legend.textContent) : "";
+  };
+  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
+  const sectionOf = (box, includeSelf) => {
+    const parts = [includeSelf ? namedBy(box) : "", headingSibling(box)];
+    let node = box.parentElement;
+    for (let depth = 0; depth < 4 && node && node !== document.body; depth++, node = node.parentElement) {
+      parts.push(namedBy(node), headingSibling(node));
+    }
+    return Array.from(new Set(parts.filter(Boolean))).join(" ");
+  };
+  const ownCaption = (box) => {
+    const caption = Array.from(box.querySelectorAll("label,legend")).find((l) => !l.querySelector("input,[role='spinbutton']") && !(l.getAttribute("for") && box.querySelector("[id='" + l.getAttribute("for") + "']")));
+    if (caption) return norm(caption.textContent);
+    const prev = box.previousElementSibling;
+    return prev && prev.matches("label,legend") && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
+  };
+  const formFieldOf = (box) => box.closest("[data-automation-id^='formField-']");
+  const formFieldLabel = (field) => {
+    const label = field.querySelector("label,legend");
+    return label ? norm(label.textContent) : "";
   };
   const labelText = (seg) => {
     const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label")), norm(seg.getAttribute("placeholder"))];
@@ -6198,11 +6246,15 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const addGroup = (segs, box, nested) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
-    const prev = box.previousElementSibling;
-    const lead = prev && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
+    const field = formFieldOf(box) || segs[0].closest("[data-automation-id^='formField-']");
+    const innerField = field && field !== box && box.contains(field) && segs.every((seg) => field.contains(seg)) ? formFieldLabel(field) : "";
+    const own = innerField || namedBy(box) || (field ? formFieldLabel(field) : "") || ownCaption(box) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const section = sectionOf(box, Boolean(innerField));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
-      context: [contextOf(box), norm(box.textContent), lead.length <= 80 ? lead : "", segs.map(labelText).join(" ")].filter(Boolean).join(" "),
+      context: [section, own].filter(Boolean).join(" "),
+      label: own,
+      section,
       nested,
     });
   };
@@ -6269,6 +6321,15 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
     const focusSegment = async (si: number): Promise<void> => {
       const selector = segmentSelector(si);
+      // A below-the-fold segment would otherwise take the trusted click at an
+      // off-screen point; centre it first so the click and key events land on it.
+      try {
+        await target.evaluate(
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center" }); })()`
+        );
+      } catch {
+        // scrolling is best-effort; the key events only need the segment focused
+      }
       try {
         await clickCentredTrusted(target, selector, { label: "date segment" });
       } catch {

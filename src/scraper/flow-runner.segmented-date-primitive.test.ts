@@ -15,7 +15,16 @@ function harness(honourKeys: boolean): {
     frameSelector: null,
     evaluate: vi.fn(async (expr: string) => {
       if (expr.includes("aria-valuemax")) {
-        return { groups: [{ segmentMaxes: [12, 2099], context: "Start date From" }] };
+        return {
+          groups: [
+            {
+              segmentMaxes: [12, 2099],
+              context: "Start date From",
+              label: "From",
+              section: "Start date",
+            },
+          ],
+        };
       }
       if (expr.includes("scrollIntoView")) return { state: "hit" };
       if (expr.includes("aria-valuenow")) return honourKeys ? [1, 2020] : [0, 0];
@@ -50,6 +59,7 @@ describe("trySegmentedDateSpinbuttonPrimitive", () => {
     });
     expect(id).not.toBeNull();
     expect(sent.filter((s) => s.endsWith("keyDown"))).toHaveLength(6);
+    expect(sent.some((s) => s.startsWith("Input.insertText"))).toBe(false);
   });
 
   it("returns null when segments ignore key events", async () => {

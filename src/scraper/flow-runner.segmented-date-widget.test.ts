@@ -89,7 +89,7 @@ describe("segmented date widget end-to-end", () => {
     ["'To' date in Work Experience 1, '122021'", 1, ["12", "2021"]],
     ["'From' date of Education 1, '2016'", 2, ["2016"]],
     ["'To' date of Education 1, '2020'", 3, ["2020"]],
-    ["type '012020' with a Work Experience From hint", 0, ["1", "2020"]],
+    ["type '012020' with a Work Experience 1 'From' hint", 0, ["1", "2020"]],
   ])("%s commits only its own group", async (step, group, expected) => {
     doc().body.innerHTML = html;
     wireWidget();
