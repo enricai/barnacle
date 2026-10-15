@@ -1,5 +1,6 @@
+import type { Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
-import { trySegmentedDateSpinbuttonPrimitive } from "@/scraper/flow-runner";
+import { executeStepWithHealing, trySegmentedDateSpinbuttonPrimitive } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 function harness(honourKeys: boolean): {
@@ -61,5 +62,44 @@ describe("trySegmentedDateSpinbuttonPrimitive", () => {
         instruction: "Enter 'From' date '012020'",
       })
     ).toBeNull();
+  });
+});
+
+describe("executeStepWithHealing segmented-date wiring", () => {
+  it("completes via the primitive with no act call", async () => {
+    const { target, page } = harness(true);
+    const act = vi.fn();
+    const stagehand = { act, observe: vi.fn().mockResolvedValue([]) } as unknown as Stagehand;
+    const result = await executeStepWithHealing({
+      stagehand,
+      page,
+      frameTarget: target,
+      step: "Enter 'From' date '012020'",
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 3,
+      phase: "apply",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger,
+      captureFn: vi.fn().mockResolvedValue(undefined),
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+    } as unknown as Parameters<typeof executeStepWithHealing>[0]);
+    expect(result).toBe("completed");
+    expect(act).not.toHaveBeenCalled();
   });
 });
