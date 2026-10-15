@@ -5794,7 +5794,7 @@ export function parseFillValueIntent(instruction: string): { value: string } | n
   return null;
 }
 
-const SEGMENTED_DATE_VALUE_RE = /^[\d/.-]+$/;
+const SEGMENTED_DATE_VALUE_RE = /^[\d/.\s-]+$/;
 const SEGMENTED_DATE_MIN_DIGITS = 4;
 const SEGMENTED_DATE_MAX_DIGITS = 8;
 const SEGMENTED_DATE_QUOTED_WEIGHT = 3;
@@ -5882,9 +5882,11 @@ export function resolveSegmentedDateGroup(
   let best = -1;
   let bestScore = 0;
   let tied = false;
+  const compatible: number[] = [];
   groups.forEach((group, index) => {
     const widths = group.segmentMaxes.map((max) => String(max).length);
     if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
+    compatible.push(index);
     const tokens = segmentedDateTokens(group.context);
     const joined = ` ${tokens.join(" ")} `;
     const phraseHits = phrases.filter((p) =>
@@ -5900,6 +5902,9 @@ export function resolveSegmentedDateGroup(
       tied = true;
     }
   });
+  // Only one group can hold this many digits, so there is nothing to confuse it
+  // with even when its label shares no words with the step.
+  if (compatible.length === 1) return compatible[0] ?? null;
   return bestScore === 0 || tied ? null : best;
 }
 
@@ -5935,13 +5940,35 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     return parts.filter(Boolean).join(" ");
   };
+  const labelText = (seg) => {
+    const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label")), norm(seg.getAttribute("placeholder"))];
+    if (seg.id) {
+      document.querySelectorAll("label").forEach((l) => { if (l.getAttribute("for") === seg.id) parts.push(norm(l.textContent)); });
+    }
+    const wrap = seg.closest("label");
+    if (wrap) parts.push(norm(wrap.textContent));
+    return parts.filter(Boolean).join(" ");
+  };
+  const maxOf = (seg, si, count) => {
+    const declared = Number(seg.getAttribute("aria-valuemax"));
+    if (declared > 0) return declared;
+    const own = labelText(seg).toLowerCase();
+    if (/year|yyyy|\byy\b/.test(own)) return 9999;
+    if (/month|\bmm\b/.test(own)) return 12;
+    if (/day|\bdd\b/.test(own)) return 31;
+    const len = Number(seg.getAttribute("maxlength"));
+    if (len > 0) return Math.pow(10, len) - 1;
+    return count > 1 && si === count - 1 ? 9999 : 12;
+  };
   const groups = [];
   let gi = 0;
   byContainer.forEach((segs, box) => {
     segs.forEach((seg, si) => seg.setAttribute(attr, gi + ":" + si));
+    const prev = box.previousElementSibling;
+    const lead = prev && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
     groups.push({
-      segmentMaxes: segs.map((seg) => Number(seg.getAttribute("aria-valuemax"))),
-      context: contextOf(box) + " " + segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).join(" "),
+      segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
+      context: [contextOf(box), norm(box.textContent), lead.length <= 80 ? lead : "", segs.map(labelText).join(" ")].filter(Boolean).join(" "),
     });
     gi++;
   });
@@ -5994,20 +6021,35 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         )
       )
     );
-    const first = `[${SEGMENTED_DATE_MARKER_ATTR}="${gi}:0"]`;
-    try {
-      await clickCentredTrusted(target, first, { label: "date segment" });
-    } catch {
-      await target.evaluate(`document.querySelector(${JSON.stringify(first)})?.focus()`);
-    }
-    for (const digit of value.digits) {
-      const keyArgs = {
-        key: digit,
-        code: `Digit${digit}`,
-        windowsVirtualKeyCode: 48 + Number(digit),
-      };
-      await sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: digit, ...keyArgs });
-      await sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...keyArgs });
+    const focusSegment = async (si: number): Promise<void> => {
+      const selector = `[${SEGMENTED_DATE_MARKER_ATTR}="${gi}:${si}"]`;
+      try {
+        await clickCentredTrusted(target, selector, { label: "date segment" });
+      } catch {
+        await target.evaluate(`document.querySelector(${JSON.stringify(selector)})?.focus()`);
+      }
+    };
+    await focusSegment(0);
+    let offset = 0;
+    for (const [si, width] of widths.entries()) {
+      if (si > 0) {
+        // Widgets that do not auto-advance leave focus on the finished segment,
+        // which would swallow the next segment's digits.
+        const focused = await target.evaluate(
+          `document.activeElement?.getAttribute(${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)})`
+        );
+        if (typeof focused === "string" && focused !== `${gi}:${si}`) await focusSegment(si);
+      }
+      for (const digit of value.digits.slice(offset, offset + width)) {
+        const keyArgs = {
+          key: digit,
+          code: `Digit${digit}`,
+          windowsVirtualKeyCode: 48 + Number(digit),
+        };
+        await sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: digit, ...keyArgs });
+        await sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...keyArgs });
+      }
+      offset += width;
     }
     const actual = (await target.evaluate(`(() => {
       const segs = Array.from(document.querySelectorAll("[${SEGMENTED_DATE_MARKER_ATTR}^='${gi}:']"));

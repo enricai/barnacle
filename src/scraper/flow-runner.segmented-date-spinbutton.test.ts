@@ -123,6 +123,24 @@ describe("segmented date primitive", () => {
     expect(exprs.some((e) => e.includes(".value ="))).toBe(false);
   });
 
+  it("re-focuses the next segment when the widget does not auto-advance", async () => {
+    const { target, page } = harness(GROUPS, [1, 2020]);
+    const base = target.evaluate as unknown as (expr: string) => Promise<unknown>;
+    (target as unknown as { evaluate: (expr: string) => Promise<unknown> }).evaluate = async (
+      expr: string
+    ) => {
+      if (expr.includes("document.activeElement")) return "0:0";
+      return base(expr);
+    };
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+  });
+
   it("returns null when readback differs from the typed digits", async () => {
     const { target, page } = harness(GROUPS, [1, 2021]);
     expect(

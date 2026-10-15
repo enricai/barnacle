@@ -12,8 +12,11 @@ function section(headingId: string, title: string, label: string, maxes: number[
 }
 
 function enumerate(html: string): SegmentedDateGroup[] {
-  document.body.innerHTML = html;
-  const out = (0, eval)(SEGMENTED_DATE_ENUMERATE_EXPR) as { groups: SegmentedDateGroup[] };
+  const doc = (globalThis as unknown as { document: { body: { innerHTML: string } } }).document;
+  doc.body.innerHTML = html;
+  const out = new Function(`return ${SEGMENTED_DATE_ENUMERATE_EXPR}`)() as {
+    groups: SegmentedDateGroup[];
+  };
   return out.groups;
 }
 
@@ -41,5 +44,18 @@ describe("segmented date DOM enumeration", () => {
     expect(
       resolveSegmentedDateGroup("'From' date in Work Experience 1, '012020'", groups)
     ).toBeNull();
+  });
+
+  it("infers segment widths when aria-valuemax is absent", () => {
+    const groups = enumerate(
+      `<div role="group" aria-label="Start"><input role="spinbutton" aria-label="month" /><input role="spinbutton" aria-label="year" /></div>`
+    );
+    expect(groups[0]?.segmentMaxes).toEqual([12, 9999]);
+    expect(resolveSegmentedDateGroup("type '012020' into the date", groups)).toBe(0);
+  });
+
+  it("targets a lone month/year group whose label shares no words with the step", () => {
+    const groups = enumerate(section("s", "Dates", "Employment period", [12, 9999]));
+    expect(resolveSegmentedDateGroup("type '03/2018' into the Start field", groups)).toBe(0);
   });
 });
