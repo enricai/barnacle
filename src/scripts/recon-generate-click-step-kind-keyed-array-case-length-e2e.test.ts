@@ -29,7 +29,7 @@ function buildCaptures(filters: string[]): Capture[] {
     }),
     buildCapture({
       url: `https://${OWN_BACKEND_HOST}/catalogue/`,
-      requestPostData: JSON.stringify({ section: "gadgets", pageSize: 4, filters }),
+      requestPostData: JSON.stringify({ section: "gadgets", pageSize: 20, filters }),
       responseBody: { ok: true },
       timestamp: "2026-01-01T00:00:01.000Z",
     }),
@@ -113,7 +113,7 @@ describe("recon-generate CLI — click-step facets with case/length-divergent co
     const { contract } = generate(
       [
         "2026-12;filterType=date",
-        "SHO;filterType=category",
+        "SHOES;filterType=category",
         "04;filterType=size",
         "WW;filterType=warehouse",
       ],
@@ -123,7 +123,7 @@ describe("recon-generate CLI — click-step facets with case/length-divergent co
     expect(contract, contract).toMatch(/payload\.categories[^`]*;filterType=category/);
     expect(contract, contract).toMatch(/payload\.sizes[^`]*;filterType=size/);
     expect(contract.indexOf("payload.categories")).toBeLessThan(contract.indexOf("payload.sizes"));
-    expect(contract).not.toContain("SHO;filterType=category");
+    expect(contract).not.toContain("SHOES;filterType=category");
     expect(contract).not.toContain("04;filterType=size");
     expect(contract).toContain("2026-12;filterType=date");
     expect(contract).toContain("WW;filterType=warehouse");
