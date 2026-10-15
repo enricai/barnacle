@@ -53,7 +53,7 @@ function makePage(
     escalatedClicks: number;
     deepRankProbes: number;
   },
-  advance: { enabled: boolean } = { enabled: false }
+  advance: { enabled: boolean; landUrl?: string } = { enabled: false }
 ): Page {
   return {
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
@@ -67,6 +67,7 @@ function makePage(
       if (src.includes("XPathResult.FIRST_ORDERED_NODE_TYPE") && src.includes('kind: "click"')) {
         clock.clickAt = clock.now;
         clock.fallbackClicks += 1;
+        if (advance.landUrl) urls.current = advance.landUrl;
         return { fired: true, kind: "click" };
       }
       return null;
@@ -104,6 +105,8 @@ function makePage(
 interface RunOptions {
   midFlowAdvance?: boolean;
   isFinalStep?: boolean;
+  startUrl?: string;
+  landUrl?: string;
 }
 
 async function run(options: RunOptions = {}): Promise<{
@@ -112,7 +115,7 @@ async function run(options: RunOptions = {}): Promise<{
   clock: { fallbackClicks: number; escalatedClicks: number; deepRankProbes: number };
 }> {
   const midFlowAdvance = options.midFlowAdvance === true;
-  const urls = { current: "https://example.com/checkout/shipping" };
+  const urls = { current: options.startUrl ?? "https://example.com/checkout/shipping" };
   const counter = { n: 0 };
   const clock = {
     now: 0,
@@ -124,7 +127,7 @@ async function run(options: RunOptions = {}): Promise<{
   const failures: AttemptRecord[][] = [];
   const threw = await executeStepWithHealing({
     stagehand: {} as unknown as Stagehand,
-    page: makePage(urls, counter, clock, { enabled: midFlowAdvance }),
+    page: makePage(urls, counter, clock, { enabled: midFlowAdvance, landUrl: options.landUrl }),
     step: STEP,
     optional: false,
     upload: false,
@@ -211,6 +214,43 @@ describe("flow-runner n+16 fallback — slow click settles before the retry snap
   it("control: the same DOM change on the final step is not credited via DOM alone", async () => {
     lateSignalMs = Number.POSITIVE_INFINITY;
     const { threw } = await run({ midFlowAdvance: true, isFinalStep: true });
+    expect(threw).toBe(true);
+  });
+
+  it("credits a mid-flow submit whose URL stays sign-in-shaped (text swaps, no network)", async () => {
+    lateSignalMs = Number.POSITIVE_INFINITY;
+    const { attempts, threw, clock } = await run({
+      midFlowAdvance: true,
+      isFinalStep: false,
+      startUrl: "https://shop.example.com/login",
+    });
+    expect(threw).toBe(false);
+    expect(attempts).toEqual([]);
+    expect(clock.fallbackClicks).toBe(1);
+    const logs = vi
+      .mocked(testLogger.info)
+      .mock.calls.concat(vi.mocked(testLogger.warn).mock.calls)
+      .map((c) => String(c[0]));
+    expect(logs.some((l) => l.includes("phantom-click-exhausted"))).toBe(false);
+  });
+
+  it("control: a final step on a sign-in-shaped URL is still not credited", async () => {
+    lateSignalMs = Number.POSITIVE_INFINITY;
+    const { threw } = await run({
+      midFlowAdvance: true,
+      isFinalStep: true,
+      startUrl: "https://shop.example.com/login",
+    });
+    expect(threw).toBe(true);
+  });
+
+  it("control: a bounce from a non-auth URL to a sign-in gate is still vetoed", async () => {
+    lateSignalMs = Number.POSITIVE_INFINITY;
+    const { threw } = await run({
+      midFlowAdvance: true,
+      isFinalStep: false,
+      landUrl: "https://shop.example.com/login",
+    });
     expect(threw).toBe(true);
   });
 });
