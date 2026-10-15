@@ -104,7 +104,7 @@ import {
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
-import { waitForSpaReady } from "@/scraper/spa-readiness";
+import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
@@ -14340,6 +14340,15 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitVerified = false;
   let submitStepSkipped = false;
   let lastStepIndex = -1;
+  const liveOriginOf = (target: Page): string => {
+    try {
+      return new URL(target.url()).origin;
+    } catch {
+      return "";
+    }
+  };
+  // Seeded so the first step does not re-gate; the initial gate lives with the caller's goto.
+  let lastOrigin = liveOriginOf(activePage);
 
   const wireCapture = (target: Page): (() => void) =>
     wireSignalCapture(target, {
@@ -14404,6 +14413,16 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
+      // A cross-origin hop (redirect, new tab, navigateTo) lands on a SPA the initial
+      // readiness gate never covered; wait for hydration before the step probes a shell.
+      const currentOrigin = liveOriginOf(activePage);
+      if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
+        logger.info(
+          `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
+        );
+        await regateSpaAfterOriginChange(activePage, logger);
+        lastOrigin = currentOrigin;
+      }
       // A navigateTo step is a direct page.goto, not an act/observe against
       // the current DOM, so it has no target frame to resolve and skips
       // straight to executeNavigateStep instead of the self-heal cascade.
