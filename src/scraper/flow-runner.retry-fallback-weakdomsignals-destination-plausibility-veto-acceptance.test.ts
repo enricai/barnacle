@@ -34,7 +34,7 @@ const BASE_URL = "https://shop.example.com/login";
 // `retryVerified` down to exactly the `weakDomSignalsAllowed` disjunct under
 // test. Only the plausible phrasing's own action clause ("click sign in")
 // matches `SIGN_IN_PATTERNS`.
-const CONTINUE_STEP = "Click the submit button and click continue to confirm the shipping address";
+const CONTINUE_STEP = "Click continue to confirm the shipping address";
 const PLAUSIBLE_STEP = "Click the submit button and click sign in to confirm your identity";
 
 const INFO_LINES: string[] = [];

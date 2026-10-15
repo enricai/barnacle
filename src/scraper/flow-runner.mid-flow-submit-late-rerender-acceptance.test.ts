@@ -295,6 +295,8 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     expect(outcome).toBe("completed");
     expect(world.counter.n).toBe(0);
     expect(world.act).toHaveBeenCalledTimes(1);
+    expect(world.act.mock.calls[0]?.[0]).toBe(STEP);
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
     expect(logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))).toBe(
       false
     );
@@ -306,6 +308,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     const outcome = await executeStepWithHealing(params(world, false, [])).catch(() => "threw");
 
     expect(outcome).not.toBe("completed");
+    expect(world.rendered()).toBe(false);
   });
 
   it("credits a text-growth transition under a different stale title", async () => {
@@ -316,6 +319,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     expect(world.rendered()).toBe(true);
     expect(outcome).toBe("completed");
     expect(world.act).toHaveBeenCalledTimes(1);
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
   });
 
   it("credits the advance when Stagehand reports success with no resolved action", async () => {

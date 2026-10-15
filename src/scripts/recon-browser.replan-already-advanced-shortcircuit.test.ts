@@ -372,4 +372,101 @@ describe("recon-browser/main — replan already-advanced short-circuit (bugfix-0
       expect.stringContaining("verification failed but the page already advanced past this step")
     );
   });
+
+  describe("submitStep on an SPA whose URL never changes", () => {
+    const SPA_URL = "https://apply.example.com/wizard";
+    const BEFORE_SIGNATURE = `40:${"Personal information first name last name ".slice(0, 40)}`;
+    const AFTER_SIGNATURE = `400:Review your answers ${"education history employer ".repeat(15)}`;
+
+    function installSpaSession(getText: () => string): void {
+      const session = {
+        on: (): void => {},
+        off: (): void => {},
+      };
+      const page = {
+        goto: vi.fn().mockResolvedValue(undefined),
+        url: (): string => SPA_URL,
+        title: vi.fn().mockResolvedValue("Apply"),
+        evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+          if (typeof expr === "string" && expr.includes("innerText")) {
+            return { html: 1000, text: getText(), values: "", state: "" };
+          }
+          if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+          if (typeof expr === "string" && expr.includes("querySelector"))
+            return { matched: false, src: null };
+          return null;
+        }),
+        frames: vi.fn().mockReturnValue([]),
+        getSessionForFrame: () => session,
+        mainFrameId: () => "main",
+        sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      } as unknown as Page;
+      const stagehand = {
+        context: { awaitActivePage: async (): Promise<Page> => page },
+      } as unknown as Stagehand;
+      vi.mocked(createBrowserSession).mockResolvedValue({
+        stagehand,
+        limiter: {} as never,
+        sessionId: "test-session",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+      } as never);
+    }
+
+    function spaArgv(): string[] {
+      return [
+        "node",
+        "recon-browser.ts",
+        "--url",
+        SPA_URL,
+        "--flow",
+        JSON.stringify({
+          steps: [
+            { step: "Save and continue", optional: false, upload: false, submitStep: true },
+            "Fill in field 1",
+          ],
+        }),
+      ];
+    }
+
+    it("skips the replan when visible text advanced but origin+path did not", async () => {
+      let text = BEFORE_SIGNATURE;
+      installSpaSession(() => text);
+      let calls = 0;
+      executeStepWithHealingStub.mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          text = AFTER_SIGNATURE;
+          throw new StepVerificationError("step 0 failed verification", "cascade-exhausted");
+        }
+        return "ok";
+      });
+      process.argv = spaArgv();
+
+      await main();
+
+      expect(guardedObserveStub).not.toHaveBeenCalled();
+      expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+      expect(loggerStub.info).toHaveBeenCalledWith(
+        expect.stringContaining("verification failed but the page already advanced past this step")
+      );
+    });
+
+    it("still replans when neither URL nor visible text changed", async () => {
+      installSpaSession(() => BEFORE_SIGNATURE);
+      executeStepWithHealingStub.mockImplementation(async () => {
+        throw new StepVerificationError("step 0 failed verification", "cascade-exhausted");
+      });
+      guardedObserveStub.mockResolvedValue([]);
+      generateObjectStub.mockResolvedValue({ object: { steps: [] } });
+      process.argv = spaArgv();
+
+      await expect(main()).rejects.toThrow();
+
+      expect(guardedObserveStub).toHaveBeenCalled();
+      expect(loggerStub.info).not.toHaveBeenCalledWith(
+        expect.stringContaining("verification failed but the page already advanced past this step")
+      );
+    });
+  });
 });

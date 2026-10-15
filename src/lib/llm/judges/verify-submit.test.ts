@@ -141,4 +141,10 @@ describe("verifySubmitWithLLM", () => {
     expect(result).not.toBeNull();
     expect(result).toEqual(parsedOutput);
   });
+  it("tells the judge a stale title is not evidence only for non-final steps", async () => {
+    const nonFinal = await captured({ stepInstruction: "Next", isFinalStep: false });
+    expect(nonFinal.system).toContain("title is not evidence");
+    expect(nonFinal.system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(true);
+    expect(nonFinal.user).not.toContain("PAGE TITLE");
+  });
 });

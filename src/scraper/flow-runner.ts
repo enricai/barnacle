@@ -3365,8 +3365,15 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  await settleAfterClick(params.page, params.signalCounter, params.preNetworkCount, () =>
-    probeVisibleTextForJudge(target)
+  await settleAfterClick(
+    params.page,
+    params.signalCounter,
+    params.preNetworkCount,
+    async () => {
+      const text = await probeVisibleTextForJudge(target);
+      return `${text.length}:${text.slice(0, 200)}`;
+    },
+    params.preVisibleTextSignature
   );
   const afterText = await probeVisibleTextForJudge(target);
   const colon = params.preVisibleTextSignature.indexOf(":");
@@ -13430,9 +13437,20 @@ export async function executeStepWithHealing(params: {
             page
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
+          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+          });
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&
-            isPlausibleStepDestination(step, retryPost.url);
+            isPlausibleStepDestination(
+              step,
+              retryPost.url,
+              retryMidFlowSubmit ? pre.url : undefined
+            );
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
@@ -13545,6 +13563,13 @@ export async function executeStepWithHealing(params: {
           // Destination-gated so an implausible landing URL's traffic cannot satisfy
           // the veto or the submit-transition carve-out downstream.
           const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
+          // Only the verdict sees the pre.url exemption, and only for a demonstrable
+          // page advance: bare network/DOM signals stay gated on the landed URL.
+          const retryMidFlowDestinationPlausible =
+            retryDestinationPlausible ||
+            (retryMidFlowSubmit &&
+              hasPageAdvanced(pre, retryPost) &&
+              isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
             retryDestinationPlausible &&
@@ -13634,13 +13659,6 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
-          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
-            step,
-            submitStep,
-            isFinalStep,
-            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-          });
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
@@ -13666,7 +13684,7 @@ export async function executeStepWithHealing(params: {
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retryMidFlowSubmit || retrySubmitShaped,
             isMidFlowSubmitStep: retryMidFlowSubmit,
-            destinationPlausible: retryDestinationPlausible,
+            destinationPlausible: retryMidFlowDestinationPlausible,
           });
           // Destination-plausibility audit of every remaining disjunct in
           // this OR (the recon report's closing instruction, see
