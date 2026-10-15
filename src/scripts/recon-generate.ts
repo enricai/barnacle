@@ -16505,7 +16505,10 @@ async function main(): Promise<void> {
    * already written its output and there is nothing left for main() to do.
    */
   function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
-    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
+    const baseUrl =
+      activeCaptures.length === 0
+        ? "https://example.com"
+        : deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
     // Gate on the flow's declared own-backend hosts (or the registrable-domain
     // fallback of baseUrl) via the same predicate recon-http.ts applies at
     // write time, so a stale aux/ directory from before that filter existed
