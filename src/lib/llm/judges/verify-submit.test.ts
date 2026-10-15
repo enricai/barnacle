@@ -141,6 +141,18 @@ describe("verifySubmitWithLLM", () => {
     expect(result).not.toBeNull();
     expect(result).toEqual(parsedOutput);
   });
+  it("defaults to strict final-step judging when isFinalStep is omitted", async () => {
+    const { system, user } = await captured({
+      stepInstruction: "Place order",
+      pageTitle: "Sign In",
+      visibleText: "Shipping address",
+    });
+    expect(system).toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
+    expect(user).toContain("FINAL STEP OF FLOW: yes");
+    expect(user).toContain("PAGE TITLE: Sign In");
+    expect(user).toContain("Success page title hints");
+  });
+
   it("tells the judge a stale title is not evidence only for non-final steps", async () => {
     const nonFinal = await captured({ stepInstruction: "Next", isFinalStep: false });
     expect(nonFinal.system).toContain("title is not evidence");

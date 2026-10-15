@@ -19,7 +19,7 @@ vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
   })),
 }));
 
-const MAX_MS = 15000;
+const MAX_MS = 60000;
 
 function makeClock(onTick: (nowMs: number, counter: { n: number }) => void): {
   page: { waitForTimeout: (ms: number) => Promise<void> };

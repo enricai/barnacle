@@ -10,7 +10,7 @@ const POLL_MS = 1000;
 const QUIET_POLLS = 3;
 const IDLE_GIVE_UP_MS = 14000;
 const TEXT_QUIET_POLLS = 9;
-const MAX_MS = 15000;
+const MAX_MS = 60000;
 
 /**
  * Waits for a click's network activity to settle so the verification snapshot
@@ -18,7 +18,8 @@ const MAX_MS = 15000;
  * accumulated from poll counts so fake pages and timers stay deterministic.
  * When `readText` is given, visible-text movement since the pre-click baseline
  * also counts as activity, so a DOM-only re-render that lands after the first
- * change is not snapshotted half-transitioned; the wait is still bounded by MAX_MS.
+ * change is not snapshotted half-transitioned; the wait ends once activity has been quiet for the quiet window and is
+ * bounded by the MAX_MS ceiling so a never-quiet page still terminates.
  */
 export async function settleAfterClick(
   page: SettlePage,
