@@ -120,6 +120,7 @@ import {
 import {
   CENTRE_AND_HIT_TEST_FN,
   type CentredHitTestResult,
+  centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
@@ -12835,6 +12836,26 @@ export async function executeStepWithHealing(params: {
             }
           }
           params.abortSignal?.throwIfAborted();
+          // Stagehand's internal Locator.click() does not scroll past sticky
+          // bars, so centre + hit-test the observed control first; an
+          // unrecoverable occlusion fails the attempt instead of clicking an
+          // overlay.
+          if (overriddenTarget.method === "click") {
+            try {
+              await centreSelectorForClick(
+                frameTarget ?? mainFrameTarget(page),
+                overriddenTarget.selector
+              );
+            } catch (err) {
+              record.errorMessage = `observed click target not clickable: ${toErrorMessage(err)}`;
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
+          }
           const result = await guardedAct(
             stagehand,
             overriddenTarget,
