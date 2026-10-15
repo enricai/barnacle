@@ -3851,7 +3851,7 @@ function isCommittedDateReadback(
   readback: VerifyFillReadbackResult | null
 ): readback is VerifyFillReadbackResult {
   if (readback === null) return false;
-  if (readback.outcome === "rejected") return false;
+  if (readback.outcome === "rejected" || readback.outcome === "segment") return false;
   // A datepicker reformats what it accepts (e.g. "01/2020" → "2020-01"), so
   // "differs" is a commit, not a rejection — require only a non-empty value
   // that contains a 4-digit year, ruling out stray placeholder text.
@@ -4013,8 +4013,8 @@ export async function fillTextDatepickerInput(
  * masked-input library reformatting).
  */
 export interface VerifyFillReadbackResult {
-  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted) */
-  outcome: "matched" | "rejected" | "differs";
+  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted); "segment" = the target is one `role=spinbutton` segment of a multi-segment widget, so its own value can never stand for the whole expected value */
+  outcome: "matched" | "rejected" | "differs" | "segment";
   /** Actual value read back from the element after the fill. */
   postValue: string;
   /** Tag of the target element (input/textarea/contenteditable). */
@@ -4061,6 +4061,9 @@ export async function verifyFillReadback(
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
+    if (el.getAttribute && el.getAttribute("role") === "spinbutton") {
+      return { outcome: "segment", postValue: el.value || el.getAttribute("aria-valuenow") || "", tag };
+    }
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       actual = el.value || "";
     } else if (el.isContentEditable) {
@@ -4078,7 +4081,14 @@ export async function verifyFillReadback(
     const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
-    if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
+    if (
+      r.outcome !== "matched" &&
+      r.outcome !== "rejected" &&
+      r.outcome !== "differs" &&
+      r.outcome !== "segment"
+    ) {
+      return null;
+    }
     return {
       outcome: r.outcome,
       postValue: typeof r.postValue === "string" ? r.postValue : "",
@@ -8875,6 +8885,12 @@ export async function verifyDomEffect(
       case "type": {
         const expected = action.arguments?.[0];
         if (typeof expected !== "string" || expected.length === 0) return false;
+        // A lone spinbutton segment holds one slice of a date, so a matching
+        // digit string proves nothing about the whole value, and the
+        // fill("")+type retype below would overwrite committed neighbours.
+        if ((await verifyFillReadback(target, selector, expected))?.outcome === "segment") {
+          return false;
+        }
         const current = await locator.inputValue();
         // Masked/formatted inputs (e.g. a phone field displaying
         // "(212) 555-0123" after typing "2125550123") reformat the typed
@@ -12518,7 +12534,10 @@ export async function executeStepWithHealing(params: {
                     fillValue
                   );
                   if (readback !== null) {
-                    if (readback.outcome === "rejected") {
+                    if (readback.outcome === "segment") {
+                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+                      record.actResultSuccess = false;
+                    } else if (readback.outcome === "rejected") {
                       record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "differs") {
@@ -13087,7 +13106,11 @@ export async function executeStepWithHealing(params: {
           readbackSelector,
           fillIntent.value
         );
-        if (readback?.outcome === "rejected") {
+        if (readback?.outcome === "segment") {
+          datepickerRejected = true;
+          record.actResultSuccess = false;
+          record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+        } else if (readback?.outcome === "rejected") {
           // Value didn't land. First try the datepicker primitive; it self-gates
           // on react-datepicker's `.react-datepicker__input-container` and returns
           // null for any non-datepicker input, so a plain rejected fill falls
