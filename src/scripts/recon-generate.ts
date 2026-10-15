@@ -275,14 +275,25 @@ export function resolveStepPayloadField(
   const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
   for (const [rx, field] of vocabulary.table) {
     if (!rx.test(instruction)) continue;
-    if (!isSelectStep) return field;
+    if (!isSelectStep) return canonicalPayloadField(field);
     const answer = pickedQuotedValue(instruction);
     if (answer !== null && OPERATIONAL_ANSWER.test(answer.trim())) return null;
     const known = knownFieldValues.get(field);
     if (known !== undefined && answer !== known) return null;
-    return field;
+    return canonicalPayloadField(field);
   }
   return null;
+}
+
+/**
+ * Maps a vocabulary row's field name onto the base schema's equivalent so a
+ * consumer's `MobilePhone` does not become an extra required key beside
+ * `Phone`. Names the base schema has no equivalent for pass through.
+ */
+function canonicalPayloadField(field: string): string {
+  if (applicantContactFieldNames.has(field) || baseContractFieldNames.has(field)) return field;
+  const canonical = resolveCanonicalAtsFieldName(field);
+  return canonical !== null && applicantContactFieldNames.has(canonical) ? canonical : field;
 }
 
 /**
