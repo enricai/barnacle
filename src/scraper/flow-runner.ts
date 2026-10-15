@@ -6031,8 +6031,12 @@ const SEGMENTED_DATE_STOPWORDS = new Set([
 export interface SegmentedDateGroup {
   /** `aria-valuemax` of each segment, in DOM order (e.g. `[12, 9999]`). */
   segmentMaxes: readonly number[];
-  /** Visible label/heading text surrounding the group (e.g. "Work Experience 1 From"). */
+  /** Section heading/ancestor text and the group's own label combined (e.g. "Work Experience 1 From"). */
   context: string;
+  /** The group's own label only (its fieldset legend, form-field label, aria-label or segment labelledby text), e.g. "From". */
+  label: string;
+  /** Heading/ancestor text surrounding the group, excluding its own label, e.g. "Work Experience 1". */
+  section: string;
   /** True for a per-wrapper subset of a larger container's segments; never picked on width alone. */
   nested?: boolean;
 }
@@ -6139,7 +6143,16 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
   const stale = document.querySelectorAll("[" + attr + "]");
   stale.forEach((el) => el.removeAttribute(attr));
-  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']"));
+  const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
+  const isHidden = (el) => {
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      if (hiddenAttr(node)) return true;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return true;
+    }
+    return false;
+  };
+  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']")).filter((el) => !isHidden(el));
   if (spins.length === 0) return { groups: [] };
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const byContainer = new Map();
@@ -6152,23 +6165,30 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const ref = id ? document.getElementById(id) : null;
     return ref ? norm(ref.textContent) : "";
   }).join(" ");
-  const contextOf = (box) => {
-    const parts = [];
-    let node = box;
-    for (let depth = 0; depth < 4 && node && node !== document.body; depth++) {
-      const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
-      if (legend) parts.push(norm(legend.textContent));
-      parts.push(norm(node.getAttribute("aria-label")));
-      parts.push(idText(node.getAttribute("aria-labelledby")));
-      let prevSib = node.previousElementSibling;
-      for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
-        if (!prevSib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) continue;
-        parts.push(norm(prevSib.textContent));
-        break;
-      }
-      node = node.parentElement;
+  const headingSibling = (node) => {
+    let prevSib = node.previousElementSibling;
+    for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
+      if (prevSib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) return norm(prevSib.textContent);
+    }
+    return "";
+  };
+  const legendOf = (node) => {
+    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+    return legend ? norm(legend.textContent) : "";
+  };
+  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
+  const sectionOf = (box) => {
+    const parts = [headingSibling(box)];
+    let node = box.parentElement;
+    for (let depth = 0; depth < 4 && node && node !== document.body; depth++, node = node.parentElement) {
+      parts.push(namedBy(node), headingSibling(node));
     }
     return parts.filter(Boolean).join(" ");
+  };
+  const formFieldOf = (box) => box.closest("[data-automation-id^='formField-']");
+  const formFieldLabel = (field) => {
+    const label = field.querySelector("label,legend");
+    return label ? norm(label.textContent) : "";
   };
   const labelText = (seg) => {
     const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label")), norm(seg.getAttribute("placeholder"))];
@@ -6198,11 +6218,14 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const addGroup = (segs, box, nested) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
-    const prev = box.previousElementSibling;
-    const lead = prev && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
+    const field = formFieldOf(box);
+    const own = namedBy(box) || (field ? formFieldLabel(field) : "") || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const section = sectionOf(box);
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
-      context: [contextOf(box), norm(box.textContent), lead.length <= 80 ? lead : "", segs.map(labelText).join(" ")].filter(Boolean).join(" "),
+      context: [section, own].filter(Boolean).join(" "),
+      label: own,
+      section,
       nested,
     });
   };

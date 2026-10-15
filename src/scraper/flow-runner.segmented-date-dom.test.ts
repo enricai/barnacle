@@ -85,3 +85,25 @@ describe("segmented date DOM enumeration", () => {
     expect(resolveSegmentedDateGroup("type '012016' into the form", groups)).toBe(0);
   });
 });
+
+describe("segmented date own label and visibility", () => {
+  const pair = (hiddenAttrs: string): string =>
+    `<section aria-labelledby="t"><h3 id="t">Flight Search</h3>` +
+    `<div role="group" aria-label="Departure"><input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" /></div>` +
+    `<div ${hiddenAttrs}><div role="group" aria-label="Return"><input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" /></div></div></section>`;
+
+  it.each(["style=\"display:none\"", "hidden", "aria-hidden=\"true\""])(
+    "skips groups under a hidden ancestor (%s)",
+    (attrs) => {
+      const groups = enumerate(pair(attrs));
+      expect(groups.map((g) => g.label)).toEqual(["Departure"]);
+    }
+  );
+
+  it("keeps own label separate from section context", () => {
+    const groups = enumerate(pair(""));
+    expect(groups.map((g) => g.label)).toEqual(["Departure", "Return"]);
+    expect(groups[1]?.section).toBe("Flight Search");
+    expect(groups[1]?.label).not.toContain("Flight");
+  });
+});
