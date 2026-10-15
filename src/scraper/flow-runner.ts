@@ -13461,9 +13461,14 @@ export async function executeStepWithHealing(params: {
           // one-shot check would false-negative and retry into a back-bounce.
           // Destination-gated so an implausible landing URL's traffic cannot satisfy
           // the veto or the submit-transition carve-out downstream.
-          const retryDestinationPlausible =
-            isPlausibleStepDestination(step, retryPost.url) ||
-            (retryMidFlowSubmit && isPlausibleStepDestination(step, retryPost.url, pre.url));
+          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
+          // Only the verdict sees the pre.url exemption, and only for a demonstrable
+          // page advance: bare network/DOM signals stay gated on the landed URL.
+          const retryMidFlowDestinationPlausible =
+            retryDestinationPlausible ||
+            (retryMidFlowSubmit &&
+              hasPageAdvanced(pre, retryPost) &&
+              isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
             retryDestinationPlausible &&
@@ -13578,7 +13583,7 @@ export async function executeStepWithHealing(params: {
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retryMidFlowSubmit || retrySubmitShaped,
             isMidFlowSubmitStep: retryMidFlowSubmit,
-            destinationPlausible: retryDestinationPlausible,
+            destinationPlausible: retryMidFlowDestinationPlausible,
           });
           // Destination-plausibility audit of every remaining disjunct in
           // this OR (the recon report's closing instruction, see
