@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildManyRepeatPagedListingDrillWithNoiseVariantActionSteps } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -94,14 +95,14 @@ describe("recon-generate CLI — many-repeat paged-listing + drill collapse hold
       writeRunDir(runRoot, manyRepeatCaptures());
 
       const siteId = `submission-sequence-collapse-scale-e2e-test-${process.pid}-${Math.random().toString(36).slice(2)}`;
-      siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+      siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
       mkdirSync(siteOutDir, { recursive: true });
       writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify(flow));
 
       const result = spawnSync(
         TSX_BIN,
         [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-        { cwd: REPO_ROOT, encoding: "utf8" }
+        { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
       );
 
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

@@ -2,6 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { StepVerificationError } from "@/scraper/errors";
 import { type AttemptRecord, executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -176,6 +177,8 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     // live happy-dom document via `window.Function` — nothing here
     // hand-simulates flow-runner.ts's internal verification logic.
     const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
         d: unknown,
@@ -378,6 +381,8 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     // against the live happy-dom document via `window.Function` — nothing
     // here hand-simulates flow-runner.ts's internal verification logic.
     const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
         d: unknown,
@@ -561,6 +566,9 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
       };
 
     const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const centred = answerCentreHitTest(expr);
+
+      if (centred) return centred;
       const src = String(expr);
       const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
         d: unknown,
@@ -729,6 +737,8 @@ describe("flow-runner view-swap zero-forward-signal click veto (offline fixture,
     // flow-runner.ts:4094), which throws to simulate a live evaluate
     // failure.
     const evaluateImpl = async (expr: unknown): Promise<unknown> => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("FIRST_ORDERED_NODE_TYPE") && src.includes("singleNodeValue !== null")) {
         throw new Error("simulated evaluate failure in presence probe");

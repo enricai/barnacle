@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Guards FAILURE 2 from the a flowless recon capture: recon-generate accepted an
@@ -66,7 +67,7 @@ function run(
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", ...extraArgs],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -77,7 +78,7 @@ describe("recon-generate empty-capture guard (FAILURE 2)", () => {
     writeEmptyRunDir(runRoot);
 
     const siteId = `empty-capture-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
 
@@ -93,7 +94,7 @@ describe("recon-generate empty-capture guard (FAILURE 2)", () => {
     writeEmptyRunDir(runRoot);
 
     const siteId = `empty-capture-allow-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const result = run(runRoot, siteId, ["--allow-empty-capture"]);
 
@@ -107,7 +108,7 @@ describe("recon-generate empty-capture guard (FAILURE 2)", () => {
     writeNonEmptyRunDir(runRoot);
 
     const siteId = `nonempty-capture-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
 

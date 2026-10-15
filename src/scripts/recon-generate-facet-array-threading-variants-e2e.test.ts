@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { unreferencedDeclaredPayloadFields } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -149,7 +150,7 @@ function generate(variant: Variant): { contract: string; browserFlow: string } {
   writeRunDir(runRoot, buildCaptures(variant));
 
   const siteId = `facet-array-threading-variants-test-${process.pid}`;
-  siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   mkdirSync(siteOutDir, { recursive: true });
   writeFileSync(
     join(siteOutDir, "recon-flow.json"),
@@ -164,7 +165,7 @@ function generate(variant: Variant): { contract: string; browserFlow: string } {
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   const output = `${result.stdout}\n${result.stderr}`;
   expect(result.status, output).toBe(0);

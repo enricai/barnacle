@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
+import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
 } from "@/scripts/recon-generate-execute-http-harness.test-helper";
@@ -198,7 +202,7 @@ function runGenerateAndTypecheck(
   const runRoot = join(workDir, "run");
   writeRunDir(runRoot, captures);
 
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   siteOutDirs.push(siteOutDir);
   mkdirSync(siteOutDir, { recursive: true });
   writeFileSync(
@@ -209,7 +213,7 @@ function runGenerateAndTypecheck(
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
@@ -229,12 +233,13 @@ function runGenerateAndTypecheck(
         incremental: false,
         tsBuildInfoFile: null,
         paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
           "@enricai/barnacle/*": ["./src/*"],
         },
       },
-      include: [`src/sites/${siteId}/**/*.ts`],
+      include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
     })
   );
   const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
@@ -352,12 +357,12 @@ describe("recon-generate CLI — ancestor loop's own direct request bodies never
     // Both of g0's own direct request bodies are issued directly inside the
     // g0 loop, before any per-entry sub-loop — reached only by drilling into
     // the ancestor's own nested `entries` array, never a per-item accessor.
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(ancestor.contract).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       'catalog/entries/details?code=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
     );
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(ancestor.contract).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       'catalog/entries/labels?tag=${(((g0 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId}'
     );
     expect(ancestor.contract).not.toMatch(/entries\/(details|labels)\?(code|tag)=\$\{item/);

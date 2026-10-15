@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
@@ -174,13 +178,13 @@ function generateAndAssertQueryConstParity(
   siteId: string,
   runRoot: string
 ): { contract: string; siteOutDir: string } {
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   siteOutDirs.push(siteOutDir);
 
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -218,6 +222,7 @@ function assertTypechecksClean(siteId: string, siteOutDir: string): void {
         incremental: false,
         tsBuildInfoFile: null,
         paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
           "@enricai/barnacle/*": ["./src/*"],
@@ -263,10 +268,10 @@ describe("recon-generate CLI + tsc --noEmit — every referenced _QUERY const is
     writeRunDir(runRoot, noisyRestCaptures());
 
     const siteId = `query-const-parity-rest-e2e-test${process.pid}`;
-    siteOutDirs.push(join(REPO_ROOT, "src", "sites", siteId));
-    mkdirSync(join(REPO_ROOT, "src", "sites", siteId), { recursive: true });
+    siteOutDirs.push(join(RECON_GENERATE_CWD, "src", "sites", siteId));
+    mkdirSync(join(RECON_GENERATE_CWD, "src", "sites", siteId), { recursive: true });
     writeFileSync(
-      join(REPO_ROOT, "src", "sites", siteId, "recon-flow.json"),
+      join(RECON_GENERATE_CWD, "src", "sites", siteId, "recon-flow.json"),
       JSON.stringify({
         steps: [
           { step: "browse catalog search" },

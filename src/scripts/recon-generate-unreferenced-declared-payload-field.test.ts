@@ -38,6 +38,7 @@ describe("unreferencedDeclaredPayloadFields structural matching", () => {
 
   it("counts a template-literal splice", () => {
     expect(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       unreferencedDeclaredPayloadFields(contract, "go(`pick ${payload.Facet}`)", steps)
     ).toEqual([]);
   });
@@ -45,6 +46,7 @@ describe("unreferencedDeclaredPayloadFields structural matching", () => {
 
 describe("unreferencedDeclaredPayloadFields nested braces", () => {
   it("keeps scanning code after a block inside a template expression", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const code = "go(`a ${[1].map((x) => { return x; })} b`); read(payload.Facet);";
     expect(
       unreferencedDeclaredPayloadFields("Facet: z.string(),", code, [

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildMultiEndpointSubmissionActionSteps } from "@/scripts/recon-generate-multiendpoint-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -81,7 +82,7 @@ function generate(runRoot: string, siteId: string): ReturnType<typeof spawnSync>
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -109,7 +110,7 @@ describe("recon-generate CLI — an unrelated same-host noise capture with a req
     writeRunDir(runRoot, allCaptures);
 
     const siteId = `marketing-endpoint-noise-guard-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeSiteFlow(siteOutDir);
 
     const result = generate(runRoot, siteId);

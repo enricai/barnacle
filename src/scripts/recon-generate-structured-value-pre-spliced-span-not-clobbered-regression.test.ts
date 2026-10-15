@@ -22,8 +22,8 @@ describe("applyStructuredValuePayloadSubstitutions — pre-spliced span is left 
     // already had one element replaced with a `${payload.regionFacet}`
     // accessor reference, even though "north-ridge" (the original leaf
     // value) matches none of the three exclusion sources below.
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: simulating an already-spliced template
     const template =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       '{"tags":["${payload.regionFacet}","sale"],"category":["outerwear","footwear"]}';
     const outStructuredKeys = new Map<string, string>();
 

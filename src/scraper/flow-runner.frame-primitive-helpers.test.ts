@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   countNgInvalidContainers,
   fillHtml5DateTimeInput,
@@ -452,6 +452,8 @@ function makeDatepickerTarget(opts: {
   const readbacks = [...opts.readbackSequence];
   const locator = makeFakeLocator();
   const evaluate = vi.fn(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const s = String(expr);
     if (s.includes("react-datepicker__input-container")) return { match: opts.gateMatch };
     if (s.includes('new KeyboardEvent("keydown"')) return "dispatched";

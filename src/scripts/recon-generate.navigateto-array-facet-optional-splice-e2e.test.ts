@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -66,11 +67,11 @@ function writeRunDir(root: string, captures: Capture[]): void {
 }
 
 function generate(siteId: string, runRoot: string): { contract: string } {
-  siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   return { contract: readFileSync(join(siteOutDir, "contract.ts"), "utf8") };
@@ -100,9 +101,9 @@ describe("recon-generate CLI — navigateTo array-facet threading, REST + GraphQ
     ]);
 
     const siteId = `navigateto-array-facet-optional-splice-rest-test-${process.pid}`;
-    mkdirSync(join(REPO_ROOT, "src", "sites", siteId), { recursive: true });
+    mkdirSync(join(RECON_GENERATE_CWD, "src", "sites", siteId), { recursive: true });
     writeFileSync(
-      join(REPO_ROOT, "src", "sites", siteId, "recon-flow.json"),
+      join(RECON_GENERATE_CWD, "src", "sites", siteId, "recon-flow.json"),
       JSON.stringify({
         steps: [
           {
@@ -154,9 +155,9 @@ describe("recon-generate CLI — navigateTo array-facet threading, REST + GraphQ
     );
 
     const siteId = `navigateto-array-facet-optional-splice-gql-test-${process.pid}`;
-    mkdirSync(join(REPO_ROOT, "src", "sites", siteId), { recursive: true });
+    mkdirSync(join(RECON_GENERATE_CWD, "src", "sites", siteId), { recursive: true });
     writeFileSync(
-      join(REPO_ROOT, "src", "sites", siteId, "recon-flow.json"),
+      join(RECON_GENERATE_CWD, "src", "sites", siteId, "recon-flow.json"),
       JSON.stringify({
         steps: [
           {
@@ -208,9 +209,9 @@ describe("recon-generate CLI — navigateTo array-facet threading, REST + GraphQ
     );
 
     const siteId = `navigateto-array-facet-optional-splice-gql-drop-test-${process.pid}`;
-    mkdirSync(join(REPO_ROOT, "src", "sites", siteId), { recursive: true });
+    mkdirSync(join(RECON_GENERATE_CWD, "src", "sites", siteId), { recursive: true });
     writeFileSync(
-      join(REPO_ROOT, "src", "sites", siteId, "recon-flow.json"),
+      join(RECON_GENERATE_CWD, "src", "sites", siteId, "recon-flow.json"),
       JSON.stringify({
         steps: [
           {
@@ -261,9 +262,9 @@ describe("recon-generate CLI — navigateTo array-facet threading, REST + GraphQ
     ]);
 
     const siteId = `navigateto-array-facet-optional-splice-rest-present-test-${process.pid}`;
-    mkdirSync(join(REPO_ROOT, "src", "sites", siteId), { recursive: true });
+    mkdirSync(join(RECON_GENERATE_CWD, "src", "sites", siteId), { recursive: true });
     writeFileSync(
-      join(REPO_ROOT, "src", "sites", siteId, "recon-flow.json"),
+      join(RECON_GENERATE_CWD, "src", "sites", siteId, "recon-flow.json"),
       JSON.stringify({
         steps: [
           {

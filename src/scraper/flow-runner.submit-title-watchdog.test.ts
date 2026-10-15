@@ -28,6 +28,7 @@ vi.mock("@/config", async (importOriginal) => {
 });
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -60,7 +61,9 @@ function baseParams(
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
     uploadFixture: null,
-    isFinalStep: false,
+    // Final, so the step is judged by submit verification (which reads
+    // `page.title()`) rather than the non-final step-advanced judge.
+    isFinalStep: true,
     // Non-null so `requireSubmitEndpoint` is true and the cascade enters the
     // submit-verification branch that reads `page.title()`.
     submitEndpointPattern: "/apply/submit",
@@ -80,6 +83,8 @@ describe("flow-runner/executeStepWithHealing — submit-verification page.title(
     const signalCounter = { n: 0 };
     const title = vi.fn().mockImplementation(() => new Promise<string>(() => {}));
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;

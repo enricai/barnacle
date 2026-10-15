@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Full-pipeline proof that pagination detection sources its signal from
@@ -135,7 +136,7 @@ describe("recon-generate CLI — pagination signal survives a partial-page prima
     writeRunDir(runRoot);
 
     const siteId = `pagination-cross-capture-evidence-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     expect(existsSync(join(siteOutDir, "contract.ts"))).toBe(false);
 
@@ -165,7 +166,7 @@ describe("recon-generate CLI — pagination signal survives a partial-page prima
         "--vocabulary",
         vocabularyPath,
       ],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

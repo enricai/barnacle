@@ -3,6 +3,7 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import {
   CENTRE_AND_HIT_TEST_FN,
   type CentredHitTestResult,
+  centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
@@ -80,5 +81,26 @@ describe("clickAfterCentredHitTest", () => {
       clickAfterCentredHitTest({ click }, async () => ({ state: "missing" }), { attempts: 1 })
     ).rejects.toThrow(/not in the document/);
     expect(click).not.toHaveBeenCalled();
+  });
+});
+
+describe("centreSelectorForClick", () => {
+  it("re-centres past a sticky overlay and resolves without clicking", async () => {
+    const order: string[] = [];
+    const target = fakeTarget(
+      [{ state: "occluded", occluder: "header#sticky" }, { state: "hit" }],
+      order
+    );
+    await centreSelectorForClick(target, "#save");
+    expect(order).toEqual(["evaluate", "evaluate"]);
+  });
+
+  it("throws without clicking when still occluded", async () => {
+    const order: string[] = [];
+    const target = fakeTarget([{ state: "occluded", occluder: "header#sticky" }], order);
+    await expect(centreSelectorForClick(target, "#save", { attempts: 2 })).rejects.toThrow(
+      /occluded by header#sticky after 2 attempts/
+    );
+    expect(order).toEqual(["evaluate", "evaluate"]);
   });
 });

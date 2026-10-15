@@ -9,6 +9,7 @@ import {
   findFrozenVaryingDrillParams,
   readComparableBodyLeaf,
 } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -185,7 +186,7 @@ describe("recon-generate CLI — same-suffix array shapes across three drill cap
     writeRunDir(runRoot, fixtureCaptures());
 
     const siteId = `shared-suffix-shapes-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -204,7 +205,7 @@ describe("recon-generate CLI — same-suffix array shapes across three drill cap
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
@@ -270,7 +271,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     );
 
     const siteId = `exclusive-constant-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -289,7 +290,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
@@ -304,7 +305,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     writeRunDir(runRoot, exclusiveFilterCaptures());
 
     const siteId = `exclusive-filters-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -323,7 +324,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
@@ -347,7 +348,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     );
 
     const siteId = `exclusive-same-shape-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -366,7 +367,7 @@ describe("recon-generate CLI — mutually exclusive filter arrays with a differi
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     const output = `${result.stdout}\n${result.stderr}`;
 

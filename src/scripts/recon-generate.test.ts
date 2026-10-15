@@ -43,6 +43,7 @@ import {
   selectReturnAction,
   truncateActionSequenceAtSubmitPattern,
 } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   buildMulticallDependentDrillDownActionSteps,
   buildMulticallHeterogeneousActionSteps,
@@ -4074,10 +4075,12 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
 });
 
 describe("emitContractTs — queryConst escapes hazardous template-literal sequences in the resolved query text", () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
   it("escapes a literal backtick and a ${...} sequence rather than splicing them raw", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
       gql: true,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       gqlQuery: '{ widget(label: `starred`) { id note(format: "${RAW_EXPR}") } }',
       multiStepBody: `    return { data: {} as unknown };`,
     });
@@ -4085,6 +4088,7 @@ describe("emitContractTs — queryConst escapes hazardous template-literal seque
     expect(queryConstMatch).not.toBeNull();
     const queryConstBody = queryConstMatch?.[1] ?? "";
     expect(queryConstBody).toContain("\\`starred\\`");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(queryConstBody).toContain("\\${RAW_EXPR}");
     expect(queryConstBody).not.toMatch(/[^\\]`starred`/);
     expect(queryConstBody).not.toMatch(/[^\\]\$\{RAW_EXPR\}/);
@@ -4576,7 +4580,7 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
     );
 
     const siteId = `recon-cli-config-displayname-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -4586,7 +4590,7 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "config", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
@@ -4639,7 +4643,7 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     );
 
     const siteId = "wholesale-fish-market";
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -4649,7 +4653,7 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     const tsResult = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(tsResult.status, `${tsResult.stdout}\n${tsResult.stderr}`).toBe(0);
 
@@ -4660,7 +4664,7 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     const configResult = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "config", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(configResult.status, `${configResult.stdout}\n${configResult.stderr}`).toBe(0);
 

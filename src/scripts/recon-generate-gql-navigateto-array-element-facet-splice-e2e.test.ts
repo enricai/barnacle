@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Closes the GraphQL-variables sibling of the report's array-element
@@ -89,7 +93,7 @@ describe("recon-generate CLI — navigateTo facets threaded into a GraphQL array
     writeFileSync(join(capturesDir, "000-search-action.json"), JSON.stringify(capture));
 
     const siteId = `gql-navigateto-array-element-facet-splice-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
 
     writeFileSync(
@@ -115,7 +119,7 @@ describe("recon-generate CLI — navigateTo facets threaded into a GraphQL array
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -138,11 +142,15 @@ describe("recon-generate CLI — navigateTo facets threaded into a GraphQL array
 
     // The emitted `payload` parameter is now referenced, so Biome's
     // noUnusedFunctionParameters warning must not fire on it.
-    const lint = execFileSync(BIOME_BIN, ["lint", "--config-path", REPO_ROOT, contractPath], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-      stdio: "pipe",
-    });
+    const lint = execFileSync(
+      BIOME_BIN,
+      ["lint", "--config-path", REPO_ROOT, "--vcs-use-ignore-file=false", contractPath],
+      {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+        stdio: "pipe",
+      }
+    );
     expect(lint).not.toMatch(/noUnusedFunctionParameters/);
     expect(lint).not.toMatch(/This parameter payload is unused/);
 
@@ -162,12 +170,13 @@ describe("recon-generate CLI — navigateTo facets threaded into a GraphQL array
           incremental: false,
           tsBuildInfoFile: null,
           paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
             "@/*": ["./src/*"],
             "@test/*": ["./test/*"],
             "@enricai/barnacle/*": ["./src/*"],
           },
         },
-        include: [`src/sites/${siteId}/**/*.ts`],
+        include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
       })
     );
 

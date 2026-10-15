@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Proves the queryConst escaping fix actually prevents the reported
@@ -43,7 +47,7 @@ function assertQueryConstCompilesSafely(source: string, siteId: string, pascal: 
   expect(queryReferenceLine, source).toBeDefined();
   expect(queryReferenceLine).toContain(constName);
 
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   outDirs.push(siteOutDir);
   mkdirSync(join(siteOutDir, "flows"), { recursive: true });
   writeFileSync(join(siteOutDir, "contract.ts"), source);
@@ -77,6 +81,7 @@ function assertQueryConstCompilesSafely(source: string, siteId: string, pascal: 
         incremental: false,
         tsBuildInfoFile: null,
         paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
           "@enricai/barnacle/*": ["./src/*"],
@@ -93,6 +98,7 @@ function assertQueryConstCompilesSafely(source: string, siteId: string, pascal: 
   expect(check.status, diagnostics).toBe(0);
 }
 
+// biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
 describe("emitContractTs queryConst — compiles safely for backtick/${} GraphQL query text", () => {
   it("emits a syntactically closed QUERY const when the query text contains a literal backtick", () => {
     const siteId = `query-const-escape-backtick-test${process.pid}`;
@@ -114,6 +120,7 @@ describe("emitContractTs queryConst — compiles safely for backtick/${} GraphQL
     assertQueryConstCompilesSafely(source, siteId, pascal);
   }, 60_000);
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
   it("emits a syntactically closed QUERY const when the query text contains a ${...} splice-like sequence", () => {
     const siteId = `query-const-escape-splice-test${process.pid}`;
     const pascal = "QueryConstEscapeSpliceFixture";
@@ -127,6 +134,7 @@ describe("emitContractTs queryConst — compiles safely for backtick/${} GraphQL
       responseBody: { id: "abc", active: true },
       endpointPath: "/graphql",
       gql: true,
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       gqlQuery: "query { field(id: ${maliciousSplice}) }",
       auxFiles: [],
     });

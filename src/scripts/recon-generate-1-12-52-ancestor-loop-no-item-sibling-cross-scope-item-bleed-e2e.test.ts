@@ -170,8 +170,8 @@ describe("recon-generate fold-hoist — ancestor loop with no item sibling, cros
     expect(combinedBody).toContain(".map(async (item) =>");
 
     // The g0-scoped hoisted call reads only g0's own nested field.
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(ancestorBody).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "catalog/entries/details?code=${(((g0 as Record<string, unknown>).meta as Record<string, unknown>).summary as Record<string, unknown>).code}"
     );
     expect(ancestorBody).not.toContain("catalog/entries/details?code=${item");

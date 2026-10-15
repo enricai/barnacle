@@ -237,7 +237,7 @@ describe("flow-runner declared non-submit step never reaches the submit judge", 
     verifyStepAdvancedWithLLM.mockReset();
     verifyStepAdvancedWithLLM.mockResolvedValue({ advanced: false, reason: "no change" });
     const fixture = buildFixture(
-      (defaults) => [
+      () => [
         {
           instruction: GUARDRAIL_TAB_INSTRUCTION,
           optional: false,

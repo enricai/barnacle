@@ -11,6 +11,7 @@ import { isZeroVarianceRepeatCapture } from "@/recon/capture-filters";
 import { HttpClientError } from "@/scraper/errors";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitContractTs } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
@@ -62,7 +63,7 @@ function runGenerate(siteId: string, runRoot: string): ReturnType<typeof spawnSy
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -130,7 +131,7 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     writeRunDir(runRoot, allCaptures);
 
     const siteId = `combined-root-causes-noise-drill-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -414,7 +415,7 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
     writeRunDir(runRoot, [search, hold, confirm]);
 
     const siteId = `combined-root-causes-config-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),

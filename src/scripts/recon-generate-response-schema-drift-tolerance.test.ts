@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Regression guard for the filed report: recon-generate must derive a
@@ -104,11 +105,11 @@ function extractResponseSchemaLine(contract: string): string {
 }
 
 function runGenerate(runRoot: string, siteId: string): string {
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
@@ -131,7 +132,7 @@ describe("recon-generate ResponseSchema: tolerates cosmetic drift without guttin
     writeRunDir(runRoot);
 
     const siteId = `response-schema-drift-tolerance-test-p${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const contract = runGenerate(runRoot, siteId);
     const schemaExpr = extractResponseSchemaLine(contract);

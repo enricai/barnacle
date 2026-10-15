@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { spliceFacetsIntoArrayVariable } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -80,7 +81,7 @@ describe("recon-generate CLI — required array facets at every call site", () =
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
     const siteId = `array-facet-every-site-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     const base = `https://${OWN_BACKEND_HOST}/#/library`;
     writeFileSync(
@@ -108,7 +109,7 @@ describe("recon-generate CLI — required array facets at every call site", () =
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
@@ -131,6 +132,7 @@ describe("spliceFacetsIntoArrayVariable overlapping literals", () => {
     const value = ["widget-x;a=1", "widget;b=2"];
     const short = { value: "widget", field: "short", optional: false };
     const long = { value: "widget-x", field: "long", optional: false };
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const expected = "[`${payload.long};a=1`, `${payload.short};b=2`]";
     expect(spliceFacetsIntoArrayVariable(value, [short, long] as never)).toBe(expected);
     expect(spliceFacetsIntoArrayVariable(value, [long, short] as never)).toBe(expected);

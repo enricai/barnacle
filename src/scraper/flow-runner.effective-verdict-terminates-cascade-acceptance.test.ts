@@ -95,6 +95,7 @@ function makeTabPage(state: AcceptanceSequenceState): Page {
   return {
     evaluate: async (expr: unknown) => {
       const src = String(expr);
+      if (src.includes("scrollIntoView")) return { state: "hit" };
       // snapshotPage's DOM_SNAPSHOT_EXPR probe. Body grows +700B — clears
       // TRIVIAL_DOM_DELTA_BYTES (500B) but stays under the 5000B view-swap
       // floor — only once the fallback's own click has re-rendered the panel.

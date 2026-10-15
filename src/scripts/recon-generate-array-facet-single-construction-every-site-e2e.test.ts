@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
@@ -66,7 +67,7 @@ function generate(): string {
     );
   });
   const siteId = `array-facet-single-construction-test-${process.pid}`;
-  siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   mkdirSync(siteOutDir, { recursive: true });
   const base = `https://${HOST}/#/s`;
   writeFileSync(
@@ -95,7 +96,7 @@ function generate(): string {
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
@@ -149,6 +150,7 @@ describe("recon-generate CLI — one construction for every facet-carrying array
   it("splices a facet recurring in a packed string under a non-correlating key", () => {
     const contract = generate();
     expect(extractCallSiteBodies(contract).get(PATHS[0] ?? "")).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       '"q":"kind:shop|city:${payload.AlphaFacet}"'
     );
   }, 60_000);

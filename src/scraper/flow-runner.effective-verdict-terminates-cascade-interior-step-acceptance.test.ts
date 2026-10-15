@@ -216,6 +216,8 @@ describe("flow-runner effective-verdict-terminates-cascade on an interior (non-f
     const page: Page = {
       evaluate: async (expr: unknown): Promise<unknown> => {
         const src = String(expr);
+        // happy-dom has no layout, so the real centre hit-test can never land.
+        if (src.includes("scrollIntoView")) return { state: "hit" };
         const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
           d: unknown,
           x: unknown

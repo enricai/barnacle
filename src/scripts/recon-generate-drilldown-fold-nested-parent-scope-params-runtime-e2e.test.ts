@@ -82,6 +82,7 @@ describe("recon-generate drill-down fold — nested fold threads BOTH a parent-s
 
     // #2: both the parent-only (`groupId`) and item-only (`itemDate`)
     // params interpolate off their own real binding.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(body).toContain("${(g0 as Record<string, unknown>).id}");
     expect(body).toContain(`$${"{item.date}"}`);
     expect(body).toContain(`$${"{item.entryId}"}`);
