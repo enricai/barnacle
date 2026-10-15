@@ -8801,7 +8801,9 @@ async function tryPromptSelectorPrimitive(params: {
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
       try {
-        await target.locator(`[${PROMPT_OPTION_MARK_ATTR}-search="1"]`).first().focus();
+        await target.evaluate(
+          `(() => { const el = document.querySelector('[${PROMPT_OPTION_MARK_ATTR}-search="1"]'); if (el) el.focus(); })()`
+        );
         await sendTrustedEnter(page);
       } catch (err) {
         logger.info(
