@@ -772,6 +772,31 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   return "";
 })`;
 /**
+ * Browser-side expression resolving ONE trigger-union hit to its widget
+ * container. A single widget often matches {@link PROMPT_TRIGGER_SELECTORS} more
+ * than once (e.g. an outer container AND its inner filter input both carry
+ * `data-uxi-widget-type`), so prefer a real interactive ancestor, else the
+ * OUTERMOST widget-kit container on the ancestor chain (so the inner input and
+ * its container collapse to the same node), else the element itself. Shared by
+ * widget enumeration and the option-scope ownership filter so both agree on what
+ * "a widget" is — including widgets that are already committed and so never
+ * stamped with the enumeration mark.
+ */
+const PROMPT_WIDGET_CONTAINER_EXPR = `((el) => {
+  const interactive = el.closest("button,[role='button'],[role='combobox']");
+  if (interactive) return interactive;
+  const kitSel = "[data-uxi-widget-type='selectinput'],[data-uxi-widget-type='multiselect'],[data-automation-id='multiSelectContainer']";
+  let container = el;
+  let node = el.closest(kitSel);
+  while (node) {
+    container = node;
+    const up = node.parentElement && node.parentElement.closest(kitSel);
+    if (!up || up === node) break;
+    node = up;
+  }
+  return container;
+})`;
+/**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
  * standard and most libraries (MUI/Radix/react-select) render the listbox in a
@@ -8234,6 +8259,7 @@ async function tryPromptSelectorPrimitive(params: {
     const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
     const triggers = Array.from(document.querySelectorAll(triggerSel));
     if (triggers.length === 0) return { widgetPresent: false };
+    const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
     const seen = new Set();
     const resolved = [];
     for (const el of triggers) {
@@ -8243,18 +8269,7 @@ async function tryPromptSelectorPrimitive(params: {
       // interactive ancestor, else the OUTERMOST widget-kit container on the
       // ancestor chain (so the inner input and its container collapse to the
       // same node), else the element itself.
-      const interactive = el.closest("button,[role='button'],[role='combobox']");
-      let container = interactive || el;
-      if (!interactive) {
-        const kitSel = "[data-uxi-widget-type='selectinput'],[data-uxi-widget-type='multiselect'],[data-automation-id='multiSelectContainer']";
-        let node = el.closest(kitSel);
-        while (node) {
-          container = node;
-          const up = node.parentElement && node.parentElement.closest(kitSel);
-          if (!up || up === node) break;
-          node = up;
-        }
-      }
+      const container = containerOf(el);
       if (seen.has(container)) continue;
       seen.add(container);
       resolved.push(container);
@@ -8369,7 +8384,7 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
 
-    const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel) => {
+    const enumerateOptionsExpr = `((widgetMarkAttr, wIdx, markAttr, optionSel, searchSel, triggerSel) => {
       const optionLabel = ${OPTION_ACCESSIBLE_LABEL_EXPR};
       const w = document.querySelector("[" + widgetMarkAttr + '="' + wIdx + '"]');
       if (!w) return { optionsPresent: false };
@@ -8387,12 +8402,35 @@ async function tryPromptSelectorPrimitive(params: {
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
       const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
-      const all = Array.from(scope.querySelectorAll(optionSel));
+      // Under the document fallback, ownership is structural: content is foreign
+      // when, climbing from it WITHOUT passing through this widget, some ancestor
+      // is or holds another widget's trigger — e.g. a committed sibling's chips,
+      // whatever markup wraps them. Resolved from the trigger union rather than
+      // the enumeration mark, because a COMMITTED sibling is never marked (only
+      // unfilled widgets are) yet its chips are the likeliest leak. An unlinked
+      // portal sits under no widget, so it stays readable.
+      const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
+      const foreignRoots = scope === document
+        ? Array.from(new Set(Array.from(document.querySelectorAll(triggerSel)).map(containerOf)))
+            .filter((o) => o !== w && !o.contains(w) && !w.contains(o))
+        : [];
+      const heldByOtherWidget = (el) => {
+        if (scope !== document || w.contains(el)) return false;
+        for (let a = el; a && a !== document.body && !a.contains(w); a = a.parentElement) {
+          if (a.matches(triggerSel) || a.querySelector(triggerSel)) return true;
+        }
+        return false;
+      };
+      const isOwned = (el) => !foreignRoots.some((o) => o.contains(el)) && !heldByOtherWidget(el);
+      const all = Array.from(scope.querySelectorAll(optionSel)).filter(isOwned);
       // A union hit may be an ancestor of another (e.g. role=listbox > li > p):
       // keep only leaf-most option nodes with their own text so we don't double
       // count or address a wrapper.
       const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
-      const searchInput = scope.querySelector(searchSel);
+      const searchInput = scope === document
+        ? (w.matches(searchSel) || w.matches("input") ? w : w.querySelector(searchSel))
+        : (scope.matches && scope.matches(searchSel) ? scope : null)
+          || Array.from(scope.querySelectorAll(searchSel)).find(isOwned) || null;
       // Mark the scoped filter input so the Node-side fill addresses THIS
       // widget's input (Playwright's locator can't re-run the scope resolution).
       if (searchInput) searchInput.setAttribute(markAttr + "-search", "1");
@@ -8400,7 +8438,7 @@ async function tryPromptSelectorPrimitive(params: {
       // is typed into — report the popup as present (with searchable=true) so the
       // caller types the filter first, rather than falling through as "no popup".
       if (opts.length === 0) {
-        return searchInput ? { optionsPresent: true, searchable: true, options: [] } : { optionsPresent: false };
+        return searchInput ? { optionsPresent: true, searchable: true, options: [], scopeIsDocument: scope === document } : { optionsPresent: false };
       }
       const options = [];
       for (let i = 0; i < opts.length; i++) {
@@ -8416,7 +8454,7 @@ async function tryPromptSelectorPrimitive(params: {
       // that resolved to THIS widget's own inline subtree or its own
       // aria-controls/aria-owns target counts.
       return { optionsPresent: true, searchable: !!searchInput, options, scopeIsDocument: scope === document };
-    })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)})`;
+    })(${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_OPTION_MARK_ATTR)}, ${JSON.stringify(PROMPT_OPTION_SELECTORS)}, ${JSON.stringify(PROMPT_SEARCH_SELECTORS)}, ${JSON.stringify(PROMPT_TRIGGER_SELECTORS)})`;
 
     type EnumerateOptionsResult = {
       optionsPresent: boolean;
@@ -8435,6 +8473,13 @@ async function tryPromptSelectorPrimitive(params: {
     // an unrelated widget's stale/leftover popup elsewhere on the page as
     // "already open"); a genuinely closed popup falls through to the normal
     // open-click + poll path below unchanged.
+    // A popup whose aria-controls link lands after the click is not yet
+    // resolvable; a document-scoped read would credit a sibling widget's
+    // content, so keep polling until a non-document scope resolves. The poll
+    // returns the last read when the budget runs out, so a popup that
+    // genuinely has no linkage still resolves through the document fallback.
+    const isOwnScopePopup = (r: EnumerateOptionsResult): boolean =>
+      r?.optionsPresent === true && r.scopeIsDocument !== true;
     const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
     const alreadyOpen =
       precheck?.optionsPresent === true &&
@@ -8479,7 +8524,7 @@ async function tryPromptSelectorPrimitive(params: {
           page,
           target,
           enumerateOptionsExpr,
-          (r) => r?.optionsPresent === true
+          isOwnScopePopup
         );
     if (!optionsInitial?.optionsPresent) {
       logger.info(
@@ -8513,10 +8558,13 @@ async function tryPromptSelectorPrimitive(params: {
       // to its popup), falling back to the union only if the mark is absent.
       const scopedSearchSel = `[${PROMPT_OPTION_MARK_ATTR}-search="1"]`;
       const marked = await target.locator(scopedSearchSel).count();
-      await target
-        .locator(marked > 0 ? scopedSearchSel : PROMPT_SEARCH_SELECTORS)
-        .first()
-        .fill(option);
+      if (marked === 0) {
+        logger.info(
+          `prompt-selector primitive: no filter input owned by the widget for ${optLabel}; falling through`
+        );
+        return null;
+      }
+      await target.locator(scopedSearchSel).first().fill(option);
     } catch (err) {
       logger.info(
         `prompt-selector primitive: filter-input type failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
@@ -8524,16 +8572,11 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    type FilteredRead = {
-      optionsPresent: boolean;
-      searchable?: boolean;
-      options?: { oIdx: number; text: string }[];
-    };
-    let optionsFiltered = await pollEnumerate<FilteredRead>(
+    let optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
       page,
       target,
       enumerateOptionsExpr,
-      (r) => r?.optionsPresent === true
+      isOwnScopePopup
     );
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
@@ -8555,12 +8598,15 @@ async function tryPromptSelectorPrimitive(params: {
         break;
       }
       await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-      optionsFiltered = await pollEnumerate<FilteredRead>(page, target, enumerateOptionsExpr, (r) =>
-        promptOptionsNameOption(r, option)
+      optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
       );
     }
     if (optionsFiltered?.optionsPresent) {
-      optionsFiltered = await readStablePromptOptions<FilteredRead>(
+      optionsFiltered = await readStablePromptOptions<EnumerateOptionsResult>(
         page,
         target,
         enumerateOptionsExpr,
@@ -8863,8 +8909,12 @@ async function commitPromptOption(params: {
       .catch(() => ({ optionsPresent: false }))) as {
       optionsPresent: boolean;
       options?: { oIdx: number; text: string }[];
+      scopeIsDocument?: boolean;
     };
-    const newOptions = reEnumerated?.optionsPresent ? (reEnumerated.options ?? []) : [];
+    const newOptions =
+      reEnumerated?.optionsPresent && reEnumerated.scopeIsDocument !== true
+        ? (reEnumerated.options ?? [])
+        : [];
     const drilled = newOptions.length > 0 && optionSetKey(newOptions) !== optionSetKey(options);
     if (!drilled) {
       logger.info(
