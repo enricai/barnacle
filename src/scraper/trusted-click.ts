@@ -90,6 +90,9 @@ export async function centreAndHitTest(
   let last: CentredHitTestResult = { state: "missing" };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     last = await evaluateOnElement(CENTRE_AND_HIT_TEST_FN);
+    if (typeof last?.state !== "string") {
+      throw new TypeError(`hit-test probe for ${label} returned no state`);
+    }
     if (last.state === "hit") return;
     logger.warn(
       `click point for ${label} not on target (${last.state}${last.occluder ? `, covered by ${last.occluder}` : ""}), attempt: ${attempt}/${attempts}`
