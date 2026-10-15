@@ -1304,7 +1304,7 @@ const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { ht
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
-  label?: string;
+  label: string;
   value: string;
 }
 
@@ -7869,7 +7869,7 @@ export type RadioGroupCandidate = {
   /** Index into the DOM's radio-group list (stable across the enumerate/apply pair). */
   gi: number;
   /** The group's legend/label text; empty string when the group is unlabeled. */
-  label?: string;
+  label: string;
   /**
    * The group's radio options. `ri` is the raw radio DOM index within the group;
    * `id`/`xpath` are stable locator hints threaded to the trusted-click commit
@@ -9662,7 +9662,7 @@ export async function verifyDomEffect(
 export interface InvalidFormControl {
   /** Human-readable label associated with the field — element's nearest
    * `<label>` text, or the value of `aria-label` / `data-id` / `name`. */
-  label?: string;
+  label: string;
   /** Compact class signature naming the framework-specific marker that
    * matched, e.g. `ng-invalid ng-touched`. Helps the LLM correlate
    * "user-interacted + still invalid" patterns. */
