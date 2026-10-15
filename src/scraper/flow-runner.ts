@@ -9206,6 +9206,31 @@ async function commitPromptOption(params: {
           cnode = cnode.parentElement;
         }
       }
+      // The widget's own announcement of what it committed is ground truth when
+      // readable: aria-describedby nodes ("N items selected, X") on the container
+      // and its descendants, else the nearest selectedItemList. While a popup is
+      // open the description can read only "Expanded", hence the fallback.
+      let committed = "";
+      const announceRx = /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/;
+      for (const el of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) {
+        for (const ref of (el.getAttribute("aria-describedby") || "").split(/\\s+/)) {
+          const refEl = ref ? document.getElementById(ref) : null;
+          const m = refEl ? announceRx.exec(norm(refEl.textContent)) : null;
+          if (m && m[1]) { committed = m[1]; break; }
+        }
+        if (committed) break;
+      }
+      if (!committed) {
+        let anode = w;
+        for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anode && !committed; d++) {
+          const list = anode.querySelector ? anode.querySelector('[data-automation-id="selectedItemList"]') : null;
+          if (list) committed = norm(list.textContent);
+          anode = anode.parentElement;
+        }
+      }
+      if (committed) {
+        return { ok: !!wantText && committed.includes(wantText), id: w.id || "", stillInvalid, committed };
+      }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
     })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
     const readback = (await target
@@ -9214,7 +9239,14 @@ async function commitPromptOption(params: {
       ok: boolean;
       id: string;
       stillInvalid: boolean;
+      committed?: string;
     };
+    if (!readback?.ok && readback?.committed) {
+      logger.info(
+        `prompt-selector primitive: committed "${readback.committed.slice(0, 40)}" instead of "${chosenOption.text.slice(0, 40)}" for ${optLabel}; falling through`
+      );
+      return null;
+    }
     if (readback?.ok) {
       logger.info(
         `prompt-selector primitive: selected "${maskValueShape(chosenOption.text)}" for ${optLabel} (${matchReason})`
