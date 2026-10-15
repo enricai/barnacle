@@ -8402,26 +8402,35 @@ async function tryPromptSelectorPrimitive(params: {
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
       const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
-      // Under the document fallback, ownership is structural: anything inside a
-      // different widget's container (one that neither contains nor is contained
-      // by this widget) is foreign — e.g. another widget's committed chips or
-      // search input. Foreign widgets are resolved from the trigger union rather
-      // than the enumeration mark, because a COMMITTED sibling is never marked
-      // (only unfilled widgets are) yet its chips are the likeliest leak.
+      // Under the document fallback, ownership is structural: content is foreign
+      // when, climbing from it WITHOUT passing through this widget, some ancestor
+      // is or holds another widget's trigger — e.g. a committed sibling's chips,
+      // whatever markup wraps them. Resolved from the trigger union rather than
+      // the enumeration mark, because a COMMITTED sibling is never marked (only
+      // unfilled widgets are) yet its chips are the likeliest leak. An unlinked
+      // portal sits under no widget, so it stays readable.
       const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
       const foreignRoots = scope === document
         ? Array.from(new Set(Array.from(document.querySelectorAll(triggerSel)).map(containerOf)))
             .filter((o) => o !== w && !o.contains(w) && !w.contains(o))
         : [];
-      const isOwned = (el) => !foreignRoots.some((o) => o.contains(el));
+      const heldByOtherWidget = (el) => {
+        if (scope !== document || w.contains(el)) return false;
+        for (let a = el; a && a !== document.body && !a.contains(w); a = a.parentElement) {
+          if (a.matches(triggerSel) || a.querySelector(triggerSel)) return true;
+        }
+        return false;
+      };
+      const isOwned = (el) => !foreignRoots.some((o) => o.contains(el)) && !heldByOtherWidget(el);
       const all = Array.from(scope.querySelectorAll(optionSel)).filter(isOwned);
       // A union hit may be an ancestor of another (e.g. role=listbox > li > p):
       // keep only leaf-most option nodes with their own text so we don't double
       // count or address a wrapper.
       const opts = all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
       const searchInput = scope === document
-        ? (w.matches(searchSel) ? w : w.querySelector(searchSel))
-        : Array.from(scope.querySelectorAll(searchSel)).find(isOwned) || null;
+        ? (w.matches(searchSel) || w.matches("input") ? w : w.querySelector(searchSel))
+        : (scope.matches && scope.matches(searchSel) ? scope : null)
+          || Array.from(scope.querySelectorAll(searchSel)).find(isOwned) || null;
       // Mark the scoped filter input so the Node-side fill addresses THIS
       // widget's input (Playwright's locator can't re-run the scope resolution).
       if (searchInput) searchInput.setAttribute(markAttr + "-search", "1");

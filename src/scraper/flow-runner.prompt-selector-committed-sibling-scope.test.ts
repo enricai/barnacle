@@ -152,4 +152,58 @@ describe("flow-runner/tryPromptSelectorPrimitive committed-sibling isolation und
     expect(window.document.getElementById("chip-a")?.hasAttribute(OPTION_MARK)).not.toBe(true);
     expect(trajectory.at(-1)?.targetId).toBe("b");
   });
+
+  describe("sibling markup the widget-kit container resolution does not recognize", () => {
+    const bareSibling = `
+      <div>
+        <label>Departure city</label>
+        <div id="a">
+          <div data-automation-id="promptSelectionLabel">Lisbon</div>
+          <ul><li data-automation-id="promptOption" role="option" id="chip-a">Lisbon</li></ul>
+          <input id="a--input" role="searchbox" type="text" value="" />
+        </div>
+      </div>`;
+    const comboSibling = `
+      <div>
+        <label>Departure city</label>
+        <div id="a">
+          <input id="a--input" role="combobox" aria-haspopup="listbox" type="text" value="Lisbon" />
+          <ul><li role="option" id="chip-a">Lisbon</li></ul>
+        </div>
+      </div>`;
+    const comboTarget = `
+      <div>
+        <label for="b">Arrival city</label>
+        <input id="b" role="combobox" aria-haspopup="listbox" type="text" value="" />
+      </div>`;
+
+    it.each([
+      ["bare sibling before", `<form>${bareSibling}${targetWidget}</form>`],
+      ["bare sibling after", `<form>${targetWidget}${bareSibling}</form>`],
+      ["combobox sibling before", `<form>${comboSibling}${targetWidget}</form>`],
+    ])("%s: unlinked searchable portal never touches the sibling", async (_n, html) => {
+      const { window, fills, clicks } = await runStep(html, {
+        options: ["Porto"],
+        portaled: true,
+        unlinkedPortal: true,
+        searchable: true,
+      });
+      const doc = window.document;
+      expect(doc.getElementById("a--input")?.hasAttribute(SEARCH_MARK)).not.toBe(true);
+      expect(doc.getElementById("chip-a")?.hasAttribute(OPTION_MARK)).not.toBe(true);
+      expect(fills.every((f) => !f.selector.includes("a--input"))).toBe(true);
+      expect(clicks.some((c) => c.includes("chip-a"))).toBe(false);
+    });
+
+    it("an input-shaped target types into itself, not the committed sibling's input", async () => {
+      const { window, fills } = await runStep(`<form>${comboSibling}${comboTarget}</form>`, {
+        options: ["Porto"],
+        portaled: true,
+        unlinkedPortal: true,
+        searchable: true,
+      });
+      expect(window.document.getElementById("a--input")?.hasAttribute(SEARCH_MARK)).not.toBe(true);
+      expect(fills.every((f) => !f.selector.includes("a--input"))).toBe(true);
+    });
+  });
 });
