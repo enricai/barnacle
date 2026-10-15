@@ -3864,7 +3864,7 @@ function isCommittedDateReadback(
   readback: VerifyFillReadbackResult | null
 ): readback is VerifyFillReadbackResult {
   if (readback === null) return false;
-  if (readback.outcome === "rejected") return false;
+  if (readback.outcome === "rejected" || readback.outcome === "segment") return false;
   // A datepicker reformats what it accepts (e.g. "01/2020" → "2020-01"), so
   // "differs" is a commit, not a rejection — require only a non-empty value
   // that contains a 4-digit year, ruling out stray placeholder text.
@@ -4026,8 +4026,8 @@ export async function fillTextDatepickerInput(
  * masked-input library reformatting).
  */
 export interface VerifyFillReadbackResult {
-  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted) */
-  outcome: "matched" | "rejected" | "differs";
+  /** "matched" = element.value === expectedValue; "rejected" = element.value === "" after a non-empty fill; "differs" = element value is non-empty but different (masked / reformatted); "segment" = the target is one `role=spinbutton` segment of a multi-segment widget, so its own value can never stand for the whole expected value */
+  outcome: "matched" | "rejected" | "differs" | "segment";
   /** Actual value read back from the element after the fill. */
   postValue: string;
   /** Tag of the target element (input/textarea/contenteditable). */
@@ -4074,6 +4074,10 @@ export async function verifyFillReadback(
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
+    const siblings = el.parentElement ? el.parentElement.querySelectorAll("[role='spinbutton']").length : 0;
+    if (el.getAttribute && el.getAttribute("role") === "spinbutton" && siblings > 1) {
+      return { outcome: "segment", postValue: el.value || el.getAttribute("aria-valuenow") || "", tag };
+    }
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       actual = el.value || "";
     } else if (el.isContentEditable) {
@@ -4091,7 +4095,14 @@ export async function verifyFillReadback(
     const raw = await target.evaluate(expr);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as { outcome?: unknown; postValue?: unknown; tag?: unknown };
-    if (r.outcome !== "matched" && r.outcome !== "rejected" && r.outcome !== "differs") return null;
+    if (
+      r.outcome !== "matched" &&
+      r.outcome !== "rejected" &&
+      r.outcome !== "differs" &&
+      r.outcome !== "segment"
+    ) {
+      return null;
+    }
     return {
       outcome: r.outcome,
       postValue: typeof r.postValue === "string" ? r.postValue : "",
@@ -5789,6 +5800,360 @@ export function parseFillValueIntent(instruction: string): { value: string } | n
     return value ? { value } : null;
   }
   return null;
+}
+
+const SEGMENTED_DATE_VALUE_RE = /^[\d/.\s-]+$/;
+const SEGMENTED_DATE_MIN_DIGITS = 4;
+const SEGMENTED_DATE_MAX_DIGITS = 8;
+const SEGMENTED_DATE_QUOTED_WEIGHT = 3;
+const SEGMENTED_DATE_KEY_DELAY_MS = 50;
+const SEGMENTED_DATE_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "date",
+  "enter",
+  "fill",
+  "for",
+  "in",
+  "into",
+  "of",
+  "on",
+  "the",
+  "then",
+  "to",
+  "type",
+  "with",
+]);
+
+/** One candidate group of `role=spinbutton` segments plus the text that names it. */
+export interface SegmentedDateGroup {
+  /** `aria-valuemax` of each segment, in DOM order (e.g. `[12, 9999]`). */
+  segmentMaxes: readonly number[];
+  /** Visible label/heading text surrounding the group (e.g. "Work Experience 1 From"). */
+  context: string;
+  /** True for a per-wrapper subset of a larger container's segments; never picked on width alone. */
+  nested?: boolean;
+}
+
+/**
+ * Extract the digits a fill/type/enter step wants typed into a multi-segment
+ * date widget. Limited to 4-8 digits so phone numbers and other long numerics
+ * never trigger the segmented-date path. Reuses `parseFillValueIntent` and
+ * falls back to the last date-shaped quoted phrase for verbless steps such as
+ * "'From' date in Work Experience 1, '012020'".
+ */
+export function parseSegmentedDateValue(
+  instruction: string
+): { digits: string; valueSpan: string } | null {
+  const spans = findQuotedSpans(instruction);
+  const intent = parseFillValueIntent(instruction)?.value;
+  const candidates = intent
+    ? [intent]
+    : spans
+        .map((s) => s.text.trim())
+        .filter((t) => SEGMENTED_DATE_VALUE_RE.test(t))
+        .reverse();
+  for (const raw of candidates) {
+    if (!SEGMENTED_DATE_VALUE_RE.test(raw)) continue;
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < SEGMENTED_DATE_MIN_DIGITS || digits.length > SEGMENTED_DATE_MAX_DIGITS) {
+      continue;
+    }
+    return { digits, valueSpan: raw };
+  }
+  if (spans.length > 0 && intent) return null;
+  const bare = instruction
+    .split(/\s+/)
+    .map((t) => t.replace(/[.,;:]+$/, ""))
+    .filter((t) => /\d/.test(t) && SEGMENTED_DATE_VALUE_RE.test(t))
+    .reverse();
+  for (const raw of bare) {
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < SEGMENTED_DATE_MIN_DIGITS || digits.length > SEGMENTED_DATE_MAX_DIGITS) {
+      continue;
+    }
+    return { digits, valueSpan: raw };
+  }
+  return null;
+}
+
+function segmentedDateTokens(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * Pick which spinbutton group a segmented-date step targets. Groups whose
+ * segment widths (digit count of `aria-valuemax`) don't sum to the value's
+ * digit count are dropped; the rest are scored by quoted-phrase and step-word
+ * hits against their context. Returns the index into `groups`, or `null` on a
+ * tie or zero score — guessing a group would write a date into the wrong field.
+ */
+export function resolveSegmentedDateGroup(
+  instruction: string,
+  groups: readonly SegmentedDateGroup[]
+): number | null {
+  const value = parseSegmentedDateValue(instruction);
+  if (!value) return null;
+  const spans = findQuotedSpans(instruction);
+  const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
+  const stepWords = new Set(
+    segmentedDateTokens(
+      spans.reduceRight((rest, s) => rest.slice(0, s.start) + " " + rest.slice(s.end), instruction)
+    ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
+  );
+  let best = -1;
+  let bestScore = 0;
+  let tied = false;
+  const compatible: number[] = [];
+  groups.forEach((group, index) => {
+    const widths = group.segmentMaxes.map((max) => String(max).length);
+    if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
+    compatible.push(index);
+    const tokens = segmentedDateTokens(group.context);
+    const joined = ` ${tokens.join(" ")} `;
+    const phraseHits = phrases.filter((p) =>
+      joined.includes(` ${segmentedDateTokens(p).join(" ")} `)
+    ).length;
+    const wordHits = tokens.filter((t, i) => stepWords.has(t) && tokens.indexOf(t) === i).length;
+    const score = phraseHits * SEGMENTED_DATE_QUOTED_WEIGHT + wordHits;
+    if (score > bestScore) {
+      best = index;
+      bestScore = score;
+      tied = false;
+    } else if (score === bestScore && score > 0) {
+      tied = true;
+    }
+  });
+  // Only one group can hold this many digits, so there is nothing to confuse it
+  // with even when its label shares no words with the step.
+  if (compatible.length === 1 && !groups[compatible[0] ?? -1]?.nested) return compatible[0] ?? null;
+  return bestScore === 0 || tied ? null : best;
+}
+
+const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
+
+/** Exported so tests can run the real DOM enumeration against markup. */
+export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
+  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
+  const stale = document.querySelectorAll("[" + attr + "]");
+  stale.forEach((el) => el.removeAttribute(attr));
+  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']"));
+  if (spins.length === 0) return { groups: [] };
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+  const byContainer = new Map();
+  for (const el of spins) {
+    const box = el.closest("fieldset,[role='group']") || el.parentElement;
+    if (!byContainer.has(box)) byContainer.set(box, []);
+    byContainer.get(box).push(el);
+  }
+  const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
+    const ref = id ? document.getElementById(id) : null;
+    return ref ? norm(ref.textContent) : "";
+  }).join(" ");
+  const contextOf = (box) => {
+    const parts = [];
+    let node = box;
+    for (let depth = 0; depth < 4 && node && node !== document.body; depth++) {
+      const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+      if (legend) parts.push(norm(legend.textContent));
+      parts.push(norm(node.getAttribute("aria-label")));
+      parts.push(idText(node.getAttribute("aria-labelledby")));
+      let prevSib = node.previousElementSibling;
+      for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
+        if (!prevSib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) continue;
+        parts.push(norm(prevSib.textContent));
+        break;
+      }
+      node = node.parentElement;
+    }
+    return parts.filter(Boolean).join(" ");
+  };
+  const labelText = (seg) => {
+    const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label")), norm(seg.getAttribute("placeholder"))];
+    if (seg.id) {
+      document.querySelectorAll("label").forEach((l) => { if (l.getAttribute("for") === seg.id) parts.push(norm(l.textContent)); });
+    }
+    const wrap = seg.closest("label");
+    if (wrap) parts.push(norm(wrap.textContent));
+    return parts.filter(Boolean).join(" ");
+  };
+  const maxOf = (seg, si, count) => {
+    const declared = Number(seg.getAttribute("aria-valuemax"));
+    if (declared > 0) return declared;
+    const own = labelText(seg).toLowerCase();
+    if (/year|yyyy|\byy\b/.test(own)) return 9999;
+    if (/month|\bmm\b/.test(own)) return 12;
+    if (/day|\bdd\b/.test(own)) return 31;
+    const len = Number(seg.getAttribute("maxlength"));
+    if (len > 0) return Math.pow(10, len) - 1;
+    return count > 1 && si === count - 1 ? 9999 : 12;
+  };
+  const groups = [];
+  const mark = (seg, token) => {
+    const prior = seg.getAttribute(attr);
+    seg.setAttribute(attr, prior ? prior + " " + token : token);
+  };
+  const addGroup = (segs, box, nested) => {
+    const gi = groups.length;
+    segs.forEach((seg, si) => mark(seg, gi + ":" + si));
+    const prev = box.previousElementSibling;
+    const lead = prev && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
+    groups.push({
+      segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
+      context: [contextOf(box), norm(box.textContent), lead.length <= 80 ? lead : "", segs.map(labelText).join(" ")].filter(Boolean).join(" "),
+      nested,
+    });
+  };
+  const nestedCandidates = [];
+  byContainer.forEach((segs, box) => {
+    addGroup(segs, box, false);
+    const byParent = new Map();
+    for (const seg of segs) {
+      if (!byParent.has(seg.parentElement)) byParent.set(seg.parentElement, []);
+      byParent.get(seg.parentElement).push(seg);
+    }
+    // A shared fieldset can hold several independent dates (From and To year
+    // spinbuttons side by side); each wrapper is then its own candidate group.
+    if (byParent.size > 1) byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent]));
+  });
+  nestedCandidates.forEach(([inner, parent]) => addGroup(inner, parent, true));
+  return { groups };
+})()`;
+
+const SEGMENTED_DATE_CLEAR_EXPR = `(() => {
+  document.querySelectorAll("[${SEGMENTED_DATE_MARKER_ATTR}]").forEach((el) => el.removeAttribute(${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)}));
+})()`;
+
+/**
+ * Type a date into a multi-segment `role=spinbutton` widget with real key
+ * events (raw CDP key events, `locator.type` with a delay as fallback), then
+ * verify every segment numerically.
+ *
+ * Why this exists: such widgets keep each segment's value in component state
+ * driven by `keydown`/`beforeinput`; `fill`/`insertText` bypasses that and
+ * garbles the segments. Returns a marker id on commit, or null on no
+ * spinbuttons, an unresolvable group, or any segment mismatch so the caller
+ * falls through to the cascade.
+ */
+export async function trySegmentedDateSpinbuttonPrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<string | null> {
+  const { page, target, instruction, logger } = params;
+  const value = parseSegmentedDateValue(instruction);
+  if (!value) return null;
+  const sendCDP = (method: string, args: object): Promise<unknown> =>
+    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
+  try {
+    const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
+      groups: SegmentedDateGroup[];
+    };
+    if (!enumerated?.groups?.length) return null;
+    const gi = resolveSegmentedDateGroup(instruction, enumerated.groups);
+    if (gi === null) {
+      logger.info("segmented date primitive: no unambiguous group; falling through");
+      await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
+      return null;
+    }
+    const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
+    const widths = maxes.map((max) => String(max).length);
+    const expected = widths.map((w, i) =>
+      Number(
+        value.digits.slice(
+          widths.slice(0, i).reduce((a, b) => a + b, 0),
+          widths.slice(0, i + 1).reduce((a, b) => a + b, 0)
+        )
+      )
+    );
+    const segmentSelector = (si: number): string =>
+      `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
+    const focusSegment = async (si: number): Promise<void> => {
+      const selector = segmentSelector(si);
+      try {
+        await clickCentredTrusted(target, selector, { label: "date segment" });
+      } catch {
+        // click unavailable or occluded; focus below is what the key events need
+      }
+      await target.evaluate(
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el && document.activeElement !== el) el.focus(); })()`
+      );
+    };
+    const typeViaCdp = async (digits: string): Promise<void> => {
+      for (const digit of digits) {
+        const keyArgs = {
+          key: digit,
+          code: `Digit${digit}`,
+          windowsVirtualKeyCode: 48 + Number(digit),
+        };
+        await sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: digit, ...keyArgs });
+        await sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...keyArgs });
+      }
+    };
+    const segmentDigits = widths.map((w, i) => {
+      const from = widths.slice(0, i).reduce((acc, n) => acc + n, 0);
+      return value.digits.slice(from, from + w);
+    });
+    const readSegments = async (): Promise<number[]> =>
+      (await target.evaluate(`(() => {
+      const sels = ${JSON.stringify(widths.map((_, si) => segmentSelector(si)))};
+      return sels.map((sel) => {
+        const s = document.querySelector(sel);
+        if (!s) return NaN;
+        const now = s.getAttribute("aria-valuenow");
+        const raw = now !== null && now !== "" ? now : s.value;
+        return raw === undefined || raw === null || String(raw).trim() === "" ? NaN : Number(raw);
+      });
+    })()`)) as number[];
+    const matches = (got: number[]): boolean =>
+      Array.isArray(got) &&
+      got.length === expected.length &&
+      got.every((n, i) => n === expected[i]);
+    // Raw CDP key events go to the focused segment, so each segment is focused
+    // explicitly rather than trusting the widget to auto-advance. A delayed
+    // locator.type (per-character key events, never Input.insertText) covers a
+    // page whose CDP channel does not reach the widget.
+    const typeViaLocator = async (): Promise<void> => {
+      for (const [si, digits] of segmentDigits.entries()) {
+        await target.locator(segmentSelector(si)).first().type(digits, {
+          delay: SEGMENTED_DATE_KEY_DELAY_MS,
+        });
+      }
+    };
+    const typeViaKeyEvents = async (): Promise<void> => {
+      for (const [si, digits] of segmentDigits.entries()) {
+        await focusSegment(si);
+        await typeViaCdp(digits);
+      }
+    };
+    let actual: number[] = [];
+    for (const type of [typeViaKeyEvents, typeViaLocator]) {
+      try {
+        await type();
+      } catch (err) {
+        logger.info(`segmented date primitive: delivery attempt threw: ${toErrorMessage(err)}`);
+        continue;
+      }
+      actual = await readSegments();
+      if (matches(actual)) break;
+    }
+    if (!matches(actual)) actual = await readSegments();
+    await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
+    if (!matches(actual)) {
+      logger.info(
+        `segmented date primitive: readback ${JSON.stringify(actual)} != ${JSON.stringify(expected)}; falling through`
+      );
+      return null;
+    }
+    logger.info(`segmented date primitive: committed segments ${JSON.stringify(actual)}`);
+    return `segmented-date-${gi}`;
+  } catch (err) {
+    logger.warn(`segmented date primitive: threw: ${toErrorMessage(err)}; falling through`);
+    return null;
+  }
 }
 
 /**
@@ -8739,6 +9104,12 @@ export async function verifyDomEffect(
       case "type": {
         const expected = action.arguments?.[0];
         if (typeof expected !== "string" || expected.length === 0) return false;
+        // A lone spinbutton segment holds one slice of a date, so a matching
+        // digit string proves nothing about the whole value, and the
+        // fill("")+type retype below would overwrite committed neighbours.
+        if ((await verifyFillReadback(target, selector, expected))?.outcome === "segment") {
+          return false;
+        }
         const current = await locator.inputValue();
         // Masked/formatted inputs (e.g. a phone field displaying
         // "(212) 555-0123" after typing "2125550123") reformat the typed
@@ -10610,6 +10981,20 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
+  // Multi-segment date spinbuttons need real key events; the cascade's
+  // insertText would garble the segments. Falls through on null.
+  const segmentedDateTargetId = await trySegmentedDateSpinbuttonPrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+  });
+  if (segmentedDateTargetId !== null) {
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by segmented-date primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDateTargetId });
+    return "completed";
+  }
+
   // On a CATCH-ALL step ("for any remaining … question"), fill every
   // required-but-empty native <select> — including MuiNativeSelect dropdowns
   // (tabindex=-1) that Stagehand observe can't see and that no concrete flow
@@ -12368,7 +12753,10 @@ export async function executeStepWithHealing(params: {
                     fillValue
                   );
                   if (readback !== null) {
-                    if (readback.outcome === "rejected") {
+                    if (readback.outcome === "segment") {
+                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+                      record.actResultSuccess = false;
+                    } else if (readback.outcome === "rejected") {
                       record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "differs") {
@@ -12937,7 +13325,11 @@ export async function executeStepWithHealing(params: {
           readbackSelector,
           fillIntent.value
         );
-        if (readback?.outcome === "rejected") {
+        if (readback?.outcome === "segment") {
+          datepickerRejected = true;
+          record.actResultSuccess = false;
+          record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+        } else if (readback?.outcome === "rejected") {
           // Value didn't land. First try the datepicker primitive; it self-gates
           // on react-datepicker's `.react-datepicker__input-container` and returns
           // null for any non-datepicker input, so a plain rejected fill falls
