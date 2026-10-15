@@ -79,7 +79,7 @@ function baseParams(
     step: STEP,
     optional: false,
     upload: false,
-    submitStep: false,
+    submitStep: true,
     stepIndex: 0,
     totalSteps: () => 1,
     phase: "flow",

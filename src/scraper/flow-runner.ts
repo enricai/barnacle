@@ -3460,7 +3460,7 @@ export async function judgeStepOutcome(params: {
     params.page,
     params.signalCounter,
     params.preNetworkCount,
-    isStepSubmitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false}),
+    isStepSubmitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false }),
     async () => {
       const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
