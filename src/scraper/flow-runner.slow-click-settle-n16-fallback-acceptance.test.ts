@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { type AttemptRecord, executeStepWithHealing } from "@/scraper/flow-runner";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import type { Logger } from "@/types/logging";
@@ -77,15 +77,17 @@ function makePage(
     }),
     url: () => urls.current,
     title: vi.fn().mockResolvedValue("App"),
-    locator: vi.fn().mockReturnValue({
-      first: () => ({
-        click: vi.fn().mockImplementation(async () => {
-          clock.escalatedClicks += 1;
+    locator: vi.fn().mockImplementation(
+      withDirectClick(() => ({
+        first: () => ({
+          click: vi.fn().mockImplementation(async () => {
+            clock.escalatedClicks += 1;
+          }),
+          isChecked: vi.fn().mockResolvedValue(false),
+          inputValue: vi.fn().mockResolvedValue(""),
         }),
-        isChecked: vi.fn().mockResolvedValue(false),
-        inputValue: vi.fn().mockResolvedValue(""),
-      }),
-    }),
+      }))
+    ),
     waitForTimeout: vi.fn().mockImplementation(async (ms: number) => {
       clock.now += ms;
       if (clock.clickAt !== null && clock.now - clock.clickAt >= lateSignalMs) {

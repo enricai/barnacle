@@ -204,22 +204,23 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
 
   it("rejects instead of resolving when the session dies after the LAST step's own verification finishes, with no next iteration to fall back on", async () => {
     // A control run of this exact fixture (same steps/act/observe shape)
-    // reads `page.url()` a fixed number of times per step; the VERY LAST
-    // read of a full run is the post-step gate on the final step, since
-    // there is no next iteration's pre-step gate to run afterward. Killing
-    // the session starting on exactly that call — and no earlier — proves
-    // it's the post-step gate (not the final step's own cascade
-    // verification, and not a next-iteration pre-step gate that doesn't
-    // exist here) that turns the death into a rejection.
-    const URL_CALLS_PER_STEP = 4;
-    const totalUrlCallsForFullRun = URL_CALLS_PER_STEP * TOTAL_STEPS;
+    // counts its `page.url()` reads; the VERY LAST read of a full run is the
+    // post-step gate on the final step, since there is no next iteration's
+    // pre-step gate to run afterward. Killing the session starting on exactly
+    // that call — and no earlier — proves it's the post-step gate (not the
+    // final step's own cascade verification, and not a next-iteration
+    // pre-step gate that doesn't exist here) that turns the death into a
+    // rejection. Measuring it keeps the test honest as verification adds or
+    // drops reads.
+    const START_URL = "https://careers.example.org/jobs/123/apply";
+    let dieAtUrlCall = Number.POSITIVE_INFINITY;
 
-    const urls = { current: "https://careers.example.org/jobs/123/apply" };
+    const urls = { current: START_URL };
     let urlCalls = 0;
     const page = {
       url: () => {
         urlCalls += 1;
-        if (urlCalls >= totalUrlCallsForFullRun) {
+        if (urlCalls >= dieAtUrlCall) {
           throw new Error("Target page, context or browser has been closed");
         }
         return urls.current;
@@ -260,7 +261,7 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
       };
     });
 
-    await expect(
+    const run = (): ReturnType<typeof runHealingFlow> =>
       runHealingFlow({
         stagehand,
         page,
@@ -269,8 +270,16 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
         anthropic: null,
         rephraseModel: null,
         uploadFixture: null,
-      })
-    ).rejects.toThrow(/session appears closed\/dead/);
+      });
+
+    await run();
+    expect(stepCount).toBe(TOTAL_STEPS);
+    dieAtUrlCall = urlCalls;
+    urlCalls = 0;
+    stepCount = 0;
+    urls.current = START_URL;
+
+    await expect(run()).rejects.toThrow(/session appears closed\/dead/);
     expect(stepCount).toBe(TOTAL_STEPS);
   });
 

@@ -2,7 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
-import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -155,7 +155,7 @@ describe("flow-runner n+16 fallback — submit-shaped overlay/hidden-control pai
       // itself is identical either way — only the flag distinguishes a
       // trusted delivery from the synthetic evaluate() dispatch), then
       // clears it.
-      locator: () => ({
+      locator: withDirectClick(() => ({
         first: () => ({
           click: async () => {
             win.__n16TrustedGestureActive = true;
@@ -168,7 +168,7 @@ describe("flow-runner n+16 fallback — submit-shaped overlay/hidden-control pai
           isChecked: async () => false,
           inputValue: async () => "",
         }),
-      }),
+      })),
       waitForTimeout: async () => {},
       getSessionForFrame: () => session,
       mainFrameId: () => "main",

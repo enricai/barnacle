@@ -61,7 +61,9 @@ function baseParams(
     logger: testLogger,
     captureFn: vi.fn().mockResolvedValue(undefined),
     uploadFixture: null,
-    isFinalStep: false,
+    // Final, so the step is judged by submit verification (which reads
+    // `page.title()`) rather than the non-final step-advanced judge.
+    isFinalStep: true,
     // Non-null so `requireSubmitEndpoint` is true and the cascade enters the
     // submit-verification branch that reads `page.title()`.
     submitEndpointPattern: "/apply/submit",

@@ -466,8 +466,10 @@ describe("flow-runner n+16 fallback — real clickExpr on happy-dom checkboxes",
     expect(result).toBe("completed");
     expect(isChecked(checkbox)).toBe(false);
     expect(events).toEqual([]);
+    // An already-aria-checked control is credited by DOM verification on
+    // attempt 1, before n+16 runs; any n+16 probe that does run must agree.
     const probes = infoLines.filter((l) => l.includes("n+16 probe:"));
-    expect(probes[0]).toContain("verified=true");
+    for (const line of probes) expect(line).toContain("verified=true");
   });
 
   it("keeps the legacy force-and-credit path for a plain native checkbox", async () => {

@@ -1,6 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -750,16 +750,18 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
         .mockImplementation(
           async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
         ),
-      locator: vi.fn().mockImplementation((selector: string) => ({
-        first: () => ({
-          click: async () => {
-            clickedSelectors.push(selector);
-            await topWindowClick();
-          },
-          isChecked: vi.fn().mockResolvedValue(false),
-          inputValue: vi.fn().mockResolvedValue(""),
-        }),
-      })),
+      locator: vi.fn().mockImplementation(
+        withDirectClick((selector: string) => ({
+          first: () => ({
+            click: async () => {
+              clickedSelectors.push(selector);
+              await topWindowClick();
+            },
+            isChecked: vi.fn().mockResolvedValue(false),
+            inputValue: vi.fn().mockResolvedValue(""),
+          }),
+        }))
+      ),
       url: () => Promise.resolve(urls.current),
       title: () => Promise.resolve("Onboard"),
     } satisfies FrameTarget);
@@ -867,20 +869,22 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
         .mockImplementation(
           async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
         ),
-      locator: vi.fn().mockImplementation((selector: string) => ({
-        first: () => ({
-          click: async () => {
-            clickedSelectors.push(selector);
-            // Only a click on the correct (first) target advances the URL, so
-            // the step verifies iff the FIRST xpath was chosen.
-            if (selector === targetXpath) {
-              urls.current = "https://apply.acme.example/onboard/a/2";
-            }
-          },
-          isChecked: vi.fn().mockResolvedValue(false),
-          inputValue: vi.fn().mockResolvedValue(""),
-        }),
-      })),
+      locator: vi.fn().mockImplementation(
+        withDirectClick((selector: string) => ({
+          first: () => ({
+            click: async () => {
+              clickedSelectors.push(selector);
+              // Only a click on the correct (first) target advances the URL, so
+              // the step verifies iff the FIRST xpath was chosen.
+              if (selector === targetXpath) {
+                urls.current = "https://apply.acme.example/onboard/a/2";
+              }
+            },
+            isChecked: vi.fn().mockResolvedValue(false),
+            inputValue: vi.fn().mockResolvedValue(""),
+          }),
+        }))
+      ),
       url: () => Promise.resolve(urls.current),
       title: () => Promise.resolve("Onboard"),
     } satisfies FrameTarget);

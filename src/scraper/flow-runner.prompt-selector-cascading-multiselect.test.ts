@@ -4,7 +4,7 @@ import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
-import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
@@ -215,13 +215,13 @@ function buildDeadEndClickHarness(): {
     evaluate,
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
-    locator,
+    locator: withDirectClick(locator),
     waitForTimeout: async (): Promise<void> => undefined,
   };
 
   const target = {
     evaluate,
-    locator,
+    locator: withDirectClick(locator),
     url: async (): Promise<string> => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     frame: null,

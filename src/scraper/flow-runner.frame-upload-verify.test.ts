@@ -197,6 +197,10 @@ describe("flow-runner/verifyDomEffect — change-dispatch frame targeting", () =
     expect(hit).toBe(true);
     // dispatchJqueryChangeEvent's evaluate must have gone through the same
     // child target verifyDomEffect used for target.locator(selector), not page.
-    expect(dispatchEvaluate).toHaveBeenCalledTimes(1);
+    // The fill readback also evaluates on this target, so match the dispatch
+    // expression itself rather than the call count.
+    expect(dispatchEvaluate).toHaveBeenCalledWith(
+      expect.stringContaining("new Event('change', { bubbles: true })")
+    );
   });
 });
