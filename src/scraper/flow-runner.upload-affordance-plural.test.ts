@@ -130,3 +130,90 @@ describe("simulateDragDropUpload with an attribute-identified drop zone", () => 
     expect(seen).toEqual(["dragenter", "dragover", "drop"]);
   });
 });
+
+interface FakeBtn {
+  text: string;
+  hidden: boolean;
+  click: ReturnType<typeof vi.fn>;
+}
+
+function btn(text: string, hidden: boolean): FakeBtn {
+  return { text, hidden, click: vi.fn() };
+}
+
+function install(btns: FakeBtn[]): void {
+  const els = btns.map((b) => ({
+    textContent: b.text,
+    click: b.click,
+    getAttribute: (n: string): string | null => (n === "aria-hidden" && b.hidden ? "true" : null),
+    getBoundingClientRect: (): { width: number; height: number } => ({ width: 10, height: 10 }),
+    style: { display: "block", visibility: "visible" },
+    closest: (): null => null,
+  }));
+  g.getComputedStyle = (el: { style: unknown }): unknown => el.style;
+  g.document = {
+    querySelector: (): null => null,
+    querySelectorAll: (): unknown[] => els,
+  };
+}
+
+async function captureExprs(): Promise<string[]> {
+  const exprs: string[] = [];
+  const target = {
+    frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
+    evaluate: (expr: unknown): Promise<unknown> => {
+      exprs.push(String(expr));
+      return Promise.resolve({ present: String(expr).includes("present: true"), clicked: false });
+    },
+    locator: () => ({ first: () => ({ setInputFiles: vi.fn() }) }),
+    url: () => Promise.resolve("https://x.example.com"),
+    title: () => Promise.resolve("x"),
+  } as unknown as FrameTarget;
+  const page = { waitForTimeout: () => new Promise((r) => setTimeout(r, 5)) } as unknown as Page;
+  await surfaceAndUpload({
+    page,
+    target,
+    fixture: { name: "r.pdf", mimeType: "application/pdf", buffer: Buffer.from("x") },
+    logger,
+    signalCounter: { n: 0 },
+    recentCaptureMeta: [],
+  } as never).catch(() => false);
+  return exprs;
+}
+
+describe("upload affordance plural labels in browser expressions", () => {
+  afterEach(() => {
+    delete g.document;
+    delete g.getComputedStyle;
+  });
+
+  it.each(["Select files", "Choose Files"])("render-gate reports %s present", async (label) => {
+    const gate = (await captureExprs()).find((e) => e.includes("present: true"));
+    expect(gate).toBeDefined();
+    install([btn(label, false)]);
+    expect(run(gate as string)).toEqual({ present: true });
+  });
+
+  it.each(["Remove file", "Cancel", "No file"])("render-gate ignores %s", async (label) => {
+    const gate = (await captureExprs()).find((e) => e.includes("present: true"));
+    install([btn(label, false)]);
+    expect(run(gate as string)).toEqual({ present: false });
+  });
+
+  it.each(["Select files", "Choose Files"])("click expression clicks %s", async (label) => {
+    const click = (await captureExprs()).find((e) => e.includes("chosen.click()"));
+    expect(click).toBeDefined();
+    const b = btn(label, false);
+    install([b]);
+    expect(run(click as string)).toMatchObject({ clicked: true });
+    expect(b.click).toHaveBeenCalledTimes(1);
+  });
+
+  it("click expression leaves Remove file, Cancel and No file alone", async () => {
+    const click = (await captureExprs()).find((e) => e.includes("chosen.click()"));
+    const decoys = ["Remove file", "Cancel", "No file"].map((t) => btn(t, false));
+    install(decoys);
+    expect(run(click as string)).toEqual({ clicked: false });
+    for (const d of decoys) expect(d.click).not.toHaveBeenCalled();
+  });
+});
