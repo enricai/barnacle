@@ -1629,6 +1629,22 @@ const ADVANCE_STEP_PHRASES: readonly string[] = [
   "advance to the next",
 ];
 
+/** Advance-click step wording ("Next"/"Continue"/"Save and continue") for the n+16 error-summary veto. */
+export const ADVANCE_CLICK_RX = /\b(next|continue|proceed|advance)\b/i;
+
+/**
+ * Page-level error summary ("Errors Found", role=alert, error-summary
+ * containers) check, evaluated in the page after an advance click. Network and
+ * text movement on a page showing its own validation summary is the form
+ * rejecting the advance, not progress.
+ */
+const ERROR_SUMMARY_EXPR = `(() => {
+  const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const sel = '[role="alert"],[class*="error-summary" i],[class*="errorsummary" i],[class*="validation-summary" i],[id*="error-summary" i]';
+  if (Array.from(document.querySelectorAll(sel)).some((e) => vis(e) && (e.textContent || "").trim())) return true;
+  return /\\bErrors? Found\\b/i.test(document.body ? document.body.innerText : "");
+})()`;
+
 /**
  * Is this flow step an advance/"Next" click (move to the next wizard page),
  * rather than a field-answer? Used to veto a DOM-only "success" (a field toggle)
@@ -14875,8 +14891,14 @@ export async function executeStepWithHealing(params: {
           // An unfired probe with no trusted delivery clicked nothing, so DOM
           // movement is ambient settling, not this step's effect.
           const n16ClickDelivered = fired === true || n16TrustedDelivered;
+          const retryShowsErrorSummary = ADVANCE_CLICK_RX.test(step)
+            ? ((await (frameTarget ?? mainFrameTarget(page))
+                .evaluate(ERROR_SUMMARY_EXPR)
+                .catch(() => false)) as boolean)
+            : false;
           let retryVerified =
             !clickBlockedByDisabled &&
+            !retryShowsErrorSummary &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             !forcedCheckboxRejected &&
