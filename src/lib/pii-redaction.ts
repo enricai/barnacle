@@ -17,6 +17,7 @@
 
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import { LRUCache } from "lru-cache";
+import { z } from "zod/v4";
 
 import type { RedactionPolicy, SensitiveVariables, TokenizedText } from "@/types/pii-redaction";
 
@@ -57,6 +58,23 @@ const registry = new LRUCache<string, SensitiveMatcher[]>({
     compiled = null;
   },
 });
+
+/**
+ * Runtime mirror of {@link RedactionPolicy} for plugins the type system cannot
+ * check (plain-JS modules, JSON manifests). Strict, because a mistyped field
+ * would silently leave values unprotected, and a string where an array belongs
+ * would be substring-matched by `includes`.
+ */
+export const REDACTION_POLICY_SCHEMA = z
+  .object({
+    persistKeys: z.array(z.string()).optional(),
+    publicKeys: z.array(z.string()).optional(),
+    skipKeys: z.array(z.string()).optional(),
+    wordKeys: z.array(z.string()).optional(),
+    digitKeys: z.array(z.string()).optional(),
+    tokenizeKeys: z.array(z.string()).optional(),
+  })
+  .strict();
 
 const policies = new Map<string, RedactionPolicy>();
 

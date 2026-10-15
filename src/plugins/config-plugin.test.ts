@@ -156,6 +156,21 @@ describe("buildConfigPlugin", () => {
     expect((await buildConfigPlugin(baseManifest())).meta.redaction).toBeUndefined();
   });
 
+  it("accepts spec.redaction.tokenizeKeys and carries it into meta.redaction", async () => {
+    const redaction = { wordKeys: ["fullName"], tokenizeKeys: ["fullName"] };
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).redaction = redaction;
+
+    expect((await buildConfigPlugin(manifest)).meta.redaction).toEqual(redaction);
+  });
+
+  it("rejects a spec.redaction with an unknown (misspelled) field", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).redaction = { persistkeys: ["orderId"] };
+
+    await expect(buildConfigPlugin(manifest)).rejects.toThrow();
+  });
+
   it("leaves meta.browserFallbackGate undefined when the manifest omits spec.browserFallbackGate", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
     expect(plugin.meta.browserFallbackGate).toBeUndefined();

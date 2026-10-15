@@ -7,6 +7,7 @@ import { z } from "zod/v4";
 
 import type { AppConfig } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { REDACTION_POLICY_SCHEMA } from "@/lib/pii-redaction";
 import { buildConfigPlugin } from "@/plugins/config-plugin";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import type { SitePlugin } from "@/site-plugin";
@@ -100,6 +101,7 @@ const metaSchema = z
     browserbaseSessionCreateParams: z.record(z.string(), z.unknown()).optional(),
     apiVersion: z.string().optional(),
     extraRoutes: z.array(z.unknown()).optional(),
+    redaction: REDACTION_POLICY_SCHEMA.optional(),
   })
   .passthrough();
 
