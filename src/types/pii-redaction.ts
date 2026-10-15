@@ -16,6 +16,12 @@ export interface RedactionPolicy {
   wordKeys?: readonly string[];
   /** Matched by their digits in any formatting (phone numbers, national ids, codes). */
   digitKeys?: readonly string[];
+  /**
+   * Opt-in: values the flow types as free text, sent to Stagehand as `%tokens%`
+   * and substituted only when the action is performed. Leave out values a step
+   * must match against page options (dropdowns, typeahead suggestions).
+   */
+  tokenizeKeys?: readonly string[];
 }
 
 /** Allowlisted view of a request body that is safe to persist. */
@@ -23,4 +29,13 @@ export interface InboundPayloadSummary {
   [key: string]: unknown;
   /** Names of the non-persisted keys that carried a value, never the values. */
   fieldsPresent: string[];
+}
+
+/** Stagehand `variables` map: token name (without `%`) → the exact text it replaced. */
+export type SensitiveVariables = Record<string, string>;
+
+/** An instruction with its request values swapped for `%Name%` tokens. */
+export interface TokenizedText {
+  text: string;
+  variables: SensitiveVariables;
 }

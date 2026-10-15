@@ -57,7 +57,8 @@ the run (the request body per the plugin's `meta.redaction` policy, and
 generated secrets) is replaced with a `<fieldName>` placeholder in
 `userContent`, `responseContent` and `errorMessage`. The judge and self-heal
 skills therefore read and replay prompts with those placeholders in place of
-the original values.
+the original values. Values a plugin lists in `tokenizeKeys` appear in Stagehand
+instructions as `%Name%` tokens instead, since that is what Stagehand's LLM saw.
 
 ### Call types
 

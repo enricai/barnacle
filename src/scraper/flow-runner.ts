@@ -36,7 +36,12 @@ import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced
 import { type VerifySubmitInput, verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { REPHRASE_RESPONSE_SCHEMA, type SUBMIT_VERDICT_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
-import { maskValueShape } from "@/lib/pii-redaction";
+import {
+  detokenize,
+  maskValueShape,
+  tokenizeSensitiveValues,
+  unresolvedTokens,
+} from "@/lib/pii-redaction";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -2798,7 +2803,7 @@ For yes/no questions, choose the candidate-favorable answer ('No' for adverse qu
 `
     : "";
 
-  const prompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
+  const rawPrompt = `You are helping a browser automation agent recover from a failed step in a recon flow.
 
 ${redirectBlock}ORIGINAL INSTRUCTION:
 ${originalStep}
@@ -2835,6 +2840,10 @@ ${gaEventEvidence || "(none)"}
 
 Rewrite the instruction so a Stagehand act() call can resolve it unambiguously to a different element than the ones already tried. Keep it short — one sentence, natural language, no quotes around it. If the invalid-fields section above names a field AND the interactive-targets section below lists clickable options inside that same container, your rewrite picks one of those options (e.g. for a yes/no question rendered as two radio labels, choose the candidate-favorable answer — 'No' for "do you have a non-compete", 'Yes' for "are you authorized to work", 'Prefer not to say' for demographic disclosures) rather than retrying the original click. If the unfocused observe section shows an open modal/dialog with a Save or Close action, your rewrite invokes that action so the underlying form can clear its blocking state. Set outcome to "impossible" with a one-line reason only when the original instruction's element does not exist on the current page and no redirect target is available.`;
 
+  // Request values reach the rephrase LLM only as %tokens%; the rewrite is
+  // resolved back before the cascade acts on it (which re-tokenizes it for
+  // Stagehand). A rewrite citing a token we never issued is unusable.
+  const { text: prompt, variables } = tokenizeSensitiveValues(rawPrompt);
   const model = client.modelId;
   const t0 = performance.now();
   try {
@@ -2865,7 +2874,8 @@ Rewrite the instruction so a Stagehand act() call can resolve it unambiguously t
     });
 
     if (parsed.outcome === "impossible") return null;
-    return parsed.instruction;
+    if (unresolvedTokens(parsed.instruction, variables).length > 0) return null;
+    return detokenize(parsed.instruction, variables);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logBillingErrorIfPresent(err);

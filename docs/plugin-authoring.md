@@ -164,6 +164,7 @@ const redaction: RedactionPolicy = {
   skipKeys: ["attachment"],   // binary/encoded content; never matched
   wordKeys: ["fullName"],     // matched case-insensitively on word boundaries
   digitKeys: ["phone"],       // matched by its digits in any formatting
+  tokenizeKeys: ["fullName", "phone"], // typed free-text values Stagehand gets as %tokens%
 };
 
 // meta: { ..., redaction }
@@ -177,6 +178,11 @@ it. Config-only manifests declare the same object as `spec.redaction`. The
 policy is validated when the plugin loads: an unknown field or a non-array value
 is rejected (the plugin is disabled, or startup aborts under
 `BARNACLE_PLUGINS_STRICT`) rather than silently leaving values unprotected.
+
+`tokenizeKeys` is opt-in: list only fields the flow types as free text. Their
+values reach Stagehand's LLM as `%Name%` tokens, substituted only when the action
+is performed. Leave out values a step must match against page options
+(dropdowns, typeahead suggestions); see [the playbook](playbook.md) §1a.
 
 Two cases core cannot see:
 

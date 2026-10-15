@@ -19,7 +19,7 @@ import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 import { LRUCache } from "lru-cache";
 import { z } from "zod/v4";
 
-import type { RedactionPolicy } from "@/types/pii-redaction";
+import type { RedactionPolicy, SensitiveVariables, TokenizedText } from "@/types/pii-redaction";
 
 const MIN_WORD_LENGTH = 2;
 const MIN_LITERAL_LENGTH = 4;
@@ -31,11 +31,23 @@ const MAX_REGISTRATION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_REGISTRY_ENTRIES = 10_000;
 const MAX_DEEP_REDACT_DEPTH = 6;
 
+/**
+ * Where {@link tokenizeSensitiveValues} may swap a value for a Stagehand
+ * `%variable%`: "anywhere" for values that cannot be mistaken for instruction
+ * words (containing a digit, `@` or whitespace, digit-matched values, minted
+ * secrets); "value-span" for bare words, only where the instruction supplies a
+ * value; "never" for keys the plugin did not list in `tokenizeKeys`.
+ */
+type TokenScope = "anywhere" | "value-span" | "never";
+
 interface SensitiveMatcher {
   pattern: RegExp;
   label: string;
   valueLength: number;
+  tokenScope: TokenScope;
 }
+
+type BaseMatcher = Omit<SensitiveMatcher, "tokenScope">;
 
 let compiled: SensitiveMatcher[] | null = null;
 
@@ -60,6 +72,7 @@ export const REDACTION_POLICY_SCHEMA = z
     skipKeys: z.array(z.string()).optional(),
     wordKeys: z.array(z.string()).optional(),
     digitKeys: z.array(z.string()).optional(),
+    tokenizeKeys: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -84,7 +97,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function wordMatcher(value: string, label: string): SensitiveMatcher {
+function wordMatcher(value: string, label: string): BaseMatcher {
   return {
     pattern: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(value)}(?![\\p{L}\\p{N}])`, "giu"),
     label,
@@ -104,7 +117,7 @@ function digitRun(digits: string): string {
  * code, and its national format (e.g. a UK trunk `0`), since country codes
  * vary in length and only a numbering-plan library can split them.
  */
-function digitMatcher(value: string, label: string): SensitiveMatcher | null {
+function digitMatcher(value: string, label: string): BaseMatcher | null {
   const digits = value.replace(/\D/g, "");
   if (digits.length < MIN_DIGITS) return null;
   const alternatives = new Set([digitRun(digits)]);
@@ -123,36 +136,52 @@ function digitMatcher(value: string, label: string): SensitiveMatcher | null {
   };
 }
 
-function literalMatcher(value: string, label: string): SensitiveMatcher {
+function literalMatcher(value: string, label: string): BaseMatcher {
   return { pattern: new RegExp(escapeRegExp(value), "g"), label, valueLength: value.length };
 }
 
 type MatchKind = "word" | "digit" | "literal";
 
-function matcherFor(kind: MatchKind, value: string, label: string): SensitiveMatcher | null {
+function baseMatcherFor(kind: MatchKind, value: string, label: string): BaseMatcher | null {
   if (kind === "digit") return digitMatcher(value, label) ?? literalMatcher(value, label);
   if (kind === "word") return value.length >= MIN_WORD_LENGTH ? wordMatcher(value, label) : null;
   return value.length >= MIN_LITERAL_LENGTH ? literalMatcher(value, label) : null;
+}
+
+function tokenScopeFor(kind: MatchKind, value: string, tokenize: boolean): TokenScope {
+  if (!tokenize) return "never";
+  return kind === "digit" || /[\d@\s]/.test(value) ? "anywhere" : "value-span";
+}
+
+function matcherFor(
+  kind: MatchKind,
+  value: string,
+  label: string,
+  tokenize: boolean
+): SensitiveMatcher | null {
+  const base = baseMatcherFor(kind, value, label);
+  return base ? { ...base, tokenScope: tokenScopeFor(kind, value, tokenize) } : null;
 }
 
 function collectMatchers(
   value: unknown,
   kind: MatchKind,
   label: string,
+  tokenize: boolean,
   out: SensitiveMatcher[]
 ): void {
   if (typeof value === "string") {
-    const matcher = matcherFor(kind, value.trim(), label);
+    const matcher = matcherFor(kind, value.trim(), label, tokenize);
     if (matcher) out.push(matcher);
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectMatchers(item, kind, label, out);
+    for (const item of value) collectMatchers(item, kind, label, tokenize, out);
     return;
   }
   if (value !== null && typeof value === "object" && !Buffer.isBuffer(value)) {
     for (const nested of Object.values(value as Record<string, unknown>)) {
-      collectMatchers(nested, kind, label, out);
+      collectMatchers(nested, kind, label, tokenize, out);
     }
   }
 }
@@ -192,7 +221,8 @@ export function registerSensitiveValues(
   const matchers: SensitiveMatcher[] = [];
   for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
     const kind = matchKindFor(key, policy);
-    if (kind) collectMatchers(value, kind, key, matchers);
+    const tokenize = policy?.tokenizeKeys?.includes(key) ?? false;
+    if (kind) collectMatchers(value, kind, key, tokenize, matchers);
   }
   registry.set(runId, matchers, { ttl: MAX_REGISTRATION_TTL_MS });
   compiled = null;
@@ -222,7 +252,11 @@ export function releaseSensitiveValues(
  */
 export function registerSecretValue(value: string, ttlMs: number = MAX_REGISTRATION_TTL_MS): void {
   if (value.length < MIN_LITERAL_LENGTH) return;
-  registry.set(`secret:${value}`, [literalMatcher(value, "Secret")], { ttl: ttlMs });
+  registry.set(
+    `secret:${value}`,
+    [{ ...literalMatcher(value, "Secret"), tokenScope: "anywhere" }],
+    { ttl: ttlMs }
+  );
   compiled = null;
 }
 
@@ -287,6 +321,102 @@ export function maskValueShape(text: string, maxLength = 40): string {
     .replace(/\p{Lu}/gu, "A")
     .replace(/\p{Ll}/gu, "a")
     .replace(/\p{N}/gu, "9");
+}
+
+/**
+ * Value positions in an instruction: a quoted or bare value introduced by
+ * with/type/enter, e.g. "fill it with 'Ann'", "Fill in Last Name with Smith".
+ */
+const VALUE_SPAN =
+  /\b(?:with|type|enter)\s+(?:'[^']*'|"[^"]*"|[^\s'",;.][^'",;]*?(?=\s*(?:$|[,;]|\.(?:\s|$)|\s(?:in|into|if|then|and|on)\b)))/giu;
+
+const TOKEN_REFERENCE = /%([A-Za-z][A-Za-z0-9_]*)%/g;
+
+/** `%E2%`-style percent-encoded bytes look like tokens but are URL text. */
+const PERCENT_ENCODED_BYTE = /^[0-9A-Fa-f]{2}$/;
+
+interface TokenClaim {
+  start: number;
+  end: number;
+  label: string;
+}
+
+function valueSpans(text: string): Array<[number, number]> {
+  return [...text.matchAll(VALUE_SPAN)].map((m) => [m.index, m.index + m[0].length]);
+}
+
+/** Non-overlapping value occurrences in `text`, longest registered value first. */
+function claimTokenRanges(text: string): TokenClaim[] {
+  const spans = valueSpans(text);
+  const claims: TokenClaim[] = [];
+  for (const matcher of activeMatchers()) {
+    if (matcher.tokenScope === "never") continue;
+    for (const m of text.matchAll(matcher.pattern)) {
+      const start = m.index;
+      const end = start + m[0].length;
+      const inSpan = spans.some(([s, e]) => start >= s && end <= e);
+      if (matcher.tokenScope === "value-span" && !inSpan) continue;
+      if (claims.some((c) => start < c.end && end > c.start)) continue;
+      claims.push({ start, end, label: matcher.label });
+    }
+  }
+  return claims.sort((a, b) => a.start - b.start);
+}
+
+/** `Email`, then `Email_2`, `Email_3`… for further distinct texts under one label. */
+function nextVariableName(label: string, taken: SensitiveVariables): string {
+  const base = label.replace(/[^A-Za-z0-9_]/g, "") || "Value";
+  if (!(base in taken)) return base;
+  const siblings = Object.keys(taken).filter((n) => n === base || n.startsWith(`${base}_`));
+  return `${base}_${siblings.length + 1}`;
+}
+
+/**
+ * Swaps registered request values (and engine-minted secrets) in a Stagehand
+ * instruction for `%Name%` tokens, returning the `variables` map Stagehand
+ * substitutes back only when it performs the action — so the values never
+ * reach the LLM prompt, Browserbase's instruction cache or the call telemetry.
+ * Each token maps to the exact text it replaced, so the typed value is
+ * byte-identical to the untokenized instruction's.
+ */
+export function tokenizeSensitiveValues(text: string): TokenizedText {
+  if (registry.size === 0 || text.length === 0) return { text, variables: {} };
+  const claims = claimTokenRanges(text);
+  if (claims.length === 0) return { text, variables: {} };
+  const variables: SensitiveVariables = {};
+  const nameByText = new Map<string, string>();
+  let out = "";
+  let cursor = 0;
+  for (const { start, end, label } of claims) {
+    const matched = text.slice(start, end);
+    const name = nameByText.get(matched) ?? nextVariableName(label, variables);
+    nameByText.set(matched, name);
+    variables[name] = matched;
+    out += `${text.slice(cursor, start)}%${name}%`;
+    cursor = end;
+  }
+  return { text: out + text.slice(cursor), variables };
+}
+
+/** Replaces `%Name%` tokens with their values (names matched case-insensitively — LLMs re-case them). */
+export function detokenize(text: string, variables: SensitiveVariables): string {
+  if (Object.keys(variables).length === 0) return text;
+  const byLowerName = new Map(Object.entries(variables).map(([k, v]) => [k.toLowerCase(), v]));
+  return text.replace(
+    TOKEN_REFERENCE,
+    (m, name: string) => byLowerName.get(name.toLowerCase()) ?? m
+  );
+}
+
+/**
+ * Tokens left in `text` that `variables` cannot resolve — an LLM-invented
+ * `%Name%` would otherwise be typed into the form verbatim.
+ */
+export function unresolvedTokens(text: string, variables: SensitiveVariables): string[] {
+  const known = new Set(Object.keys(variables).map((k) => k.toLowerCase()));
+  return [...text.matchAll(TOKEN_REFERENCE)]
+    .map((m) => m[1] ?? "")
+    .filter((name) => !PERCENT_ENCODED_BYTE.test(name) && !known.has(name.toLowerCase()));
 }
 
 /** Test-only: clears the registry between cases. */
