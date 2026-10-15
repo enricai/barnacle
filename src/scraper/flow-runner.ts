@@ -8125,11 +8125,43 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    const optionsFiltered = await pollEnumerate<{
+    type FilteredRead = {
       optionsPresent: boolean;
       searchable?: boolean;
       options?: { oIdx: number; text: string }[];
-    }>(page, target, enumerateOptionsExpr, (r) => r?.optionsPresent === true);
+    };
+    let optionsFiltered = await pollEnumerate<FilteredRead>(
+      page,
+      target,
+      enumerateOptionsExpr,
+      (r) => r?.optionsPresent === true
+    );
+    // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
+    // Enter keydown; filter-as-you-type widgets already name the option here.
+    for (
+      let submit = 0;
+      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS && !promptOptionsNameOption(optionsFiltered, option);
+      submit++
+    ) {
+      logger.info(
+        `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
+      );
+      try {
+        await sendTrustedEnter(page);
+      } catch (err) {
+        logger.info(
+          `prompt-selector primitive: enter submit failed for ${optLabel}: ${toErrorMessage(err)}`
+        );
+        break;
+      }
+      await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+      optionsFiltered = await pollEnumerate<FilteredRead>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        (r) => promptOptionsNameOption(r, option)
+      );
+    }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
         `prompt-selector primitive: filtered popup for ${optLabel} rendered no options; falling through`
@@ -8155,6 +8187,33 @@ async function tryPromptSelectorPrimitive(params: {
     );
     return null;
   }
+}
+
+/** Cap on trusted Enter submits for a search-on-submit prompt selector. */
+const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
+
+/** Shared option-text normalisation so submit detection and commit agree on a match. */
+function normPromptOptionText(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Detects a list that still needs a submit: true only when some option's text
+ * equals the requested option, so any placeholder wording is treated alike.
+ */
+function promptOptionsNameOption(
+  result: { options?: { text: string }[] } | null | undefined,
+  option: string
+): boolean {
+  const want = normPromptOptionText(option);
+  return (result?.options ?? []).some((o) => normPromptOptionText(o.text) === want);
+}
+
+/** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
+async function sendTrustedEnter(page: Page): Promise<void> {
+  const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
 }
 
 /**
@@ -8202,7 +8261,7 @@ async function commitPromptOption(params: {
     chosen,
     enumerateOptionsExpr,
   } = params;
-  const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const norm = normPromptOptionText;
   const wantOpt = norm(option);
   const optionSetKey = (opts: { text: string }[]): string =>
     opts
