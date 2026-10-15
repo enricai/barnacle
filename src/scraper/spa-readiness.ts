@@ -94,7 +94,9 @@ export async function regateSpaAfterOriginChange(
   try {
     await page.reload({ waitUntil: "domcontentloaded" });
   } catch (err) {
-    logger.warn(`spa readiness: reload failed: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(
+      `spa readiness: reload failed: ${err instanceof Error ? err.message : String(err)}`
+    );
     return;
   }
   await waitForSpaReady(page, logger, opts);

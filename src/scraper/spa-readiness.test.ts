@@ -123,7 +123,10 @@ describe("spa-readiness/regateSpaAfterOriginChange", () => {
   });
 
   it("reloads once with domcontentloaded when the body stays an empty shell", async () => {
-    const { page, reload } = pageWithReload([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9000]);
+    const { page, reload } = pageWithReload([10]);
+    reload.mockImplementation(async () => {
+      (page.evaluate as ReturnType<typeof vi.fn>).mockResolvedValue(9000);
+    });
     await regateSpaAfterOriginChange(page, testLogger, fast);
     expect(reload).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledWith({ waitUntil: "domcontentloaded" });
