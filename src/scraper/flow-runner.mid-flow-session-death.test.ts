@@ -1,6 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { SessionTimeoutError } from "@/scraper/errors";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import { runWithSession } from "@/scraper/pool";
@@ -67,7 +67,11 @@ function makeFakePage(urls: { current: string }): { page: Page; killSession: () 
       return urls.current;
     },
     title: vi.fn().mockResolvedValue("Apply"),
-    evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+    evaluate: vi
+      .fn()
+      .mockImplementation(
+        async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+      ),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -221,7 +225,11 @@ describe("flow-runner/runHealingFlow — mid-flow session death", () => {
         return urls.current;
       },
       title: vi.fn().mockResolvedValue("Apply"),
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),

@@ -5,6 +5,7 @@ import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { judgeSelectOptionWithLLM } from "@/lib/llm/judges/select-option";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -166,7 +167,8 @@ function buildCascadeHarness(): {
     }),
   });
 
-  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
+  const evaluate = async (expr: unknown): Promise<unknown> =>
+    answerCentreHitTest(expr) ?? runExpr(String(expr));
 
   const page = {
     evaluate,

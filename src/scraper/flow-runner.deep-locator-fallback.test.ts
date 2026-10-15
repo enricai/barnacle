@@ -1,6 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
   type FakeDeepLocatorFrame,
@@ -69,7 +69,11 @@ function makeChildFrameTarget(): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: FRAME_SELECTOR,
-    evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+    evaluate: vi
+      .fn()
+      .mockImplementation(
+        async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+      ),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -234,7 +238,9 @@ describe("flow-runner/probeStepBeforeAttempts — frame-scoped deepLocator fallb
     const fallbackTarget: FrameTarget = {
       frame: null,
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockResolvedValue(null),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
       locator: vi.fn(),
       url: () => Promise.resolve("https://apply.acme.example/jobs/1/apply"),
       title: () => Promise.resolve("Apply"),
@@ -285,7 +291,9 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       };
     };
     const page = {
-      evaluate: vi.fn().mockResolvedValue(null),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
       deepLocator: wrappedDeepLocator,
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Apply"),
@@ -303,7 +311,11 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resolveFrameTarget.mockResolvedValue({
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),
@@ -390,7 +402,9 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       };
     };
     const page = {
-      evaluate: vi.fn().mockResolvedValue(null),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
       deepLocator: wrappedDeepLocator,
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Apply"),
@@ -408,7 +422,11 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resolveFrameTarget.mockResolvedValue({
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),
@@ -482,7 +500,9 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       };
     };
     const page = {
-      evaluate: vi.fn().mockResolvedValue(null),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
       deepLocator: wrappedDeepLocator,
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Apply"),
@@ -500,7 +520,11 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resolveFrameTarget.mockResolvedValue({
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),
@@ -578,7 +602,9 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
       };
     };
     const page = {
-      evaluate: vi.fn().mockResolvedValue(null),
+      evaluate: vi
+        .fn()
+        .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
       deepLocator: wrappedDeepLocator,
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Onboard"),
@@ -596,7 +622,11 @@ describe("flow-runner/executeStepWithHealing — frame-scoped deepLocator attemp
     resolveFrameTarget.mockResolvedValue({
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockReturnValue({
         first: () => ({
           isChecked: vi.fn().mockResolvedValue(false),
@@ -692,7 +722,11 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
     });
     const clickedSelectors: string[] = [];
     const page = {
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Onboard"),
       locator: vi.fn().mockReturnValue({
@@ -711,7 +745,11 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
     resolveFrameTarget.mockResolvedValue({
       frame: null,
       frameSelector: null,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockImplementation((selector: string) => ({
         first: () => ({
           click: async () => {
@@ -803,7 +841,11 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
     const urls = { current: "https://apply.acme.example/onboard/a/1" };
     const clickedSelectors: string[] = [];
     const page = {
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       url: () => urls.current,
       title: vi.fn().mockResolvedValue("Onboard"),
       locator: vi.fn().mockReturnValue({
@@ -820,7 +862,11 @@ describe("flow-runner/executeStepWithHealing — top-window trusted-click-retry 
     resolveFrameTarget.mockResolvedValue({
       frame: null,
       frameSelector: null,
-      evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+      evaluate: vi
+        .fn()
+        .mockImplementation(
+          async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+        ),
       locator: vi.fn().mockImplementation((selector: string) => ({
         first: () => ({
           click: async () => {

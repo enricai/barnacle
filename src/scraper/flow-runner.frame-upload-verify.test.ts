@@ -1,6 +1,6 @@
 import type { Action, Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   attachToSurfacedInput,
   dispatchJqueryChangeEvent,
@@ -48,7 +48,9 @@ function makeChildTarget(evaluateImpl: (expr: unknown) => Promise<unknown>): Fra
 /** Fake `Page` whose `evaluate` is a distinct spy from the child target's, so a call reaching it (instead of the child target) is detectable. */
 function makeFakePage(): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         setInputFiles: vi.fn().mockResolvedValue(undefined),
