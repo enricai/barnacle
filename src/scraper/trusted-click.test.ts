@@ -149,3 +149,29 @@ describe("identity expectation", () => {
     expect(buildCentreAndHitTestFn()).toBe(CENTRE_AND_HIT_TEST_FN);
   });
 });
+
+describe("clickCentredTrusted expectText", () => {
+  it("embeds the identity check in the selector expression and withholds on mismatch", async () => {
+    const order: string[] = [];
+    const target = fakeTarget([{ state: "mismatch" }], order);
+    await expect(clickCentredTrusted(target, "#row", { expectText: "Row 7" })).rejects.toThrow(
+      /identity mismatch/
+    );
+    expect(order).toEqual(["evaluate"]);
+    const expr = vi.mocked(target.evaluate).mock.calls[0]?.[0] as string;
+    expect(expr).toContain('"Row 7"');
+    expect(expr).toContain("\\s+");
+  });
+
+  it("executes the generated function and compares normalised text", () => {
+    const make = (text: string): object => ({
+      isConnected: true,
+      textContent: text,
+      scrollIntoView: () => {},
+    });
+    const run = (expected: string, text: string): { state: string } =>
+      new Function(`return (${buildCentreAndHitTestFn(expected)})`)().call(make(text));
+    expect(run("Row 7", "Row 8").state).toBe("mismatch");
+    expect(() => run("Row 7", "  Row\n   7 ")).toThrow(/getBoundingClientRect/);
+  });
+});
