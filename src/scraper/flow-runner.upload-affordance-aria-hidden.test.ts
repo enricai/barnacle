@@ -140,6 +140,10 @@ describe("upload affordance aria-hidden decoys", () => {
     expect(isUploadAffordanceLabel("upload later")).toBe(false);
     expect(isUploadAffordanceLabel("no file")).toBe(false);
     expect(isUploadAffordanceLabel("remove file")).toBe(false);
+    expect(isUploadAffordanceLabel("SELECT  FILES")).toBe(true);
+    expect(isUploadAffordanceLabel("Decline to upload files")).toBe(false);
+    expect(isUploadAffordanceLabel("No files")).toBe(false);
+    expect(isUploadAffordanceLabel("Remove files")).toBe(false);
   });
 
   it("gate and click expressions embed the shared vocabulary source", async () => {

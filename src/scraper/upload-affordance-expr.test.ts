@@ -15,7 +15,17 @@ const POSITIVE = [
   "Add a resume",
   "Add files",
 ];
-const NEGATIVE = ["Cancel", "Remove file", "No file", "Upload later", "Submit", ""];
+const NEGATIVE = [
+  "Cancel",
+  "Remove file",
+  "Remove files",
+  "No file",
+  "No files",
+  "Decline to upload files",
+  "Upload later",
+  "Submit",
+  "",
+];
 
 describe("upload affordance vocabulary", () => {
   const browser = new Function(`return (${UPLOAD_AFFORDANCE_MATCHER_EXPR});`)() as (
