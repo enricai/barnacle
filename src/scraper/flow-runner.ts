@@ -12376,7 +12376,13 @@ export async function executeStepWithHealing(params: {
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
         await preCentreNaturalLanguageClick(step);
-        const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
+        const result = await guardedAct(
+          stagehand,
+          step,
+          { timeout: STEP_WATCHDOG_MS },
+          captureFn,
+          frameTarget ?? mainFrameTarget(page)
+        );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
         // Deny-list guard (post-hoc): attempt-1 act resolves internally, so we
@@ -13006,7 +13012,8 @@ export async function executeStepWithHealing(params: {
             stagehand,
             overriddenTarget,
             { timeout: STEP_WATCHDOG_MS },
-            captureFn
+            captureFn,
+            frameTarget ?? mainFrameTarget(page)
           );
           record.actResultSuccess = result.success;
           record.actResultDescription = result.actionDescription;
@@ -13341,7 +13348,8 @@ export async function executeStepWithHealing(params: {
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
-              captureFn
+              captureFn,
+              frameTarget ?? mainFrameTarget(page)
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;

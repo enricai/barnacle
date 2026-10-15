@@ -751,12 +751,12 @@ describe("guardedAct pre-centring", () => {
     expect(order).toEqual(["centre", "act"]);
   });
 
-  it("resolves a string instruction via observe, then acts on the Action", async () => {
+  it("resolves a string instruction via observe to centre it, then acts on the original string", async () => {
     const action: Action = { selector: "#go", description: "go", method: "click" };
     const { sh, order } = fakeClickStagehand([action]);
     await guardedAct(sh, "click go");
     expect(order).toEqual(["centre", "act"]);
-    expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(action);
+    expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe("click go");
   });
 
   it("does not centre a non-click Action", async () => {

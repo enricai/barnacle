@@ -50,6 +50,7 @@ import type {
 } from "@browserbasehq/stagehand";
 import pRetry from "p-retry";
 import { z } from "zod/v4";
+import { toErrorMessage } from "@/lib/errors";
 import { getLogger } from "@/lib/logging";
 import {
   detokenize,
@@ -74,7 +75,7 @@ import {
   resolveFrameTarget,
 } from "@/scraper/frame-target";
 import { isTransientProviderError } from "@/scraper/transient-provider-error";
-import { centreSelectorForClick } from "@/scraper/trusted-click";
+import { CentredClickError, centreSelectorForClick } from "@/scraper/trusted-click";
 import { withWatchdog } from "@/scraper/watchdog";
 import type { SensitiveVariables } from "@/types/pii-redaction";
 
@@ -258,41 +259,77 @@ function frameScopedOptions<T extends { selector?: string }>(
 }
 
 /**
+ * Resolves a string act instruction to the Action Stagehand would click so it
+ * can be centred first. Resolution is best-effort: when `observe` is
+ * unavailable, throws, or finds nothing, the caller falls back to Stagehand's
+ * own string `act`, which resolves internally exactly as before.
+ */
+async function resolveClickAction(
+  stagehand: Stagehand,
+  instruction: string,
+  options: ActOptions | undefined
+): Promise<Action | undefined> {
+  if (typeof stagehand.observe !== "function") return undefined;
+  try {
+    const observed = await withWatchdog(
+      () => stagehand.observe(instruction, options?.timeout ? { timeout: options.timeout } : {}),
+      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-observe" }
+    );
+    return observed[0];
+  } catch (err) {
+    logger.warn(`could not resolve click target for pre-centring: ${toErrorMessage(err)}`);
+    return undefined;
+  }
+}
+
+/**
  * Stagehand's `act` clicks the content-box centre after only a
  * `scrollIntoViewIfNeeded`, so a sticky overlay swallows the click. Centre +
- * hit-test the click target first (Stagehand's own scroll is then a no-op) and
- * return the Action to act on. String instructions are resolved via `observe`
- * so the same pre-centring applies. Frame-hop (`>>`) selectors are centred in
- * the child frame they resolve to. Resolution, centring and occlusion failures
- * propagate: an uncentred click is never delivered silently. Non-click actions
- * are passed through untouched since there is no click point to clear.
+ * hit-test the click target first so Stagehand's own scroll is a no-op. String
+ * instructions are resolved via `observe` for the pre-centring only (best
+ * effort) and still reach `act` as the original string, so downstream
+ * method/argument handling is unchanged. Frame-hop (`>>`) selectors are centred
+ * in the child frame they resolve to. A target that is occluded, or a hop whose
+ * frame is not attached, throws: an occluded click is never delivered. A target
+ * the evaluating document cannot see is left to Stagehand's own resolution.
+ * Non-click actions are skipped since there is no click point to clear.
  */
 async function preCentreClickTarget(
   stagehand: Stagehand,
   input: string | Action,
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
-): Promise<string | Action> {
+): Promise<void> {
   const page = stagehand.context?.activePage();
   const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
-  if (!target || !page) return input;
+  if (!target) return;
   const action =
-    typeof input === "string"
-      ? (
-          await withWatchdog(
-            () => stagehand.observe(input, options?.timeout ? { timeout: options.timeout } : {}),
-            {
-              timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
-              label: "stagehand-observe",
-            }
-          )
-        )[0]
-      : input;
-  if (!action || action.method !== "click") return input;
+    typeof input === "string" ? await resolveClickAction(stagehand, input, options) : input;
+  if (action?.method !== "click") return;
+  try {
+    await centreAction(page, target, action);
+  } catch (err) {
+    if (!(err instanceof CentredClickError) || err.state !== "missing") throw err;
+    logger.warn(`${err.message}; leaving the click to Stagehand's own resolution`);
+  }
+}
+
+/**
+ * Centres and hit-tests an Action's click target, resolving a `>>` frame hop
+ * to the child frame the tail selector lives in.
+ */
+async function centreAction(
+  page: ReturnType<NonNullable<Stagehand["context"]>["activePage"]> | undefined,
+  target: FrameTarget,
+  action: Action
+): Promise<void> {
   const hopAt = action.selector.lastIndexOf(">>");
   if (hopAt === -1) {
     await centreSelectorForClick(target, action.selector, { label: action.selector });
-    return action;
+    return;
+  }
+  if (!page) {
+    throw new Error(`no active page to resolve frame hop for ${action.selector}`);
   }
   const hopTarget = await resolveFrameTarget(page, action.selector.slice(0, hopAt).trim());
   if (hopTarget.declaredFrameSelector) {
@@ -301,7 +338,6 @@ async function preCentreClickTarget(
   await centreSelectorForClick(hopTarget, action.selector.slice(hopAt + 2).trim(), {
     label: action.selector,
   });
-  return action;
 }
 
 /**
@@ -347,7 +383,7 @@ export async function guardedAct(
   const userContent = actInstructionOf(sendInput);
   const t0 = performance.now();
   try {
-    const actInput = await preCentreClickTarget(stagehand, sendInput, sendOptions, frameTarget);
+    await preCentreClickTarget(stagehand, sendInput, sendOptions, frameTarget);
     // Stagehand's `act` has two overloads (string and Action) that share the
     // same runtime implementation (dispatch is via `isObserveResult` inside
     // Stagehand). The two branches LOOK identical but TS can't resolve the
@@ -358,9 +394,9 @@ export async function guardedAct(
     const raw = await retryTransient(() =>
       withWatchdog(
         () =>
-          typeof actInput === "string"
-            ? stagehand.act(actInput, sendOptions)
-            : stagehand.act(actInput, sendOptions),
+          typeof sendInput === "string"
+            ? stagehand.act(sendInput, sendOptions)
+            : stagehand.act(sendInput, sendOptions),
         { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
       )
     );
