@@ -5070,7 +5070,16 @@ const UPLOAD_WIDGET_RENDER_INTERVAL_MS = 600;
  * matches `/attachment`; the others cover the other ATS upload sinks. Module-
  * level so both the raw-input path and the click-to-surface path share one list.
  */
-const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
+const UPLOAD_URL_PATTERNS = [
+  "/upload",
+  "/resume",
+  "/file",
+  "/attach",
+  "/document",
+  "/cv",
+  "/media",
+  "/import",
+] as const;
 
 /** One entry of the recent-network-capture window shared across upload helpers. */
 type CaptureMeta = { method: string; status: number; url: string };
@@ -5255,7 +5264,11 @@ export async function attachToSurfacedInput(params: {
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
-  const inputLocator = target.locator("xpath=//input[@type='file']").first();
+  const enabledInputs = target.locator("xpath=//input[@type='file' and not(@disabled)]");
+  const hasEnabledInput = (await enabledInputs.count().catch(() => 0)) > 0;
+  const inputLocator = (
+    hasEnabledInput ? enabledInputs : target.locator("xpath=//input[@type='file']")
+  ).first();
   try {
     await inputLocator.setInputFiles({
       name: fixture.name,
