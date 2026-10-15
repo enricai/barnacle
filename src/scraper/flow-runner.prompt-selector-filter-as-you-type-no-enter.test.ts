@@ -94,4 +94,61 @@ describe("flow-runner/prompt-selector filter-as-you-type widget", () => {
     });
     expect(enterKeyDowns).toEqual([]);
   });
+
+  it("sends zero Enter keyDowns when the rendered label has a prefix or suffix", async () => {
+    const stagehandAct = vi.fn();
+    const stagehand = {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand;
+    const { page, target, fills, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCHABLE_WIDGET_HTML,
+      popupByWidgetId: {
+        "src-widget": {
+          options: ["Republic of Panama (PA)", "Canada (North America)", "Mexico"],
+          searchable: true,
+        },
+      },
+    });
+    const trajectory: { stepIndex: number; verifiedBy: string; targetId?: string }[] = [];
+
+    await executeStepWithHealing({
+      stagehand,
+      page: page as unknown as Page,
+      frameTarget: target,
+      step: "for 'How Did You Hear About Us?' select 'Canada'",
+      optional: false,
+      upload: false,
+      submitStep: false,
+      stepIndex: 3,
+      phase: "apply",
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      anthropic: null,
+      rephraseModel: null,
+      logger: testLogger,
+      captureFn: vi.fn().mockResolvedValue(undefined),
+      uploadFixture: null,
+      isFinalStep: false,
+      submitEndpointPattern: null,
+      submittedStateSelectors: [],
+      requireSubmitEndpointMatch: false,
+      advanceTransitionBodyPattern: null,
+      successUrlFragments: [],
+      successPageTitleHints: [],
+      ownBackendHostnames: [],
+      knownErrorClassPrefixes: [],
+      wizardExitButtonLabels: [],
+      trajectory,
+    } as never).catch(() => undefined);
+
+    expect(fills.length).toBeGreaterThanOrEqual(1);
+
+    const enterKeyDowns = cdpEvents.filter((e) => {
+      const p = e.params as { type?: string; key?: string } | undefined;
+      return e.method === "Input.dispatchKeyEvent" && p?.type === "keyDown" && p.key === "Enter";
+    });
+    expect(enterKeyDowns).toEqual([]);
+  });
 });
