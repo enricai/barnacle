@@ -6550,10 +6550,37 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
 export function parseCheckStep(instruction: string): { label: string } | null {
   const lower = instruction.toLowerCase();
   if (/\bany\s+remaining\b/.test(lower)) return null;
-  const found = matchQuotedAfter(instruction, /\b(?:check|click)\s+(?:the\s+)?(?=')/i);
+  const found = matchQuotedAfter(
+    instruction,
+    /\b(?:un)?check\s+(?:the\s+)?(?=')|\bclick\s+(?:the\s+)?(?=')/i
+  );
   const rest = found ? instruction.slice(found.phrase.end) : "";
   const label = /^.*?\bcheckbox\b/i.test(rest) ? found?.phrase.text.trim() : undefined;
   return label ? { label } : null;
+}
+
+/**
+ * Parse a single-checkbox STATE step ("Check the 'X' checkbox" / "Uncheck the
+ * 'X' checkbox") into its label, desired state and trailing section words.
+ *
+ * Why this exists: "Click the … checkbox" is a toggle and stays with the
+ * cascade; only the explicit check/uncheck verbs name a target state the
+ * primitive can compare against what the page committed.
+ */
+export function parseCheckStateStep(
+  instruction: string
+): { label: string; desired: boolean; sectionWords: string[] } | null {
+  const verb = /^\s*(un)?check\b/i.exec(instruction);
+  const parsed = parseCheckStep(instruction);
+  if (!verb || !parsed) return null;
+  const found = matchQuotedAfter(instruction, /\b(?:un)?check\s+(?:the\s+)?(?=')/i);
+  const rest = found ? instruction.slice(found.phrase.end) : "";
+  const tail = rest.replace(/^.*?\bcheckbox\b/i, "");
+  const stop = new Set(["the", "for", "and", "section", "under", "this", "that", "with", "from"]);
+  const sectionWords = (tail.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter(
+    (w) => !stop.has(w)
+  );
+  return { label: parsed.label, desired: !verb[1], sectionWords };
 }
 
 /** Strips wrapping single quotes a parser's capture group may include (e.g. when a flow author quotes the field name itself), so a probe label compares plain text against plain text. */
@@ -7726,6 +7753,130 @@ export async function tryFillRequiredSelectsPrimitive(params: {
       `required-select primitive: evaluate threw: ${toErrorMessage(err)}; falling through`
     );
     return false;
+  }
+}
+
+/** Marker stamped on the matched checkbox / its label so trusted clicks can address them. */
+const CHECKBOX_STATE_MARKER_ATTR = "data-barnacle-cbstate";
+const CHECKBOX_STATE_POLL_MS = 200;
+const CHECKBOX_STATE_POLL_ATTEMPTS = 8;
+
+/**
+ * Commits a single "Check/Uncheck the 'X' checkbox" step by comparing the
+ * box's committed state to the requested one, so a pre-ticked box is never
+ * toggled off by a blind click. Returns the box's DOM id (possibly empty) on
+ * success, or null when ambiguous, absent, obscured or unflipped so the
+ * caller falls through to the cascade.
+ */
+export async function tryCheckboxStatePrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<string | null> {
+  const { page, target, instruction, logger } = params;
+  const parsed = parseCheckStateStep(instruction);
+  if (!parsed) return null;
+  const attr = CHECKBOX_STATE_MARKER_ATTR;
+  const stampExpr = `((label, words) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const want = norm(label);
+    document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"));
+    const visible = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden";
+    const labelsOf = (cb) => {
+      const out = [];
+      if (cb.id) {
+        const esc = (window.CSS && CSS.escape) ? CSS.escape(cb.id) : cb.id;
+        document.querySelectorAll('label[for="' + esc + '"]').forEach((l) => out.push(l));
+      }
+      const w = cb.closest("label");
+      if (w && !out.includes(w)) out.push(w);
+      return out;
+    };
+    const isOn = (cb) => {
+      const a = cb.getAttribute("aria-checked");
+      return a === "true" ? true : a === "false" ? false : cb.checked === true;
+    };
+    const boxes = Array.from(document.querySelectorAll("input[type=checkbox],[role=checkbox]"));
+    let hits = [];
+    for (const cb of boxes) {
+      const ls = labelsOf(cb);
+      const names = ls.map((l) => norm(l.textContent));
+      const al = cb.getAttribute("aria-label");
+      if (al) names.push(norm(al));
+      if (!names.includes(want)) continue;
+      if (!visible(cb) && !ls.some(visible)) continue;
+      hits.push({ cb, ls });
+    }
+    const sectionText = (cb) => {
+      const parts = [];
+      for (let n = cb.parentElement; n; n = n.parentElement) {
+        const lb = n.getAttribute("aria-labelledby");
+        if (lb) lb.split(/\\s+/).forEach((id) => { const el = document.getElementById(id); if (el) parts.push(el.textContent); });
+        const lg = n.querySelector(":scope > legend");
+        if (lg) parts.push(lg.textContent);
+        const hd = n.querySelector(":scope > h2, :scope > h3, :scope > h4");
+        if (hd) parts.push(hd.textContent);
+      }
+      return norm(parts.join(" "));
+    };
+    if (hits.length > 1 && words.length > 0) {
+      const narrowed = hits.filter((h) => { const t = sectionText(h.cb); return words.some((w) => t.includes(w)); });
+      if (narrowed.length > 0) hits = narrowed;
+    }
+    if (hits.length === 0) return { status: "none" };
+    if (hits.length > 1) return { status: "ambiguous" };
+    const { cb, ls } = hits[0];
+    cb.setAttribute("${attr}", "box");
+    const lab = ls.find(visible);
+    if (lab) lab.setAttribute("${attr}", "label");
+    return { status: "ok", checked: isOn(cb), id: cb.id || "", hasLabel: !!lab };
+  })(${JSON.stringify(parsed.label.toLowerCase())}, ${JSON.stringify(parsed.sectionWords)})`;
+  const stateExpr = `(() => {
+    const cb = document.querySelector("[${attr}=box]");
+    if (!cb) return null;
+    const a = cb.getAttribute("aria-checked");
+    return a === "true" ? true : a === "false" ? false : cb.checked === true;
+  })()`;
+  const clearExpr = `document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"))`;
+  try {
+    const stamped = (await target.evaluate(stampExpr)) as {
+      status: string;
+      checked?: boolean;
+      id?: string;
+      hasLabel?: boolean;
+    };
+    if (stamped?.status !== "ok") return null;
+    const id = stamped.id ?? "";
+    if (stamped.checked === parsed.desired) {
+      logger.info(
+        `checkbox state primitive: "${parsed.label.slice(0, 40)}" already ${parsed.desired ? "checked" : "unchecked"}, no click`
+      );
+      return id;
+    }
+    const clickSels = [...(stamped.hasLabel ? [`[${attr}="label"]`] : []), `[${attr}="box"]`];
+    for (const sel of clickSels) {
+      if (!(await isClickPointUnobscured(target, sel))) continue;
+      await clickCentredTrusted(target, sel, { label: "checkbox" });
+      for (let i = 0; i < CHECKBOX_STATE_POLL_ATTEMPTS; i++) {
+        await page.waitForTimeout(CHECKBOX_STATE_POLL_MS);
+        if ((await target.evaluate(stateExpr)) === parsed.desired) {
+          logger.info(
+            `checkbox state primitive: "${parsed.label.slice(0, 40)}" now ${parsed.desired ? "checked" : "unchecked"}`
+          );
+          return id;
+        }
+      }
+    }
+    logger.warn(
+      `checkbox state primitive: "${parsed.label.slice(0, 40)}" did not reach desired state, falling through`
+    );
+    return null;
+  } catch (err) {
+    logger.warn(`checkbox state primitive failed: ${toErrorMessage(err)}`);
+    return null;
+  } finally {
+    await target.evaluate(clearExpr).catch(() => undefined);
   }
 }
 
@@ -11454,6 +11605,18 @@ export async function executeStepWithHealing(params: {
   if (checkboxTargetId !== null) {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox primitive`);
     trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: checkboxTargetId });
+    return "completed";
+  }
+
+  const checkboxStateTargetId = await tryCheckboxStatePrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+  });
+  if (checkboxStateTargetId !== null) {
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox state primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: checkboxStateTargetId });
     return "completed";
   }
 
