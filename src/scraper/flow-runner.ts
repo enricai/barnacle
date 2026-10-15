@@ -1752,6 +1752,19 @@ export function isStepSubmitShaped(params: {
 }
 
 /**
+ * Whether a click may need the long idle settle wait: a submit-shaped step or
+ * one naming an advance word, since both can start their round-trip late.
+ */
+export function isStepSettleWaitShaped(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  return isStepSubmitShaped(params) || isAdvanceStep(params.step);
+}
+
+/**
  * Submit-shaped but NOT the flow's final step: a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
  * instead of needing the final submit's network/URL proof.
@@ -3460,7 +3473,7 @@ export async function judgeStepOutcome(params: {
     params.page,
     params.signalCounter,
     params.preNetworkCount,
-    isStepSubmitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false }),
+    isStepSettleWaitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false }),
     async () => {
       const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
@@ -11485,6 +11498,7 @@ export async function executeStepWithHealing(params: {
     isFinalStep,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
   });
+  const isSettleWaitStep = isSubmitOrFinalStep || isAdvanceStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
@@ -13571,7 +13585,7 @@ export async function executeStepWithHealing(params: {
         page,
         signalCounter,
         pre.networkCount,
-        isSubmitOrFinalStep,
+        isSettleWaitStep,
         async () => {
           const snap = await snapshotPage(settleTarget, signalCounter);
           return snap.visibleTextSignature;
@@ -14345,7 +14359,7 @@ export async function executeStepWithHealing(params: {
             page,
             signalCounter,
             pre.networkCount,
-            isSubmitOrFinalStep,
+            isSettleWaitStep,
             async () => {
               const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
               return snap.visibleTextSignature;
