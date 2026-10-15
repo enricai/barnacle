@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deriveBaseUrl } from "@/scripts/recon-generate";
-import type { Capture } from "@/scripts/recon-generate";
+import type { Capture } from "@/scripts/recon-shared";
 
 const cap = (url: string): Capture => ({ url }) as Capture;
 
