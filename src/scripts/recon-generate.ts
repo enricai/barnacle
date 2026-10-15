@@ -14511,7 +14511,12 @@ export function emitContractTs(opts: {
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
-  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
+  // Composed unconditionally: zod strips unknown keys, so without it the
+  // TrackingUrl the engine's fireTrackingClick reads never survives parse.
+  const trackingExtension = extendFields.has("TrackingUrl")
+    ? ""
+    : ".extend(JobTrackingSchema.shape)";
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingExtension}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
   // (usesApplicantContactSchema); multipartBoolean() is only imported when a
@@ -14532,6 +14537,9 @@ export function emitContractTs(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
+  const jobTrackingImport = extendFields.has("TrackingUrl")
+    ? ""
+    : `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15129,7 +15137,7 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
@@ -15602,6 +15610,7 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
+  requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
