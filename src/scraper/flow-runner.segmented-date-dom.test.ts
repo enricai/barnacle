@@ -174,4 +174,30 @@ describe("segmented date unquoted and lone targets", () => {
       resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", groups)
     ).toBeNull();
   });
+
+  it("skips groups with no visible segment", () => {
+    const hidden = `<div role="group" aria-label="From" style="display:none"><input role="spinbutton" aria-valuemax="9999" /></div>`;
+    const shown = `<div role="group" aria-label="To"><input role="spinbutton" aria-valuemax="9999" /></div>`;
+    const groups = enumerate(hidden + shown);
+    expect(groups).toHaveLength(1);
+    const step = "Click the Year spinbutton in the 'From' date of Education 1 and type '2015'";
+    expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
+  });
+
+  it("matches the quoted label against a fieldset legend", () => {
+    const year = `<input role="spinbutton" aria-valuemax="9999" />`;
+    const groups = enumerate(
+      `<fieldset><legend>To</legend>${year}</fieldset><fieldset><legend>From</legend>${year}</fieldset>`
+    );
+    const step = "Click the Year spinbutton in the 'From' date of Education 1 and type '2015'";
+    expect(resolveSegmentedDateGroup(step, groups)).toBe(1);
+  });
+
+  it("does not select a lone group labelled otherwise from prose 'from'", () => {
+    const groups = enumerate(
+      `<div role="group" aria-label="Graduation"><input role="spinbutton" aria-valuemax="9999" /></div>`
+    );
+    const step = "Click the Year spinbutton in the 'From' date of Education 1 and type '2015'";
+    expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
+  });
 });
