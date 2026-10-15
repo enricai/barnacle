@@ -87,7 +87,7 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     vi.clearAllMocks();
   });
 
-  it("commits the requested option after node-reusing re-renders, clicking the node whose text matches", async () => {
+  it("commits the requested option after node-reusing re-renders, including one right after the stable read, clicking the node whose text matches", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window } = buildPromptWidgetHarness({
       html: VIRTUALIZED_HTML,
@@ -112,6 +112,30 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
           },
         };
       };
+    let previousKey = "";
+    let reshuffled = false;
+    const originalEvaluate = target.evaluate.bind(target) as (e: unknown) => Promise<unknown>;
+    (target as unknown as { evaluate: (e: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ): Promise<unknown> => {
+      const out = (await originalEvaluate(expr)) as { options?: { text: string }[] } | null;
+      const texts = (out?.options ?? []).map((o) => o.text);
+      const key = JSON.stringify(texts);
+      if (texts.includes("Sweden") && key === previousKey && !reshuffled) {
+        reshuffled = true;
+        const reused = window.document.querySelector("[role='option']");
+        const added = window.document.createElement("li");
+        if (reused) reused.textContent = "Denmark";
+        reused?.setAttribute("data-automation-label", "Denmark");
+        added.setAttribute("role", "option");
+        added.setAttribute("data-automation-id", "promptOption");
+        added.setAttribute("data-automation-label", "Sweden");
+        added.textContent = "Sweden";
+        reused?.parentElement?.appendChild(added);
+      }
+      previousKey = key;
+      return out;
+    };
     const pageLoc = page as unknown as { locator: (s: string) => unknown };
     pageLoc.locator = recording(pageLoc.locator);
     const targetLoc = target as unknown as { locator: (s: string) => unknown };
@@ -128,6 +152,7 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
 
     expect(result).toBe("completed");
     expect(stagehandAct).not.toHaveBeenCalled();
+    expect(reshuffled).toBe(true);
     expect(clickedTexts).toEqual(["Sweden"]);
     const committed = window.document.querySelector(
       "[data-automation-id='promptSelectionLabel']"
