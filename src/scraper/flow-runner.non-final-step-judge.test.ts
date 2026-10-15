@@ -82,4 +82,56 @@ describe("judgeStepOutcome", () => {
       stepInstruction: "click continue",
     });
   });
+
+  describe("re-judge after a mid-transition render", () => {
+    const NO = { advanced: false, reason: "no" };
+
+    function rejudgeParams(
+      reads: string[],
+      waits: number[]
+    ): Parameters<typeof judgeStepOutcome>[0] {
+      return {
+        ...params(false, []),
+        page: { waitForTimeout: async (ms: number) => void waits.push(ms) },
+        target: {
+          evaluate: async () =>
+            reads[Math.min(stepJudge.mock.calls.length, reads.length - 1)] ?? "",
+        } as never,
+      };
+    }
+
+    it("waits 5s and returns the second verdict when the text changed", async () => {
+      stepJudge.mockReset();
+      stepJudge.mockResolvedValueOnce(NO).mockResolvedValueOnce({ advanced: true, reason: "yes" });
+      const waits: number[] = [];
+      const verdict = await judgeStepOutcome(rejudgeParams(["a", "b"], waits));
+      expect(waits).toContain(5000);
+      expect(stepJudge).toHaveBeenCalledTimes(2);
+      expect(verdict).toMatchObject({ verified: true });
+    });
+
+    it("judges once when the later read is identical", async () => {
+      stepJudge.mockReset();
+      stepJudge.mockResolvedValue(NO);
+      const verdict = await judgeStepOutcome(rejudgeParams(["same"], []));
+      expect(stepJudge).toHaveBeenCalledTimes(1);
+      expect(verdict).toEqual({ verified: false, reason: "no" });
+    });
+
+    it("adds no extra wait or call when the first verdict advanced", async () => {
+      stepJudge.mockReset();
+      stepJudge.mockResolvedValue({ advanced: true, reason: "yes" });
+      const waits: number[] = [];
+      await judgeStepOutcome(rejudgeParams(["a", "b"], waits));
+      expect(stepJudge).toHaveBeenCalledTimes(1);
+      expect(waits).not.toContain(5000);
+    });
+
+    it("keeps the first verdict when the second judge returns null", async () => {
+      stepJudge.mockReset();
+      stepJudge.mockResolvedValueOnce(NO).mockResolvedValueOnce(null);
+      const verdict = await judgeStepOutcome(rejudgeParams(["a", "b"], []));
+      expect(verdict).toEqual({ verified: false, reason: "no" });
+    });
+  });
 });
