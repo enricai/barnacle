@@ -3,7 +3,6 @@ import {
   type NavigateToFacetBinding,
   resolveRecurringNavigateToFacets,
 } from "@/scripts/recon-generate";
-import type { ActionStep } from "@/scripts/recon-shared";
 
 const ACTIONS = [
   {
@@ -15,7 +14,7 @@ const ACTIONS = [
       requestHeaders: {},
     },
   },
-] as unknown as Pick<ActionStep, "capture">[];
+] as unknown as Parameters<typeof resolveRecurringNavigateToFacets>[1];
 
 describe("resolveRecurringNavigateToFacets — click facet without a step literal", () => {
   it("resolves the facet from its own kind-keyed element like a literal-bearing one", () => {
