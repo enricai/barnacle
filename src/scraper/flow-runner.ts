@@ -13336,9 +13336,16 @@ export async function executeStepWithHealing(params: {
             page
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
+          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
+            step,
+            submitStep,
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+          });
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&
-            isPlausibleStepDestination(step, retryPost.url);
+            isPlausibleStepDestination(step, retryPost.url, retryMidFlowSubmit ? pre.url : undefined);
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
           const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
@@ -13450,7 +13457,9 @@ export async function executeStepWithHealing(params: {
           // one-shot check would false-negative and retry into a back-bounce.
           // Destination-gated so an implausible landing URL's traffic cannot satisfy
           // the veto or the submit-transition carve-out downstream.
-          const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
+          const retryDestinationPlausible =
+            isPlausibleStepDestination(step, retryPost.url) ||
+            (retryMidFlowSubmit && isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
             retryDestinationPlausible &&
@@ -13540,13 +13549,6 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             }) || retryResolvedElementIsSubmitShaped;
-          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
-            step,
-            submitStep,
-            isFinalStep,
-            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-          });
           const weakDomSignalsAllowed =
             ((!inferredFinalSubmitStep && !submitStep && !retryResolvedElementIsSubmitShaped) ||
               requireSubmitEndpoint) &&
