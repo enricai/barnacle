@@ -135,7 +135,8 @@ describe("executeStepWithHealing upload session threading", () => {
     await t.run();
     expect(fetchMock).not.toHaveBeenCalled();
     const call = t.send.mock.calls.find((c) => c[0] === "DOM.setFileInputFiles");
-    expect(call).toBeDefined();
-    expect((call?.[1] as { files: string[] }).files[0]).not.toContain("/tmp/.uploads/");
+    const files = (call?.[1] as { files?: string[] } | undefined)?.files ?? [];
+    expect(files).toHaveLength(1);
+    expect(files[0]).not.toContain("/tmp/.uploads/");
   });
 });
