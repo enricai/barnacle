@@ -41,6 +41,10 @@ Strictness rule for verified=true:
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
 When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
+const NON_FINAL_STEP_RULE = `
+
+This is NOT the final step of the flow. For a non-final step the document title of a single-page app is not evidence: it often stays stale across steps. Visible text decides; if the visible text shows the page advanced, verified=true even when the title or URL did not change.`;
+
 const MAX_VISIBLE_TEXT_CHARS = 3000;
 
 /**
@@ -131,7 +135,10 @@ export async function verifySubmitWithLLM(params: {
   if (client === null) return null;
   const result = await callHaikuJudge({
     client,
-    systemPrompt: SUBMIT_VERIFY_SYSTEM_PROMPT,
+    systemPrompt:
+      input.isFinalStep === false
+        ? `${SUBMIT_VERIFY_SYSTEM_PROMPT}${NON_FINAL_STEP_RULE}`
+        : SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
     callType: CALL_TYPE_JUDGE_SUBMIT_VERIFY,

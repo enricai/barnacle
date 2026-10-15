@@ -142,3 +142,12 @@ describe("verifySubmitWithLLM", () => {
     expect(result).toEqual(parsedOutput);
   });
 });
+
+describe("non-final step system prompt", () => {
+  it("tells the judge a stale title is not evidence only for non-final steps", async () => {
+    const nonFinal = await captured({ stepInstruction: "Next", isFinalStep: false });
+    expect(nonFinal.system).toContain("title of a single-page app is not evidence");
+    expect(nonFinal.system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(true);
+    expect(nonFinal.user).not.toContain("PAGE TITLE");
+  });
+});

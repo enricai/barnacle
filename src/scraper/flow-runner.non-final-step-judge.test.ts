@@ -83,3 +83,14 @@ describe("judgeStepOutcome", () => {
     });
   });
 });
+
+describe("judgeStepOutcome non-final settle baseline", () => {
+  it("seeds the settle with the pre-click signature", async () => {
+    const click = await import("@/scraper/click-settle");
+    const spy = vi.spyOn(click, "settleAfterClick");
+    stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
+    await judgeStepOutcome(params(false, ["a", "b", "b"]));
+    expect(spy.mock.calls[0]?.[4]).toBe("12:Create account");
+    spy.mockRestore();
+  });
+});

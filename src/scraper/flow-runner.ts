@@ -3359,8 +3359,15 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  await settleAfterClick(params.page, params.signalCounter, params.preNetworkCount, () =>
-    probeVisibleTextForJudge(target)
+  await settleAfterClick(
+    params.page,
+    params.signalCounter,
+    params.preNetworkCount,
+    async () => {
+      const text = await probeVisibleTextForJudge(target);
+      return `${text.length}:${text.slice(0, 200)}`;
+    },
+    params.preVisibleTextSignature
   );
   const afterText = await probeVisibleTextForJudge(target);
   const colon = params.preVisibleTextSignature.indexOf(":");
