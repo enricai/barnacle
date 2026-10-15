@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  escapeQuotedValue,
   findQuotedSpans,
   maskApostrophes,
   matchAnchored,
@@ -42,5 +43,20 @@ describe("quoted-spans", () => {
 
   it("matchAnchored returns null when the pattern does not match", () => {
     expect(matchAnchored("click 'Go'", /^select '([^']+)'/)).toBeNull();
+  });
+});
+
+describe("escapeQuotedValue", () => {
+  it.each(["O'Brien", "12 King's Row", "Smith'", "5'10", "'Tis"])(
+    "round-trips %s through findQuotedSpans",
+    (value) => {
+      const spans = findQuotedSpans(`Fill in the Name field with '${escapeQuotedValue(value)}'`);
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.text).toBe(value);
+    }
+  );
+
+  it("leaves letter-flanked apostrophes unescaped", () => {
+    expect(escapeQuotedValue("O'Brien")).toBe("O'Brien");
   });
 });

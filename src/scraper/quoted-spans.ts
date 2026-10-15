@@ -1,5 +1,7 @@
 const APOSTROPHE_PLACEHOLDER = "\u0000";
 const APOSTROPHE_BETWEEN_LETTERS = /(?<=[A-Za-z])'(?=[A-Za-z])/g;
+const ESCAPED_APOSTROPHE = /\\'/g;
+const ESCAPE_PLACEHOLDER = "\u0001\u0001";
 const SINGLE_QUOTED_SPAN = /'([^']+)'/g;
 
 export interface QuotedSpan {
@@ -9,18 +11,30 @@ export interface QuotedSpan {
 }
 
 /**
- * Hides contraction/possessive apostrophes (letter on both sides) so they are
- * not mistaken for quote delimiters; the output has the same length as the input.
+ * Hides contraction/possessive apostrophes (letter on both sides) and
+ * backslash-escaped apostrophes so they are not mistaken for quote delimiters;
+ * the output has the same length as the input.
  */
 export function maskApostrophes(text: string): string {
-  return text.replace(APOSTROPHE_BETWEEN_LETTERS, APOSTROPHE_PLACEHOLDER);
+  return text
+    .replace(ESCAPED_APOSTROPHE, ESCAPE_PLACEHOLDER)
+    .replace(APOSTROPHE_BETWEEN_LETTERS, APOSTROPHE_PLACEHOLDER);
+}
+
+/**
+ * Makes a runtime value safe to splice between single quotes: apostrophes that
+ * masking would not hide get a backslash escape the parsers honour, so the
+ * value cannot end the span early. Letter-flanked apostrophes stay untouched.
+ */
+export function escapeQuotedValue(value: string): string {
+  return value.replace(/(?<![A-Za-z])'|'(?![A-Za-z])/g, "\\'");
 }
 
 /**
  * Reverses `maskApostrophes` on text captured from a masked string.
  */
 export function restoreApostrophes(text: string): string {
-  return text.replaceAll(APOSTROPHE_PLACEHOLDER, "'");
+  return text.replaceAll(ESCAPE_PLACEHOLDER, "'").replaceAll(APOSTROPHE_PLACEHOLDER, "'");
 }
 
 /**

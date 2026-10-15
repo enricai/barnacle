@@ -49,7 +49,7 @@ import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
-import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
+import { escapeQuotedValue, findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import {
   type Capture,
   type RateLimitFinding,
@@ -15417,7 +15417,7 @@ function buildStepInstructionExpr(
     capturedFallback && captured !== null
       ? `payload.${field} ?? ${JSON.stringify(captured)}`
       : `payload.${field}`;
-  return `\`${escapeForTemplateLiteral(site.before)}\${${read}}${escapeForTemplateLiteral(site.after)}\``;
+  return `\`${escapeForTemplateLiteral(site.before)}\${escapeQuotedValue(${read})}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15434,7 +15434,7 @@ function buildCompositeStepInstructionExpr(
 ): string {
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
+  return `\`${escapeForTemplateLiteral(site.before)}\${escapeQuotedValue(payload.${fieldA})} \${escapeQuotedValue(payload.${fieldB})}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15971,7 +15971,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
-import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
+${stepLiterals.some((literal) => literal.includes("escapeQuotedValue(")) ? `import { escapeQuotedValue } from "${ENGINE_PKG}/scraper/quoted-spans";\n` : ""}import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
 import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";
 import ${

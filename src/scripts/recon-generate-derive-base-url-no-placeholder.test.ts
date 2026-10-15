@@ -6,9 +6,9 @@ const cap = (url: string): Capture => ({ url }) as Capture;
 
 describe("deriveBaseUrl without a placeholder origin", () => {
   it("throws naming the captured hosts when ownBackendHostnames matches no capture", () => {
-    expect(() =>
-      deriveBaseUrl([cap("https://other.test/a")], ["api.shop-example.test"])
-    ).toThrow(/ownBackendHostnames matched no capture.*other\.test/);
+    expect(() => deriveBaseUrl([cap("https://other.test/a")], ["api.shop-example.test"])).toThrow(
+      /ownBackendHostnames matched no capture.*other\.test/
+    );
   });
 
   it("returns the declared host's origin when it matches", () => {
