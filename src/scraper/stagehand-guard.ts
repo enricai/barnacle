@@ -67,7 +67,12 @@ import {
   CALL_TYPE_STAGEHAND_EXTRACT,
   CALL_TYPE_STAGEHAND_OBSERVE,
 } from "@/lib/telemetry/call-types";
-import { buildHopSelector, type FrameTarget, mainFrameTarget } from "@/scraper/frame-target";
+import {
+  buildHopSelector,
+  type FrameTarget,
+  mainFrameTarget,
+  resolveFrameTarget,
+} from "@/scraper/frame-target";
 import { isTransientProviderError } from "@/scraper/transient-provider-error";
 import { centreSelectorForClick } from "@/scraper/trusted-click";
 import { withWatchdog } from "@/scraper/watchdog";
@@ -257,10 +262,10 @@ function frameScopedOptions<T extends { selector?: string }>(
  * `scrollIntoViewIfNeeded`, so a sticky overlay swallows the click. Centre +
  * hit-test the click target first (Stagehand's own scroll is then a no-op) and
  * return the Action to act on. String instructions are resolved via `observe`
- * so the same pre-centring applies; every failure to resolve or centre keeps
- * the original input, so this never makes an act fail that would have run.
- * Frame-hop (`>>`) selectors are skipped — they are not addressable from the
- * active page's main frame.
+ * so the same pre-centring applies. Frame-hop (`>>`) selectors are centred in
+ * the child frame they resolve to. Resolution, centring and occlusion failures
+ * propagate: an uncentred click is never delivered silently. Non-click actions
+ * are passed through untouched since there is no click point to clear.
  */
 async function preCentreClickTarget(
   stagehand: Stagehand,
@@ -268,29 +273,35 @@ async function preCentreClickTarget(
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
 ): Promise<string | Action> {
-  try {
-    const page = stagehand.context?.activePage();
-    const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
-    if (!target) return input;
-    const action =
-      typeof input === "string"
-        ? (
-            await withWatchdog(
-              () => stagehand.observe(input, options?.timeout ? { timeout: options.timeout } : {}),
-              {
-                timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
-                label: "stagehand-observe",
-              }
-            )
-          )[0]
-        : input;
-    if (!action || action.method !== "click" || action.selector.includes(">>")) return input;
+  const page = stagehand.context?.activePage();
+  const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
+  if (!target || !page) return input;
+  const action =
+    typeof input === "string"
+      ? (
+          await withWatchdog(
+            () => stagehand.observe(input, options?.timeout ? { timeout: options.timeout } : {}),
+            {
+              timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
+              label: "stagehand-observe",
+            }
+          )
+        )[0]
+      : input;
+  if (!action || action.method !== "click") return input;
+  const hopAt = action.selector.lastIndexOf(">>");
+  if (hopAt === -1) {
     await centreSelectorForClick(target, action.selector, { label: action.selector });
     return action;
-  } catch (err) {
-    logger.warn(`pre-centring skipped: ${err instanceof Error ? err.message : String(err)}`);
-    return input;
   }
+  const hopTarget = await resolveFrameTarget(page, action.selector.slice(0, hopAt).trim());
+  if (hopTarget.declaredFrameSelector) {
+    throw new Error(`frame ${hopTarget.declaredFrameSelector} not attached; cannot centre click`);
+  }
+  await centreSelectorForClick(hopTarget, action.selector.slice(hopAt + 2).trim(), {
+    label: action.selector,
+  });
+  return action;
 }
 
 /**
