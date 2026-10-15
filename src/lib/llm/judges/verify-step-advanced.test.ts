@@ -86,8 +86,7 @@ describe("verifyStepAdvancedWithLLM", () => {
   it("carries a step-list page's before and after text verbatim", async () => {
     const client = fakeClient({ advanced: true, reason: "step 3 current" });
     const beforeText = "current step 2 of 7 My Information";
-    const afterText =
-      "step 2 of 7 My Information current step 3 of 7 My Experience Job Title *";
+    const afterText = "step 2 of 7 My Information current step 3 of 7 My Experience Job Title *";
     await verifyStepAdvancedWithLLM({
       client,
       input: { ...INPUT, beforeText, afterText },
