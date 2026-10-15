@@ -6199,8 +6199,8 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     return legend ? norm(legend.textContent) : "";
   };
   const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
-  const sectionOf = (box) => {
-    const parts = [headingSibling(box)];
+  const sectionOf = (box, includeSelf) => {
+    const parts = [includeSelf ? namedBy(box) : "", headingSibling(box)];
     let node = box.parentElement;
     for (let depth = 0; depth < 4 && node && node !== document.body; depth++, node = node.parentElement) {
       parts.push(namedBy(node), headingSibling(node));
@@ -6246,9 +6246,10 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const addGroup = (segs, box, nested) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
-    const field = formFieldOf(box);
-    const own = namedBy(box) || (field ? formFieldLabel(field) : "") || ownCaption(box) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
-    const section = sectionOf(box);
+    const field = formFieldOf(box) || segs[0].closest("[data-automation-id^='formField-']");
+    const innerField = field && field !== box && box.contains(field) && segs.every((seg) => field.contains(seg)) ? formFieldLabel(field) : "";
+    const own = innerField || namedBy(box) || (field ? formFieldLabel(field) : "") || ownCaption(box) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const section = sectionOf(box, Boolean(innerField));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
       context: [section, own].filter(Boolean).join(" "),
@@ -6322,9 +6323,13 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       const selector = segmentSelector(si);
       // A below-the-fold segment would otherwise take the trusted click at an
       // off-screen point; centre it first so the click and key events land on it.
-      await target.evaluate(
-        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.scrollIntoView({ block: "center", inline: "center" }); })()`
-      );
+      try {
+        await target.evaluate(
+          `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "center", inline: "center" }); })()`
+        );
+      } catch {
+        // scrolling is best-effort; the key events only need the segment focused
+      }
       try {
         await clickCentredTrusted(target, selector, { label: "date segment" });
       } catch {
