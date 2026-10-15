@@ -5783,6 +5783,115 @@ export function parseFillValueIntent(instruction: string): { value: string } | n
   return null;
 }
 
+const SEGMENTED_DATE_VALUE_RE = /^[\d/.-]+$/;
+const SEGMENTED_DATE_MIN_DIGITS = 4;
+const SEGMENTED_DATE_MAX_DIGITS = 8;
+const SEGMENTED_DATE_QUOTED_WEIGHT = 3;
+const SEGMENTED_DATE_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "at",
+  "date",
+  "enter",
+  "fill",
+  "for",
+  "in",
+  "into",
+  "of",
+  "on",
+  "the",
+  "then",
+  "to",
+  "type",
+  "with",
+]);
+
+/** One candidate group of `role=spinbutton` segments plus the text that names it. */
+export interface SegmentedDateGroup {
+  /** `aria-valuemax` of each segment, in DOM order (e.g. `[12, 9999]`). */
+  segmentMaxes: readonly number[];
+  /** Visible label/heading text surrounding the group (e.g. "Work Experience 1 From"). */
+  context: string;
+}
+
+/**
+ * Extract the digits a fill/type/enter step wants typed into a multi-segment
+ * date widget. Limited to 4-8 digits so phone numbers and other long numerics
+ * never trigger the segmented-date path. Reuses `parseFillValueIntent` and
+ * falls back to the last date-shaped quoted phrase for verbless steps such as
+ * "'From' date in Work Experience 1, '012020'".
+ */
+export function parseSegmentedDateValue(
+  instruction: string
+): { digits: string; valueSpan: string } | null {
+  const spans = findQuotedSpans(instruction);
+  const intent = parseFillValueIntent(instruction)?.value;
+  const candidates = intent
+    ? [intent]
+    : spans
+        .map((s) => s.text.trim())
+        .filter((t) => SEGMENTED_DATE_VALUE_RE.test(t))
+        .reverse();
+  for (const raw of candidates) {
+    if (!SEGMENTED_DATE_VALUE_RE.test(raw)) continue;
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < SEGMENTED_DATE_MIN_DIGITS || digits.length > SEGMENTED_DATE_MAX_DIGITS) {
+      continue;
+    }
+    return { digits, valueSpan: raw };
+  }
+  return null;
+}
+
+function segmentedDateTokens(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * Pick which spinbutton group a segmented-date step targets. Groups whose
+ * segment widths (digit count of `aria-valuemax`) don't sum to the value's
+ * digit count are dropped; the rest are scored by quoted-phrase and step-word
+ * hits against their context. Returns the index into `groups`, or `null` on a
+ * tie or zero score — guessing a group would write a date into the wrong field.
+ */
+export function resolveSegmentedDateGroup(
+  instruction: string,
+  groups: readonly SegmentedDateGroup[]
+): number | null {
+  const value = parseSegmentedDateValue(instruction);
+  if (!value) return null;
+  const spans = findQuotedSpans(instruction);
+  const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
+  const stepWords = new Set(
+    segmentedDateTokens(
+      spans.reduceRight((rest, s) => rest.slice(0, s.start) + " " + rest.slice(s.end), instruction)
+    ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
+  );
+  let best = -1;
+  let bestScore = 0;
+  let tied = false;
+  groups.forEach((group, index) => {
+    const widths = group.segmentMaxes.map((max) => String(max).length);
+    if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
+    const tokens = segmentedDateTokens(group.context);
+    const joined = ` ${tokens.join(" ")} `;
+    const phraseHits = phrases.filter((p) =>
+      joined.includes(` ${segmentedDateTokens(p).join(" ")} `)
+    ).length;
+    const wordHits = tokens.filter((t, i) => stepWords.has(t) && tokens.indexOf(t) === i).length;
+    const score = phraseHits * SEGMENTED_DATE_QUOTED_WEIGHT + wordHits;
+    if (score > bestScore) {
+      best = index;
+      bestScore = score;
+      tied = false;
+    } else if (score === bestScore && score > 0) {
+      tied = true;
+    }
+  });
+  return bestScore === 0 || tied ? null : best;
+}
+
 /**
  * Parse a single-choice RADIO flow step into the option to click and (when
  * present) the question label that scopes which radio group it targets.
