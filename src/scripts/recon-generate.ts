@@ -11703,6 +11703,22 @@ export interface FallbackGateSpec {
 }
 
 /**
+ * Reads the flow file's `browserFlowOnly: true` opt-in, which forces the
+ * browser-flow-only emit for a submission flow whose HTTP analysis would
+ * otherwise produce an executeHttp path. Anything but a literal `true` (or an
+ * unreadable/legacy bare-array file) is "not opted in".
+ */
+export function parseBrowserFlowOnlyOptIn(flowFileContents: string): boolean {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+    return (raw as { browserFlowOnly?: unknown }).browserFlowOnly === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
  * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
  * a missing file, a legacy bare-array flow, or a malformed declaration all
@@ -13842,9 +13858,14 @@ const applicantContactEvidenceFieldNamesLower = new Set(
 export function contractUsesApplicantContactSchema(opts: {
   inputBody?: unknown;
   isSubmissionFlow?: boolean;
+  browserFlowOnly?: boolean;
   payloadFieldNames?: Set<string>;
 }): boolean {
-  const { inputBody, isSubmissionFlow, payloadFieldNames } = opts;
+  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames } = opts;
+  // A browser-flow-only submission flow has no HTTP body of its own: whatever
+  // inputBody HTTP analysis captured describes a path the plugin won't emit,
+  // so it is not evidence about the real caller's shape.
+  if (isSubmissionFlow === true && browserFlowOnly === true) return true;
   // A body-less submission flow has no inputBody to inspect; the payload fields
   // its steps splice are the only evidence, whether or not it also has an HTTP
   // path (the browser-flow emitter can't know which the contract will take).
@@ -14134,6 +14155,7 @@ export function emitContractTs(opts: {
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
+    browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
@@ -15511,6 +15533,8 @@ export function emitConfigManifest(opts: {
   isSubmissionFlow?: boolean;
   /** Whether the flow has a multipart upload action — same input the `.ts` emitter takes. */
   hasMultipartStep?: boolean;
+  /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
+  browserFlowOnly?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15625,6 +15649,7 @@ export function emitConfigManifest(opts: {
     contractUsesApplicantContactSchema({
       inputBody,
       isSubmissionFlow,
+      browserFlowOnly,
       payloadFieldNames,
     });
   const multipart = hasUploadStep && contractCarriesResume;
@@ -15752,6 +15777,7 @@ export function emitBrowserFlowTs(opts: {
   flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
+  browserFlowOnly?: boolean;
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
@@ -15777,6 +15803,7 @@ export function emitBrowserFlowTs(opts: {
     flowSteps,
     isSubmissionFlow,
     hasMultipartStep = false,
+    browserFlowOnly = false,
     inputBody,
     vocabulary,
     frameSelector,
@@ -15798,6 +15825,7 @@ export function emitBrowserFlowTs(opts: {
     contractUsesApplicantContactSchema({
       inputBody,
       isSubmissionFlow,
+      browserFlowOnly,
       payloadFieldNames,
     });
   const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
@@ -16487,6 +16515,14 @@ async function main(): Promise<void> {
     }
   })();
 
+  const browserFlowOnlyOptIn = (() => {
+    try {
+      return parseBrowserFlowOnlyOptIn(readFileSync(flowFile, "utf8"));
+    } catch {
+      return false;
+    }
+  })();
+
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
   // so both draw from the real submission, not incidental widget/chatbot POSTs.
@@ -17010,7 +17046,8 @@ async function main(): Promise<void> {
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
     const browserFlowOnly =
-      isSubmissionFlow && (noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
+      isSubmissionFlow &&
+      (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
     const multiStepBody = browserFlowOnly
       ? undefined
       : isSubmissionFlow
@@ -17132,7 +17169,7 @@ async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     if (emit === "config") {
@@ -17149,6 +17186,7 @@ async function main(): Promise<void> {
           recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
           isSubmissionFlow,
           hasMultipartStep,
+          browserFlowOnly,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -17176,6 +17214,7 @@ async function main(): Promise<void> {
       flowSteps,
       isSubmissionFlow,
       hasMultipartStep,
+      browserFlowOnly,
       inputBody,
       vocabulary,
       frameSelector,
@@ -17253,6 +17292,7 @@ async function main(): Promise<void> {
               flowSteps,
               isSubmissionFlow,
               hasMultipartStep,
+              browserFlowOnly,
               vocabulary,
               frameSelector,
               capturedFallbackFields: unread,

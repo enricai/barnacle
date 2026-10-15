@@ -416,3 +416,29 @@ describe("emitContractTs — browser-flow-only reported shape is Biome-clean", (
     }
   });
 });
+
+describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
+  it("forces the applicant contract for a browser-flow-only submission flow despite a non-evidence inputBody", async () => {
+    const { contractUsesApplicantContactSchema } = await import("@/scripts/recon-generate");
+    const inputBody = { vendorKey: "x" };
+    expect(contractUsesApplicantContactSchema({ inputBody, isSubmissionFlow: true })).toBe(false);
+    expect(
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: true,
+        browserFlowOnly: true,
+      })
+    ).toBe(true);
+    expect(
+      contractUsesApplicantContactSchema({ inputBody, isSubmissionFlow: false, browserFlowOnly: true })
+    ).toBe(false);
+  });
+
+  it("parses the flow-file opt-in only for a literal true", async () => {
+    const { parseBrowserFlowOnlyOptIn } = await import("@/scripts/recon-generate");
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: true }))).toBe(true);
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: "yes" }))).toBe(false);
+    expect(parseBrowserFlowOnlyOptIn("[]")).toBe(false);
+    expect(parseBrowserFlowOnlyOptIn("nope")).toBe(false);
+  });
+});
