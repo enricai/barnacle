@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Extends recon-generate-multi-value-opaque-splice-guard-e2e's two-value pin to
@@ -119,7 +120,7 @@ function generate(runRoot: string, siteId: string): ReturnType<typeof spawnSync>
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -142,7 +143,7 @@ describe("recon-generate CLI — 100+ threaded state values plus one same-host o
     writeRunDir(runRoot);
 
     const siteId = `value-coincidence-large-corpus-and-path-segment-threading-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
     const result = generate(runRoot, siteId);

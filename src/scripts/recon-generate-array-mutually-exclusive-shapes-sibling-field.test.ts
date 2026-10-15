@@ -8,6 +8,7 @@ import {
   collectRequestBodyValuesByKey,
   findFrozenVaryingDrillParams,
 } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -139,7 +140,7 @@ function runGenerate(captures: Capture[]): { status: number | null; output: stri
     );
   });
   const siteId = `exclusive-sibling-test-${process.pid}`;
-  siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   mkdirSync(siteOutDir, { recursive: true });
   writeFileSync(
     join(siteOutDir, "recon-flow.json"),
@@ -153,7 +154,7 @@ function runGenerate(captures: Capture[]): { status: number | null; output: stri
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
 }

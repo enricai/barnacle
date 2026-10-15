@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Complements recon-generate-fold-plan-primary-order-independent-emission-runtime-e2e.test.ts
@@ -186,7 +187,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -197,7 +198,7 @@ describe("recon-generate fold plan shape inference — order independence runtim
     // capture file order — a differing siteId would leak into every
     // generated identifier name and mask a byte-for-byte comparison.
     const siteId = `fold-shape-order-test-run${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
     writeFlowFile(siteOutDir);
 

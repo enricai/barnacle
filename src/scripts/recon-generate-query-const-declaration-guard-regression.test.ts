@@ -4,6 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Pins the general invariant behind a reported `const` identifier
@@ -42,7 +46,7 @@ function assertNoUndeclaredQueryConstAndCompiles(
   const undeclaredReferences = references.filter((name) => !declarations.includes(name));
   expect(undeclaredReferences, source).toEqual([]);
 
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   outDirs.push(siteOutDir);
   mkdirSync(join(siteOutDir, "flows"), { recursive: true });
   writeFileSync(join(siteOutDir, "contract.ts"), source);
@@ -76,6 +80,7 @@ function assertNoUndeclaredQueryConstAndCompiles(
         incremental: false,
         tsBuildInfoFile: null,
         paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
           "@enricai/barnacle/*": ["./src/*"],

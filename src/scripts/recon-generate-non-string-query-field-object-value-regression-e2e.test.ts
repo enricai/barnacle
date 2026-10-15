@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 /**
@@ -65,7 +66,7 @@ describe("recon-generate CLI — non-string `query` field on a legacy capture ar
     writeFileSync(join(runRoot, "graphql", "001-capture.json"), JSON.stringify(analyticsCapture));
 
     const siteId = `non-string-query-field-regression-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -80,7 +81,7 @@ describe("recon-generate CLI — non-string `query` field on a legacy capture ar
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.stderr).not.toMatch(/query\.replace is not a function/);

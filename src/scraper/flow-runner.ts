@@ -6073,7 +6073,7 @@ export function resolveSegmentedDateGroup(
   const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
   const stepWords = new Set(
     segmentedDateTokens(
-      spans.reduceRight((rest, s) => rest.slice(0, s.start) + " " + rest.slice(s.end), instruction)
+      spans.reduceRight((rest, s) => `${rest.slice(0, s.start)} ${rest.slice(s.end)}`, instruction)
     ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
   );
   let best = -1;
@@ -6234,14 +6234,10 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     }
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
-    const expected = widths.map((w, i) =>
-      Number(
-        value.digits.slice(
-          widths.slice(0, i).reduce((a, b) => a + b, 0),
-          widths.slice(0, i + 1).reduce((a, b) => a + b, 0)
-        )
-      )
-    );
+    const expected = widths.map((w, i) => {
+      const start = widths.slice(0, i).reduce((a, b) => a + b, 0);
+      return Number(value.digits.slice(start, start + w));
+    });
     const segmentSelector = (si: number): string =>
       `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
     const focusSegment = async (si: number): Promise<void> => {

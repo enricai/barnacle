@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Diagnostic for FAILURE 3 (a flowless recon capture): recon:generate presented three
@@ -60,7 +61,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -71,7 +72,7 @@ describe("recon-generate landing-phase submission-flow WARN (FAILURE 3)", () => 
     writeRunDir(runRoot, ["home", "home"]);
 
     const siteId = `bootstrap-warn-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;
@@ -88,7 +89,7 @@ describe("recon-generate landing-phase submission-flow WARN (FAILURE 3)", () => 
     writeRunDir(runRoot, ["home", "personal-information"]);
 
     const siteId = `bootstrap-warn-quiet-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     const result = run(runRoot, siteId);
     const out = `${result.stdout}\n${result.stderr}`;

@@ -10,6 +10,10 @@ import {
   type FoldReturnSpec,
   indexStateValues,
 } from "@/scripts/recon-generate";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
@@ -129,7 +133,7 @@ describe("emitContractTs — needsFoldHttpClient under gql=true/gqlQuery=null wi
     expect(source).not.toContain("createGraphqlClient");
     expect(source).toContain("createHttpClient");
 
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(join(siteOutDir, "flows"), { recursive: true });
     writeFileSync(join(siteOutDir, "contract.ts"), source);
     writeFileSync(
@@ -161,6 +165,7 @@ describe("emitContractTs — needsFoldHttpClient under gql=true/gqlQuery=null wi
           incremental: false,
           tsBuildInfoFile: null,
           paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
             "@/*": ["./src/*"],
             "@test/*": ["./test/*"],
             "@enricai/barnacle/*": ["./src/*"],

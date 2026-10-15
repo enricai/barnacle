@@ -135,7 +135,9 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
     const largeSet = buildLargeSyntheticCaptureSet(800);
     const urlSpy = spyOnURLConstructor();
 
-    isZeroVarianceRepeatCapture(largeSet[1]!, largeSet);
+    const [, firstCandidate] = largeSet;
+    if (!firstCandidate) throw new Error("synthetic capture set is empty");
+    isZeroVarianceRepeatCapture(firstCandidate, largeSet);
     const callsAfterFirstLookup = urlSpy.count();
     // Building the index parses every capture's URL at most twice
     // (endpointOrigin + pathname parse), so the very first lookup against a
@@ -162,8 +164,10 @@ describe("captureEndpointIndexCache — equivalence with the pre-rewrite linear 
     const largeSet = buildLargeSyntheticCaptureSet(1000);
     const urlSpy = spyOnURLConstructor();
 
+    const [primingCandidate] = largeSet;
+    if (!primingCandidate) throw new Error("synthetic capture set is empty");
     // Prime the index.
-    isZeroVarianceRepeatCapture(largeSet[0]!, largeSet);
+    isZeroVarianceRepeatCapture(primingCandidate, largeSet);
     const afterPriming = urlSpy.count();
 
     const firstBatchCandidates = largeSet.slice(1, 51);

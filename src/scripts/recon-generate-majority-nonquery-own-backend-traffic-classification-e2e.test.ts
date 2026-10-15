@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * `isGraphQL()`'s vote denominator must weigh genuinely-parsed GraphQL
@@ -85,7 +86,7 @@ function runGenerate(
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   return { stdout: result.stdout, status: result.status };
 }
@@ -130,7 +131,7 @@ describe("isGraphQL() — majority non-.query own-backend traffic vs. a minority
     }
 
     const siteId = `majority-nonquery-rest-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
     const { stdout, status } = runGenerate(runRoot, siteId, siteOutDir);
 

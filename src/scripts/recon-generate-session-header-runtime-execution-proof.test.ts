@@ -10,6 +10,7 @@ import { z } from "zod/v4";
 import { omitHeaderCaseInsensitive } from "@/lib/case-insensitive-headers";
 import { mergeFoldedPrimaryBodies } from "@/lib/merge-folded-primary-bodies";
 import { createHttpClient } from "@/scraper/http-client";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   extractExecuteHttpBodyFromContract,
   stripEmitterTypeAssertions,
@@ -195,7 +196,7 @@ describe("recon-generate emitted executeHttp — a captured Cookie jar and a vol
     writeRunDir(runRoot, fixtureCaptures());
 
     const siteId = `session-header-runtime-execution-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -215,7 +216,7 @@ describe("recon-generate emitted executeHttp — a captured Cookie jar and a vol
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

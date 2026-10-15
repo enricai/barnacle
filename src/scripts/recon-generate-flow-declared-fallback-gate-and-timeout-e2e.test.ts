@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { HttpBotChallengeError, HttpSchemaError } from "@/scraper/errors";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
 /**
@@ -103,7 +104,7 @@ describe("recon-flow.json-declared browserFallbackGate/httpTimeoutMs — generat
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot);
 
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -117,7 +118,7 @@ describe("recon-flow.json-declared browserFallbackGate/httpTimeoutMs — generat
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 

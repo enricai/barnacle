@@ -14,6 +14,7 @@ import {
   indexStateValues,
   resolveFoldPlan,
 } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   extractExecuteHttpBodyFromContract,
   stripEmitterTypeAssertions,
@@ -670,7 +671,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
     const runRoot = join(workDir, "run");
     const REPO_ROOT = join(__dirname, "..", "..");
     const siteId = `gql-nonjoin-unresolvable-run${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     try {
       mkdirSync(join(runRoot, "graphql"), { recursive: true });
       mkdirSync(join(runRoot, "replays"), { recursive: true });
@@ -709,7 +710,7 @@ describe("GraphQL-primary + captured GET REST drill-down foldReturn — extracti
           "ts",
           "--force",
         ],
-        { cwd: REPO_ROOT, encoding: "utf8" }
+        { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
       );
       const out = `${result.stdout}\n${result.stderr}`;
 

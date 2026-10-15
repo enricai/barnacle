@@ -16,6 +16,10 @@ import {
   indexStateValues,
 } from "@/scripts/recon-generate";
 import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
+import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
 } from "@/scripts/recon-generate-execute-http-harness.test-helper";
@@ -206,9 +210,9 @@ describe("recon-generate foldReturn declared joinFields + 2-hop drill chain — 
     // (1) typecheck: the generated contract.ts must compile with zero
     // diagnostics against its own discovered schema, including the optional
     // nested `promo` field that's genuinely absent from every real row.
-    // Written under src/sites/ (like the CLI itself would) since tsc's
+    // Written under the in-repo generate cwd (see RECON_GENERATE_CWD) since tsc's
     // configured rootDir rejects files outside the repo tree.
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(join(siteOutDir, "flows"), { recursive: true });
     const contractFile = join(siteOutDir, "contract.ts");
     writeFileSync(contractFile, contract);
@@ -241,12 +245,13 @@ describe("recon-generate foldReturn declared joinFields + 2-hop drill chain — 
           incremental: false,
           tsBuildInfoFile: null,
           paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
             "@/*": ["./src/*"],
             "@test/*": ["./test/*"],
             "@enricai/barnacle/*": ["./src/*"],
           },
         },
-        include: [`src/sites/${siteId}/**/*.ts`],
+        include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
       })
     );
     const typecheck = execFileSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {

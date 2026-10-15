@@ -7,6 +7,7 @@ import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
@@ -96,7 +97,7 @@ describe("recon-generate: submit-manifest.json under-coverage collapses a real m
     );
 
     const siteId = `recon-manifest-undercoverage-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     // A single submitStep:true step is the natural (and, per the report, wrong)
     // way to declare a one-button checkout flow — the flow itself never claims
@@ -116,7 +117,7 @@ describe("recon-generate: submit-manifest.json under-coverage collapses a real m
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import type { Capture } from "@/scripts/recon-shared";
 
 /**
@@ -89,7 +90,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -100,7 +101,7 @@ describe("recon-generate CLI — mutually exclusive facet array shapes", () => {
     writeRunDir(runRoot);
 
     const siteId = `exclusive-facet-shapes-run${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * End-to-end pin at the CLI boundary: a flow-authored `displayName` in
@@ -56,7 +57,7 @@ function run(runRoot: string, siteId: string, emit: "ts" | "config"): ReturnType
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", emit, "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -67,7 +68,7 @@ describe("recon-generate CLI e2e: flow-authored displayName reaches both emit pa
     writeRunDir(runRoot);
 
     const siteId = `recon-displayname-ts-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -87,7 +88,7 @@ describe("recon-generate CLI e2e: flow-authored displayName reaches both emit pa
     writeRunDir(runRoot);
 
     const siteId = `recon-displayname-config-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
@@ -109,7 +110,7 @@ describe("recon-generate CLI e2e: flow-authored displayName reaches both emit pa
     writeRunDir(runRoot);
 
     const siteId = `recon-displayname-omit-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
