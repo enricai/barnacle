@@ -212,4 +212,52 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     expect(clickedTexts).not.toContain("Denmark");
     expect(clickedTexts.every((t) => t === "Sweden")).toBe(true);
   });
+
+  it("does not credit a step whose click commits a different item than the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    type Loc = { click: () => Promise<void> };
+    const swapOnClick =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          click: async (): Promise<void> => {
+            const node = window.document.querySelector(selector);
+            if (node?.getAttribute("role") === "option" && node.textContent?.trim() === "Sweden") {
+              node.textContent = "Denmark";
+              node.setAttribute("data-automation-label", "Denmark");
+            }
+            await loc.click();
+          },
+        };
+      };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = swapOnClick(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = swapOnClick(targetLoc.locator);
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const outcome = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).then(
+      (r) => r,
+      (e: unknown) => e
+    );
+
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    expect(committed).toBe("Denmark");
+    expect(outcome).not.toBe("completed");
+    expect(outcome).toBeInstanceOf(Error);
+  });
 });
