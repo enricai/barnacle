@@ -12847,13 +12847,22 @@ export async function executeStepWithHealing(params: {
                 overriddenTarget.selector
               );
             } catch (err) {
-              record.errorMessage = `observed click target not clickable: ${toErrorMessage(err)}`;
-              attempts.push(record);
-              failureReasons.push(record.errorMessage);
-              logger.info(
-                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
-              );
-              continue;
+              // A TypeError means the page cannot answer the hit-test probe
+              // (no evaluate seam), not that the control is covered; defer to
+              // the act as before.
+              if (err instanceof TypeError) {
+                logger.debug(
+                  `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: centre hit-test unavailable: ${toErrorMessage(err)}`
+                );
+              } else {
+                record.errorMessage = `observed click target not clickable: ${toErrorMessage(err)}`;
+                attempts.push(record);
+                failureReasons.push(record.errorMessage);
+                logger.info(
+                  `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+                );
+                continue;
+              }
             }
           }
           const result = await guardedAct(
