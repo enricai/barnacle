@@ -15404,7 +15404,7 @@ function escapeForTemplateLiteral(segment: string): string {
  * own choice so the browser-flow and HTTP-body emitters never disagree on
  * which quoted span is the persona value.
  */
-function buildStepInstructionExpr(
+export function buildStepInstructionExpr(
   instruction: string,
   field: string | null,
   capturedFallback = false
