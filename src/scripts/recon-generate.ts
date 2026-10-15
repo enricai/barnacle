@@ -7632,7 +7632,7 @@ function parseBodyLeafValues(requestPostData: string | null): string[] {
  * cannot skew the pool size away from the count of facets awaiting a value.
  */
 function collectNewlyAppearingRequestValueTransitions(
-  actions: readonly ActionStep[],
+  actions: readonly Pick<ActionStep, "capture">[],
   explainedLiterals: readonly string[] = []
 ): string[][] {
   const seenGlobally = new Set<string>();
@@ -7710,7 +7710,7 @@ function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = f
  */
 export function resolveRecurringNavigateToFacets(
   declared: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[]
+  actions: readonly Pick<ActionStep, "capture">[]
 ): NavigateToFacetBinding[] {
   const appearsAnywhere = (value: string): boolean =>
     actions.some(
@@ -7775,7 +7775,7 @@ export function resolveRecurringNavigateToFacets(
  */
 function findKindKeyedLiteral(
   facet: NavigateToFacetBinding,
-  actions: readonly ActionStep[]
+  actions: readonly Pick<ActionStep, "capture">[]
 ): string | undefined {
   const byTier = new Map<number, Set<string>>();
   const sameMonth = new Set<string>();
@@ -7841,7 +7841,7 @@ function findKindKeyedLiteral(
  */
 function correlateUnreachableNavigateToFacets(
   facets: readonly NavigateToFacetBinding[],
-  actions: readonly ActionStep[],
+  actions: readonly Pick<ActionStep, "capture">[],
   explainedLiterals: readonly string[]
 ): ReadonlyMap<string, string> | null {
   const transitions = collectNewlyAppearingRequestValueTransitions(actions, explainedLiterals);
@@ -14557,9 +14557,11 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // the same captured request-variables object the signal was itself
   // detected from (see paginationOperationIdentity above) — the default
   // `{ q: payload.query }` REST body has no skip/count container to advance.
+  // A single-primary flow compiles no action steps, so its captured traffic
+  // is the only place a declared facet's kind-suffixed element can be found.
   const navigateToFacets = resolveRecurringNavigateToFacets(
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
-    actionSteps
+    actionSteps.length > 0 ? actionSteps : allCaptures.map((capture) => ({ capture }))
   );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
