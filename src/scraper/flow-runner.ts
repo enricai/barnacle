@@ -8140,7 +8140,8 @@ async function tryPromptSelectorPrimitive(params: {
     // Enter keydown; filter-as-you-type widgets already name the option here.
     for (
       let submit = 0;
-      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS && !promptOptionsNameOption(optionsFiltered, option);
+      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS &&
+      !promptOptionsNameOption(optionsFiltered, option);
       submit++
     ) {
       logger.info(
@@ -8155,11 +8156,8 @@ async function tryPromptSelectorPrimitive(params: {
         break;
       }
       await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-      optionsFiltered = await pollEnumerate<FilteredRead>(
-        page,
-        target,
-        enumerateOptionsExpr,
-        (r) => promptOptionsNameOption(r, option)
+      optionsFiltered = await pollEnumerate<FilteredRead>(page, target, enumerateOptionsExpr, (r) =>
+        promptOptionsNameOption(r, option)
       );
     }
     if (!optionsFiltered?.optionsPresent) {
