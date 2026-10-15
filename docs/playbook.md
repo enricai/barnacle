@@ -108,7 +108,7 @@ Total runtime: 20–40 minutes for a typical flow, fully unattended.
 
 `createBrowserSession()` (`src/scraper/session.ts`) constructs Stagehand with
 `serverCache: false` on Browserbase (the cache keys on instruction text, and
-instructions carry applicant values, so it never hits on value-bearing steps
+instructions carry request values, so it never hits on value-bearing steps
 and would only persist those values server-side) and
 `selfHeal: false` — Stagehand's built-in heal only catches Playwright throws,
 not silent semantic misses ("clicked the wrong thing, returned success"),

@@ -312,7 +312,7 @@ export async function createBrowserbaseBrowserSession(
           } as ModelConfiguration),
       llmClient,
       // Off: the cache keys on instruction text, and flow instructions carry
-      // applicant values, so it never hits on value-bearing steps and would
+      // request values, so it never hits on value-bearing steps and would
       // only persist those values on Browserbase's side.
       serverCache: false,
       selfHeal: false,

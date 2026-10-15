@@ -34,6 +34,7 @@ vi.mock("@/lib/telemetry/s3-sink", () => ({
   bufferSubmissionLine: vi.fn(),
 }));
 
+import { registerRedactionPolicy, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
 import {
   captureSubmissionEnvelope,
@@ -98,6 +99,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  resetSensitiveValuesForTests();
   vi.clearAllMocks();
 });
 
@@ -154,7 +156,8 @@ describe("captureSubmissionEnvelope", () => {
     expect(parsed.auditPayload).toBeNull();
   });
 
-  it("keeps allowlisted inbound identifiers and the audit payload verbatim", async () => {
+  it("keeps the plugin's declared persistKeys and the audit payload verbatim", async () => {
+    registerRedactionPolicy("ats-c", { persistKeys: ["jobId", "ClickUrl"] });
     const input = makeSuccessInput();
     await captureSubmissionEnvelope(input, { sinkPath });
 
@@ -167,31 +170,49 @@ describe("captureSubmissionEnvelope", () => {
     expect(parsed.auditPayload).toEqual(input.auditPayload);
   });
 
-  it("never persists applicant fields or résumé bytes from the inbound payload", async () => {
+  it("records undeclared keys by name only, never their values", async () => {
+    registerRedactionPolicy("ats-c", { persistKeys: ["orderId", "batch"] });
     const input = {
       ...makeSuccessInput(),
       inboundPayload: {
-        JobId: "J-1",
-        scenario: "happy-path",
-        FirstName: "Sentinelfirst",
-        Email: "sentinel-pii@example.com",
-        Phone: "+15551234567",
-        Answers: { q1: "Yes" },
-        Resume: Buffer.from("resume-bytes-sentinel"),
-        ResumeBase64: Buffer.from("resume-bytes-sentinel").toString("base64"),
-        Empty: "",
+        orderId: "ORD-1",
+        batch: "nightly",
+        fullName: "Sentinelfirst",
+        contactEmail: "sentinel-pii@example.com",
+        phone: "+15551234567",
+        choices: { q1: "Yes" },
+        attachment: Buffer.from("attachment-bytes-sentinel"),
+        attachmentBase64: Buffer.from("attachment-bytes-sentinel").toString("base64"),
+        empty: "",
       },
     };
     await captureSubmissionEnvelope(input, { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8");
-    expect(line).not.toMatch(/Sentinelfirst|sentinel-pii|5551234567|resume-bytes|cmVzdW1l/);
+    expect(line).not.toMatch(/Sentinelfirst|sentinel-pii|5551234567|attachment-bytes|YXR0YWNo/);
     const parsed = JSON.parse(line.trim()) as SubmissionEnvelopeSample;
     expect(parsed.inboundPayload).toEqual({
-      JobId: "J-1",
-      scenario: "happy-path",
-      fieldsPresent: ["Answers", "Email", "FirstName", "Phone", "Resume", "ResumeBase64"],
+      orderId: "ORD-1",
+      batch: "nightly",
+      fieldsPresent: [
+        "attachment",
+        "attachmentBase64",
+        "choices",
+        "contactEmail",
+        "fullName",
+        "phone",
+      ],
     });
+  });
+
+  it("persists no values for a plugin that declared no policy", async () => {
+    const input = makeSuccessInput();
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const parsed = JSON.parse(
+      fs.readFileSync(sinkPath, "utf-8").trim()
+    ) as SubmissionEnvelopeSample;
+    expect(parsed.inboundPayload).toEqual({ fieldsPresent: ["ClickUrl", "jobId"] });
   });
 
   it("line is terminated by a newline character", async () => {

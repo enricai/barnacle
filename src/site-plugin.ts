@@ -20,6 +20,7 @@ import type { BrowserSession } from "@/scraper/session";
 import type { BrowserbaseSessionCreateParams } from "@/scraper/session-shared";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 import type { Logger } from "@/types/logging";
+import type { RedactionPolicy } from "@/types/pii-redaction";
 
 export type { BeaconOutcomeInput } from "@/lib/telemetry/beacon-capture";
 
@@ -150,6 +151,13 @@ export interface SitePluginMeta {
    * loader always cascades, unconditionally.
    */
   browserFallbackGate?: boolean | ((error: ScraperError) => boolean);
+  /**
+   * How this plugin's request-body fields are redacted from logs, telemetry
+   * and error replies, and which are persisted in submission telemetry. Only
+   * the plugin knows what its fields mean. Absent means fail-closed: every
+   * string field is redacted as a literal and none is persisted.
+   */
+  redaction?: RedactionPolicy;
   /**
    * Timeout (ms) for the browser fallback session specifically, applied only
    * when a hot-path failure cascades into it. Overrides `taskTimeoutMs` for

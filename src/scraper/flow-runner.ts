@@ -432,8 +432,8 @@ export function wireSignalCapture(
       }
     }
 
-    // Query strings carry form GETs and analytics beacons (often applicant
-    // fields); origin + path is enough to follow the request sequence.
+    // Query strings carry form GETs and analytics beacons (often form-field
+    // values); origin + path is enough to follow the request sequence.
     logger.info(
       `captured [${capture.status}] ${capture.method} ${req.url.split("?")[0]} → ${filename}`
     );
@@ -10356,7 +10356,7 @@ export function spliceEmailStepFillValue(step: string, code: string): string {
 
 /**
  * Masks a typed/selected value for logs and attempt diagnostics. Values are
- * applicant answers (or the emailStep-extracted single-use code spliced into
+ * caller-supplied answers (or the emailStep-extracted single-use code spliced into
  * the step, see {@link spliceEmailStepFillValue}), so only their shape is
  * kept — enough to debug format mismatches, never the value itself.
  */

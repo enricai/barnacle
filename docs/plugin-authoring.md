@@ -148,26 +148,46 @@ config-only manifest reaches this only via `spec.httpModule`, and — since it
 never gets `extractJoinKeys` — its line only outranks core's own
 `TrackingUrl` fire when none was present.
 
-## Applicant data in logs and telemetry
+## Sensitive request data (`meta.redaction`)
 
 Core registers each request's body (`/run` and `meta.extraRoutes`) for the
-duration of the run, and every log line, telemetry record and error reply is
-scrubbed of those values (`<Email>`, `<FirstName>`, …). Passwords from
-`generateThrowawayPassword()` register themselves.
+duration of the run and scrubs those values from every log line, telemetry
+record and error reply (`<fieldName>`). Only the plugin knows what its fields
+mean, so it declares how each top-level key is treated:
+
+```ts
+meta: {
+  // ...
+  redaction: {
+    persistKeys: ["orderId"],   // not sensitive; kept verbatim in submission telemetry
+    publicKeys: ["searchTerm"], // not sensitive; never scrubbed, not persisted
+    skipKeys: ["attachment"],   // binary/encoded content; never matched
+    wordKeys: ["fullName"],     // matched case-insensitively on word boundaries
+    digitKeys: ["phone"],       // matched by its digits in any formatting
+  },
+},
+```
+
+Any key the policy doesn't list is scrubbed as an exact literal and is not
+persisted, so a plugin that declares nothing is safe by default. Submission
+telemetry (`inboundPayload`) keeps only `persistKeys` values plus the names of
+the other fields present — declare any field your own tooling reads back from
+it. Config-only manifests declare the same object as `spec.redaction`.
 
 Two cases core cannot see:
 
 - **Secrets your plugin mints itself** — e.g. an account password derived from a
-  server secret. Register it before use:
+  server secret. Register it before use (`generateThrowawayPassword()` already
+  does):
 
   ```ts
   import { registerSecretValue } from "@enricai/barnacle/lib/pii-redaction";
 
-  const password = derivePassword(payload.Email);
+  const password = derivePassword(accountId);
   registerSecretValue(password);
   ```
 
-- **Short answers** (`Yes`, `No`, EEO choices) are too common to register, so
+- **Short values** (`Yes`, `No`, single choices) are too common to register, so
   don't log chosen values. Log `maskValueShape(value)` (`Aaa`, `99/99/9999`)
   when the format matters for debugging.
 

@@ -147,6 +147,15 @@ describe("buildConfigPlugin", () => {
     expect(typeof plugin.executeHttp).toBe("function");
   });
 
+  it("carries spec.redaction into meta.redaction, and leaves it undefined when omitted", async () => {
+    const redaction = { persistKeys: ["orderId"], wordKeys: ["fullName"], digitKeys: ["phone"] };
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).redaction = redaction;
+
+    expect((await buildConfigPlugin(manifest)).meta.redaction).toEqual(redaction);
+    expect((await buildConfigPlugin(baseManifest())).meta.redaction).toBeUndefined();
+  });
+
   it("leaves meta.browserFallbackGate undefined when the manifest omits spec.browserFallbackGate", async () => {
     const plugin = await buildConfigPlugin(baseManifest());
     expect(plugin.meta.browserFallbackGate).toBeUndefined();
