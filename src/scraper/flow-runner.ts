@@ -8801,6 +8801,7 @@ async function tryPromptSelectorPrimitive(params: {
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
       try {
+        await target.locator(`[${PROMPT_OPTION_MARK_ATTR}-search="1"]`).first().focus();
         await sendTrustedEnter(page);
       } catch (err) {
         logger.info(
@@ -8888,16 +8889,27 @@ function normPromptOptionText(s: string): string {
   return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
+const PROMPT_PLACEHOLDER_RE = /^(no\b|nothing\b|none$|loading|searching|type to search|\.\.\.)/;
+
 /**
- * Detects a list that still needs a submit: true only when some option's text
- * equals the requested option, so any placeholder wording is treated alike.
+ * Detects whether the list already names the requested option, so the submit
+ * decision never fires Enter at a widget that searches as you type. Looser than
+ * commitPromptOption's exact detMatch on purpose: a rendered label that differs
+ * by a prefix or suffix still means the list answered the query. Placeholder
+ * entries never count, even when they echo the requested text.
  */
 function promptOptionsNameOption(
   result: { options?: { text: string }[] } | null | undefined,
   option: string
 ): boolean {
   const want = normPromptOptionText(option);
-  return (result?.options ?? []).some((o) => normPromptOptionText(o.text) === want);
+  if (want === "") return true;
+  return (result?.options ?? []).some((o) => {
+    const text = normPromptOptionText(o.text);
+    if (text === "" || PROMPT_PLACEHOLDER_RE.test(text)) return false;
+    return text.includes(want) || want.includes(text);
+  });
 }
 
 /** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
