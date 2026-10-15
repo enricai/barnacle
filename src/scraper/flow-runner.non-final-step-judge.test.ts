@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { stepJudge, submitJudge } = vi.hoisted(() => ({
+const { stepJudge, submitJudge, settle } = vi.hoisted(() => ({
   stepJudge: vi.fn(),
   submitJudge: vi.fn(),
+  settle: vi.fn(),
 }));
+
+vi.mock("@/scraper/click-settle", async (orig) => {
+  const actual = await orig<typeof import("@/scraper/click-settle")>();
+  settle.mockImplementation(actual.settleAfterClick);
+  return { ...actual, settleAfterClick: settle };
+});
 
 vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
   verifyStepAdvancedWithLLM: stepJudge,
@@ -86,11 +93,9 @@ describe("judgeStepOutcome", () => {
 
 describe("judgeStepOutcome non-final settle baseline", () => {
   it("seeds the settle with the pre-click signature", async () => {
-    const click = await import("@/scraper/click-settle");
-    const spy = vi.spyOn(click, "settleAfterClick");
+    settle.mockClear();
     stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
     await judgeStepOutcome(params(false, ["a", "b", "b"]));
-    expect(spy.mock.calls[0]?.[4]).toBe("12:Create account");
-    spy.mockRestore();
+    expect(settle.mock.calls[0]?.[4]).toBe("12:Create account");
   });
 });
