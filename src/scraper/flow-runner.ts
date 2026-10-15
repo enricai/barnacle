@@ -971,7 +971,8 @@ const CLICK_INTENT_RE = /\bclick\b/i;
 async function centreObservedClickTarget(
   target: FrameTarget,
   selector: string,
-  onUnavailable: (message: string) => void
+  onUnavailable: (message: string) => void,
+  deferWhenMissing = false
 ): Promise<string | null> {
   try {
     await centreSelectorForClick(target, selector);
@@ -981,6 +982,12 @@ async function centreObservedClickTarget(
     // evaluate seam), not that the control is covered; defer to the act.
     if (err instanceof TypeError) {
       onUnavailable(`centre hit-test unavailable: ${toErrorMessage(err)}`);
+      return null;
+    }
+    // Stagehand's own resolution of a natural-language act can differ from the
+    // observe result, so an unresolvable element there is the act's to judge.
+    if (deferWhenMissing && toErrorMessage(err).includes("is not in the document")) {
+      onUnavailable(`centre target unresolved: ${toErrorMessage(err)}`);
       return null;
     }
     return `observed click target not clickable: ${toErrorMessage(err)}`;
@@ -12209,7 +12216,8 @@ export async function executeStepWithHealing(params: {
         frameTarget ?? mainFrameTarget(page),
         first.selector,
         (msg) =>
-          logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`)
+          logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`),
+        true
       );
       if (failure) throw new Error(failure);
     };
