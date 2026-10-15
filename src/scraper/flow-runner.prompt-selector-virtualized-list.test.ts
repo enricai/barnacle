@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { StepVerificationError } from "@/scraper/errors";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
@@ -258,6 +259,6 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     )?.textContent;
     expect(committed).toBe("Denmark");
     expect(outcome).not.toBe("completed");
-    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome).toBeInstanceOf(StepVerificationError);
   });
 });
