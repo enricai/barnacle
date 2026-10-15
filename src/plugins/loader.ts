@@ -392,6 +392,10 @@ export async function dispatch<TResult>(
   const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
+  // dispatch() is also called directly (integration runners, consumer
+  // tests), not only through registerRoutes; submission telemetry looks the
+  // policy up by siteId, so record it here too.
+  registerRedactionPolicy(plugin.meta.siteId, plugin.meta.redaction);
   registerSensitiveValues(context.requestId, payload, plugin.meta.redaction);
 
   try {
