@@ -52,6 +52,13 @@ Each captured sample (`LlmCallSample`, defined in
 `"schema-validation-failed"`, `"response-empty"`, or `"exception-other"` —
 `null` on success.
 
+Captured content is scrubbed before it is written: every value registered for
+the run (the request body per the plugin's `meta.redaction` policy, and
+generated secrets) is replaced with a `<fieldName>` placeholder in
+`userContent`, `responseContent` and `errorMessage`. The judge and self-heal
+skills therefore read and replay prompts with those placeholders in place of
+the original values.
+
 ### Call types
 
 The four LLM call sites Barnacle owns are named by constants in
