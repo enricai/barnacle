@@ -29,7 +29,14 @@ export const UPLOAD_AFFORDANCE_MATCHER_EXPR = `((raw) => {
   return new RegExp(${JSON.stringify(POSITIVE_SOURCE)}).test(t);
 })`;
 
-const DROP_ZONE_ATTRIBUTES = ["data-testid", "data-test", "data-test-id", "data-qa", "data-cy", "id"];
+const DROP_ZONE_ATTRIBUTES = [
+  "data-testid",
+  "data-test",
+  "data-test-id",
+  "data-qa",
+  "data-cy",
+  "id",
+];
 
 /**
  * Single drop-zone selector list shared by the render-gate and the synthetic
