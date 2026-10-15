@@ -5204,8 +5204,10 @@ async function waitForUploadNetworkSignal(params: {
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
+  /** Ends the wait early (returning false) once another resolution path, e.g. an intercepted chooser, is ready to run. */
+  stopWhen?: () => boolean;
 }): Promise<boolean> {
-  const { page, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, fixture, logger, signalCounter, recentCaptureMeta, stopWhen } = params;
   const networkCountBefore = signalCounter.n;
   const captureMetaCountBefore = recentCaptureMeta.length;
   const startedAt = performance.now();
@@ -5224,6 +5226,7 @@ async function waitForUploadNetworkSignal(params: {
         return true;
       }
     }
+    if (stopWhen?.()) return false;
     await page.waitForTimeout(UPLOAD_NETWORK_POLL_INTERVAL_MS);
   }
   return false;
@@ -5575,9 +5578,18 @@ export async function surfaceAndUpload(params: {
   try {
     if (!(await clickUploadAffordance(page, target, logger))) return false;
     // Strategy 0: some MUI widgets XHR straight to attachment_upload_url on
-    // click, no chooser, no input.
+    // click, no chooser, no input. Stops waiting the moment a chooser is
+    // intercepted — that widget wants the file via the chooser, so burning the
+    // full network window first only delays Strategy B.
     if (
-      await waitForUploadNetworkSignal({ page, fixture, logger, signalCounter, recentCaptureMeta })
+      await waitForUploadNetworkSignal({
+        page,
+        fixture,
+        logger,
+        signalCounter,
+        recentCaptureMeta,
+        stopWhen: () => chooserBackendNodeId !== null,
+      })
     ) {
       logger.info("upload primitive: resolved via click → immediate upload POST");
       return true;
