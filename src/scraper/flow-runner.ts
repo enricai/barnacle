@@ -1304,7 +1304,7 @@ const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { ht
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
-  label: string;
+  label?: string;
   value: string;
 }
 
@@ -6034,9 +6034,9 @@ export interface SegmentedDateGroup {
   /** Section heading/ancestor text and the group's own label combined (e.g. "Work Experience 1 From"). */
   context: string;
   /** The group's own label only (its fieldset legend, form-field label, aria-label or segment labelledby text), e.g. "From". */
-  label: string;
+  label?: string;
   /** Heading/ancestor text surrounding the group, excluding its own label, e.g. "Work Experience 1". */
-  section: string;
+  section?: string;
   /** True for a per-wrapper subset of a larger container's segments; never picked on width alone. */
   nested?: boolean;
 }
@@ -6183,7 +6183,11 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     for (let depth = 0; depth < 4 && node && node !== document.body; depth++, node = node.parentElement) {
       parts.push(namedBy(node), headingSibling(node));
     }
-    return parts.filter(Boolean).join(" ");
+    return Array.from(new Set(parts.filter(Boolean))).join(" ");
+  };
+  const ownCaption = (box) => {
+    const caption = Array.from(box.querySelectorAll("label,legend")).find((l) => !l.querySelector("input,[role='spinbutton']") && !(l.getAttribute("for") && box.querySelector("[id='" + l.getAttribute("for") + "']")));
+    return caption ? norm(caption.textContent) : "";
   };
   const formFieldOf = (box) => box.closest("[data-automation-id^='formField-']");
   const formFieldLabel = (field) => {
@@ -6219,7 +6223,7 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
     const field = formFieldOf(box);
-    const own = namedBy(box) || (field ? formFieldLabel(field) : "") || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const own = namedBy(box) || (field ? formFieldLabel(field) : "") || ownCaption(box) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
     const section = sectionOf(box);
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
@@ -7865,7 +7869,7 @@ export type RadioGroupCandidate = {
   /** Index into the DOM's radio-group list (stable across the enumerate/apply pair). */
   gi: number;
   /** The group's legend/label text; empty string when the group is unlabeled. */
-  label: string;
+  label?: string;
   /**
    * The group's radio options. `ri` is the raw radio DOM index within the group;
    * `id`/`xpath` are stable locator hints threaded to the trusted-click commit
@@ -9658,7 +9662,7 @@ export async function verifyDomEffect(
 export interface InvalidFormControl {
   /** Human-readable label associated with the field — element's nearest
    * `<label>` text, or the value of `aria-label` / `data-id` / `name`. */
-  label: string;
+  label?: string;
   /** Compact class signature naming the framework-specific marker that
    * matched, e.g. `ng-invalid ng-touched`. Helps the LLM correlate
    * "user-interacted + still invalid" patterns. */
