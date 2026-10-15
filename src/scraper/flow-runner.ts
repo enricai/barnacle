@@ -3327,6 +3327,9 @@ export async function buildSubmitJudgeStepContext(params: {
   };
 }
 
+const STEP_REJUDGE_DELAY_MS = 5000;
+const STEP_REJUDGE_COMPARE_CHARS = 1200;
+
 type SubmitVerdict = z.infer<typeof SUBMIT_VERDICT_SCHEMA>;
 
 /**
@@ -3362,20 +3365,38 @@ export async function judgeStepOutcome(params: {
   await settleAfterClick(params.page, params.signalCounter, params.preNetworkCount, () =>
     probeVisibleTextForJudge(target)
   );
-  const afterText = await probeVisibleTextForJudge(target);
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText =
     colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1);
-  const verdict = await verifyStepAdvancedWithLLM({
-    client,
-    input: {
-      stepInstruction: step,
-      beforeText,
-      afterText,
-      invalidMarkerCount: params.submitInput.invalidMarkerCount,
-    },
-    captureFn,
-  });
+  const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
+    verifyStepAdvancedWithLLM({
+      client,
+      input: {
+        stepInstruction: step,
+        beforeText,
+        afterText,
+        invalidMarkerCount: params.submitInput.invalidMarkerCount,
+      },
+      captureFn,
+    });
+  const rejudgeIfTextMoved = async (
+    first: Awaited<ReturnType<typeof judgeText>>,
+    judgedText: string
+  ): Promise<Awaited<ReturnType<typeof judgeText>>> => {
+    if (first === null || first.advanced) return first;
+    await params.page.waitForTimeout(STEP_REJUDGE_DELAY_MS);
+    const laterText = await probeVisibleTextForJudge(target);
+    if (
+      laterText.slice(0, STEP_REJUDGE_COMPARE_CHARS) ===
+      judgedText.slice(0, STEP_REJUDGE_COMPARE_CHARS)
+    ) {
+      return first;
+    }
+    return (await judgeText(laterText)) ?? first;
+  };
+  const afterText = await probeVisibleTextForJudge(target);
+  const firstVerdict = await judgeText(afterText);
+  const verdict = await rejudgeIfTextMoved(firstVerdict, afterText);
   if (verdict === null) return null;
   return verdict.advanced
     ? {
