@@ -39,6 +39,8 @@ import { getLogger } from "@/lib/logging";
 import {
   detokenize,
   maskValueShape,
+  redactSecrets,
+  registerSecretValue,
   tokenizeSensitiveValues,
   unresolvedTokens,
 } from "@/lib/pii-redaction";
@@ -11737,7 +11739,7 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
       );
       throw new StepVerificationError(
-        `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
         "backend-error-unrecoverable"
       );
     }
@@ -11837,7 +11839,7 @@ export async function executeStepWithHealing(params: {
         fieldValuesAtFailure,
       }) ?? null;
     throw new StepVerificationError(
-      `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
+      `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
       "probe-absent"
     );
   }
@@ -14979,7 +14981,7 @@ export async function executeStepWithHealing(params: {
     );
   }
   throw new StepVerificationError(
-    `${formatStepPrefix(stepIndex, totalSteps)} (${step.slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
+    `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
     phantomClickAfterAttempt1 ? "phantom-click-exhausted" : "cascade-exhausted"
   );
 }
@@ -15110,6 +15112,14 @@ export interface RunHealingFlowDeps {
    */
   maxFlowMs?: number;
   /**
+   * Credentials the steps type in literally (e.g. a stable account password
+   * spliced into "Fill in the Password field with '…'"). Registered before the
+   * first step so they reach the page but never an LLM prompt, a log line,
+   * telemetry or an error message — letting a plugin reuse a password a later
+   * run must sign in with, which an unregistered literal would leak.
+   */
+  secrets?: readonly string[];
+  /**
    * Teardown death signal from the session that built {@link stagehand}/
    * {@link page} (see `BrowserSession.deathSignal`). When supplied, each
    * step is raced against it via {@link raceAgainstTeardown} so a
@@ -15152,6 +15162,7 @@ export interface RunHealingFlowDeps {
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
+  for (const secret of deps.secrets ?? []) registerSecretValue(secret);
   const counter = { n: 0 };
   // Rebound when a step's click opens a new tab, so later steps drive that page.
   let activePage = page;

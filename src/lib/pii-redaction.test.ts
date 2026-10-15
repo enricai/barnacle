@@ -9,6 +9,7 @@ import {
   redactionPolicyFor,
   redactPii,
   redactPiiDeep,
+  redactSecrets,
   registerRedactionPolicy,
   registerSecretValue,
   registerSensitiveValues,
@@ -128,6 +129,23 @@ describe("redactPii", () => {
   it("ignores secrets too short to match safely", () => {
     registerSecretValue("ab");
     expect(redactPii("ab")).toBe("ab");
+  });
+});
+
+describe("redactSecrets", () => {
+  it("replaces registered secrets but keeps the applicant's ordinary values", () => {
+    registerSensitiveValues("run-1", PAYLOAD, POLICY);
+    registerSecretValue("Pw-stable-123!");
+    expect(
+      redactSecrets("Ann Sentinelson typed 'Pw-stable-123!' into Password, then 'Pw-stable-123!'")
+    ).toBe("Ann Sentinelson typed '<Secret>' into Password, then '<Secret>'");
+  });
+
+  it("is a no-op when no secret is registered", () => {
+    registerSensitiveValues("run-1", PAYLOAD, POLICY);
+    expect(redactSecrets("Fill in Name with 'Ann Sentinelson'")).toBe(
+      "Fill in Name with 'Ann Sentinelson'"
+    );
   });
 });
 
