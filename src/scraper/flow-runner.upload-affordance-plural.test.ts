@@ -80,6 +80,7 @@ describe("surfaceAndUpload with a lazily-mounted input behind a 'Select files' b
     const setInputFiles = vi.fn().mockResolvedValue(undefined);
     const evaluate = vi.fn((expr: unknown): Promise<unknown> => {
       const e = String(expr);
+      if (e.includes("scrollIntoView")) return Promise.resolve({ state: "hit" });
       if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
       if (e.includes("el.files.length > 0")) return Promise.resolve(dom.inputMounted() ? 1 : 0);
       return Promise.resolve(run(e));
@@ -87,7 +88,7 @@ describe("surfaceAndUpload with a lazily-mounted input behind a 'Select files' b
     const target = {
       frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
       evaluate,
-      locator: () => ({ first: () => ({ setInputFiles, click: dom.trustedClick }) }),
+      locator: () => ({ click: dom.trustedClick, first: () => ({ setInputFiles }) }),
       url: () => Promise.resolve("https://uploader.example.com"),
       title: () => Promise.resolve("Uploader"),
     } as unknown as FrameTarget;
@@ -119,6 +120,7 @@ describe("tryUploadPrimitive end-to-end with a lazily-mounted input behind 'Sele
     const setInputFiles = vi.fn().mockResolvedValue(undefined);
     const evaluate = vi.fn((expr: unknown): Promise<unknown> => {
       const e = String(expr);
+      if (e.includes("scrollIntoView")) return Promise.resolve({ state: "hit" });
       if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
       if (e.includes("el.files.length > 0")) return Promise.resolve(dom.inputMounted() ? 1 : 0);
       return Promise.resolve(run(e));
@@ -127,7 +129,7 @@ describe("tryUploadPrimitive end-to-end with a lazily-mounted input behind 'Sele
       frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
       frameSelector: null,
       evaluate,
-      locator: () => ({ first: () => ({ setInputFiles, click: dom.trustedClick }) }),
+      locator: () => ({ click: dom.trustedClick, first: () => ({ setInputFiles }) }),
       url: () => Promise.resolve("https://careers.example.com/apply"),
       title: () => Promise.resolve("Apply"),
     } as unknown as FrameTarget;

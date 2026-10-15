@@ -5708,7 +5708,7 @@ export async function clickUploadAffordance(
     }
     // A trusted CDP click is required: an in-page el.click() never opens a file chooser.
     try {
-      await target.locator(markerSelector).first().click();
+      await clickCentredTrusted(target, markerSelector, { label: "upload affordance" });
     } finally {
       await target
         .evaluate(

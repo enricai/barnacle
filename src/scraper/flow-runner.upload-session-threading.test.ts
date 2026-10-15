@@ -63,13 +63,14 @@ function setup(opts: { inputTakes: boolean; sessionId?: string }): {
     frameSelector: null,
     evaluate: (expr: unknown): Promise<unknown> => {
       const e = String(expr);
+      if (e.includes("scrollIntoView")) return Promise.resolve({ state: "hit" });
       if (e.includes("present: true")) return Promise.resolve({ present: true });
       if (e.includes("chosen.setAttribute(")) return Promise.resolve({ marked: true, text: "u" });
       if (e.includes("querySelectorAll('input[type=file]').length")) return Promise.resolve(1);
       if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
       return Promise.resolve(false);
     },
-    locator: () => ({ first: () => ({ click, setInputFiles }) }),
+    locator: () => ({ click, first: () => ({ click, setInputFiles }) }),
     url: () => Promise.resolve("https://x.example.com"),
     title: () => Promise.resolve("x"),
   } as unknown as FrameTarget;
