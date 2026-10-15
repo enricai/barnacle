@@ -58,4 +58,30 @@ describe("segmented date DOM enumeration", () => {
     const groups = enumerate(section("s", "Dates", "Employment period", [12, 9999]));
     expect(resolveSegmentedDateGroup("type '03/2018' into the Start field", groups)).toBe(0);
   });
+
+  it("disambiguates same-width groups by the heading above their section", () => {
+    const row = (title: string, label: string): string =>
+      `<div><h3>${title}</h3><div><label>${label}</label><div><input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" /></div></div></div>`;
+    const groups = enumerate(row("Work Experience 1", "From") + row("Education 1", "From"));
+    expect(resolveSegmentedDateGroup("'From' date of Education 1, '092016'", groups)).toBe(1);
+    expect(resolveSegmentedDateGroup("'From' date in Work Experience 1, '012020'", groups)).toBe(0);
+  });
+
+  it("splits From/To year spinbuttons that share one fieldset", () => {
+    const year = (label: string): string =>
+      `<div><label>${label}</label><input role="spinbutton" aria-valuemax="9999" /></div>`;
+    const groups = enumerate(
+      `<fieldset><legend>Education 1</legend>${year("From")}${year("To")}</fieldset>`
+    );
+    expect(resolveSegmentedDateGroup("'From' date of Education 1, '2016'", groups)).toBe(1);
+    expect(resolveSegmentedDateGroup("'To' date of Education 1, '2020'", groups)).toBe(2);
+  });
+
+  it("never picks a lone nested segment on width alone", () => {
+    const groups = enumerate(
+      `<div role="group" aria-label="Period"><div><input role="spinbutton" aria-valuemax="12" /></div><div><input role="spinbutton" aria-valuemax="9999" /></div></div>`
+    );
+    expect(resolveSegmentedDateGroup("type '2016' into the form", groups)).toBeNull();
+    expect(resolveSegmentedDateGroup("type '012016' into the form", groups)).toBe(0);
+  });
 });

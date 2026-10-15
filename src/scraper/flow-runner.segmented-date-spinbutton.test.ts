@@ -213,3 +213,55 @@ describe("lone spinbutton segment verification", () => {
     expect(fill).not.toHaveBeenCalled();
   });
 });
+
+describe("segmented date primitive delivery", () => {
+  it("falls back to a delayed locator.type per segment, never fill or insertText", async () => {
+    const { target, sent } = harness(GROUPS, [1, 2020]);
+    const page = {
+      sendCDP: async (): Promise<void> => {
+        throw new Error("cdp channel unavailable");
+      },
+    } as never;
+    const selectors: string[] = [];
+    const typed: { text: string; delay?: number }[] = [];
+    const fill = vi.fn();
+    (
+      target.locator as unknown as { mockImplementation: (f: (s: string) => unknown) => void }
+    ).mockImplementation((selector: string) => {
+      const loc = {
+        first: () => loc,
+        click: async (): Promise<void> => {},
+        fill,
+        type: async (text: string, opts?: { delay?: number }): Promise<void> => {
+          selectors.push(selector);
+          typed.push({ text, delay: opts?.delay });
+        },
+      };
+      return loc;
+    });
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: "type '012020' into the Work Experience From date",
+    });
+    expect(id).toBe("segmented-date-0");
+    expect(typed.map((t) => t.text)).toEqual(["01", "2020"]);
+    expect(typed.every((t) => (t.delay ?? 0) > 0)).toBe(true);
+    expect(selectors).toHaveLength(2);
+    expect(new Set(selectors).size).toBe(2);
+    expect(fill).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+  });
+
+  it("accepts an unquoted value in the step", async () => {
+    const { target, page } = harness(GROUPS, [1, 2020]);
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: "Enter 012020 as the Work Experience 1 From date",
+    });
+    expect(id).toBe("segmented-date-0");
+  });
+});
