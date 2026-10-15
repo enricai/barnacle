@@ -9003,7 +9003,12 @@ async function sendTrustedEnter(page: Page): Promise<void> {
 
 /** Dispatches a trusted Escape to the focused element via CDP, closing a popup left open. */
 async function sendTrustedEscape(page: Page): Promise<void> {
-  const key = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 };
+  const key = {
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  };
   await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", ...key });
   await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
 }
@@ -9034,7 +9039,9 @@ const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
  */
 async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const count = (await target.evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR).catch(() => 0)) as number;
+    const count = (await target
+      .evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR)
+      .catch(() => 0)) as number;
     if (!count) return;
     logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
     try {
