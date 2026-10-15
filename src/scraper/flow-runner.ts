@@ -3382,6 +3382,14 @@ export async function probeLeafInvalidContainers(target: FrameTarget): Promise<L
  * simply reasons without it.
  */
 async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
+  return (await probeRawVisibleText(target)).slice(0, 3000);
+}
+
+/**
+ * Untruncated body text, so a settle signature built from it uses the same
+ * unit (raw `innerText.length`) as {@link DOM_SNAPSHOT_EXPR}'s pre-click one.
+ */
+async function probeRawVisibleText(target: FrameTarget): Promise<string> {
   try {
     const text = await withWatchdog(
       () => target.evaluate(`(() => (document.body ? document.body.innerText || "" : ""))()`),
@@ -3390,7 +3398,7 @@ async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
         label: "flow-runner: submit-verification visible text probe",
       }
     );
-    return typeof text === "string" ? text.slice(0, 3000) : "";
+    return typeof text === "string" ? text : "";
   } catch {
     return "";
   }
@@ -3453,14 +3461,17 @@ export async function judgeStepOutcome(params: {
     params.signalCounter,
     params.preNetworkCount,
     async () => {
-      const text = await probeVisibleTextForJudge(target);
+      const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
     },
     params.preVisibleTextSignature
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
-  const beforeText =
-    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1);
+  const beforeText = (
+    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1)
+  )
+    .replace(/\s+/g, " ")
+    .trim();
   const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
     verifyStepAdvancedWithLLM({
       client,
