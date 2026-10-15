@@ -5528,6 +5528,29 @@ export async function surfaceAndUpload(params: {
       logger.info("upload primitive: resolved via click → immediate upload POST");
       return true;
     }
+    // Strategy B: the click opened a native chooser we intercepted. Tried before A —
+    // the chooser names the exact input the widget wants, while A re-sets whatever
+    // input exists, which a React widget may ignore.
+    if (chooserBackendNodeId !== null) {
+      logger.info(
+        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
+      );
+      if (
+        await setFilesViaCdp({
+        page,
+        target,
+        session,
+        backendNodeId: chooserBackendNodeId,
+        fixture,
+        logger,
+        signalCounter,
+        recentCaptureMeta,
+        browserbaseSessionId,
+        })
+      ) {
+        return true;
+      }
+    }
     // Strategy A: the click lazily mounted a hidden <input type=file>.
     const appeared = await pollEnumerate<number>(
       page,
@@ -5549,23 +5572,6 @@ export async function surfaceAndUpload(params: {
       ) {
         return true;
       }
-    }
-    // Strategy B: the click opened a native chooser we intercepted.
-    if (chooserBackendNodeId !== null) {
-      logger.info(
-        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
-      );
-      return setFilesViaCdp({
-        page,
-        target,
-        session,
-        backendNodeId: chooserBackendNodeId,
-        fixture,
-        logger,
-        signalCounter,
-        recentCaptureMeta,
-        browserbaseSessionId,
-      });
     }
     return false;
   } finally {
