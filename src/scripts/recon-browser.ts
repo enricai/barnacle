@@ -130,7 +130,7 @@ import {
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session-teardown";
-import { waitForSpaReady } from "@/scraper/spa-readiness";
+import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedObserve } from "@/scraper/stagehand-guard";
 import type { TargetResolutionDiagnosticSnapshot } from "@/scraper/target-resolution-diagnostic";
 import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
@@ -2988,7 +2988,7 @@ async function main(): Promise<void> {
           logger.info(
             `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
           );
-          await waitForSpaReady(page, logger);
+          await regateSpaAfterOriginChange(page, logger);
           lastOrigin = currentOrigin;
         }
         // Debug: dump the full DOM right before this step's cascade runs. Lets

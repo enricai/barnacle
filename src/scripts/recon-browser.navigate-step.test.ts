@@ -87,17 +87,26 @@ vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   };
 });
 
+const { regateSpaStub } = vi.hoisted(() => ({ regateSpaStub: vi.fn() }));
+vi.mock("@/scraper/spa-readiness", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/spa-readiness")>();
+  return { ...actual, regateSpaAfterOriginChange: regateSpaStub };
+});
+
 import { createBrowserSession } from "@/scraper/session";
 import { main, parseCli } from "@/scripts/recon-browser";
 
-function makeFakePage(): { page: Page; stagehand: Stagehand } {
+function makeFakePage(getUrl: () => string = (): string => "https://example.com"): {
+  page: Page;
+  stagehand: Stagehand;
+} {
   const session = {
     on: (): void => {},
     off: (): void => {},
   };
   const page = {
     goto: vi.fn().mockResolvedValue(undefined),
-    url: (): string => "https://example.com",
+    url: getUrl,
     title: vi.fn().mockResolvedValue("Example"),
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
       if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
@@ -156,6 +165,8 @@ describe("recon-browser CLI/main — navigateTo dispatches to executeNavigateSte
     executeStepWithHealingStub.mockResolvedValue("completed");
     executeNavigateStepStub.mockReset();
     executeNavigateStepStub.mockResolvedValue("completed");
+    regateSpaStub.mockReset();
+    regateSpaStub.mockResolvedValue(undefined);
     vi.mocked(createBrowserSession).mockReset();
   });
 
@@ -206,5 +217,44 @@ describe("recon-browser CLI/main — navigateTo dispatches to executeNavigateSte
     expect(callArgs.optional).toBe(true);
     expect(callArgs.page).toBe(page);
     expect(executeStepWithHealingStub).not.toHaveBeenCalled();
+  });
+
+  async function runThreeStepFlow(urlAfterFirstStep: string): Promise<void> {
+    let currentUrl = "https://example.com";
+    const { stagehand } = makeFakePage(() => currentUrl);
+    vi.mocked(createBrowserSession).mockResolvedValue({
+      stagehand,
+      limiter: {} as never,
+      sessionId: "test-session",
+      provider: "browserbase",
+      close: vi.fn().mockResolvedValue(undefined),
+    } as never);
+    executeStepWithHealingStub.mockImplementationOnce(async () => {
+      currentUrl = urlAfterFirstStep;
+      return "completed";
+    });
+    process.argv = [
+      "node",
+      "recon-browser.ts",
+      "--url",
+      "https://example.com",
+      "--flow",
+      JSON.stringify([{ step: "click apply" }, { step: "fill name" }, { step: "click next" }]),
+    ];
+    await main();
+  }
+
+  it("re-gates SPA readiness once when the page origin changes between steps", async () => {
+    await runThreeStepFlow("https://apply.example.org/start");
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(3);
+    expect(regateSpaStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-gate SPA readiness when the origin is unchanged", async () => {
+    await runThreeStepFlow("https://example.com/other-path");
+
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(3);
+    expect(regateSpaStub).not.toHaveBeenCalled();
   });
 });

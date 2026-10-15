@@ -104,7 +104,7 @@ import {
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
-import { waitForSpaReady } from "@/scraper/spa-readiness";
+import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
@@ -1226,6 +1226,11 @@ export function prepareFailureDumpBody(raw: unknown): string | null {
  * entry, so the weak page-wide signature and the strict per-element gate
  * agree on exactly what counts as a class-token selection marker.
  */
+/** Shared by both checkbox credit sites so they agree on what "aria-managed" reads. */
+function ariaCheckedReadExpr(elVar: string): string {
+  return `${elVar}.getAttribute("aria-checked")`;
+}
+
 const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
 
 /** One form control's live accessible-name/value pair at step-failure time. */
@@ -3333,6 +3338,9 @@ export async function buildSubmitJudgeStepContext(params: {
   };
 }
 
+const STEP_REJUDGE_DELAY_MS = 5000;
+const STEP_REJUDGE_COMPARE_CHARS = 1200;
+
 type SubmitVerdict = z.infer<typeof SUBMIT_VERDICT_SCHEMA>;
 
 /**
@@ -3375,20 +3383,38 @@ export async function judgeStepOutcome(params: {
     },
     params.preVisibleTextSignature
   );
-  const afterText = await probeVisibleTextForJudge(target);
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText =
     colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1);
-  const verdict = await verifyStepAdvancedWithLLM({
-    client,
-    input: {
-      stepInstruction: step,
-      beforeText,
-      afterText,
-      invalidMarkerCount: params.submitInput.invalidMarkerCount,
-    },
-    captureFn,
-  });
+  const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
+    verifyStepAdvancedWithLLM({
+      client,
+      input: {
+        stepInstruction: step,
+        beforeText,
+        afterText,
+        invalidMarkerCount: params.submitInput.invalidMarkerCount,
+      },
+      captureFn,
+    });
+  const rejudgeIfTextMoved = async (
+    first: Awaited<ReturnType<typeof judgeText>>,
+    judgedText: string
+  ): Promise<Awaited<ReturnType<typeof judgeText>>> => {
+    if (first === null || first.advanced) return first;
+    await params.page.waitForTimeout(STEP_REJUDGE_DELAY_MS);
+    const laterText = await probeVisibleTextForJudge(target);
+    if (
+      laterText.slice(0, STEP_REJUDGE_COMPARE_CHARS) ===
+      judgedText.slice(0, STEP_REJUDGE_COMPARE_CHARS)
+    ) {
+      return first;
+    }
+    return (await judgeText(laterText)) ?? first;
+  };
+  const afterText = await probeVisibleTextForJudge(target);
+  const firstVerdict = await judgeText(afterText);
+  const verdict = await rejudgeIfTextMoved(firstVerdict, afterText);
   if (verdict === null) return null;
   return verdict.advanced
     ? {
@@ -9346,6 +9372,12 @@ export async function verifyDomEffect(
           // owned panel to now render option content before crediting it.
           return await comboboxOpenerPanelOpened(target, xpath, preSelectionState);
         }
+        // A control exposing aria-checked is framework-managed: its own
+        // aria-checked is the committed state, so a leftover invalid marker
+        // on an ancestor must not veto a genuinely ticked box.
+        const ariaCheckedExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? ${ariaCheckedReadExpr("el")} : null; })()`;
+        const ariaChecked = await target.evaluate(ariaCheckedExpr).catch(() => null);
+        if (ariaChecked === "true" || ariaChecked === "false") return ariaChecked === "true";
         const isCheckedNow = await locator.isChecked();
         if (!isCheckedNow) return false;
         // Vacuous-click guard. On multi-page Angular paginators an input
@@ -13770,13 +13802,14 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { const __ac = ${ariaCheckedReadExpr("el")}; if (__ac === "true" || __ac === "false") return { fired: true, kind: "checkbox", checked: __ac === "true", ariaManaged: true }; el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
             phraseMismatch?: boolean;
             kind?: string;
             checked?: boolean;
+            ariaManaged?: boolean;
           };
           const fired = probeResult.fired;
           if (fired) await adoptOpenedPage();
@@ -13789,7 +13822,11 @@ export async function executeStepWithHealing(params: {
           // ancestor-invalid signal through prevents the cascade from
           // advancing past a vacuous click.
           let ancestorStillInvalid = false;
-          if (probeResult.kind === "checkbox" && probeResult.checked === true) {
+          if (
+            probeResult.kind === "checkbox" &&
+            probeResult.checked === true &&
+            probeResult.ariaManaged !== true
+          ) {
             const ancestorInvalidExpr = `(() => {
               const isInvalid = ${INVALID_MARKER_EL_EXPR};
               const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
@@ -13808,10 +13845,17 @@ export async function executeStepWithHealing(params: {
               .evaluate(ancestorInvalidExpr)
               .catch(() => false)) as boolean;
           }
+          // An aria-managed box is never forced, so the framework's own
+          // aria-checked decides; a stale invalid ancestor is not consulted.
+          const forcedCheckboxRejected =
+            probeResult.kind === "checkbox" &&
+            (probeResult.ariaManaged === true
+              ? probeResult.checked !== true
+              : ancestorStillInvalid);
           const checkboxStateVerified =
             probeResult.kind === "checkbox" &&
             probeResult.checked === true &&
-            !ancestorStillInvalid;
+            (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
           await settleAfterClick(
             page,
@@ -14099,6 +14143,7 @@ export async function executeStepWithHealing(params: {
             !clickBlockedByDisabled &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
+            !forcedCheckboxRejected &&
             ((n16ClickDelivered && retryNetworkFired && retryDestinationPlausible) ||
               (n16ClickDelivered && retryUrlChanged) ||
               (checkboxStateVerified && retryDestinationPlausible) ||
@@ -14810,6 +14855,15 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let submitVerified = false;
   let submitStepSkipped = false;
   let lastStepIndex = -1;
+  const liveOriginOf = (target: Page): string => {
+    try {
+      return new URL(target.url()).origin;
+    } catch {
+      return "";
+    }
+  };
+  // Seeded so the first step does not re-gate; the initial gate lives with the caller's goto.
+  let lastOrigin = liveOriginOf(activePage);
 
   const wireCapture = (target: Page): (() => void) =>
     wireSignalCapture(target, {
@@ -14874,6 +14928,16 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
         );
       }
       lastStepIndex = i;
+      // A cross-origin hop (redirect, new tab, navigateTo) lands on a SPA the initial
+      // readiness gate never covered; wait for hydration before the step probes a shell.
+      const currentOrigin = liveOriginOf(activePage);
+      if (currentOrigin !== "" && currentOrigin !== lastOrigin) {
+        logger.info(
+          `origin changed ${lastOrigin || "(none)"} → ${currentOrigin}; re-gating on SPA hydration`
+        );
+        await regateSpaAfterOriginChange(activePage, logger);
+        lastOrigin = currentOrigin;
+      }
       // A navigateTo step is a direct page.goto, not an act/observe against
       // the current DOM, so it has no target frame to resolve and skips
       // straight to executeNavigateStep instead of the self-heal cascade.
