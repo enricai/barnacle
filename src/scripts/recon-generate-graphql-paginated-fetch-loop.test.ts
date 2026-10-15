@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import { createHttpClient } from "@/scraper/http-client";
 import { emitContractTs } from "@/scripts/recon-generate";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   extractExecuteHttpBodyFromContract,
   stripEmitterTypeAssertions,
@@ -205,13 +206,13 @@ describe("recon-generate GraphQL paginated fetch loop: total/count signal presen
     writePagedRunDir(runRoot);
 
     const siteId = `graphql-paginated-fetch-loop-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -256,13 +257,13 @@ describe("recon-generate GraphQL paginated fetch loop: MAX_PAGES caps before the
     writeTruncatedPagedRunDir(runRoot);
 
     const siteId = `graphql-paginated-truncation-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -289,13 +290,13 @@ describe("recon-generate GraphQL paginated fetch loop: no total/count signal", (
     writeUnpagedRunDir(runRoot);
 
     const siteId = `graphql-unpaginated-fetch-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

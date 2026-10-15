@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Acceptance test for the read-only GraphQL selection path:
@@ -245,13 +246,13 @@ describe("recon-generate read-only GraphQL flow: listings-fixture-shaped capture
     writeRunDir(runRoot);
 
     const siteId = `graphql-readonly-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -287,13 +288,13 @@ describe("recon-generate read-only GraphQL flow: catalog-fixture capture set wit
     writePagedRunDir(runRoot);
 
     const siteId = `graphql-readonly-paging-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
 
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
@@ -327,7 +328,7 @@ describe("recon-generate: flow declares submitStep:true but captures zero mutati
     writeSubmitStepMutationFreeRunDir(runRoot);
 
     const siteId = `graphql-submitstep-no-mutation-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
@@ -341,7 +342,7 @@ describe("recon-generate: flow declares submitStep:true but captures zero mutati
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

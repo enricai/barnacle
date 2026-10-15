@@ -2,7 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement, Window } from "happy-dom";
 import { Window as HappyDomWindow } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
-
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -49,7 +49,9 @@ function makeStagehand(): Stagehand {
 
 function fakePage(): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -173,6 +175,9 @@ function makeTarget(window: Window): FrameTarget {
   const document = window.document;
 
   const evaluate = (async (expr: unknown): Promise<unknown> => {
+    const centred = answerCentreHitTest(expr);
+
+    if (centred) return centred;
     const src = String(expr);
     const fn = new window.Function("document", `return (${src});`) as (d: unknown) => unknown;
     return fn(document);
@@ -216,7 +221,7 @@ function makeTarget(window: Window): FrameTarget {
     frame: null,
     frameSelector: null,
     evaluate,
-    locator,
+    locator: withDirectClick(locator),
     url: () => Promise.resolve("https://careers.example.com/apply/job/1"),
     title: () => Promise.resolve("Apply"),
   };

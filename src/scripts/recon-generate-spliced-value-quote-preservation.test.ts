@@ -90,7 +90,7 @@ describe("spliced persona values keep their quote delimiters", () => {
   it("escapes template-literal metacharacters in the untouched prefix while keeping the quoted splice", () => {
     const block = emitFlow(["Fill in the City field (note: `a`) with 'Dallas'"]);
 
-    expect(block).toContain("(note: \\`a\\`) with '" + PAYLOAD_CITY + "'");
+    expect(block).toContain(`(note: \\\`a\\\`) with '${PAYLOAD_CITY}'`);
   });
 
   it("round-trips the emitted fill template through parseFillStep", () => {

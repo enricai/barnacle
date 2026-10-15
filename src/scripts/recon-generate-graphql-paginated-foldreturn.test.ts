@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Reproduces the reported failure end to end through the real `recon-generate`
@@ -120,7 +121,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -131,7 +132,7 @@ describe("GraphQL query-primary + pagination signal + declared foldReturn — ru
     writeRunDir(runRoot);
 
     const siteId = `gql-paginated-fold-test-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDirWith, { withFoldReturn: true });
 
     const result = run(runRoot, siteId);
@@ -172,7 +173,7 @@ describe("GraphQL query-primary + pagination signal + declared foldReturn — ru
     writeRunDir(runRoot);
 
     const siteId = `gql-paginated-nofold-test-run${process.pid}`;
-    siteOutDirWithout = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirWithout = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDirWithout, { withFoldReturn: false });
 
     const result = run(runRoot, siteId);
@@ -193,13 +194,13 @@ describe("GraphQL query-primary + pagination signal + declared foldReturn — ru
     writeRunDir(runRoot);
 
     const siteIdWith = `gql-paginated-diff-with-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteIdWith);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteIdWith);
     writeFlowFile(siteOutDirWith, { withFoldReturn: true });
     expect(run(runRoot, siteIdWith).status).toBe(0);
     const contractWith = readFileSync(join(siteOutDirWith, "contract.ts"), "utf8");
 
     const siteIdWithout = `gql-paginated-diff-without-run${process.pid}`;
-    siteOutDirWithout = join(REPO_ROOT, "src", "sites", siteIdWithout);
+    siteOutDirWithout = join(RECON_GENERATE_CWD, "src", "sites", siteIdWithout);
     writeFlowFile(siteOutDirWithout, { withFoldReturn: false });
     expect(run(runRoot, siteIdWithout).status).toBe(0);
     const contractWithout = readFileSync(join(siteOutDirWithout, "contract.ts"), "utf8");

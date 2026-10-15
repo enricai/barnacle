@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildStep } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -131,12 +132,12 @@ function runGenerate(siteId: string, runRoot: string): { output: string; contrac
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   return {
     output: `${result.stdout}\n${result.stderr}`,
-    contract: readFileSync(join(REPO_ROOT, "src", "sites", siteId, "contract.ts"), "utf8"),
+    contract: readFileSync(join(RECON_GENERATE_CWD, "src", "sites", siteId, "contract.ts"), "utf8"),
   };
 }
 
@@ -172,7 +173,7 @@ describe("recon-generate CLI — declared foldReturn drill after the submit step
     writeRunDir(runRoot, captures());
 
     const siteId = `foldreturn-post-submit-drill-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFlow(siteOutDir);
 
@@ -191,7 +192,7 @@ describe("recon-generate CLI — declared foldReturn drill after the submit step
     writeSubmitManifest(runRoot, all, [0, 1, 2, 2]);
 
     const siteId = `foldreturn-post-submit-drill-manifest-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     writeFlow(siteOutDir);
 

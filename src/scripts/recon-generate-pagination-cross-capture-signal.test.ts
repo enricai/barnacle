@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Reproduces the reported failure: `detectPaginationSignal` returned null
@@ -146,7 +147,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -161,7 +162,7 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     ]);
 
     const siteId = `pagination-cross-capture-test-run${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);
@@ -183,7 +184,7 @@ describe("detectPaginationSignal cross-capture evidence — runtime e2e", () => 
     writeRunDir(runRoot, [differentOperationFullPageCapture(), partialPageCapture()]);
 
     const siteId = `pagination-cross-capture-nosibling-test-run${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir);
 
     const result = run(runRoot, siteId);

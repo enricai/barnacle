@@ -126,6 +126,7 @@ import {
 import {
   CENTRE_AND_HIT_TEST_FN,
   type CentredHitTestResult,
+  centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
@@ -969,6 +970,39 @@ const ATTEMPT_BACKOFF_MS = 1_000;
  * actionable.
  */
 const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
+
+const CLICK_INTENT_RE = /\bclick\b/i;
+
+/**
+ * Shared pre-click centre + hit-test for a Stagehand-resolved selector, so
+ * observe-act and the natural-language act attempts share one routine.
+ * Returns a failure message when the control stays covered, null otherwise.
+ */
+async function centreObservedClickTarget(
+  target: FrameTarget,
+  selector: string,
+  onUnavailable: (message: string) => void,
+  deferWhenMissing = false
+): Promise<string | null> {
+  try {
+    await centreSelectorForClick(target, selector);
+    return null;
+  } catch (err) {
+    // A TypeError means the page cannot answer the hit-test probe (no
+    // evaluate seam), not that the control is covered; defer to the act.
+    if (err instanceof TypeError) {
+      onUnavailable(`centre hit-test unavailable: ${toErrorMessage(err)}`);
+      return null;
+    }
+    // Stagehand's own resolution of a natural-language act can differ from the
+    // observe result, so an unresolvable element there is the act's to judge.
+    if (deferWhenMissing && toErrorMessage(err).includes("is not in the document")) {
+      onUnavailable(`centre target unresolved: ${toErrorMessage(err)}`);
+      return null;
+    }
+    return `observed click target not clickable: ${toErrorMessage(err)}`;
+  }
+}
 
 /**
  * Builds an in-page expression that finds the marker-stamped element, piercing
@@ -6054,7 +6088,7 @@ export function resolveSegmentedDateGroup(
   const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
   const stepWords = new Set(
     segmentedDateTokens(
-      spans.reduceRight((rest, s) => rest.slice(0, s.start) + " " + rest.slice(s.end), instruction)
+      spans.reduceRight((rest, s) => `${rest.slice(0, s.start)} ${rest.slice(s.end)}`, instruction)
     ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
   );
   let best = -1;
@@ -6215,14 +6249,10 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     }
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
-    const expected = widths.map((w, i) =>
-      Number(
-        value.digits.slice(
-          widths.slice(0, i).reduce((a, b) => a + b, 0),
-          widths.slice(0, i + 1).reduce((a, b) => a + b, 0)
-        )
-      )
-    );
+    const expected = widths.map((w, i) => {
+      const start = widths.slice(0, i).reduce((a, b) => a + b, 0);
+      return Number(value.digits.slice(start, start + w));
+    });
     const segmentSelector = (si: number): string =>
       `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
     const focusSegment = async (si: number): Promise<void> => {
@@ -12178,6 +12208,31 @@ export async function executeStepWithHealing(params: {
     // from DOM re-read. Captured here so both branches of the cascade write to it.
     let resolvedAction: Action | null = null;
 
+    // Stagehand resolves a natural-language act target internally, so for a
+    // click-intent instruction resolve it with observe first and centre it;
+    // a sticky bar otherwise swallows Stagehand's own click. Throws when the
+    // control stays covered so the attempt fails instead of clicking an overlay.
+    const preCentreNaturalLanguageClick = async (instruction: string): Promise<void> => {
+      if (!CLICK_INTENT_RE.test(instruction)) return;
+      const observed = await guardedObserve(
+        stagehand,
+        instruction,
+        { timeout: STEP_WATCHDOG_MS },
+        captureFn,
+        frameTarget
+      ).catch(() => [] as Action[]);
+      const first = observed[0];
+      if (first?.method !== "click" || !first.selector) return;
+      const failure = await centreObservedClickTarget(
+        frameTarget ?? mainFrameTarget(page),
+        first.selector,
+        (msg) =>
+          logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`),
+        true
+      );
+      if (failure) throw new Error(failure);
+    };
+
     try {
       // Field-label-first routing: for a frame-scoped fill/select step,
       // Stagehand's own act()/observe() can resolve a real, in-DOM, plausible-
@@ -12247,6 +12302,7 @@ export async function executeStepWithHealing(params: {
         record.technique = "act-string";
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
+        await preCentreNaturalLanguageClick(step);
         const result = await guardedAct(stagehand, step, { timeout: STEP_WATCHDOG_MS }, captureFn);
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
@@ -12850,6 +12906,29 @@ export async function executeStepWithHealing(params: {
             }
           }
           params.abortSignal?.throwIfAborted();
+          // Stagehand's internal Locator.click() does not scroll past sticky
+          // bars, so centre + hit-test the observed control first; an
+          // unrecoverable occlusion fails the attempt instead of clicking an
+          // overlay.
+          if (overriddenTarget.method === "click") {
+            const centreFailure = await centreObservedClickTarget(
+              frameTarget ?? mainFrameTarget(page),
+              overriddenTarget.selector,
+              (msg) =>
+                logger.debug(
+                  `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`
+                )
+            );
+            if (centreFailure) {
+              record.errorMessage = centreFailure;
+              attempts.push(record);
+              failureReasons.push(record.errorMessage);
+              logger.info(
+                `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+              );
+              continue;
+            }
+          }
           const result = await guardedAct(
             stagehand,
             overriddenTarget,
@@ -13184,6 +13263,7 @@ export async function executeStepWithHealing(params: {
           } else {
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
+            await preCentreNaturalLanguageClick(rephrased);
             const result = await guardedAct(
               stagehand,
               rephrased,

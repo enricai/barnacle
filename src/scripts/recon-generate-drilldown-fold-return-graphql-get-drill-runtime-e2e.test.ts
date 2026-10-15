@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Reproduces the reported failure end to end through the real `recon-generate`
@@ -111,7 +112,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -122,7 +123,7 @@ describe("recon-generate GraphQL-primary + GET REST drill-down foldReturn — ru
     writeRunDir(runRoot);
 
     const siteId = `gql-get-drill-fold-test-run${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir, { withFoldReturn: true });
 
     const result = run(runRoot, siteId);
@@ -152,7 +153,7 @@ describe("recon-generate GraphQL-primary + GET REST drill-down foldReturn — ru
     writeRunDir(runRoot);
 
     const siteId = `gql-get-drill-nofold-test-run${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDir, { withFoldReturn: false });
 
     const result = run(runRoot, siteId);

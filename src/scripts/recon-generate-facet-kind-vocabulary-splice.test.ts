@@ -23,8 +23,10 @@ describe("single-primary array splice with kind-suffixed elements", () => {
       facets
     );
     expect(expr).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "...(payload.destination ? [`${String(payload.destination).toUpperCase()};filterType=destination`] : [])"
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(expr).toContain("...(payload.nights ? [`${payload.nights};filterType=night`] : [])");
     expect(expr).toContain('"x;filterType=other"');
     expect(expr).not.toContain('"BAHAMAS;filterType=destination"');

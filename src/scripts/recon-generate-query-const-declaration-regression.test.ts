@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildMultiEndpointSubmissionActionSteps } from "@/scripts/recon-generate-multiendpoint-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -48,7 +52,7 @@ function runGenerate(siteId: string, runRoot: string): ReturnType<typeof spawnSy
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -108,6 +112,7 @@ function assertTypechecksClean(siteId: string, siteOutDir: string): void {
         incremental: false,
         tsBuildInfoFile: null,
         paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
           "@/*": ["./src/*"],
           "@test/*": ["./test/*"],
           "@enricai/barnacle/*": ["./src/*"],
@@ -151,7 +156,7 @@ describe("generated contract.ts never references an undeclared *_QUERY const", (
     writeRunDir(runRoot, [capture]);
 
     const siteId = `query-const-regression-single-e2e-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(siteId, runRoot);
@@ -196,7 +201,7 @@ describe("generated contract.ts never references an undeclared *_QUERY const", (
     writeRunDir(runRoot, [capture]);
 
     const siteId = `query-const-regression-paginated-e2e-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
 
     const result = runGenerate(siteId, runRoot);
@@ -255,7 +260,7 @@ describe("generated contract.ts never references an undeclared *_QUERY const", (
     writeRunDir(runRoot, allCaptures);
 
     const siteId = `query-const-regression-selfheal-e2e-${process.pid}`;
-    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     siteOutDirs.push(siteOutDir);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(

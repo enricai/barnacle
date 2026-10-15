@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
 /**
@@ -97,11 +98,11 @@ function extractResponseSchemaLine(contract: string): string {
 }
 
 function runGenerate(runRoot: string, siteId: string, extraArgs: string[] = []): string {
-  const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+  const siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", ...extraArgs],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   return readFileSync(join(siteOutDir, "contract.ts"), "utf8");
@@ -124,7 +125,7 @@ describe("recon-generate ResponseSchema: stable across pre-replay and post-repla
     writeRunDir(runRoot);
 
     const siteId = `response-schema-replay-stability-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
 
     // Run 1: no replay artifacts yet.
     const contractBeforeReplay = runGenerate(runRoot, siteId);

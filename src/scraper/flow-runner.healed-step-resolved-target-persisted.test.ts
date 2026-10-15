@@ -2,6 +2,7 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -131,6 +132,8 @@ describe("flow-runner onStepHeal — persists the resolved target for a trusted-
     const session = { on: () => {}, off: () => {} };
     const page: Page = {
       evaluate: async (expr: unknown): Promise<unknown> => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         const src = String(expr);
         const fn = new window.Function("document", "XPathResult", `return (${src});`) as (
           d: unknown,
@@ -140,7 +143,7 @@ describe("flow-runner onStepHeal — persists the resolved target for a trusted-
       },
       url: () => BASE_URL,
       title: async () => "Apply — Step 1",
-      locator: (selector: string) => ({
+      locator: withDirectClick((selector: string) => ({
         first: () => ({
           click: async () => {
             expect(selector).toBe(controlSelector);
@@ -151,7 +154,7 @@ describe("flow-runner onStepHeal — persists the resolved target for a trusted-
           isChecked: async () => false,
           inputValue: async () => "",
         }),
-      }),
+      })),
       waitForTimeout: async () => {},
       getSessionForFrame: () => session,
       mainFrameId: () => "main",

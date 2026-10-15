@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -145,7 +149,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, fixtureCaptures());
     const siteId = `all-facets-all-sites-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     const base = `https://${OWN_BACKEND_HOST}/#/library`;
     const tokens = [AUTHOR_TOKEN, GENRE_TOKEN, LANGUAGE_TOKEN, FORMAT_TOKEN];
@@ -174,7 +178,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
@@ -219,7 +223,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
     const runRoot = join(workDir, "run");
     writeRunDir(runRoot, mixCaptures());
     const siteId = `structured-all-facets-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     const base = `https://${MIX_HOST}/#/depot`;
     writeFileSync(
@@ -248,7 +252,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
@@ -279,12 +283,13 @@ describe("recon-generate CLI — every facet at every call site", () => {
           incremental: false,
           tsBuildInfoFile: null,
           paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
             "@/*": ["./src/*"],
             "@test/*": ["./test/*"],
             "@enricai/barnacle/*": ["./src/*"],
           },
         },
-        include: [`src/sites/${siteId}/**/*.ts`],
+        include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
       })
     );
     const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {

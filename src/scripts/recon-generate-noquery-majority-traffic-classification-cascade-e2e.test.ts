@@ -5,7 +5,10 @@ import { join } from "node:path";
 
 import { addSeconds } from "date-fns";
 import { afterEach, describe, expect, it } from "vitest";
-
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -177,7 +180,7 @@ describe("recon-generate CLI — no-query REST-majority traffic, genuine GraphQL
     writeRunDir(runRoot, captures);
 
     const siteId = `noquery-majority-cascade-e2e-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     expect(existsSync(siteOutDir)).toBe(false);
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
@@ -203,7 +206,7 @@ describe("recon-generate CLI — no-query REST-majority traffic, genuine GraphQL
     const result = spawnSync(
       TSX_BIN,
       [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     const out = `${result.stdout}\n${result.stderr}`;
 
@@ -228,12 +231,13 @@ describe("recon-generate CLI — no-query REST-majority traffic, genuine GraphQL
           incremental: false,
           tsBuildInfoFile: null,
           paths: {
+            "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
             "@/*": ["./src/*"],
             "@test/*": ["./test/*"],
             "@enricai/barnacle/*": ["./src/*"],
           },
         },
-        include: [`src/sites/${siteId}/**/*.ts`],
+        include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
       })
     );
 

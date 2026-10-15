@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
 
 import { createHttpClient } from "@/scraper/http-client";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
   evalExecuteHttpBody,
   extractExecuteHttpBodyFromContract,
@@ -127,7 +128,7 @@ describe("recon-generate emitted executeHttp — typed facet payload fields reso
     writeRunDir(runRoot, reportShapeCaptures());
 
     const siteId = `facet-payload-runtime-execution-test-${process.pid}`;
-    siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
 
     writeFileSync(
@@ -161,7 +162,7 @@ describe("recon-generate emitted executeHttp — typed facet payload fields reso
         "--vocabulary",
         vocabularyPath,
       ],
-      { cwd: REPO_ROOT, encoding: "utf8" }
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);

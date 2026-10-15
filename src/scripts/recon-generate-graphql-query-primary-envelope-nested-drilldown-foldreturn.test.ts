@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
  * Reproduces the reported failure end to end through the real
@@ -210,7 +211,7 @@ function run(runRoot: string, siteId: string): ReturnType<typeof spawnSync> {
   return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-    { cwd: REPO_ROOT, encoding: "utf8" }
+    { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
   );
 }
 
@@ -221,14 +222,14 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     writeRunDir(runRoot);
 
     const siteIdWith = `gql-envelope-nested-diff-with-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteIdWith);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteIdWith);
     writeFlowFile(siteOutDirWith, { withFoldReturn: true });
     const resultWith = run(runRoot, siteIdWith);
     expect(resultWith.status, `${resultWith.stdout}\n${resultWith.stderr}`).toBe(0);
     const contractWith = readFileSync(join(siteOutDirWith, "contract.ts"), "utf8");
 
     const siteIdWithout = `gql-envelope-nested-diff-without-run${process.pid}`;
-    siteOutDirWithout = join(REPO_ROOT, "src", "sites", siteIdWithout);
+    siteOutDirWithout = join(RECON_GENERATE_CWD, "src", "sites", siteIdWithout);
     writeFlowFile(siteOutDirWithout, { withFoldReturn: false });
     const resultWithout = run(runRoot, siteIdWithout);
     expect(resultWithout.status, `${resultWithout.stdout}\n${resultWithout.stderr}`).toBe(0);
@@ -245,7 +246,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     writeRunDir(runRoot);
 
     const siteId = `gql-envelope-nested-fold-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDirWith, { withFoldReturn: true });
 
     const result = run(runRoot, siteId);
@@ -266,7 +267,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     writeRunDir(runRoot);
 
     const siteId = `gql-envelope-nested-diag-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeFlowFile(siteOutDirWith, { withFoldReturn: true });
 
     const result = run(runRoot, siteId);
@@ -282,7 +283,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     writeGroupedRunDir(runRoot);
 
     const siteId = `gql-envelope-nested-hoist-run${process.pid}`;
-    siteOutDirWith = join(REPO_ROOT, "src", "sites", siteId);
+    siteOutDirWith = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     writeGroupedFlowFile(siteOutDirWith);
 
     const result = run(runRoot, siteId);
@@ -303,6 +304,7 @@ describe("GraphQL query-primary + data-enveloped nested-wildcard resultsPath + d
     // The drill request is parameterized off the group-scoped `groupId`
     // field (never `item.*`), so it's spliced ABOVE the item loop — once
     // per ancestor group — instead of re-issued once per item.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain("${(g0 as Record<string, unknown>).groupId}");
     expect(fetchIndex).toBeGreaterThan(ancestorLoopIndex);
     expect(fetchIndex).toBeLessThan(itemLoopIndex);
