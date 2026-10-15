@@ -98,8 +98,8 @@ describe("label-derived payload field canonicalisation", () => {
       flowSteps: STEPS,
     });
 
-    expect(code).toContain(`$${"{payload." + phone + "}"}`);
-    expect(code).toContain(`$${"{payload." + address + "}"}`);
+    expect(code).toContain(`$${"{escapeQuotedValue(payload." + phone + ")}"}`);
+    expect(code).toContain(`$${"{escapeQuotedValue(payload." + address + ")}"}`);
     expect(code).not.toContain("payload.MobilePhone");
     expect(code).not.toContain("payload.AddressLine1");
   });
