@@ -5205,7 +5205,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
 describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated violation still hard-fails", () => {
   it("throws when a required *Url field from the submit capture itself is never referenced as payload.<Field>", () => {
     const contractCode = "TrackingUrl: z.string(),";
-    const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "networkidle" });';
+    const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
     expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
       /required URL field.*TrackingUrl/

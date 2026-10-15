@@ -1,8 +1,8 @@
 /**
  * Shared apply-page navigation helper. Centralises the two-step pattern that
  * every site browser-flow repeats: await the active Stagehand page, then
- * navigate to the apply URL with networkidle so form scripts have fully
- * settled before the caller starts filling fields.
+ * navigate to the apply URL with domcontentloaded. Chatty pages never reach
+ * networkidle, so hydration is left to waitForSpaReady in the caller.
  *
  * Scripts that interleave CDP listener wiring between awaitActivePage and goto
  * (recon-browser.ts, recon-generate.ts, etc.) must NOT use this helper — they
@@ -15,7 +15,7 @@ import type { MetricsCollector } from "@/lib/dispatch-metrics";
 
 /**
  * Awaits the active Stagehand page and navigates to `url` with
- * `waitUntil: "networkidle"`. When a `MetricsCollector` is supplied, wraps
+ * `waitUntil: "domcontentloaded"`. When a `MetricsCollector` is supplied, wraps
  * the goto in a `"navigate"` step so the caller's metrics include navigation
  * timing without each site having to repeat the bookkeeping.
  */
@@ -28,7 +28,7 @@ export async function navigateActivePage(
   const page = await stagehand.context.awaitActivePage();
   collector?.startStep("navigate");
   await page.goto(url, {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
     ...(timeoutMs !== undefined && { timeoutMs }),
   });
   collector?.endStep("success");

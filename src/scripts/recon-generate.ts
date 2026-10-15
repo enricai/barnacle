@@ -16046,8 +16046,8 @@ export async function run${pascal}BrowserFlow(
 ): Promise<${pascal}Response> {
   const page = await stagehand.context.awaitActivePage();
 
-  await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "networkidle" });
-  // networkidle can resolve before a bot-managed/CDN-fronted SPA hydrates; wait for
+  await page.goto(${isSubmissionFlow ? "entryUrl" : "baseUrl"}, { waitUntil: "domcontentloaded" });
+  // domcontentloaded fires before a bot-managed/CDN-fronted SPA hydrates; wait for
   // the real DOM so the first steps don't probe an empty shell page and skip.
   await waitForSpaReady(page, logger);
 ${usesThrowawayPassword ? "\n  // Minted once per run — the flow needs a credential to authenticate, but\n  // there is no caller-supplied Password field on the payload to splice.\n  const throwawayPassword = generateThrowawayPassword();\n" : ""}${usesEmailStep ? "\n  // Resolved once per run from the caller-supplied Email — the emailStep hook\n  // polls this inbox rather than a freshly allocated one, since the applicant\n  // (not this run) owns the address the ATS actually emails.\n  const allocatedInbox = testmailInboxFromAddress(payload.Email);\n" : ""}
