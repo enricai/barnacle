@@ -27,9 +27,11 @@ function setup(opts: { inputTakes: boolean }): {
   setInputFiles: ReturnType<typeof vi.fn>;
   click: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
+  dropCalls: () => number;
 } {
   const signalCounter = { n: 0 };
   const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  let drops = 0;
   const handlers: Record<string, (p?: object) => void> = {};
   const emitUploadPost = (): void => {
     setTimeout(() => {
@@ -65,7 +67,10 @@ function setup(opts: { inputTakes: boolean }): {
       if (e.includes("present: true")) return Promise.resolve({ present: true });
       if (e.includes("chosen.setAttribute(")) return Promise.resolve({ marked: true, text: "u" });
       if (e.includes("querySelectorAll('input[type=file]').length")) return Promise.resolve(1);
-      if (e.includes("no drop zone found")) return Promise.resolve({ ok: false });
+      if (e.includes("no drop zone found")) {
+        drops += 1;
+        return Promise.resolve({ ok: false });
+      }
       return Promise.resolve(false);
     },
     locator: () => ({ first: () => ({ click, setInputFiles }) }),
@@ -107,6 +112,7 @@ function setup(opts: { inputTakes: boolean }): {
     setInputFiles,
     click,
     send,
+    dropCalls: () => drops,
   };
 }
 
@@ -119,6 +125,7 @@ describe("tryUploadPrimitive existing-input retry", () => {
     const t = setup({ inputTakes: false });
     expect(await t.run()).toBe("completed");
     expect(t.click).toHaveBeenCalled();
+    expect(t.dropCalls()).toBeLessThanOrEqual(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toMatch(/\/v1\/sessions\/sess-1\/uploads$/);
     expect(init.method).toBe("POST");
@@ -135,6 +142,7 @@ describe("tryUploadPrimitive existing-input retry", () => {
     expect(await t.run()).toBe("completed");
     expect(t.setInputFiles).toHaveBeenCalled();
     expect(t.click).not.toHaveBeenCalled();
+    expect(t.dropCalls()).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
