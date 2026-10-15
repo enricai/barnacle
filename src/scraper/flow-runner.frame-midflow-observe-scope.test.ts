@@ -240,11 +240,12 @@ describe("flow-runner mid-flow iframe: guardedObserve's actual hop-scoped select
     // act-string resolved directly (`APPLY_NOW_STEP`'s own observe call is
     // deliberately excluded from `observeSelectors` above), so every
     // recorded call belongs to step 2: its pre-cascade reachability probe,
-    // then attempt 2's observe+act fallback once attempt 1's act-string
-    // phantom-fails on content it can't yet see pre-resolution.
-    expect(observeSelectors).toHaveLength(2);
+    // attempt 1's click-intent pre-centre observe, then attempt 2's
+    // observe+act fallback once attempt 1's act-string phantom-fails on
+    // content it can't yet see pre-resolution.
+    expect(observeSelectors).toHaveLength(3);
 
-    // BOTH of step 2's observe calls carry the `#apply_frame >> `
+    // ALL of step 2's observe calls carry the `#apply_frame >> `
     // hop prefix — proving `resolveFrameTarget` re-resolved per step
     // (bugfix-001) and the hop selector was composed from that fresh
     // resolution (bugfix-003) for every observe call against the step, not a
