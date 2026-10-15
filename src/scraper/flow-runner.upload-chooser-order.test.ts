@@ -31,8 +31,10 @@ function setup(opts: { chooser: boolean; cdpUploads: boolean }): {
   const setInputFiles = vi.fn().mockResolvedValue(undefined);
   const send = vi.fn((method: string): Promise<unknown> => {
     if (method === "DOM.setFileInputFiles" && opts.cdpUploads) {
-      signalCounter.n += 1;
-      recentCaptureMeta.push({ method: "POST", status: 200, url: "https://x.test/upload" });
+      setTimeout(() => {
+        recentCaptureMeta.push({ method: "POST", status: 200, url: "https://x.test/upload" });
+        signalCounter.n += 1;
+      }, 10);
     }
     return Promise.resolve({});
   });

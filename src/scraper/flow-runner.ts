@@ -5537,15 +5537,15 @@ export async function surfaceAndUpload(params: {
       );
       if (
         await setFilesViaCdp({
-        page,
-        target,
-        session,
-        backendNodeId: chooserBackendNodeId,
-        fixture,
-        logger,
-        signalCounter,
-        recentCaptureMeta,
-        browserbaseSessionId,
+          page,
+          target,
+          session,
+          backendNodeId: chooserBackendNodeId,
+          fixture,
+          logger,
+          signalCounter,
+          recentCaptureMeta,
+          browserbaseSessionId,
         })
       ) {
         return true;
