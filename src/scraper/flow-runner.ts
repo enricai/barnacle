@@ -123,6 +123,12 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
+import {
+  FIND_DROP_ZONE_EXPR,
+  matchesUploadAffordanceVocabulary,
+  UPLOAD_AFFORDANCE_CONTROL_SELECTOR,
+  UPLOAD_AFFORDANCE_MATCHER_EXPR,
+} from "@/scraper/upload-affordance-expr";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
@@ -5065,7 +5071,16 @@ const UPLOAD_WIDGET_RENDER_INTERVAL_MS = 600;
  * matches `/attachment`; the others cover the other ATS upload sinks. Module-
  * level so both the raw-input path and the click-to-surface path share one list.
  */
-const UPLOAD_URL_PATTERNS = ["/upload", "/resume", "/file", "/attachment", "/document"] as const;
+const UPLOAD_URL_PATTERNS = [
+  "/upload",
+  "/resume",
+  "/file",
+  "/attach",
+  "/document",
+  "/cv",
+  "/media",
+  "/import",
+] as const;
 
 /** One entry of the recent-network-capture window shared across upload helpers. */
 type CaptureMeta = { method: string; status: number; url: string };
@@ -5120,13 +5135,7 @@ async function waitForUploadNetworkSignal(params: {
  * surface path never fires a skip/decline/submit control.
  */
 export function isUploadAffordanceLabel(label: string): boolean {
-  const norm = label.replace(/\s+/g, " ").trim().toLowerCase();
-  if (norm.length === 0) return false;
-  if (/\b(later|skip|without|remove|delete|cancel)\b/.test(norm)) return false;
-  if (/\bno file\b/.test(norm)) return false;
-  return /\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\/cv)\b/.test(
-    norm
-  );
+  return matchesUploadAffordanceVocabulary(label);
 }
 
 /**
@@ -5256,7 +5265,13 @@ export async function attachToSurfacedInput(params: {
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
-  const inputLocator = target.locator("xpath=//input[@type='file']").first();
+  // Prefer an enabled input (a widget can keep a disabled decoy beside the live one);
+  // the second union branch only matches when no enabled file input exists.
+  const inputLocator = target
+    .locator(
+      "xpath=(//input[@type='file' and not(@disabled)] | //input[@type='file'][not(//input[@type='file' and not(@disabled)])])[1]"
+    )
+    .first();
   try {
     await inputLocator.setInputFiles({
       name: fixture.name,
@@ -5371,22 +5386,14 @@ export async function surfaceAndUpload(params: {
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
   // target to appear — a dropzone, an upload-affordance button, or an
   // <input type=file> — so every downstream strategy runs against a rendered
-  // widget. Static evaluate literal (no interpolation); dropzone list parallels
+  // widget. Dropzone list is the shared FIND_DROP_ZONE_EXPR used by
   // simulateDragDropUpload and the button matcher parallels clickUploadAffordance.
   const targetExpr = `(() => {
-    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isUpload = (raw) => {
-      const t = norm(raw);
-      if (!t) return false;
-      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
-      if (/\\bno file\\b/.test(t)) return false;
-      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
-    };
+    const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
     if (document.querySelector("input[type=file]")) return { present: true };
-    const dz = document.querySelector("[class*='dropzone'],[class*='drop-zone'],[class*='file-drop'],[class*='upload-zone'],[class*='ResumeUpload'],[class*='resumeUpload'],[class*='resume-upload'],uapp-upload,app-upload");
-    if (dz) return { present: true };
+    if (${FIND_DROP_ZONE_EXPR}(document)) return { present: true };
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
-    const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const btns = Array.from(document.querySelectorAll(${JSON.stringify(UPLOAD_AFFORDANCE_CONTROL_SELECTOR)}));
     if (btns.some((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
     return { present: false };
   })()`;
@@ -5508,19 +5515,13 @@ async function clickUploadAffordance(
   target: FrameTarget,
   logger: Logger
 ): Promise<boolean> {
-  // The browser-side matcher parallels isUploadAffordanceLabel; kept as a literal
-  // so the enumerate is a static string (same trust posture as the other
-  // primitives). Only the shared visibility constant is interpolated.
+  // The browser-side matcher is the shared upload-affordance vocabulary; the enumerate stays
+  // a static string (same trust posture as the other
+  // primitives); only shared constants are interpolated.
   const expr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-    const isUpload = (raw) => {
-      const t = norm(raw);
-      if (!t) return false;
-      if (/\\b(later|skip|without|remove|delete|cancel)\\b/.test(t)) return false;
-      if (/\\bno file\\b/.test(t)) return false;
-      return /\\b(upload|browse|select file|choose file|attach|add (a )?(resume|cv|file)|resume\\/cv)\\b/.test(t);
-    };
-    const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
+    const els = Array.from(document.querySelectorAll(${JSON.stringify(UPLOAD_AFFORDANCE_CONTROL_SELECTOR)}));
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
@@ -8501,24 +8502,7 @@ export async function simulateDragDropUpload(
     const fileName = ${JSON.stringify(fixture.name)};
     const fileType = ${JSON.stringify(fixture.mimeType)};
     const base64 = ${JSON.stringify(base64)};
-    const dropZoneSelectors = [
-      "uapp-upload",
-      "app-upload",
-      "uapp-resume-upload",
-      "[class*='dropzone']",
-      "[class*='drop-zone']",
-      "[class*='file-drop']",
-      "[class*='upload-zone']",
-      "[class*='uapp-upload']",
-      "[class*='ResumeUpload']",
-      "[class*='resumeUpload']",
-      "[class*='resume-upload']",
-    ];
-    let dropZone = null;
-    for (const sel of dropZoneSelectors) {
-      const el = document.querySelector(sel);
-      if (el) { dropZone = el; break; }
-    }
+    const dropZone = ${FIND_DROP_ZONE_EXPR}(document);
     if (!dropZone) return { ok: false, reason: "no drop zone found" };
     try {
       const binStr = atob(base64);
