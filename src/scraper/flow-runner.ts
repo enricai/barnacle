@@ -8346,7 +8346,23 @@ async function commitPromptOption(params: {
     }
     const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
 
-    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${chosenOption.oIdx}"]`;
+    // A virtualized list may reuse nodes between the read and the click, so the
+    // stamped index can now point at a different item: re-stamp and re-resolve
+    // the matched option by text, then click the index from that fresh read.
+    const wantChosenText = norm(chosenOption.text);
+    const fresh = (await target
+      .evaluate(enumerateOptionsExpr)
+      .catch(() => null)) as { options?: { oIdx: number; text: string }[] } | null;
+    const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+    const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
+    if (!freshOption) {
+      logger.info(
+        `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
+      );
+      return null;
+    }
+
+    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
     try {
       await clickCentredTrusted(target, optionSel, { label: "prompt-selector option" });
     } catch (err) {
