@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 import { ApplicantContactSchema } from "@/lib/applicant-payload";
+import { JobTrackingSchema } from "@/lib/job-tracking";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { emitContractTs, resolveStepPayloadField } from "@/scripts/recon-generate";
 
@@ -54,7 +55,7 @@ describe("resolveStepPayloadField — canonical payload field names", () => {
       payloadFieldNames: fields,
     });
     const block = source.match(
-      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\);/
+      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(JobTrackingSchema\.shape\))?;/
     );
     expect(block).not.toBeNull();
     expect(block![0]).not.toContain("MobilePhone:");
@@ -93,15 +94,16 @@ describe("emitContractTs — generate and safeParse", () => {
       payloadFieldNames: fields,
     });
     const block = source.match(
-      /const (\w+PayloadSchema) = (ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\));/
+      /const (\w+PayloadSchema) = (ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(JobTrackingSchema\.shape\))?);/
     );
     expect(block).not.toBeNull();
     const schema = new Function(
       "z",
       "ApplicantContactSchema",
+      "JobTrackingSchema",
       "multipartJsonObject",
       `return ${block![2]};`
-    )(z, ApplicantContactSchema, (s: z.ZodType) => s) as z.ZodType;
+    )(z, ApplicantContactSchema, JobTrackingSchema, (s: z.ZodType) => s) as z.ZodType;
     const base = Object.fromEntries(
       Object.entries(ApplicantContactSchema.shape).map(([k, v]) => {
         const parsed = (v as z.ZodType).safeParse("x");
@@ -117,4 +119,51 @@ describe("emitContractTs — generate and safeParse", () => {
     });
     expect(result.success ? [] : result.error.issues).toEqual([]);
   });
+});
+
+describe("emitContractTs — TrackingUrl composition", () => {
+  const emit = (isSubmissionFlow: boolean, omitExecuteHttp: boolean): string =>
+    emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp,
+      isSubmissionFlow,
+      payloadFieldNames: new Set<string>(),
+    });
+
+  it.each([
+    ["applicant base", true, true],
+    ["empty object base", false, true],
+    ["query base", false, false],
+  ])(
+    "imports JobTrackingSchema and retains TrackingUrl on parse (%s)",
+    (_name, submission, omit) => {
+      const source = emit(submission, omit);
+      expect(source).toContain('import { JobTrackingSchema } from "');
+      expect(source).toContain(".extend(JobTrackingSchema.shape)");
+      const block = source.match(
+        /const (\w+PayloadSchema) = ([\s\S]*?\.extend\(JobTrackingSchema\.shape\));/
+      );
+      expect(block).not.toBeNull();
+      const schema = new Function(
+        "z",
+        "ApplicantContactSchema",
+        "JobTrackingSchema",
+        "multipartJsonObject",
+        `return ${block![2]};`
+      )(z, ApplicantContactSchema, JobTrackingSchema, (s: z.ZodType) => s) as z.ZodType;
+      const shape = (schema as unknown as { shape: Record<string, unknown> }).shape;
+      expect(Object.keys(shape)).toContain("TrackingUrl");
+    }
+  );
 });
