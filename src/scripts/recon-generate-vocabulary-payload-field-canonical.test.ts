@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod/v4";
 import { ApplicantContactSchema } from "@/lib/applicant-payload";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { emitContractTs, resolveStepPayloadField } from "@/scripts/recon-generate";
@@ -64,5 +65,56 @@ describe("resolveStepPayloadField — canonical payload field names", () => {
     expect(Object.keys(ApplicantContactSchema.shape)).toEqual(
       expect.arrayContaining(["Phone", "AddressLine"])
     );
+  });
+});
+
+describe("emitContractTs — generate and safeParse", () => {
+  it("emits a payload schema that accepts base-schema fields plus Email and ClickUrl only", () => {
+    const fields = new Set(
+      ["Fill 'Phone Number' with '555'", "Fill 'Address Line 1' with '1 Main'"].map(
+        (s) => resolveStepPayloadField(s, undefined, false, vocabulary) as string
+      )
+    );
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      payloadFieldNames: fields,
+    });
+    const block = source.match(
+      /const (\w+PayloadSchema) = (ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\));/
+    );
+    expect(block).not.toBeNull();
+    const schema = new Function(
+      "z",
+      "ApplicantContactSchema",
+      "multipartJsonObject",
+      `return ${block![2]};`
+    )(z, ApplicantContactSchema, (s: z.ZodType) => s) as z.ZodType;
+    const base = Object.fromEntries(
+      Object.entries(ApplicantContactSchema.shape).map(([k, v]) => {
+        const parsed = (v as z.ZodType).safeParse("x");
+        return [k, parsed.success ? "x" : undefined];
+      })
+    );
+    const result = schema.safeParse({
+      ...base,
+      Resume: Buffer.from("x"),
+      Answers: {},
+      Email: "a@b.co",
+      ClickUrl: "https://x.test/a",
+    });
+    expect(result.success ? [] : result.error.issues).toEqual([]);
   });
 });
