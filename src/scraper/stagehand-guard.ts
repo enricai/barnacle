@@ -46,10 +46,17 @@ import type {
   ExtractOptions,
   ObserveOptions,
   Stagehand,
+  Variables,
 } from "@browserbasehq/stagehand";
 import pRetry from "p-retry";
 import { z } from "zod/v4";
 
+import {
+  detokenize,
+  redactPii,
+  tokenizeSensitiveValues,
+  unresolvedTokens,
+} from "@/lib/pii-redaction";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -63,6 +70,7 @@ import {
 import { buildHopSelector, type FrameTarget } from "@/scraper/frame-target";
 import { isTransientProviderError } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
+import type { SensitiveVariables } from "@/types/pii-redaction";
 
 /**
  * Injectable capture function — matches `captureLlmCall`'s signature. Same
@@ -182,6 +190,45 @@ function actInstructionOf(input: string | Action): string {
   return typeof input === "string" ? input : input.description;
 }
 
+function mergeVariables<T extends { variables?: Variables }>(
+  options: T | undefined,
+  variables: Variables
+): T | undefined {
+  if (Object.keys(variables).length === 0) return options;
+  return { ...options, variables: { ...options?.variables, ...variables } } as T;
+}
+
+/**
+ * Observe only needs the token names for its prompt (it never performs the
+ * action, so never substitutes): withhold the values so they are not shipped
+ * to the Stagehand API either. Plain strings, not the `{ value, description }`
+ * form, so the call stays inside the wire shape already proven against the API.
+ */
+function withheldVariables(variables: SensitiveVariables): Variables {
+  return Object.fromEntries(Object.keys(variables).map((name) => [name, ""]));
+}
+
+function detokenizeAction(action: Action, variables: SensitiveVariables): Action {
+  if (Object.keys(variables).length === 0) return action;
+  return {
+    ...action,
+    description: detokenize(action.description, variables),
+    ...(action.arguments
+      ? { arguments: action.arguments.map((arg) => detokenize(arg, variables)) }
+      : {}),
+  };
+}
+
+function detokenizeActResult(result: ActResult, variables: SensitiveVariables): ActResult {
+  if (Object.keys(variables).length === 0) return result;
+  return {
+    ...result,
+    message: detokenize(result.message, variables),
+    actionDescription: detokenize(result.actionDescription, variables),
+    actions: result.actions.map((action) => detokenizeAction(action, variables)),
+  };
+}
+
 /**
  * Merges `frameTarget.frameSelector` into `options.selector` for
  * `ObserveOptions`/`ExtractOptions`, composed as Stagehand `">>"` hop
@@ -234,7 +281,14 @@ export async function guardedAct(
   _frameTarget?: FrameTarget
 ): Promise<ActResult> {
   const callId = randomUUID();
-  const userContent = actInstructionOf(input);
+  // Request values travel as Stagehand `variables`, substituted only when
+  // the action is performed. An `Action` (from observe) is replayed without
+  // an LLM, so it keeps its literal arguments.
+  const tokenized =
+    typeof input === "string" ? tokenizeSensitiveValues(input) : { text: "", variables: {} };
+  const sendInput = typeof input === "string" ? tokenized.text : input;
+  const sendOptions = mergeVariables(options, tokenized.variables);
+  const userContent = actInstructionOf(sendInput);
   const t0 = performance.now();
   try {
     // Stagehand's `act` has two overloads (string and Action) that share the
@@ -247,7 +301,9 @@ export async function guardedAct(
     const raw = await retryTransient(() =>
       withWatchdog(
         () =>
-          typeof input === "string" ? stagehand.act(input, options) : stagehand.act(input, options),
+          typeof sendInput === "string"
+            ? stagehand.act(sendInput, sendOptions)
+            : stagehand.act(sendInput, sendOptions),
         { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
       )
     );
@@ -284,7 +340,7 @@ export async function guardedAct(
       },
       captureFn
     );
-    return parsed.data;
+    return detokenizeActResult(parsed.data, tokenized.variables);
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
     const latencyMs = performance.now() - t0;
@@ -334,20 +390,26 @@ export async function guardedObserve(
   frameTarget?: FrameTarget
 ): Promise<Action[]> {
   const callId = randomUUID();
-  const userContent = instruction ?? "";
+  const tokenized =
+    instruction === undefined ? { text: "", variables: {} } : tokenizeSensitiveValues(instruction);
+  const sendInstruction = instruction === undefined ? undefined : tokenized.text;
+  const userContent = sendInstruction ?? "";
   const t0 = performance.now();
-  const scopedOptions = frameScopedOptions(options, frameTarget);
+  const scopedOptions = mergeVariables(
+    frameScopedOptions(options, frameTarget),
+    withheldVariables(tokenized.variables)
+  );
   try {
     // Match Stagehand's overloads: pass instruction only when defined, so
     // the SDK falls through to its no-arg/options-only path otherwise.
     const raw = await retryTransient(() =>
       withWatchdog(
         () =>
-          instruction === undefined
+          sendInstruction === undefined
             ? scopedOptions === undefined
               ? stagehand.observe()
               : stagehand.observe(scopedOptions)
-            : stagehand.observe(instruction, scopedOptions),
+            : stagehand.observe(sendInstruction, scopedOptions),
         {
           timeoutMs: scopedOptions?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
           label: "stagehand-observe",
@@ -387,7 +449,18 @@ export async function guardedObserve(
       },
       captureFn
     );
-    return parsed.data;
+    // Callers replay these actions directly (no substitution on that path),
+    // so tokens are resolved here; an action carrying a token the LLM
+    // invented would type it verbatim and is dropped.
+    return parsed.data
+      .map((action) => detokenizeAction(action, tokenized.variables))
+      .filter(
+        (action) =>
+          Object.keys(tokenized.variables).length === 0 ||
+          (action.arguments ?? []).every(
+            (arg) => unresolvedTokens(arg, tokenized.variables).length === 0
+          )
+      );
   } catch (err) {
     if (err instanceof StagehandSchemaError) throw err;
     const latencyMs = performance.now() - t0;
@@ -532,8 +605,13 @@ async function captureCall(
   >,
   captureFn: StagehandCaptureFn = captureLlmCall
 ): Promise<void> {
+  // Replayed observe `Action`s keep literal arguments, so scrub here rather
+  // than relying on every caller-supplied sink to do it.
   await captureFn({
     ...partial,
+    userContent: redactPii(partial.userContent),
+    responseContent: partial.responseContent === null ? null : redactPii(partial.responseContent),
+    errorMessage: partial.errorMessage === null ? null : redactPii(partial.errorMessage),
     model: "stagehand-internal",
     systemPrompt: null,
     inputTokens: null,

@@ -29,6 +29,11 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
+import {
+  registerRedactionPolicy,
+  registerSensitiveValues,
+  releaseSensitiveValues,
+} from "@/lib/pii-redaction";
 import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
 import { type HotPathErrorTelemetry, RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
@@ -387,6 +392,11 @@ export async function dispatch<TResult>(
   const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
+  // dispatch() is also called directly (integration runners, consumer
+  // tests), not only through registerRoutes; submission telemetry looks the
+  // policy up by siteId, so record it here too.
+  registerRedactionPolicy(plugin.meta.siteId, plugin.meta.redaction);
+  registerSensitiveValues(context.requestId, payload, plugin.meta.redaction);
 
   try {
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
@@ -482,6 +492,8 @@ export async function dispatch<TResult>(
     }
     (err as unknown as { metrics: DispatchMetrics }).metrics = metrics;
     throw err;
+  } finally {
+    releaseSensitiveValues(context.requestId);
   }
 }
 
@@ -538,6 +550,7 @@ export async function registerRoutes(
 
   for (const plugin of plugins) {
     const routePath = plugin.meta.routeOverride ?? `/v1/${plugin.meta.siteId}/run`;
+    registerRedactionPolicy(plugin.meta.siteId, plugin.meta.redaction);
 
     app.post(
       routePath,
@@ -663,15 +676,21 @@ function registerExtraRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await route.handler(
-          {
-            body,
-            params: request.params as Record<string, string>,
-            log: request.log as unknown as Logger,
-          },
-          context
-        );
-        return route.envelope === false ? result : successEnvelope(result as object);
+        // Extra routes bypass dispatch(), so they register their body here.
+        registerSensitiveValues(request.id, body, plugin.meta.redaction);
+        try {
+          const result = await route.handler(
+            {
+              body,
+              params: request.params as Record<string, string>,
+              log: request.log as unknown as Logger,
+            },
+            context
+          );
+          return route.envelope === false ? result : successEnvelope(result as object);
+        } finally {
+          releaseSensitiveValues(request.id);
+        }
       },
     });
 

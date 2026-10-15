@@ -60,6 +60,7 @@ export async function captureBeaconEvent(
   input: BeaconEventInput,
   opts: CaptureBeaconEventOptions = {}
 ): Promise<void> {
+  if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.submissionsNdjsonPath;
   const sample: BeaconEventSample = {
     ...input,

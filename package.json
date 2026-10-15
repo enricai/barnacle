@@ -108,6 +108,10 @@
       "types": "./dist/lib/phone.d.ts",
       "default": "./dist/lib/phone.js"
     },
+    "./lib/pii-redaction": {
+      "types": "./dist/lib/pii-redaction.d.ts",
+      "default": "./dist/lib/pii-redaction.js"
+    },
     "./lib/random": {
       "types": "./dist/lib/random.d.ts",
       "default": "./dist/lib/random.js"
@@ -244,6 +248,10 @@
       "types": "./dist/types/logging.d.ts",
       "default": "./dist/types/logging.js"
     },
+    "./types/pii-redaction": {
+      "types": "./dist/types/pii-redaction.d.ts",
+      "default": "./dist/types/pii-redaction.js"
+    },
     "./types/session-proxy": {
       "types": "./dist/types/session-proxy.d.ts",
       "default": "./dist/types/session-proxy.js"
@@ -298,6 +306,7 @@
     "fastify-type-provider-zod": "^5.0.2",
     "happy-dom": "^20.11.2",
     "http-status-codes": "^2.3.0",
+    "libphonenumber-js": "^1.13.11",
     "lru-cache": "^11.5.2",
     "nanoid": "^6.0.0",
     "normalize-url": "^9.0.1",

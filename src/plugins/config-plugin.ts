@@ -26,6 +26,7 @@ import { createBedrockModel } from "@/lib/bedrock";
 import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import { RECON_FLOW_STEP_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
+import { REDACTION_POLICY_SCHEMA } from "@/lib/pii-redaction";
 import { jsonSchemaToZod } from "@/plugins/json-schema-to-zod";
 import { PLUGIN_API_VERSION } from "@/plugins/plugin-api-version";
 import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
@@ -108,6 +109,8 @@ export const CONFIG_PLUGIN_MANIFEST = z.object({
      * fallback should be skipped. Absent means today's unconditional cascade.
      */
     browserFallbackGate: browserFallbackGateSchema.optional(),
+    /** How request fields are redacted and which are persisted; see `SitePluginMeta.redaction`. */
+    redaction: REDACTION_POLICY_SCHEMA.optional(),
   }),
 });
 
@@ -341,6 +344,7 @@ export async function buildConfigPlugin(
         browserbaseSessionCreateParams: spec.browserbaseSessionCreateParams,
       }),
       ...(browserFallbackGate !== undefined && { browserFallbackGate }),
+      ...(spec.redaction !== undefined && { redaction: spec.redaction }),
     },
     ...(executeHttp && { executeHttp }),
     async execute(

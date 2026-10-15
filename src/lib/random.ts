@@ -9,6 +9,8 @@
 
 import { randomBytes } from "node:crypto";
 
+import { registerSecretValue } from "@/lib/pii-redaction";
+
 /**
  * Returns a uniformly distributed integer in the inclusive range [min, max].
  * If `max <= min` the function returns `min` rather than producing NaN or
@@ -35,8 +37,12 @@ export function pickRandom<T>(arr: readonly T[]): T {
  * password field but has no caller-supplied secret to splice — recon-captured
  * credentials must never leak into a generated flow, and a fixed literal would
  * be a shared secret across every run. `node:crypto`'s CSPRNG (not `Math.random`,
- * which backs the jitter helpers above) keeps the value unguessable.
+ * which backs the jitter helpers above) keeps the value unguessable. The value
+ * is registered for redaction because flows embed it in step instructions that
+ * reach logs and telemetry.
  */
 export function generateThrowawayPassword(): string {
-  return randomBytes(24).toString("base64url");
+  const password = randomBytes(24).toString("base64url");
+  registerSecretValue(password);
+  return password;
 }

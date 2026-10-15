@@ -148,6 +148,59 @@ config-only manifest reaches this only via `spec.httpModule`, and — since it
 never gets `extractJoinKeys` — its line only outranks core's own
 `TrackingUrl` fire when none was present.
 
+## Sensitive request data (`meta.redaction`)
+
+Core registers each request's body (`/run` and `meta.extraRoutes`) for the
+duration of the run and scrubs those values from every log line, telemetry
+record and error reply (`<fieldName>`). Only the plugin knows what its fields
+mean, so it declares how each top-level key is treated:
+
+```ts
+import type { RedactionPolicy } from "@enricai/barnacle/types/pii-redaction";
+
+const redaction: RedactionPolicy = {
+  persistKeys: ["orderId"],   // not sensitive; kept verbatim in submission telemetry
+  publicKeys: ["searchTerm"], // not sensitive; never scrubbed, not persisted
+  skipKeys: ["attachment"],   // binary/encoded content; never matched
+  wordKeys: ["fullName"],     // matched case-insensitively on word boundaries
+  digitKeys: ["phone"],       // matched by its digits in any formatting
+  tokenizeKeys: ["fullName", "phone"], // typed free-text values Stagehand gets as %tokens%
+};
+
+// meta: { ..., redaction }
+```
+
+Any key the policy doesn't list is scrubbed as an exact literal and is not
+persisted, so a plugin that declares nothing is safe by default. Submission
+telemetry (`inboundPayload`) keeps only `persistKeys` values plus the names of
+the other fields present — declare any field your own tooling reads back from
+it. Config-only manifests declare the same object as `spec.redaction`. The
+policy is validated when the plugin loads: an unknown field or a non-array value
+is rejected (the plugin is disabled, or startup aborts under
+`BARNACLE_PLUGINS_STRICT`) rather than silently leaving values unprotected.
+
+`tokenizeKeys` is opt-in: list only fields the flow types as free text. Their
+values reach Stagehand's LLM as `%Name%` tokens, substituted only when the action
+is performed. Leave out values a step must match against page options
+(dropdowns, typeahead suggestions); see [the playbook](playbook.md) §1a.
+
+Two cases core cannot see:
+
+- **Secrets your plugin mints itself** — e.g. an account password derived from a
+  server secret. Register it before use (`generateThrowawayPassword()` already
+  does):
+
+  ```ts
+  import { registerSecretValue } from "@enricai/barnacle/lib/pii-redaction";
+
+  const password = derivePassword(accountId);
+  registerSecretValue(password);
+  ```
+
+- **Short values** (`Yes`, `No`, single choices) are too common to register, so
+  don't log chosen values. Log `maskValueShape(value)` (`Aaa`, `99/99/9999`)
+  when the format matters for debugging.
+
 ## Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets,

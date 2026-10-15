@@ -12,6 +12,7 @@ import { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { redactPiiDeep } from "@/lib/pii-redaction";
 import { bufferCallLine } from "@/lib/telemetry/s3-sink";
 
 const logger = getLogger({ name: "telemetry/call-capture" });
@@ -184,8 +185,9 @@ export async function captureLlmCall(
   input: LlmCallInput,
   opts: CaptureOptions = {}
 ): Promise<void> {
+  if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.callsNdjsonPath;
-  const sample: LlmCallSample = { ...input, ts: formatISO(new Date()) };
+  const sample = redactPiiDeep({ ...input, ts: formatISO(new Date()) }) as LlmCallSample;
 
   try {
     const line = `${JSON.stringify(sample)}\n`;

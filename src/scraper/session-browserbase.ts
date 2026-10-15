@@ -298,6 +298,8 @@ export async function createBrowserbaseBrowserSession(
           ...customSessionParams.browserSettings,
           ...(advancedStealth ? { advancedStealth: true, solveCaptchas: true } : {}),
           fingerprint,
+          logSession: config.scraper.browserbaseSessionArtifacts,
+          recordSession: config.scraper.browserbaseSessionArtifacts,
         },
       },
       model: config.scraper.useBedrock
@@ -309,7 +311,11 @@ export async function createBrowserbaseBrowserSession(
             fetch: createTimeoutFetch(config.scraper.anthropicTimeoutMs),
           } as ModelConfiguration),
       llmClient,
-      serverCache: true,
+      // Off: the cache keys on instruction text, and instructions can still
+      // carry request values the guard leaves literal (keys outside the
+      // plugin's tokenizeKeys, replayed observe actions), which a cache entry
+      // would persist on Browserbase's side.
+      serverCache: false,
       selfHeal: false,
       // Stagehand spawns an out-of-process crash supervisor whenever
       // keepAlive isn't true, watching its own stdin lifeline pipe and

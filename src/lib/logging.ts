@@ -3,6 +3,7 @@ import pino from "pino";
 
 import { getTracer } from "@/lib/datadog";
 import { getBoolEnv, getEnv, getNodeEnv } from "@/lib/env";
+import { redactPii, redactPiiDeep } from "@/lib/pii-redaction";
 import type { Logger } from "@/types/logging";
 
 const nodeEnv = getNodeEnv();
@@ -62,6 +63,18 @@ const formatters = {
 };
 
 type LogFunction = (obj: unknown, ...args: unknown[]) => void;
+
+/**
+ * Scrubs registered request values from every argument before pino formats
+ * the line. `redact` only matches object keys; log messages are interpolated
+ * strings, so values have to be matched by content. Child loggers (e.g.
+ * Fastify's `request.log`) inherit pino hooks. Exported for direct testing.
+ */
+export const PII_REDACTING_LOG_HOOKS: pino.LoggerOptions["hooks"] = {
+  logMethod(args, method): void {
+    method.apply(this, args.map((arg) => redactPiiDeep(arg)) as Parameters<typeof method>);
+  },
+};
 
 /**
  * Splits a message that exceeds CloudWatch's 256KB per-event cap. Prefers
@@ -130,7 +143,10 @@ function getChunkPrefix(index: number, totalChunks: number): string {
 
 function logWithSplitting(originalLogFn: LogFunction, obj: unknown, ...args: unknown[]): void {
   if (typeof obj === "string") {
-    const chunks = splitLargeMessage(obj);
+    // The redaction hook sees one chunk at a time, so a value cut in half by
+    // the split would match in neither; scrub the whole message first.
+    const whole = splitLargeMessage(obj);
+    const chunks = whole.length > 1 ? splitLargeMessage(redactPii(obj)) : whole;
     chunks.forEach((chunk, index) => {
       const prefix = getChunkPrefix(index, chunks.length);
       originalLogFn(`${prefix}${chunk}`, ...args);
@@ -198,6 +214,7 @@ export function getScriptLogger(name: string): Logger {
     pino({
       name: getLogName(name, defaultAppName),
       level: process.env.LOG_LEVEL ?? "info",
+      hooks: PII_REDACTING_LOG_HOOKS,
       transport,
     })
   );
@@ -226,6 +243,7 @@ export function getLogger({ name, level }: { name: string; level?: string }): Lo
     },
     timestamp: getTimestamp,
     formatters,
+    hooks: PII_REDACTING_LOG_HOOKS,
     mixin: ddEnabled ? ddMixin : undefined,
     redact: {
       paths: redactPaths,

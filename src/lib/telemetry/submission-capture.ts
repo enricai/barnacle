@@ -1,6 +1,7 @@
 /**
  * Append-only NDJSON sink for dispatch submission envelopes. One line per
- * plugin invocation captures the outcome — siteId, requestId, inbound payload,
+ * plugin invocation captures the outcome — siteId, requestId, an allowlisted
+ * summary of the request body (only the keys the plugin declares persistable),
  * status, audit payload, error message, duration, plus the opaque `joinKeys`
  * bag and the `kind:"submit"` dimension — so downstream tooling (ETL, jq,
  * ad-hoc queries) can answer "what did we submit for jobId X on date Y, and
@@ -20,8 +21,10 @@ import type { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { redactionPolicyFor, redactPiiDeep } from "@/lib/pii-redaction";
 import { submitRecordSchema } from "@/lib/telemetry/reconciliation-record";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
+import type { InboundPayloadSummary } from "@/types/pii-redaction";
 
 const logger = getLogger({ name: "telemetry/submission-capture" });
 
@@ -41,6 +44,31 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
  * internally so callers omit them.
  */
 export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind">;
+
+/**
+ * Reduces a request body to what telemetry consumers read, because the raw
+ * body can carry personal data and the sink lands in long-retention S3
+ * storage. Only the plugin's declared `persistKeys` keep their values; every
+ * other key is recorded by name in `fieldsPresent`. Non-object bodies
+ * collapse to `null`.
+ */
+export function summarizeInboundPayload(
+  payload: unknown,
+  persistKeys: readonly string[] = []
+): InboundPayloadSummary | null {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const summary: InboundPayloadSummary = { fieldsPresent: [] };
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (value === undefined || value === null || value === "") continue;
+    if (persistKeys.includes(key) && (typeof value === "string" || typeof value === "number")) {
+      summary[key] = value;
+      continue;
+    }
+    summary.fieldsPresent.push(key);
+  }
+  summary.fieldsPresent.sort();
+  return summary;
+}
 
 /** Options for `captureSubmissionEnvelope`. */
 export interface CaptureSubmissionOptions {
@@ -70,12 +98,17 @@ export async function captureSubmissionEnvelope(
   input: SubmissionEnvelopeInput,
   opts: CaptureSubmissionOptions = {}
 ): Promise<void> {
+  if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.submissionsNdjsonPath;
-  const sample: SubmissionEnvelopeSample = {
+  const sample = redactPiiDeep({
     ...input,
+    inboundPayload: summarizeInboundPayload(
+      input.inboundPayload,
+      redactionPolicyFor(input.siteId)?.persistKeys
+    ),
     kind: "submit",
     ts: formatISO(new Date()),
-  };
+  }) as SubmissionEnvelopeSample;
 
   try {
     const line = `${JSON.stringify(sample)}\n`;

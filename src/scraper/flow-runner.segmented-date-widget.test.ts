@@ -120,10 +120,11 @@ describe("segmented date widget sharing a fieldset", () => {
     doc().body.innerHTML = `<fieldset><legend>Education 1</legend>${year("From")}${year("To")}</fieldset>`;
     wireWidget();
     const { target, page } = harness();
+    const info = vi.fn();
     const id = await trySegmentedDateSpinbuttonPrimitive({
       page,
       target,
-      logger,
+      logger: { info, warn: vi.fn() } as never,
       instruction: "'To' date of Education 1, '2020'",
     });
     expect(id).toBeTruthy();
@@ -131,6 +132,9 @@ describe("segmented date widget sharing a fieldset", () => {
       i.getAttribute("aria-valuenow")
     );
     expect(vals).toEqual([null, "2020"]);
+    // Dates can be personal data (birth dates): only their shape is logged.
+    expect(info).toHaveBeenCalledWith("segmented date primitive: committed segments [9999]");
+    expect(info.mock.calls.flat().join("\n")).not.toContain("2020");
   });
 });
 
