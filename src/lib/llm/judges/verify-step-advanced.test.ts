@@ -74,4 +74,28 @@ describe("verifyStepAdvancedWithLLM", () => {
     expect(args.messages[0]?.content).toContain("Create account email password");
     expect(args.messages[0]?.content).toContain("Shipping address");
   });
+
+  it("system prompt compares the current-step marker and limits failure to explicit errors", () => {
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("marked current");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("Required-field markers");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("not errors");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("explicit error summary or message");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).not.toContain("the same form");
+  });
+
+  it("carries a step-list page's before and after text verbatim", async () => {
+    const client = fakeClient({ advanced: true, reason: "step 3 current" });
+    const beforeText = "current step 2 of 7 My Information";
+    const afterText =
+      "step 2 of 7 My Information current step 3 of 7 My Experience Job Title *";
+    await verifyStepAdvancedWithLLM({
+      client,
+      input: { ...INPUT, beforeText, afterText },
+    });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      messages: { content: string }[];
+    };
+    expect(args.messages[0]?.content).toContain(beforeText);
+    expect(args.messages[0]?.content).toContain(afterText);
+  });
 });
