@@ -18,7 +18,10 @@ const WORK_FROM = "'From' date in Work Experience 1, '012020'";
 const EDU_FROM = "'From' date of Education 1, '2016'";
 const EDU_TO = "'To' date of Education 1, '2020'";
 
-function harness(groups: SegmentedDateGroup[], readback: number[]): {
+function harness(
+  groups: SegmentedDateGroup[],
+  readback: number[]
+): {
   target: FrameTarget;
   page: never;
   sent: string[];
@@ -66,7 +69,9 @@ describe("segmented date group resolution (verbatim steps)", () => {
   });
 
   it("returns null when the digit count fits no group", () => {
-    expect(resolveSegmentedDateGroup("'From' date in Work Experience 1, '75201'", GROUPS)).toBeNull();
+    expect(
+      resolveSegmentedDateGroup("'From' date in Work Experience 1, '75201'", GROUPS)
+    ).toBeNull();
   });
 });
 
@@ -109,7 +114,7 @@ describe("segmented date primitive", () => {
     ).toBeNull();
     expect(sent).toHaveLength(0);
     expect(exprs).toHaveLength(1);
-    expect(exprs[0]).not.toContain("removeAttribute");
+    expect(exprs[0]).toContain("aria-valuemax");
   });
 });
 
@@ -123,7 +128,11 @@ describe("lone spinbutton segment verification", () => {
       type: vi.fn(),
     };
     const target = {
-      evaluate: async (): Promise<unknown> => ({ outcome: "segment", postValue: "01", tag: "input" }),
+      evaluate: async (): Promise<unknown> => ({
+        outcome: "segment",
+        postValue: "01",
+        tag: "input",
+      }),
       locator: () => locator,
     } as unknown as FrameTarget;
     return { target, fill };
