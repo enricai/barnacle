@@ -8126,11 +8126,49 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    const optionsFiltered = await pollEnumerate<{
+    type FilteredRead = {
       optionsPresent: boolean;
       searchable?: boolean;
       options?: { oIdx: number; text: string }[];
-    }>(page, target, enumerateOptionsExpr, (r) => r?.optionsPresent === true);
+    };
+    let optionsFiltered = await pollEnumerate<FilteredRead>(
+      page,
+      target,
+      enumerateOptionsExpr,
+      (r) => r?.optionsPresent === true
+    );
+    // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
+    // Enter keydown; filter-as-you-type widgets already name the option here.
+    for (
+      let submit = 0;
+      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS &&
+      !promptOptionsNameOption(optionsFiltered, option);
+      submit++
+    ) {
+      logger.info(
+        `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
+      );
+      try {
+        await sendTrustedEnter(page);
+      } catch (err) {
+        logger.info(
+          `prompt-selector primitive: enter submit failed for ${optLabel}: ${toErrorMessage(err)}`
+        );
+        break;
+      }
+      await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+      optionsFiltered = await pollEnumerate<FilteredRead>(page, target, enumerateOptionsExpr, (r) =>
+        promptOptionsNameOption(r, option)
+      );
+    }
+    if (optionsFiltered?.optionsPresent) {
+      optionsFiltered = await readStablePromptOptions<FilteredRead>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        optionsFiltered
+      );
+    }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
         `prompt-selector primitive: filtered popup for ${optLabel} rendered no options; falling through`
@@ -8156,6 +8194,62 @@ async function tryPromptSelectorPrimitive(params: {
     );
     return null;
   }
+}
+
+/** Cap on re-reads while waiting for the filtered list to stop changing. */
+const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
+
+/**
+ * Re-reads the filtered list until two consecutive reads carry identical
+ * ordered option text, so the committer never picks from a list that is still
+ * re-rendering. The last read is returned because each read re-marks the live
+ * nodes; an earlier read's marks may point at detached elements. Bounded: after
+ * the cap the latest read is returned as-is.
+ */
+async function readStablePromptOptions<T extends { options?: { text: string }[] }>(
+  page: Page,
+  target: FrameTarget,
+  enumerateOptionsExpr: string,
+  initial: T
+): Promise<T> {
+  const key = (r: T): string => JSON.stringify((r?.options ?? []).map((o) => o.text));
+  let current = initial;
+  for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+    const next = (await target.evaluate(enumerateOptionsExpr)) as T;
+    const stable = key(next) === key(current);
+    current = next;
+    if (stable) return current;
+  }
+  logger.info("prompt-selector primitive: filtered list still changing after stable-read cap");
+  return current;
+}
+
+/** Cap on trusted Enter submits for a search-on-submit prompt selector. */
+const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
+
+/** Shared option-text normalisation so submit detection and commit agree on a match. */
+function normPromptOptionText(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Detects a list that still needs a submit: true only when some option's text
+ * equals the requested option, so any placeholder wording is treated alike.
+ */
+function promptOptionsNameOption(
+  result: { options?: { text: string }[] } | null | undefined,
+  option: string
+): boolean {
+  const want = normPromptOptionText(option);
+  return (result?.options ?? []).some((o) => normPromptOptionText(o.text) === want);
+}
+
+/** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
+async function sendTrustedEnter(page: Page): Promise<void> {
+  const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
 }
 
 /**
@@ -8203,7 +8297,7 @@ async function commitPromptOption(params: {
     chosen,
     enumerateOptionsExpr,
   } = params;
-  const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const norm = normPromptOptionText;
   const wantOpt = norm(option);
   const optionSetKey = (opts: { text: string }[]): string =>
     opts
@@ -8253,7 +8347,23 @@ async function commitPromptOption(params: {
     }
     const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
 
-    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${chosenOption.oIdx}"]`;
+    // A virtualized list may reuse nodes between the read and the click, so the
+    // stamped index can now point at a different item: re-stamp and re-resolve
+    // the matched option by text, then click the index from that fresh read.
+    const wantChosenText = norm(chosenOption.text);
+    const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
+      options?: { oIdx: number; text: string }[];
+    } | null;
+    const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+    const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
+    if (!freshOption) {
+      logger.info(
+        `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
+      );
+      return null;
+    }
+
+    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
     try {
       await clickCentredTrusted(target, optionSel, { label: "prompt-selector option" });
     } catch (err) {
