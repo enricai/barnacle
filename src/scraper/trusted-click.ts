@@ -74,15 +74,14 @@ export const CENTRE_AND_HIT_TEST_FN = `function () {
 }`;
 
 /**
- * Core loop shared by every entry point: centre + hit-test until the point
- * lands on the target, then click exactly once. Retries re-centre because a
- * lazy-loaded layout shift or a sticky bar can move between passes.
+ * Centre + hit-test loop without the click, for callers whose click is issued
+ * later by Stagehand itself: leaves the target centred and verified
+ * unobstructed so that click lands on the intended control. Retries re-centre
+ * because a lazy-loaded layout shift or a sticky bar can move between passes.
  *
- * @throws when the target is missing or still occluded after all attempts —
- * never clicks an overlay.
+ * @throws when the target is missing or still occluded after all attempts.
  */
-export async function clickAfterCentredHitTest(
-  clickable: TrustedClickable,
+export async function centreAndHitTest(
   evaluateOnElement: EvaluateOnElementFn,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
@@ -91,10 +90,7 @@ export async function clickAfterCentredHitTest(
   let last: CentredHitTestResult = { state: "missing" };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     last = await evaluateOnElement(CENTRE_AND_HIT_TEST_FN);
-    if (last.state === "hit") {
-      await clickable.click();
-      return;
-    }
+    if (last.state === "hit") return;
     logger.warn(
       `click point for ${label} not on target (${last.state}${last.occluder ? `, covered by ${last.occluder}` : ""}), attempt: ${attempt}/${attempts}`
     );
@@ -104,6 +100,22 @@ export async function clickAfterCentredHitTest(
       ? `centred click: ${label} is not in the document`
       : `centred click: ${label} is occluded by ${last.occluder ?? "another element"} after ${attempts} attempts`
   );
+}
+
+/**
+ * Core loop shared by every entry point: centre + hit-test until the point
+ * lands on the target, then click exactly once.
+ *
+ * @throws when the target is missing or still occluded after all attempts —
+ * never clicks an overlay.
+ */
+export async function clickAfterCentredHitTest(
+  clickable: TrustedClickable,
+  evaluateOnElement: EvaluateOnElementFn,
+  opts: CentredTrustedClickOptions = {}
+): Promise<void> {
+  await centreAndHitTest(evaluateOnElement, opts);
+  await clickable.click();
 }
 
 /**
@@ -138,4 +150,20 @@ export async function clickCentredTrusted(
     () => target.evaluate<CentredHitTestResult>(expression),
     { label: selector, ...opts }
   );
+}
+
+/**
+ * Centres `selector` and confirms its click point is unobstructed without
+ * clicking, so a subsequent Stagehand-issued click lands on the target.
+ */
+export async function centreSelectorForClick(
+  target: FrameTarget,
+  selector: string,
+  opts: CentredTrustedClickOptions = {}
+): Promise<void> {
+  const expression = buildSelectorExpression(selector);
+  await centreAndHitTest(() => target.evaluate<CentredHitTestResult>(expression), {
+    label: selector,
+    ...opts,
+  });
 }
