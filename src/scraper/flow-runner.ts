@@ -3460,6 +3460,7 @@ export async function judgeStepOutcome(params: {
     params.page,
     params.signalCounter,
     params.preNetworkCount,
+    isStepSubmitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false}),
     async () => {
       const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
@@ -7177,6 +7178,7 @@ export async function submitCaptchaGatedForm(
           verification.page,
           verification.signalCounter,
           pre.networkCount,
+          true,
           async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
           pre.visibleTextSignature
         );
@@ -7208,6 +7210,7 @@ export async function submitCaptchaGatedForm(
               verification.page,
               verification.signalCounter,
               post.networkCount,
+              true,
               async () =>
                 (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
               post.visibleTextSignature
@@ -10729,6 +10732,7 @@ async function probeChildFrameSubmitFallback(params: {
       page,
       signalCounter,
       pre.networkCount,
+      true,
       async () => {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
@@ -10760,6 +10764,7 @@ async function probeChildFrameSubmitFallback(params: {
       page,
       signalCounter,
       post.networkCount,
+      true,
       async () => {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
@@ -12660,6 +12665,7 @@ export async function executeStepWithHealing(params: {
                 page,
                 signalCounter,
                 pre.networkCount,
+                true,
                 async () => {
                   const snap = await snapshotPage(
                     frameTarget ?? mainFrameTarget(page),
@@ -13565,6 +13571,7 @@ export async function executeStepWithHealing(params: {
         page,
         signalCounter,
         pre.networkCount,
+        isSubmitOrFinalStep,
         async () => {
           const snap = await snapshotPage(settleTarget, signalCounter);
           return snap.visibleTextSignature;
@@ -14338,6 +14345,7 @@ export async function executeStepWithHealing(params: {
             page,
             signalCounter,
             pre.networkCount,
+            isSubmitOrFinalStep,
             async () => {
               const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
               return snap.visibleTextSignature;

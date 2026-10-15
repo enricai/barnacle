@@ -20,11 +20,14 @@ const MAX_MS = 60000;
  * also counts as activity, so a DOM-only re-render that lands after the first
  * change is not snapshotted half-transitioned; the wait ends once activity has been quiet for the quiet window and is
  * bounded by the MAX_MS ceiling so a never-quiet page still terminates.
+ * Only submit-shaped steps keep the long idle wait for a slow round-trip to start;
+ * any other click that shows no activity after one quiet poll gives up.
  */
 export async function settleAfterClick(
   page: SettlePage,
   counter: SettleCounter,
   preCount: number,
+  submitShaped: boolean,
   readText?: () => Promise<string>,
   preText?: string
 ): Promise<void> {
@@ -65,6 +68,6 @@ export async function settleAfterClick(
       if (quiet >= (textMoved ? TEXT_QUIET_POLLS : QUIET_POLLS)) return;
       continue;
     }
-    if (elapsed >= IDLE_GIVE_UP_MS) return;
+    if (!submitShaped || elapsed >= IDLE_GIVE_UP_MS) return;
   }
 }
