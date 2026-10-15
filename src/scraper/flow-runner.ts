@@ -6291,6 +6291,11 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
     const focusSegment = async (si: number): Promise<void> => {
       const selector = segmentSelector(si);
+      // A below-the-fold segment would otherwise take the trusted click at an
+      // off-screen point; centre it first so the click and key events land on it.
+      await target.evaluate(
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el) el.scrollIntoView({ block: "center", inline: "center" }); })()`
+      );
       try {
         await clickCentredTrusted(target, selector, { label: "date segment" });
       } catch {

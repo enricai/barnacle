@@ -170,6 +170,28 @@ describe("segmented date primitive", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("scrolls the first segment into view before any key event is sent", async () => {
+    const order: string[] = [];
+    const { target } = harness(GROUPS, [1, 2020]);
+    const base = target.evaluate as unknown as (expr: string) => Promise<unknown>;
+    (target as unknown as { evaluate: (expr: string) => Promise<unknown> }).evaluate = async (
+      expr: string
+    ) => {
+      if (expr.includes('scrollIntoView({ block: "center"') && expr.includes("0:0")) {
+        order.push("scroll");
+      }
+      return base(expr);
+    };
+    const page = {
+      sendCDP: async (_m: string, a: { type: string }) => {
+        order.push(a.type);
+      },
+    } as never;
+    await trySegmentedDateSpinbuttonPrimitive({ page, target, logger, instruction: WORK_FROM });
+    expect(order[0]).toBe("scroll");
+    expect(order.indexOf("scroll")).toBeLessThan(order.indexOf("keyDown"));
+  });
+
   it("returns null when segments ignore key events", async () => {
     const { target, page } = harness(GROUPS, [0, 0]);
     expect(
