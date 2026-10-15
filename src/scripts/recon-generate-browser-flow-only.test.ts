@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  contractUsesApplicantContactSchema,
+  emitContractTs,
+  parseBrowserFlowOnlyOptIn,
+} from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -418,8 +422,7 @@ describe("emitContractTs — browser-flow-only reported shape is Biome-clean", (
 });
 
 describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
-  it("forces the applicant contract for a browser-flow-only submission flow despite a non-evidence inputBody", async () => {
-    const { contractUsesApplicantContactSchema } = await import("@/scripts/recon-generate");
+  it("forces the applicant contract for a browser-flow-only submission flow despite a non-evidence inputBody", () => {
     const inputBody = { vendorKey: "x" };
     expect(contractUsesApplicantContactSchema({ inputBody, isSubmissionFlow: true })).toBe(false);
     expect(
@@ -430,14 +433,21 @@ describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
       })
     ).toBe(true);
     expect(
-      contractUsesApplicantContactSchema({ inputBody, isSubmissionFlow: false, browserFlowOnly: true })
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: false,
+        browserFlowOnly: true,
+      })
     ).toBe(false);
   });
 
-  it("parses the flow-file opt-in only for a literal true", async () => {
-    const { parseBrowserFlowOnlyOptIn } = await import("@/scripts/recon-generate");
-    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: true }))).toBe(true);
-    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: "yes" }))).toBe(false);
+  it("parses the flow-file opt-in only for a literal true", () => {
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: true }))).toBe(
+      true
+    );
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: "yes" }))).toBe(
+      false
+    );
     expect(parseBrowserFlowOnlyOptIn("[]")).toBe(false);
     expect(parseBrowserFlowOnlyOptIn("nope")).toBe(false);
   });

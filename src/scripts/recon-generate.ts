@@ -15550,6 +15550,7 @@ export function emitConfigManifest(opts: {
     httpModulePath,
     isSubmissionFlow = false,
     hasMultipartStep = false,
+    browserFlowOnly = false,
     env = process.env,
   } = opts;
   const payloadFieldNames = new Set<string>();
