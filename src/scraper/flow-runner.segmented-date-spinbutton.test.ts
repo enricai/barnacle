@@ -8,10 +8,20 @@ import {
 import type { FrameTarget } from "@/scraper/frame-target";
 
 const GROUPS: SegmentedDateGroup[] = [
-  { segmentMaxes: [12, 9999], context: "Work Experience 1 From" },
-  { segmentMaxes: [12, 9999], context: "Work Experience 1 To" },
-  { segmentMaxes: [9999], context: "Education 1 From" },
-  { segmentMaxes: [9999], context: "Education 1 To" },
+  {
+    segmentMaxes: [12, 9999],
+    context: "Work Experience 1 From",
+    label: "From",
+    section: "Work Experience 1",
+  },
+  {
+    segmentMaxes: [12, 9999],
+    context: "Work Experience 1 To",
+    label: "To",
+    section: "Work Experience 1",
+  },
+  { segmentMaxes: [9999], context: "Education 1 From", label: "From", section: "Education 1" },
+  { segmentMaxes: [9999], context: "Education 1 To", label: "To", section: "Education 1" },
 ];
 
 const WORK_FROM = "'From' date in Work Experience 1, '012020'";
@@ -243,7 +253,7 @@ describe("segmented date primitive delivery", () => {
       page,
       target,
       logger,
-      instruction: "type '012020' into the Work Experience From date",
+      instruction: "type '012020' into the Work Experience 1 'From' date",
     });
     expect(id).toBe("segmented-date-0");
     expect(typed.map((t) => t.text)).toEqual(["01", "2020"]);
@@ -260,7 +270,7 @@ describe("segmented date primitive delivery", () => {
       page,
       target,
       logger,
-      instruction: "Enter 012020 as the Work Experience 1 From date",
+      instruction: "Enter 012020 as the Work Experience 1 'From' date",
     });
     expect(id).toBe("segmented-date-0");
   });

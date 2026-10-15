@@ -51,12 +51,13 @@ describe("segmented date DOM enumeration", () => {
       `<div role="group" aria-label="Start"><input role="spinbutton" aria-label="month" /><input role="spinbutton" aria-label="year" /></div>`
     );
     expect(groups[0]?.segmentMaxes).toEqual([12, 9999]);
-    expect(resolveSegmentedDateGroup("type '012020' into the date", groups)).toBe(0);
+    expect(resolveSegmentedDateGroup("'Start' date, '012020'", groups)).toBe(0);
   });
 
-  it("targets a lone month/year group whose label shares no words with the step", () => {
+  it("returns null for a lone group whose own label does not match the target field", () => {
     const groups = enumerate(section("s", "Dates", "Employment period", [12, 9999]));
-    expect(resolveSegmentedDateGroup("type '03/2018' into the Start field", groups)).toBe(0);
+    expect(resolveSegmentedDateGroup("type '03/2018' into the Start field", groups)).toBeNull();
+    expect(resolveSegmentedDateGroup("'Start' date, '03/2018'", groups)).toBeNull();
   });
 
   it("disambiguates same-width groups by the heading above their section", () => {
@@ -82,7 +83,7 @@ describe("segmented date DOM enumeration", () => {
       `<div role="group" aria-label="Period"><div><input role="spinbutton" aria-valuemax="12" /></div><div><input role="spinbutton" aria-valuemax="9999" /></div></div>`
     );
     expect(resolveSegmentedDateGroup("type '2016' into the form", groups)).toBeNull();
-    expect(resolveSegmentedDateGroup("type '012016' into the form", groups)).toBe(0);
+    expect(resolveSegmentedDateGroup("'Period' date, '012016'", groups)).toBe(0);
   });
 });
 
@@ -92,7 +93,7 @@ describe("segmented date own label and visibility", () => {
     `<div role="group" aria-label="Departure"><input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" /></div>` +
     `<div ${hiddenAttrs}><div role="group" aria-label="Return"><input role="spinbutton" aria-valuemax="12" /><input role="spinbutton" aria-valuemax="9999" /></div></div></section>`;
 
-  it.each(["style=\"display:none\"", "hidden", "aria-hidden=\"true\""])(
+  it.each(['style="display:none"', "hidden", 'aria-hidden="true"'])(
     "skips groups under a hidden ancestor (%s)",
     (attrs) => {
       const groups = enumerate(pair(attrs));

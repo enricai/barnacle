@@ -6005,7 +6005,6 @@ export function parseFillValueIntent(instruction: string): { value: string } | n
 const SEGMENTED_DATE_VALUE_RE = /^[\d/.\s-]+$/;
 const SEGMENTED_DATE_MIN_DIGITS = 4;
 const SEGMENTED_DATE_MAX_DIGITS = 8;
-const SEGMENTED_DATE_QUOTED_WEIGHT = 3;
 const SEGMENTED_DATE_KEY_DELAY_MS = 50;
 const SEGMENTED_DATE_STOPWORDS = new Set([
   "a",
@@ -6090,9 +6089,11 @@ function segmentedDateTokens(text: string): string[] {
 /**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
- * digit count are dropped; the rest are scored by quoted-phrase and step-word
- * hits against their context. Returns the index into `groups`, or `null` on a
- * tie or zero score — guessing a group would write a date into the wrong field.
+ * digit count are dropped. A group is only eligible when a quoted target field
+ * from the step (e.g. 'From') matches its OWN label; the surrounding section
+ * text only breaks ties between eligible groups. Returns the index into
+ * `groups`, or `null` when nothing matches or the best match is tied — writing
+ * a date into a group that merely fits the width would corrupt another field.
  */
 export function resolveSegmentedDateGroup(
   instruction: string,
@@ -6100,40 +6101,32 @@ export function resolveSegmentedDateGroup(
 ): number | null {
   const value = parseSegmentedDateValue(instruction);
   if (!value) return null;
-  const spans = findQuotedSpans(instruction);
-  const phrases = spans.map((s) => s.text.trim()).filter((t) => t && t !== value.valueSpan);
-  const stepWords = new Set(
-    segmentedDateTokens(
-      spans.reduceRight((rest, s) => `${rest.slice(0, s.start)} ${rest.slice(s.end)}`, instruction)
-    ).filter((w) => !SEGMENTED_DATE_STOPWORDS.has(w))
-  );
+  const phrases = findQuotedSpans(instruction)
+    .map((s) => segmentedDateTokens(s.text.trim()).join(" "))
+    .filter((p) => p && p !== segmentedDateTokens(value.valueSpan).join(" "));
+  if (phrases.length === 0) return null;
+  const stepTokens = new Set(segmentedDateTokens(instruction));
   let best = -1;
-  let bestScore = 0;
+  let bestScore = -1;
   let tied = false;
-  const compatible: number[] = [];
   groups.forEach((group, index) => {
     const widths = group.segmentMaxes.map((max) => String(max).length);
     if (widths.reduce((a, b) => a + b, 0) !== value.digits.length) return;
-    compatible.push(index);
-    const tokens = segmentedDateTokens(group.context);
-    const joined = ` ${tokens.join(" ")} `;
-    const phraseHits = phrases.filter((p) =>
-      joined.includes(` ${segmentedDateTokens(p).join(" ")} `)
+    const own = ` ${segmentedDateTokens(group.label ?? "").join(" ")} `;
+    if (!phrases.some((p) => own.includes(` ${p} `))) return;
+    const sectionTokens = new Set(segmentedDateTokens(group.section ?? ""));
+    const score = [...sectionTokens].filter(
+      (t) => stepTokens.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
     ).length;
-    const wordHits = tokens.filter((t, i) => stepWords.has(t) && tokens.indexOf(t) === i).length;
-    const score = phraseHits * SEGMENTED_DATE_QUOTED_WEIGHT + wordHits;
     if (score > bestScore) {
       best = index;
       bestScore = score;
       tied = false;
-    } else if (score === bestScore && score > 0) {
+    } else if (score === bestScore) {
       tied = true;
     }
   });
-  // Only one group can hold this many digits, so there is nothing to confuse it
-  // with even when its label shares no words with the step.
-  if (compatible.length === 1 && !groups[compatible[0] ?? -1]?.nested) return compatible[0] ?? null;
-  return bestScore === 0 || tied ? null : best;
+  return best < 0 || tied ? null : best;
 }
 
 const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
@@ -6187,7 +6180,9 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   };
   const ownCaption = (box) => {
     const caption = Array.from(box.querySelectorAll("label,legend")).find((l) => !l.querySelector("input,[role='spinbutton']") && !(l.getAttribute("for") && box.querySelector("[id='" + l.getAttribute("for") + "']")));
-    return caption ? norm(caption.textContent) : "";
+    if (caption) return norm(caption.textContent);
+    const prev = box.previousElementSibling;
+    return prev && prev.matches("label,legend") && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
   };
   const formFieldOf = (box) => box.closest("[data-automation-id^='formField-']");
   const formFieldLabel = (field) => {
