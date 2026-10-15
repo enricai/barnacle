@@ -8653,10 +8653,13 @@ async function tryPromptSelectorPrimitive(params: {
       }
       const options = [];
       for (let i = 0; i < opts.length; i++) {
-        opts[i].setAttribute(markAttr, String(i));
         const label = optionLabel(opts[i]);
         const ids = window.__bclOptionNodeIds || (window.__bclOptionNodeIds = { map: new WeakMap(), next: 0 });
         if (!ids.map.has(opts[i])) ids.map.set(opts[i], ids.next++);
+        // Stamped with the node's own identity, not its list position: a
+        // re-enumeration after a virtualized re-render or scroll can reorder
+        // positions, so a positional stamp would re-address a different item.
+        opts[i].setAttribute(markAttr, String(ids.map.get(opts[i])));
         options.push({
           oIdx: i,
           text: label,
@@ -8799,12 +8802,31 @@ async function tryPromptSelectorPrimitive(params: {
       );
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
-    for (
-      let submit = 0;
-      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS &&
-      !promptOptionsNameOption(optionsFiltered, option);
-      submit++
-    ) {
+    // The list is settled BEFORE each submit decision, so a search-as-you-type
+    // list still re-rendering (stale rows from the prior query) never reads as
+    // "names nothing", and the precondition is re-read right before the key
+    // press so a list that loaded in the meantime is not submitted at.
+    for (let submit = 0; ; submit++) {
+      optionsFiltered = optionsFiltered?.optionsPresent
+        ? await readStablePromptOptions<EnumerateOptionsResult>(
+            page,
+            target,
+            enumerateOptionsExpr,
+            optionsFiltered
+          )
+        : null;
+      if (
+        !optionsFiltered ||
+        promptOptionsNameOption(optionsFiltered, option) ||
+        submit >= PROMPT_SELECTOR_MAX_ENTER_SUBMITS
+      ) {
+        break;
+      }
+      const live = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
+      if (promptOptionsNameOption(live, option)) {
+        optionsFiltered = live;
+        continue;
+      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
@@ -8825,14 +8847,6 @@ async function tryPromptSelectorPrimitive(params: {
         target,
         enumerateOptionsExpr,
         (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
-      );
-    }
-    if (optionsFiltered?.optionsPresent) {
-      optionsFiltered = await readStablePromptOptions<EnumerateOptionsResult>(
-        page,
-        target,
-        enumerateOptionsExpr,
-        optionsFiltered
       );
     }
     if (!optionsFiltered?.optionsPresent) {
@@ -8911,14 +8925,17 @@ function normPromptOptionText(s: string): string {
 }
 
 /** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
-const PROMPT_PLACEHOLDER_RE = /^(no\b|nothing\b|none$|loading|searching|type to search|\.\.\.)/;
+const PROMPT_PLACEHOLDER_RE =
+  /^(no\b|nothing\b|none$|loading|searching|type to search|press enter|hit enter|search for|\.\.\.)/;
 
 /**
  * Detects whether the list already names the requested option, so the submit
  * decision never fires Enter at a widget that searches as you type. Looser than
  * commitPromptOption's exact detMatch on purpose: a rendered label that differs
- * by a prefix or suffix still means the list answered the query. Placeholder
- * entries never count, even when they echo the requested text.
+ * by a prefix or suffix still means the list answered the query. A shorter
+ * entry the request merely contains (a chip "Oslo" for "University of Oslo")
+ * names nothing requested. Placeholder entries never count, even when they
+ * echo the requested text.
  */
 function promptOptionsNameOption(
   result: { options?: { text: string }[] } | null | undefined,
@@ -8931,7 +8948,7 @@ function promptOptionsNameOption(
     if (text === "") return false;
     if (text === want) return true;
     if (PROMPT_PLACEHOLDER_RE.test(text)) return false;
-    return text.includes(want) || want.includes(text);
+    return text.includes(want);
   });
 }
 
@@ -9049,14 +9066,16 @@ async function commitPromptOption(params: {
         options?: PromptOptionRead[];
       } | null;
       const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
-      const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
+      const freshOption =
+        freshMatches.find((o) => o.nodeId !== undefined && o.nodeId === chosenOption.nodeId) ??
+        freshMatches[0];
       if (!freshOption) {
         logger.info(
           `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
         );
         return null;
       }
-      const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
+      const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.nodeId ?? freshOption.oIdx}"]`;
       try {
         await clickCentredTrusted(target, optionSel, {
           label: "prompt-selector option",
@@ -9138,7 +9157,9 @@ async function commitPromptOption(params: {
       }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
     })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
-    const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
+    const readback = (await target
+      .evaluate(readbackExpr)
+      .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
       ok: boolean;
       id: string;
       stillInvalid: boolean;
