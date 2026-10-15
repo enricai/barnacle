@@ -7401,7 +7401,7 @@ export async function trySelectPrimitive(params: {
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser, no mutation): find the target select — the one whose
   // nearby text matches the question label (or, when no label, any select).
   // Try a deterministic option match first; if it hits, apply immediately (no
@@ -7922,7 +7922,7 @@ async function tryCheckboxPrimitive(params: {
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
   // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
   // checkboxes. Question label = the group's legend / associated label; each
@@ -8292,7 +8292,7 @@ async function tryRadioPrimitive(params: {
   const parsed = parseRadioStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
   // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
   // container with radios. Question label = the group's legend / associated label; each option
@@ -8635,7 +8635,7 @@ async function tryPromptSelectorPrimitive(params: {
           : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsedFill !== null);
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -10858,6 +10858,22 @@ export function spliceEmailStepFillValue(step: string, code: string): string {
  */
 function maskLoggedValue(text: string, sensitiveValue?: string): string {
   return sensitiveValue && text === sensitiveValue ? "[redacted]" : maskValueShape(text);
+}
+
+/**
+ * Builds the "option ..., question ..." log label shared by the select,
+ * checkbox, radio and prompt-selector primitives. A value parsed from a FILL
+ * step is typed user data (names, emails, passwords), so it is logged only as
+ * its length; other options are catalog text and stay readable.
+ */
+export function primitiveOptionLabel(
+  option: string,
+  questionLabel: string | null | undefined,
+  redactValue?: string,
+  fromFill = false,
+): string {
+  const shown = fromFill ? `[${option.length}-char typed value]` : maskLoggedValue(option, redactValue).slice(0, 40);
+  return `option "${shown}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
 }
 
 /**
