@@ -44,10 +44,6 @@ import {
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
 import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
-import {
-  matchesUploadAffordanceVocabulary,
-  UPLOAD_AFFORDANCE_MATCHER_EXPR,
-} from "@/scraper/upload-affordance-expr";
 import { followNewPage } from "@/scraper/active-page";
 import {
   buildMarkShadowInteractiveDescendantExpr,
@@ -127,6 +123,10 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
+import {
+  matchesUploadAffordanceVocabulary,
+  UPLOAD_AFFORDANCE_MATCHER_EXPR,
+} from "@/scraper/upload-affordance-expr";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";

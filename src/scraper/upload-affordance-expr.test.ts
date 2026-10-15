@@ -5,11 +5,22 @@ import {
   UPLOAD_AFFORDANCE_MATCHER_EXPR,
 } from "@/scraper/upload-affordance-expr";
 
-const POSITIVE = ["Select files", "Choose Files", "Select file", "Upload", "Browse", "Attach", "Add a resume", "Add files"];
+const POSITIVE = [
+  "Select files",
+  "Choose Files",
+  "Select file",
+  "Upload",
+  "Browse",
+  "Attach",
+  "Add a resume",
+  "Add files",
+];
 const NEGATIVE = ["Cancel", "Remove file", "No file", "Upload later", "Submit", ""];
 
 describe("upload affordance vocabulary", () => {
-  const browser = new Function(`return (${UPLOAD_AFFORDANCE_MATCHER_EXPR});`)() as (s: string) => boolean;
+  const browser = new Function(`return (${UPLOAD_AFFORDANCE_MATCHER_EXPR});`)() as (
+    s: string
+  ) => boolean;
 
   it.each(POSITIVE)("accepts %s in Node and browser", (label) => {
     expect(matchesUploadAffordanceVocabulary(label)).toBe(true);
