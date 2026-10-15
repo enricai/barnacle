@@ -10746,6 +10746,20 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
+  // Multi-segment date spinbuttons need real key events; the cascade's
+  // insertText would garble the segments. Falls through on null.
+  const segmentedDateTargetId = await trySegmentedDateSpinbuttonPrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+  });
+  if (segmentedDateTargetId !== null) {
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by segmented-date primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDateTargetId });
+    return "completed";
+  }
+
   // On a CATCH-ALL step ("for any remaining … question"), fill every
   // required-but-empty native <select> — including MuiNativeSelect dropdowns
   // (tabindex=-1) that Stagehand observe can't see and that no concrete flow
