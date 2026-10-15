@@ -29,7 +29,7 @@ const POLICY: RedactionPolicy = {
 const PAYLOAD = {
   orderId: "ORD-778899",
   trackingUrl: "https://shop.example.com/o/778899?ref=abc",
-  searchTerm: "Bahamas cruise",
+  searchTerm: "blue widgets",
   fullName: "Ann Sentinelson",
   contactEmail: "ann.sentinel@example.com",
   phone: "+15551234567",
@@ -99,14 +99,13 @@ describe("redactPii", () => {
 
   it("never matches persisted, public or skipped keys", () => {
     registerSensitiveValues("run-1", PAYLOAD, POLICY);
-    const text =
-      "order ORD-778899 via https://shop.example.com/o/778899?ref=abc for Bahamas cruise";
+    const text = "order ORD-778899 via https://shop.example.com/o/778899?ref=abc for blue widgets";
     expect(redactPii(text)).toBe(text);
   });
 
   it("is fail-closed without a policy: every string is matched as a literal", () => {
-    registerSensitiveValues("run-1", { searchTerm: "Bahamas cruise", orderId: "ORD-1234" });
-    expect(redactPii("searching Bahamas cruise for ORD-1234")).toBe(
+    registerSensitiveValues("run-1", { searchTerm: "blue widgets", orderId: "ORD-1234" });
+    expect(redactPii("searching blue widgets for ORD-1234")).toBe(
       "searching <searchTerm> for <orderId>"
     );
   });

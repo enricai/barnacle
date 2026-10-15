@@ -26,7 +26,7 @@ import { extendLogger, getLogger, PII_REDACTING_LOG_HOOKS } from "@/lib/logging"
 import { resetSensitiveValuesForTests } from "@/lib/pii-redaction";
 import { generateThrowawayPassword } from "@/lib/random";
 import { captureLlmCall } from "@/lib/telemetry/call-capture";
-import { registerRoutes } from "@/plugins/loader";
+import { buildPluginContext, dispatch, registerRoutes } from "@/plugins/loader";
 import { StepVerificationError } from "@/scraper/errors";
 import type { SitePlugin, SitePluginResult } from "@/site-plugin";
 import type { Logger } from "@/types/logging";
@@ -239,5 +239,38 @@ describe("dispatch() keeps request values out of telemetry and error replies", (
       }
     }
     expect(outputs.logs).toContain("<Email>");
+  });
+
+  it("persists the plugin's declared keys when dispatch() is called without registerRoutes", async () => {
+    const plugin: SitePlugin<unknown, unknown> = {
+      meta: {
+        siteId: "pii-e2e-direct",
+        displayName: "PII E2E direct",
+        bodySchema: REQUEST_SCHEMA,
+        responseSchema: z.object({ verified: z.boolean() }),
+        redaction: REDACTION,
+      },
+      execute: vi.fn(),
+      executeHttp: async (): Promise<SitePluginResult<unknown>> => ({ data: { verified: true } }),
+    };
+    const context = buildPluginContext({
+      plugin,
+      cfg: cfgStub,
+      requestId: "req-direct",
+      logger: getLogger({ name: "pii-redaction-e2e-direct" }),
+    });
+
+    await dispatch(plugin, REQUEST, context);
+
+    const row = fs
+      .readFileSync(sinkPaths.submissions, "utf-8")
+      .trim()
+      .split("\n")
+      .map(
+        (line) => JSON.parse(line) as { kind?: string; inboundPayload?: Record<string, unknown> }
+      )
+      .find((r) => r.kind === "submit");
+    expect(row?.inboundPayload?.JobId).toBe(REQUEST.JobId);
+    expect(JSON.stringify(row)).not.toMatch(SENTINELS[2] as RegExp);
   });
 });
