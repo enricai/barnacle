@@ -354,7 +354,7 @@ function nextVariableName(label: string, taken: SensitiveVariables): string {
 }
 
 /**
- * Swaps registered applicant values (and engine-minted secrets) in a Stagehand
+ * Swaps registered request values (and engine-minted secrets) in a Stagehand
  * instruction for `%Name%` tokens, returning the `variables` map Stagehand
  * substitutes back only when it performs the action — so the values never
  * reach the LLM prompt, Browserbase's instruction cache or the call telemetry.

@@ -34,7 +34,7 @@ export interface InboundPayloadSummary {
 /** Stagehand `variables` map: token name (without `%`) → the exact text it replaced. */
 export type SensitiveVariables = Record<string, string>;
 
-/** An instruction with its applicant values swapped for `%Name%` tokens. */
+/** An instruction with its request values swapped for `%Name%` tokens. */
 export interface TokenizedText {
   text: string;
   variables: SensitiveVariables;
