@@ -12208,7 +12208,8 @@ export async function executeStepWithHealing(params: {
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector,
-        (msg) => logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`)
+        (msg) =>
+          logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`)
       );
       if (failure) throw new Error(failure);
     };
@@ -12895,7 +12896,9 @@ export async function executeStepWithHealing(params: {
               frameTarget ?? mainFrameTarget(page),
               overriddenTarget.selector,
               (msg) =>
-                logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`)
+                logger.debug(
+                  `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`
+                )
             );
             if (centreFailure) {
               record.errorMessage = centreFailure;

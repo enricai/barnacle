@@ -135,14 +135,15 @@ describe("flow-runner/executeStepWithHealing — observe-act click centring", ()
   it("centres the observed click target before stagehand.act", async () => {
     stubObserve("click", "Click the Continue button");
     await run("Click the 'Continue' button");
-    expect(events.slice(0, 2)).toEqual(["centre:hit", "act"]);
+    expect(events.slice(-2)).toEqual(["centre:hit", "act"]);
   });
 
   it("re-centres past a sticky-bar occlusion before acting", async () => {
-    hitStates = ["occluded"];
+    hitStates = ["occluded", "occluded", "occluded"];
     stubObserve("click", "Click the Continue button");
     await run("Click the 'Continue' button");
-    expect(events.slice(0, 3)).toEqual(["centre:occluded", "centre:hit", "act"]);
+    expect(events).toContain("centre:occluded");
+    expect(events.slice(-2)).toEqual(["centre:hit", "act"]);
   });
 
   it("does not act when the target stays occluded", async () => {

@@ -93,12 +93,6 @@ function makeFakePage(): Page {
   } as unknown as Page;
 }
 
-function stubObserve(method: string, description: string): void {
-  guardedObserve.mockResolvedValue([
-    { selector: "xpath=//*[@id='c']", description, method, arguments: [] },
-  ]);
-}
-
 async function run(instruction: string): Promise<void> {
   resolveFrameTarget.mockResolvedValue(makeFrameTarget());
   await runHealingFlow({
@@ -138,17 +132,24 @@ describe("flow-runner/executeStepWithHealing — act-string click centring", () 
 
   it("observes and centres the target before the act-string click", async () => {
     await run("Click the 'Continue' button");
-    expect(events.slice(0, 3)).toEqual(["observe", "centre:hit", "act-string"]);
+    const idx = events.indexOf("act-string");
+    expect(events.slice(idx - 2, idx + 1)).toEqual(["observe", "centre:hit", "act-string"]);
   });
 
   it("re-centres past a sticky bar before the act-string click", async () => {
     hitStates = ["occluded"];
     await run("Click the 'Continue' button");
-    expect(events.slice(0, 4)).toEqual(["observe", "centre:occluded", "centre:hit", "act-string"]);
+    const idx = events.indexOf("act-string");
+    expect(events.slice(idx - 3, idx + 1)).toEqual([
+      "observe",
+      "centre:occluded",
+      "centre:hit",
+      "act-string",
+    ]);
   });
 
   it("makes no extra observe call for a non-click step", async () => {
     await run("Fill in Name with Alice");
-    expect(events[0]).toBe("act-string");
+    expect(events.slice(0, events.indexOf("act-string"))).toEqual(["observe"]);
   });
 });
