@@ -5351,7 +5351,7 @@ async function tryUploadPrimitive(params: {
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  const attached = await attachToSurfacedInput({
+  const attached = await setInputFilesAndVerify({
     page,
     target,
     fixture,
@@ -5376,12 +5376,13 @@ async function tryUploadPrimitive(params: {
 
 /**
  * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
- * mounted after a click) and verify. Extracted verbatim from the original
- * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
- * path share one setInputFiles + framework-change-dispatch + network/DOM verify
- * + drag-drop-fallback implementation.
+ * mounted after a click) via setInputFiles + framework-change-dispatch, then
+ * verify by network signal or DOM. Never drags/drops: the synthetic drop is
+ * owned by {@link surfaceAndUpload}'s Strategy DZ (and by
+ * {@link attachToSurfacedInput} for direct callers) so a widget that accepts
+ * drops cannot receive the file twice within one upload step.
  */
-export async function attachToSurfacedInput(params: {
+async function setInputFilesAndVerify(params: {
   page: Page;
   /** Frame the surfaced `<input type=file>` lives in. */
   target: FrameTarget;
@@ -5461,28 +5462,47 @@ export async function attachToSurfacedInput(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
-    logger.warn(
-      "upload primitive: no network activity within timeout and no file attached in DOM; attempting drag-drop fallback"
-    );
-    // K'4: fall back to simulated drag-drop on the most-likely drop zone.
-    // Some custom upload widgets (Material Dropzone, react-dropzone, custom
-    // <uapp-upload> wrappers) only register files when a `drop` event with
-    // a DataTransfer fires on the visible drop area — they don't observe
-    // the hidden input's `files[]` mutations even with synthetic `change`
-    // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
-    if (dragDropOk) {
-      logger.info(
-        `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
-      );
-      return true;
-    }
+    logger.warn("upload primitive: no network activity within timeout and no file attached in DOM");
     return false;
   }
   logger.info(
     `upload primitive: file attached in DOM after setInputFiles (deferred-upload widget; name=${fixture.name}, filesLength=${attachedLength})`
   );
   return true;
+}
+
+/**
+ * Attach to an existing input, falling back to one synthetic drag-drop on the
+ * dropzone when the input did not take the file. Kept for direct callers; the
+ * upload primitive composes {@link setInputFilesAndVerify} with
+ * {@link surfaceAndUpload} instead, which already owns the drop attempt.
+ */
+export async function attachToSurfacedInput(params: {
+  page: Page;
+  /** Frame the surfaced `<input type=file>` lives in. */
+  target: FrameTarget;
+  fixture: UploadFixture;
+  logger: Logger;
+  signalCounter: { n: number };
+  recentCaptureMeta: readonly CaptureMeta[];
+}): Promise<boolean> {
+  const { target, fixture, logger } = params;
+  if (await setInputFilesAndVerify(params)) return true;
+  logger.warn("upload primitive: attempting drag-drop fallback");
+  // K'4: fall back to simulated drag-drop on the most-likely drop zone.
+  // Some custom upload widgets (Material Dropzone, react-dropzone, custom
+  // <uapp-upload> wrappers) only register files when a `drop` event with
+  // a DataTransfer fires on the visible drop area — they don't observe
+  // the hidden input's `files[]` mutations even with synthetic `change`
+  // dispatches. This is the documented Playwright community workaround.
+  const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
+  if (dragDropOk) {
+    logger.info(
+      `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
+    );
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -5620,7 +5640,7 @@ export async function surfaceAndUpload(params: {
     if ((appeared ?? 0) > 0) {
       logger.info("upload primitive: click surfaced a hidden <input type=file>");
       if (
-        await attachToSurfacedInput({
+        await setInputFilesAndVerify({
           page,
           target,
           fixture,
