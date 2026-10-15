@@ -715,3 +715,54 @@ describe("transient provider retry", () => {
     expect(bad).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("guardedAct pre-centring", () => {
+  const ACT_OK = { success: true, message: "ok", actionDescription: "d", actions: [] };
+
+  function fakeClickStagehand(actions: Action[]): {
+    sh: Stagehand;
+    order: string[];
+  } {
+    const order: string[] = [];
+    const page = {
+      evaluate: vi.fn(async () => {
+        order.push("centre");
+        return { state: "hit" };
+      }),
+      locator: vi.fn(),
+      url: () => "",
+      title: async () => "",
+    };
+    const sh = {
+      context: { activePage: () => page },
+      observe: vi.fn().mockResolvedValue(actions),
+      act: vi.fn(async () => {
+        order.push("act");
+        return ACT_OK;
+      }),
+    } as unknown as Stagehand;
+    return { sh, order };
+  }
+
+  it("centres a click Action before stagehand.act", async () => {
+    const action: Action = { selector: "xpath=//button", description: "b", method: "click" };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
+  it("resolves a string instruction via observe, then acts on the Action", async () => {
+    const action: Action = { selector: "#go", description: "go", method: "click" };
+    const { sh, order } = fakeClickStagehand([action]);
+    await guardedAct(sh, "click go");
+    expect(order).toEqual(["centre", "act"]);
+    expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toEqual(action);
+  });
+
+  it("does not centre a non-click Action", async () => {
+    const action: Action = { selector: "#i", description: "f", method: "fill", arguments: ["x"] };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["act"]);
+  });
+});
