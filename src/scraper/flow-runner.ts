@@ -8798,6 +8798,19 @@ async function tryPromptSelectorPrimitive(params: {
         enumerateOptionsExpr,
         isOwnScopePopup
       );
+    // An as-you-type search may still be in flight; Enter now would re-query with
+    // an empty search and swap in the full list. Search-on-submit widgets never
+    // name the option unprompted, so the wait is bounded.
+    for (
+      let wait = 0;
+      wait < PROMPT_SELECTOR_MAX_SEARCH_WAITS &&
+      optionsFiltered?.optionsPresent &&
+      !promptOptionsNameOption(optionsFiltered, option);
+      wait++
+    ) {
+      await page.waitForTimeout(PROMPT_SELECTOR_SEARCH_WAIT_MS);
+      optionsFiltered = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
+    }
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
     // The list is settled BEFORE each submit decision, so a search-as-you-type
@@ -8913,6 +8926,10 @@ async function readStablePromptOptions<T extends { options?: PromptOptionRead[] 
 
 /** Cap on click-time re-resolves when the stamped node is re-bound mid-scroll. */
 const PROMPT_SELECTOR_MAX_CLICK_RESOLVES = 3;
+
+/** Bounded wait for an in-flight as-you-type search before concluding it is search-on-submit. */
+const PROMPT_SELECTOR_MAX_SEARCH_WAITS = 6;
+const PROMPT_SELECTOR_SEARCH_WAIT_MS = 500;
 
 /** Cap on trusted Enter submits for a search-on-submit prompt selector. */
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
@@ -9074,6 +9091,20 @@ async function commitPromptOption(params: {
         return null;
       }
       const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.nodeId ?? freshOption.oIdx}"]`;
+      const markedLabel = (await target
+        .evaluate(
+          `((sel, labelOf) => {
+            const el = document.querySelector(sel);
+            return el ? labelOf(el) : null;
+          })(${JSON.stringify(optionSel)}, ${OPTION_ACCESSIBLE_LABEL_EXPR})`
+        )
+        .catch(() => null)) as string | null;
+      if (markedLabel === null || !norm(markedLabel).includes(wantChosenText)) {
+        logger.info(
+          `prompt-selector primitive: marked option node for ${optLabel} no longer shows the matched option; re-resolving`
+        );
+        continue;
+      }
       try {
         const expectedDomText = freshOption.domText ?? wantChosenText;
         await clickCentredTrusted(target, optionSel, {
