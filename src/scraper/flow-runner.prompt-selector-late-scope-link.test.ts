@@ -27,6 +27,7 @@ const HTML = `
     <span id="lbl-b">Arrival city</span>
     <button id="b" type="button" aria-haspopup="listbox" aria-labelledby="lbl-b" aria-invalid="true"><span>Select</span></button>
   </div>
+  <ul id="stale-c" role="listbox"><li role="option" data-stale="1">City 17</li></ul>
 </form>`;
 
 const CITIES = Array.from({ length: 22 }, (_, i) => `City ${i + 1}`);
@@ -81,7 +82,7 @@ describe("flow-runner/tryPromptSelectorPrimitive late scope link", () => {
     const { page, target, window, clicks } = buildPromptWidgetHarness({
       html: HTML,
       popupByWidgetId: {
-        b: { options: CITIES, portaled: true, linkAfterOpen: true, linkDelayMs: 20 },
+        b: { options: CITIES, portaled: true, linkAfterOpen: true, linkDelayMs: 40 },
       },
     });
 
@@ -93,6 +94,7 @@ describe("flow-runner/tryPromptSelectorPrimitive late scope link", () => {
     expect(result).toBe("completed");
     expect(doc.getElementById("b")?.textContent).toBe("City 17");
     expect(doc.getElementById("chip-a")?.hasAttribute(OPTION_MARK)).toBe(false);
+    expect(doc.querySelector("[data-stale]")?.hasAttribute(OPTION_MARK)).toBe(false);
     expect(doc.getElementById("a--input")?.getAttribute("value") ?? "").toBe("");
     expect(clicks.filter((c) => c.includes("chip") || c.includes("#a"))).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('selected "City 17"'));
