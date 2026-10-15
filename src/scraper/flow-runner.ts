@@ -5252,6 +5252,8 @@ async function tryUploadPrimitive(params: {
   fixture: { buffer: Buffer; name: string; mimeType: string } | null;
   logger: Logger;
   signalCounter: { n: number };
+  /** Set on a Browserbase session so native-chooser uploads push the fixture to the remote browser. */
+  browserbaseSessionId?: string;
   /**
    * Tail of the recent-capture-meta window. Used to verify the post-upload
    * network signal is actually an upload-related POST (URL contains
@@ -5309,12 +5311,33 @@ async function tryUploadPrimitive(params: {
       logger,
       signalCounter,
       recentCaptureMeta,
+      browserbaseSessionId: params.browserbaseSessionId,
     });
     if (surfaced) return true;
     logger.info("upload primitive: click-to-surface failed; falling through to cascade");
     return false;
   }
-  return attachToSurfacedInput({ page, target, fixture, logger, signalCounter, recentCaptureMeta });
+  const attached = await attachToSurfacedInput({
+    page,
+    target,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+  });
+  if (attached) return true;
+  logger.info(
+    "upload primitive: existing input did not take the file; attempting click-to-surface"
+  );
+  return surfaceAndUpload({
+    page,
+    target,
+    fixture,
+    logger,
+    signalCounter,
+    recentCaptureMeta,
+    browserbaseSessionId: params.browserbaseSessionId,
+  });
 }
 
 /**
@@ -5448,8 +5471,10 @@ export async function surfaceAndUpload(params: {
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
+  browserbaseSessionId?: string;
 }): Promise<boolean> {
-  const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
+  const { page, target, fixture, logger, signalCounter, recentCaptureMeta, browserbaseSessionId } =
+    params;
   // Render-gate: the input-less strategies below (drag-drop is one-shot, the
   // affordance click resolves what's in the DOM) all race the async widget
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
@@ -5523,6 +5548,29 @@ export async function surfaceAndUpload(params: {
       logger.info("upload primitive: resolved via click → immediate upload POST");
       return true;
     }
+    // Strategy B: the click opened a native chooser we intercepted. Tried before A —
+    // the chooser names the exact input the widget wants, while A re-sets whatever
+    // input exists, which a React widget may ignore.
+    if (chooserBackendNodeId !== null) {
+      logger.info(
+        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
+      );
+      if (
+        await setFilesViaCdp({
+          page,
+          target,
+          session,
+          backendNodeId: chooserBackendNodeId,
+          fixture,
+          logger,
+          signalCounter,
+          recentCaptureMeta,
+          browserbaseSessionId,
+        })
+      ) {
+        return true;
+      }
+    }
     // Strategy A: the click lazily mounted a hidden <input type=file>.
     const appeared = await pollEnumerate<number>(
       page,
@@ -5545,28 +5593,14 @@ export async function surfaceAndUpload(params: {
         return true;
       }
     }
-    // Strategy B: the click opened a native chooser we intercepted.
-    if (chooserBackendNodeId !== null) {
-      logger.info(
-        `upload primitive: native file chooser intercepted (backendNodeId=${chooserBackendNodeId}); setting files via CDP`
-      );
-      return setFilesViaCdp({
-        page,
-        target,
-        session,
-        backendNodeId: chooserBackendNodeId,
-        fixture,
-        logger,
-        signalCounter,
-        recentCaptureMeta,
-      });
-    }
     return false;
   } finally {
     session.off("Page.fileChooserOpened", onChooser);
     await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
   }
 }
+
+const UPLOAD_AFFORDANCE_MARKER = "data-barnacle-upload-affordance";
 
 /**
  * Locate and click the resume-upload affordance in the page DOM. Uses a DOM
@@ -5579,7 +5613,7 @@ export async function surfaceAndUpload(params: {
  * Takes both `page` (for `pollEnumerate`'s `waitForTimeout`) and `target`
  * (the frame the enumerate/click runs against).
  */
-async function clickUploadAffordance(
+export async function clickUploadAffordance(
   page: Page,
   target: FrameTarget,
   logger: Logger
@@ -5594,27 +5628,75 @@ async function clickUploadAffordance(
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
-    if (matches.length === 0) return { clicked: false };
+    if (matches.length === 0) return { marked: false };
     const chosen = matches.find(scoped) || matches[0];
-    chosen.click();
-    return { clicked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
+    chosen.setAttribute("${UPLOAD_AFFORDANCE_MARKER}", "");
+    return { marked: true, text: norm(chosen.getAttribute("aria-label") || chosen.textContent || "").slice(0, 50) };
   })()`;
+  const markerSelector = `[${UPLOAD_AFFORDANCE_MARKER}]`;
   try {
-    const result = (await pollEnumerate<{ clicked: boolean; text?: string }>(
+    const result = (await pollEnumerate<{ marked: boolean; text?: string }>(
       page,
       target,
       expr,
-      (r) => r?.clicked === true
-    )) ?? { clicked: false };
-    if (result.clicked) {
-      logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
-      return true;
+      (r) => r?.marked === true
+    )) ?? { marked: false };
+    if (!result.marked) {
+      logger.info("upload primitive: no upload affordance button found in DOM");
+      return false;
     }
-    logger.info("upload primitive: no upload affordance button found in DOM");
-    return false;
+    // A trusted CDP click is required: an in-page el.click() never opens a file chooser.
+    try {
+      await target.locator(markerSelector).first().click();
+    } finally {
+      await target
+        .evaluate(
+          `document.querySelectorAll(${JSON.stringify(markerSelector)}).forEach((el) => el.removeAttribute("${UPLOAD_AFFORDANCE_MARKER}"))`
+        )
+        .catch(() => {});
+    }
+    logger.info(`upload primitive: clicked upload affordance "${result.text ?? ""}"`);
+    return true;
   } catch (err) {
     logger.warn(`upload primitive: affordance click threw: ${toErrorMessage(err)}`);
     return false;
+  }
+}
+
+/**
+ * Push the fixture to Browserbase's session uploads endpoint, because a remote
+ * browser cannot read a path on this host. Returns the path the remote
+ * browser sees, or null when the upload is rejected.
+ */
+async function uploadFixtureToRemoteSession(
+  sessionId: string,
+  fixture: UploadFixture,
+  logger: Logger
+): Promise<string | null> {
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([new Uint8Array(fixture.buffer)], { type: fixture.mimeType }),
+    fixture.name
+  );
+  try {
+    const res = await fetch(
+      `${config.scraper.browserbaseBaseUrl}/v1/sessions/${sessionId}/uploads`,
+      {
+        method: "POST",
+        headers: { "X-BB-API-Key": config.scraper.browserbaseApiKey ?? "" },
+        body: form,
+      }
+    );
+    const accepted = res.ok ?? (res.status >= 200 && res.status < 300);
+    if (!accepted) {
+      logger.warn(`upload primitive: remote session upload failed (status=${res.status})`);
+      return null;
+    }
+    return `/tmp/.uploads/${fixture.name}`;
+  } catch (err) {
+    logger.warn(`upload primitive: remote session upload threw: ${toErrorMessage(err)}`);
+    return null;
   }
 }
 
@@ -5625,7 +5707,7 @@ async function clickUploadAffordance(
  * file. Targets the intercepted input by `backendNodeId`, then verifies via the
  * shared upload-network signal.
  */
-async function setFilesViaCdp(params: {
+export async function setFilesViaCdp(params: {
   page: Page;
   /** Frame the intercepted chooser's input lives in — scopes the filename-chip fallback check below. */
   target: FrameTarget;
@@ -5635,6 +5717,8 @@ async function setFilesViaCdp(params: {
   logger: Logger;
   signalCounter: { n: number };
   recentCaptureMeta: readonly CaptureMeta[];
+  /** When set, the browser is remote and the fixture is pushed via the session uploads API. */
+  browserbaseSessionId?: string;
 }): Promise<boolean> {
   const {
     page,
@@ -5645,11 +5729,15 @@ async function setFilesViaCdp(params: {
     logger,
     signalCounter,
     recentCaptureMeta,
+    browserbaseSessionId,
   } = params;
   // CDP needs a filesystem path; the fixture is an in-memory buffer. Write it
   // to a temp file (tiny — a few KB) so the path is always valid regardless of
   // where the recon loaded the fixture from.
-  const path = writeFixtureToTempFile(fixture);
+  const path = browserbaseSessionId
+    ? await uploadFixtureToRemoteSession(browserbaseSessionId, fixture, logger)
+    : writeFixtureToTempFile(fixture);
+  if (path === null) return false;
   try {
     await session.send("DOM.setFileInputFiles", { files: [path], backendNodeId });
   } catch (err) {
@@ -10962,6 +11050,7 @@ export async function executeStepWithHealing(params: {
       fixture: uploadFixture,
       logger,
       signalCounter,
+      browserbaseSessionId: stagehand.browserbaseSessionID,
       recentCaptureMeta,
     })
   ) {

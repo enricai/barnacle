@@ -1,5 +1,5 @@
-const EXCLUDE_SOURCE = "\\b(later|skip|without|remove|delete|cancel)\\b";
-const NO_FILE_SOURCE = "\\bno file\\b";
+const EXCLUDE_SOURCE = "\\b(later|skip|without|remove|delete|cancel|decline)\\b";
+const NO_FILE_SOURCE = "\\bno files?\\b";
 const POSITIVE_SOURCE =
   "\\b(upload|browse|(select|choose) files?|attach|add (a )?(resume|cv|files?)|resume/cv)\\b";
 

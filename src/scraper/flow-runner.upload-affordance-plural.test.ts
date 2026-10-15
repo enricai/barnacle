@@ -24,16 +24,20 @@ const run = (expr: string): unknown => new Function(`return ${expr};`)();
 
 /**
  * Stub DOM for a generic uploader: the only affordance is a button labelled
- * `label`, and the `<input type=file>` mounts only once that button is clicked.
+ * `label`, and the `<input type=file>` mounts only once that button receives a
+ * trusted (locator) click — an in-page `el.click()` never surfaces it.
  */
-function installLazyUploader(label: string): { inputMounted: () => boolean } {
+function installLazyUploader(label: string): {
+  inputMounted: () => boolean;
+  trustedClick: () => Promise<void>;
+} {
   let mounted = false;
   const input = { files: { length: 0 } };
   const button = {
     textContent: label,
-    click: (): void => {
-      mounted = true;
-    },
+    click: vi.fn(),
+    setAttribute: vi.fn(),
+    removeAttribute: vi.fn(),
     getAttribute: (): string | null => null,
     getBoundingClientRect: (): { width: number; height: number } => ({ width: 10, height: 10 }),
     style: { display: "block", visibility: "visible" },
@@ -46,7 +50,13 @@ function installLazyUploader(label: string): { inputMounted: () => boolean } {
     querySelectorAll: (sel: string): unknown[] =>
       sel.includes("input[type=file]") ? (mounted ? [input] : []) : [button],
   };
-  return { inputMounted: (): boolean => mounted };
+  return {
+    inputMounted: (): boolean => mounted,
+    trustedClick: (): Promise<void> => {
+      mounted = true;
+      return Promise.resolve();
+    },
+  };
 }
 
 describe("isUploadAffordanceLabel plural/singular vocabulary", () => {
@@ -77,7 +87,7 @@ describe("surfaceAndUpload with a lazily-mounted input behind a 'Select files' b
     const target = {
       frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
       evaluate,
-      locator: () => ({ first: () => ({ setInputFiles }) }),
+      locator: () => ({ first: () => ({ setInputFiles, click: dom.trustedClick }) }),
       url: () => Promise.resolve("https://uploader.example.com"),
       title: () => Promise.resolve("Uploader"),
     } as unknown as FrameTarget;
@@ -117,7 +127,7 @@ describe("tryUploadPrimitive end-to-end with a lazily-mounted input behind 'Sele
       frame: { session: { send: () => Promise.resolve(), on: () => {}, off: () => {} } },
       frameSelector: null,
       evaluate,
-      locator: () => ({ first: () => ({ setInputFiles }) }),
+      locator: () => ({ first: () => ({ setInputFiles, click: dom.trustedClick }) }),
       url: () => Promise.resolve("https://careers.example.com/apply"),
       title: () => Promise.resolve("Apply"),
     } as unknown as FrameTarget;
@@ -202,16 +212,18 @@ interface FakeBtn {
   text: string;
   hidden: boolean;
   click: ReturnType<typeof vi.fn>;
+  mark: ReturnType<typeof vi.fn>;
 }
 
 function btn(text: string, hidden: boolean): FakeBtn {
-  return { text, hidden, click: vi.fn() };
+  return { text, hidden, click: vi.fn(), mark: vi.fn() };
 }
 
 function install(btns: FakeBtn[]): void {
   const els = btns.map((b) => ({
     textContent: b.text,
     click: b.click,
+    setAttribute: b.mark,
     getAttribute: (n: string): string | null => (n === "aria-hidden" && b.hidden ? "true" : null),
     getBoundingClientRect: (): { width: number; height: number } => ({ width: 10, height: 10 }),
     style: { display: "block", visibility: "visible" },
@@ -267,20 +279,21 @@ describe("upload affordance plural labels in browser expressions", () => {
     expect(run(gate as string)).toEqual({ present: false });
   });
 
-  it.each(["Select files", "Choose Files"])("click expression clicks %s", async (label) => {
-    const click = (await captureExprs()).find((e) => e.includes("chosen.click()"));
+  it.each(["Select files", "Choose Files"])("click expression marks %s", async (label) => {
+    const click = (await captureExprs()).find((e) => e.includes("chosen.setAttribute("));
     expect(click).toBeDefined();
     const b = btn(label, false);
     install([b]);
-    expect(run(click as string)).toMatchObject({ clicked: true });
-    expect(b.click).toHaveBeenCalledTimes(1);
+    expect(run(click as string)).toMatchObject({ marked: true });
+    expect(b.mark).toHaveBeenCalledTimes(1);
+    expect(b.click).not.toHaveBeenCalled();
   });
 
   it("click expression leaves Remove file, Cancel and No file alone", async () => {
-    const click = (await captureExprs()).find((e) => e.includes("chosen.click()"));
+    const click = (await captureExprs()).find((e) => e.includes("chosen.setAttribute("));
     const decoys = ["Remove file", "Cancel", "No file"].map((t) => btn(t, false));
     install(decoys);
-    expect(run(click as string)).toEqual({ clicked: false });
-    for (const d of decoys) expect(d.click).not.toHaveBeenCalled();
+    expect(run(click as string)).toEqual({ marked: false });
+    for (const d of decoys) expect(d.mark).not.toHaveBeenCalled();
   });
 });

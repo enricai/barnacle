@@ -38,6 +38,8 @@ export interface AppConfig {
     provider: "browserbase" | "steel";
     browserbaseApiKey: string | undefined;
     browserbaseProjectId: string | undefined;
+    /** Browserbase REST base URL; override for tests or regional endpoints. */
+    browserbaseBaseUrl: string;
     steelApiKey: string | undefined;
     /**
      * 2Captcha API key that backs the default `solveCaptcha` provider
@@ -476,6 +478,7 @@ export function loadConfig(): AppConfig {
       })(),
       browserbaseApiKey: process.env.BROWSERBASE_API_KEY,
       browserbaseProjectId: process.env.BROWSERBASE_PROJECT_ID,
+      browserbaseBaseUrl: process.env.BROWSERBASE_BASE_URL || "https://api.browserbase.com",
       steelApiKey: process.env.STEEL_API_KEY,
       twoCaptchaApiKey: process.env.TWOCAPTCHA_API_KEY,
       anthropicApiKey: process.env.ANTHROPIC_API_KEY,

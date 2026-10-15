@@ -113,6 +113,7 @@ import {
   runHealingFlow,
 } from "@/scraper/flow-runner";
 import { createBrowserSession } from "@/scraper/session";
+import { UPLOAD_AFFORDANCE_MATCHER_EXPR } from "@/scraper/upload-affordance-expr";
 import {
   applyFailedStepFlagsToResumingBridgeStep,
   buildRadioIdXPath,
@@ -5295,6 +5296,8 @@ describe("recon-browser/isUploadAffordanceLabel", () => {
       "Upload a Resume/CV",
       "Browse",
       "Select File",
+      "Select files",
+      "Select Files",
       "Choose File",
       "Select files",
       "Choose Files",
@@ -5307,6 +5310,16 @@ describe("recon-browser/isUploadAffordanceLabel", () => {
       "  UPLOAD  ",
       "Click here to upload a resume",
     ]) {
+      expect(isUploadAffordanceLabel(label)).toBe(true);
+    }
+  });
+
+  it("in-page matcher built from UPLOAD_AFFORDANCE_MATCHER_EXPR accepts the same plural labels", () => {
+    const inPage = new Function(`return (${UPLOAD_AFFORDANCE_MATCHER_EXPR});`)() as (
+      s: string
+    ) => boolean;
+    for (const label of ["select file", "select files", "choose files"]) {
+      expect(inPage(label)).toBe(true);
       expect(isUploadAffordanceLabel(label)).toBe(true);
     }
   });

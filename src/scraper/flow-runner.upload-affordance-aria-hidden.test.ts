@@ -1,8 +1,13 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { surfaceAndUpload } from "@/scraper/flow-runner";
+import {
+  clickUploadAffordance,
+  isUploadAffordanceLabel,
+  surfaceAndUpload,
+} from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { UPLOAD_AFFORDANCE_MATCHER_EXPR } from "@/scraper/upload-affordance-expr";
 import type { Logger } from "@/types/logging";
 
 const logger = {
@@ -18,16 +23,18 @@ interface FakeBtn {
   text: string;
   hidden: boolean;
   click: ReturnType<typeof vi.fn>;
+  mark: ReturnType<typeof vi.fn>;
 }
 
 function btn(text: string, hidden: boolean): FakeBtn {
-  return { text, hidden, click: vi.fn() };
+  return { text, hidden, click: vi.fn(), mark: vi.fn() };
 }
 
 function install(btns: FakeBtn[]): void {
   const els = btns.map((b) => ({
     textContent: b.text,
     click: b.click,
+    setAttribute: b.mark,
     getAttribute: (n: string): string | null => (n === "aria-hidden" && b.hidden ? "true" : null),
     getBoundingClientRect: (): { width: number; height: number } => ({ width: 10, height: 10 }),
     style: { display: "block", visibility: "visible" },
@@ -84,17 +91,71 @@ describe("upload affordance aria-hidden decoys", () => {
 
   it("click matcher clicks the visible twin, never the aria-hidden decoy", async () => {
     const exprs = await captureExprs();
-    const click = exprs.find((e) => e.includes("chosen.click()"));
+    const click = exprs.find((e) => e.includes("chosen.setAttribute("));
     expect(click).toBeDefined();
     const decoy = btn("Upload resume", true);
     const real = btn("Upload resume", false);
     install([decoy, real]);
-    expect(run(click as string)).toMatchObject({ clicked: true });
-    expect(decoy.click).not.toHaveBeenCalled();
-    expect(real.click).toHaveBeenCalledTimes(1);
+    expect(run(click as string)).toMatchObject({ marked: true });
+    expect(decoy.mark).not.toHaveBeenCalled();
+    expect(real.mark).toHaveBeenCalledTimes(1);
+    expect(real.click).not.toHaveBeenCalled();
     const only = btn("Upload resume", true);
     install([only]);
-    expect(run(click as string)).toEqual({ clicked: false });
-    expect(only.click).not.toHaveBeenCalled();
+    expect(run(click as string)).toEqual({ marked: false });
+    expect(only.mark).not.toHaveBeenCalled();
+  });
+
+  it("clicks via a trusted locator click and removes the marker even when it throws", async () => {
+    const calls: string[] = [];
+    const click = vi.fn().mockRejectedValue(new Error("boom"));
+    const target = {
+      frame: {},
+      evaluate: (expr: unknown): Promise<unknown> => {
+        const e = String(expr);
+        calls.push(e);
+        return Promise.resolve(
+          e.includes("removeAttribute") ? undefined : { marked: true, text: "upload" }
+        );
+      },
+      locator: (sel: string) => ({
+        first: () => ({
+          click: () => {
+            calls.push(`click ${sel}`);
+            return click();
+          },
+        }),
+      }),
+    } as unknown as FrameTarget;
+    const page = { waitForTimeout: () => Promise.resolve() } as unknown as Page;
+    const ok = await clickUploadAffordance(page, target, logger);
+    expect(ok).toBe(false);
+    expect(calls.some((c) => c.startsWith("click [data-barnacle-upload-affordance]"))).toBe(true);
+    expect(calls[calls.length - 1]).toContain("removeAttribute");
+  });
+
+  it("accepts singular and plural select-file labels, still rejects decliners", () => {
+    expect(isUploadAffordanceLabel("Select files")).toBe(true);
+    expect(isUploadAffordanceLabel("Select file")).toBe(true);
+    expect(isUploadAffordanceLabel("upload later")).toBe(false);
+    expect(isUploadAffordanceLabel("no file")).toBe(false);
+    expect(isUploadAffordanceLabel("remove file")).toBe(false);
+    expect(isUploadAffordanceLabel("SELECT  FILES")).toBe(true);
+    expect(isUploadAffordanceLabel("Decline to upload files")).toBe(false);
+    expect(isUploadAffordanceLabel("No files")).toBe(false);
+    expect(isUploadAffordanceLabel("Remove files")).toBe(false);
+    expect(isUploadAffordanceLabel("Add files")).toBe(true);
+    expect(isUploadAffordanceLabel("Choose Files to attach")).toBe(true);
+  });
+
+  it("gate and click expressions embed the shared vocabulary source", async () => {
+    const exprs = await captureExprs();
+    const gate = exprs.find((e) => e.includes("present: true"));
+    const click = exprs.find((e) => e.includes("chosen.setAttribute("));
+    expect(gate).toContain(UPLOAD_AFFORDANCE_MATCHER_EXPR);
+    expect(click).toContain(UPLOAD_AFFORDANCE_MATCHER_EXPR);
+    const only = btn("Select files", false);
+    install([only]);
+    expect(run(click as string)).toMatchObject({ marked: true });
   });
 });
