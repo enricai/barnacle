@@ -7800,8 +7800,12 @@ function findKindKeyedLiteral(
       const tier = kindMatchTier(facet, parsed.kind);
       if (tier > 0) byTier.set(tier, (byTier.get(tier) ?? new Set()).add(parsed.literal));
       const month = monthCodeOf(parsed.literal);
+      const isOwnLiteral = [facet.value, ...(facet.literals ?? [])].some(
+        (known) => known.toLowerCase() === parsed.literal.toLowerCase()
+      );
       if (
         month !== undefined &&
+        !isOwnLiteral &&
         (facetMonths.has(month) || yearlessMonths.has(month.slice("YYYY-".length)))
       ) {
         sameMonth.add(parsed.literal);
