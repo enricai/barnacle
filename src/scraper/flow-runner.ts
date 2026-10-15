@@ -129,6 +129,7 @@ import {
   centreSelectorForClick,
   clickAfterCentredHitTest,
   clickCentredTrusted,
+  firstMatchClickable,
 } from "@/scraper/trusted-click";
 import {
   FIND_DROP_ZONE_EXPR,
@@ -12677,7 +12678,7 @@ export async function executeStepWithHealing(params: {
               try {
                 const markerSelector = `[${markerAttr}="${markerValue}"]`;
                 await clickAfterCentredHitTest(
-                  topWindowTarget.locator(markerSelector),
+                  firstMatchClickable(topWindowTarget.locator(markerSelector)),
                   () =>
                     topWindowTarget.evaluate<CentredHitTestResult>(
                       buildDeepMarkerCentreExpr(markerSelector)

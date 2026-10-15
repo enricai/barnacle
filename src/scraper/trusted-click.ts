@@ -155,6 +155,16 @@ function buildSelectorExpression(selector: string): string {
 }
 
 /**
+ * Resolves the handle a trusted click is delivered on. A locator that clicks
+ * itself is used directly; one that only exposes `first()` (the shape every
+ * trusted click used before the centring helper existed) is narrowed to its
+ * first match.
+ */
+export function firstMatchClickable(locator: ReturnType<FrameTarget["locator"]>): TrustedClickable {
+  return typeof locator.click === "function" ? locator : locator.first();
+}
+
+/**
  * Trusted-clicks `selector` inside a main-frame or child-frame `FrameTarget`
  * after centring it and confirming the click point hits it.
  */
@@ -165,7 +175,7 @@ export async function clickCentredTrusted(
 ): Promise<void> {
   const expression = buildSelectorExpression(selector);
   await clickAfterCentredHitTest(
-    target.locator(selector),
+    firstMatchClickable(target.locator(selector)),
     () => target.evaluate<CentredHitTestResult>(expression),
     { label: selector, ...opts }
   );

@@ -260,39 +260,43 @@ function frameScopedOptions<T extends { selector?: string }>(
 
 /**
  * Resolves a string act instruction to the Action Stagehand would click so it
- * can be centred first. Resolution is best-effort: when `observe` is
- * unavailable, throws, or finds nothing, the caller falls back to Stagehand's
- * own string `act`, which resolves internally exactly as before.
+ * can be centred first. Scoped to the step's frame the same way
+ * `guardedObserve` is, so an in-frame control is not resolved against the top
+ * document. Resolution is best-effort: when `observe` is unavailable, throws,
+ * or finds nothing, Stagehand's own string `act` resolves internally exactly
+ * as before.
  */
 async function resolveClickAction(
   stagehand: Stagehand,
   instruction: string,
-  options: ActOptions | undefined
+  options: ActOptions | undefined,
+  frameTarget: FrameTarget | undefined
 ): Promise<Action | undefined> {
   if (typeof stagehand.observe !== "function") return undefined;
-  try {
-    const observed = await withWatchdog(
-      () => stagehand.observe(instruction, options?.timeout ? { timeout: options.timeout } : {}),
-      { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-observe" }
-    );
-    return observed[0];
-  } catch (err) {
-    logger.warn(`could not resolve click target for pre-centring: ${toErrorMessage(err)}`);
-    return undefined;
-  }
+  const observeOptions = frameScopedOptions<ObserveOptions>(
+    options?.timeout ? { timeout: options.timeout } : {},
+    frameTarget
+  );
+  const observed = await withWatchdog(() => stagehand.observe(instruction, observeOptions), {
+    timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS,
+    label: "stagehand-observe",
+  });
+  return observed[0];
 }
 
 /**
  * Stagehand's `act` clicks the content-box centre after only a
  * `scrollIntoViewIfNeeded`, so a sticky overlay swallows the click. Centre +
  * hit-test the click target first so Stagehand's own scroll is a no-op. String
- * instructions are resolved via `observe` for the pre-centring only (best
- * effort) and still reach `act` as the original string, so downstream
- * method/argument handling is unchanged. Frame-hop (`>>`) selectors are centred
- * in the child frame they resolve to. A target that is occluded, or a hop whose
- * frame is not attached, throws: an occluded click is never delivered. A target
- * the evaluating document cannot see is left to Stagehand's own resolution.
- * Non-click actions are skipped since there is no click point to clear.
+ * instructions are resolved via `observe` for the pre-centring only and still
+ * reach `act` as the original string, so downstream method/argument handling
+ * is unchanged. Frame-hop (`>>`) selectors are centred in the child frame they
+ * resolve to. Best-effort by design: a target that cannot be resolved or
+ * centred is logged and left to Stagehand's own delivery, because a click that
+ * lands on an overlay is caught as a phantom by the healing ladder and retried
+ * through the centred trusted-click path, whereas failing here would turn an
+ * act that would have run into a hard attempt failure. Non-click actions are
+ * skipped since there is no click point to clear.
  */
 async function preCentreClickTarget(
   stagehand: Stagehand,
@@ -300,17 +304,21 @@ async function preCentreClickTarget(
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
 ): Promise<void> {
-  const page = stagehand.context?.activePage();
-  const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
-  if (!target) return;
-  const action =
-    typeof input === "string" ? await resolveClickAction(stagehand, input, options) : input;
-  if (action?.method !== "click") return;
   try {
+    const page =
+      typeof stagehand.context?.activePage === "function"
+        ? stagehand.context.activePage()
+        : undefined;
+    const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
+    if (!target) return;
+    const action =
+      typeof input === "string"
+        ? await resolveClickAction(stagehand, input, options, frameTarget)
+        : input;
+    if (action?.method !== "click") return;
     await centreAction(page, target, action);
   } catch (err) {
-    if (!(err instanceof CentredClickError) || err.state !== "missing") throw err;
-    logger.warn(`${err.message}; leaving the click to Stagehand's own resolution`);
+    logger.warn(`pre-centring skipped: ${toErrorMessage(err)}`);
   }
 }
 
