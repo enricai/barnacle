@@ -88,6 +88,48 @@ describe("segmented date primitive", () => {
     expect(sent.filter((s) => s.endsWith("keyDown"))).toHaveLength(6);
   });
 
+  it("types '012020' as ordered per-digit key events, never insertText or fill", async () => {
+    const calls: { method: string; args: { type: string; text?: string } }[] = [];
+    const { target, exprs } = harness(GROUPS, [1, 2020]);
+    const page = {
+      sendCDP: async (method: string, args: { type: string; text?: string }) => {
+        calls.push({ method, args });
+      },
+    } as never;
+    const fill = vi.fn();
+    (
+      target.locator as unknown as { mockImplementation: (f: () => unknown) => void }
+    ).mockImplementation(() => {
+      const loc = { first: () => loc, click: async (): Promise<void> => {}, fill, type: fill };
+      return loc;
+    });
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    expect(calls.every((c) => c.method === "Input.dispatchKeyEvent")).toBe(true);
+    const downs = calls.filter((c) => c.args.type === "keyDown").map((c) => c.args.text);
+    expect(downs).toEqual(["0", "1", "2", "0", "2", "0"]);
+    for (let i = 0; i < calls.length; i += 1) {
+      if (calls[i]?.args.type === "keyDown") {
+        expect(calls[i + 1]?.args.type).toBe("keyUp");
+      }
+    }
+    expect(calls.some((c) => c.method === "Input.insertText")).toBe(false);
+    expect(fill).not.toHaveBeenCalled();
+    expect(exprs.some((e) => e.includes(".value ="))).toBe(false);
+  });
+
+  it("returns null when readback differs from the typed digits", async () => {
+    const { target, page } = harness(GROUPS, [1, 2021]);
+    expect(
+      await trySegmentedDateSpinbuttonPrimitive({ page, target, logger, instruction: WORK_FROM })
+    ).toBeNull();
+  });
+
   it("dispatches no key events for '75201' against an MM/YYYY group", async () => {
     const { target, page, sent } = harness([GROUPS[0] as SegmentedDateGroup], [1, 2020]);
     const id = await trySegmentedDateSpinbuttonPrimitive({
