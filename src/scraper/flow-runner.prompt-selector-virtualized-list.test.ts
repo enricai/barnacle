@@ -179,12 +179,22 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
       if (!node) return { state: "missing" };
       if (!rebound && node.textContent?.trim() === "Sweden") {
         rebound = true;
-        node.textContent = "Denmark";
+        const other = Array.from(window.document.querySelectorAll("[role='option']")).find(
+          (n) => n.textContent?.trim() === "Denmark"
+        );
+        for (const [n, text] of [
+          [node, "Denmark"],
+          [other, "Sweden"],
+        ] as const) {
+          if (!n) continue;
+          n.textContent = text;
+          n.setAttribute("data-automation-label", text);
+        }
       }
       const expected = /actual !== "([^"]*)"/.exec(source)?.[1];
       const actual = (node.textContent ?? "").replace(/\s+/g, " ").trim();
       if (expected !== undefined && actual !== expected) return { state: "mismatch" };
-      clickedTexts.push(actual);
+      if (expected !== undefined) clickedTexts.push(actual);
       return { state: "hit" };
     };
     const merged = {
@@ -193,9 +203,13 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
       step: "for 'Country of residence' select 'Sweden'",
     };
 
-    await executeStepWithHealing(merged as unknown as Parameters<typeof executeStepWithHealing>[0]);
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
 
+    expect(result).toBe("completed");
     expect(rebound).toBe(true);
     expect(clickedTexts).not.toContain("Denmark");
+    expect(clickedTexts.every((t) => t === "Sweden")).toBe(true);
   });
 });
