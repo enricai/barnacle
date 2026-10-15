@@ -13935,6 +13935,10 @@ export function emitContractTs(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
+   * a retry would try to re-register the same address. Emits
+   * `meta.maxAttempts: 1`. */
+  createsAccount?: boolean;
   /** Multi-action flow whose last step is a submit — when combined with
    * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
    * gates a successful return, so the response schema carries a real
@@ -14050,6 +14054,7 @@ export function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    createsAccount = false,
     isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
@@ -15141,6 +15146,14 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
+  const executeReadsBaseUrl = !usesApplicantContactSchema;
+  const executeContextName = executeReadsBaseUrl || !omitExecuteHttp ? "context" : "_context";
+  const executeDocComment = omitExecuteHttp
+    ? ""
+    : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
+  const maxAttemptsLiteral = createsAccount
+    ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
+    : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -15193,14 +15206,13 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}
   },
 ${executeHttpMethodBlock}
-  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
-  async execute(
+${executeDocComment}  async execute(
     payload: ${pascal}Payload,
     session: BrowserSession,
-    context: SitePluginContext
+    ${executeContextName}: SitePluginContext
   ): Promise<SitePluginResult<${pascal}Response>> {
     const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
@@ -15797,7 +15809,12 @@ export function emitBrowserFlowTs(opts: {
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-}): { code: string; payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
+}): {
+  code: string;
+  payloadFieldNames: Set<string>;
+  optionalPayloadFieldNames: Set<string>;
+  usesThrowawayPassword: boolean;
+} {
   const {
     siteId,
     pascal,
@@ -16048,7 +16065,7 @@ ${flowStepsBlock}
 `
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
-  return { code, payloadFieldNames, optionalPayloadFieldNames };
+  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -17257,6 +17274,7 @@ async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      createsAccount: browserFlow.usesThrowawayPassword,
       isSubmissionFlow,
       inputBody,
       hasMultipartStep,
