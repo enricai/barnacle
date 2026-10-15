@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FrameTarget } from "@/scraper/frame-target";
 import {
+  buildCentreAndHitTestFn,
   CENTRE_AND_HIT_TEST_FN,
   type CentredHitTestResult,
   centreSelectorForClick,
@@ -116,5 +117,35 @@ describe("firstMatchClickable", () => {
   it("narrows a first()-only locator to its first match", () => {
     const first = { click: vi.fn() };
     expect(firstMatchClickable({ first: () => first } as never)).toBe(first);
+  });
+});
+
+describe("identity expectation", () => {
+  it("withholds the click and reports a mismatch", async () => {
+    const click = vi.fn(async () => {});
+    const evaluateOnElement = vi.fn(
+      async (_fn: string) => ({ state: "mismatch" }) as CentredHitTestResult
+    );
+    await expect(
+      clickAfterCentredHitTest({ click }, evaluateOnElement, { expectText: "Row 7" })
+    ).rejects.toThrow(/identity mismatch/);
+    expect(click).not.toHaveBeenCalled();
+    expect(evaluateOnElement).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(evaluateOnElement).mock.calls[0]?.[0]).toContain('"Row 7"');
+  });
+
+  it("clicks once when the identity check passes", async () => {
+    const click = vi.fn(async () => {});
+    await clickAfterCentredHitTest({ click }, async () => ({ state: "hit" }), {
+      expectText: "Row 7",
+    });
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the in-page check after scroll and before hit-test", () => {
+    const fn = buildCentreAndHitTestFn("Row 7");
+    expect(fn.indexOf("scrollIntoView")).toBeLessThan(fn.indexOf("mismatch"));
+    expect(fn.indexOf("mismatch")).toBeLessThan(fn.indexOf("elementFromPoint"));
+    expect(buildCentreAndHitTestFn()).toBe(CENTRE_AND_HIT_TEST_FN);
   });
 });
