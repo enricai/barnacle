@@ -175,4 +175,38 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     )?.textContent;
     expect(committed).toBe("Sweden");
   });
+
+  it.each([
+    ["exact label", ["Norway", "Sweden", "Denmark"], "Sweden", "Sweden"],
+    ["suffix label", ["Norway", "Sweden (SE)", "Denmark"], "Sweden", "Sweden (SE)"],
+    ["prefix label", ["Norway", "Kingdom of Sweden", "Denmark"], "Sweden", "Kingdom of Sweden"],
+  ])(
+    "sends no Enter for a filter-as-you-type typeahead (%s)",
+    async (_name, options, requested, expectedCommit) => {
+      const stagehandAct = vi.fn();
+      const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+        html: SEARCH_ON_SUBMIT_HTML,
+        popupByWidgetId: {
+          "country-widget": { options, searchable: true },
+        },
+      });
+      const merged = {
+        ...baseParams(page as unknown as Page, stagehandAct, ""),
+        frameTarget: target,
+        step: `for 'Country of residence' select '${requested}'`,
+      };
+
+      const result = await executeStepWithHealing(
+        merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+      ).catch(() => "failed");
+
+      expect(enterKeyDowns(cdpEvents)).toBe(0);
+      if (expectedCommit !== requested) return;
+      expect(result).toBe("completed");
+      const committed = window.document.querySelector(
+        "[data-automation-id='promptSelectionLabel']"
+      )?.textContent;
+      expect(committed).toBe(expectedCommit);
+    }
+  );
 });
