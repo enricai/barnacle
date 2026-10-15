@@ -1,6 +1,11 @@
+import { readFileSync } from "node:fs";
 import { type Document, type HTMLInputElement, Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
-import { parseCheckStateStep, tryCheckboxStatePrimitive } from "@/scraper/flow-runner";
+import {
+  parseCheckStateStep,
+  parseCheckStep,
+  tryCheckboxStatePrimitive,
+} from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 const LOGGER = { info: () => undefined, warn: () => undefined } as never;
@@ -92,5 +97,102 @@ describe("tryCheckboxStatePrimitive", () => {
     const two = `<input type="checkbox" id="b"><label for="b">Terms</label><input type="checkbox" id="c"><label for="c">Terms</label>`;
     expect(await run(setup(two), "Check the 'Terms' checkbox")).toBeNull();
     expect(await run(setup(one), "Check the 'Nope' checkbox")).toBeNull();
+  });
+
+  it("unchecks a pre-ticked box with exactly one click", async () => {
+    const s = setup(one);
+    expect(await run(s, "Uncheck the 'I agree to the terms' checkbox")).toBe("a");
+    expect(s.clicks).toHaveLength(1);
+    expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("is a no-op for an unticked box on Uncheck", async () => {
+    const s = setup(one.replace(" checked", ""));
+    expect(await run(s, "Uncheck the 'I agree to the terms' checkbox")).toBe("a");
+    expect(s.clicks).toEqual([]);
+  });
+
+  it("matches the label exactly, not as a substring", async () => {
+    const s = setup(
+      `<input type="checkbox" id="a"><label for="a">I agree to the terms and conditions</label>`
+    );
+    expect(await run(s, "Check the 'I agree to the terms' checkbox")).toBeNull();
+    expect(s.clicks).toEqual([]);
+  });
+
+  it("prefers aria-checked over the checked property", async () => {
+    const on = setup(
+      `<div role="checkbox" id="r" aria-checked="true" aria-label="Subscribe"></div>`
+    );
+    expect(await run(on, "Check the 'Subscribe' checkbox")).toBe("r");
+    expect(on.clicks).toEqual([]);
+    const off = setup(
+      `<div role="checkbox" id="r" aria-checked="false" aria-label="Subscribe"></div>`,
+      false
+    );
+    expect(await run(off, "Uncheck the 'Subscribe' checkbox")).toBe("r");
+    expect(off.clicks).toEqual([]);
+  });
+
+  it("falls through when the click never flips the box", async () => {
+    const s = setup(one.replace(" checked", ""), false);
+    expect(await run(s, "Check the 'I agree to the terms' checkbox")).toBeNull();
+    expect(s.clicks.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to the box when the label click point is obscured", async () => {
+    const s = setup(one.replace(" checked", ""));
+    (s.doc as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () =>
+      s.doc.querySelector("[data-barnacle-cbstate=box]");
+    const id = await tryCheckboxStatePrimitive({
+      page: s.page,
+      target: s.target,
+      instruction: "Check the 'I agree to the terms' checkbox",
+      logger: LOGGER,
+    });
+    expect(id).toBe("a");
+    expect(s.clicks).toEqual(['[data-barnacle-cbstate="box"]']);
+  });
+
+  it("falls through without clicking when every click point is obscured", async () => {
+    const s = setup(one.replace(" checked", ""));
+    (s.doc as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () => s.doc.body;
+    const id = await tryCheckboxStatePrimitive({
+      page: s.page,
+      target: s.target,
+      instruction: "Check the 'I agree to the terms' checkbox",
+      logger: LOGGER,
+    });
+    expect(id).toBeNull();
+    expect(s.clicks).toEqual([]);
+  });
+
+  it("clears its marker attributes afterwards", async () => {
+    const s = setup(one.replace(" checked", ""));
+    await run(s, "Check the 'I agree to the terms' checkbox");
+    expect(s.doc.querySelector("[data-barnacle-cbstate]")).toBeNull();
+  });
+
+  it("ignores click phrasing, leaving toggles to the cascade", async () => {
+    const s = setup(one);
+    expect(await run(s, "Click the 'I agree to the terms' checkbox")).toBeNull();
+    expect(s.clicks).toEqual([]);
+  });
+});
+
+describe("parseCheckStep uncheck form", () => {
+  it("extracts the label from an Uncheck step", () => {
+    expect(parseCheckStep("Uncheck the 'Newsletter' checkbox")).toEqual({ label: "Newsletter" });
+  });
+});
+
+describe("step ordering", () => {
+  it("runs the checkbox state primitive before the prompt-selector and date primitives", () => {
+    const src = readFileSync(`${__dirname}/flow-runner.ts`, "utf8");
+    const at = (needle: string): number => src.indexOf(`await ${needle}({`);
+    const state = at("tryCheckboxStatePrimitive");
+    expect(state).toBeGreaterThan(0);
+    expect(state).toBeLessThan(at("tryPromptSelectorPrimitive"));
+    expect(state).toBeLessThan(at("trySegmentedDateSpinbuttonPrimitive"));
   });
 });
