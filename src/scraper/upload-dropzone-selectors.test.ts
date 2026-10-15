@@ -1,6 +1,6 @@
 import { Window } from "happy-dom";
 import { describe, expect, it } from "vitest";
-import { DROP_ZONE_SELECTORS } from "@/scraper/upload-affordance-expr";
+import { DROP_ZONE_SELECTORS, FIND_DROP_ZONE_EXPR } from "@/scraper/upload-affordance-expr";
 
 describe("DROP_ZONE_SELECTORS", () => {
   it("keeps class and tag selectors", () => {
@@ -26,5 +26,25 @@ describe("DROP_ZONE_SELECTORS against a DOM", () => {
 
   it("does not match an unrelated drop attribute", () => {
     expect(query(`<div data-testid="drop-down-menu"></div>`)).toBeNull();
+  });
+});
+
+describe("FIND_DROP_ZONE_EXPR against a DOM", () => {
+  const find = (html: string): unknown => {
+    const window = new Window();
+    window.document.body.innerHTML = html;
+    return new Function("document", `return ${FIND_DROP_ZONE_EXPR}(document);`)(window.document);
+  };
+
+  it.each([
+    `<div data-area="file-drop"></div>`,
+    `<div id="dropzone"></div>`,
+    `<section data-widget="upload-drop-region"></section>`,
+  ])("finds a drop area identified by a non-class attribute: %s", (html) => {
+    expect(find(html)).not.toBeNull();
+  });
+
+  it("ignores dropdown menus", () => {
+    expect(find(`<div id="menu" data-x="drop-down"></div>`)).toBeNull();
   });
 });

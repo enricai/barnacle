@@ -124,8 +124,9 @@ import {
   clickCentredTrusted,
 } from "@/scraper/trusted-click";
 import {
-  DROP_ZONE_SELECTORS,
+  FIND_DROP_ZONE_EXPR,
   matchesUploadAffordanceVocabulary,
+  UPLOAD_AFFORDANCE_CONTROL_SELECTOR,
   UPLOAD_AFFORDANCE_MATCHER_EXPR,
 } from "@/scraper/upload-affordance-expr";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
@@ -5264,11 +5265,13 @@ export async function attachToSurfacedInput(params: {
   recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, fixture, logger, signalCounter, recentCaptureMeta } = params;
-  const enabledInputs = target.locator("xpath=//input[@type='file' and not(@disabled)]");
-  const hasEnabledInput = (await enabledInputs.count().catch(() => 0)) > 0;
-  const inputLocator = (
-    hasEnabledInput ? enabledInputs : target.locator("xpath=//input[@type='file']")
-  ).first();
+  // Prefer an enabled input (a widget can keep a disabled decoy beside the live one);
+  // the second union branch only matches when no enabled file input exists.
+  const inputLocator = target
+    .locator(
+      "xpath=(//input[@type='file' and not(@disabled)] | //input[@type='file'][not(//input[@type='file' and not(@disabled)])])[1]"
+    )
+    .first();
   try {
     await inputLocator.setInputFiles({
       name: fixture.name,
@@ -5383,15 +5386,14 @@ export async function surfaceAndUpload(params: {
   // mount. Wait (bounded, same window as the raw-input probe) for ANY upload
   // target to appear — a dropzone, an upload-affordance button, or an
   // <input type=file> — so every downstream strategy runs against a rendered
-  // widget. Dropzone list is the shared DROP_ZONE_SELECTORS used by
+  // widget. Dropzone list is the shared FIND_DROP_ZONE_EXPR used by
   // simulateDragDropUpload and the button matcher parallels clickUploadAffordance.
   const targetExpr = `(() => {
     const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
     if (document.querySelector("input[type=file]")) return { present: true };
-    const dz = document.querySelector(${JSON.stringify(DROP_ZONE_SELECTORS.join(","))});
-    if (dz) return { present: true };
+    if (${FIND_DROP_ZONE_EXPR}(document)) return { present: true };
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
-    const btns = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const btns = Array.from(document.querySelectorAll(${JSON.stringify(UPLOAD_AFFORDANCE_CONTROL_SELECTOR)}));
     if (btns.some((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""))) return { present: true };
     return { present: false };
   })()`;
@@ -5519,7 +5521,7 @@ async function clickUploadAffordance(
   const expr = `(() => {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
     const isUpload = ${UPLOAD_AFFORDANCE_MATCHER_EXPR};
-    const els = Array.from(document.querySelectorAll("button,[role='button'],a"));
+    const els = Array.from(document.querySelectorAll(${JSON.stringify(UPLOAD_AFFORDANCE_CONTROL_SELECTOR)}));
     const scoped = (el) => !!el.closest("[class*='ttachment'],[class*='pload'],[class*='esume']");
     const actionable = ${ACTIONABLE_VISIBILITY_EXPR};
     const matches = els.filter((el) => actionable(el) && isUpload(el.getAttribute("aria-label") || el.textContent || ""));
@@ -8500,12 +8502,7 @@ export async function simulateDragDropUpload(
     const fileName = ${JSON.stringify(fixture.name)};
     const fileType = ${JSON.stringify(fixture.mimeType)};
     const base64 = ${JSON.stringify(base64)};
-    const dropZoneSelectors = ${JSON.stringify(DROP_ZONE_SELECTORS)};
-    let dropZone = null;
-    for (const sel of dropZoneSelectors) {
-      const el = document.querySelector(sel);
-      if (el) { dropZone = el; break; }
-    }
+    const dropZone = ${FIND_DROP_ZONE_EXPR}(document);
     if (!dropZone) return { ok: false, reason: "no drop zone found" };
     try {
       const binStr = atob(base64);

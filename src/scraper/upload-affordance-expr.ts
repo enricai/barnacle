@@ -60,3 +60,35 @@ export const DROP_ZONE_SELECTORS: readonly string[] = [
     ["file", "upload"].map((word) => `[${attr}*='drop' i][${attr}*='${word}' i]`)
   ),
 ];
+
+/**
+ * Controls that can carry an upload-affordance label. Shared by the render-gate
+ * and the click so a `role="link"` "Choose files" control is seen by both.
+ */
+export const UPLOAD_AFFORDANCE_CONTROL_SELECTOR = "button,[role='button'],[role='link'],a";
+
+const DROP_ZONE_ATTRIBUTE_VALUE_SOURCE =
+  "drop[-_ ]?(zone|area|target|file|upload|resume)|(file|upload|resume)[-_ ]?drop(?!-?down)";
+
+/**
+ * Browser-evaluable function expression `(document) => Element | null` that
+ * finds a drop area. Tries the class/tag/attribute selectors first, then scans
+ * every element's attributes (any name, any value) so a drop area identified
+ * only by e.g. `data-area="file-drop"` is still found. Shared by the render-gate
+ * and the synthetic drag-drop so the two cannot disagree about what a drop area is.
+ */
+export const FIND_DROP_ZONE_EXPR = `((doc) => {
+  const bySelector = doc.querySelector(${JSON.stringify(DROP_ZONE_SELECTORS.join(","))});
+  if (bySelector) return bySelector;
+  if (typeof doc.querySelectorAll !== "function") return null;
+  const valueRe = new RegExp(${JSON.stringify(DROP_ZONE_ATTRIBUTE_VALUE_SOURCE)}, "i");
+  const skip = new Set(["html", "head", "body", "script", "style", "input", "option"]);
+  for (const el of Array.from(doc.querySelectorAll("*"))) {
+    if (!el.attributes || skip.has(String(el.tagName || "").toLowerCase())) continue;
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.name === "class") continue;
+      if (valueRe.test(attr.name) || valueRe.test(attr.value || "")) return el;
+    }
+  }
+  return null;
+})`;
