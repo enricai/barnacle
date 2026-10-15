@@ -1,6 +1,7 @@
 /**
  * Append-only NDJSON sink for dispatch submission envelopes. One line per
- * plugin invocation captures the outcome — siteId, requestId, inbound payload,
+ * plugin invocation captures the outcome — siteId, requestId, an allowlisted
+ * summary of the inbound payload (never applicant PII or résumé bytes),
  * status, audit payload, error message, duration, plus the opaque `joinKeys`
  * bag and the `kind:"submit"` dimension — so downstream tooling (ETL, jq,
  * ad-hoc queries) can answer "what did we submit for jobId X on date Y, and
@@ -20,8 +21,10 @@ import type { z } from "zod/v4";
 
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
+import { NON_PII_PAYLOAD_KEYS, redactPiiDeep } from "@/lib/pii-redaction";
 import { submitRecordSchema } from "@/lib/telemetry/reconciliation-record";
 import { bufferSubmissionLine } from "@/lib/telemetry/s3-sink";
+import type { InboundPayloadSummary } from "@/types/pii-redaction";
 
 const logger = getLogger({ name: "telemetry/submission-capture" });
 
@@ -41,6 +44,28 @@ export type SubmissionEnvelopeSample = z.infer<typeof submissionEnvelopeSampleSc
  * internally so callers omit them.
  */
 export type SubmissionEnvelopeInput = Omit<SubmissionEnvelopeSample, "ts" | "kind">;
+
+/**
+ * Reduces a request body to what telemetry consumers actually read, because
+ * the raw body is applicant PII (and the full résumé) and the sink lands in
+ * long-retention S3 storage. Non-object bodies collapse to `null`.
+ */
+export function summarizeInboundPayload(payload: unknown): InboundPayloadSummary | null {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const summary: InboundPayloadSummary = { fieldsPresent: [] };
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (value === undefined || value === null || value === "") continue;
+    // Allowlisted keys are what downstream reconciliation joins on (af-qa's CI
+    // enrichment looks rows up by `scenario`); everything else is applicant data.
+    if (NON_PII_PAYLOAD_KEYS.has(key) && (typeof value === "string" || typeof value === "number")) {
+      summary[key] = value;
+      continue;
+    }
+    summary.fieldsPresent.push(key);
+  }
+  summary.fieldsPresent.sort();
+  return summary;
+}
 
 /** Options for `captureSubmissionEnvelope`. */
 export interface CaptureSubmissionOptions {
@@ -70,12 +95,14 @@ export async function captureSubmissionEnvelope(
   input: SubmissionEnvelopeInput,
   opts: CaptureSubmissionOptions = {}
 ): Promise<void> {
+  if (config.telemetry.enabled === false) return;
   const sinkPath = opts.sinkPath ?? config.telemetry.submissionsNdjsonPath;
-  const sample: SubmissionEnvelopeSample = {
+  const sample = redactPiiDeep({
     ...input,
+    inboundPayload: summarizeInboundPayload(input.inboundPayload),
     kind: "submit",
     ts: formatISO(new Date()),
-  };
+  }) as SubmissionEnvelopeSample;
 
   try {
     const line = `${JSON.stringify(sample)}\n`;

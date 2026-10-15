@@ -15,6 +15,7 @@ vi.mock("@/lib/logging", () => ({
   getScriptLogger: () => loggerStub,
 }));
 
+import { maskValueShape } from "@/lib/pii-redaction";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
@@ -442,7 +443,9 @@ describe("flow-runner cascade fill actuation throughput (batched fill-by-index o
     // sets `record.verifiedBy = "dom"` right before this log line) rather
     // than routing through a generic resolved-action verifier.
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining(`deepLocator filled "${RENDERED_TARGET_TEXT}" with "${FILL_VALUE}"`)
+      expect.stringContaining(
+        `deepLocator filled "${RENDERED_TARGET_TEXT}" with "${maskValueShape(FILL_VALUE)}"`
+      )
     );
 
     // One batched scan (enumeration) and one batched fill (actuation) — the

@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { maskValueShape } from "@/lib/pii-redaction";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
@@ -97,7 +98,9 @@ describe("flow-runner/tryPromptSelectorPrimitive late scope link", () => {
     expect(doc.querySelector("[data-stale]")?.hasAttribute(OPTION_MARK)).toBe(false);
     expect(doc.getElementById("a--input")?.getAttribute("value") ?? "").toBe("");
     expect(clicks.filter((c) => c.includes("chip") || c.includes("#a"))).toEqual([]);
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('selected "City 17"'));
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(`selected "${maskValueShape("City 17")}"`)
+    );
   });
 
   it("does not treat a stale document-scoped listbox as already open", async () => {
@@ -133,7 +136,9 @@ describe("flow-runner/tryPromptSelectorPrimitive late scope link", () => {
 
     expect(result).toBe("completed");
     expect(window.document.getElementById("b")?.textContent).toBe("City 5");
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('selected "City 5"'));
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining(`selected "${maskValueShape("City 5")}"`)
+    );
   });
 
   it("does not credit a document-scoped option-set change after a failed readback as a drill", async () => {

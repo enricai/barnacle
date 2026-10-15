@@ -2,6 +2,7 @@ import type { FastifyReply } from "fastify";
 
 import { buildErrorEnvelope, httpStatusForCode } from "@/api/errors";
 import type { ErrorCode } from "@/api/schemas/common";
+import { redactPii, redactPiiDeep } from "@/lib/pii-redaction";
 import type { DispatchMetrics } from "@/types/dispatch-metrics";
 
 /**
@@ -16,7 +17,9 @@ export function replyWithError(
   statusOverride?: number,
   metrics?: DispatchMetrics
 ): void {
-  const envelope = buildErrorEnvelope(code, message, detailType);
-  const body = metrics ? { ...envelope, metrics } : envelope;
+  // Error messages and per-step metrics embed step instructions, which carry
+  // applicant values; scrub them before they leave the process.
+  const envelope = buildErrorEnvelope(code, redactPii(message), detailType);
+  const body = metrics ? { ...envelope, metrics: redactPiiDeep(metrics) } : envelope;
   void reply.status(statusOverride ?? httpStatusForCode(code)).send(body);
 }

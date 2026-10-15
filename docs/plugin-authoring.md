@@ -148,6 +148,29 @@ config-only manifest reaches this only via `spec.httpModule`, and — since it
 never gets `extractJoinKeys` — its line only outranks core's own
 `TrackingUrl` fire when none was present.
 
+## Applicant data in logs and telemetry
+
+Core registers each request's body (`/run` and `meta.extraRoutes`) for the
+duration of the run, and every log line, telemetry record and error reply is
+scrubbed of those values (`<Email>`, `<FirstName>`, …). Passwords from
+`generateThrowawayPassword()` register themselves.
+
+Two cases core cannot see:
+
+- **Secrets your plugin mints itself** — e.g. an account password derived from a
+  server secret. Register it before use:
+
+  ```ts
+  import { registerSecretValue } from "@enricai/barnacle/lib/pii-redaction";
+
+  const password = derivePassword(payload.Email);
+  registerSecretValue(password);
+  ```
+
+- **Short answers** (`Yes`, `No`, EEO choices) are too common to register, so
+  don't log chosen values. Log `maskValueShape(value)` (`Aaa`, `99/99/9999`)
+  when the format matters for debugging.
+
 ## Static fixtures
 
 If Phase 3b (auxiliary fixture detection) found static JSON endpoints (markets,

@@ -67,7 +67,8 @@ renames it `beaconSessionIp` to avoid colliding with `session.ip`.
   the JSON body of every row (Recipe 4). Schema: `src/api/schemas/submissions.ts`.
 - **Raw NDJSON** (`.barnacle/submissions.ndjson`, path from
   `SUBMISSIONS_NDJSON_PATH`) via `jq` — the fallback for shapes the route
-  doesn't expose (`inboundPayload`/`auditPayload`), no network access to a
+  doesn't expose (`inboundPayload` — an allowlisted summary, never applicant
+  values — and `auditPayload`), no network access to a
   running instance, or filtering on a specific `joinKeys` field.
 
 Recipes below ran against a local sample sink (5 submits across two

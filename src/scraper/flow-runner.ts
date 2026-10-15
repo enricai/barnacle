@@ -36,6 +36,7 @@ import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced
 import { type VerifySubmitInput, verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { REPHRASE_RESPONSE_SCHEMA, type SUBMIT_VERDICT_SCHEMA } from "@/lib/llm/schemas";
 import { getLogger } from "@/lib/logging";
+import { maskValueShape } from "@/lib/pii-redaction";
 import {
   captureLlmCall,
   classifyLlmCallFailure,
@@ -431,7 +432,11 @@ export function wireSignalCapture(
       }
     }
 
-    logger.info(`captured [${capture.status}] ${capture.method} ${req.url} → ${filename}`);
+    // Query strings carry form GETs and analytics beacons (often applicant
+    // fields); origin + path is enough to follow the request sequence.
+    logger.info(
+      `captured [${capture.status}] ${capture.method} ${req.url.split("?")[0]} → ${filename}`
+    );
   };
 
   session.on("Network.requestWillBeSent", onRequest);
@@ -6283,11 +6288,13 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
     if (!matches(actual)) {
       logger.info(
-        `segmented date primitive: readback ${JSON.stringify(actual)} != ${JSON.stringify(expected)}; falling through`
+        `segmented date primitive: readback ${maskValueShape(JSON.stringify(actual))} != ${maskValueShape(JSON.stringify(expected))}; falling through`
       );
       return null;
     }
-    logger.info(`segmented date primitive: committed segments ${JSON.stringify(actual)}`);
+    logger.info(
+      `segmented date primitive: committed segments ${maskValueShape(JSON.stringify(actual))}`
+    );
     return `segmented-date-${gi}`;
   } catch (err) {
     logger.warn(`segmented date primitive: threw: ${toErrorMessage(err)}; falling through`);
@@ -7216,14 +7223,14 @@ export async function trySelectPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  /** See {@link maskLoggedValue} — an emailStep code, when this step's fill value came from one. */
   redactValue?: string;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find the target select — the one whose
   // nearby text matches the question label (or, when no label, any select).
   // Try a deterministic option match first; if it hits, apply immediately (no
@@ -7338,7 +7345,7 @@ export async function trySelectPrimitive(params: {
       );
       if (ok && !stillInvalid) {
         logger.info(
-          `select primitive: set dropdown to "${enumResult.detMatch.text.trim().slice(0, 40)}" (${optLabel})`
+          `select primitive: set dropdown to "${maskValueShape(enumResult.detMatch.text.trim())}" (${optLabel})`
         );
         return enumResult.detMatch.id;
       }
@@ -7388,7 +7395,7 @@ export async function trySelectPrimitive(params: {
     );
     if (ok && !stillInvalid) {
       logger.info(
-        `select primitive: LLM chose "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+        `select primitive: LLM chose "${maskValueShape(chosenOption.text)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return chosenCandidate.id;
     }
@@ -7560,7 +7567,7 @@ export async function tryFillRequiredSelectsPrimitive(params: {
       const { ok, stillInvalid } = await applySelectValue(page, target, cand.selIdx, chosen.value);
       if (ok && !stillInvalid) {
         logger.info(
-          `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${chosen.text.slice(0, 40)}"`
+          `required-select primitive: filled "${cand.label.slice(0, 40)}" with "${maskValueShape(chosen.text)}"`
         );
       } else {
         allCommitted = false;
@@ -7613,14 +7620,14 @@ async function tryCheckboxPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  /** See {@link maskLoggedValue} — an emailStep code, when this step's fill value came from one. */
   redactValue?: string;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
   // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
   // checkboxes. Question label = the group's legend / associated label; each
@@ -7764,7 +7771,7 @@ async function tryCheckboxPrimitive(params: {
     const applyResult = (await target.evaluate(applyExpr)) as { ok: boolean; id: string };
     if (applyResult?.ok) {
       logger.info(
-        `checkbox primitive: LLM checked "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+        `checkbox primitive: LLM checked "${maskValueShape(chosenOption.text)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return applyResult.id;
     }
@@ -7983,14 +7990,14 @@ async function tryRadioPrimitive(params: {
   captureFn?: JudgeCaptureFn;
   // Returns the selected radio's DOM id on success (empty string if none), or
   // null when unhandled. See trySelectPrimitive for the id-as-targetId rationale.
-  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  /** See {@link maskLoggedValue} — an emailStep code, when this step's fill value came from one. */
   redactValue?: string;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
   const parsed = parseRadioStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
   // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
   // container with radios. Question label = the group's legend / associated label; each option
@@ -8077,7 +8084,7 @@ async function tryRadioPrimitive(params: {
       });
       if (applied) {
         logger.info(
-          `radio primitive: selected "${(chosenOpt?.text ?? "").trim().slice(0, 40)}" (${optLabel})`
+          `radio primitive: selected "${maskValueShape((chosenOpt?.text ?? "").trim())}" (${optLabel})`
         );
         return chosenOpt?.id ?? "";
       }
@@ -8131,7 +8138,7 @@ async function tryRadioPrimitive(params: {
     };
     if (applyResult?.ok) {
       logger.info(
-        `radio primitive: LLM selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
+        `radio primitive: LLM selected "${maskValueShape(chosenOption.text)}" for ${optLabel} (${verdict.reason.slice(0, 60)})`
       );
       return chosenOption.id ?? "";
     }
@@ -8297,7 +8304,7 @@ async function tryPromptSelectorPrimitive(params: {
   logger: Logger;
   anthropic: Anthropic | null;
   captureFn?: JudgeCaptureFn;
-  /** See {@link redactIfSensitive} — an emailStep code, when this step's fill value came from one. */
+  /** See {@link maskLoggedValue} — an emailStep code, when this step's fill value came from one. */
   redactValue?: string;
 }): Promise<string | null> {
   const { page, target, instruction, logger, anthropic, captureFn, redactValue } = params;
@@ -8333,7 +8340,7 @@ async function tryPromptSelectorPrimitive(params: {
           : null;
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${redactIfSensitive(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -8979,7 +8986,7 @@ async function commitPromptOption(params: {
     };
     if (readback?.ok) {
       logger.info(
-        `prompt-selector primitive: selected "${chosenOption.text.slice(0, 40)}" for ${optLabel} (${matchReason})`
+        `prompt-selector primitive: selected "${maskValueShape(chosenOption.text)}" for ${optLabel} (${matchReason})`
       );
       return readback.id;
     }
@@ -10348,15 +10355,13 @@ export function spliceEmailStepFillValue(step: string, code: string): string {
 }
 
 /**
- * Masks `text` when it equals `sensitiveValue` (the emailStep-extracted code
- * spliced into the step's fill value, see {@link spliceEmailStepFillValue}).
- * The select/checkbox/radio/prompt-selector primitives all re-parse the
- * (possibly code-bearing) instruction independently of the fill primitive,
- * so each one's own "option"/diagnostic logging must redact it too — the
- * code is a single-use credential and must never reach the logs verbatim.
+ * Masks a typed/selected value for logs and attempt diagnostics. Values are
+ * applicant answers (or the emailStep-extracted single-use code spliced into
+ * the step, see {@link spliceEmailStepFillValue}), so only their shape is
+ * kept — enough to debug format mismatches, never the value itself.
  */
-function redactIfSensitive(text: string, sensitiveValue?: string): string {
-  return sensitiveValue && text === sensitiveValue ? "[redacted]" : text;
+function maskLoggedValue(text: string, sensitiveValue?: string): string {
+  return sensitiveValue && text === sensitiveValue ? "[redacted]" : maskValueShape(text);
 }
 
 /**
@@ -12194,7 +12199,7 @@ export async function executeStepWithHealing(params: {
         triedSelectors.push(fieldLabelOutcome.matched.selector);
         record.triedSelectors = [fieldLabelOutcome.matched.selector];
         record.actResultSuccess = true;
-        record.actResultDescription = `deepLocator ${fieldLabelOutcome.fieldTarget.kind === "fill" ? "filled" : "selected"} "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" with "${fieldLabelOutcome.fieldTarget.value}"`;
+        record.actResultDescription = `deepLocator ${fieldLabelOutcome.fieldTarget.kind === "fill" ? "filled" : "selected"} "${fieldLabelOutcome.matched.accessibleText || fieldLabelOutcome.matched.selector}" with "${maskValueShape(fieldLabelOutcome.fieldTarget.value)}"`;
         // Same rationale as the pre-existing candidates===0 branch below:
         // the write + read-back the actuation helper already performed IS
         // the verification signal — no resolvedAction/network/url verifier
@@ -12879,8 +12884,8 @@ export async function executeStepWithHealing(params: {
               );
               if (dateFill !== null) {
                 record.errorMessage = dateFill.filled
-                  ? `html5-date-fallback: filled ${dateFill.inputType}="${redactIfSensitive(dateFill.postValue, emailStepCode)}"`
-                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${redactIfSensitive(dateFill.postValue, emailStepCode)})`;
+                  ? `html5-date-fallback: filled ${dateFill.inputType}="${maskLoggedValue(dateFill.postValue, emailStepCode)}"`
+                  : `html5-date-fallback: failed to fill ${dateFill.inputType} (post=${maskLoggedValue(dateFill.postValue, emailStepCode)})`;
                 // Override the act result based on the deterministic fill
                 // outcome — the helper bypasses Stagehand's schema-error
                 // failure mode by writing directly via the native setter.
@@ -12903,8 +12908,8 @@ export async function executeStepWithHealing(params: {
                 );
                 if (datepickerFill !== null) {
                   record.errorMessage = datepickerFill.filled
-                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`
-                    : `text-datepicker-fill: failed to commit "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
+                    ? `text-datepicker-fill: filled via ${datepickerFill.strategy} "${maskLoggedValue(datepickerFill.postValue, emailStepCode)}"`
+                    : `text-datepicker-fill: failed to commit "${maskLoggedValue(fillValue.slice(0, 60), emailStepCode)}" (post=${maskLoggedValue(datepickerFill.postValue, emailStepCode)})`;
                   if (datepickerFill.filled) {
                     record.actResultSuccess = true;
                     resolvedAction = overriddenTarget;
@@ -12925,14 +12930,14 @@ export async function executeStepWithHealing(params: {
                   );
                   if (readback !== null) {
                     if (readback.outcome === "segment") {
-                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+                      record.errorMessage = `fill-value-rejected: tried "${maskLoggedValue(fillValue.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "rejected") {
-                      record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+                      record.errorMessage = `fill-value-rejected: tried "${maskLoggedValue(fillValue.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
                       record.actResultSuccess = false;
                     } else if (readback.outcome === "differs") {
                       logger.info(
-                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${redactIfSensitive(fillValue.slice(0, 60), emailStepCode)}" got "${redactIfSensitive(readback.postValue.slice(0, 60), emailStepCode)}" (framework reformatted)`
+                        `${formatStepPrefix(stepIndex, totalSteps)} fill-value-differs: tried "${maskLoggedValue(fillValue.slice(0, 60), emailStepCode)}" got "${maskLoggedValue(readback.postValue.slice(0, 60), emailStepCode)}" (framework reformatted)`
                       );
                     }
                   }
@@ -13499,7 +13504,7 @@ export async function executeStepWithHealing(params: {
         if (readback?.outcome === "segment") {
           datepickerRejected = true;
           record.actResultSuccess = false;
-          record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
+          record.errorMessage = `fill-value-rejected: tried "${maskLoggedValue(fillIntent.value.slice(0, 60), emailStepCode)}" on a single spinbutton segment; a lone segment cannot hold the whole value`;
         } else if (readback?.outcome === "rejected") {
           // Value didn't land. First try the datepicker primitive; it self-gates
           // on react-datepicker's `.react-datepicker__input-container` and returns
@@ -13513,14 +13518,14 @@ export async function executeStepWithHealing(params: {
           if (datepickerFill !== null) {
             if (datepickerFill.filled) {
               datepickerCommitted = true;
-              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${redactIfSensitive(datepickerFill.postValue, emailStepCode)}"`;
+              record.errorMessage = `text-datepicker-fill: filled via ${datepickerFill.strategy} "${maskLoggedValue(datepickerFill.postValue, emailStepCode)}"`;
             } else {
               // A gated-in datepicker that neither gesture commits is a real fill
               // failure (per fillTextDatepickerInput's contract) — authoritative,
               // so suppress the weak view-swap/form-value acceptance and escalate.
               datepickerRejected = true;
               record.actResultSuccess = false;
-              record.errorMessage = `text-datepicker-fill: failed to commit "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" (post=${redactIfSensitive(datepickerFill.postValue, emailStepCode)})`;
+              record.errorMessage = `text-datepicker-fill: failed to commit "${maskLoggedValue(fillIntent.value.slice(0, 60), emailStepCode)}" (post=${maskLoggedValue(datepickerFill.postValue, emailStepCode)})`;
             }
           } else {
             // Not a datepicker — the fill was genuinely rejected. Same message
@@ -13528,7 +13533,7 @@ export async function executeStepWithHealing(params: {
             // failure dump reads identically regardless of which path caught it.
             datepickerRejected = true;
             record.actResultSuccess = false;
-            record.errorMessage = `fill-value-rejected: tried "${redactIfSensitive(fillIntent.value.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
+            record.errorMessage = `fill-value-rejected: tried "${maskLoggedValue(fillIntent.value.slice(0, 60), emailStepCode)}" on <${readback.tag}>; element value remains empty (silent rejection — HTML5 type validation, framework controlled-component, or masked-input library)`;
           }
         }
       }

@@ -108,6 +108,10 @@
       "types": "./dist/lib/phone.d.ts",
       "default": "./dist/lib/phone.js"
     },
+    "./lib/pii-redaction": {
+      "types": "./dist/lib/pii-redaction.d.ts",
+      "default": "./dist/lib/pii-redaction.js"
+    },
     "./lib/random": {
       "types": "./dist/lib/random.d.ts",
       "default": "./dist/lib/random.js"

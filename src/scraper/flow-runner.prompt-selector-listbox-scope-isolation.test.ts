@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { maskValueShape } from "@/lib/pii-redaction";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
@@ -133,7 +134,9 @@ describe("flow-runner/tryPromptSelectorPrimitive listbox scope isolation (multi-
     // Resolved and committed the CHOSEN widget (w3), not a stray/sibling.
     expect(trajectory).toEqual([{ stepIndex: 3, verifiedBy: "dom", targetId: "w3" }]);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('selected "Epsilon" for option "Epsilon"')
+      expect.stringContaining(
+        `selected "${maskValueShape("Epsilon")}" for option "${maskValueShape("Epsilon")}"`
+      )
     );
     expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("did not commit"));
     expect(testLogger.info).not.toHaveBeenCalledWith(

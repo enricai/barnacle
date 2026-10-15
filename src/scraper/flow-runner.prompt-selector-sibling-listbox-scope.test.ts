@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { maskValueShape } from "@/lib/pii-redaction";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
@@ -127,7 +128,9 @@ describe("flow-runner/tryPromptSelectorPrimitive sibling listbox scope isolation
     // Resolved and committed widget B, never widget A's opener/options.
     expect(trajB).toEqual([{ stepIndex: 4, verifiedBy: "dom", targetId: "wB" }]);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('selected "No" for option "No"')
+      expect.stringContaining(
+        `selected "${maskValueShape("No")}" for option "${maskValueShape("No")}"`
+      )
     );
 
     // Widget B's own value node committed "No"; widget A's committed value

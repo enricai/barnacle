@@ -154,14 +154,44 @@ describe("captureSubmissionEnvelope", () => {
     expect(parsed.auditPayload).toBeNull();
   });
 
-  it("preserves the inbound and audit payloads verbatim", async () => {
+  it("keeps allowlisted inbound identifiers and the audit payload verbatim", async () => {
     const input = makeSuccessInput();
     await captureSubmissionEnvelope(input, { sinkPath });
 
     const line = fs.readFileSync(sinkPath, "utf-8").trim();
     const parsed = JSON.parse(line) as SubmissionEnvelopeSample;
-    expect(parsed.inboundPayload).toEqual(input.inboundPayload);
+    expect(parsed.inboundPayload).toEqual({
+      ...(input.inboundPayload as object),
+      fieldsPresent: [],
+    });
     expect(parsed.auditPayload).toEqual(input.auditPayload);
+  });
+
+  it("never persists applicant fields or résumé bytes from the inbound payload", async () => {
+    const input = {
+      ...makeSuccessInput(),
+      inboundPayload: {
+        JobId: "J-1",
+        scenario: "happy-path",
+        FirstName: "Sentinelfirst",
+        Email: "sentinel-pii@example.com",
+        Phone: "+15551234567",
+        Answers: { q1: "Yes" },
+        Resume: Buffer.from("resume-bytes-sentinel"),
+        ResumeBase64: Buffer.from("resume-bytes-sentinel").toString("base64"),
+        Empty: "",
+      },
+    };
+    await captureSubmissionEnvelope(input, { sinkPath });
+
+    const line = fs.readFileSync(sinkPath, "utf-8");
+    expect(line).not.toMatch(/Sentinelfirst|sentinel-pii|5551234567|resume-bytes|cmVzdW1l/);
+    const parsed = JSON.parse(line.trim()) as SubmissionEnvelopeSample;
+    expect(parsed.inboundPayload).toEqual({
+      JobId: "J-1",
+      scenario: "happy-path",
+      fieldsPresent: ["Answers", "Email", "FirstName", "Phone", "Resume", "ResumeBase64"],
+    });
   });
 
   it("line is terminated by a newline character", async () => {

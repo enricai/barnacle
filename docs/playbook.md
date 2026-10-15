@@ -107,7 +107,9 @@ Total runtime: 20–40 minutes for a typical flow, fully unattended.
 ### 1a — Session bootstrap
 
 `createBrowserSession()` (`src/scraper/session.ts`) constructs Stagehand with
-`serverCache: true` (skips LLM inference on replay after the first run) and
+`serverCache: false` on Browserbase (the cache keys on instruction text, and
+instructions carry applicant values, so it never hits on value-bearing steps
+and would only persist those values server-side) and
 `selfHeal: false` — Stagehand's built-in heal only catches Playwright throws,
 not silent semantic misses ("clicked the wrong thing, returned success"),
 which recon's own verify-and-retry cascade handles (1c). The runtime fallback

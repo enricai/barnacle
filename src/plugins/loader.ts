@@ -29,6 +29,7 @@ import {
 import { MetricsCollector } from "@/lib/dispatch-metrics";
 import { toErrorMessage } from "@/lib/errors";
 import { extendLogger, getLogger } from "@/lib/logging";
+import { registerSensitiveValues, releaseSensitiveValues } from "@/lib/pii-redaction";
 import { captureBeaconEvent, createBeaconOutcomeRecorder } from "@/lib/telemetry/beacon-capture";
 import { type HotPathErrorTelemetry, RunTelemetry } from "@/lib/telemetry/run-telemetry";
 import { captureSubmissionEnvelope } from "@/lib/telemetry/submission-capture";
@@ -387,6 +388,7 @@ export async function dispatch<TResult>(
   const managesOwnTracking = !!plugin.extractJoinKeys;
 
   recordDdAttempt(ddTags);
+  registerSensitiveValues(context.requestId, payload);
 
   try {
     const result = await runPluginPipeline<TResult>(plugin, payload, context, options);
@@ -482,6 +484,8 @@ export async function dispatch<TResult>(
     }
     (err as unknown as { metrics: DispatchMetrics }).metrics = metrics;
     throw err;
+  } finally {
+    releaseSensitiveValues(context.requestId);
   }
 }
 
@@ -663,15 +667,22 @@ function registerExtraRoutes(
           requestId: request.id,
           logger: extendLogger(request.log as unknown as pino.Logger),
         });
-        const result = await route.handler(
-          {
-            body,
-            params: request.params as Record<string, string>,
-            log: request.log as unknown as Logger,
-          },
-          context
-        );
-        return route.envelope === false ? result : successEnvelope(result as object);
+        // Extra routes carry applicant data too (resume answers, OTP emails) and
+        // bypass dispatch(), so they register their body for redaction here.
+        registerSensitiveValues(request.id, body);
+        try {
+          const result = await route.handler(
+            {
+              body,
+              params: request.params as Record<string, string>,
+              log: request.log as unknown as Logger,
+            },
+            context
+          );
+          return route.envelope === false ? result : successEnvelope(result as object);
+        } finally {
+          releaseSensitiveValues(request.id);
+        }
       },
     });
 

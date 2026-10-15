@@ -119,6 +119,14 @@ export interface AppConfig {
      */
     browserbaseSessionTimeoutSeconds: number;
     /**
+     * Whether Browserbase keeps its CDP session log and video recording.
+     * Off by default because both capture what the flow types — every
+     * applicant field and generated password lands in `Input.insertText`
+     * params on Browserbase's side. Turn on (BROWSERBASE_SESSION_ARTIFACTS)
+     * only for local/recon debugging with non-applicant data.
+     */
+    browserbaseSessionArtifacts: boolean;
+    /**
      * Minimum DOM-growth byte delta (`outerHTML.length`) for
      * `isClickViewSwapVerified` to credit a network-free click as a verified
      * client-side view swap. Default of 5000 sits 10× above the trivial-delta
@@ -515,6 +523,7 @@ export function loadConfig(): AppConfig {
       connectTimeoutMs: getNumericEnv("STAGEHAND_CONNECT_TIMEOUT_MS", 120_000),
       steelSessionTimeoutMs: getNumericEnv("STEEL_SESSION_TIMEOUT_MS", 3_600_000),
       browserbaseSessionTimeoutSeconds: getNumericEnv("BROWSERBASE_SESSION_TIMEOUT_SECONDS", 1_800),
+      browserbaseSessionArtifacts: getBoolEnv("BROWSERBASE_SESSION_ARTIFACTS", false),
       viewSwapMinBytesThreshold: getNumericEnv("VIEW_SWAP_MIN_BYTES", 5000),
       viewSwapRevealMinBytesThreshold: getNumericEnv("VIEW_SWAP_REVEAL_MIN_BYTES", 500),
       uploadWidgetRenderAttempts: getNumericEnv("UPLOAD_WIDGET_RENDER_ATTEMPTS", 17),
