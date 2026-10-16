@@ -29,11 +29,17 @@ function setup(opts: { inputTakes: boolean }): {
   send: ReturnType<typeof vi.fn>;
 } {
   const signalCounter = { n: 0 };
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] =
+    [];
   const handlers: Record<string, (p?: object) => void> = {};
   const emitUploadPost = (): void => {
     setTimeout(() => {
-      recentCaptureMeta.push({ method: "POST", status: 200, url: "https://x.example.com/upload" });
+      recentCaptureMeta.push({
+        method: "POST",
+        status: 200,
+        url: "https://x.example.com/upload",
+        hasBody: true,
+      });
       signalCounter.n += 1;
     }, 10);
   };

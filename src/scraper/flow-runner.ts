@@ -203,7 +203,7 @@ export function wireSignalCapture(
     counter: { n: number };
     signalCounter: { n: number };
     recentCaptures: string[];
-    recentCaptureMeta: { method: string; status: number; url: string }[];
+    recentCaptureMeta: CaptureMeta[];
     getCurrentPhase: () => string;
     getCurrentPageOrigin: () => string;
     onCapture?: (capture: Capture, filename: string) => void;
@@ -1566,7 +1566,7 @@ export async function resolveDumpPageIdentity(
  * AND a 5xx status. Returns the matched URL when found; null otherwise.
  */
 export function findRecentBackendError(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
   /**
    * Hostnames considered "the site's own backend." Replaces the prior
@@ -1626,7 +1626,7 @@ async function isLandedUrlPlausibleForStep(
  * clean skip.
  */
 export function findRecentPageTransition(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
 }): string | null {
   const { recentCaptureMeta, preMetaLength } = params;
@@ -2470,7 +2470,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
 export function describeAttemptEffectSignals(
   pre: StepSnapshot,
   post: StepSnapshot,
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[],
+  recentCaptureMeta: readonly CaptureMeta[],
   preMetaLength: number
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
@@ -5466,7 +5466,7 @@ async function tryUploadPrimitive(params: {
    * in the ATS's framework state — false positive. K'1 catches this by
    * filtering the network signal by URL keyword.
    */
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
@@ -11816,7 +11816,7 @@ export async function executeStepWithHealing(params: {
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
-  recentCaptureMeta: { method: string; status: number; url: string }[];
+  recentCaptureMeta: CaptureMeta[];
   anthropic: Anthropic | null;
   /**
    * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM`
@@ -16242,7 +16242,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let activePage = page;
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  const recentCaptureMeta: CaptureMeta[] = [];
   const start = Date.now();
   let submitVerified = false;
   let submitStepSkipped = false;
