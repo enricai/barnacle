@@ -9731,7 +9731,26 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
   if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
   if ((FACET_KIND_HINTS.get(facet) ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
   if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
-  return named.some((word) => normalizeKind(word) === element) ? 3 : 0;
+  if (named.some((word) => normalizeKind(word) === element)) return 3;
+  // An element kind spelled as a compound (`departurePort`, `numberOfNights`)
+  // still names the facet when one of its words is a word the facet itself
+  // (or its step's prose) uses for its kind.
+  const elementWords = deriveFacetKind(elementKind)
+    .split(" ")
+    .filter((word) => !KIND_NOISE_WORDS.has(word))
+    .map(normalizeKind);
+  const facetWords = new Set(
+    [
+      ...named,
+      ...(FACET_KIND_HINTS.get(facet) ?? []).flatMap((hint) => deriveFacetKind(hint).split(" ")),
+    ]
+      .filter((word) => !KIND_NOISE_WORDS.has(word))
+      .map(normalizeKind)
+  );
+  return elementWords.length > 1 &&
+    elementWords.some((word) => word.length > 2 && facetWords.has(word))
+    ? 3
+    : 0;
 }
 
 function kindsMatch(facet: NavigateToFacetBinding, elementKind: string): boolean {
