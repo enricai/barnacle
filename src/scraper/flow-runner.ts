@@ -14,7 +14,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -117,6 +117,13 @@ import {
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
+import {
+  defaultCapturesDir,
+  listCaptureFiles,
+  readCaptureFile,
+  recordRuntimeCapture,
+  withRuntimeCaptureStore,
+} from "@/scraper/runtime-capture-store";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import {
@@ -153,7 +160,7 @@ import {
   UPLOAD_AFFORDANCE_MATCHER_EXPR,
 } from "@/scraper/upload-affordance-expr";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
-import { type Capture, resolveReconRunDir } from "@/scripts/recon-shared";
+import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
 import type { Logger } from "@/types/logging";
 import type { SessionProxyTuple } from "@/types/session-proxy";
@@ -2071,14 +2078,7 @@ export function latestCaptureIndex(recentCaptures: readonly string[]): number {
  * so callers scan in capture order. Returns [] when the dir is unreadable.
  */
 export function capturesAfterIndex(preIdx: number, capturesDir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(capturesDir);
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
+  return listCaptureFiles(capturesDir)
     .map((f) => ({ f, idx: parseCaptureIndex(f) }))
     .filter((e): e is { f: string; idx: number } => e.idx !== null && e.idx > preIdx)
     .sort((a, b) => a.idx - b.idx)
@@ -2114,7 +2114,7 @@ export function windowHasTransitionBody(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
+  const capturesDir = params.capturesDir ?? defaultCapturesDir();
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -2123,8 +2123,10 @@ export function windowHasTransitionBody(params: {
   }
   for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     try {
-      const raw = readFileSync(join(capturesDir, filename), "utf8");
-      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const capture = readCaptureFile(capturesDir, filename) as
+        | (Partial<Capture> & { requestPostData?: unknown })
+        | null;
+      if (!capture) continue;
       const body =
         typeof capture.requestPostData === "string"
           ? capture.requestPostData
@@ -2158,7 +2160,7 @@ export function windowHasAdvanceTransition(params: {
 }): boolean {
   const { preIdx, advanceTransitionBodyPattern } = params;
   if (!advanceTransitionBodyPattern) return false;
-  const capturesDir = params.capturesDir ?? resolveReconRunDir().graphqlDir;
+  const capturesDir = params.capturesDir ?? defaultCapturesDir();
   let rx: RegExp;
   try {
     rx = new RegExp(advanceTransitionBodyPattern);
@@ -2167,8 +2169,10 @@ export function windowHasAdvanceTransition(params: {
   }
   for (const filename of capturesAfterIndex(preIdx, capturesDir)) {
     try {
-      const raw = readFileSync(join(capturesDir, filename), "utf8");
-      const capture = JSON.parse(raw) as Partial<Capture> & { requestPostData?: unknown };
+      const capture = readCaptureFile(capturesDir, filename) as
+        | (Partial<Capture> & { requestPostData?: unknown })
+        | null;
+      if (!capture) continue;
       const body =
         typeof capture.requestPostData === "string"
           ? capture.requestPostData
@@ -3798,7 +3802,7 @@ export function extractSubmitFailureEvidence(
    * the host filter and returns any 4xx in the window.
    */
   ownBackendHostnames: readonly string[],
-  capturesDir: string = resolveReconRunDir().graphqlDir,
+  capturesDir: string = defaultCapturesDir(),
   mode: "strict" | "any-4xx" = "strict"
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
@@ -3809,9 +3813,8 @@ export function extractSubmitFailureEvidence(
     if (seen.has(filename)) continue;
     seen.add(filename);
     try {
-      const path = join(capturesDir, filename);
-      const raw = readFileSync(path, "utf8");
-      const capture = JSON.parse(raw) as Partial<Capture>;
+      const capture = readCaptureFile(capturesDir, filename);
+      if (!capture) continue;
       if (typeof capture.url !== "string") continue;
       if (mode === "strict") {
         let hostname: string;
@@ -3891,7 +3894,7 @@ export function extractSubmitFailureEvidence(
  */
 export function extractGaEventEvidence(
   recentCaptureFilenames: readonly string[],
-  capturesDir: string = resolveReconRunDir().graphqlDir
+  capturesDir: string = defaultCapturesDir()
 ): string {
   if (recentCaptureFilenames.length === 0) return "";
   const records: string[] = [];
@@ -3900,9 +3903,8 @@ export function extractGaEventEvidence(
     if (seen.has(filename)) continue;
     seen.add(filename);
     try {
-      const path = join(capturesDir, filename);
-      const raw = readFileSync(path, "utf8");
-      const capture = JSON.parse(raw) as Partial<Capture>;
+      const capture = readCaptureFile(capturesDir, filename);
+      if (!capture) continue;
       if (typeof capture.url !== "string") continue;
       let url: URL;
       try {
@@ -15098,7 +15100,7 @@ export async function executeStepWithHealing(params: {
         const fallbackEvidence = extractSubmitFailureEvidence(
           recentCaptures.slice(-tail.length),
           [],
-          resolveReconRunDir().graphqlDir,
+          defaultCapturesDir(),
           "any-4xx"
         );
         if (fallbackEvidence.length > 0) {
@@ -16310,6 +16312,10 @@ export interface RunHealingFlowDeps {
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
+  return withRuntimeCaptureStore(() => runHealingFlowScoped(deps));
+}
+
+async function runHealingFlowScoped(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
   for (const secret of deps.secrets ?? []) registerSecretValue(secret);
@@ -16340,6 +16346,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       recentCaptures,
       recentCaptureMeta,
       getCurrentPhase: () => "flow",
+      onCapture: (capture, filename) => recordRuntimeCapture(filename, capture),
       getCurrentPageOrigin: () => {
         try {
           return new URL(activePage.url()).origin;
