@@ -1436,7 +1436,7 @@ async function readPageQuiescence(target: FrameTarget): Promise<PageQuiescence> 
  * signal instead of hand-building the readers.
  */
 export async function settleWithPageQuiescence(
-  page: Page,
+  page: SettlePage,
   target: FrameTarget,
   signalCounter: { n: number },
   preNetworkCount: number,
@@ -3566,6 +3566,9 @@ export async function judgeStepOutcome(params: {
   captureFn?: JudgeCaptureFn;
   step: string;
   isFinalStep: boolean;
+  submitStep: boolean;
+  flowHasSubmitSemantics: boolean;
+  elementSubmitShaped?: boolean;
   page: SettlePage;
   target: FrameTarget;
   signalCounter: { n: number };
@@ -3584,17 +3587,18 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  await settleAfterClick(
+  await settleWithPageQuiescence(
     params.page,
+    target,
     params.signalCounter,
     params.preNetworkCount,
-    isStepSettleWaitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false }),
-    async () => {
-      const text = await probeRawVisibleText(target);
-      return `${text.length}:${text.slice(0, 200)}`;
-    },
-    params.preVisibleTextSignature,
-    () => readPageQuiescence(target)
+    isStepSettleWaitShaped({
+      step,
+      submitStep: params.submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+    }) || params.elementSubmitShaped === true,
+    params.preVisibleTextSignature
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
@@ -11644,19 +11648,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    await settleAfterClick(
-      page,
-      signalCounter,
-      pre.networkCount,
-      true,
-      async () => {
-        const snap = await snapshotPage(target, signalCounter);
-        return snap.visibleTextSignature;
-      },
-      pre.visibleTextSignature,
-      () => readPageQuiescence(target)
-    );
-    const post = await snapshotPage(target, signalCounter, page);
+    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -11677,19 +11669,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    await settleAfterClick(
-      page,
-      signalCounter,
-      post.networkCount,
-      true,
-      async () => {
-        const snap = await snapshotPage(target, signalCounter);
-        return snap.visibleTextSignature;
-      },
-      post.visibleTextSignature,
-      () => readPageQuiescence(target)
-    );
-    const runnerUpPost = await snapshotPage(target, signalCounter, page);
+    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -14979,6 +14959,9 @@ export async function executeStepWithHealing(params: {
         captureFn,
         step,
         isFinalStep,
+        submitStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        elementSubmitShaped: resolvedElementIsSubmitShaped,
         page,
         target: frameTarget ?? mainFrameTarget(page),
         signalCounter,
@@ -15667,6 +15650,9 @@ export async function executeStepWithHealing(params: {
               captureFn,
               step,
               isFinalStep,
+              submitStep,
+              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+              elementSubmitShaped: resolvedElementIsSubmitShaped,
               page,
               target: frameTarget ?? mainFrameTarget(page),
               signalCounter,
