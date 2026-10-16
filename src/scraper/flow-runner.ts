@@ -69,7 +69,7 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
-import { type SettlePage, settleAfterClick } from "@/scraper/click-settle";
+import { QUIESCENCE_PROBE_EXPR, type SettlePage, settleAfterClick } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -3537,7 +3537,8 @@ export async function judgeStepOutcome(params: {
       const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
     },
-    params.preVisibleTextSignature
+    params.preVisibleTextSignature,
+    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
