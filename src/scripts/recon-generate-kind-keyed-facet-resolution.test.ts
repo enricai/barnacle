@@ -33,3 +33,36 @@ describe("kind-keyed facet resolution", () => {
     expect(resolved.some((f) => f.field === "stayLength" && f.value === "N3")).toBe(true);
   });
 });
+
+describe("kind-keyed value translation", () => {
+  it("maps each observed value to its own captured code", () => {
+    const facets = extractNavigateToFacetOrder(
+      [
+        { step: "select the 'Lisbon' city option", payloadField: "destination" },
+        { step: "select the 'Porto' city option", payloadField: "destination" },
+      ],
+      {}
+    );
+    const actions = [
+      {
+        capture: buildCapture({
+          url: "https://shop.example.com/search",
+          requestPostData: JSON.stringify({
+            filters: ["LIS;filterType=city", "PRT;filterType=city"],
+          }),
+          responseBody: {},
+          timestamp: "2026-01-01T00:00:00.000Z",
+        }),
+      },
+    ];
+    const resolved = resolveRecurringNavigateToFacets(facets, actions) ?? [];
+    const pairs = resolved.flatMap((f) => [...(f.valueMap?.entries() ?? [])]);
+    expect(pairs).toEqual(
+      expect.arrayContaining([
+        ["Lisbon", "LIS"],
+        ["Porto", "PRT"],
+      ])
+    );
+    expect(pairs).not.toContainEqual(["Lisbon", "PRT"]);
+  });
+});

@@ -7851,10 +7851,17 @@ export function resolveRecurringNavigateToFacets(
         // A case-only variant is already owned by the declared facet, whose
         // renderer re-cases any caller value to the captured element's casing.
         if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-        if (facet.value.length > 0)
+        // The traffic carries codes, not which declared value each belongs to;
+        // pair only where the code abbreviates the value, never by position.
+        const sameField = declared.filter(
+          ({ field, value }) => field === facet.field && value.length > 0
+        );
+        const abbreviated = sameField.filter(({ value }) => abbreviates(literal, value));
+        const owners = abbreviated.length > 0 || sameField.length !== 1 ? abbreviated : sameField;
+        if (owners.length > 0)
           pairsByField.set(facet.field, [
             ...(pairsByField.get(facet.field) ?? []),
-            [facet.value, literal],
+            ...owners.map((owner): [string, string] => [owner.value, literal]),
           ]);
         return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
       })
@@ -9798,6 +9805,19 @@ function facetCaseMethod(
   if (prefix === facet.value.toUpperCase()) return "toUpperCase";
   if (prefix === facet.value.toLowerCase()) return "toLowerCase";
   return undefined;
+}
+
+/** True when `code`'s letters occur in order within `value`, starting at its first letter (`LIS` in `Lisbon`). */
+function abbreviates(code: string, value: string): boolean {
+  const letters = code.toLowerCase().replace(/[^a-z]/g, "");
+  const target = value.toLowerCase();
+  if (letters.length === 0 || letters[0] !== target[0]) return false;
+  let from = 0;
+  for (const letter of letters) {
+    from = target.indexOf(letter, from) + 1;
+    if (from === 0) return false;
+  }
+  return true;
 }
 
 /**
