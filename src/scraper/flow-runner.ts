@@ -1190,6 +1190,12 @@ interface StepSnapshot {
    */
   visibleTextSignature: string;
   /**
+   * First ~3000 whitespace-normalised chars of `document.body.innerText`, so
+   * later decisions can read the page's real content rather than the lossy
+   * signature. Optional so literal snapshots built elsewhere keep compiling.
+   */
+  visibleText?: string;
+  /**
    * Joined `value`/`checked` fingerprint of every visible input/textarea/select
    * control (bounded to 2000 chars, same spirit as the 200-char text slice).
    * `innerText` never reflects a plain `<input>`'s `value` property, so a
@@ -1363,7 +1369,10 @@ function ariaCheckedReadExpr(elVar: string): string {
   return `${elVar}.getAttribute("aria-checked")`;
 }
 
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
+/** Bound on {@link StepSnapshot.visibleText}, keeping a pathological page from bloating snapshots. */
+const VISIBLE_TEXT_EXCERPT_CHARS = 3000;
+
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: t.replace(/\\s+/g, " ").trim().slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}) }; })()`;
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
@@ -1524,6 +1533,7 @@ export async function snapshotPage(
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
+  let visibleText = "";
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
@@ -1538,6 +1548,8 @@ export async function snapshotPage(
     ) {
       bodyHtmlLength = (result as { html: number }).html;
       visibleTextSignature = (result as { text: string }).text;
+      const rawFull = (result as Record<string, unknown>).full;
+      visibleText = typeof rawFull === "string" ? rawFull : "";
       const rawValues = (result as Record<string, unknown>).values;
       formValueSignature = typeof rawValues === "string" ? rawValues : "";
       const rawState = (result as Record<string, unknown>).state;
@@ -1578,6 +1590,7 @@ export async function snapshotPage(
     url,
     bodyHtmlLength,
     visibleTextSignature,
+    visibleText,
     formValueSignature,
     selectionStateSignature,
     selectionStateByXpath,
