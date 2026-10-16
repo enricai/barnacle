@@ -309,3 +309,190 @@ describe("segmented date primitive delivery", () => {
     expect(id).toBe("segmented-date-0");
   });
 });
+
+describe("segmented date primitive obscured click point", () => {
+  function obscuredFixture(opts: { popupOpen: boolean; escapeClearsPopup: boolean }): {
+    target: FrameTarget;
+    page: never;
+    events: string[];
+  } {
+    const events: string[] = [];
+    let popupOpen = opts.popupOpen;
+    const { target: base } = harness(GROUPS, [1, 2020]);
+    const baseEvaluate = base.evaluate as unknown as (expr: string) => Promise<unknown>;
+    const target = {
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("elementFromPoint")) {
+          events.push(popupOpen ? "hit-test:occluded" : "hit-test:hit");
+          return popupOpen ? { state: "occluded", occluder: "ul#popup" } : { state: "hit" };
+        }
+        if (expr.includes("activeListContainer")) return popupOpen ? 1 : 0;
+        if (expr.includes("el.focus()")) events.push("focus");
+        return baseEvaluate(expr);
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {
+          events.push("click");
+        },
+      })),
+    } as unknown as FrameTarget;
+    const page = {
+      sendCDP: async (_m: string, a: { type: string; key: string }) => {
+        if (a.type === "keyDown" && a.key === "Escape") {
+          events.push("escape");
+          if (opts.escapeClearsPopup) popupOpen = false;
+          return;
+        }
+        if (a.type === "keyDown") events.push(`digit:${a.key}`);
+      },
+      waitForTimeout: async (): Promise<void> => undefined,
+    } as never;
+    return { target, page, events };
+  }
+
+  it("dismisses the obscuring popup, then trusted-clicks and types the digits", async () => {
+    const { target, page, events } = obscuredFixture({ popupOpen: true, escapeClearsPopup: true });
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    const escapeAt = events.indexOf("escape");
+    const click = events.indexOf("click");
+    const firstDigit = events.findIndex((e) => e.startsWith("digit:"));
+    expect(escapeAt).toBeGreaterThanOrEqual(0);
+    expect(click).toBeGreaterThan(escapeAt);
+    expect(firstDigit).toBeGreaterThan(click);
+    expect(events.filter((e) => e.startsWith("digit:")).map((e) => e.slice(6))).toEqual([
+      "0",
+      "1",
+      "2",
+      "0",
+      "2",
+      "0",
+    ]);
+  });
+
+  it("issues no dismissal when the click point is already unobscured", async () => {
+    const { target, page, events } = obscuredFixture({ popupOpen: false, escapeClearsPopup: true });
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    expect(events).not.toContain("escape");
+    expect(events).toContain("click");
+  });
+
+  it("withholds the trusted click and falls back to focus when dismissal fails", async () => {
+    const { target, page, events } = obscuredFixture({ popupOpen: true, escapeClearsPopup: false });
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(events).toContain("escape");
+    expect(events).not.toContain("click");
+    expect(events).toContain("focus");
+    expect(id).toBe("segmented-date-0");
+  });
+
+  it("dismisses a popup the listbox heuristic does not recognise, on a page with no timer seam", async () => {
+    const events: string[] = [];
+    let popupOpen = true;
+    const { target: base } = harness(GROUPS, [1, 2020]);
+    const baseEvaluate = base.evaluate as unknown as (expr: string) => Promise<unknown>;
+    const target = {
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("elementFromPoint")) {
+          return popupOpen ? { state: "occluded", occluder: "div#calendar" } : { state: "hit" };
+        }
+        if (expr.includes("activeListContainer")) return 0;
+        return baseEvaluate(expr);
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {
+          events.push("click");
+        },
+      })),
+    } as unknown as FrameTarget;
+    const page = {
+      sendCDP: async (_m: string, a: { type: string; key: string }) => {
+        if (a.type !== "keyDown") return;
+        events.push(a.key === "Escape" ? "escape" : `digit:${a.key}`);
+        if (a.key === "Escape") popupOpen = false;
+      },
+    } as never;
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    const escapeAt = events.indexOf("escape");
+    expect(escapeAt).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("click")).toBeGreaterThan(escapeAt);
+    expect(events.findIndex((e) => e.startsWith("digit:"))).toBeGreaterThan(
+      events.indexOf("click")
+    );
+  });
+
+  it("sends Escape before typing when only the listbox probe sees the open popup", async () => {
+    const events: string[] = [];
+    let popupOpen = true;
+    const { target: base } = harness(GROUPS, [1, 2020]);
+    const baseEvaluate = base.evaluate as unknown as (expr: string) => Promise<unknown>;
+    const target = {
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("elementFromPoint")) return { state: popupOpen ? "missing" : "hit" };
+        if (expr.includes("activeListContainer")) return popupOpen ? 1 : 0;
+        return baseEvaluate(expr);
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {
+          events.push("click");
+        },
+      })),
+    } as unknown as FrameTarget;
+    const page = {
+      sendCDP: async (_m: string, a: { type: string; key: string }) => {
+        if (a.type !== "keyDown") return;
+        events.push(a.key === "Escape" ? "escape" : `digit:${a.key}`);
+        if (a.key === "Escape") popupOpen = false;
+      },
+      waitForTimeout: async (): Promise<void> => undefined,
+    } as never;
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    expect(events.indexOf("escape")).toBeGreaterThanOrEqual(0);
+    expect(events.findIndex((e) => e.startsWith("digit:"))).toBeGreaterThan(
+      events.indexOf("escape")
+    );
+  });
+});

@@ -137,7 +137,6 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
   firstMatchClickable,
-  isClickPointUnobscured,
   probeClickPoint,
 } from "@/scraper/trusted-click";
 import {
@@ -793,6 +792,19 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   return "";
 })`;
 /**
+ * Browser-side predicate: does a widget's committed text name the requested
+ * option as a whole phrase? A bare substring test credits "Astrophysics" for
+ * "Physics"; comparing on word boundaries (punctuation folded to spaces) keeps
+ * chip lists and "N items selected, X" announcements matching while a longer,
+ * different option no longer does.
+ */
+const PROMPT_NAMES_OPTION_EXPR = `((committed, wanted) => {
+  const words = (s) => " " + (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+  const want = words(wanted);
+  return want.trim() === "" || words(committed).includes(want);
+})`;
+
+/**
  * Browser-side expression reading what a prompt-selector widget ANNOUNCES it
  * committed, lowercased and whitespace-collapsed, or `""` when nothing is
  * readable. The announcement is ground truth over any inferred state: first the
@@ -823,6 +835,8 @@ const PROMPT_ANNOUNCED_VALUE_EXPR = `((w) => {
   let anode = w;
   for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anode; d++) {
     const list = anode.querySelector ? anode.querySelector('[data-automation-id="selectedItemList"]') : null;
+    const entries = list ? Array.from(list.querySelectorAll("*")).filter((e) => e.children.length === 0).map((e) => norm(e.textContent)).filter(Boolean) : [];
+    if (entries.length > 0) return entries.join(" , ");
     if (list && norm(list.textContent)) return norm(list.textContent);
     anode = anode.parentElement;
   }
@@ -4372,8 +4386,8 @@ export async function verifyPromptSelectorCommitted(
     const emptyRx = new RegExp(${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)});
     const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
     const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
-    const squash = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const want = squash(${JSON.stringify(requestedOption ?? "")});
+    const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
+    const want = ${JSON.stringify(requestedOption ?? "")};
     const xpath = ${JSON.stringify(xpath)};
     const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const el = result.singleNodeValue;
@@ -4381,7 +4395,7 @@ export async function verifyPromptSelectorCommitted(
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) return { isPromptWidget: false, committed: false };
     const value = announcedValue(widget) || currentText(widget, valueSel, emptyRx);
-    return { isPromptWidget: true, committed: value !== "" && (!want || squash(value).includes(want)) };
+    return { isPromptWidget: true, committed: value !== "" && (!want || namesOption(value, want)) };
   })()`;
   try {
     const raw = await target.evaluate(expr);
@@ -6176,6 +6190,8 @@ export interface SegmentedDateGroup {
   nested?: boolean;
   /** Each segment's own label text (aria-label, labelledby, placeholder), in DOM order. */
   segmentLabels?: readonly string[];
+  /** Index of the group holding these exact segments under a different name; the two never tie. */
+  sameAs?: number;
 }
 
 /**
@@ -6264,19 +6280,63 @@ function segmentedDateStepTokens(text: string): string[] {
   });
 }
 
+const SEGMENTED_DATE_STEP_NOISE = new Set([
+  "barnaclevalue",
+  "click",
+  "type",
+  "enter",
+  "fill",
+  "set",
+  "select",
+  "input",
+  "write",
+  "put",
+  "choose",
+  "use",
+  "press",
+  "focus",
+  "spinbutton",
+  "part",
+  "segment",
+  "digits",
+  "box",
+  "first",
+  "second",
+  "into",
+  "as",
+  "by",
+  "from",
+  "to",
+  "is",
+  "be",
+  "it",
+  "its",
+  "this",
+  "that",
+  "my",
+  "your",
+  ...SEGMENTED_DATE_STOPWORDS,
+  ...SEGMENTED_DATE_FIELD_WORDS,
+  ...SEGMENTED_DATE_PART_LABELS,
+  ...SEGMENTED_DATE_FIELD_NOUNS,
+]);
+
 /**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
  * digit count are dropped. A group is only eligible when a field the step names
  * (quoted, e.g. 'From', or unquoted in field position, e.g. "the To date")
  * matches its OWN label as whole words — a group with no `label` is judged by
- * its whole `context`. The section the step names ("Work Experience 1") is
+ * its whole `context` — and every other quoted phrase is found in the group's
+ * label or section. The section the step names ("Work Experience 1") is
  * then resolved: when a width-fitting group elsewhere matches the step's
- * section words better than any eligible group does, the named section renders
- * no such field and the step resolves to nothing rather than to another
- * section's. Returns the index into `groups`, or `null` when nothing matches
- * or the best match is tied — writing a date into a group that merely fits the
- * width would corrupt another field.
+ * section words better than any eligible group does, or the group's own
+ * section shares none of the step's remaining words (or numbering), the named
+ * section renders no such field and the step resolves to nothing rather than to
+ * another section's. Returns the index into `groups`, or `null` when nothing
+ * matches or the best match is tied — writing a date into a group that merely
+ * fits the width would corrupt another field. Groups that hold the same
+ * segments under different names never tie.
  */
 export function resolveSegmentedDateGroup(
   instruction: string,
@@ -6343,7 +6403,7 @@ function pickSegmentedDateGroup(
       (t) =>
         t.length > 0 &&
         t.join(" ") !== valueTokens &&
-        !(t.length === 1 && SEGMENTED_DATE_PART_LABELS.has(t[0] ?? ""))
+        !t.every((token) => SEGMENTED_DATE_PART_LABELS.has(token))
     );
   const stepTokens = segmentedDateStepTokens(
     instruction.replace(value.valueSpan, " barnaclevalue ")
@@ -6367,6 +6427,29 @@ function pickSegmentedDateGroup(
         !SEGMENTED_DATE_FIELD_WORDS.has(t)
     ).length;
   };
+  const quotedTokens = new Set(quoted.flat());
+  const leftover = stepTokens.filter(
+    (t) => !SEGMENTED_DATE_STEP_NOISE.has(t) && !quotedTokens.has(t)
+  );
+  const isNumber = (t: string): boolean => /^\d+$/.test(t);
+  // A group under another heading is not the field the step names, however
+  // well its label matches: the step's own words must find the section.
+  // A section that only repeats the group's own label is no heading at all
+  // (Workday enumerates "From*" as both), so it cannot name another section.
+  const namesOtherSection = (group: SegmentedDateGroup): boolean => {
+    const section = segmentedDateTokens(group.section ?? "");
+    const label = segmentedDateTokens(group.label ?? "");
+    if (section.length === 0 || contains(label, section)) return false;
+    const known = new Set([...section, ...label]);
+    const words = leftover.filter((t) => !isNumber(t));
+    const numbers = leftover.filter(isNumber);
+    const sectionNumbers = section.filter(isNumber);
+    if (numbers.length > 0 && sectionNumbers.length > 0) {
+      if (!numbers.some((n) => sectionNumbers.includes(n))) return true;
+    }
+    if (words.some((t) => section.includes(t))) return false;
+    return words.some((t) => !known.has(t));
+  };
   const bestSection = Math.max(0, ...groups.filter(compatible).map((group) => sectionScore(group)));
   let bestScore = -1;
   let leaders: number[] = [];
@@ -6378,19 +6461,25 @@ function pickSegmentedDateGroup(
       group.label === undefined &&
       quoted.length === 0 &&
       own.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t) && stepSet.has(t));
-    if (
-      !namesOwnField &&
-      !targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))
-    ) {
-      return;
-    }
+    const namesOwnLabel = (t: readonly string[]): boolean =>
+      contains(t, own) || (quoted.length > 0 && contains(own, t));
+    if (!namesOwnField && !targets.some(namesOwnLabel)) return;
+    const named = segmentedDateTokens(`${group.section ?? ""} ${group.context}`);
+    if (quoted.some((t) => !namesOwnLabel(t) && !contains(named, t))) return;
+    if (namesOtherSection(group)) return;
     const score = sectionScore(group);
     if (score < bestSection) return;
     if (score > bestScore) {
       bestScore = score;
       leaders = [index];
     } else if (score === bestScore) {
-      leaders.push(index);
+      const alias = (a: number, b: number): boolean =>
+        (groups[a]?.sameAs ?? a) === (groups[b]?.sameAs ?? b) ||
+        groups[a]?.sameAs === b ||
+        groups[b]?.sameAs === a;
+      const twin = leaders.findIndex((leader) => alias(leader, index));
+      if (twin < 0) leaders.push(index);
+      else leaders[twin] = Math.min(leaders[twin] ?? index, index);
     }
   });
   if (leaders.length === 1) return leaders[0] ?? null;
@@ -6549,9 +6638,49 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       segmentLabels: segs.map((seg) => labelText(seg)),
     });
   };
+  const PART_WORD = /^(mm|dd|yyyy|yy|month|day|year)$/i;
+  const keyOf = (text) => norm(text).split(" ").filter((word) => {
+    const parts = word.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    return parts.length > 0 && !parts.every((part) => PART_WORD.test(part));
+  }).join(" ");
+  const ownKey = (seg) => {
+    const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label"))];
+    if (seg.id) {
+      document.querySelectorAll("label").forEach((l) => { if (l.getAttribute("for") === seg.id) parts.push(norm(l.textContent)); });
+    }
+    const wrap = seg.closest("label");
+    if (wrap) parts.push(norm(wrap.textContent));
+    return keyOf(parts.filter(Boolean).join(" "));
+  };
+  // A container's legend names the whole section; the field a segment belongs
+  // to is the caption naming it, or the caption nearest before it with no other
+  // control in between.
+  const fieldKeys = (segs, box) => {
+    const own = new Set(segs);
+    const boxLegend = box.tagName === "FIELDSET" ? box.querySelector(":scope > legend") : null;
+    const keys = new Map();
+    let current = "";
+    box.querySelectorAll("label,legend,input,select,textarea,button").forEach((el) => {
+      if (el === boxLegend) return;
+      if (el.matches("label,legend")) {
+        const target = el.getAttribute("for");
+        if (isHidden(el) || el.querySelector("input,select,textarea,[role='spinbutton']") || (target && box.querySelector("[id='" + target + "']"))) return;
+        current = keyOf(el.textContent);
+        return;
+      }
+      if (!own.has(el)) {
+        if (!isHidden(el)) current = "";
+        return;
+      }
+      keys.set(el, ownKey(el) || current);
+    });
+    return segs.map((seg) => keys.get(seg) || "");
+  };
+  const captionRuns = [];
   const nestedCandidates = [];
   byContainer.forEach((segs, box) => {
     addGroup(segs, box, false);
+    const outerIndex = groups.length - 1;
     const byParent = new Map();
     for (const seg of segs) {
       if (!byParent.has(seg.parentElement)) byParent.set(seg.parentElement, []);
@@ -6559,9 +6688,36 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     // A shared fieldset can hold several independent dates (From and To year
     // spinbuttons side by side); each wrapper is then its own candidate group.
-    if (byParent.size > 1) byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent]));
+    if (byParent.size > 1) {
+      byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent]));
+      return;
+    }
+    const keys = fieldKeys(segs, box);
+    const runs = [];
+    segs.forEach((seg, si) => {
+      const last = runs[runs.length - 1];
+      if (last && last.key === keys[si]) last.segs.push(seg);
+      else runs.push({ key: keys[si], segs: [seg] });
+    });
+    runs.filter((run) => run.key).forEach((run) => captionRuns.push({ run, box, outerIndex, whole: run.segs.length === segs.length }));
   });
   nestedCandidates.forEach(([inner, parent]) => addGroup(inner, parent, true));
+  captionRuns.forEach(({ run, box, outerIndex, whole }) => {
+    const outer = groups[outerIndex];
+    const same = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === b.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (whole && same(outer.label || "", run.key)) return;
+    const gi = groups.length;
+    run.segs.forEach((seg, si) => mark(seg, gi + ":" + si));
+    const section = sectionOf(box, true);
+    groups.push({
+      segmentMaxes: run.segs.map((seg, si) => maxOf(seg, si, run.segs.length)),
+      context: [section, run.key].filter(Boolean).join(" "),
+      label: run.key,
+      section,
+      nested: true,
+      sameAs: whole ? outerIndex : undefined,
+    });
+  });
   return { groups };
 })()`;
 
@@ -6646,7 +6802,9 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         // scrolling is best-effort; the key events only need the segment focused
       }
       try {
-        if (await isClickPointUnobscured(target, selector)) {
+        // An open option popup can cover the field; clear it so the trusted
+        // click lands on the segment instead of falling back to a bare focus().
+        if (await clearObscuringPopup(page, target, selector)) {
           await clickCentredTrusted(target, selector, { label: "date segment" });
         }
       } catch {
@@ -8186,7 +8344,14 @@ export async function tryCheckboxStatePrimitive(params: {
     let overlaid = false;
     let trustedDelivered = false;
     for (const sel of clickSels) {
-      const probe = await probeClickPoint(target, sel);
+      const firstProbe = await probeClickPoint(target, sel);
+      const probe =
+        firstProbe?.state === "occluded" && firstProbe.occluder !== "none"
+          ? await dismissLeftoverPromptPopups(page, target).then(
+              () => probeClickPoint(target, sel),
+              () => firstProbe
+            )
+          : firstProbe;
       if (probe?.state === "occluded" && probe.occluder !== "none") {
         overlaid = true;
         continue;
@@ -9563,16 +9728,53 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
       .evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR)
       .catch(() => 0)) as number;
     if (!count) return;
-    logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
+    logger.info(`popup dismissal: dismissing ${count} leftover popup(s) via Escape`);
     const trusted = await sendTrustedEscape(page)
       .then(() => true)
       .catch((err) => {
-        logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
+        logger.info(`popup dismissal: Escape dispatch failed: ${toErrorMessage(err)}`);
         return false;
       });
     if (!trusted || attempt > 0) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
-    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS).catch(() => undefined);
+    await settleAfterEscape(page);
   }
+}
+
+/** Waits for a dismissed popup to unpaint; a page without a timer seam just proceeds. */
+async function settleAfterEscape(page: Page): Promise<void> {
+  await Promise.resolve()
+    .then(() => page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS))
+    .catch(() => undefined);
+}
+
+/**
+ * Clears whatever popup paints over `selector`'s click point so the caller's
+ * trusted click lands on the field. The hit test, not the popup's markup, is
+ * the evidence: a named occluder gets the listbox-aware dismissal first and
+ * then a plain Escape for popups that dismissal does not recognise. Resolves
+ * true only when a fresh hit test reaches the field; an indeterminate probe
+ * (no layout, nothing at the point) only ever gets the listbox-aware
+ * dismissal, never a blind Escape.
+ */
+async function clearObscuringPopup(
+  page: Page,
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const covered = (probe: Awaited<ReturnType<typeof probeClickPoint>>): boolean =>
+    probe?.state === "occluded" && probe.occluder !== undefined && probe.occluder !== "none";
+  const first = await probeClickPoint(target, selector);
+  if (first?.state === "hit") return true;
+  await dismissLeftoverPromptPopups(page, target).catch(() => undefined);
+  const afterListbox = await probeClickPoint(target, selector);
+  if (afterListbox?.state === "hit") return true;
+  if (!covered(afterListbox)) return false;
+  const trusted = await sendTrustedEscape(page)
+    .then(() => true)
+    .catch(() => false);
+  if (!trusted) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
+  await settleAfterEscape(page);
+  return (await probeClickPoint(target, selector))?.state === "hit";
 }
 
 /**
@@ -9742,6 +9944,7 @@ async function commitPromptOption(params: {
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
+      const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "", stillInvalid: false };
       const text = currentText(w, valueSel, emptyRx);
@@ -9800,7 +10003,7 @@ async function commitPromptOption(params: {
       // The widget's own announcement of what it committed is ground truth when readable.
       const committed = announcedValue(w);
       if (committed) {
-        return { ok: !!wantText && committed.includes(wantText), id: w.id || "", stillInvalid, committed };
+        return { ok: !!wantText && namesOption(committed, wantText), id: w.id || "", stillInvalid, committed };
       }
       // A wrong option leaves the widget valid, so !stillInvalid proves nothing
       // once the widget's own value is readable: a readable value naming another

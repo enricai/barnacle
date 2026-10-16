@@ -129,6 +129,41 @@ describe("prompt-selector read-back compares the widget's readable value to the 
   });
 });
 
+describe("prompt-selector wrong-commit pins for other options, fields and phrasing", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("does not credit the step when the widget announces a different option than the one requested", async () => {
+    const { trajectory } = await run(
+      "In the 'Major' prompt selector, select the option 'Physics'",
+      { options: OPTIONS, commitsInstead: "Geology" }
+    );
+    expect(trajectory).toEqual([]);
+  });
+
+  it("does not credit a step phrased without an ellipsis when the widget commits another option", async () => {
+    const { trajectory } = await run("In the 'Major' prompt selector select the option 'Geology'", {
+      options: OPTIONS,
+      commitsInstead: "Physics",
+    });
+    expect(trajectory).toEqual([]);
+  });
+
+  it("credits a step phrased without an ellipsis when the requested option commits", async () => {
+    const { trajectory } = await run("In the 'Major' prompt selector select the option 'Physics'", {
+      options: OPTIONS,
+    });
+    expect(trajectory).toEqual([{ stepIndex: 2, verifiedBy: "dom", targetId: "major-widget" }]);
+  });
+
+  it("does not credit a differently named field when the widget commits another option", async () => {
+    const { trajectory } = await run(
+      "In the 'Major' prompt selector, select the option 'Chemistry'",
+      { options: OPTIONS, commitsInstead: "Physics" }
+    );
+    expect(trajectory).toEqual([]);
+  });
+});
+
 describe("verifyPromptSelectorCommitted with a requested option", () => {
   const html = (value: string): string => `
 <div id="w" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
@@ -160,5 +195,32 @@ describe("verifyPromptSelectorCommitted with a requested option", () => {
     const { target } = buildPromptWidgetHarness({ html: html("Advertising"), popupByWidgetId: {} });
     const got = await verifyPromptSelectorCommitted(target, "xpath=//*[@id='w']");
     expect(got?.committed).toBe(true);
+  });
+});
+
+describe("verifyPromptSelectorCommitted names the whole option", () => {
+  const html = (value: string): string => `
+<div id="w" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+  <div data-automation-id="promptSelectionLabel">${value}</div>
+  <input id="inp" data-uxi-widget-type="selectinput" type="text" />
+</div>`;
+
+  it("rejects a longer option that merely contains the requested text", async () => {
+    const { target } = buildPromptWidgetHarness({
+      html: html("Astrophysics"),
+      popupByWidgetId: {},
+    });
+    const got = await verifyPromptSelectorCommitted(target, "xpath=//*[@id='w']", "Physics");
+    expect(got).toEqual({ isPromptWidget: true, committed: false });
+  });
+
+  it("accepts the requested option among other chips", async () => {
+    const chips = `<div data-automation-id="selectedItemList"><div>Advertising</div><div>Physics</div></div>`;
+    const { target } = buildPromptWidgetHarness({
+      html: html("").replace("</div>\n  <input", `</div>${chips}\n  <input`),
+      popupByWidgetId: {},
+    });
+    const got = await verifyPromptSelectorCommitted(target, "xpath=//*[@id='w']", "Physics");
+    expect(got).toEqual({ isPromptWidget: true, committed: true });
   });
 });
