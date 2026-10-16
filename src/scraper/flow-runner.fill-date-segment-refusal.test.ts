@@ -116,7 +116,9 @@ describe("flow-runner/executeStepWithHealing — observe-act fill on date segmen
     hitStates = [];
     segmentAnswer = false;
     guardedAct.mockImplementation(async (_s, instructionOrTarget) => {
-      events.push(typeof instructionOrTarget === "string" ? "act-string" : "act");
+      events.push(
+        typeof instructionOrTarget === "string" ? "act-string" : `act:${instructionOrTarget.method}`
+      );
       return { success: false, message: "no", actionDescription: "", actions: [] };
     });
     guardedObserve.mockImplementation(async () => [
@@ -131,12 +133,12 @@ describe("flow-runner/executeStepWithHealing — observe-act fill on date segmen
 
   it("never issues the fill act when the candidate is a date segment", async () => {
     segmentAnswer = true;
-    await run("Fill in Name with Alice");
-    expect(events).not.toContain("act");
+    await run("Fill in the Name field with 'Alice'");
+    expect(events).not.toContain("act:fill");
   });
 
   it("still fills a normal text input candidate", async () => {
-    await run("Fill in Name with Alice");
-    expect(events).toContain("act");
+    await run("Fill in the Name field with 'Alice'");
+    expect(events).toContain("act:fill");
   });
 });
