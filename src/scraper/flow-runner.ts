@@ -7421,7 +7421,8 @@ async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
-  pre: StepSnapshot
+  pre: StepSnapshot,
+  waitForMutations = true
 ): Promise<StepSnapshot> {
   if (page)
     await settleWithPageQuiescence(
@@ -7429,7 +7430,7 @@ async function settleAndSnapshotPostClick(
       target,
       signalCounter,
       pre.networkCount,
-      true,
+      waitForMutations,
       pre.visibleTextSignature
     );
   return snapshotPage(target, signalCounter, page);
@@ -15313,18 +15314,12 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleWithPageQuiescence(
+          const retryPost = await settleAndSnapshotPostClick(
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
             page,
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            pre.networkCount,
-            isSettleWaitStep || retryResolvedElementIsSubmitShaped,
-            pre.visibleTextSignature
-          );
-          const retryPost = await snapshotPage(
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            page
+            pre,
+            isSettleWaitStep || retryResolvedElementIsSubmitShaped
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
