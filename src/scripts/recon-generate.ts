@@ -7845,6 +7845,10 @@ export function resolveRecurringNavigateToFacets(
       if (declared.some(({ value }) => value === literal)) return [];
       if (claimedLiterals.has(literal)) return [];
       claimedLiterals.add(literal);
+      const known = [facet.value, ...(facet.literals ?? [])];
+      // A case-only variant is already owned by the declared facet, whose
+      // renderer re-cases any caller value to the captured element's casing.
+      if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
       const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
       return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
     })
