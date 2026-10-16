@@ -116,4 +116,19 @@ describe("isMidFlowSubmitShapedStep", () => {
       })
     ).toBe(false);
   });
+
+  // runHealingFlow and recon-browser derive finality from the whole flow's
+  // steps/plan (replans splice plan in place), never from an executed slice.
+  it("derives finality per index over the full flow: only the last index is final", () => {
+    const steps = ["Click Create Account", "Fill the name", "Click Submit"];
+    const verdicts = steps.map((s, i) =>
+      isMidFlowSubmitShapedStep({
+        step: s,
+        submitStep: true,
+        isFinalStep: i === steps.length - 1,
+        flowHasSubmitSemantics: true,
+      })
+    );
+    expect(verdicts).toEqual([true, true, false]);
+  });
 });

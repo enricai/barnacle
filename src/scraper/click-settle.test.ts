@@ -142,4 +142,45 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, false);
     expect(f.polls()).toBe(4);
   });
+
+  it("waits for pending requests the capture never counts after an early header flip", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 12 ? "body" : f.polls() >= 1 ? "header" : "pre");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "pre",
+      async () => ({ pending: f.polls() < 12 ? 1 : 0, mutations: f.polls() >= 12 ? 1 : 0 })
+    );
+    expect(f.polls()).toBe(22);
+  });
+
+  it("still gives up at 14 polls on a no-op click when the page reports idle", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => "same",
+      "same",
+      async () => ({
+        pending: 0,
+        mutations: 0,
+      })
+    );
+    expect(f.polls()).toBe(14);
+  });
+
+  it("stops at the max when the page never goes idle", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, async () => ({
+      pending: 1,
+      mutations: 0,
+    }));
+    expect(f.polls()).toBe(60);
+  });
 });

@@ -69,7 +69,12 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
-import { type SettlePage, settleAfterClick } from "@/scraper/click-settle";
+import {
+  QUIESCENCE_PROBE_EXPR,
+  type SettlePage,
+  settleAfterClick,
+  settleAndSnapshot,
+} from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -1396,6 +1401,30 @@ export function fieldValuesAtFailureExpr(): string {
     }
     return out;
   })()`;
+}
+
+/**
+ * Settles after a click using the target's own text signature and in-page
+ * quiescence reader, so every post-click site decides from the same settle
+ * signal instead of hand-building the readers.
+ */
+export async function settleWithPageQuiescence(
+  page: Page,
+  target: FrameTarget,
+  signalCounter: { n: number },
+  preNetworkCount: number,
+  submitShaped: boolean,
+  preVisibleTextSignature: string
+): Promise<void> {
+  await settleAfterClick(
+    page,
+    signalCounter,
+    preNetworkCount,
+    submitShaped,
+    async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
+    preVisibleTextSignature,
+    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+  );
 }
 
 /**
@@ -3537,7 +3566,8 @@ export async function judgeStepOutcome(params: {
       const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
     },
-    params.preVisibleTextSignature
+    params.preVisibleTextSignature,
+    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
@@ -7141,6 +7171,29 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
 }
 
 /**
+ * Settles after a click and returns the post-click snapshot, so the settle
+ * wait and the phantom classifier decide from the same reader and baseline.
+ * Without a page there is nothing to wait on and the snapshot is taken as-is.
+ */
+async function settleAndSnapshotPostClick(
+  target: FrameTarget,
+  signalCounter: { n: number },
+  page: Page | undefined,
+  pre: StepSnapshot
+): Promise<StepSnapshot> {
+  if (page)
+    await settleWithPageQuiescence(
+      page,
+      target,
+      signalCounter,
+      pre.networkCount,
+      true,
+      pre.visibleTextSignature
+    );
+  return snapshotPage(target, signalCounter, page);
+}
+
+/**
  * Shared in-page discovery of the widget's callback, used identically by
  * `injectCaptchaTokenAndSubmit`'s precheck (to decide the branch) and its
  * invoke step (to re-resolve and call it) without ever marshalling a
@@ -7475,16 +7528,12 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
-      if (verification.page)
-        await settleAfterClick(
-          verification.page,
-          verification.signalCounter,
-          pre.networkCount,
-          true,
-          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
-          pre.visibleTextSignature
-        );
-      const post = await snapshotPage(target, verification.signalCounter, verification.page);
+      const post = await settleAndSnapshotPostClick(
+        target,
+        verification.signalCounter,
+        verification.page,
+        pre
+      );
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
         pre,
@@ -7507,20 +7556,11 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
-          if (verification.page)
-            await settleAfterClick(
-              verification.page,
-              verification.signalCounter,
-              post.networkCount,
-              true,
-              async () =>
-                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
-              post.visibleTextSignature
-            );
-          const runnerUpPost = await snapshotPage(
+          const runnerUpPost = await settleAndSnapshotPostClick(
             target,
             verification.signalCounter,
-            verification.page
+            verification.page,
+            post
           );
           const runnerUpVerdict = classifyPhantomClick({
             actResultSuccess: true,
@@ -11296,7 +11336,8 @@ async function probeChildFrameSubmitFallback(params: {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
       },
-      pre.visibleTextSignature
+      pre.visibleTextSignature,
+      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
     );
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
@@ -11328,7 +11369,8 @@ async function probeChildFrameSubmitFallback(params: {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
       },
-      post.visibleTextSignature
+      post.visibleTextSignature,
+      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
     );
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
@@ -13233,25 +13275,16 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              await settleAfterClick(
+              const midTarget = frameTarget ?? mainFrameTarget(page);
+              const midPost = await settleAndSnapshot({
                 page,
-                signalCounter,
-                pre.networkCount,
-                true,
-                async () => {
-                  const snap = await snapshotPage(
-                    frameTarget ?? mainFrameTarget(page),
-                    signalCounter
-                  );
-                  return snap.visibleTextSignature;
-                },
-                pre.visibleTextSignature
-              );
-              const midPost = await snapshotPage(
-                frameTarget ?? mainFrameTarget(page),
-                signalCounter,
-                page
-              );
+                counter: signalCounter,
+                pre,
+                submitShaped: true,
+                snapshot: (withPage) =>
+                  snapshotPage(midTarget, signalCounter, withPage ? page : undefined),
+                readQuiescence: async () => midTarget.evaluate(QUIESCENCE_PROBE_EXPR),
+              });
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -14139,15 +14172,12 @@ export async function executeStepWithHealing(params: {
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     if (mayTriggerRoundTrip) {
       const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleAfterClick(
+      await settleWithPageQuiescence(
         page,
+        settleTarget,
         signalCounter,
         pre.networkCount,
         isSettleWaitStep,
-        async () => {
-          const snap = await snapshotPage(settleTarget, signalCounter);
-          return snap.visibleTextSignature;
-        },
         pre.visibleTextSignature
       );
     }
@@ -14914,15 +14944,12 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleAfterClick(
+          await settleWithPageQuiescence(
             page,
+            frameTarget ?? mainFrameTarget(page),
             signalCounter,
             pre.networkCount,
             isSettleWaitStep,
-            async () => {
-              const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
-              return snap.visibleTextSignature;
-            },
             pre.visibleTextSignature
           );
           const retryPost = await snapshotPage(

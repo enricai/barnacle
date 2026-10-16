@@ -36,6 +36,7 @@ const testLogger = {
 const STEP =
   "On the registration form (Email Address and Password already filled), click the Create Account button to submit the form";
 const IDLE_GIVE_UP_MS = 14000;
+const LATE_BODY_DELAY_MS = 12000;
 const CANDIDATE = {
   selector: "css=button#create-account",
   description: "Create Account",
@@ -57,7 +58,7 @@ interface VirtualPage {
 }
 
 /** `lateRender` false models a click that never changes anything on the page. */
-function makePage(lateRender: boolean): VirtualPage {
+function makePage(lateRender: boolean, bodyDelayMs = 8000): VirtualPage {
   const clock = { now: 0 };
   const signalCounter = { n: 0 };
   let clickedAt: number | null = null;
@@ -71,8 +72,12 @@ function makePage(lateRender: boolean): VirtualPage {
         if (!lateRender || clickedAt === null || elapsed < 2000) {
           return { html: 1200, text: "1:registration form" };
         }
-        if (elapsed < 8000) return { html: 1300, text: "2:verify your account header" };
+        if (elapsed < bodyDelayMs) return { html: 1300, text: "2:verify your account header" };
         return { html: 9000, text: "3:verify your account header and code entry body" };
+      }
+      if (src.includes("__settleQ")) {
+        const inFlight = lateRender && clickedAt !== null && clock.now - clickedAt < bodyDelayMs;
+        return { pending: inFlight ? 1 : 0, mutations: 0 };
       }
       if (src.includes("isInvalid")) return 0;
       return null;
@@ -162,6 +167,19 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with a late re-
     expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0 })]);
   });
 
+  it("credits a non-final click whose body re-renders beyond the old quiet window with no network", async () => {
+    const vp = makePage(true, LATE_BODY_DELAY_MS);
+    wireClick(vp);
+
+    const outcome = await executeStepWithHealing(
+      baseParams(vp, { isFinalStep: false, stepIndex: 0, totalSteps: () => 2 }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(vp.signalCounter.n).toBe(0);
+  });
+
   it("classifies a genuine no-op click as a phantom at the settle idle give-up", async () => {
     const vp = makePage(false);
     wireClick(vp);
@@ -172,6 +190,19 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with a late re-
 
     expect(guardedAct).toHaveBeenCalledTimes(1);
     expect(vp.settlePolls()).toBe(IDLE_GIVE_UP_MS / 1000);
+  });
+
+  it("does not credit a late DOM-only re-render on the final slice position", async () => {
+    const vp = makePage(true, LATE_BODY_DELAY_MS);
+    wireClick(vp);
+
+    await expect(
+      executeStepWithHealing(
+        baseParams(vp, { isFinalStep: true, stepIndex: 1, totalSteps: () => 2 }) as never
+      )
+    ).rejects.toThrow(/verification|attempts/i);
+
+    expect(vp.signalCounter.n).toBe(0);
   });
 
   it("does not credit the same DOM-only page on DOM alone when it is the final step", async () => {
