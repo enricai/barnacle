@@ -463,3 +463,35 @@ describe("scraper/phantom-click report snapshot pair", () => {
     ).toBe("phantom");
   });
 });
+
+describe("hasPageAdvanced head swap", () => {
+  const snap = (
+    sig: string
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+  } => ({
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 1000,
+    visibleTextSignature: sig,
+  });
+  const chrome = "Home Jobs Careers Help Contact Footer Privacy Terms";
+
+  it("credits a header swap under shared chrome", () => {
+    expect(
+      hasPageAdvanced(
+        snap(`300:${chrome} Personal Information`),
+        snap(`300:${chrome} Work Experience`)
+      )
+    ).toBe(true);
+  });
+
+  it("does not credit a single-word change under shared chrome", () => {
+    expect(hasPageAdvanced(snap(`300:${chrome} Required`), snap(`300:${chrome} Invalid`))).toBe(
+      false
+    );
+  });
+});
