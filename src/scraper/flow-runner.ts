@@ -11189,7 +11189,8 @@ async function probeChildFrameSubmitFallback(params: {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
       },
-      pre.visibleTextSignature
+      pre.visibleTextSignature,
+      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
     );
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
@@ -11221,7 +11222,8 @@ async function probeChildFrameSubmitFallback(params: {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
       },
-      post.visibleTextSignature
+      post.visibleTextSignature,
+      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
     );
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
