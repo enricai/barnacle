@@ -113,7 +113,7 @@ import {
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
-import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import { CLICK_INTENT_RE, guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
@@ -973,8 +973,6 @@ const ATTEMPT_BACKOFF_MS = 1_000;
  * actionable.
  */
 const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
-
-const CLICK_INTENT_RE = /\bclick\b/i;
 
 /**
  * Shared pre-click centre + hit-test for a Stagehand-resolved selector, so
@@ -12371,8 +12369,9 @@ export async function executeStepWithHealing(params: {
     // click-intent instruction resolve it with observe first and centre it;
     // a sticky bar otherwise swallows Stagehand's own click. Throws when the
     // control stays covered so the attempt fails instead of clicking an overlay.
-    const preCentreNaturalLanguageClick = async (instruction: string): Promise<void> => {
-      if (!CLICK_INTENT_RE.test(instruction)) return;
+    // Resolves true once the observe ran, so guardedAct skips its own pass.
+    const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
+      if (!CLICK_INTENT_RE.test(instruction)) return false;
       const observed = await guardedObserve(
         stagehand,
         instruction,
@@ -12381,7 +12380,7 @@ export async function executeStepWithHealing(params: {
         frameTarget
       ).catch(() => [] as Action[]);
       const first = observed[0];
-      if (first?.method !== "click" || !first.selector) return;
+      if (first?.method !== "click" || !first.selector) return true;
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector,
@@ -12390,6 +12389,7 @@ export async function executeStepWithHealing(params: {
         true
       );
       if (failure) throw new Error(failure);
+      return true;
     };
 
     try {
@@ -12461,13 +12461,14 @@ export async function executeStepWithHealing(params: {
         record.technique = "act-string";
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
-        await preCentreNaturalLanguageClick(step);
+        const preCentred = await preCentreNaturalLanguageClick(step);
         const result = await guardedAct(
           stagehand,
           step,
           { timeout: STEP_WATCHDOG_MS },
           captureFn,
-          frameTarget ?? mainFrameTarget(page)
+          frameTarget ?? mainFrameTarget(page),
+          preCentred
         );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
@@ -13429,13 +13430,14 @@ export async function executeStepWithHealing(params: {
           } else {
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
-            await preCentreNaturalLanguageClick(rephrased);
+            const preCentred = await preCentreNaturalLanguageClick(rephrased);
             const result = await guardedAct(
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
               captureFn,
-              frameTarget ?? mainFrameTarget(page)
+              frameTarget ?? mainFrameTarget(page),
+              preCentred
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;

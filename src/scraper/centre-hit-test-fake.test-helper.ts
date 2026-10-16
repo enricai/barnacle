@@ -1,5 +1,12 @@
 import { CENTRE_AND_HIT_TEST_FN, type CentredHitTestResult } from "@/scraper/trusted-click";
 
+// Every centring function (with or without an `expectText` identity check)
+// shares the source up to the scroll; the identity check is spliced in after.
+const CENTRE_FN_PREAMBLE = CENTRE_AND_HIT_TEST_FN.slice(
+  0,
+  CENTRE_AND_HIT_TEST_FN.indexOf('inline: "center" });') + 'inline: "center" });'.length
+);
+
 /**
  * Answers the pre-click centre + hit-test probe for fake pages. Fakes (and
  * happy-dom) have no layout, so `elementFromPoint` can never land on the
@@ -8,7 +15,7 @@ import { CENTRE_AND_HIT_TEST_FN, type CentredHitTestResult } from "@/scraper/tru
  * handling runs.
  */
 export function answerCentreHitTest(expr: unknown): CentredHitTestResult | null {
-  return String(expr).includes(CENTRE_AND_HIT_TEST_FN) ? { state: "hit" } : null;
+  return String(expr).includes(CENTRE_FN_PREAMBLE) ? { state: "hit" } : null;
 }
 
 interface FirstClickable {

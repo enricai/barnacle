@@ -141,8 +141,11 @@ export async function centreAndHitTest(
   let last: CentredHitTestResult = { state: "missing" };
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const result = await evaluateOnElement(centreFn);
+    if (typeof result?.state !== "string") {
+      throw new TypeError(`hit-test probe for ${label} returned no state`);
+    }
     last =
-      result?.state === "hit" || result?.state === "occluded" || result?.state === "mismatch"
+      result.state === "hit" || result.state === "occluded" || result.state === "mismatch"
         ? result
         : { state: "missing" };
     if (last.state === "hit") {

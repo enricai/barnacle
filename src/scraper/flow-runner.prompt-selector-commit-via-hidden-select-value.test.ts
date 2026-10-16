@@ -4,7 +4,6 @@ import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { maskValueShape } from "@/lib/pii-redaction";
-import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -248,20 +247,19 @@ function buildHarness(params: {
     return handle;
   };
 
-  const evaluate = async (expr: unknown): Promise<unknown> =>
-    answerCentreHitTest(expr) ?? runExpr(String(expr));
+  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
 
   const page = {
     evaluate,
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
-    locator: withDirectClick(locator),
+    locator: locator,
     waitForTimeout: async (): Promise<void> => undefined,
   };
 
   const target = {
     evaluate,
-    locator: withDirectClick(locator),
+    locator: locator,
     url: async (): Promise<string> => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     frame: null,
