@@ -1,5 +1,6 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 const { generateObjectMock } = vi.hoisted(() => ({ generateObjectMock: vi.fn() }));
 vi.mock("ai", async (importOriginal) => {
@@ -52,7 +53,9 @@ function fakePage(bodyLengths: number[]): {
   let call = 0;
   const waitForTimeout = vi.fn().mockResolvedValue(undefined);
   const page = {
-    evaluate: vi.fn().mockImplementation(async () => {
+    evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const v = bodyLengths[Math.min(call, bodyLengths.length - 1)];
       call += 1;
       return v;
@@ -555,6 +558,8 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       { deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" },
     ];
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) {
         return rankedCandidates;
@@ -772,6 +777,8 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     // short-circuit, attempt 5 llm-rephrase no-ops) rather than throwing
     // from inside the attempt-2 block itself.
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) return [];
       if (src.includes('__mouse("click"')) return { clicked: false };
@@ -869,6 +876,8 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     const signalCounter = { n: 0 };
     let clickAttempts = 0;
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) {
         return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];
@@ -926,6 +935,8 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     ];
     const signalCounter = { n: 0 };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) return rankedCandidates;
       if (src.includes('__mouse("click"')) {
@@ -1145,6 +1156,8 @@ describe("flow-runner/executeStepWithHealing — observe-act method override for
   } {
     const url = params.url;
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) {
         return { html: params.bodyHtmlLength, text: `0:` };
@@ -1248,6 +1261,8 @@ describe("flow-runner/runHealingFlow", () => {
   ): Page {
     const session = { on: () => {}, off: () => {} };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;
@@ -1504,6 +1519,8 @@ describe("resolveDumpPageIdentity", () => {
       url: () => STALE_URL,
       title: async () => "unused",
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
         const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
         if (selector !== IFRAME_SELECTOR) return { matched: false, src: null };
@@ -1513,6 +1530,8 @@ describe("resolveDumpPageIdentity", () => {
         {
           frameId: "fresh-child-frame",
           evaluate: async (expr: unknown) => {
+            const centred = answerCentreHitTest(expr);
+            if (centred) return centred;
             if (expr === "location.href") return NEW_URL;
             if (/document\.body/.test(String(expr))) return true;
             return null;
@@ -1576,6 +1595,8 @@ describe("flow-runner/runHealingFlow — frameSelector routes the cascade to the
   }): Page {
     const session = { on: () => {}, off: () => {} };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes(IFRAME_SRC_MARKER)) {
         return params.iframeSrc
@@ -1968,6 +1989,8 @@ describe("flow-runner/snapshotPage — post-action url read on a stale child fra
     return {
       frameId: "fake-child-frame",
       evaluate: async (expr: unknown) => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         if (expr === "location.href") return url;
         if (/document\.body/.test(String(expr))) return true;
         return `frame-evaluated:${String(expr)}`;
@@ -1982,6 +2005,8 @@ describe("flow-runner/snapshotPage — post-action url read on a stale child fra
       url: () => TOP_WRAPPER_URL,
       title: async () => "main document title",
       evaluate: async (expr: unknown) => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         const match = /document\.querySelector\((.+?)\)/.exec(String(expr));
         const selector = match?.[1] ? (JSON.parse(match[1]) as string) : null;
         if (selector !== IFRAME_SELECTOR) return { matched: false, src: null };

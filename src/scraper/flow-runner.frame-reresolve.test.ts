@@ -25,6 +25,7 @@ vi.mock("@/config", async (importOriginal) => {
   };
 });
 
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
@@ -154,6 +155,8 @@ function makeFakeTopPage(
   };
   const page = {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
@@ -202,6 +205,8 @@ function makeFakeTopPage(
 function makeDelayedFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       await sleepMs(PROBE_DELAY_MS);
       return expr === "location.href" ? childUrls.current : { html: 0, text: "0:" };
     },
@@ -246,6 +251,8 @@ function makeDelayedFakeTopPage(
   };
   const page = {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       await sleepMs(PROBE_DELAY_MS);
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {

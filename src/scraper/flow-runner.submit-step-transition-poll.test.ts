@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 /**
  * Regression for the `advanceGateActive` gate at the primary verifier
@@ -84,6 +84,8 @@ function makeFakePage(
   onFirstPollInterval: () => void
 ): { page: Page; waitForTimeout: ReturnType<typeof vi.fn> } {
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const src = String(expr);
     if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
     if (src.includes("isInvalid(el)")) return 0;

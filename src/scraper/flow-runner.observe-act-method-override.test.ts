@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -58,7 +59,9 @@ function makeChildFrameTarget(urls: { current: string }): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: FRAME_SELECTOR,
-    evaluate: vi.fn().mockImplementation(async () => {
+    evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       // Return different values pre/post to trigger verification success
       snapshotCount++;
       return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
@@ -77,7 +80,9 @@ function makeChildFrameTarget(urls: { current: string }): FrameTarget {
 function makeFakePage(urls: { current: string }): Page {
   let snapshotCount = 0;
   return {
-    evaluate: vi.fn().mockImplementation(async () => {
+    evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       snapshotCount++;
       return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
     }),
@@ -185,7 +190,9 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
     const childFrameTarget = {
       frame: {} as FrameTarget["frame"],
       frameSelector: FRAME_SELECTOR,
-      evaluate: vi.fn().mockImplementation(async () => {
+      evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         snapshotCount++;
         return { html: snapshotCount, text: `${snapshotCount}:California-value-${snapshotCount}` };
       }),

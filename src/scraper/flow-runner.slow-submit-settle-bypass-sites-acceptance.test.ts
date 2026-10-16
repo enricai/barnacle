@@ -1,5 +1,6 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import {
   type HealingFlowStep,
@@ -51,6 +52,8 @@ function makeSlowPage(): {
   const state = { topClicked: false, waitedMs: 0 };
   const clicks = new Map<number, number>();
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const src = String(expr);
     if (src.includes("ranked.sort")) return [TOP, RUNNER_UP];
     for (const candidate of [TOP, RUNNER_UP]) {

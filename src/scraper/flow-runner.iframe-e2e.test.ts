@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   type FakeDeepLocatorFrame,
   type FakeDeepLocatorHangingHop,
@@ -172,6 +173,8 @@ function makeFakeStagehandWithResolvedAct(childUrls: { current: string }) {
 function makeFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       if (expr === "location.href") return childUrls.current;
       // verifyDomEffect's click-branch xpath probe never runs for this
       // candidate (selector isn't `xpath=`-prefixed, see MANUAL_APPLICATION_CANDIDATE),
@@ -204,6 +207,8 @@ function makeFakeTopPage(topUrl: { current: string }, childUrls: { current: stri
   const childFrame = makeFakeChildFrame(childUrls);
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
@@ -253,6 +258,8 @@ function makeMidflowFakeTopPage(
   const childFrame = makeFakeChildFrame(childUrls);
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         if (!iframeAttached.current) return { matched: false, src: null };
@@ -741,6 +748,8 @@ interface AcceptanceSequenceState {
 function makeAcceptanceChildFrame(childUrls: { current: string }, state: AcceptanceSequenceState) {
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src === "location.href") return childUrls.current;
       if (src === "document.readyState") return "complete";
@@ -810,6 +819,8 @@ function makeFakeTopPageForAcceptanceSequence(
   };
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;

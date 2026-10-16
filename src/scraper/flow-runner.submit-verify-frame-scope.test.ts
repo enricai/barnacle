@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -103,6 +104,8 @@ function makeChildTarget(
   opts: { invalidCount: () => number; n16ClickResult: () => Record<string, unknown> }
 ): FrameTarget {
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const src = String(expr);
     if (src.includes("outerHTML") && src.includes("innerText")) {
       return { html: 0, text: "0:" };
@@ -157,7 +160,9 @@ function makeChildTarget(
 /** Fake `Page`: only the surface `executeStepWithHealing`'s non-frame-scoped calls touch (page.title(), page.waitForTimeout()). Its `evaluate`/`locator` must never fire — every probe in this region is frame-scoped. */
 function fakePage(getUrl: () => string = () => `${CHILD_ORIGIN}/application/abc-123`): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),

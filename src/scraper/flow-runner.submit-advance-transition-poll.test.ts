@@ -1,8 +1,8 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 /**
  * Regression for the `advanceGateActive` exclusion at the primary verifier
@@ -108,6 +108,8 @@ describe("flow-runner/executeStepWithHealing — advance-transition poll fires f
       }
     });
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
       if (src.includes("isInvalid(el)")) return 0;
@@ -212,6 +214,8 @@ describe("flow-runner/executeStepWithHealing — advance-gate miss log reports t
         .fn()
         .mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
       const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+        const centred = answerCentreHitTest(expr);
+        if (centred) return centred;
         const src = String(expr);
         if (src.includes("outerHTML")) return { html: 184186, text: "0:" };
         if (src.includes("isInvalid(el)")) return 0;
