@@ -15872,8 +15872,7 @@ export function emitBrowserFlowTs(opts: {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
   }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
-  const contractCarriesResume =
-    hasMultipartStep || canonicalise;
+  const contractCarriesResume = hasMultipartStep || canonicalise;
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
