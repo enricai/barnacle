@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractNavigateToFacetOrder,
   type NavigateToFacetBinding,
   resolveRecurringNavigateToFacets,
 } from "@/scripts/recon-generate";
@@ -40,5 +41,31 @@ describe("resolveRecurringNavigateToFacets — click-step facet against a compou
       actionsFor(["CARIB;filterType=destination"])
     );
     expect(resolved[0]).toMatchObject({ field: "destination", value: "CARIB", keyedByKind: true });
+  });
+});
+
+describe("extractNavigateToFacetOrder — kind named by the prose ahead of the quoted value", () => {
+  const resolveStep = (step: string, field: string, element: string): unknown =>
+    resolveRecurringNavigateToFacets(
+      extractNavigateToFacetOrder([{ step, payloadField: field }]),
+      actionsFor([element])
+    );
+
+  it("owns the element of a kind a container noun names", () => {
+    expect(
+      resolveStep("In the harbor dropdown select 'Northern Bay'", "trip", "NBAY;filterType=harbor")
+    ).toMatchObject([{ field: "trip", value: "NBAY", keyedByKind: true }]);
+  });
+
+  it("owns the element of a kind written directly before the value", () => {
+    expect(
+      resolveStep("Select the harbor 'Northern Bay'", "trip", "NBAY;filterType=harbor")
+    ).toMatchObject([{ field: "trip", value: "NBAY", keyedByKind: true }]);
+  });
+
+  it("leaves an element of an unnamed kind unowned", () => {
+    expect(
+      resolveStep("In the harbor dropdown select 'Northern Bay'", "trip", "NBAY;filterType=berth")
+    ).toEqual([]);
   });
 });

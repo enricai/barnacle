@@ -544,11 +544,72 @@ const STEP_KIND_STOP_WORDS = new Set([
   "question",
 ]);
 
+const STEP_KIND_CONTAINER_WORDS = new Set([
+  "facet",
+  "filter",
+  "field",
+  "dropdown",
+  "drop-down",
+  "selector",
+  "menu",
+  "list",
+  "widget",
+  "picker",
+]);
+
+const STEP_KIND_LEADING_STOP_WORDS = new Set([
+  ...STEP_KIND_STOP_WORDS,
+  "select",
+  "choose",
+  "pick",
+  "click",
+  "tap",
+  "press",
+  "open",
+  "set",
+  "enter",
+  "type",
+  "fill",
+  "in",
+  "on",
+  "at",
+  "of",
+  "to",
+  "for",
+  "from",
+  "into",
+  "with",
+  "and",
+  "then",
+  "by",
+]);
+
+/**
+ * Element kinds named by the prose ahead of the value span: the noun a
+ * container word follows ("the destination filter dropdown" names
+ * `destination`) and the noun sitting directly before the value ("select the
+ * destination 'Lisbon'"), for a step whose field name and trailing phrase
+ * name nothing the page's own vocabulary uses.
+ */
+function collectLeadingStepKindHints(instruction: string, spanStart: number): string[] {
+  const words = (instruction.slice(0, spanStart).match(/[A-Za-z][A-Za-z0-9_-]*/g) ?? []).map(
+    (word) => word.toLowerCase()
+  );
+  const isKindWord = (word: string | undefined): word is string =>
+    word !== undefined && !STEP_KIND_LEADING_STOP_WORDS.has(word);
+  const containerNamed = words.flatMap((word, index) =>
+    STEP_KIND_CONTAINER_WORDS.has(word) && isKindWord(words[index - 1]) ? [words[index - 1]!] : []
+  );
+  const directlyBefore = words[words.length - 1];
+  return [...new Set([...containerNamed, ...(isKindWord(directlyBefore) ? [directlyBefore] : [])])];
+}
+
 /**
  * Element kinds a click step's own prose names: the noun phrase trailing the
- * value span ("select the 'Lisbon' city option" names `city`), so a facet whose
- * field name differs from the page's vocabulary can still own the element of
- * that kind. Reads only the generic instruction grammar, no site vocabulary.
+ * value span ("select the 'Lisbon' city option" names `city`), or the noun
+ * ahead of it ("the city dropdown"), so a facet whose field name differs from
+ * the page's vocabulary can still own the element of that kind. Reads only the
+ * generic instruction grammar, no site vocabulary.
  */
 function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv): string[] {
   const value = extractStepPersonaValue(instruction, env);
@@ -562,7 +623,8 @@ function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv):
     .map((word) => word.replace(/^['"]+|['"]+$/g, ""))
     .filter((word) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(word));
   const kindWords = words.filter((word) => !STEP_KIND_STOP_WORDS.has(word.toLowerCase()));
-  return [...new Set([...(kindWords.length > 1 ? [kindWords.join(" ")] : []), ...kindWords])];
+  const trailing = [...(kindWords.length > 1 ? [kindWords.join(" ")] : []), ...kindWords];
+  return [...new Set([...trailing, ...collectLeadingStepKindHints(instruction, span.start)])];
 }
 
 function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
