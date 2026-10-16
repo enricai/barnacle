@@ -186,21 +186,13 @@ describe("settleAfterClick", () => {
 
   it("gives up at 14 polls when the text never moved", async () => {
     const f = makeFake(() => {});
-    await settleAfterClick(
-      f.page,
-      f.counter,
-      0,
-      true,
-      async () => "same",
-      "same"
-    );
+    await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same");
     expect(f.polls()).toBe(14);
   });
 
   it("ends only after a body re-render following a header flip when the probe sees mutations", async () => {
     const f = makeFake(() => {});
-    const text = (): string =>
-      f.polls() >= 10 ? "body" : f.polls() >= 1 ? "header" : "pre";
+    const text = (): string => (f.polls() >= 10 ? "body" : f.polls() >= 1 ? "header" : "pre");
     await settleAfterClick(
       f.page,
       f.counter,

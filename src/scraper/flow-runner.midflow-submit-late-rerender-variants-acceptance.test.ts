@@ -308,7 +308,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit credited once t
       verified: false,
       reason: "no network or url evidence",
     } as never);
-    const world = buildWorld("Sign In", { ...REPORT, delayMs: 18_000 });
+    const world = buildWorld("Sign In", { ...REPORT, delayMs: 10_000 });
     const trajectory: unknown[] = [];
 
     const outcome = await executeStepWithHealing(params(world, false, trajectory, STEP, false));

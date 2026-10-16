@@ -1448,6 +1448,15 @@ async function readPageQuiescence(target: FrameTarget): Promise<PageQuiescence> 
 }
 
 /**
+ * Installs the quiescence probe before a click, because it only starts counting
+ * requests and mutations from its first read and a post-click install would miss
+ * everything the click triggers immediately.
+ */
+async function armPageQuiescence(target: FrameTarget): Promise<void> {
+  await readPageQuiescence(target);
+}
+
+/**
  * Reads only the visible-text signature settle polls on. Going through
  * {@link snapshotPage} also read the frame URL, which rejects once a submit
  * detaches the OOPIF and would abort the settle mid-poll; a failed read here
@@ -1512,8 +1521,6 @@ export async function snapshotPage(
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
-    // Arms the quiescence probe before the click so early requests and mutations are counted.
-    await Promise.resolve(target.evaluate(QUIESCENCE_PROBE_EXPR)).catch(() => undefined);
     const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
       result !== null &&
@@ -7751,6 +7758,7 @@ export async function submitCaptchaGatedForm(
     const pre = verification
       ? await snapshotPage(target, verification.signalCounter, verification.page)
       : null;
+    if (pre) await armPageQuiescence(target);
     const clickResult = await target
       .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
       .catch((err: unknown) => {
@@ -7763,8 +7771,7 @@ export async function submitCaptchaGatedForm(
         target,
         verification.signalCounter,
         verification.page,
-        pre,
-        verification.isMidFlowSubmitStep
+        pre
       );
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
@@ -7792,8 +7799,7 @@ export async function submitCaptchaGatedForm(
             target,
             verification.signalCounter,
             verification.page,
-            post,
-            verification.isMidFlowSubmitStep
+            post
           );
           const runnerUpVerdict = classifyPhantomClick({
             actResultSuccess: true,
@@ -11696,17 +11702,12 @@ async function probeChildFrameSubmitFallback(params: {
     // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
     const top = ranked[0]!;
     const pre = await snapshotPage(target, signalCounter, page);
+    await armPageQuiescence(target);
     const clickResult = (await Promise.resolve(
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const post = await settleAndSnapshotPostClick(
-      target,
-      signalCounter,
-      page,
-      pre,
-      isMidFlowSubmitStep
-    );
+    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -11727,13 +11728,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(
-      target,
-      signalCounter,
-      page,
-      post,
-      isMidFlowSubmitStep
-    );
+    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -13387,6 +13382,7 @@ export async function executeStepWithHealing(params: {
       page,
       captureSelectionState
     );
+    await armPageQuiescence(frameTarget ?? mainFrameTarget(page));
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -13647,13 +13643,7 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
-              const midPost = await settleAndSnapshotPostClick(
-                midTarget,
-                signalCounter,
-                page,
-                pre,
-                deepMidFlowSubmit
-              );
+              const midPost = await settleAndSnapshotPostClick(midTarget, signalCounter, page, pre);
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
