@@ -28,6 +28,7 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
 
 const STEP =
   "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
+const RETRY_STEP = "Click the Continue tile to proceed to the next section";
 const REPHRASED = "Press the Create Account control at the bottom of the registration form";
 const URL = "https://example.org/signup";
 const RERENDER_DELAY_MS = 12000;
@@ -69,7 +70,7 @@ function resolveXPath(root: HappyDomElement, xp: string): HappyDomElement | null
 }
 
 type Doc = InstanceType<typeof Window>["document"];
-type Site = "deep-locator" | "runner-up" | "rephrase";
+type Site = "deep-locator" | "runner-up" | "rephrase" | "retry";
 
 /** Fills `#out` so the document hits the target visible-text length and serialized byte size. */
 function shapeBody(d: Doc, textLen: number, bytes: number): void {
@@ -105,17 +106,20 @@ function buildWorld(site: Site, advances: boolean): World {
   shapeBody(document as unknown as Doc, PRE_TEXT_LEN, PRE_BYTES);
   const control = document.getElementById("theControl") as unknown as HappyDomElement;
   const hdr = document.getElementById("hdr") as unknown as HappyDomElement;
+  const controlXPath = xpathFor(control);
   const decoyXPath = xpathFor(document.getElementById("decoy") as unknown as HappyDomElement);
 
   let now = 0;
   let clickedAt: number | null = null;
   let rendered = false;
   const clicks: number[] = [];
+  let trustedClicks = 0;
+  let trustedOnly = site === "retry";
   const counter = { n: 0 };
   (
     control as unknown as { addEventListener: (t: string, cb: () => void) => void }
   ).addEventListener("click", () => {
-    if (!advances) return;
+    if (!advances || trustedOnly) return;
     clickedAt = now;
     hdr.textContent = "Signed in as jane@example.com";
   });
@@ -145,6 +149,7 @@ function buildWorld(site: Site, advances: boolean): World {
 
   const evaluate = async (expr: unknown): Promise<unknown> => {
     const src = String(expr);
+    if (site === "retry" && src.includes('block: "center"')) return { state: "hit" };
     const isRank = src.includes("deepElements") && src.includes("ranked.sort");
     const isClick = src.includes("deepElements") && src.includes("clicked: true");
     if (site === "rephrase" && (isRank || isClick)) return isRank ? [] : { clicked: false };
@@ -172,6 +177,12 @@ function buildWorld(site: Site, advances: boolean): World {
       first: () => ({
         isChecked: async () => false,
         inputValue: async () => "",
+        click: async (): Promise<void> => {
+          trustedClicks += 1;
+          if (trustedClicks < 2) return;
+          trustedOnly = false;
+          clickControl();
+        },
       }),
     }),
     waitForTimeout: async (ms: number): Promise<void> => {
@@ -201,7 +212,13 @@ function buildWorld(site: Site, advances: boolean): World {
       success: true,
       message: "clicked",
       actionDescription: "clicked",
-      actions: [{ selector: `xpath=${decoyXPath}`, description: "control", method: "click" }],
+      actions: [
+        {
+          selector: `xpath=${site === "retry" ? controlXPath : decoyXPath}`,
+          description: "control",
+          method: "click",
+        },
+      ],
     };
   });
   const stagehand = {
@@ -222,14 +239,14 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function params(world: World, rephrase: boolean): never {
+function params(world: World, rephrase: boolean, submit = true): never {
   return {
     stagehand: world.stagehand,
     page: world.page,
-    step: STEP,
+    step: submit ? STEP : RETRY_STEP,
     optional: false,
     upload: false,
-    submitStep: true,
+    submitStep: submit,
     stepIndex: 0,
     totalSteps: () => 2,
     phase: "flow",
@@ -308,14 +325,25 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit at bypass sites
     expect(logLines().some((l) => GIVE_UP.test(l))).toBe(false);
   });
 
-  it.each<Site>(["deep-locator", "runner-up", "rephrase"])(
+  it("credits a late advance delivered by the trusted-click-retry attempt", async () => {
+    const world = buildWorld("retry", true);
+
+    const outcome = await executeStepWithHealing(params(world, false, false));
+
+    expect(outcome).toBe("completed");
+    expect(world.rendered()).toBe(true);
+    expect(logLines().some((l) => l.includes("trusted-click-retry"))).toBe(true);
+    expect(logLines().some((l) => GIVE_UP.test(l))).toBe(false);
+  });
+
+  it.each<Site>(["deep-locator", "runner-up", "rephrase", "retry"])(
     "still ends phantom when the %s click is a no-op",
     async (site) => {
       const world = buildWorld(site, false);
 
-      const outcome = await executeStepWithHealing(params(world, site === "rephrase")).catch(
-        () => "threw"
-      );
+      const outcome = await executeStepWithHealing(
+        params(world, site === "rephrase", site !== "retry")
+      ).catch(() => "threw");
 
       expect(outcome).not.toBe("completed");
       expect(world.rendered()).toBe(false);
