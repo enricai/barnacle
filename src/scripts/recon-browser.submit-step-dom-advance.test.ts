@@ -18,4 +18,15 @@ describe("hasSubmitStepDomAdvanced", () => {
   it("fails closed when a signature is missing", () => {
     expect(hasSubmitStepDomAdvanced(false, undefined, POST)).toBe(false);
   });
+  it("credits the settled snapshot after the body re-rendered past the first one", () => {
+    const settled = `1200:Work history employer title start date end date`;
+    expect(hasSubmitStepDomAdvanced(false, PRE, settled)).toBe(true);
+  });
+  it("does not credit a settled page that returned to the step-start text", () => {
+    expect(hasSubmitStepDomAdvanced(false, PRE, `${PRE}`)).toBe(false);
+  });
+  it("does not credit a small inline-validation text change", () => {
+    const withError = `${PRE.replace(/^40:/, "52:")}`;
+    expect(hasSubmitStepDomAdvanced(false, PRE, withError)).toBe(false);
+  });
 });
