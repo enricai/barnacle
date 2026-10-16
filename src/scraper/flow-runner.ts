@@ -6774,9 +6774,9 @@ const SEGMENTED_DATE_CLEAR_EXPR = `(() => {
  *
  * Why this exists: such widgets keep each segment's value in component state
  * driven by `keydown`/`beforeinput`; `fill`/`insertText` bypasses that and
- * garbles the segments. Returns a marker id on commit, or null on no
- * spinbuttons, an unresolvable group, or any segment mismatch so the caller
- * falls through to the cascade.
+ * garbles the segments. Returns a marker id on commit, or null on any
+ * non-commit. Callers that must tell "not applicable" from "refused" use
+ * `runSegmentedDateSpinbuttonPrimitive`.
  */
 export async function trySegmentedDateSpinbuttonPrimitive(params: {
   page: Page;
@@ -6784,16 +6784,44 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
   instruction: string;
   logger: Logger;
 }): Promise<string | null> {
+  const outcome = await runSegmentedDateSpinbuttonPrimitive(params);
+  return outcome.kind === "committed" ? outcome.targetId : null;
+}
+
+export type SegmentedDateOutcome =
+  | { kind: "committed"; targetId: string }
+  | { kind: "not-applicable" }
+  | { kind: "refused"; reason: string };
+
+/**
+ * Same as `trySegmentedDateSpinbuttonPrimitive` but distinguishes "this step
+ * is not a segmented date here" (fall through to the cascade) from "a
+ * width-compatible segment group exists and the primitive could not deliver"
+ * (refused: the cascade would write the value via insertText and garble the
+ * segments, so the caller must fail the step instead).
+ */
+export async function runSegmentedDateSpinbuttonPrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<SegmentedDateOutcome> {
   const { page, target, instruction, logger } = params;
+  const notApplicable: SegmentedDateOutcome = { kind: "not-applicable" };
+  const refuse = (reason: string): SegmentedDateOutcome => {
+    logger.warn(`segmented date primitive: refused: ${reason}`);
+    return { kind: "refused", reason };
+  };
+  let groupChosen = false;
   const whole = parseSegmentedDateValue(instruction);
   const part = parseSegmentedPartStep(instruction);
-  if (!whole && !part) return null;
+  if (!whole && !part) return notApplicable;
   const sendCDP = frameCdpSender(page, target);
   try {
     const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
       groups: SegmentedDateGroup[];
     };
-    if (!enumerated?.groups?.length) return null;
+    if (!enumerated?.groups?.length) return notApplicable;
     const wholeGi = whole ? resolveSegmentedDateGroup(instruction, enumerated.groups) : null;
     const partStep = wholeGi === null ? part : null;
     const value = (wholeGi !== null ? whole : part) as { digits: string; valueSpan: string };
@@ -6813,10 +6841,21 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         ? pickSegmentedDateGroup(instruction, enumerated.groups, partStep, partFits)
         : null);
     if (gi === null) {
-      logger.info("segmented date primitive: no unambiguous group; falling through");
       await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
-      return null;
+      const widthCompatible = enumerated.groups.some(
+        (group) =>
+          (whole !== null &&
+            group.segmentMaxes.reduce((sum, max) => sum + String(max).length, 0) ===
+              whole.digits.length) ||
+          (partStep !== null && partFits(group))
+      );
+      if (widthCompatible) {
+        return refuse("a width-compatible date group exists but the target group is ambiguous");
+      }
+      logger.info("segmented date primitive: no compatible group; falling through");
+      return notApplicable;
     }
+    groupChosen = true;
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
     const onlySegment = partStep ? partOf(enumerated.groups[gi] as SegmentedDateGroup) : null;
@@ -6916,18 +6955,18 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     if (!matches(actual)) actual = await readSegments();
     await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
     if (!matches(actual)) {
-      logger.info(
-        `segmented date primitive: readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}; falling through`
+      return refuse(
+        `readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}`
       );
-      return null;
     }
     logger.info(
       `segmented date primitive: committed segments ${maskDateDigits(JSON.stringify(actual))}`
     );
-    return `segmented-date-${gi}`;
+    return { kind: "committed", targetId: `segmented-date-${gi}` };
   } catch (err) {
+    if (groupChosen) return refuse(`delivery threw: ${toErrorMessage(err)}`);
     logger.warn(`segmented date primitive: threw: ${toErrorMessage(err)}; falling through`);
-    return null;
+    return notApplicable;
   }
 }
 
@@ -12379,15 +12418,21 @@ export async function executeStepWithHealing(params: {
 
   // Multi-segment date spinbuttons need real key events; the cascade's
   // insertText would garble the segments. Falls through on null.
-  const segmentedDateTargetId = await trySegmentedDateSpinbuttonPrimitive({
+  const segmentedDate = await runSegmentedDateSpinbuttonPrimitive({
     page,
     target: selectFrameTarget,
     instruction: step,
     logger,
   });
-  if (segmentedDateTargetId !== null) {
+  if (segmentedDate.kind === "refused") {
+    throw new StepVerificationError(
+      `${formatStepPrefix(stepIndex, totalSteps)} (${redactPii(step).slice(0, 60)}) segmented date could not be delivered: ${segmentedDate.reason}`,
+      "cascade-exhausted"
+    );
+  }
+  if (segmentedDate.kind === "committed") {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by segmented-date primitive`);
-    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDateTargetId });
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDate.targetId });
     return "completed";
   }
 
