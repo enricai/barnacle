@@ -13128,25 +13128,13 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
-              await settleAfterClick(
+              const midPost = await settleAndSnapshot({
                 page,
+                target: frameTarget ?? mainFrameTarget(page),
                 signalCounter,
-                pre.networkCount,
-                true,
-                async () => {
-                  const snap = await snapshotPage(
-                    frameTarget ?? mainFrameTarget(page),
-                    signalCounter
-                  );
-                  return snap.visibleTextSignature;
-                },
-                pre.visibleTextSignature
-              );
-              const midPost = await snapshotPage(
-                frameTarget ?? mainFrameTarget(page),
-                signalCounter,
-                page
-              );
+                pre,
+                submitShaped: true,
+              });
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
