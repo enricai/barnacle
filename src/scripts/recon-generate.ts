@@ -7840,16 +7840,15 @@ export function resolveRecurringNavigateToFacets(
   // recurs in one vocabulary (a hash slug, a quoted label) says nothing about
   // the same facet's element in another (`WW;filterType=ship`).
   const claimedLiterals = new Set<string>();
-  const aliased = declared.flatMap((facet) => {
-    const literal = findKindKeyedLiteral(facet, actions);
-    if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
-    if (claimedLiterals.has(literal)) return [];
-    claimedLiterals.add(literal);
-    const known = [facet.value, ...(facet.literals ?? [])];
-    if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-    const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
-    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
-  });
+  const aliased = declared.flatMap((facet) =>
+    findKindKeyedLiterals(facet, actions).flatMap((literal) => {
+      if (declared.some(({ value }) => value === literal)) return [];
+      if (claimedLiterals.has(literal)) return [];
+      claimedLiterals.add(literal);
+      const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
+      return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
+    })
+  );
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
   const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
@@ -7874,16 +7873,18 @@ export function resolveRecurringNavigateToFacets(
 }
 
 /**
- * The literal a facet takes in the code vocabulary: the captured request
+ * The literals a facet takes in the code vocabulary: the captured request
  * element (query value or body string leaf) whose `<literal><delim>key=<kind>`
  * suffix names the facet's own kind. Derived from the traffic itself, so it
  * never depends on how many other facets or transitions the flow declared.
- * Returns `undefined` unless exactly one distinct literal carries the kind.
+ * A kind carrying several distinct literals across captures yields each of
+ * them, so every element of the kind is owned instead of none; the month
+ * evidence narrows them only when it singles out some of them.
  */
-function findKindKeyedLiteral(
+function findKindKeyedLiterals(
   facet: NavigateToFacetBinding,
   actions: readonly Pick<ActionStep, "capture">[]
-): string | undefined {
+): string[] {
   const byTier = new Map<number, Set<string>>();
   const sameMonth = new Set<string>();
   const facetMonths = new Set(
@@ -7920,9 +7921,9 @@ function findKindKeyedLiteral(
     }
   }
   const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
-  if (closest !== undefined && closest.size === 1) return [...closest][0];
-  const sameMonthInKind = [...(closest ?? sameMonth)].filter((literal) => sameMonth.has(literal));
-  return sameMonthInKind.length === 1 ? sameMonthInKind[0] : undefined;
+  if (closest === undefined) return sameMonth.size === 1 ? [...sameMonth] : [];
+  const sameMonthInKind = [...closest].filter((literal) => sameMonth.has(literal));
+  return sameMonthInKind.length > 0 && closest.size > 1 ? sameMonthInKind : [...closest];
 }
 
 /**
