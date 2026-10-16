@@ -4,6 +4,7 @@ import { ApplicantContactSchema } from "@/lib/applicant-payload";
 import { JobTrackingSchema } from "@/lib/job-tracking";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import {
+  deriveBaseUrl,
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
@@ -189,5 +190,42 @@ describe("JobTrackingSchema composition", () => {
     expect(result.success && (result.data as Record<string, unknown>).TrackingUrl).toBe(
       "https://t.example/a"
     );
+  });
+
+  it("parses ApplicantContact fields, Email and ClickUrl alone, requiring no extra keys", () => {
+    const schema = evalSchema(emitContract(canonicalFields()));
+    const base = Object.fromEntries(
+      Object.entries(ApplicantContactSchema.shape).map(([k, v]) => [
+        k,
+        (v as z.ZodType).safeParse("x").success ? "x" : undefined,
+      ])
+    );
+    const result = schema.safeParse({
+      ...base,
+      Resume: Buffer.from("x"),
+      Answers: {},
+      Email: "a@b.co",
+      ClickUrl: "https://x.test/a",
+    });
+    expect(result.success ? [] : result.error.issues).toEqual([]);
+  });
+});
+
+describe("deriveBaseUrl with unmatched ownBackendHostnames", () => {
+  it("throws listing the captured hosts instead of falling back to a default origin", () => {
+    const captures = [
+      { url: "https://api.one.example.org/v1/a", method: "POST" },
+      { url: "https://api.two.example.org/v1/b", method: "POST" },
+    ] as Parameters<typeof deriveBaseUrl>[0];
+    let thrown: unknown;
+    try {
+      deriveBaseUrl(captures, ["missing.example.com"]);
+    } catch (e) {
+      thrown = e;
+    }
+    const message = (thrown as Error).message;
+    expect(message).toContain("ownBackendHostnames matched no capture");
+    expect(message).toContain("api.one.example.org, api.two.example.org");
+    expect(message).not.toContain("https://example.com");
   });
 });
