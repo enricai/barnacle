@@ -22,8 +22,8 @@ afterEach(() => {
 });
 
 /** Runs the real generator CLI over the wizard-checkout captures with the given
- * recon-flow.json, returning every emitted file keyed by name. */
-function generate(flow: Record<string, unknown>): Record<string, string> {
+ * raw recon-flow.json contents. */
+function runGenerate(flowContents: string): ReturnType<typeof spawnSync> {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-bfo-opt-in-"));
   const runRoot = join(workDir, "run");
   const capturesDir = join(runRoot, "graphql");
@@ -40,12 +40,17 @@ function generate(flow: Record<string, unknown>): Record<string, string> {
   const siteId = `bfo-opt-in-test-${process.pid}`;
   siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
   mkdirSync(siteOutDir, { recursive: true });
-  writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify(flow));
-  const result = spawnSync(
+  writeFileSync(join(siteOutDir, "recon-flow.json"), flowContents);
+  return spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
     { cwd: REPO_ROOT, encoding: "utf8" }
   );
+}
+
+/** Runs the generator and returns every emitted file keyed by name. */
+function generate(flow: Record<string, unknown>): Record<string, string> {
+  const result = runGenerate(JSON.stringify(flow));
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   const outDir = siteOutDir;
   return Object.fromEntries(
@@ -96,14 +101,16 @@ describe("browserFlowOnly opt-in — decision and readers", () => {
       ['{"steps":[]}', false],
       ["[]", false],
       ["null", false],
-      ["not json", false],
     ];
     cases.forEach(([contents, expected], index) => {
       const file = join(workDir as string, `flow-${index}.json`);
       writeFileSync(file, contents);
       expect(readBrowserFlowOnly(file), contents).toBe(expected);
     });
-    expect(readBrowserFlowOnly(join(workDir, "missing.json"))).toBe(false);
+    expect(() => readBrowserFlowOnly(join(workDir as string, "missing.json"))).toThrow();
+    const malformed = join(workDir, "malformed.json");
+    writeFileSync(malformed, "not json");
+    expect(() => readBrowserFlowOnly(malformed)).toThrow();
   });
 });
 
@@ -119,6 +126,11 @@ describe("recon-generate CLI — browserFlowOnly flow-file opt-in", () => {
     expect(contract).not.toContain("async executeHttp(");
     expect(contract).not.toContain("payload.query");
     expect(Object.keys(files).filter((name) => name.endsWith(".http.ts"))).toEqual([]);
+  }, 60_000);
+
+  it("fails nonzero on a malformed flow file instead of silently opting out", () => {
+    const result = runGenerate("{ not json");
+    expect(result.status).not.toBe(0);
   }, 60_000);
 
   it("keeps existing behaviour without the flag", () => {

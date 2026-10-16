@@ -18,11 +18,14 @@ describe("readBrowserFlowOnly", () => {
   it("is true only for literal true", () => {
     expect(readBrowserFlowOnly(flow("a.json", '{"steps":[],"browserFlowOnly":true}'))).toBe(true);
   });
-  it("is false for array, missing, non-boolean, null, and unreadable", () => {
+  it("is false for array, missing key, non-boolean, and null", () => {
     expect(readBrowserFlowOnly(flow("b.json", "[]"))).toBe(false);
     expect(readBrowserFlowOnly(flow("c.json", '{"steps":[]}'))).toBe(false);
     expect(readBrowserFlowOnly(flow("d.json", '{"browserFlowOnly":"true"}'))).toBe(false);
     expect(readBrowserFlowOnly(flow("e.json", "null"))).toBe(false);
-    expect(readBrowserFlowOnly(join(DIR, "missing.json"))).toBe(false);
+  });
+  it("reports malformed and unreadable files instead of treating them as not opted in", () => {
+    expect(() => readBrowserFlowOnly(flow("f.json", "not json"))).toThrow();
+    expect(() => readBrowserFlowOnly(join(DIR, "missing.json"))).toThrow();
   });
 });
