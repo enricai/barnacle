@@ -6738,8 +6738,7 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
   const whole = parseSegmentedDateValue(instruction);
   const part = parseSegmentedPartStep(instruction);
   if (!whole && !part) return null;
-  const sendCDP = (method: string, args: object): Promise<unknown> =>
-    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
+  const sendCDP = frameCdpSender(page, target);
   try {
     const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
       groups: SegmentedDateGroup[];
@@ -9536,7 +9535,7 @@ async function tryPromptSelectorPrimitive(params: {
         await target.evaluate(
           `(() => { const el = document.querySelector('[${PROMPT_OPTION_MARK_ATTR}-search="1"]'); if (el) el.focus(); })()`
         );
-        await sendTrustedEnter(page);
+        await sendTrustedEnter(page, target);
       } catch (err) {
         logger.info(
           `prompt-selector primitive: enter submit failed for ${optLabel}: ${toErrorMessage(err)}`
@@ -9658,23 +9657,45 @@ function promptOptionsNameOption(
   });
 }
 
-/** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
-async function sendTrustedEnter(page: Page): Promise<void> {
-  const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+/**
+ * Single owner of CDP delivery for trusted input: a child-frame target's own
+ * session when it has one, otherwise the page's, so keys reach the frame that
+ * holds the focused element.
+ */
+function frameCdpSender(page: Page, target: FrameTarget): (method: string, args: object) => Promise<unknown> {
+  return (method, args) =>
+    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
 }
 
-/** Dispatches a trusted Escape to the focused element via CDP, closing a popup left open. */
-async function sendTrustedEscape(page: Page): Promise<void> {
-  const key = {
+async function sendTrustedKey(
+  page: Page,
+  target: FrameTarget,
+  key: object,
+  text?: string
+): Promise<void> {
+  const send = frameCdpSender(page, target);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", ...(text ? { text } : {}), ...key });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+}
+
+/** Dispatches a trusted Enter to the focused element (the filter input) via the target frame's CDP session. */
+async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> {
+  await sendTrustedKey(
+    page,
+    target,
+    { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+    "\r"
+  );
+}
+
+/** Dispatches a trusted Escape to the focused element via the target frame's CDP session, closing a popup left open. */
+async function sendTrustedEscape(page: Page, target: FrameTarget): Promise<void> {
+  await sendTrustedKey(page, target, {
     key: "Escape",
     code: "Escape",
     windowsVirtualKeyCode: 27,
     nativeVirtualKeyCode: 27,
-  };
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", ...key });
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+  });
 }
 
 /**
@@ -9721,7 +9742,7 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
       .catch(() => 0)) as number;
     if (!count) return;
     logger.info(`popup dismissal: dismissing ${count} leftover popup(s) via Escape`);
-    const trusted = await sendTrustedEscape(page)
+    const trusted = await sendTrustedEscape(page, target)
       .then(() => true)
       .catch((err) => {
         logger.info(`popup dismissal: Escape dispatch failed: ${toErrorMessage(err)}`);
@@ -9761,7 +9782,7 @@ async function clearObscuringPopup(
   const afterListbox = await probeClickPoint(target, selector);
   if (afterListbox?.state === "hit") return true;
   if (!covered(afterListbox)) return false;
-  const trusted = await sendTrustedEscape(page)
+  const trusted = await sendTrustedEscape(page, target)
     .then(() => true)
     .catch(() => false);
   if (!trusted) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
