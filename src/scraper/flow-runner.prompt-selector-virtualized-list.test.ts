@@ -307,7 +307,14 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
     const { page, target, window } = buildPromptWidgetHarness({
       html: VIRTUALIZED_HTML,
       popupByWidgetId: {
-        "country-widget": { options: OPTIONS, searchOnSubmit: true, reuseRenders: RENDERS },
+        "country-widget": {
+          options: OPTIONS,
+          searchOnSubmit: true,
+          reuseRenders: [
+            ["Sweden", "Denmark", "Norway"],
+            ["Norway", "Sweden", "Denmark"],
+          ],
+        },
       },
     });
     const merged = {
