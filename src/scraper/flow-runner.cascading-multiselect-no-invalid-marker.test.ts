@@ -138,6 +138,26 @@ function buildCascadeHarness(): {
     }
   };
 
+  const clickElement = (el: Element | null): void => {
+    if (!el) return;
+    const inOpenPopup = el.closest("[data-test-popup]") !== null;
+    if (inOpenPopup && el.getAttribute("role") === "option") {
+      const text = el.getAttribute("data-automation-label") || "";
+      if (rendered === "categories") {
+        renderPopup("leaves");
+      } else {
+        commitLeaf(text);
+      }
+      return;
+    }
+    if (rendered === "closed") {
+      renderPopup("categories");
+    } else {
+      document.querySelector("[data-test-popup]")?.remove();
+      rendered = "closed";
+    }
+  };
+
   const locator = (selector: string) => {
     const handle = {
       count: async (): Promise<number> => {
@@ -149,24 +169,7 @@ function buildCascadeHarness(): {
       },
       click: async (): Promise<void> => {
         clicks.push(selector);
-        const el = resolveFirst(selector);
-        if (!el) return;
-        const inOpenPopup = el.closest("[data-test-popup]") !== null;
-        if (inOpenPopup && el.getAttribute("role") === "option") {
-          const text = el.getAttribute("data-automation-label") || "";
-          if (rendered === "categories") {
-            renderPopup("leaves");
-          } else {
-            commitLeaf(text);
-          }
-          return;
-        }
-        if (rendered === "closed") {
-          renderPopup("categories");
-        } else {
-          document.querySelector("[data-test-popup]")?.remove();
-          rendered = "closed";
-        }
+        clickElement(resolveFirst(selector));
       },
       fill: async (): Promise<void> => undefined,
       isChecked: async (): Promise<boolean> => false,
@@ -183,6 +186,11 @@ function buildCascadeHarness(): {
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     locator: locator,
+    click: async (x: number): Promise<void> => {
+      const el = rectIds.get(Math.floor(x / 10)) ?? null;
+      if (el) clicks.push(`point-click:${el.outerHTML}`);
+      clickElement(el);
+    },
     waitForTimeout: async (): Promise<void> => undefined,
   };
 

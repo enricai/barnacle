@@ -200,6 +200,22 @@ function buildDeadEndClickHarness(): {
     }
   };
 
+  const clickElement = (el: Element | null): void => {
+    if (!el) return;
+    const inOpenPopup = el.closest("[data-test-popup]") !== null;
+    if (inOpenPopup && el.getAttribute("role") === "option") {
+      // The dead-end click itself: rendered option exists and is
+      // clickable, but nothing in the DOM changes as a result.
+      return;
+    }
+    if (!open) {
+      renderPopup();
+    } else {
+      document.querySelector("[data-test-popup]")?.remove();
+      open = false;
+    }
+  };
+
   const locator = (selector: string) => {
     const handle = {
       count: async (): Promise<number> => {
@@ -211,20 +227,7 @@ function buildDeadEndClickHarness(): {
       },
       click: async (): Promise<void> => {
         clicks.push(selector);
-        const el = resolveFirst(selector);
-        if (!el) return;
-        const inOpenPopup = el.closest("[data-test-popup]") !== null;
-        if (inOpenPopup && el.getAttribute("role") === "option") {
-          // The dead-end click itself: rendered option exists and is
-          // clickable, but nothing in the DOM changes as a result.
-          return;
-        }
-        if (!open) {
-          renderPopup();
-        } else {
-          document.querySelector("[data-test-popup]")?.remove();
-          open = false;
-        }
+        clickElement(resolveFirst(selector));
       },
       fill: async (): Promise<void> => undefined,
       isChecked: async (): Promise<boolean> => false,
@@ -241,6 +244,11 @@ function buildDeadEndClickHarness(): {
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     locator: locator,
+    click: async (x: number): Promise<void> => {
+      const el = rectIds.get(Math.floor(x / 10)) ?? null;
+      if (el) clicks.push(`point-click:${el.outerHTML}`);
+      clickElement(el);
+    },
     waitForTimeout: async (): Promise<void> => undefined,
   };
 

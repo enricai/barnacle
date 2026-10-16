@@ -214,6 +214,21 @@ function buildHarness(params: {
     }
   };
 
+  const clickElement = (el: Element | null): void => {
+    if (!el) return;
+    const inOpenPopup = el.closest("[data-test-popup]") !== null;
+    if (inOpenPopup && el.getAttribute("role") === "option") {
+      commit(el.getAttribute("data-automation-label") || "");
+      return;
+    }
+    if (!popupOpen) {
+      renderPopup();
+    } else {
+      document.querySelector("[data-test-popup]")?.remove();
+      popupOpen = false;
+    }
+  };
+
   const locator = (selector: string) => {
     const handle = {
       count: async (): Promise<number> => {
@@ -225,19 +240,7 @@ function buildHarness(params: {
       },
       click: async (): Promise<void> => {
         clicks.push(selector);
-        const el = resolveFirst(selector);
-        if (!el) return;
-        const inOpenPopup = el.closest("[data-test-popup]") !== null;
-        if (inOpenPopup && el.getAttribute("role") === "option") {
-          commit(el.getAttribute("data-automation-label") || "");
-          return;
-        }
-        if (!popupOpen) {
-          renderPopup();
-        } else {
-          document.querySelector("[data-test-popup]")?.remove();
-          popupOpen = false;
-        }
+        clickElement(resolveFirst(selector));
       },
       fill: async (): Promise<void> => undefined,
       isChecked: async (): Promise<boolean> => false,
@@ -254,6 +257,9 @@ function buildHarness(params: {
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     locator: locator,
+    click: async (x: number): Promise<void> => {
+      clickElement(rectIds.get(Math.floor(x / 10)) ?? null);
+    },
     waitForTimeout: async (): Promise<void> => undefined,
   };
 

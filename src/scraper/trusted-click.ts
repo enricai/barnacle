@@ -22,6 +22,9 @@ export interface CentredHitTestResult {
   state: "hit" | "occluded" | "missing" | "mismatch";
   /** Short description of the element covering the point, when occluded. */
   occluder?: string;
+  /** Viewport coordinates of the hit-tested click point, set when `state` is `"hit"`. */
+  x?: number;
+  y?: number;
 }
 
 /**
@@ -54,6 +57,14 @@ export interface CentredTrustedClickOptions {
    * withholds the click. Resolving `false` is reported as an identity mismatch.
    */
   verifyBeforeClick?: () => Promise<boolean>;
+  /**
+   * Delivers the click at the exact point the identity-checked in-page call
+   * hit-tested, instead of `Locator.click()` re-resolving and re-scrolling
+   * after an await gap. Only valid where in-page viewport coordinates are the
+   * dispatch coordinates (main frame). Throwing a {@link CentredClickError}
+   * `"mismatch"` withholds the click.
+   */
+  clickAtPoint?: (x: number, y: number) => Promise<void>;
 }
 
 /**
@@ -92,7 +103,7 @@ export function buildCentreAndHitTestFn(expectText?: string): string {
     ? el.getRootNode().elementFromPoint(x, y)
     : document.elementFromPoint(x, y);
   for (let node = hit; node; ) {
-    if (node === el) return { state: "hit" };
+    if (node === el) return { state: "hit", x, y };
     node = node.parentNode && node.parentNode.host ? node.parentNode.host : node.parentNode;
   }
   const tag = hit && hit.tagName ? hit.tagName.toLowerCase() : "none";
@@ -131,7 +142,7 @@ export class CentredClickError extends Error {
 export async function centreAndHitTest(
   evaluateOnElement: EvaluateOnElementFn,
   opts: CentredTrustedClickOptions = {}
-): Promise<void> {
+): Promise<CentredHitTestResult> {
   const attempts = Math.max(1, opts.attempts ?? DEFAULT_CENTRED_CLICK_ATTEMPTS);
   const label = opts.label ?? "target";
   const centreFn =
@@ -153,7 +164,7 @@ export async function centreAndHitTest(
         last = { state: "mismatch" };
         break;
       }
-      return;
+      return last;
     }
     if (last.state === "mismatch") break;
     logger.warn(
@@ -210,7 +221,11 @@ export async function clickAfterCentredHitTest(
   evaluateOnElement: EvaluateOnElementFn,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
-  await centreAndHitTest(evaluateOnElement, opts);
+  const hit = await centreAndHitTest(evaluateOnElement, opts);
+  if (opts.clickAtPoint && hit.x !== undefined && hit.y !== undefined) {
+    await opts.clickAtPoint(hit.x, hit.y);
+    return;
+  }
   await clickable.click();
 }
 

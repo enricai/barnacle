@@ -60,4 +60,22 @@ describe("dismissLeftoverPromptPopups", () => {
     await dismissLeftoverPromptPopups(f.page, f.target);
     expect(f.sent).toEqual([]);
   });
+
+  it("routes Escape through the child frame's CDP session when present", async () => {
+    const f = fakes([1, 0]);
+    const frameSent: string[] = [];
+    const target = {
+      evaluate: async (): Promise<number> => (frameSent.length ? 0 : 1),
+      frame: {
+        session: {
+          send: async (_m: string, p: { type: string; key: string }): Promise<void> => {
+            if (p.type === "keyDown") frameSent.push(p.key);
+          },
+        },
+      },
+    };
+    await dismissLeftoverPromptPopups(f.page, target as never);
+    expect(frameSent).toEqual(["Escape"]);
+    expect(f.sent).toEqual([]);
+  });
 });

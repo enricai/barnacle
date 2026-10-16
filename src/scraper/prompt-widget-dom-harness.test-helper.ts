@@ -92,8 +92,15 @@ export interface PopupSpec {
    */
   searchOnSubmit?: boolean;
   /**
-   * With `searchOnSubmit`, successive label sets applied IN PLACE (same option
-   * nodes, different text) — one per `page.waitForTimeout` call after Enter —
+   * With `searchOnSubmit`, the placeholder row text shown before Enter
+   * (default "No Items."). The literal token `{query}` is replaced by the
+   * filter value, modeling a list that echoes the query.
+   */
+  placeholderText?: string;
+  /**
+   * With `searchOnSubmit` (after Enter) or `searchable` (after the filter is
+   * filled), successive label sets applied IN PLACE (same option
+   * nodes, different text) — one per `page.waitForTimeout` call —
    * modeling a list that re-renders N times while reusing its DOM nodes.
    */
   reuseRenders?: string[][];
@@ -240,7 +247,11 @@ export function buildPromptWidgetHarness(params: {
       const triggerInput = widgetEl.querySelector("input");
       if (triggerInput) triggerInput.setAttribute("data-test-filter", widgetEl.id);
     }
-    const searchHtml = awaitingSubmit ? `<li data-test-placeholder="true">No Items.</li>` : "";
+    const placeholder = (state.spec.placeholderText ?? "No Items.").replace(
+      "{query}",
+      state.filter
+    );
+    const searchHtml = awaitingSubmit ? `<li data-test-placeholder="true">${placeholder}</li>` : "";
     const optsHtml = shown
       .map((o, i) => {
         const label = optionLabel(o);
@@ -495,7 +506,8 @@ export function buildPromptWidgetHarness(params: {
       for (const state of openState.values()) {
         const renders = state.spec.reuseRenders;
         const step = state.renderStep ?? 0;
-        if (!state.submitted || !renders || step >= renders.length) continue;
+        const live = state.submitted || (state.spec.searchable && state.filter !== "");
+        if (!live || !renders || step >= renders.length) continue;
         const popup = document.querySelector(`[data-test-popup-for="${widgetIdOf(state)}"]`);
         const nodes = Array.from(popup?.querySelectorAll("[role='option']") ?? []);
         nodes.forEach((node, i) => {

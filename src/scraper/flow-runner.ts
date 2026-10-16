@@ -137,6 +137,7 @@ import {
 } from "@/scraper/target-resolution-diagnostic";
 import {
   CENTRE_AND_HIT_TEST_FN,
+  CentredClickError,
   type CentredHitTestResult,
   centreSelectorForClick,
   clickAfterCentredHitTest,
@@ -6738,8 +6739,7 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
   const whole = parseSegmentedDateValue(instruction);
   const part = parseSegmentedPartStep(instruction);
   if (!whole && !part) return null;
-  const sendCDP = (method: string, args: object): Promise<unknown> =>
-    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
+  const sendCDP = frameCdpSender(page, target);
   try {
     const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
       groups: SegmentedDateGroup[];
@@ -9536,7 +9536,7 @@ async function tryPromptSelectorPrimitive(params: {
         await target.evaluate(
           `(() => { const el = document.querySelector('[${PROMPT_OPTION_MARK_ATTR}-search="1"]'); if (el) el.focus(); })()`
         );
-        await sendTrustedEnter(page);
+        await sendTrustedEnter(page, target);
       } catch (err) {
         logger.info(
           `prompt-selector primitive: enter submit failed for ${optLabel}: ${toErrorMessage(err)}`
@@ -9602,7 +9602,7 @@ async function readStablePromptOptions<T extends { options?: PromptOptionRead[] 
   initial: T
 ): Promise<T | null> {
   const key = (r: T): string =>
-    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.nodeId ?? null]));
+    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.domText ?? null]));
   let current = initial;
   for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
@@ -9649,32 +9649,104 @@ function promptOptionsNameOption(
 ): boolean {
   const want = normPromptOptionText(option);
   if (want === "") return true;
-  return (result?.options ?? []).some((o) => {
+  return realPromptOptions(result?.options ?? [], option).some((o) => {
     const text = normPromptOptionText(o.text);
-    if (text === "") return false;
-    if (text === want) return true;
-    if (PROMPT_PLACEHOLDER_RE.test(text)) return false;
-    return text.includes(want);
+    return text === want || text.includes(want);
   });
 }
 
-/** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
-async function sendTrustedEnter(page: Page): Promise<void> {
-  const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+/**
+ * Single classification of which rendered entries are real options, shared by
+ * the submit decision and the committer so they cannot disagree. Placeholders
+ * ("No Items.", "No results for x") are dropped, except an entry that is
+ * exactly the requested text, which is the user's own option.
+ */
+function realPromptOptions<T extends { text: string }>(options: T[], option: string): T[] {
+  const want = normPromptOptionText(option);
+  return options.filter((o) => {
+    const text = normPromptOptionText(o.text);
+    if (text === "") return false;
+    return text === want || !PROMPT_PLACEHOLDER_RE.test(text);
+  });
 }
 
-/** Dispatches a trusted Escape to the focused element via CDP, closing a popup left open. */
-async function sendTrustedEscape(page: Page): Promise<void> {
-  const key = {
+/**
+ * Single owner of CDP delivery for trusted input: a child-frame target's own
+ * session when it has one, otherwise the page's, so keys reach the frame that
+ * holds the focused element.
+ */
+function frameCdpSender(
+  page: Page,
+  target: FrameTarget
+): (method: string, args: object) => Promise<unknown> {
+  return (method, args) =>
+    target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
+}
+
+/**
+ * Clicks at a frame-local viewport point through the same CDP route as keys, so
+ * the press lands where the hit test just ran instead of re-resolving a locator.
+ * A same-process child frame has no session of its own, so its offset in the
+ * page is added to reach page coordinates.
+ */
+async function dispatchTrustedClick(
+  page: Page,
+  target: FrameTarget,
+  x: number,
+  y: number
+): Promise<void> {
+  if (target.frame === null) {
+    await page.click(x, y);
+    return;
+  }
+  const send = frameCdpSender(page, target);
+  const offset = target.frame.session
+    ? { x: 0, y: 0 }
+    : (((await target
+        .evaluate(
+          `(() => {
+            const f = window.frameElement;
+            if (!f) return null;
+            const r = f.getBoundingClientRect();
+            return { x: r.left, y: r.top };
+          })()`
+        )
+        .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 });
+  const point = { x: x + offset.x, y: y + offset.y, button: "left", clickCount: 1 };
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point });
+}
+
+async function sendTrustedKey(
+  page: Page,
+  target: FrameTarget,
+  key: object,
+  text?: string
+): Promise<void> {
+  const send = frameCdpSender(page, target);
+  await send("Input.dispatchKeyEvent", { type: "keyDown", ...(text ? { text } : {}), ...key });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+}
+
+/** Dispatches a trusted Enter to the focused element (the filter input) via the target frame's CDP session. */
+async function sendTrustedEnter(page: Page, target: FrameTarget): Promise<void> {
+  await sendTrustedKey(
+    page,
+    target,
+    { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+    "\r"
+  );
+}
+
+/** Dispatches a trusted Escape to the focused element via the target frame's CDP session, closing a popup left open. */
+async function sendTrustedEscape(page: Page, target: FrameTarget): Promise<void> {
+  await sendTrustedKey(page, target, {
     key: "Escape",
     code: "Escape",
     windowsVirtualKeyCode: 27,
     nativeVirtualKeyCode: 27,
-  };
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", ...key });
-  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+  });
 }
 
 /**
@@ -9721,7 +9793,7 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
       .catch(() => 0)) as number;
     if (!count) return;
     logger.info(`popup dismissal: dismissing ${count} leftover popup(s) via Escape`);
-    const trusted = await sendTrustedEscape(page)
+    const trusted = await sendTrustedEscape(page, target)
       .then(() => true)
       .catch((err) => {
         logger.info(`popup dismissal: Escape dispatch failed: ${toErrorMessage(err)}`);
@@ -9761,7 +9833,7 @@ async function clearObscuringPopup(
   const afterListbox = await probeClickPoint(target, selector);
   if (afterListbox?.state === "hit") return true;
   if (!covered(afterListbox)) return false;
-  const trusted = await sendTrustedEscape(page)
+  const trusted = await sendTrustedEscape(page, target)
     .then(() => true)
     .catch(() => false);
   if (!trusted) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
@@ -9824,7 +9896,7 @@ async function commitPromptOption(params: {
 
   let optionsResult = params.optionsResult;
   for (let depth = 0; depth <= PROMPT_SELECTOR_MAX_DRILL_DEPTH; depth++) {
-    const options = optionsResult.options ?? [];
+    const options = realPromptOptions(optionsResult.options ?? [], option);
     const detMatch = options.find((o) => norm(o.text) === wantOpt) ?? null;
     if (detMatch === null && (anthropic === null || options.length === 0)) {
       logger.info(
@@ -9875,7 +9947,9 @@ async function commitPromptOption(params: {
       const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
         options?: PromptOptionRead[];
       } | null;
-      const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+      const freshMatches = realPromptOptions(fresh?.options ?? [], option).filter(
+        (o) => norm(o.text) === wantChosenText
+      );
       const freshOption =
         freshMatches.find((o) => o.nodeId !== undefined && o.nodeId === chosenOption.nodeId) ??
         freshMatches[0];
@@ -9905,6 +9979,24 @@ async function commitPromptOption(params: {
         await clickCentredTrusted(target, optionSel, {
           label: "prompt-selector option",
           expectText: expectedDomText,
+          clickAtPoint: async (x, y) => {
+            const stillThere = await target
+              .evaluate(
+                `((x, y, want) => {
+                  const hit = document.elementFromPoint(x, y);
+                  const el = hit && hit.closest(${JSON.stringify(optionSel)});
+                  return !!el && (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
+                })(${x}, ${y}, ${JSON.stringify(expectedDomText)})`
+              )
+              .catch(() => false);
+            if (!stillThere) {
+              throw new CentredClickError(
+                "centred click: prompt-selector option identity mismatch at click point, click withheld",
+                "mismatch"
+              );
+            }
+            await dispatchTrustedClick(page, target, x, y);
+          },
           verifyBeforeClick: async () =>
             (await target
               .evaluate(
