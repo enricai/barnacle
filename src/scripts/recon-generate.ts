@@ -14693,10 +14693,10 @@ export function emitContractTs(opts: {
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
-  // zod strips unknown keys, so without composing it a job-application
+  // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
-  const composesJobTracking = usesApplicantContactSchema && !extendFields.has("TrackingUrl");
+  const composesJobTracking = !extendFields.has("TrackingUrl");
   const trackingMerge = composesJobTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
@@ -15849,7 +15849,7 @@ export function emitConfigManifest(opts: {
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  if (usesApplicantContactSchema) requestProperties.TrackingUrl ??= { type: "string" };
+  requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
