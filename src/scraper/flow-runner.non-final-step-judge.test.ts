@@ -22,9 +22,25 @@ vi.mock("@/lib/llm/judges/verify-submit", async (orig) => ({
 
 import { judgeStepOutcome } from "@/scraper/flow-runner";
 
-function fakeTarget(reads: string[]): { evaluate: () => Promise<string> } {
+function fakeTarget(reads: string[]): ReturnType<typeof judgeTarget> {
   let i = 0;
-  return { evaluate: async () => reads[Math.min(i++, reads.length - 1)] ?? "" };
+  return judgeTarget(() => reads[Math.min(i++, reads.length - 1)] ?? "");
+}
+
+function judgeTarget(read: () => string): {
+  url: () => Promise<string>;
+  evaluate: (expr: string) => Promise<unknown>;
+} {
+  return {
+    url: async () => "u",
+    evaluate: async (expr: string) => {
+      if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
+      const t = read();
+      if (expr.includes("outerHTML"))
+        return { html: t.length, text: `${t.length}:${t.slice(0, 200)}`, values: "", state: "" };
+      return t;
+    },
+  };
 }
 
 const SUBMIT_INPUT = {
@@ -44,6 +60,8 @@ function params(isFinalStep: boolean, reads: string[]): Parameters<typeof judgeS
     client: {} as never,
     step: "click continue",
     isFinalStep,
+    submitStep: false,
+    flowHasSubmitSemantics: false,
     page: { waitForTimeout: async () => {} },
     target: fakeTarget(reads) as never,
     signalCounter: { n: 0 },
@@ -100,10 +118,9 @@ describe("judgeStepOutcome", () => {
       return {
         ...params(false, []),
         page: { waitForTimeout: async (ms: number) => void waits.push(ms) },
-        target: {
-          evaluate: async () =>
-            reads[Math.min(stepJudge.mock.calls.length, reads.length - 1)] ?? "",
-        } as never,
+        target: judgeTarget(
+          () => reads[Math.min(stepJudge.mock.calls.length, reads.length - 1)] ?? ""
+        ) as never,
       };
     }
 

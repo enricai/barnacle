@@ -253,6 +253,64 @@ function headWordSimilarity(pre: string, post: string): number {
   return shared / union.size;
 }
 
+/** Words dropped AND introduced in the head for it to count as swapped copy. */
+const PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS = 2;
+
+function leadingHeadWord(signature: string): string | undefined {
+  return signature
+    .slice(signature.indexOf(":") + 1)
+    .toLowerCase()
+    .split(/\W+/)
+    .find((w) => w !== "");
+}
+
+function isHeadSwapped(pre: string, post: string): boolean {
+  const preWords = textHeadWords(pre);
+  const postWords = textHeadWords(post);
+  const dropped = [...preWords].filter((w) => !postWords.has(w)).length;
+  if (dropped < PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS) return false;
+  const added = [...postWords].filter((w) => !preWords.has(w)).length;
+  if (added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS) return true;
+  // A swapped header can reuse a word the shared chrome already carries (a
+  // "My Account" header over an "Account" button), leaving a single new word;
+  // a new word leading the head still marks replaced copy.
+  const leading = leadingHeadWord(post);
+  return leading !== undefined && !preWords.has(leading);
+}
+
+type PageAdvanceKind = "none" | "header" | "body";
+
+/**
+ * Reads how far the visible text moved: `body` when the copy itself was
+ * replaced (a large or relative length change, or a head whose words were
+ * mostly swapped), `header` when only a header-sized slice moved over shared
+ * chrome, `none` otherwise. The split lets a settle tell a finished transition
+ * from a header that flipped before its body re-rendered.
+ */
+function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): PageAdvanceKind {
+  const preSig = pre.visibleTextSignature;
+  const postSig = post.visibleTextSignature;
+  if (preSig === undefined || postSig === undefined || preSig === postSig) return "none";
+  const preLen = textLengthOf(preSig);
+  const postLen = textLengthOf(postSig);
+  if (preLen === null || postLen === null) return "none";
+  const lengthDelta = Math.abs(postLen - preLen);
+  if (lengthDelta >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA) return "body";
+  const similarity = headWordSimilarity(preSig, postSig);
+  // Identical head words mean whitespace/layout reflow, not new copy.
+  if (similarity === 1) return "none";
+  if (
+    lengthDelta >= PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA &&
+    lengthDelta / Math.max(preLen, 1) >= PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO
+  ) {
+    return "body";
+  }
+  if (similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY) return "body";
+  // Shared chrome (nav, footer) inflates similarity when a wizard swaps only
+  // its header and body copy within the 200-char head.
+  return isHeadSwapped(preSig, postSig) ? "header" : "none";
+}
+
 /**
  * Decides whether the page demonstrably advanced (a wizard step swapped
  * content) from pre/post snapshots alone, so a network-free, URL-stable
@@ -264,24 +322,16 @@ function headWordSimilarity(pre: string, post: string): number {
  * line (small, mostly-shared text) is not an advance.
  */
 export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
-  const preSig = pre.visibleTextSignature;
-  const postSig = post.visibleTextSignature;
-  if (preSig === undefined || postSig === undefined || preSig === postSig) return false;
-  const preLen = textLengthOf(preSig);
-  const postLen = textLengthOf(postSig);
-  if (preLen === null || postLen === null) return false;
-  const lengthDelta = Math.abs(postLen - preLen);
-  if (lengthDelta >= PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA) return true;
-  const similarity = headWordSimilarity(preSig, postSig);
-  // Identical head words mean whitespace/layout reflow, not new copy.
-  if (similarity === 1) return false;
-  if (
-    lengthDelta >= PAGE_ADVANCE_MIN_RELATIVE_TEXT_LENGTH_DELTA &&
-    lengthDelta / Math.max(preLen, 1) >= PAGE_ADVANCE_MIN_TEXT_LENGTH_RATIO
-  ) {
-    return true;
-  }
-  return similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY;
+  return pageAdvanceKind(pre, post) !== "none";
+}
+
+/**
+ * Stricter sibling of {@link hasPageAdvanced} for deciding a re-render has
+ * finished: a header that flipped over shared chrome is an advance, but the
+ * body usually re-renders after it, so only replaced copy counts as settled.
+ */
+export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
+  return pageAdvanceKind(pre, post) === "body";
 }
 
 /**
