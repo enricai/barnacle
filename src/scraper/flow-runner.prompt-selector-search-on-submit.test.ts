@@ -377,7 +377,10 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
       html: SEARCH_ON_SUBMIT_HTML,
       popupByWidgetId: {
-        "country-widget": { options: ["University of Texas", "University of Utah"], searchOnSubmit: true },
+        "country-widget": {
+          options: ["University of Texas", "University of Utah"],
+          searchOnSubmit: true,
+        },
       },
     });
     const merged = {
@@ -430,20 +433,20 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
       popupByWidgetId: { "country-widget": { options: OPTIONS, searchOnSubmit: true } },
     });
     const frameSends: { method: string; params: unknown }[] = [];
-    const frameSend = async (method: string, params?: unknown): Promise<void> => {
-      frameSends.push({ method, params });
-      await (page as unknown as { sendCDP: (m: string, p?: unknown) => Promise<void> }).sendCDP(
-        method,
-        params
-      );
+    const pageSends: { method: string; params: unknown }[] = [];
+    const pageLoc = page as unknown as { sendCDP: (m: string, p?: unknown) => Promise<void> };
+    const originalSend = pageLoc.sendCDP.bind(page);
+    pageLoc.sendCDP = async (method, params) => {
+      pageSends.push({ method, params });
+      await originalSend(method, params);
     };
-    (target as unknown as { frame: unknown }).frame = { session: { send: frameSend } };
-    const pageSend = (page as unknown as { sendCDP: (m: string, p?: unknown) => Promise<void> })
-      .sendCDP;
-    const pageOnly: { method: string; params: unknown }[] = [];
-    (page as unknown as { sendCDP: unknown }).sendCDP = async (m: string, p?: unknown) => {
-      pageOnly.push({ method: m, params: p });
-      return pageSend(m, p);
+    (target as unknown as { frame: unknown }).frame = {
+      session: {
+        send: async (method: string, params?: unknown): Promise<void> => {
+          frameSends.push({ method, params });
+          await originalSend(method, params);
+        },
+      },
     };
     const merged = {
       ...baseParams(page as unknown as Page, stagehandAct, ""),
@@ -457,7 +460,7 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
 
     expect(result).toBe("completed");
     expect(enterKeyDowns(frameSends)).toBe(1);
-    expect(enterKeyDowns(pageOnly.filter((e) => !frameSends.includes(e)))).toBe(1);
+    expect(enterKeyDowns(pageSends)).toBe(0);
     expect(
       window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
     ).toBe("Sweden");
