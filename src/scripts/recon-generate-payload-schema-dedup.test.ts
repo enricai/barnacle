@@ -39,7 +39,7 @@ describe("emitContractTs — payload schema field dedup against ApplicantContact
     });
 
     const payloadSchemaMatch = source.match(
-      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\);/
+      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaBlock = payloadSchemaMatch![0]!;

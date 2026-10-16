@@ -240,6 +240,9 @@ function toPascalCase(siteId: string): string {
  *   label match names, or it is not that field's datum (e.g. a device-type
  *   dropdown's `'Mobile'` looks like a phone-number field by label alone, but
  *   is nothing like the number the Fill step already bound).
+ * @param canonicalise map a vocabulary row's name onto the equivalent
+ *   `ApplicantContactSchema` key ({@link canonicalPayloadField}); set by the
+ *   job-application emit paths whose contract extends that base schema
  * @returns the PascalCase payload field name to splice, or null to keep literal
  */
 export function resolveStepPayloadField(
@@ -247,7 +250,8 @@ export function resolveStepPayloadField(
   explicit?: string,
   forceNone?: boolean,
   vocabulary: ReconVocabulary = EMPTY_VOCABULARY,
-  knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES
+  knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES,
+  canonicalise = false
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
@@ -275,14 +279,26 @@ export function resolveStepPayloadField(
   const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
   for (const [rx, field] of vocabulary.table) {
     if (!rx.test(instruction)) continue;
-    if (!isSelectStep) return field;
+    const resolved = canonicalise ? canonicalPayloadField(field) : field;
+    if (!isSelectStep) return resolved;
     const answer = pickedQuotedValue(instruction);
     if (answer !== null && OPERATIONAL_ANSWER.test(answer.trim())) return null;
-    const known = knownFieldValues.get(field);
+    const known = knownFieldValues.get(resolved);
     if (known !== undefined && answer !== known) return null;
-    return field;
+    return resolved;
   }
   return null;
+}
+
+/**
+ * Maps a vocabulary row's field name onto the base schema's equivalent so a
+ * consumer's `MobilePhone` does not become an extra required key beside
+ * `Phone`. Names the base schema has no equivalent for pass through.
+ */
+export function canonicalPayloadField(field: string): string {
+  if (applicantContactFieldNames.has(field) || baseContractFieldNames.has(field)) return field;
+  const canonical = resolveCanonicalAtsFieldName(field);
+  return canonical !== null && applicantContactFieldNames.has(canonical) ? canonical : field;
 }
 
 /**
@@ -294,7 +310,8 @@ export function resolveStepPayloadField(
 function fieldForFillStep(
   step: FlowStepInput,
   vocabulary: ReconVocabulary,
-  knownFieldValues?: ReadonlyMap<string, string>
+  knownFieldValues?: ReadonlyMap<string, string>,
+  canonicalise = false
 ): string | null {
   const isObj = typeof step !== "string";
   const instruction = isObj ? step.step : step;
@@ -303,12 +320,14 @@ function fieldForFillStep(
     isObj ? step.payloadField : undefined,
     isObj ? step.payloadFieldNone : undefined,
     vocabulary,
-    knownFieldValues
+    knownFieldValues,
+    canonicalise
   );
   if (vocabField !== null) return vocabField;
   if (isObj && step.payloadFieldNone) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
-  return deriveFillLabelField(instruction);
+  const labelField = deriveFillLabelField(instruction);
+  return canonicalise && labelField !== null ? canonicalPayloadField(labelField) : labelField;
 }
 
 /**
@@ -323,14 +342,15 @@ function fieldForFillStep(
 export function buildKnownFieldValues(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  canonicalise = false
 ): Map<string, string> {
   const known = new Map<string, string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field = fieldForFillStep(step, vocabulary);
+    const field = fieldForFillStep(step, vocabulary, undefined, canonicalise);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -1615,6 +1635,12 @@ export function deriveBaseUrl(
   const candidates = captures.filter((c) =>
     isAllowedFixtureHost(captureHostname(c.url), ownBackendHostnames, null)
   );
+  if (candidates.length === 0) {
+    const captured = [...new Set(captures.map((c) => captureHostname(c.url)))].join(", ");
+    throw new Error(
+      `ownBackendHostnames matched no capture: declared [${ownBackendHostnames.join(", ")}], captured hosts [${captured}]`
+    );
+  }
   return dominantHostOrigin(candidates);
 }
 
@@ -1627,7 +1653,9 @@ function firstCaptureOrigin(captures: Capture[]): string {
       // try next
     }
   }
-  return "https://example.com";
+  throw new Error(
+    `no capture has a parseable URL to derive a base URL from (${captures.length} candidate captures)`
+  );
 }
 
 /**
@@ -11684,6 +11712,22 @@ export interface FallbackGateSpec {
 }
 
 /**
+ * Reads the flow file's `browserFlowOnly: true` opt-in, which forces the
+ * browser-flow-only emit for a submission flow whose HTTP analysis would
+ * otherwise produce an executeHttp path. Anything but a literal `true` (or an
+ * unreadable/legacy bare-array file) is "not opted in".
+ */
+export function parseBrowserFlowOnlyOptIn(flowFileContents: string): boolean {
+  try {
+    const raw: unknown = JSON.parse(flowFileContents);
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+    return (raw as { browserFlowOnly?: unknown }).browserFlowOnly === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
  * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
  * a missing file, a legacy bare-array flow, or a malformed declaration all
@@ -13823,9 +13867,14 @@ const applicantContactEvidenceFieldNamesLower = new Set(
 export function contractUsesApplicantContactSchema(opts: {
   inputBody?: unknown;
   isSubmissionFlow?: boolean;
+  browserFlowOnly?: boolean;
   payloadFieldNames?: Set<string>;
 }): boolean {
-  const { inputBody, isSubmissionFlow, payloadFieldNames } = opts;
+  const { inputBody, isSubmissionFlow, browserFlowOnly, payloadFieldNames } = opts;
+  // A browser-flow-only submission flow has no HTTP body of its own: whatever
+  // inputBody HTTP analysis captured describes a path the plugin won't emit,
+  // so it is not evidence about the real caller's shape.
+  if (isSubmissionFlow === true && browserFlowOnly === true) return true;
   // A body-less submission flow has no inputBody to inspect; the payload fields
   // its steps splice are the only evidence, whether or not it also has an HTTP
   // path (the browser-flow emitter can't know which the contract will take).
@@ -13895,6 +13944,10 @@ export function emitContractTs(opts: {
    * ships browser-only with the standard candidate payload schema — rather
    * than emitting a fabricated single-call HTTP stub. */
   omitExecuteHttp?: boolean;
+  /** The flow registers an account (its steps splice `${RECON_PASSWORD}`), so
+   * a retry would try to re-register the same address. Emits
+   * `meta.maxAttempts: 1`. */
+  createsAccount?: boolean;
   /** Multi-action flow whose last step is a submit — when combined with
    * `omitExecuteHttp`, `runHealingFlow`'s `submitStep` verification already
    * gates a successful return, so the response schema carries a real
@@ -14010,6 +14063,7 @@ export function emitContractTs(opts: {
     auxFiles,
     multiStepBody,
     omitExecuteHttp = false,
+    createsAccount = false,
     isSubmissionFlow = false,
     inputBody,
     hasMultipartStep = false,
@@ -14115,6 +14169,7 @@ export function emitContractTs(opts: {
   const usesApplicantContactSchema = contractUsesApplicantContactSchema({
     inputBody,
     isSubmissionFlow,
+    browserFlowOnly: omitExecuteHttp,
     payloadFieldNames,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
@@ -14260,10 +14315,15 @@ export function emitContractTs(opts: {
   // as required strings (z.email() for Email per the repo's z.string().email()→
   // z.email() migration) so those references typecheck in the generated flow.
   if (payloadFieldNames) {
-    for (const name of [...payloadFieldNames].sort()) {
+    // The browser-flow-only emit canonicalises its own splices already; this
+    // covers a caller handing over vocabulary-row names directly, so one never
+    // becomes a required key beside the base schema's own equivalent.
+    const canonicaliseNames = usesApplicantContactSchema && omitExecuteHttp && isSubmissionFlow;
+    for (const rawName of [...payloadFieldNames].sort()) {
+      const name = canonicaliseNames ? canonicalPayloadField(rawName) : rawName;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = name === "Email" ? "z.email()" : "z.string()";
-      const suffix = optionalPayloadFieldNames.has(name) ? ".optional()" : "";
+      const suffix = optionalPayloadFieldNames.has(rawName) ? ".optional()" : "";
       addExtendField(name, `  ${name}: ${zod}${suffix},`);
     }
   }
@@ -14492,7 +14552,12 @@ export function emitContractTs(opts: {
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
-  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}`;
+  // zod strips unknown keys, so without composing it a job-application
+  // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
+  // rather than a second extend keeps the schema to a single `.extend()`.
+  const composesJobTracking = usesApplicantContactSchema && !extendFields.has("TrackingUrl");
+  const trackingMerge = composesJobTracking ? ".merge(JobTrackingSchema)" : "";
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
   // (usesApplicantContactSchema); multipartBoolean() is only imported when a
@@ -14513,6 +14578,9 @@ export function emitContractTs(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
+  const jobTrackingImport = composesJobTracking
+    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
+    : "";
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15092,6 +15160,19 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
+  // Applicant contracts enter on payload.ClickUrl, so a browser-flow-only
+  // execute has nothing left to read from the context.
+  const executeOmitsContext = omitExecuteHttp && usesApplicantContactSchema;
+  const executeContextParam = executeOmitsContext ? "" : `,\n    context: SitePluginContext`;
+  const sitePluginImports = executeOmitsContext
+    ? "SitePlugin, SitePluginResult"
+    : "SitePlugin, SitePluginContext, SitePluginResult";
+  const executeDocComment = omitExecuteHttp
+    ? ""
+    : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
+  const maxAttemptsLiteral = createsAccount
+    ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
+    : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -15110,9 +15191,9 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
+import type { ${sitePluginImports} } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 ${baseHeadersBlock}${limiterBlock}
 export const ${pascal}ResponseSchema = ${responseSchemaExpr};
@@ -15144,14 +15225,12 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
     // JSON-stringified encoding parseable.
     `
         : ""
-    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}
+    }apiVersion: ${JSON.stringify(PLUGIN_API_VERSION)},${payloadNeedsMultipart || usesApplicantContactSchema || hasMultipartStep ? "\n    multipart: true," : ""}${browserFallbackGateLiteral}${maxAttemptsLiteral}
   },
 ${executeHttpMethodBlock}
-  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */
-  async execute(
+${executeDocComment}  async execute(
     payload: ${pascal}Payload,
-    session: BrowserSession,
-    context: SitePluginContext
+    session: BrowserSession${executeContextParam}
   ): Promise<SitePluginResult<${pascal}Response>> {
     const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
@@ -15343,7 +15422,7 @@ function escapeForTemplateLiteral(segment: string): string {
  * own choice so the browser-flow and HTTP-body emitters never disagree on
  * which quoted span is the persona value.
  */
-function buildStepInstructionExpr(
+export function buildStepInstructionExpr(
   instruction: string,
   field: string | null,
   capturedFallback = false
@@ -15484,6 +15563,8 @@ export function emitConfigManifest(opts: {
   isSubmissionFlow?: boolean;
   /** Whether the flow has a multipart upload action — same input the `.ts` emitter takes. */
   hasMultipartStep?: boolean;
+  /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
+  browserFlowOnly?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -15499,10 +15580,17 @@ export function emitConfigManifest(opts: {
     httpModulePath,
     isSubmissionFlow = false,
     hasMultipartStep = false,
+    browserFlowOnly = false,
     env = process.env,
   } = opts;
+  const canonicalise = isSubmissionFlow && browserFlowOnly;
   const payloadFieldNames = new Set<string>();
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
 
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
@@ -15534,7 +15622,8 @@ export function emitConfigManifest(opts: {
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     if (field !== null) payloadFieldNames.add(field);
     const rewritten = buildManifestInstruction(instruction, field);
@@ -15583,6 +15672,15 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
+  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames,
+  });
+  // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
+  // without it would drop the TrackingUrl the engine reads after submission.
+  if (usesApplicantContactSchema) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -15592,13 +15690,7 @@ export function emitConfigManifest(opts: {
   // Same decision emitBrowserFlowTs makes: only a flow that uploads AND whose
   // contract carries Resume fields is multipart, so buildUploadFixture agrees.
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
-  const contractCarriesResume =
-    hasMultipartStep ||
-    contractUsesApplicantContactSchema({
-      inputBody,
-      isSubmissionFlow,
-      payloadFieldNames,
-    });
+  const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
   const manifest = {
@@ -15648,7 +15740,8 @@ export function emitConfigManifest(opts: {
 function computeFlowPayloadFieldNames(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary | undefined,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  canonicalise = false
 ): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const payloadFieldNames = new Set<string>();
   // Widest wins: a field is only optional if EVERY step that registers it
@@ -15662,7 +15755,12 @@ function computeFlowPayloadFieldNames(
       optionalPayloadFieldNames.delete(field);
     }
   };
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -15692,7 +15790,8 @@ function computeFlowPayloadFieldNames(
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -15724,6 +15823,7 @@ export function emitBrowserFlowTs(opts: {
   flowSteps: FlowStepInput[];
   isSubmissionFlow: boolean;
   hasMultipartStep?: boolean;
+  browserFlowOnly?: boolean;
   /** Inputs to {@link contractUsesApplicantContactSchema}; the decision is made
    * here, after payload fields are accumulated, to match the contract emitter. */
   inputBody?: unknown;
@@ -15742,13 +15842,19 @@ export function emitBrowserFlowTs(opts: {
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-}): { code: string; payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
+}): {
+  code: string;
+  payloadFieldNames: Set<string>;
+  optionalPayloadFieldNames: Set<string>;
+  usesThrowawayPassword: boolean;
+} {
   const {
     siteId,
     pascal,
     flowSteps,
     isSubmissionFlow,
     hasMultipartStep = false,
+    browserFlowOnly = false,
     inputBody,
     vocabulary,
     frameSelector,
@@ -15756,10 +15862,12 @@ export function emitBrowserFlowTs(opts: {
     env = process.env,
   } = opts;
 
+  const canonicalise = isSubmissionFlow && browserFlowOnly;
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
-    env
+    env,
+    canonicalise
   );
   for (const field of capturedFallbackFields) {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
@@ -15770,9 +15878,15 @@ export function emitBrowserFlowTs(opts: {
     contractUsesApplicantContactSchema({
       inputBody,
       isSubmissionFlow,
+      browserFlowOnly,
       payloadFieldNames,
     });
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
 
@@ -15820,7 +15934,8 @@ export function emitBrowserFlowTs(opts: {
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -15991,7 +16106,7 @@ ${flowStepsBlock}
 `
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
-  return { code, payloadFieldNames, optionalPayloadFieldNames };
+  return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -16459,6 +16574,14 @@ async function main(): Promise<void> {
     }
   })();
 
+  const browserFlowOnlyOptIn = (() => {
+    try {
+      return parseBrowserFlowOnlyOptIn(readFileSync(flowFile, "utf8"));
+    } catch {
+      return false;
+    }
+  })();
+
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
   // so both draw from the real submission, not incidental widget/chatbot POSTs.
@@ -16497,7 +16620,10 @@ async function main(): Promise<void> {
    * already written its output and there is nothing left for main() to do.
    */
   function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
-    const baseUrl = deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
+    const baseUrl =
+      activeCaptures.length === 0
+        ? "https://example.com"
+        : deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
     // Gate on the flow's declared own-backend hosts (or the registrable-domain
     // fallback of baseUrl) via the same predicate recon-http.ts applies at
     // write time, so a stale aux/ directory from before that filter existed
@@ -16979,7 +17105,8 @@ async function main(): Promise<void> {
     // fabrication of its own kind for a flow that isn't a single-action
     // query/search to begin with.
     const browserFlowOnly =
-      isSubmissionFlow && (noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
+      isSubmissionFlow &&
+      (browserFlowOnlyOptIn || noReplayableActionFlow || actionSteps.some((s) => s.isCrossDomain));
     const multiStepBody = browserFlowOnly
       ? undefined
       : isSubmissionFlow
@@ -17101,7 +17228,7 @@ async function main(): Promise<void> {
     }
 
     logger.info(
-      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
+      `generating plugin for ${siteId} (${gql ? "GraphQL" : browserFlowOnly ? `submission flow, ${actionSteps.length} steps, browser-flow-only (${browserFlowOnlyOptIn ? "forced by flow file" : noReplayableActionFlow ? "no replayable action sequence" : "cross-domain hop detected"})` : isSubmissionFlow ? `submission flow, ${actionSteps.length} steps` : "single-endpoint REST"}, baseUrl: ${baseUrl})`
     );
 
     if (emit === "config") {
@@ -17118,6 +17245,7 @@ async function main(): Promise<void> {
           recoveredFields: [...discoveredFormFields, ...discoveredOptionFields],
           isSubmissionFlow,
           hasMultipartStep,
+          browserFlowOnly,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
@@ -17145,6 +17273,7 @@ async function main(): Promise<void> {
       flowSteps,
       isSubmissionFlow,
       hasMultipartStep,
+      browserFlowOnly,
       inputBody,
       vocabulary,
       frameSelector,
@@ -17186,6 +17315,7 @@ async function main(): Promise<void> {
       auxFiles,
       multiStepBody,
       omitExecuteHttp: browserFlowOnly,
+      createsAccount: browserFlow.usesThrowawayPassword,
       isSubmissionFlow,
       inputBody,
       hasMultipartStep,
@@ -17222,6 +17352,7 @@ async function main(): Promise<void> {
               flowSteps,
               isSubmissionFlow,
               hasMultipartStep,
+              browserFlowOnly,
               vocabulary,
               frameSelector,
               capturedFallbackFields: unread,

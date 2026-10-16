@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { emitContractTs } from "@/scripts/recon-generate";
+import {
+  contractUsesApplicantContactSchema,
+  emitContractTs,
+  parseBrowserFlowOnlyOptIn,
+} from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -414,5 +418,100 @@ describe("emitContractTs — browser-flow-only reported shape is Biome-clean", (
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
+  it("forces the applicant contract for a browser-flow-only submission flow despite a non-evidence inputBody", () => {
+    const inputBody = { vendorKey: "x" };
+    expect(contractUsesApplicantContactSchema({ inputBody, isSubmissionFlow: true })).toBe(false);
+    expect(
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: true,
+        browserFlowOnly: true,
+      })
+    ).toBe(true);
+    expect(
+      contractUsesApplicantContactSchema({
+        inputBody,
+        isSubmissionFlow: false,
+        browserFlowOnly: true,
+      })
+    ).toBe(false);
+  });
+
+  it("parses the flow-file opt-in only for a literal true", () => {
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: true }))).toBe(
+      true
+    );
+    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: "yes" }))).toBe(
+      false
+    );
+    expect(parseBrowserFlowOnlyOptIn("[]")).toBe(false);
+    expect(parseBrowserFlowOnlyOptIn("nope")).toBe(false);
+  });
+});
+
+describe("emitContractTs — forced browser-flow-only with a non-evidence inputBody", () => {
+  it("emits the applicant contract and enters the flow on payload.ClickUrl", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      multiStepBody: undefined,
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      inputBody: { vendorKey: "x" },
+      payloadFieldNames: new Set(["FirstName"]),
+    });
+    expect(source).toContain("ApplicantContactSchema.extend(");
+    expect(source).toContain("ClickUrl: z.string().min(1)");
+    expect(source).toContain("Answers:");
+    expect(source).not.toContain("async executeHttp(");
+    expect(source).toMatch(/BrowserFlow\(session\.stagehand, payload\.ClickUrl,/);
+    expect(source).not.toContain("context.baseUrl,");
+  });
+});
+
+describe("emitContractTs — account-creation retry policy and execute() context", () => {
+  const base = {
+    siteId: "test-site",
+    pascal: "TestSite",
+    baseUrl: "https://api.example.com",
+    baseHeaders: {},
+    minTime: 100,
+    safeRps: 10,
+    responseBody: {},
+    gql: false,
+    gqlQuery: null,
+    endpointPath: "/apply",
+    auxFiles: [],
+    multiStepBody: undefined,
+    omitExecuteHttp: true,
+    isSubmissionFlow: true,
+    inputBody: { vendorKey: "x" },
+    payloadFieldNames: new Set(["FirstName"]),
+  };
+
+  it("emits maxAttempts: 1 with a why-comment only for account-creating flows", () => {
+    expect(emitContractTs({ ...base, createsAccount: true })).toMatch(
+      /\/\/ A retry would re-register[^\n]*\n\s+maxAttempts: 1,/
+    );
+    expect(emitContractTs(base)).not.toContain("maxAttempts");
+  });
+
+  it("omits the context parameter and the hot-path comment when execute reads payload.ClickUrl", () => {
+    const source = emitContractTs(base);
+    expect(source).not.toContain("context: SitePluginContext");
+    expect(source).not.toContain("invoked only when hot path fails");
   });
 });

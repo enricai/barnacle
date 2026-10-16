@@ -44,3 +44,21 @@ describe("quoted-spans", () => {
     expect(matchAnchored("click 'Go'", /^select '([^']+)'/)).toBeNull();
   });
 });
+
+describe("a value spliced raw between quotes", () => {
+  it.each(["O'Brien", "12 King's Row", "Smith'", "5'10", "'Tis", "'", "plain"])(
+    "reads %s back in full",
+    (value) => {
+      const spans = findQuotedSpans(`Fill in the Name field with '${value}' and continue`);
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.text).toBe(value);
+    }
+  );
+
+  it("still ends a span at the next real delimiter", () => {
+    expect(findQuotedSpans("Select 'Smith'' from the 'Name' dropdown").map((s) => s.text)).toEqual([
+      "Smith'",
+      "Name",
+    ]);
+  });
+});

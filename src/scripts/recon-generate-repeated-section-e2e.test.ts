@@ -156,7 +156,7 @@ describe("recon-generate CLI: preferred branch synthesizes the real per-section 
 });
 
 describe("recon-generate CLI: unsynthesizable repeated-section variant falls back to browser-flow-only", () => {
-  it("omits executeHttp and emits the standard candidate payload schema when the sequence can't be faithfully replayed as bare fetch", () => {
+  it("omits executeHttp and emits the job-application payload schema when the sequence can't be faithfully replayed as bare fetch", () => {
     const captures = buildRepeatedSectionSubmissionCaptures();
     // Same trigger recon-generate-browser-flow-only.test.ts already proves for
     // the static-leaf fixture: the captured sequence hops to a different host
@@ -188,14 +188,14 @@ describe("recon-generate CLI: unsynthesizable repeated-section variant falls bac
     expect(contract).not.toContain("query: payload.query");
     expect(contract).not.toContain("query: z.string().min(1)");
     // The fixture's terminal validate call carries only { revision, checksum
-    // } — none of ApplicantContactSchema's own evidence fields — so it gets
-    // the plain empty base, not the job-application template.
-    expect(contract).not.toContain(
-      "ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n})"
-    );
-    expect(contract).not.toContain("import { ApplicantContactSchema }");
-    expect(contract).not.toContain("Email: z.email()");
-    expect(contract).not.toContain("ClickUrl: z.string().min(1)");
-    expect(contract).not.toContain("Answers: multipartJsonObject");
+    // } — none of ApplicantContactSchema's own evidence fields — but a
+    // browser-flow-only submission flow is the job-application template by
+    // construction: the captured body describes a path the plugin never emits,
+    // so it is not evidence about the real caller's shape.
+    expect(contract).toContain("ApplicantContactSchema.extend({");
+    expect(contract).toContain("import { ApplicantContactSchema }");
+    expect(contract).toContain("Email: z.email()");
+    expect(contract).toContain("ClickUrl: z.string().min(1)");
+    expect(contract).toContain("Answers: multipartJsonObject");
   }, 30_000);
 });

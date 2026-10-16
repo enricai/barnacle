@@ -66,6 +66,22 @@ It round-trips losslessly through replan write-back, and `recon:generate`
 threads it verbatim into both emit paths' `meta.displayName` /
 `metadata.displayName` when present, leaving it unset otherwise.
 
+**Forcing browser-only generation:** a submission flow whose HTTP analysis
+captured a replayable body is normally emitted with an `executeHttp` hot path.
+Set `browserFlowOnly: true` to skip it and emit a browser-flow-only plugin
+(same output as the auto-detected no-replayable-sequence / cross-domain case):
+
+```json
+{
+  "steps": ["fill the First Name field with {{ .request.FirstName }}", "click Submit"],
+  "browserFlowOnly": true
+}
+```
+
+A forced flow gets `ApplicantContactSchema` (with `ClickUrl`, `Answers`,
+`ResumeBase64`) as its payload base and enters on `payload.ClickUrl`,
+regardless of any body HTTP analysis captured. Ignored for single-action flows.
+
 **Emailed verification:** a step targeting an emailed link or code (magic-link
 sign-in, OTP confirmation) sets `emailStep: true` plus an `emailStepConfig`
 object — `extract` (`"link"` | `"code"`, default `"link"`), `subjectContains`,
