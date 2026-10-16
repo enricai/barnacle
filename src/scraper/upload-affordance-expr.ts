@@ -1,7 +1,7 @@
 const EXCLUDE_SOURCE = "\\b(later|skip|without|remove|delete|cancel|decline)\\b";
 const NO_FILE_SOURCE = "\\bno files?\\b";
 const POSITIVE_SOURCE =
-  "\\b(upload|browse|(select|choose) files?|attach|add (a )?(resume|cv|files?)|resume/cv)\\b";
+  "\\b(uploads?|browse|(select|choose) files?|attach|add (a )?(resumes?|cvs?|files?)|resumes?/cvs?)\\b";
 
 /**
  * Normalised-label predicate for the Node side. It exists so the Node

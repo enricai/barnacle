@@ -19,6 +19,10 @@ const POSITIVE = [
   "Add a file",
   "Add a CV",
   "Upload files",
+  "Uploads",
+  "Add resumes",
+  "Add CVs",
+  "Upload your Resumes/CVs",
 ];
 const NEGATIVE = [
   "Cancel",
