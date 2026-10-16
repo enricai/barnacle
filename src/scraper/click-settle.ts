@@ -135,3 +135,33 @@ export const QUIESCENCE_PROBE_EXPR = `(() => {
   }
   return { pending: w.__settleQ.pending, mutations: w.__settleQ.mutations };
 })()`;
+
+export interface SettleSnapshotTarget<S extends { networkCount: number; visibleTextSignature: string }> {
+  page: SettlePage;
+  counter: SettleCounter;
+  pre: S;
+  submitShaped: boolean;
+  /** Takes a snapshot; `withPage` marks the final post-settle read. */
+  snapshot: (withPage: boolean) => Promise<S>;
+  readQuiescence?: () => Promise<PageQuiescence | undefined>;
+}
+
+/**
+ * Settles after a click and returns the post snapshot, so the settle wait, the
+ * phantom classifier and view-swap detection all decide from one settled
+ * snapshot instead of each call site hand-building its own reader.
+ */
+export async function settleAndSnapshot<
+  S extends { networkCount: number; visibleTextSignature: string },
+>(target: SettleSnapshotTarget<S>): Promise<S> {
+  await settleAfterClick(
+    target.page,
+    target.counter,
+    target.pre.networkCount,
+    target.submitShaped,
+    async () => (await target.snapshot(false)).visibleTextSignature,
+    target.pre.visibleTextSignature,
+    target.readQuiescence
+  );
+  return target.snapshot(true);
+}
