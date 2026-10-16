@@ -52,7 +52,7 @@ export async function settleAfterClick(
   const safeQuiescence = async (): Promise<PageQuiescence | undefined> => {
     if (!readQuiescence) return undefined;
     try {
-      return await readQuiescence();
+      return (await readQuiescence()) ?? undefined;
     } catch {
       return undefined;
     }
