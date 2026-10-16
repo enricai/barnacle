@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { unreferencedDeclaredPayloadFields } from "@/scripts/recon-generate";
+import {
+  unreadPayloadFieldChecklistLines,
+  unreferencedDeclaredPayloadFields,
+} from "@/scripts/recon-generate";
 
 describe("unreferencedDeclaredPayloadFields", () => {
   const contract = "Facet: z.string(),\nOther: z.string(),\nconst x = payload.Other;";
@@ -53,5 +56,14 @@ describe("unreferencedDeclaredPayloadFields nested braces", () => {
         { step: "pick", payloadField: "Facet" },
       ])
     ).toEqual([]);
+  });
+});
+
+describe("unreadPayloadFieldChecklistLines", () => {
+  it("emits one checklist line per unread field and none for a threaded set", () => {
+    const lines = unreadPayloadFieldChecklistLines(new Set(["Facet"]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Facet");
+    expect(unreadPayloadFieldChecklistLines(new Set())).toEqual([]);
   });
 });

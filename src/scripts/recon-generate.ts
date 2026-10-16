@@ -15462,6 +15462,17 @@ function unreadDeclaredPayloadFields(
   );
 }
 
+/**
+ * Review-checklist lines for declared payload fields no emitted request reads,
+ * so a reviewer sees the silently-optionalized field outside the log stream.
+ */
+export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): string[] {
+  return [...fields].map(
+    (field) =>
+      `Declared payloadField ${field} is read by no emitted request and was emitted optional — confirm it should affect the request, or drop it`
+  );
+}
+
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
 type FlowStepInput =
   | string
@@ -17478,7 +17489,12 @@ async function main(): Promise<void> {
   logger.info(`wrote ${outDir}/contract.ts`);
   // Same opts fed to emitContractTs above, so this can never drift from what
   // the header used to embed.
-  const checklist = buildContractChecklist(final.contractOpts);
+  const checklist = [
+    ...buildContractChecklist(final.contractOpts),
+    ...unreadPayloadFieldChecklistLines(
+      unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+    ),
+  ];
   logger.info(
     `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
   );
