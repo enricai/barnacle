@@ -16566,7 +16566,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  const browserFlowOnlyOptIn = readBrowserFlowOnly(flowFile);
+  const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
