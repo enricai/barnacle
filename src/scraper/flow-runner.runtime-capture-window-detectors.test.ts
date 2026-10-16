@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,6 +19,7 @@ import {
   recordRuntimeCapture,
   withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
+import { resolveReconRunDir } from "@/scripts/recon-shared";
 
 const ORIGIN = "https://app.example.com";
 const PATTERN = "ExampleTransition";
@@ -204,5 +208,34 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
     });
     expect(await first).toBe(true);
     expect(await second).toEqual({ advance: false, files: [] });
+  });
+});
+
+describe("flow-runner window detectors outside a runtime scope (recon disk path)", () => {
+  it("reads capture files from the recon graphql dir", () => {
+    const previousOutDir = process.env.RECON_OUT_DIR;
+    const previousRunId = process.env.RECON_RUN_ID;
+    process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "recon-window-detectors-"));
+    process.env.RECON_RUN_ID = "window-detectors-disk-path-test";
+    try {
+      const { graphqlDir } = resolveReconRunDir();
+      mkdirSync(graphqlDir, { recursive: true });
+      writeFileSync(
+        join(graphqlDir, "001-transition.json"),
+        JSON.stringify({
+          requestPostData: graphqlBody("next"),
+          variables: { input: { type: "next" } },
+        })
+      );
+      expect(defaultCapturesDir().startsWith("memory:")).toBe(false);
+      expect(
+        windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN })
+      ).toBe(true);
+    } finally {
+      if (previousOutDir === undefined) delete process.env.RECON_OUT_DIR;
+      else process.env.RECON_OUT_DIR = previousOutDir;
+      if (previousRunId === undefined) delete process.env.RECON_RUN_ID;
+      else process.env.RECON_RUN_ID = previousRunId;
+    }
   });
 });
