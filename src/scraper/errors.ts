@@ -20,8 +20,8 @@
 export abstract class ScraperError extends Error {
   public readonly retryable: boolean;
 
-  constructor(message: string, retryable: boolean) {
-    super(message);
+  constructor(message: string, retryable: boolean, options?: ErrorOptions) {
+    super(message, options);
     this.name = new.target.name;
     this.retryable = retryable;
   }
@@ -301,6 +301,38 @@ export function isHttpServerError(err: unknown): err is HttpServerError {
 }
 
 /**
+ * The direct-HTTP hot path got no usable response at all — a network-level
+ * failure (connection reset/refused, DNS lookup failure, socket hang up), an
+ * aborted request, or a timeout. Dispatch treats it as a browser-fallback
+ * trigger like {@link HttpServerError}: the target never answered this
+ * request, so a browser session on a different network path may still get
+ * through. Kept distinct from HttpServerError so metrics and logs can tell
+ * "no response received" apart from "the server answered 5xx".
+ *
+ * `retryable` is `true` because these failures are usually transient. The
+ * HTTP client retries them in place within its own budget; a timeout or
+ * abort is not retried in place, because a repeat would only time out again.
+ * Plugins with their own HTTP clients can throw this class too, so their
+ * network failures cascade the same way. The underlying error goes in
+ * `cause`.
+ */
+export class HttpTransportError extends ScraperError {
+  constructor(
+    message = "no response received — network failure or timeout",
+    options?: ErrorOptions
+  ) {
+    super(message, true, options);
+  }
+}
+
+/** Cross-realm-safe replacement for `err instanceof HttpTransportError`. See {@link isCaptchaError} for why this exists. */
+export function isHttpTransportError(err: unknown): err is HttpTransportError {
+  return (
+    err instanceof HttpTransportError || (err instanceof Error && err.name === "HttpTransportError")
+  );
+}
+
+/**
  * The direct-HTTP hot path received a 429 rate-limit response. Not a
  * fallback trigger — a 429 means the configured rps ceiling is too high; the
  * right response is to back off and surface the metric, not burn a session.
@@ -508,6 +540,7 @@ const SCRAPER_ERROR_NAMES = new Set([
   "HttpSchemaError",
   "HttpBotChallengeError",
   "HttpServerError",
+  "HttpTransportError",
   "HttpClientError",
   "HttpRateLimitError",
   "HttpUrlLockedError",
@@ -520,7 +553,7 @@ const SCRAPER_ERROR_NAMES = new Set([
 /**
  * Cross-realm-safe replacement for `err instanceof ScraperError`. See
  * {@link isCaptchaError} for why this exists — this is the hierarchy-level
- * variant, matching any of the 17 concrete subclasses defined in this file
+ * variant, matching any of the concrete subclasses defined in this file
  * regardless of which module instance constructed the error.
  */
 export function isScraperError(err: unknown): err is ScraperError {

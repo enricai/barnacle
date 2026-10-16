@@ -1,3 +1,4 @@
+import Bottleneck from "bottleneck";
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,12 +22,15 @@ import {
   CaptchaError,
   EmptyResultsError,
   HttpBotChallengeError,
+  HttpClientError,
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpTransportError,
   HttpUrlLockedError,
   SelectorFailureError,
 } from "@/scraper/errors";
+import { createHttpClient } from "@/scraper/http-client";
 import { resetMetrics } from "@/scraper/metrics";
 import type { SitePlugin, SitePluginContext } from "@/site-plugin";
 
@@ -491,6 +495,153 @@ describe("dispatch — executeHttp hot-path branches", () => {
     expect(result.data).toEqual({ result: "ok" });
   });
 
+  it("falls back to execute() and records fallback on HttpTransportError (no response received)", async () => {
+    mockHttpExecute.mockRejectedValueOnce(
+      new HttpTransportError("http fetch failed: ECONNRESET", { cause: new Error("ECONNRESET") })
+    );
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+    expect(mockRecordFallbackActivation).toHaveBeenCalledWith("http-site");
+    expect(mockRecordHotPathSuccess).not.toHaveBeenCalled();
+    expect(result.data).toEqual({ result: "ok" });
+  });
+
+  it("falls back to execute() on a cross-realm HttpTransportError thrown by a plugin's own client", async () => {
+    class FakeCrossModuleHttpTransportError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = "HttpTransportError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleHttpTransportError("request timed out");
+    expect(crossRealmErr).not.toBeInstanceOf(HttpTransportError);
+    mockHttpExecute.mockRejectedValueOnce(crossRealmErr);
+    const result = await dispatch(httpPlugin, {}, stubContext);
+    expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+    expect(mockRecordFallbackActivation).toHaveBeenCalledWith("http-site");
+    expect(result.data).toEqual({ result: "ok" });
+  });
+
+  it("tags a failed transport-error run as error_type=transport_error, not server_error", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpTransportError());
+    mockPluginExecute.mockRejectedValueOnce(
+      new HttpTransportError("browser path also unreachable")
+    );
+    await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(ScrapeFailureError);
+    expect(mockRecordDdFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ error_type: "transport_error" })
+    );
+    expect(mockRecordDdFailure).not.toHaveBeenCalledWith(
+      expect.objectContaining({ error_type: "server_error" })
+    );
+  });
+
+  it("forwards maxAttempts and the fallback task timeout on the transport-error fallback path", async () => {
+    const onRetry = vi.fn();
+    mockHttpExecute.mockRejectedValueOnce(new HttpTransportError());
+    const plugin: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: {
+        ...httpPlugin.meta,
+        siteId: "transport-fallback-site",
+        maxAttempts: 1,
+        browserFallbackTaskTimeoutMs: 25_000,
+      },
+      onRetry,
+    };
+    await dispatch(plugin, {}, stubContext);
+    expect(mockRunWithSession).toHaveBeenCalledWith(
+      expect.any(Function),
+      { onRetry, maxAttempts: 1 },
+      25_000,
+      { advancedStealth: undefined }
+    );
+  });
+
+  it("throws ScrapeFailureError and does NOT invoke browser execute() on HttpClientError (4xx)", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpClientError(404));
+    await expect(dispatch(httpPlugin, {}, stubContext)).rejects.toBeInstanceOf(ScrapeFailureError);
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+    expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+  });
+
+  describe("with the engine HTTP client as the hot path", () => {
+    const Schema = z.object({ id: z.string() });
+
+    const makeClientPlugin = (defaultTimeoutMs?: number): SitePlugin<unknown, unknown> => {
+      const client = createHttpClient({
+        schema: Schema,
+        bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: 0 }),
+        baseHeaders: {},
+        defaultTimeoutMs,
+      });
+      return {
+        ...httpPlugin,
+        meta: { ...httpPlugin.meta, siteId: "client-site" },
+        executeHttp: async () => ({ data: await client("https://api.example.test/items") }),
+      };
+    };
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("cascades a network failure into execute()", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockRejectedValue(
+          new TypeError("fetch failed", {
+            cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+          })
+        )
+      );
+      const result = await dispatch(makeClientPlugin(), {}, stubContext);
+      expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+      expect(mockRecordFallbackActivation).toHaveBeenCalledWith("client-site");
+      expect(result.data).toEqual({ result: "ok" });
+    });
+
+    it("cascades a defaultTimeoutMs timeout into execute()", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation(
+          (_url: string, init?: RequestInit) =>
+            new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                reject(
+                  new DOMException("The operation was aborted due to timeout", "TimeoutError")
+                );
+              });
+            })
+        )
+      );
+      const result = await dispatch(makeClientPlugin(30), {}, stubContext);
+      expect(mockPluginExecute).toHaveBeenCalledTimes(1);
+      expect(mockRecordFallbackActivation).toHaveBeenCalledWith("client-site");
+      expect(result.data).toEqual({ result: "ok" });
+    });
+
+    it.each([
+      [429, ThrottledRequestError],
+      [404, ScrapeFailureError],
+    ])("does not cascade an HTTP %i response", async (status, apiErrorClass) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          status,
+          ok: false,
+          text: vi.fn().mockResolvedValue("{}"),
+          headers: new Headers(),
+        })
+      );
+      await expect(dispatch(makeClientPlugin(), {}, stubContext)).rejects.toBeInstanceOf(
+        apiErrorClass
+      );
+      expect(mockPluginExecute).not.toHaveBeenCalled();
+      expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+    });
+  });
+
   it("forwards plugin.onRetry to runWithSession when plugin defines it", async () => {
     const onRetry = vi.fn();
     const pluginWithRetry: SitePlugin<unknown, unknown> = {
@@ -663,6 +814,18 @@ describe("dispatch — hotPathError telemetry + browserFallbackGate", () => {
     const context = makeContext();
     await expect(dispatch(gatedPlugin, {}, context)).rejects.toThrow("predicate-denied");
     expect(gate).toHaveBeenCalledWith(expect.any(HttpSchemaError));
+    expect(mockPluginExecute).not.toHaveBeenCalled();
+  });
+
+  it("lets browserFallbackGate deny the fallback for HttpTransportError", async () => {
+    mockHttpExecute.mockRejectedValueOnce(new HttpTransportError("socket hang up"));
+    const gate = vi.fn().mockReturnValue(false);
+    const gatedPlugin: SitePlugin<unknown, unknown> = {
+      ...httpPlugin,
+      meta: { ...httpPlugin.meta, siteId: "gated-transport-site", browserFallbackGate: gate },
+    };
+    await expect(dispatch(gatedPlugin, {}, makeContext())).rejects.toThrow("socket hang up");
+    expect(gate).toHaveBeenCalledWith(expect.any(HttpTransportError));
     expect(mockPluginExecute).not.toHaveBeenCalled();
   });
 

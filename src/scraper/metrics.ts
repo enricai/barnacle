@@ -45,8 +45,8 @@ export function recordHotPathSuccess(siteId: string): void {
 
 /**
  * Records a fallback activation for `siteId`. Called by dispatch() when the
- * hot path throws `HttpSchemaError`, `HttpBotChallengeError`, or `HttpServerError`
- * and the Stagehand browser path is engaged instead.
+ * hot path throws `HttpSchemaError`, `HttpBotChallengeError`, `HttpServerError`,
+ * or `HttpTransportError` and the Stagehand browser path is engaged instead.
  */
 export function recordFallbackActivation(siteId: string): void {
   ensureEntry(siteId).fallbackActivations++;

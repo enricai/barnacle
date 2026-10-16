@@ -9,6 +9,8 @@ import {
   EmailStepInboxUnavailableError,
   HttpRateLimitError,
   HttpSchemaError,
+  HttpServerError,
+  HttpTransportError,
   HttpUrlLockedError,
   isBrowserbaseSessionCreateRateLimitError,
   isCaptchaError,
@@ -16,6 +18,8 @@ import {
   isEmailStepExtractError,
   isEmailStepInboxUnavailableError,
   isHttpSchemaError,
+  isHttpServerError,
+  isHttpTransportError,
   isScraperError,
   isSessionLifetimeExceededError,
   MissingFormMapKeyError,
@@ -42,6 +46,40 @@ describe("HttpUrlLockedError", () => {
   it("accepts a custom message", () => {
     const err = new HttpUrlLockedError("url locked on j-12345");
     expect(err.message).toBe("url locked on j-12345");
+  });
+});
+
+describe("HttpTransportError", () => {
+  it("is retryable, a ScraperError, and distinct from HttpServerError", () => {
+    const err = new HttpTransportError();
+    expect(err).toBeInstanceOf(ScraperError);
+    expect(err.retryable).toBe(true);
+    expect(err.name).toBe("HttpTransportError");
+    expect(err.message).toBe("no response received — network failure or timeout");
+    expect(err).not.toBeInstanceOf(HttpServerError);
+    expect(isHttpServerError(err)).toBe(false);
+  });
+
+  it("carries the underlying failure as cause", () => {
+    const cause = new TypeError("fetch failed");
+    const err = new HttpTransportError("search request failed", { cause });
+    expect(err.message).toBe("search request failed");
+    expect(err.cause).toBe(cause);
+  });
+
+  it("is recognized by isHttpTransportError and isScraperError, same-realm and cross-realm", () => {
+    class FakeCrossModuleHttpTransportError extends Error {
+      constructor() {
+        super("timed out");
+        this.name = "HttpTransportError";
+      }
+    }
+    const crossRealmErr = new FakeCrossModuleHttpTransportError();
+    expect(isHttpTransportError(new HttpTransportError())).toBe(true);
+    expect(crossRealmErr).not.toBeInstanceOf(HttpTransportError);
+    expect(isHttpTransportError(crossRealmErr)).toBe(true);
+    expect(isScraperError(crossRealmErr)).toBe(true);
+    expect(isHttpTransportError(new Error("timed out"))).toBe(false);
   });
 });
 

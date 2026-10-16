@@ -46,6 +46,7 @@ import {
   isHttpRateLimitError,
   isHttpSchemaError,
   isHttpServerError,
+  isHttpTransportError,
   isHttpUrlLockedError,
   isScraperError,
   type NeedsUserInfoResult,
@@ -239,7 +240,8 @@ async function runPluginPipeline<TResult>(
     if (
       isHttpSchemaError(httpErr) ||
       isHttpBotChallengeError(httpErr) ||
-      isHttpServerError(httpErr)
+      isHttpServerError(httpErr) ||
+      isHttpTransportError(httpErr)
     ) {
       context.telemetry.recordHotPathError(toHotPathErrorTelemetry(httpErr));
       if (!isFallbackAllowed(plugin, httpErr)) {
@@ -504,6 +506,7 @@ function classifyDispatchError(err: unknown): string {
   if (isHttpUrlLockedError(err)) return "url_locked";
   if (isHttpSchemaError(err)) return "schema_drift";
   if (isHttpServerError(err)) return "server_error";
+  if (isHttpTransportError(err)) return "transport_error";
   if (isHttpClientError(err)) return "client_error";
   if (isCaptchaError(err)) return "captcha";
   if (isEmptyResultsError(err)) return "empty_results";

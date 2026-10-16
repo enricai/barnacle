@@ -3,7 +3,12 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildConfigPlugin, CONFIG_PLUGIN_MANIFEST } from "@/plugins/config-plugin";
-import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
+import {
+  HttpBotChallengeError,
+  HttpSchemaError,
+  HttpServerError,
+  HttpTransportError,
+} from "@/scraper/errors";
 
 const mockRunHealingFlow = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ submitVerified: false, submitStepSkipped: false, lastStepIndex: -1 })
@@ -187,6 +192,22 @@ describe("buildConfigPlugin", () => {
     expect(gate(new HttpSchemaError("bad shape"))).toBe(false);
     expect(gate(new HttpBotChallengeError("captcha"))).toBe(true);
     expect(gate(new HttpServerError("500"))).toBe(true);
+    expect(gate(new HttpTransportError())).toBe(true);
+  });
+
+  it("skips transport failures, and only them, when spec.browserFallbackGate.skipOn lists transport_error", async () => {
+    const manifest = baseManifest();
+    (manifest.spec as Record<string, unknown>).browserFallbackGate = {
+      skipOn: ["transport_error"],
+    };
+
+    const plugin = await buildConfigPlugin(manifest);
+    const gate = plugin.meta.browserFallbackGate;
+    if (typeof gate !== "function") throw new Error("expected a predicate gate");
+
+    expect(gate(new HttpTransportError())).toBe(false);
+    expect(gate(new HttpServerError("500"))).toBe(true);
+    expect(gate(new HttpSchemaError("bad shape"))).toBe(true);
   });
 
   it("skips multiple named failure classes when spec.browserFallbackGate.skipOn lists more than one", async () => {
