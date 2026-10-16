@@ -52,7 +52,7 @@ function runGenerate(flowContents: string): ReturnType<typeof spawnSync> {
 function generate(flow: Record<string, unknown>): Record<string, string> {
   const result = runGenerate(JSON.stringify(flow));
   expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-  const outDir = siteOutDir;
+  const outDir = siteOutDir ?? "";
   return Object.fromEntries(
     readdirSync(outDir)
       .filter((name) => name.endsWith(".ts"))
