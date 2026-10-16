@@ -13579,6 +13579,13 @@ export async function executeStepWithHealing(params: {
                   snapshotPage(midTarget, signalCounter, withPage ? page : undefined),
                 readQuiescence: () => readPageQuiescence(midTarget),
               });
+              const deepMidFlowSubmit = isMidFlowSubmitShapedStep({
+                step,
+                submitStep,
+                isFinalStep,
+                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                elementSubmitShaped: !stepDeclaredNonSubmit,
+              });
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -13587,23 +13594,11 @@ export async function executeStepWithHealing(params: {
                 // stray selection flip must not mask a top-pick phantom and skip
                 // the runner-up retry.
                 isSubmitShapedStep: true,
-                isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
-                  step,
-                  submitStep,
-                  isFinalStep,
-                  flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                }),
+                isMidFlowSubmitStep: deepMidFlowSubmit,
                 destinationPlausible: isPlausibleStepDestination(
                   step,
                   midPost.url,
-                  isMidFlowSubmitShapedStep({
-                    step,
-                    submitStep,
-                    isFinalStep,
-                    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                  })
-                    ? pre.url
-                    : undefined
+                  deepMidFlowSubmit ? pre.url : undefined
                 ),
               });
               if (topVerdict === "phantom") {
@@ -14480,6 +14475,17 @@ export async function executeStepWithHealing(params: {
     }
 
     const networkFired = post.networkCount > pre.networkCount;
+    const isClick = resolvedAction !== null && resolvedAction.method === "click";
+    // Attribute-based submit-shape read of the resolved click target itself —
+    // independent of the flow-authored `submitStep` flag. See
+    // resolvedClickTargetIsSubmitShaped's doc comment.
+    const resolvedElementIsSubmitShaped =
+      isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
+        ? await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            resolvedAction.selector
+          )
+        : false;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -14487,6 +14493,7 @@ export async function executeStepWithHealing(params: {
       submitStep,
       isFinalStep,
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
     const destinationPlausible = isPlausibleStepDestination(
       step,
@@ -14496,7 +14503,6 @@ export async function executeStepWithHealing(params: {
     const urlChanged = hasOriginOrPathChanged(pre.url, post.url) && destinationPlausible;
     const isStateClass =
       resolvedAction !== null && STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
-    const isClick = resolvedAction !== null && resolvedAction.method === "click";
     // State-class actions (fill/check/etc.) never move the network counter or URL,
     // so the legacy heuristic false-negatived every form fill. Re-read DOM state
     // for those; keep the navigation signal authoritative for clicks/links —
@@ -14607,16 +14613,6 @@ export async function executeStepWithHealing(params: {
             resolvedAction.selector
           )
         : true;
-    // Attribute-based submit-shape read of the resolved click target itself —
-    // independent of the flow-authored `submitStep` flag. See
-    // resolvedClickTargetIsSubmitShaped's doc comment.
-    const resolvedElementIsSubmitShaped =
-      isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
-        ? await resolvedClickTargetIsSubmitShaped(
-            frameTarget ?? mainFrameTarget(page),
-            resolvedAction.selector
-          )
-        : false;
     // Client-side view-swap gate: credit a click that produces substantial
     // DOM growth (≥5KB) with zero network when it's NOT a submit/final step
     // and NOT an advance-pattern step. Fixes the top-window site "Manual Application"
