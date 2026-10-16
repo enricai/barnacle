@@ -16,6 +16,8 @@ import {
 import type { HttpResponseBinding, HttpResponseInfo } from "@/scraper/http-client";
 import { createHttpClient } from "@/scraper/http-client";
 
+const REAL_FETCH = globalThis.fetch;
+
 const passThruLimiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });
 
 const BASE_HEADERS = {
@@ -360,7 +362,7 @@ describe("scraper/http-client createHttpClient", () => {
   });
 
   it("retries on network-level failures and eventually throws HttpTransportError", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network failure")));
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
     const client = makeClient();
     // p-retry retries 2 times (3 total attempts) then propagates as HttpTransportError
     await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpTransportError);
@@ -641,7 +643,7 @@ describe("scraper/http-client onResponse hook", () => {
   });
 
   it("does not invoke onResponse when fetch throws a network error", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network failure")));
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
 
     const captured: HttpResponseInfo[] = [];
     const client = createHttpClient<Item>({
@@ -1213,6 +1215,52 @@ describe("scraper/http-client transport failures", () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
     }
   );
+
+  it.each([
+    ["ETIMEDOUT", "connect ETIMEDOUT 192.0.2.1:443"],
+    ["EPIPE", "write EPIPE"],
+    ["ENETUNREACH", "connect ENETUNREACH 192.0.2.1:443"],
+    ["EHOSTUNREACH", "connect EHOSTUNREACH 192.0.2.1:443"],
+  ])("maps a %s nested deeper in the cause chain to HttpTransportError", async (code, message) => {
+    const root = Object.assign(new Error(message), { code });
+    const cause = new Error("request failed", {
+      cause: new Error("socket error", { cause: root }),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(cause));
+
+    await expect(makeClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpTransportError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it.each<[string, string, Parameters<ReturnType<typeof makeClient>>[1]]>([
+    ["an invalid URL", "not a valid url", undefined],
+    ["an invalid header value", "https://example.com/api/item", { headers: { "X-Bad": "a\nb" } }],
+    ["a GET with a body", "https://example.com/api/item", { method: "GET", body: "{}" }],
+  ])(
+    "does not retry or cascade a request fetch rejects before sending (%s)",
+    async (_label, url, init) => {
+      vi.stubGlobal("fetch", vi.fn(REAL_FETCH));
+
+      const err = await makeClient()(url, init).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(UnknownScraperError);
+      expect(isHttpTransportError(err)).toBe(false);
+      expect((err as Error).message).toContain("request rejected before sending");
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("does not retry or cascade a non-network fetch rejection", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("unexpected plugin bug")));
+
+    const err = await makeClient()("https://example.com/api/item").catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnknownScraperError);
+    expect(isHttpTransportError(err)).toBe(false);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
 
   it("recovers when a network failure is followed by a good response", async () => {
     vi.stubGlobal(

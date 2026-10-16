@@ -358,8 +358,8 @@ function toEnvelopeSession(
 /**
  * Runs a single plugin submission end-to-end. Tries the direct-HTTP hot path
  * first when the plugin supplies `executeHttp`; on `HttpSchemaError`,
- * `HttpBotChallengeError`, or `HttpServerError` falls back to the Stagehand
- * browser path. Records metrics on each branch so ops dashboards can alert on
+ * `HttpBotChallengeError`, `HttpServerError`, or `HttpTransportError` falls
+ * back to the Stagehand browser path. Records metrics on each branch so ops dashboards can alert on
  * rising fallback rates. Emits a `submission-envelope` telemetry record on
  * both success and failure — the durable source-of-truth for "what did we
  * submit for jobId X and did it succeed." Calls the plugin's own
