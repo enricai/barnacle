@@ -7,7 +7,7 @@
  * both sides) consistent and gives the call sites a single name to scan for.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 
 import { registerSecretValue } from "@/lib/pii-redaction";
 
@@ -32,17 +32,41 @@ export function pickRandom<T>(arr: readonly T[]): T {
   return arr[index] ?? (arr[0] as T);
 }
 
+const UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const LOWERCASE = "abcdefghijklmnopqrstuvwxyz";
+const DIGITS = "0123456789";
+// No `-`/`_`: some policies do not count them as special characters.
+const SPECIALS = "!@#%^*()+=?.";
+const PASSWORD_LENGTH = 24;
+
+function pickChar(charset: string): string {
+  return charset.charAt(randomInt(charset.length));
+}
+
 /**
  * Mints a fresh, single-use credential value for a flow step that must fill a
  * password field but has no caller-supplied secret to splice — recon-captured
  * credentials must never leak into a generated flow, and a fixed literal would
  * be a shared secret across every run. `node:crypto`'s CSPRNG (not `Math.random`,
- * which backs the jitter helpers above) keeps the value unguessable. The value
- * is registered for redaction because flows embed it in step instructions that
- * reach logs and telemetry.
+ * which backs the jitter helpers above) keeps the value unguessable. Sites
+ * commonly enforce upper/lower/digit/special policies, so one character of each
+ * class is guaranteed and the result is Fisher-Yates shuffled with `randomInt`
+ * (unbiased) so the guaranteed characters sit at unpredictable positions. The
+ * alphabet excludes quotes, backticks, backslashes and `$` because flows splice
+ * the value into template literals. The value is registered for redaction
+ * because flows embed it in step instructions that reach logs and telemetry.
  */
 export function generateThrowawayPassword(): string {
-  const password = randomBytes(24).toString("base64url");
+  const all = UPPERCASE + LOWERCASE + DIGITS + SPECIALS;
+  const chars = [pickChar(UPPERCASE), pickChar(LOWERCASE), pickChar(DIGITS), pickChar(SPECIALS)];
+  while (chars.length < PASSWORD_LENGTH) chars.push(pickChar(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    const tmp = chars[i] as string;
+    chars[i] = chars[j] as string;
+    chars[j] = tmp;
+  }
+  const password = chars.join("");
   registerSecretValue(password);
   return password;
 }
