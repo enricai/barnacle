@@ -74,7 +74,6 @@ import {
   QUIESCENCE_PROBE_EXPR,
   type SettlePage,
   settleAfterClick,
-  settleAndSnapshot,
 } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
@@ -1431,6 +1430,21 @@ async function readPageQuiescence(target: FrameTarget): Promise<PageQuiescence> 
 }
 
 /**
+ * Reads only the visible-text signature settle polls on. Going through
+ * {@link snapshotPage} also read the frame URL, which rejects once a submit
+ * detaches the OOPIF and would abort the settle mid-poll; a failed read here
+ * degrades to the empty signature like the snapshot's own text read does.
+ */
+async function readSettleTextSignature(target: FrameTarget): Promise<string> {
+  const result = await Promise.resolve(target.evaluate<unknown>(DOM_SNAPSHOT_EXPR)).catch(
+    () => null
+  );
+  if (result === null || typeof result !== "object") return "";
+  const { text } = result as { text?: unknown };
+  return typeof text === "string" ? text : "";
+}
+
+/**
  * Settles after a click using the target's own text signature and in-page
  * quiescence reader, so every post-click site decides from the same settle
  * signal instead of hand-building the readers.
@@ -1441,17 +1455,39 @@ export async function settleWithPageQuiescence(
   signalCounter: { n: number },
   preNetworkCount: number,
   submitShaped: boolean,
-  preVisibleTextSignature: string
+  preVisibleTextSignature: string,
+  advanced?: (visibleTextSignature: string) => boolean
 ): Promise<void> {
   await settleAfterClick(
     page,
     signalCounter,
     preNetworkCount,
     submitShaped,
-    async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
+    () => readSettleTextSignature(target),
     preVisibleTextSignature,
-    () => readPageQuiescence(target)
+    () => readPageQuiescence(target),
+    advanced
   );
+}
+
+/**
+ * Builds the "has the page finished advancing" test a mid-flow submit settles
+ * against, from the same {@link hasPageAdvanced} the phantom classifier credits
+ * with, so settle and classifier can never disagree about a half-transition.
+ * Undefined for any other step, which keeps the plain quiet-window settle.
+ */
+function pageAdvancedSince(
+  preVisibleTextSignature: string,
+  midFlowSubmit: boolean
+): ((visibleTextSignature: string) => boolean) | undefined {
+  if (!midFlowSubmit) return undefined;
+  const pre = {
+    networkCount: 0,
+    url: "",
+    bodyHtmlLength: 0,
+    visibleTextSignature: preVisibleTextSignature,
+  };
+  return (visibleTextSignature) => hasPageAdvanced(pre, { ...pre, visibleTextSignature });
 }
 
 /**
@@ -3598,7 +3634,17 @@ export async function judgeStepOutcome(params: {
       isFinalStep,
       flowHasSubmitSemantics: params.flowHasSubmitSemantics,
     }) || params.elementSubmitShaped === true,
-    params.preVisibleTextSignature
+    params.preVisibleTextSignature,
+    pageAdvancedSince(
+      params.preVisibleTextSignature,
+      isMidFlowSubmitShapedStep({
+        step,
+        submitStep: params.submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+        elementSubmitShaped: params.elementSubmitShaped,
+      })
+    )
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
@@ -7360,7 +7406,8 @@ async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
-  pre: StepSnapshot
+  pre: StepSnapshot,
+  midFlowSubmit = false
 ): Promise<StepSnapshot> {
   if (page)
     await settleWithPageQuiescence(
@@ -7369,7 +7416,8 @@ async function settleAndSnapshotPostClick(
       signalCounter,
       pre.networkCount,
       true,
-      pre.visibleTextSignature
+      pre.visibleTextSignature,
+      pageAdvancedSince(pre.visibleTextSignature, midFlowSubmit)
     );
   return snapshotPage(target, signalCounter, page);
 }
@@ -7713,7 +7761,8 @@ export async function submitCaptchaGatedForm(
         target,
         verification.signalCounter,
         verification.page,
-        pre
+        pre,
+        verification.isMidFlowSubmitStep
       );
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
@@ -7741,7 +7790,8 @@ export async function submitCaptchaGatedForm(
             target,
             verification.signalCounter,
             verification.page,
-            post
+            post,
+            verification.isMidFlowSubmitStep
           );
           const runnerUpVerdict = classifyPhantomClick({
             actResultSuccess: true,
@@ -11648,7 +11698,13 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
+    const post = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      pre,
+      isMidFlowSubmitStep
+    );
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -11669,7 +11725,13 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
+    const runnerUpPost = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      post,
+      isMidFlowSubmitStep
+    );
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -13570,15 +13632,6 @@ export async function executeStepWithHealing(params: {
             const runnerUp = ranked[1];
             if (runnerUp) {
               const midTarget = frameTarget ?? mainFrameTarget(page);
-              const midPost = await settleAndSnapshot({
-                page,
-                counter: signalCounter,
-                pre,
-                submitShaped: true,
-                snapshot: (withPage) =>
-                  snapshotPage(midTarget, signalCounter, withPage ? page : undefined),
-                readQuiescence: () => readPageQuiescence(midTarget),
-              });
               const deepMidFlowSubmit = isMidFlowSubmitShapedStep({
                 step,
                 submitStep,
@@ -13586,6 +13639,13 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
+              const midPost = await settleAndSnapshotPostClick(
+                midTarget,
+                signalCounter,
+                page,
+                pre,
+                deepMidFlowSubmit
+              );
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -14448,37 +14508,12 @@ export async function executeStepWithHealing(params: {
     await adoptOpenedPage(
       resolvedAction && STATE_CLASS_METHODS.has(resolvedAction.method ?? "") ? 0 : undefined
     );
-    await page.waitForTimeout(STEP_PAUSE_MS);
-    // A successful act that reported no actions still ran a click-class action;
-    // judging it before its round-trip lands would cascade onto the advanced page.
-    const mayTriggerRoundTrip =
-      resolvedAction === null
-        ? record.actResultSuccess === true
-        : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
-    if (mayTriggerRoundTrip) {
-      const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleWithPageQuiescence(
-        page,
-        settleTarget,
-        signalCounter,
-        pre.networkCount,
-        isSettleWaitStep,
-        pre.visibleTextSignature
-      );
-    }
-    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
-    record.post = post;
-
-    if (resolvedAction) {
-      record.resolvedMethod = resolvedAction.method ?? null;
-      record.resolvedArguments = (resolvedAction.arguments ?? []).map(String);
-    }
-
-    const networkFired = post.networkCount > pre.networkCount;
     const isClick = resolvedAction !== null && resolvedAction.method === "click";
     // Attribute-based submit-shape read of the resolved click target itself —
-    // independent of the flow-authored `submitStep` flag. See
-    // resolvedClickTargetIsSubmitShaped's doc comment.
+    // independent of the flow-authored `submitStep` flag. Read before the
+    // settle: a view swap removes the clicked control, so a post-swap read
+    // would blind the mid-flow exemption on exactly the case it exists for.
+    // See resolvedClickTargetIsSubmitShaped's doc comment.
     const resolvedElementIsSubmitShaped =
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? await resolvedClickTargetIsSubmitShaped(
@@ -14495,6 +14530,34 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
+    await page.waitForTimeout(STEP_PAUSE_MS);
+    // A successful act that reported no actions still ran a click-class action;
+    // judging it before its round-trip lands would cascade onto the advanced page.
+    const mayTriggerRoundTrip =
+      resolvedAction === null
+        ? record.actResultSuccess === true
+        : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
+    if (mayTriggerRoundTrip) {
+      const settleTarget = frameTarget ?? mainFrameTarget(page);
+      await settleWithPageQuiescence(
+        page,
+        settleTarget,
+        signalCounter,
+        pre.networkCount,
+        isSettleWaitStep || resolvedElementIsSubmitShaped,
+        pre.visibleTextSignature,
+        pageAdvancedSince(pre.visibleTextSignature, stepIsMidFlowSubmit)
+      );
+    }
+    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
+    record.post = post;
+
+    if (resolvedAction) {
+      record.resolvedMethod = resolvedAction.method ?? null;
+      record.resolvedArguments = (resolvedAction.arguments ?? []).map(String);
+    }
+
+    const networkFired = post.networkCount > pre.networkCount;
     const destinationPlausible = isPlausibleStepDestination(
       step,
       post.url,
@@ -15238,8 +15301,18 @@ export async function executeStepWithHealing(params: {
             frameTarget ?? mainFrameTarget(page),
             signalCounter,
             pre.networkCount,
-            isSettleWaitStep,
-            pre.visibleTextSignature
+            isSettleWaitStep || retryResolvedElementIsSubmitShaped,
+            pre.visibleTextSignature,
+            pageAdvancedSince(
+              pre.visibleTextSignature,
+              isMidFlowSubmitShapedStep({
+                step,
+                submitStep,
+                isFinalStep,
+                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                elementSubmitShaped: retryResolvedElementIsSubmitShaped,
+              })
+            )
           );
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),

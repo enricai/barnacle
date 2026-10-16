@@ -489,6 +489,15 @@ describe("hasPageAdvanced head swap", () => {
     ).toBe(true);
   });
 
+  it("credits a header swap whose single new word is already in the shared chrome", () => {
+    expect(
+      hasPageAdvanced(
+        snap(`300:Sign In Create Account Email Address ${chrome}`),
+        snap(`300:My Account Create Account Email Address ${chrome}`)
+      )
+    ).toBe(true);
+  });
+
   it("does not credit a single-word change under shared chrome", () => {
     expect(hasPageAdvanced(snap(`300:${chrome} Required`), snap(`300:${chrome} Invalid`))).toBe(
       false

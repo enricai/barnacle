@@ -183,4 +183,50 @@ describe("settleAfterClick", () => {
     }));
     expect(f.polls()).toBe(60);
   });
+
+  it("keeps polling a half-transitioned page past the text quiet window until it advances", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 13 ? "body" : "header");
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "pre",
+      undefined,
+      (sig) => sig === "body"
+    );
+    expect(f.polls()).toBe(22);
+  });
+
+  it("stops waiting on a half-transition once the extra budget is spent", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => "header",
+      "pre",
+      undefined,
+      () => false
+    );
+    expect(f.polls()).toBe(30);
+  });
+
+  it("pays no extra wait when the text never moved", async () => {
+    const f = makeFake(() => {});
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => "same",
+      "same",
+      undefined,
+      () => false
+    );
+    expect(f.polls()).toBe(14);
+  });
 });

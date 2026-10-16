@@ -256,14 +256,26 @@ function headWordSimilarity(pre: string, post: string): number {
 /** Words dropped AND introduced in the head for it to count as swapped copy. */
 const PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS = 2;
 
+function leadingHeadWord(signature: string): string | undefined {
+  return signature
+    .slice(signature.indexOf(":") + 1)
+    .toLowerCase()
+    .split(/\W+/)
+    .find((w) => w !== "");
+}
+
 function isHeadSwapped(pre: string, post: string): boolean {
   const preWords = textHeadWords(pre);
   const postWords = textHeadWords(post);
   const dropped = [...preWords].filter((w) => !postWords.has(w)).length;
+  if (dropped < PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS) return false;
   const added = [...postWords].filter((w) => !preWords.has(w)).length;
-  return (
-    dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS && added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS
-  );
+  if (added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS) return true;
+  // A swapped header can reuse a word the shared chrome already carries (a
+  // "My Account" header over an "Account" button), leaving a single new word;
+  // a new word leading the head still marks replaced copy.
+  const leading = leadingHeadWord(post);
+  return leading !== undefined && !preWords.has(leading);
 }
 
 /**

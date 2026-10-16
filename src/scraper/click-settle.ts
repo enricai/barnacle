@@ -16,6 +16,7 @@ const QUIET_POLLS = 3;
 const IDLE_GIVE_UP_MS = 14000;
 const TEXT_QUIET_POLLS = 9;
 const MAX_MS = 60000;
+const HALF_TRANSITION_MAX_MS = 20000;
 
 /**
  * Waits for a click's network activity to settle so the verification snapshot
@@ -31,6 +32,10 @@ const MAX_MS = 60000;
  * is no longer a guess about how late a re-render can land.
  * Only submit-shaped steps keep the long idle wait for a slow round-trip to start;
  * any other click that shows no activity after one quiet poll gives up.
+ * When `advanced` is given and the text has moved but does not yet satisfy it, the
+ * page is half-transitioned (a header flipped before the body re-rendered), so the
+ * quiet window is not trusted and polling continues for up to HALF_TRANSITION_MAX_MS
+ * more; a click that moved nothing never pays this extra wait.
  */
 export async function settleAfterClick(
   page: SettlePage,
@@ -39,7 +44,8 @@ export async function settleAfterClick(
   submitShaped: boolean,
   readText?: () => Promise<string>,
   preText?: string,
-  readQuiescence?: () => Promise<PageQuiescence>
+  readQuiescence?: () => Promise<PageQuiescence>,
+  advanced?: (visibleTextSignature: string) => boolean
 ): Promise<void> {
   const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
   const quiescence = async (): Promise<PageQuiescence | undefined> =>
@@ -49,6 +55,8 @@ export async function settleAfterClick(
   const startText = await read();
   let lastText = preText ?? startText;
   let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
+  let latestText = startText;
+  let halfTransitionWaited = 0;
   let seen = counter.n > preCount || textMoved;
   let last = counter.n;
   let quiet = 0;
@@ -57,6 +65,7 @@ export async function settleAfterClick(
     await page.waitForTimeout(POLL_MS);
     elapsed += POLL_MS;
     const text = await read();
+    if (text !== undefined) latestText = text;
     if (text !== undefined && lastText !== undefined && text !== lastText) {
       lastText = text;
       textMoved = true;
@@ -82,7 +91,16 @@ export async function settleAfterClick(
     }
     if (seen) {
       quiet += 1;
-      if (quiet >= (textMoved ? TEXT_QUIET_POLLS : QUIET_POLLS)) return;
+      if (quiet >= (textMoved ? TEXT_QUIET_POLLS : QUIET_POLLS)) {
+        const halfTransitioned =
+          advanced !== undefined &&
+          textMoved &&
+          latestText !== undefined &&
+          !advanced(latestText) &&
+          halfTransitionWaited < HALF_TRANSITION_MAX_MS;
+        if (!halfTransitioned) return;
+        halfTransitionWaited += POLL_MS;
+      }
       continue;
     }
     if (!submitShaped || elapsed >= IDLE_GIVE_UP_MS) return;
@@ -133,6 +151,8 @@ export interface SettleSnapshotTarget<
   /** Takes a snapshot; `withPage` marks the final post-settle read. */
   snapshot: (withPage: boolean) => Promise<S>;
   readQuiescence?: () => Promise<PageQuiescence>;
+  /** Whether a text signature shows the page finished advancing; see settleAfterClick. */
+  advanced?: (visibleTextSignature: string) => boolean;
 }
 
 /**
@@ -150,7 +170,8 @@ export async function settleAndSnapshot<
     target.submitShaped,
     async () => (await target.snapshot(false)).visibleTextSignature,
     target.pre.visibleTextSignature,
-    target.readQuiescence
+    target.readQuiescence,
+    target.advanced
   );
   return target.snapshot(true);
 }
