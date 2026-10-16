@@ -15568,7 +15568,15 @@ export function emitConfigManifest(opts: {
     browserFlowOnly = false,
     env = process.env,
   } = opts;
-  const canonicalise = isSubmissionFlow && browserFlowOnly;
+  // Raw (uncanonicalised) splice names are the evidence for a body-less flow;
+  // the decision must be made on them before canonicalising, or it is circular.
+  const canonicalise = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
+      .payloadFieldNames,
+  });
   const payloadFieldNames = new Set<string>();
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
@@ -15847,7 +15855,13 @@ export function emitBrowserFlowTs(opts: {
     env = process.env,
   } = opts;
 
-  const canonicalise = isSubmissionFlow && browserFlowOnly;
+  const canonicalise = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
+      .payloadFieldNames,
+  });
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
@@ -15859,13 +15873,7 @@ export function emitBrowserFlowTs(opts: {
   }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
   const contractCarriesResume =
-    hasMultipartStep ||
-    contractUsesApplicantContactSchema({
-      inputBody,
-      isSubmissionFlow,
-      browserFlowOnly,
-      payloadFieldNames,
-    });
+    hasMultipartStep || canonicalise;
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
