@@ -7840,19 +7840,29 @@ export function resolveRecurringNavigateToFacets(
   // recurs in one vocabulary (a hash slug, a quoted label) says nothing about
   // the same facet's element in another (`WW;filterType=ship`).
   const claimedLiterals = new Set<string>();
-  const aliased = declared.flatMap((facet) =>
-    findKindKeyedLiterals(facet, actions).flatMap((literal) => {
-      if (declared.some(({ value }) => value === literal)) return [];
-      if (claimedLiterals.has(literal)) return [];
-      claimedLiterals.add(literal);
-      const known = [facet.value, ...(facet.literals ?? [])];
-      // A case-only variant is already owned by the declared facet, whose
-      // renderer re-cases any caller value to the captured element's casing.
-      if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-      const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
-      return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
-    })
-  );
+  const pairsByField = new Map<string, [string, string][]>();
+  const aliased = declared
+    .flatMap((facet) =>
+      findKindKeyedLiterals(facet, actions).flatMap((literal) => {
+        if (declared.some(({ value }) => value === literal)) return [];
+        if (claimedLiterals.has(literal)) return [];
+        claimedLiterals.add(literal);
+        const known = [facet.value, ...(facet.literals ?? [])];
+        // A case-only variant is already owned by the declared facet, whose
+        // renderer re-cases any caller value to the captured element's casing.
+        if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
+        if (facet.value.length > 0)
+          pairsByField.set(facet.field, [
+            ...(pairsByField.get(facet.field) ?? []),
+            [facet.value, literal],
+          ]);
+        return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
+      })
+    )
+    .map((alias) => {
+      const pairs = pairsByField.get(alias.field) ?? [];
+      return pairs.length === 0 ? alias : { ...alias, valueMap: new Map(pairs) };
+    });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
   const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
