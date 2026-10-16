@@ -14158,7 +14158,7 @@ export function emitContractTs(opts: {
     payloadFieldNames,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
-    usesApplicantContactSchema && applicantContactFieldNames.has(name);
+    usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
   // means this is not a job-application submission flow. The former keeps
   // its own read-flow `{ query }` contract untouched; the latter (a body WAS
@@ -14303,7 +14303,7 @@ export function emitContractTs(opts: {
     // The browser-flow-only emit canonicalises its own splices already; this
     // covers a caller handing over vocabulary-row names directly, so one never
     // becomes a required key beside the base schema's own equivalent.
-    const canonicaliseNames = usesApplicantContactSchema && omitExecuteHttp && isSubmissionFlow;
+    const canonicaliseNames = usesApplicantContactSchema;
     for (const rawName of [...payloadFieldNames].sort()) {
       const name = canonicaliseNames ? canonicalPayloadField(rawName) : rawName;
       if (isReservedByApplicantContactSchema(name)) continue;
