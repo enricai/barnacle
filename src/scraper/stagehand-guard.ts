@@ -95,12 +95,38 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 /**
- * Instructions whose act resolves to a click on a control (a "Select No" or
- * "Open the dropdown" step clicks a button just like "Click Next"); only these
- * are worth an observe to find a click point. Fill/type steps are excluded.
+ * Instructions that name a click-like verb ("Select No", "Open the dropdown",
+ * "Click Next").
  */
-export const CLICK_INTENT_RE =
+const CLICK_VERB_RE =
   /\b(?:click|tap|press|select|choose|pick|open|toggle|check|uncheck|expand|submit)\b/i;
+
+/**
+ * Instructions that lead with text entry, upload or page motion; these never
+ * resolve to a pointer click, so an observe for a click point is wasted.
+ */
+const NON_CLICK_LEAD_RE =
+  /^\W*(?:fill|type|enter|input|write|paste|upload|attach|scroll|wait|sleep|pause|navigate|go\s+to)\b/i;
+
+/**
+ * Whether an act instruction may resolve to a pointer click. Any phrasing that
+ * is not plainly text entry counts ("Answer No", "Continue", "Save and
+ * proceed" name no click verb yet click a button), so the click point is
+ * cleared before Stagehand delivers it.
+ */
+export function hasClickIntent(instruction: string): boolean {
+  return CLICK_VERB_RE.test(instruction) || !NON_CLICK_LEAD_RE.test(instruction);
+}
+
+const TRUSTED_CLICK_METHODS: ReadonlySet<string> = new Set(["click", "doubleClick"]);
+
+/**
+ * Whether a Stagehand method is delivered as a trusted CDP mouse press on the
+ * target's centre, and so needs its click point cleared first.
+ */
+export function isTrustedClickMethod(method: string | undefined): boolean {
+  return method !== undefined && TRUSTED_CLICK_METHODS.has(method);
+}
 
 const TRANSIENT_RETRIES = 2;
 const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
@@ -276,7 +302,7 @@ async function resolveClickAction(
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
 ): Promise<Action | undefined> {
-  if (typeof stagehand.observe !== "function" || !CLICK_INTENT_RE.test(instruction)) {
+  if (typeof stagehand.observe !== "function" || !hasClickIntent(instruction)) {
     return undefined;
   }
   const observeOptions = frameScopedOptions<ObserveOptions>(
@@ -319,8 +345,8 @@ async function preCentreClickTarget(
     typeof input === "string"
       ? await resolveClickAction(stagehand, input, options, frameTarget)
       : input;
-  if (action?.method !== "click") return;
-  await centreAction(page, target, action);
+  if (!isTrustedClickMethod(action?.method)) return;
+  await centreAction(page, target, action as Action);
 }
 
 /**

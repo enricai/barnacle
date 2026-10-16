@@ -782,6 +782,23 @@ describe("guardedAct pre-centring", () => {
     expect(order).toEqual(["centre", "act"]);
   });
 
+  it.each(["Answer No to the returning customer question", "Continue to the next page"])(
+    "centres a string instruction with no click verb (%s) before acting",
+    async (instruction) => {
+      const action: Action = { selector: "#trigger", description: "t", method: "click" };
+      const { sh, order } = fakeClickStagehand([action]);
+      await guardedAct(sh, instruction);
+      expect(order).toEqual(["centre", "act"]);
+    }
+  );
+
+  it("centres a doubleClick action before acting", async () => {
+    const action: Action = { selector: "#row", description: "r", method: "doubleClick" };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
   it("does not observe a fill-style string instruction", async () => {
     const { sh, order } = fakeClickStagehand([]);
     await guardedAct(sh, "Enter Jane into the first name field");

@@ -113,7 +113,12 @@ import {
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
-import { CLICK_INTENT_RE, guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import {
+  guardedAct,
+  guardedObserve,
+  hasClickIntent,
+  isTrustedClickMethod,
+} from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
@@ -12891,7 +12896,7 @@ export async function executeStepWithHealing(params: {
     // control stays covered so the attempt fails instead of clicking an overlay.
     // Resolves true once the observe ran, so guardedAct skips its own pass.
     const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
-      if (!CLICK_INTENT_RE.test(instruction)) return false;
+      if (!hasClickIntent(instruction)) return false;
       const observed = await guardedObserve(
         stagehand,
         instruction,
@@ -12900,7 +12905,7 @@ export async function executeStepWithHealing(params: {
         frameTarget
       );
       const first = observed[0];
-      if (first?.method !== "click" || !first.selector) return true;
+      if (!isTrustedClickMethod(first?.method) || !first?.selector) return true;
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector
@@ -13594,7 +13599,7 @@ export async function executeStepWithHealing(params: {
           // bars, so centre + hit-test the observed control first; an
           // unrecoverable occlusion fails the attempt instead of clicking an
           // overlay.
-          if (overriddenTarget.method === "click") {
+          if (isTrustedClickMethod(overriddenTarget.method)) {
             const centreFailure = await centreObservedClickTarget(
               frameTarget ?? mainFrameTarget(page),
               overriddenTarget.selector
