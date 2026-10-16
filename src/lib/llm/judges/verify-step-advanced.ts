@@ -19,7 +19,7 @@ const MAX_REASON_CHARS = 400;
 const STEP_ADVANCED_SYSTEM_PROMPT = `You decide whether a browser-automated flow moved past a mid-flow step after a click. You are given the step instruction, the visible page text BEFORE the click, and the visible page text AFTER it.
 
 Compare which step is marked current (for example "current step 2 of 7") in the BEFORE text and in the AFTER text. Ignore step-list or progress-bar names that appear in both texts; they list steps and do not show where the flow is.
-Set advanced=true when the AFTER text marks a different step as current, or shows a different heading with the fields the step asked to fill (present in the BEFORE text) gone.
+Base the decision only on the visible page text, never on a document title. Set advanced=true when the AFTER text marks a different step as current, or shows a different heading with the fields the step asked to fill (present in the BEFORE text) gone.
 Required-field markers (such as an asterisk) on a newly loaded step are not errors; they are the next step's normal empty form.
 Set advanced=false when the same step is still marked current, or when the AFTER text shows an explicit error summary or error message, or the DOM invalid-marker count is above zero. Only an explicit error summary or message counts as failure.
 Shared page chrome (header, cart badge, document title, step list) is not evidence in either direction. If the AFTER text shows content for a later view (for example a shopping-site cart page or the next form) and the asked-for fields are gone, set advanced=true even though the chrome looks the same as BEFORE.

@@ -3616,6 +3616,7 @@ export async function judgeStepOutcome(params: {
   signalCounter: { n: number };
   preNetworkCount: number;
   preVisibleTextSignature: string;
+  preVisibleText?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3642,12 +3643,15 @@ export async function judgeStepOutcome(params: {
     }) || params.elementSubmitShaped === true,
     params.preVisibleTextSignature
   );
-  const colon = params.preVisibleTextSignature.indexOf(":");
-  const beforeText = (
-    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1)
+  const signatureColon = params.preVisibleTextSignature.indexOf(":");
+  const signatureHead = (
+    signatureColon === -1
+      ? params.preVisibleTextSignature
+      : params.preVisibleTextSignature.slice(signatureColon + 1)
   )
     .replace(/\s+/g, " ")
     .trim();
+  const beforeText = params.preVisibleText ? params.preVisibleText : signatureHead;
   const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
     verifyStepAdvancedWithLLM({
       client,
@@ -15038,6 +15042,7 @@ export async function executeStepWithHealing(params: {
         signalCounter,
         preNetworkCount: pre.networkCount,
         preVisibleTextSignature: pre.visibleTextSignature,
+        preVisibleText: pre.visibleText,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -15729,6 +15734,7 @@ export async function executeStepWithHealing(params: {
               signalCounter,
               preNetworkCount: pre.networkCount,
               preVisibleTextSignature: pre.visibleTextSignature,
+              preVisibleText: pre.visibleText,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,
