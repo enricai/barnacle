@@ -4,6 +4,7 @@ import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import {
   classifyPhantomClick,
   hasPageAdvanced,
+  hasPageBodySwapped,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
 } from "@/scraper/phantom-click";
@@ -502,5 +503,51 @@ describe("hasPageAdvanced head swap", () => {
     expect(hasPageAdvanced(snap(`300:${chrome} Required`), snap(`300:${chrome} Invalid`))).toBe(
       false
     );
+  });
+});
+
+describe("hasPageBodySwapped", () => {
+  const snap = (
+    sig: string
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+  } => ({
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 1000,
+    visibleTextSignature: sig,
+  });
+  const chrome = "Home Jobs Careers Help Contact Footer Privacy Terms";
+
+  it("does not count a header-only flip over shared chrome as a finished swap", () => {
+    const pre = snap(`300:Sign In Create Account Email Address ${chrome}`);
+    const post = snap(`300:My Account Create Account Email Address ${chrome}`);
+    expect(hasPageAdvanced(pre, post)).toBe(true);
+    expect(hasPageBodySwapped(pre, post)).toBe(false);
+  });
+
+  it("counts a substantial length change as a finished swap in either direction", () => {
+    expect(hasPageBodySwapped(snap(`996:Sign In ${chrome}`), snap(`588:Sign In ${chrome}`))).toBe(
+      true
+    );
+    expect(hasPageBodySwapped(snap(`120:Sign In ${chrome}`), snap(`1500:Sign In ${chrome}`))).toBe(
+      true
+    );
+  });
+
+  it("counts a head whose words were mostly replaced as a finished swap", () => {
+    expect(
+      hasPageBodySwapped(
+        snap("300:Email Address Password Verify New Password Create Account"),
+        snap("300:Welcome aboard verify your inbox to continue")
+      )
+    ).toBe(true);
+  });
+
+  it("does not count unchanged text", () => {
+    expect(hasPageBodySwapped(snap(`300:${chrome}`), snap(`300:${chrome}`))).toBe(false);
   });
 });

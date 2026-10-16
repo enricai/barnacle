@@ -112,6 +112,7 @@ import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
   hasPageAdvanced,
+  hasPageBodySwapped,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
@@ -1472,8 +1473,10 @@ export async function settleWithPageQuiescence(
 
 /**
  * Builds the "has the page finished advancing" test a mid-flow submit settles
- * against, from the same {@link hasPageAdvanced} the phantom classifier credits
- * with, so settle and classifier can never disagree about a half-transition.
+ * against. It is the body-swap half of the {@link hasPageAdvanced} the phantom
+ * classifier credits with, so a header that flipped before its body re-rendered
+ * keeps settle polling while the classifier still credits whatever is left once
+ * the wait is spent.
  * Undefined for any other step, which keeps the plain quiet-window settle.
  */
 function pageAdvancedSince(
@@ -1487,7 +1490,7 @@ function pageAdvancedSince(
     bodyHtmlLength: 0,
     visibleTextSignature: preVisibleTextSignature,
   };
-  return (visibleTextSignature) => hasPageAdvanced(pre, { ...pre, visibleTextSignature });
+  return (visibleTextSignature) => hasPageBodySwapped(pre, { ...pre, visibleTextSignature });
 }
 
 /**

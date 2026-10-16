@@ -235,7 +235,8 @@ function params(
   world: World,
   isFinalStep: boolean,
   trajectory: unknown[],
-  step: string = STEP
+  step: string = STEP,
+  submitStep = true
 ): never {
   return {
     stagehand: world.stagehand,
@@ -243,7 +244,7 @@ function params(
     step,
     optional: false,
     upload: false,
-    submitStep: true,
+    submitStep,
     stepIndex: 0,
     totalSteps: () => 2,
     phase: "flow",
@@ -301,6 +302,22 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit credited once t
       );
     });
   }
+
+  it("waits past the quiet window for a body re-render when only the header words flipped on an instruction-inferred submit", async () => {
+    vi.mocked(verifySubmitWithLLM).mockResolvedValue({
+      verified: false,
+      reason: "no network or url evidence",
+    } as never);
+    const world = buildWorld("Sign In", { ...REPORT, delayMs: 18_000 });
+    const trajectory: unknown[] = [];
+
+    const outcome = await executeStepWithHealing(params(world, false, trajectory, STEP, false));
+
+    expect(outcome).toBe("completed");
+    expect(world.state.rendered).toBe(true);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(trajectory).toHaveLength(1);
+  });
 
   it("does not credit a submit-shaped click that changes nothing", async () => {
     vi.mocked(verifySubmitWithLLM).mockResolvedValue({
