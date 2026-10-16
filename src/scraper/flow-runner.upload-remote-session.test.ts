@@ -46,6 +46,13 @@ describe("setFilesViaCdp remote session", () => {
     expect(params.session.send).not.toHaveBeenCalled();
   });
 
+  it("returns false without DOM call when the POST throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    const params = makeParams({ browserbaseSessionId: "sess-1" });
+    expect(await setFilesViaCdp(params)).toBe(false);
+    expect(params.session.send).not.toHaveBeenCalled();
+  });
+
   it("uses a temp file and no fetch without a session id", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
