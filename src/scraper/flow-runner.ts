@@ -121,6 +121,8 @@ import {
   defaultCapturesDir,
   listCaptureFiles,
   readCaptureFile,
+  recordRuntimeCapture,
+  withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
@@ -16310,6 +16312,10 @@ export interface RunHealingFlowDeps {
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
+  return withRuntimeCaptureStore(() => runHealingFlowScoped(deps));
+}
+
+async function runHealingFlowScoped(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
   for (const secret of deps.secrets ?? []) registerSecretValue(secret);
@@ -16340,6 +16346,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
       recentCaptures,
       recentCaptureMeta,
       getCurrentPhase: () => "flow",
+      onCapture: (capture, filename) => recordRuntimeCapture(filename, capture),
       getCurrentPageOrigin: () => {
         try {
           return new URL(activePage.url()).origin;
