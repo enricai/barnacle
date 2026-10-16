@@ -3,10 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  contractUsesApplicantContactSchema,
-  parseBrowserFlowOnlyOptIn,
-} from "@/scripts/recon-generate";
+import { contractUsesApplicantContactSchema } from "@/scripts/recon-generate";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 import { readBrowserFlowOnly } from "@/scripts/recon-shared";
 
@@ -104,7 +101,6 @@ describe("browserFlowOnly opt-in — decision and readers", () => {
     cases.forEach(([contents, expected], index) => {
       const file = join(workDir as string, `flow-${index}.json`);
       writeFileSync(file, contents);
-      expect(parseBrowserFlowOnlyOptIn(contents), contents).toBe(expected);
       expect(readBrowserFlowOnly(file), contents).toBe(expected);
     });
     expect(readBrowserFlowOnly(join(workDir, "missing.json"))).toBe(false);

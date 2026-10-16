@@ -54,6 +54,7 @@ import {
   type Capture,
   type RateLimitFinding,
   type ReplayResult,
+  readBrowserFlowOnly,
   readCaptureDir,
   readJsonDir,
   readOwnBackendHostnames,
@@ -11712,22 +11713,6 @@ export interface FallbackGateSpec {
 }
 
 /**
- * Reads the flow file's `browserFlowOnly: true` opt-in, which forces the
- * browser-flow-only emit for a submission flow whose HTTP analysis would
- * otherwise produce an executeHttp path. Anything but a literal `true` (or an
- * unreadable/legacy bare-array file) is "not opted in".
- */
-export function parseBrowserFlowOnlyOptIn(flowFileContents: string): boolean {
-  try {
-    const raw: unknown = JSON.parse(flowFileContents);
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
-    return (raw as { browserFlowOnly?: unknown }).browserFlowOnly === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
  * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
  * a missing file, a legacy bare-array flow, or a malformed declaration all
@@ -16574,13 +16559,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  const browserFlowOnlyOptIn = (() => {
-    try {
-      return parseBrowserFlowOnlyOptIn(readFileSync(flowFile, "utf8"));
-    } catch {
-      return false;
-    }
-  })();
+  const browserFlowOnlyOptIn = readBrowserFlowOnly(flowFile);
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
