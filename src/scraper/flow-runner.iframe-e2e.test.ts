@@ -514,7 +514,7 @@ describe("flow-runner iframe end-to-end: mid-flow iframe attachment (offline fix
     } as unknown as import("@browserbasehq/stagehand").Stagehand;
     const session = { on: () => {}, off: () => {} };
     const page = {
-      evaluate: async () => null,
+      evaluate: async (expr: unknown) => answerCentreHitTest(expr) ?? null,
       url: () => topUrl.current,
       title: async () => "the top-window site Careers",
       locator: () => ({

@@ -366,7 +366,7 @@ describe("flow-runner frame re-resolution — no declared frameSelector is a no-
     const topUrl = { current: "https://jobs.example.com/apply" };
     const session = { on: () => {}, off: () => {} };
     const page = {
-      evaluate: async () => null,
+      evaluate: async (expr: unknown) => answerCentreHitTest(expr) ?? null,
       url: () => topUrl.current,
       title: async () => "Apply",
       locator: () => ({
