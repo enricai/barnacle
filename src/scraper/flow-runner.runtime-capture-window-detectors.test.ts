@@ -112,9 +112,9 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
       expect(
         windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN })
       ).toBe(false);
-      expect(
-        windowHasTransitionBody({ preIdx: -1, advanceTransitionBodyPattern: PATTERN })
-      ).toBe(true);
+      expect(windowHasTransitionBody({ preIdx: -1, advanceTransitionBodyPattern: PATTERN })).toBe(
+        true
+      );
       const preIdx = capturesAfterIndex(-1, defaultCapturesDir()).length - 1;
       await emitRequest({
         method: "POST",
@@ -122,9 +122,9 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
         postData: graphqlBody("next"),
       });
       teardown();
-      expect(
-        windowHasAdvanceTransition({ preIdx, advanceTransitionBodyPattern: PATTERN })
-      ).toBe(true);
+      expect(windowHasAdvanceTransition({ preIdx, advanceTransitionBodyPattern: PATTERN })).toBe(
+        true
+      );
       expect(windowHasAdvanceTransition({ preIdx: 1, advanceTransitionBodyPattern: PATTERN })).toBe(
         false
       );
