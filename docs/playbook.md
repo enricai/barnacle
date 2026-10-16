@@ -526,7 +526,7 @@ order are normalized. Default TTL 15 minutes, via `CACHE_TTL_MS`.
 ### 5B — Browser fallback (on failure only)
 
 Invoked when the hot path throws `HttpSchemaError`, `HttpBotChallengeError`,
-or `HttpServerError`:
+`HttpServerError`, or `HttpTransportError`:
 
 ```
 Hot path fails → recordFallbackActivation(siteId)
@@ -560,8 +560,8 @@ Concrete retry settings (`src/scraper/retry.ts`): `factor: 2`, `minTimeout:
 `SitePluginMeta.maxAttempts`.
 
 Hot-path error → fallback decision: `HttpSchemaError`, `HttpBotChallengeError`,
-and `HttpServerError` all trigger the browser fallback (schema drift/bot
-block/5xx may resolve with a real browser). `HttpRateLimitError` does not —
+`HttpServerError`, and `HttpTransportError` all trigger the browser fallback
+(schema drift/bot block/5xx/no response may resolve with a real browser). `HttpRateLimitError` does not —
 burning a session on a 429 won't help; back off instead.
 
 ### 5D — Session pool mechanics

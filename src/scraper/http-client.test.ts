@@ -8,7 +8,9 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpTransportError,
   HttpUrlLockedError,
+  isHttpTransportError,
   UnknownScraperError,
 } from "@/scraper/errors";
 import type { HttpResponseBinding, HttpResponseInfo } from "@/scraper/http-client";
@@ -357,13 +359,11 @@ describe("scraper/http-client createHttpClient", () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
 
-  it("retries on network-level failures (UnknownScraperError) and eventually throws", async () => {
+  it("retries on network-level failures and eventually throws HttpTransportError", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network failure")));
     const client = makeClient();
-    // p-retry retries 2 times (3 total attempts) then propagates as UnknownScraperError
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
-      UnknownScraperError
-    );
+    // p-retry retries 2 times (3 total attempts) then propagates as HttpTransportError
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpTransportError);
     // fetch should have been called 3 times total (1 original + 2 retries)
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
   });
@@ -651,9 +651,7 @@ describe("scraper/http-client onResponse hook", () => {
       onResponse: (info) => captured.push(info),
     });
 
-    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
-      UnknownScraperError
-    );
+    await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(HttpTransportError);
     expect(captured).toHaveLength(0);
   });
 
@@ -1146,7 +1144,7 @@ describe("scraper/http-client response-header binding", () => {
 
       const started = Date.now();
       await expect(client("https://example.com/api/item")).rejects.toBeInstanceOf(
-        UnknownScraperError
+        HttpTransportError
       );
       expect(Date.now() - started).toBeLessThan(2_000);
     }, 5_000);
@@ -1180,8 +1178,127 @@ describe("scraper/http-client response-header binding", () => {
       const started = Date.now();
       await expect(
         client("https://example.com/api/item", { signal: controller.signal })
-      ).rejects.toBeInstanceOf(UnknownScraperError);
+      ).rejects.toBeInstanceOf(HttpTransportError);
       expect(Date.now() - started).toBeLessThan(2_000);
     }, 5_000);
   });
+});
+
+describe("scraper/http-client transport failures", () => {
+  /** Node's fetch rejects with a generic `TypeError: fetch failed` and carries the real reason on `cause`. */
+  function fetchFailed(code: string, message: string): TypeError {
+    return new TypeError("fetch failed", { cause: Object.assign(new Error(message), { code }) });
+  }
+
+  it.each([
+    ["ECONNRESET", "read ECONNRESET"],
+    ["ENOTFOUND", "getaddrinfo ENOTFOUND api.example.com"],
+    ["ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:443"],
+    ["EAI_AGAIN", "getaddrinfo EAI_AGAIN api.example.com"],
+    ["ECONNRESET", "socket hang up"],
+    ["UND_ERR_SOCKET", "other side closed"],
+  ])(
+    "maps a %s network failure (%s) to HttpTransportError after retrying it",
+    async (code, message) => {
+      const cause = fetchFailed(code, message);
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(cause));
+
+      const rejection = makeClient()("https://example.com/api/item");
+
+      await expect(rejection).rejects.toBeInstanceOf(HttpTransportError);
+      const err = await rejection.catch((e: unknown) => e);
+      expect((err as HttpTransportError).cause).toBe(cause);
+      expect((err as Error).message).toContain(code);
+      expect((err as Error).message).toContain(message);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+    }
+  );
+
+  it("recovers when a network failure is followed by a good response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockRejectedValueOnce(fetchFailed("ECONNRESET", "read ECONNRESET"))
+        .mockResolvedValueOnce({
+          status: 200,
+          ok: true,
+          text: vi.fn().mockResolvedValue(JSON.stringify({ id: "1", name: "Widget" })),
+          headers: new Headers(),
+        })
+    );
+
+    await expect(makeClient()("https://example.com/api/item")).resolves.toEqual({
+      id: "1",
+      name: "Widget",
+    });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["TimeoutError", "The operation was aborted due to timeout"],
+    ["AbortError", "This operation was aborted"],
+  ])("maps a %s to HttpTransportError without retrying", async (name, message) => {
+    const cause = new DOMException(message, name);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(cause));
+
+    const rejection = makeClient()("https://example.com/api/item");
+
+    await expect(rejection).rejects.toBeInstanceOf(HttpTransportError);
+    const err = await rejection.catch((e: unknown) => e);
+    expect((err as HttpTransportError).cause).toBe(cause);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a connection dropped while the body streams in to HttpTransportError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        status: 200,
+        ok: true,
+        text: vi.fn().mockRejectedValue(new TypeError("terminated")),
+        headers: new Headers(),
+      })
+    );
+
+    await expect(makeClient()("https://example.com/api/item")).rejects.toBeInstanceOf(
+      HttpTransportError
+    );
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3);
+  });
+
+  it("maps the caller's signal firing during retry backoff to HttpTransportError", async () => {
+    const controller = new AbortController();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => {
+        controller.abort();
+        throw fetchFailed("ECONNRESET", "read ECONNRESET");
+      })
+    );
+
+    const err = await makeClient()("https://example.com/api/item", {
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(isHttpTransportError(err)).toBe(true);
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [429, HttpRateLimitError],
+    [404, HttpClientError],
+    [400, HttpClientError],
+    [503, HttpServerError],
+  ])(
+    "still classifies an HTTP %i response by status, not as a transport failure",
+    async (status, errorClass) => {
+      mockFetch(status, { error: "x" });
+
+      const err = await makeClient()("https://example.com/api/item").catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(errorClass);
+      expect(isHttpTransportError(err)).toBe(false);
+    }
+  );
 });

@@ -161,6 +161,7 @@ Hot-path → fallback decision (in `dispatch()`):
 | `HttpSchemaError` | Yes | Response shape drifted; browser may still return the right data via DOM extraction |
 | `HttpBotChallengeError` | Yes | 401/403 from edge; residential proxy in the browser session may get through |
 | `HttpServerError` | Yes | 5xx; recovery strategy is the same regardless of path |
+| `HttpTransportError` | Yes | No response received (connection reset/refused, DNS failure, socket hang up, abort, timeout); a browser session on a different network path may still get through. Network failures are retried in place by the HTTP client first; aborts and timeouts are not |
 | `HttpRateLimitError` | **No** | 429 means back off — burning a browser session against a rate-limited endpoint just costs money |
 
 ---

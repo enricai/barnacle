@@ -34,6 +34,7 @@ import {
   isHttpBotChallengeError,
   isHttpSchemaError,
   isHttpServerError,
+  isHttpTransportError,
   type ScraperError,
   StepVerificationError,
 } from "@/scraper/errors";
@@ -47,7 +48,12 @@ import { testmailInboxFromAddress } from "@/testmail/client";
 const jsonSchemaFragment = z.record(z.string(), z.unknown());
 
 /** Failure-class names a manifest can name in `spec.browserFallbackGate.skipOn`, matching `classifyDispatchError`'s tags in `src/plugins/loader.ts`. */
-const FALLBACK_GATE_FAILURE_CLASSES = ["schema_drift", "bot_challenge", "server_error"] as const;
+const FALLBACK_GATE_FAILURE_CLASSES = [
+  "schema_drift",
+  "bot_challenge",
+  "server_error",
+  "transport_error",
+] as const;
 
 const browserFallbackGateSchema = z.object({
   skipOn: z.array(z.enum(FALLBACK_GATE_FAILURE_CLASSES)).min(1),
@@ -216,6 +222,7 @@ const FAILURE_CLASS_CLASSIFIERS: Record<
   schema_drift: isHttpSchemaError,
   bot_challenge: isHttpBotChallengeError,
   server_error: isHttpServerError,
+  transport_error: isHttpTransportError,
 };
 
 /**

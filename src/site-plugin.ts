@@ -279,9 +279,11 @@ export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown
   meta: SitePluginMeta;
   /**
    * Optional direct-HTTP hot path. When present, dispatch() tries this first.
-   * On `HttpSchemaError`, `HttpBotChallengeError`, or `HttpServerError` it falls
-   * through to `execute()` automatically — the plugin never has to wire the
-   * fallback itself.
+   * On `HttpSchemaError`, `HttpBotChallengeError`, `HttpServerError`, or
+   * `HttpTransportError` it falls through to `execute()` automatically — the
+   * plugin never has to wire the fallback itself. A plugin that issues requests
+   * through its own client (not `createHttpClient()`) should throw
+   * `HttpTransportError` for network failures and timeouts so they cascade too.
    *
    * Use `createHttpClient()` from `src/scraper/http-client.ts` to get a typed
    * fetch wrapper pre-wired with Bottleneck rate-limiting and Zod boundary
@@ -297,7 +299,8 @@ export interface SitePlugin<TPayload = unknown, TResult = Record<string, unknown
    * must not create or close sessions itself.
    *
    * Invoked automatically when `executeHttp` is absent or when it throws
-   * `HttpSchemaError`, `HttpBotChallengeError`, or `HttpServerError`.
+   * `HttpSchemaError`, `HttpBotChallengeError`, `HttpServerError`, or
+   * `HttpTransportError`.
    */
   execute(
     payload: TPayload,

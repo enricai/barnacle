@@ -14,7 +14,7 @@ from `src/site-plugin.ts`. Built-in plugins register via `BUILTIN_SITE_PLUGINS` 
 interface SitePlugin<TPayload, TResult> {
   meta: SitePluginMeta;
   // Direct-HTTP hot path (millisecond latency, no LLM). Core tries this first;
-  // falls back to execute() on HttpSchemaError / HttpBotChallengeError / HttpServerError.
+  // falls back to execute() on HttpSchemaError / HttpBotChallengeError / HttpServerError / HttpTransportError.
   executeHttp?: (payload: TPayload, context: SitePluginContext) => Promise<SitePluginResult<TResult>>;
   // Browser fallback — Stagehand session (Browserbase by default, Steel via SCRAPER_PROVIDER), pooled by core.
   execute(payload: TPayload, session: BrowserSession, context: SitePluginContext): Promise<SitePluginResult<TResult>>;
@@ -70,6 +70,27 @@ export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
   },
 };
 ```
+
+The hot path falls back to `execute()` when it throws `HttpSchemaError`,
+`HttpBotChallengeError`, `HttpServerError` or `HttpTransportError`. The engine's
+HTTP clients already throw `HttpTransportError` when no response arrives (a
+connection reset or refused, a DNS failure, a socket hang-up, an abort or a
+timeout). A plugin that sends requests through its own client should throw the
+same class for those failures, so they also reach the browser fallback instead
+of failing the request:
+
+```ts
+import { HttpTransportError } from "@enricai/barnacle/scraper/errors";
+
+try {
+  response = await myOwnClient.get(url, { signal: AbortSignal.timeout(10_000) });
+} catch (err) {
+  throw new HttpTransportError(`my-site search: ${String(err)}`, { cause: err });
+}
+```
+
+A 429 (`HttpRateLimitError`), a locked URL (`HttpUrlLockedError`) and any other
+4xx (`HttpClientError`) still never fall back.
 
 ## Reading an aggregate/per-unit basis annotation
 
@@ -237,7 +258,8 @@ loudly on an undeclared field. Template:
 direct-HTTP hot path, forwarded to a `createExecuteHttp(options)` factory
 export as `HttpClientOptions.defaultTimeoutMs` (a static `executeHttp` export
 still works but can't receive it). `spec.browserFallbackGate.skipOn` names
-one or more of `schema_drift` / `bot_challenge` / `server_error` — hot-path
+one or more of `schema_drift` / `bot_challenge` / `server_error` /
+`transport_error` — hot-path
 failures of a listed class skip the Stagehand browser fallback instead of
 cascading into it, for a site whose fallback is known to be unreliable for
 that failure class.

@@ -12,7 +12,9 @@ import {
   HttpRateLimitError,
   HttpSchemaError,
   HttpServerError,
+  HttpTransportError,
   isHttpRateLimitError,
+  isScraperError,
   type ScraperError,
   UnknownScraperError,
 } from "@/scraper/errors";
@@ -390,6 +392,83 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
 }
 
 /**
+ * True when `err` is a deliberate cancellation: a caller's `AbortSignal`
+ * firing (`AbortError`) or `AbortSignal.timeout` / `defaultTimeoutMs`
+ * elapsing (`TimeoutError`).
+ */
+function isAbortOrTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
+}
+
+/**
+ * Renders a fetch failure with its root cause. Node's fetch rejects with a
+ * generic `TypeError: fetch failed` and puts the real reason (`ECONNRESET`,
+ * `ENOTFOUND`, ...) on `cause`, so the outer message alone hides what happened.
+ */
+function errorDetail(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  const causeCode =
+    cause !== null && typeof cause === "object" && "code" in cause ? String(cause.code) : undefined;
+  const causeMessage = cause instanceof Error ? cause.message : undefined;
+  const suffix = [causeCode, causeMessage].filter(Boolean).join(" ");
+  return suffix ? `${err.name}: ${err.message} (${suffix})` : `${err.name}: ${err.message}`;
+}
+
+/**
+ * Converts a failure that left the hot path without a usable response into an
+ * {@link HttpTransportError}, so dispatch can cascade it into the browser
+ * fallback. A plain network failure (reset, refused, DNS, socket hang up) is
+ * thrown as-is so p-retry retries it in place. An abort or timeout is wrapped
+ * in p-retry's `AbortError` because the signal fired on purpose and a retry
+ * would only time out again.
+ */
+function toTransportFailure(err: unknown, label: string): HttpTransportError | AbortError {
+  if (isAbortOrTimeout(err)) {
+    return new AbortError(
+      new HttpTransportError(`${label}: aborted or timed out: ${errorDetail(err)}`, { cause: err })
+    );
+  }
+  return new HttpTransportError(`${label}: ${errorDetail(err)}`, { cause: err });
+}
+
+/**
+ * Reads the response body. The connection can still drop or time out while
+ * the body streams in, and that is the same "no usable response" failure as
+ * one that happens before the headers arrive.
+ */
+async function readBodyOrThrow(response: Response, url: string): Promise<string> {
+  try {
+    return await response.text();
+  } catch (err) {
+    throw toTransportFailure(err, `reading the response body from ${url} failed`);
+  }
+}
+
+/**
+ * Runs the retry loop and converts the caller's own signal firing between
+ * attempts into an {@link HttpTransportError}. p-retry rejects with the
+ * signal's raw `reason` there, which is not a ScraperError, so without this a
+ * caller-side timeout that lands during backoff would not cascade into the
+ * browser fallback, while one that lands mid-fetch would.
+ */
+async function rethrowCallerAbortAsTransport<T>(
+  signal: AbortSignal | undefined,
+  url: string,
+  run: () => Promise<T>
+): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (isScraperError(err) || !signal?.aborted || err !== signal.reason) throw err;
+    throw new HttpTransportError(
+      `http request to ${url} aborted or timed out between attempts: ${errorDetail(err)}`,
+      { cause: err }
+    );
+  }
+}
+
+/**
  * Factory that creates a typed direct-HTTP request function pre-wired with
  * the plugin's Bottleneck limiter, p-retry for transient network failures,
  * and Zod response schema. This is the hot-path runtime: no browser, no LLM
@@ -407,8 +486,10 @@ function resolveBinding(binding: HttpResponseBinding, headers: Headers): string 
  * outage is not the same as a bot block but the recovery is identical.
  * Throws `HttpRateLimitError` on 429 — NOT a fallback trigger; the caller
  * should back off, not burn a session.
- * Wraps transient network errors in `UnknownScraperError` and retries up to
- * 2 times with exponential backoff before propagating.
+ * Throws `HttpTransportError` when no usable response arrives (connection
+ * reset/refused, DNS failure, socket hang up, abort, timeout), which is also a
+ * fallback trigger. Network failures are retried up to 2 times with
+ * exponential backoff first; an abort or timeout is not retried.
  */
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
@@ -448,7 +529,7 @@ export function createHttpClient<TResponse>(
     // call only — see HttpRequestInit.schema for why a multi-call chain with
     // heterogeneous response shapes needs this escape hatch.
     const activeSchema = init.schema ?? (schema as unknown as ZodType<TOverride>);
-    return bottleneck.schedule(() =>
+    const attempt = (): Promise<TOverride> =>
       pRetry(
         async () => {
           const method = init.method ?? "GET";
@@ -485,22 +566,7 @@ export function createHttpClient<TResponse>(
               signal,
             });
           } catch (err) {
-            // Caller-triggered cancellation ("AbortError") or a defaultTimeoutMs
-            // firing (AbortSignal.timeout rejects as "TimeoutError", not
-            // "AbortError") — either way the signal fired on purpose, so
-            // propagate without retry rather than burning the retry budget on
-            // a call that will only time out again. The outer p-retry's own
-            // `signal` option will also throwIfAborted on its retry-loop
-            // boundaries, but wrapping in AbortError here covers the window
-            // between fetch dispatch and the next signal check inside pRetry.
-            if (
-              err instanceof Error &&
-              (err.name === "AbortError" || err.name === "TimeoutError")
-            ) {
-              throw new AbortError(new UnknownScraperError(`http fetch aborted: ${err.message}`));
-            }
-            // Network-level failure (DNS, TCP reset, timeout) — retryable.
-            throw new UnknownScraperError(`http fetch failed: ${String(err)}`);
+            throw toTransportFailure(err, `http fetch to ${url} failed`);
           }
 
           onResponse?.({ status: response.status, headers: response.headers, url });
@@ -587,7 +653,7 @@ export function createHttpClient<TResponse>(
             }
           }
 
-          const rawText = await response.text();
+          const rawText = await readBodyOrThrow(response, url);
 
           // A plugin may recognize a non-JSON response body the engine can't
           // (a vendor sentinel). Its verdict drives retry via the error's
@@ -653,7 +719,7 @@ export function createHttpClient<TResponse>(
             }
           },
         }
-      )
-    );
+      );
+    return bottleneck.schedule(() => rethrowCallerAbortAsTransport(init.signal, url, attempt));
   };
 }
