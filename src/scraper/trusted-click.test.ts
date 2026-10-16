@@ -162,6 +162,12 @@ describe("identity expectation", () => {
     expect(click).toHaveBeenCalledTimes(1);
   });
 
+  it("scrolls instantly so a smooth-scrolling page is hit-tested settled, not under a sticky cookie bar on example.com", () => {
+    const expected = 'scrollIntoView({ block: "center", inline: "center", behavior: "instant" })';
+    expect(CENTRE_AND_HIT_TEST_FN).toContain(expected);
+    expect(buildCentreAndHitTestFn("Row 7")).toContain(expected);
+  });
+
   it("runs the in-page check after scroll and before hit-test", () => {
     const fn = buildCentreAndHitTestFn("Row 7");
     expect(fn.indexOf("scrollIntoView")).toBeLessThan(fn.indexOf("mismatch"));
