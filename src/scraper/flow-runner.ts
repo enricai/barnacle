@@ -137,6 +137,7 @@ import {
 } from "@/scraper/target-resolution-diagnostic";
 import {
   CENTRE_AND_HIT_TEST_FN,
+  CentredClickError,
   type CentredHitTestResult,
   centreSelectorForClick,
   clickAfterCentredHitTest,
@@ -9601,7 +9602,7 @@ async function readStablePromptOptions<T extends { options?: PromptOptionRead[] 
   initial: T
 ): Promise<T | null> {
   const key = (r: T): string =>
-    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.nodeId ?? null]));
+    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.domText ?? null]));
   let current = initial;
   for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
@@ -9943,6 +9944,27 @@ async function commitPromptOption(params: {
         await clickCentredTrusted(target, optionSel, {
           label: "prompt-selector option",
           expectText: expectedDomText,
+          clickAtPoint:
+            target.frame === null
+              ? async (x, y) => {
+                  const stillThere = await target
+                    .evaluate(
+                      `((x, y, want) => {
+                        const hit = document.elementFromPoint(x, y);
+                        const el = hit && hit.closest(${JSON.stringify(optionSel)});
+                        return !!el && (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
+                      })(${x}, ${y}, ${JSON.stringify(expectedDomText)})`
+                    )
+                    .catch(() => false);
+                  if (!stillThere) {
+                    throw new CentredClickError(
+                      "centred click: prompt-selector option identity mismatch at click point, click withheld",
+                      "mismatch"
+                    );
+                  }
+                  await page.click(x, y);
+                }
+              : undefined,
           verifyBeforeClick: async () =>
             (await target
               .evaluate(
