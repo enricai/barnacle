@@ -153,11 +153,11 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
       )
     );
 
-    expect(seen[0].advance).toBe(true);
-    expect(seen[1].advance).toBe(true);
-    expect(seen[0].files).toBe(1);
-    expect(seen[1].files).toBe(2);
-    expect(seen[0].dir).not.toBe(seen[1].dir);
-    expect(seen[0].dir.startsWith("memory:")).toBe(true);
+    expect(seen[0]?.advance).toBe(true);
+    expect(seen[1]?.advance).toBe(true);
+    expect(seen[0]?.files).toBe(1);
+    expect(seen[1]?.files).toBe(2);
+    expect(seen[0]?.dir).not.toBe(seen[1]?.dir);
+    expect(seen[0]?.dir.startsWith("memory:")).toBe(true);
   });
 });
