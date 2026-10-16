@@ -14031,7 +14031,8 @@ export async function executeStepWithHealing(params: {
           const snap = await snapshotPage(settleTarget, signalCounter);
           return snap.visibleTextSignature;
         },
-        pre.visibleTextSignature
+        pre.visibleTextSignature,
+        async () => settleTarget.evaluate(QUIESCENCE_PROBE_EXPR)
       );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
