@@ -136,7 +136,9 @@ export const QUIESCENCE_PROBE_EXPR = `(() => {
   return { pending: w.__settleQ.pending, mutations: w.__settleQ.mutations };
 })()`;
 
-export interface SettleSnapshotTarget<S extends { networkCount: number; visibleTextSignature: string }> {
+export interface SettleSnapshotTarget<
+  S extends { networkCount: number; visibleTextSignature: string },
+> {
   page: SettlePage;
   counter: SettleCounter;
   pre: S;
