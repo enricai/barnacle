@@ -15301,13 +15301,17 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
-  // Applicant contracts enter on payload.ClickUrl, so a browser-flow-only
-  // execute has nothing left to read from the context.
-  const executeOmitsContext = omitExecuteHttp && usesApplicantContactSchema;
-  const executeContextParam = executeOmitsContext ? "" : `,\n    context: SitePluginContext`;
-  const sitePluginImports = executeOmitsContext
-    ? "SitePlugin, SitePluginResult"
-    : "SitePlugin, SitePluginContext, SitePluginResult";
+  const executeEntryUrlExpr = usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl";
+  const executeUsesContext = executeEntryUrlExpr.includes("context.");
+  const executeContextParam = executeUsesContext
+    ? `,\n    context: SitePluginContext`
+    : omitExecuteHttp
+      ? ""
+      : `,\n    _context: SitePluginContext`;
+  const sitePluginImports =
+    executeUsesContext || !omitExecuteHttp
+      ? "SitePlugin, SitePluginContext, SitePluginResult"
+      : "SitePlugin, SitePluginResult";
   const executeDocComment = omitExecuteHttp
     ? ""
     : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
@@ -15373,7 +15377,7 @@ ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
     session: BrowserSession${executeContextParam}
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
   },
 };
