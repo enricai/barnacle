@@ -6658,15 +6658,21 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const prior = seg.getAttribute(attr);
     seg.setAttribute(attr, prior ? prior + " " + token : token);
   };
-  const addGroup = (segs, box, nested) => {
+  const addGroup = (segs, box, nested, outer) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
     let inner = null;
-    for (let node = segs[0].parentElement; node && node !== box && box.contains(node) && !inner; node = node.parentElement) {
-      if (segs.every((seg) => node.contains(seg)) && hasCaption(node)) inner = node;
+    // A wrapper holding one segment is captioned by the nearest ancestor that
+    // holds that segment and no other: a caption over several segments names
+    // the whole date, never one slice of it.
+    const top = outer || box;
+    const soleOwner = (node) => !outer || spins.filter((sp) => node.contains(sp)).length === segs.length;
+    for (let node = segs[0].parentElement; node && node !== top && top.contains(node) && !inner; node = node.parentElement) {
+      if (segs.every((seg) => node.contains(seg)) && hasCaption(node) && soleOwner(node)) inner = node;
     }
+    if (inner === box) inner = null;
     const labelBox = inner || box;
-    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ") || Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" ");
     const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
@@ -6689,7 +6695,7 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     const wrap = seg.closest("label");
     if (wrap) parts.push(norm(wrap.textContent));
-    return keyOf(parts.filter(Boolean).join(" "));
+    return keyOf(Array.from(new Set(parts.filter(Boolean))).join(" "));
   };
   // A container's legend names the whole section; the field a segment belongs
   // to is the caption naming it, or the caption nearest before it with no other
@@ -6703,8 +6709,15 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       if (el === boxLegend) return;
       if (el.matches("label,legend")) {
         const target = el.getAttribute("for");
-        if (isHidden(el) || el.querySelector("input,select,textarea,[role='spinbutton']") || (target && box.querySelector("[id='" + target + "']"))) return;
-        current = keyOf(el.textContent);
+        if (isHidden(el) || el.querySelector("input,select,textarea,[role='spinbutton']")) return;
+        const text = keyOf(el.textContent);
+        // A label tied to one of these segments names the field that segment
+        // opens; its text is only a part word ("Month") when it names nothing.
+        if (target && box.querySelector("[id='" + target + "']")) {
+          if (own.has(box.querySelector("[id='" + target + "']")) && text) current = text;
+          return;
+        }
+        current = text;
         return;
       }
       if (!own.has(el)) {
@@ -6727,10 +6740,8 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     // A shared fieldset can hold several independent dates (From and To year
     // spinbuttons side by side); each wrapper is then its own candidate group.
-    if (byParent.size > 1) {
-      byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent]));
-      return;
-    }
+    const split = byParent.size > 1;
+    if (split) byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent, box]));
     const keys = fieldKeys(segs, box);
     const runs = [];
     segs.forEach((seg, si) => {
@@ -6738,9 +6749,13 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       if (last && last.key === keys[si]) last.segs.push(seg);
       else runs.push({ key: keys[si], segs: [seg] });
     });
-    runs.filter((run) => run.key).forEach((run) => captionRuns.push({ run, box, outerIndex, whole: run.segs.length === segs.length }));
+    // Segments that each sit in their own display wrapper still form one date
+    // when a shared caption names them, so the caption run is a candidate too;
+    // a run that is exactly one wrapper's segments is already that wrapper's group.
+    const isWrapperGroup = (run) => split && byParent.get(run.segs[0].parentElement).length === run.segs.length && run.segs.every((seg) => seg.parentElement === run.segs[0].parentElement);
+    runs.filter((run) => run.key && !isWrapperGroup(run)).forEach((run) => captionRuns.push({ run, box, outerIndex, whole: run.segs.length === segs.length }));
   });
-  nestedCandidates.forEach(([inner, parent]) => addGroup(inner, parent, true));
+  nestedCandidates.forEach(([inner, parent, outer]) => addGroup(inner, parent, true, outer));
   captionRuns.forEach(({ run, box, outerIndex, whole }) => {
     const outer = groups[outerIndex];
     const same = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === b.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
