@@ -7,7 +7,7 @@ interface Harness {
   order: string[];
 }
 
-function harness(opts: { clickFails?: boolean; readbackOk?: boolean[] }): Harness {
+function harness(opts: { clickFails?: boolean; readbackOk?: boolean[]; centreState?: string }): Harness {
   const order: string[] = [];
   const readbacks = [...(opts.readbackOk ?? [])];
   const target = {
@@ -16,7 +16,7 @@ function harness(opts: { clickFails?: boolean; readbackOk?: boolean[] }): Harnes
     evaluate: vi.fn(async (expr: string) => {
       if (expr.includes("scrollIntoView")) {
         order.push("centre");
-        return { state: "hit" };
+        return { state: opts.centreState ?? "hit" };
       }
       if (expr.includes("rb.checked")) {
         order.push("readback");
@@ -71,5 +71,18 @@ describe("fillTextDatepickerInput centred click", () => {
     const bad = harness({ clickFails: true });
     const res = await fillTextDatepickerInput(bad.target, "xpath=//input[@id='d']", "01/02/2025");
     expect(res?.strategy).toBe("none");
+  });
+});
+
+describe("strict centring failure", () => {
+  it("never clicks when the target cannot be centred", async () => {
+    const { target, order } = harness({ centreState: "occluded", readbackOk: [true] });
+    expect(await applyRadioSelection(target, 0, 0, { id: "r1", xpath: "" })).toBe(false);
+    expect(order.some((o) => o.startsWith("click:"))).toBe(false);
+
+    const date = harness({ centreState: "occluded" });
+    const res = await fillTextDatepickerInput(date.target, "xpath=//input[@id='d']", "01/02/2025");
+    expect(res?.strategy).toBe("none");
+    expect(date.order.some((o) => o.startsWith("click:"))).toBe(false);
   });
 });
