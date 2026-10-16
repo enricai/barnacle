@@ -9911,7 +9911,9 @@ async function commitPromptOption(params: {
       const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
         options?: PromptOptionRead[];
       } | null;
-      const freshMatches = realPromptOptions(fresh?.options ?? [], option).filter((o) => norm(o.text) === wantChosenText);
+      const freshMatches = realPromptOptions(fresh?.options ?? [], option).filter(
+        (o) => norm(o.text) === wantChosenText
+      );
       const freshOption =
         freshMatches.find((o) => o.nodeId !== undefined && o.nodeId === chosenOption.nodeId) ??
         freshMatches[0];
