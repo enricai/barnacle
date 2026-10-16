@@ -201,3 +201,68 @@ describe("segmented date unquoted and lone targets", () => {
     expect(resolveSegmentedDateGroup(step, groups)).toBeNull();
   });
 });
+
+describe("segmented date captions inside a titled container", () => {
+  const spin = (max: number, attrs = ""): string =>
+    `<input role="spinbutton" aria-valuemax="${max}" ${attrs} />`;
+  const year = (label: string, attrs = ""): string =>
+    `<div ${attrs}><label>${label}</label>${spin(9999)}</div>`;
+  const EDU_FROM = "Type '2015' into the 'From' year spinbutton of Education 1";
+  const EDU_TO = "Type '2020' into the 'To' year spinbutton of Education 1";
+
+  it("reaches the lone From group whose fieldset legend names the section", () => {
+    const groups = enumerate(`<fieldset><legend>Education 1</legend>${year("From")}</fieldset>`);
+    expect(groups[resolveSegmentedDateGroup(EDU_FROM, groups) ?? -1]?.label).toBe("From");
+    expect(resolveSegmentedDateGroup(EDU_TO, groups)).toBeNull();
+  });
+
+  it("reaches the lone From group when the To sibling is not rendered", () => {
+    const groups = enumerate(
+      `<fieldset><legend>Education 1</legend>${year("From")}${year("To", "hidden")}</fieldset>`
+    );
+    expect(groups[resolveSegmentedDateGroup(EDU_FROM, groups) ?? -1]?.label).toBe("From");
+    expect(resolveSegmentedDateGroup(EDU_TO, groups)).toBeNull();
+  });
+
+  it("splits From/To segments that sit flat under one legend", () => {
+    const flat = `<fieldset><legend>Education 1</legend><label>From</label>${spin(9999)}<label>To</label>${spin(9999)}</fieldset>`;
+    const groups = enumerate(flat);
+    const to = resolveSegmentedDateGroup(EDU_TO, groups);
+    const from = resolveSegmentedDateGroup(EDU_FROM, groups);
+    expect(groups[to ?? -1]?.label).toBe("To");
+    expect(groups[from ?? -1]?.label).toBe("From");
+  });
+
+  it("splits segments named by their own aria-labels under one legend", () => {
+    const groups = enumerate(
+      `<fieldset><legend>Work Experience 1</legend>${spin(12, 'aria-label="From month"')}${spin(9999, 'aria-label="From year"')}${spin(12, 'aria-label="To month"')}${spin(9999, 'aria-label="To year"')}</fieldset>`
+    );
+    const to = resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", groups);
+    expect(groups[to ?? -1]?.label).toBe("To");
+  });
+
+  it("never writes a From year into the lone From group of another section", () => {
+    const work = enumerate(
+      `<fieldset><legend>Work Experience 1</legend>${year("From")}</fieldset>`
+    );
+    expect(resolveSegmentedDateGroup(EDU_FROM, work)).toBeNull();
+    const other = enumerate(`<fieldset><legend>Education 2</legend>${year("From")}</fieldset>`);
+    expect(resolveSegmentedDateGroup(EDU_FROM, other)).toBeNull();
+  });
+
+  it("does not pick the single group when other quoted labels are absent from it", () => {
+    const groups = enumerate(`<fieldset><legend>Education 1</legend>${year("From")}</fieldset>`);
+    expect(
+      resolveSegmentedDateGroup("In 'Education 1' set 'Degree' 'Minor' 'From' to '2015'", groups)
+    ).toBeNull();
+    const from = resolveSegmentedDateGroup("In 'Education 1' set 'From' to '2015'", groups);
+    expect(groups[from ?? -1]?.label).toBe("From");
+  });
+
+  it("keeps a legend-named group reachable by its legend when a caption repeats it", () => {
+    const groups = enumerate(
+      `<fieldset><legend>Start</legend><label>Start</label>${spin(12)}${spin(9999)}</fieldset>`
+    );
+    expect(resolveSegmentedDateGroup("'Start' date, '012020'", groups)).toBe(0);
+  });
+});

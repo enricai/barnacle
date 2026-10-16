@@ -452,4 +452,47 @@ describe("segmented date primitive obscured click point", () => {
       events.indexOf("click")
     );
   });
+
+  it("sends Escape before typing when only the listbox probe sees the open popup", async () => {
+    const events: string[] = [];
+    let popupOpen = true;
+    const { target: base } = harness(GROUPS, [1, 2020]);
+    const baseEvaluate = base.evaluate as unknown as (expr: string) => Promise<unknown>;
+    const target = {
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("elementFromPoint")) return { state: popupOpen ? "missing" : "hit" };
+        if (expr.includes("activeListContainer")) return popupOpen ? 1 : 0;
+        return baseEvaluate(expr);
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {
+          events.push("click");
+        },
+      })),
+    } as unknown as FrameTarget;
+    const page = {
+      sendCDP: async (_m: string, a: { type: string; key: string }) => {
+        if (a.type !== "keyDown") return;
+        events.push(a.key === "Escape" ? "escape" : `digit:${a.key}`);
+        if (a.key === "Escape") popupOpen = false;
+      },
+      waitForTimeout: async (): Promise<void> => undefined,
+    } as never;
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    expect(events.indexOf("escape")).toBeGreaterThanOrEqual(0);
+    expect(events.findIndex((e) => e.startsWith("digit:"))).toBeGreaterThan(
+      events.indexOf("escape")
+    );
+  });
 });

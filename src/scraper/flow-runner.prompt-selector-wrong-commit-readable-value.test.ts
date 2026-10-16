@@ -197,3 +197,30 @@ describe("verifyPromptSelectorCommitted with a requested option", () => {
     expect(got?.committed).toBe(true);
   });
 });
+
+describe("verifyPromptSelectorCommitted names the whole option", () => {
+  const html = (value: string): string => `
+<div id="w" data-uxi-widget-type="multiselect" data-automation-id="multiSelectContainer">
+  <div data-automation-id="promptSelectionLabel">${value}</div>
+  <input id="inp" data-uxi-widget-type="selectinput" type="text" />
+</div>`;
+
+  it("rejects a longer option that merely contains the requested text", async () => {
+    const { target } = buildPromptWidgetHarness({
+      html: html("Astrophysics"),
+      popupByWidgetId: {},
+    });
+    const got = await verifyPromptSelectorCommitted(target, "xpath=//*[@id='w']", "Physics");
+    expect(got).toEqual({ isPromptWidget: true, committed: false });
+  });
+
+  it("accepts the requested option among other chips", async () => {
+    const chips = `<div data-automation-id="selectedItemList"><div>Advertising</div><div>Physics</div></div>`;
+    const { target } = buildPromptWidgetHarness({
+      html: html("").replace("</div>\n  <input", `</div>${chips}\n  <input`),
+      popupByWidgetId: {},
+    });
+    const got = await verifyPromptSelectorCommitted(target, "xpath=//*[@id='w']", "Physics");
+    expect(got).toEqual({ isPromptWidget: true, committed: true });
+  });
+});
