@@ -6616,7 +6616,15 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         // scrolling is best-effort; the key events only need the segment focused
       }
       try {
-        if (await isClickPointUnobscured(target, selector)) {
+        // An open option popup can cover the field; clear it so the trusted
+        // click lands on the segment instead of falling back to a bare focus().
+        const clear =
+          (await isClickPointUnobscured(target, selector)) ||
+          (await dismissLeftoverPromptPopups(page, target).then(
+            () => isClickPointUnobscured(target, selector),
+            () => false
+          ));
+        if (clear) {
           await clickCentredTrusted(target, selector, { label: "date segment" });
         }
       } catch {
@@ -9523,11 +9531,11 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
       .evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR)
       .catch(() => 0)) as number;
     if (!count) return;
-    logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
+    logger.info(`popup dismissal: dismissing ${count} leftover popup(s) via Escape`);
     const trusted = await sendTrustedEscape(page)
       .then(() => true)
       .catch((err) => {
-        logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
+        logger.info(`popup dismissal: Escape dispatch failed: ${toErrorMessage(err)}`);
         return false;
       });
     if (!trusted || attempt > 0) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
