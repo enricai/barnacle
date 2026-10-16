@@ -32,6 +32,18 @@ vi.mock("@/lib/telemetry/call-capture", async () => {
   };
 });
 
+const hopResolver = vi.fn();
+vi.mock("@/scraper/frame-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/frame-target")>();
+  return {
+    ...actual,
+    resolveFrameTarget: (...args: Parameters<typeof actual.resolveFrameTarget>) =>
+      hopResolver.getMockImplementation()
+        ? hopResolver(...args)
+        : actual.resolveFrameTarget(...args),
+  };
+});
+
 import {
   guardedAct,
   guardedExtract,
@@ -783,6 +795,43 @@ describe("guardedAct pre-centring", () => {
     vi.mocked(sh.observe).mockRejectedValue(new Error("observe boom"));
     await expect(guardedAct(sh, "click go")).rejects.toThrow();
     expect(sh.act).not.toHaveBeenCalled();
+  });
+
+  it("rejects without acting when a frame-hop click target's frame is not attached", async () => {
+    const action: Action = {
+      selector: "iframe#f >> #go",
+      description: "go",
+      method: "click",
+    };
+    const { sh } = fakeClickStagehand([]);
+    hopResolver.mockResolvedValue({ ...fakeMainFrameTarget(), declaredFrameSelector: "iframe#f" });
+    try {
+      await expect(guardedAct(sh, action)).rejects.toThrow();
+      expect(sh.act).not.toHaveBeenCalled();
+    } finally {
+      hopResolver.mockReset();
+    }
+  });
+
+  it("centres a frame-hop click target in the child frame before acting", async () => {
+    const action: Action = {
+      selector: "iframe#f >> #go",
+      description: "go",
+      method: "click",
+    };
+    const { sh, order } = fakeClickStagehand([]);
+    const child = fakeChildFrameTarget("iframe#f");
+    vi.mocked(child.evaluate).mockImplementation(async () => {
+      order.push("centre-child");
+      return { state: "hit" };
+    });
+    hopResolver.mockResolvedValue(child);
+    try {
+      await guardedAct(sh, action);
+      expect(order).toEqual(["centre-child", "act"]);
+    } finally {
+      hopResolver.mockReset();
+    }
   });
 
   it("acts without centring when the stagehand context exposes no active page", async () => {

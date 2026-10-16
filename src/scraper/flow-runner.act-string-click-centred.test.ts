@@ -152,4 +152,10 @@ describe("flow-runner/executeStepWithHealing — act-string click centring", () 
     await run("Fill in Name with Alice");
     expect(events.slice(0, events.indexOf("act-string"))).toEqual(["observe"]);
   });
+
+  it("never issues the act-string click while the target stays occluded", async () => {
+    hitStates = Array.from({ length: 50 }, () => "occluded");
+    await run("Click the 'Continue' button");
+    expect(events).not.toContain("act-string");
+  });
 });
