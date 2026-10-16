@@ -1399,6 +1399,30 @@ export function fieldValuesAtFailureExpr(): string {
 }
 
 /**
+ * Settles after a click using the target's own text signature and in-page
+ * quiescence reader, so every post-click site decides from the same settle
+ * signal instead of hand-building the readers.
+ */
+export async function settleWithPageQuiescence(
+  page: Page,
+  target: FrameTarget,
+  signalCounter: { n: number },
+  preNetworkCount: number,
+  submitShaped: boolean,
+  preVisibleTextSignature: string
+): Promise<void> {
+  await settleAfterClick(
+    page,
+    signalCounter,
+    preNetworkCount,
+    submitShaped,
+    async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
+    preVisibleTextSignature,
+    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+  );
+}
+
+/**
  * Captures the pre/post signal triple the submit-verify cascade diffs.
  * Accepts the optional `page` so a resolved child `FrameTarget` whose
  * `url()` rejects (OOPIF detached by the submit it just fired) can still
@@ -14022,17 +14046,13 @@ export async function executeStepWithHealing(params: {
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
     if (mayTriggerRoundTrip) {
       const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleAfterClick(
+      await settleWithPageQuiescence(
         page,
+        settleTarget,
         signalCounter,
         pre.networkCount,
         isSettleWaitStep,
-        async () => {
-          const snap = await snapshotPage(settleTarget, signalCounter);
-          return snap.visibleTextSignature;
-        },
-        pre.visibleTextSignature,
-        async () => settleTarget.evaluate(QUIESCENCE_PROBE_EXPR)
+        pre.visibleTextSignature
       );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
