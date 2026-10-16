@@ -189,6 +189,8 @@ describe("recon-generate CLI — click and navigateTo facets threaded into a fil
     const { contract, browserFlow, output } = generate(FIVE_ELEMENTS);
 
     expect(output).toContain("declared payloadField nights is read by no emitted request");
+    expect(contract, contract).toMatch(/nights: z\.[^\n]*\.optional\(\)/);
+    expect(contract, contract).not.toMatch(/nights: z\.(?![^\n]*\.optional\(\))/);
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract, contract).toMatch(/payload\.month[^`]*;filterType=date/);
     expect(contract, contract).toMatch(/payload\.ship[^`]*;filterType=ship/);
