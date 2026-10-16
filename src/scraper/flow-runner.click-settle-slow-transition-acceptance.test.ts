@@ -108,6 +108,8 @@ function makeHeaderThenBodyPage(): VirtualPage {
   let clickedAt: number | null = null;
   (vp.page.evaluate as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) {
         const elapsed = clickedAt === null ? 0 : clock.now - clickedAt;

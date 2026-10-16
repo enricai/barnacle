@@ -156,6 +156,8 @@ describe("flow-runner/executeStepWithHealing — upload/select primitive frame s
 
   it("threads the resolved child FrameTarget into tryUploadPrimitive's target, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("input[type=file]").valueOf() && src.includes("length")) return 1;
       return null;
@@ -212,6 +214,8 @@ describe("flow-runner/executeStepWithHealing — upload/select primitive frame s
       first: () => ({ setInputFiles: vi.fn().mockRejectedValue(new Error("no real DOM")) }),
     });
     (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("input[type=file]") && src.includes("length")) return 1;
       return null;
@@ -238,6 +242,8 @@ describe("flow-runner/executeStepWithHealing — upload/select primitive frame s
 
   it("threads the resolved child FrameTarget into the shared selectFrameTarget (select-primitive enumerate), not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("selectPresent")) return { selectPresent: false };
       return null;
@@ -282,6 +288,8 @@ describe("flow-runner/executeStepWithHealing — pre-submit form-validity probe 
 
   it("threads the resolved child FrameTarget into probeFormValidityBeforeSubmit, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("selectPresent")) return { selectPresent: false };
       if (src.includes("groupPresent")) return { groupPresent: false };
@@ -347,6 +355,8 @@ describe("flow-runner/executeStepWithHealing — html5 date-fill / fill-readback
 
   it("threads the resolved child FrameTarget into fillHtml5DateTimeInput's target, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("selectPresent")) return { selectPresent: false };
       if (src.includes("groupPresent")) return { groupPresent: false };
@@ -421,6 +431,8 @@ describe("flow-runner/executeStepWithHealing — structured-click probe frame sc
 
   it("threads the resolved child FrameTarget into the structured-click probe, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("isCheckable")) {
@@ -480,6 +492,8 @@ describe("flow-runner/executeStepWithHealing — structured-click probe frame sc
     // xpath attempt-1 resolved (carried forward via the running triedSelectors),
     // so structured-click still runs at attempt 3 rather than being skipped.
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
@@ -558,6 +572,8 @@ describe("flow-runner/executeStepWithHealing — verifyDomEffect frame scoping",
 
   it("threads the resolved child FrameTarget into verifyDomEffect, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("el.type || null")) return "checkbox";
@@ -612,6 +628,8 @@ describe("flow-runner/executeStepWithHealing — submitted-state DOM probe frame
   it("threads the resolved child FrameTarget into the top-level submitted-state DOM probe, not mainFrameTarget(page)", async () => {
     const urls = { current: `${CHILD_ORIGIN}/application/abc-123` };
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("document.querySelector(sel)")) return "[data-testid=thank-you]";
       if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
@@ -671,6 +689,8 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
 
   it("threads the resolved child FrameTarget into the n+16 native-click fallback, not mainFrameTarget(page)", async () => {
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
@@ -732,6 +752,8 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
   ) {
     let snapshotCalls = 0;
     return vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };
@@ -838,6 +860,8 @@ describe("flow-runner/executeStepWithHealing — n+16 native-click fallback fram
   it("does NOT credit a checkbox-intent step when the n+16 click resolves kind=checkbox checked=false, even with a page-wide htmlDelta/textChanged/formValueChanged all moving from an unrelated field", async () => {
     let snapshotCalls = 0;
     const childEvaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("groupPresent")) return { groupPresent: false };
       if (src.includes("isCheckable")) return { resolved: true, isCheckable: false };

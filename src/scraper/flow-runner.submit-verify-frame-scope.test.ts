@@ -361,6 +361,8 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
     let snapshotCallCount = 0;
     const originalEvaluate = childTarget.evaluate;
     childTarget.evaluate = vi.fn().mockImplementation(async (expr: string) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       if (expr.includes("outerHTML") && expr.includes("innerText")) {
         snapshotCallCount += 1;
         return snapshotCallCount <= 1 ? { html: 0, text: "0:" } : { html: 500, text: "1:x" };
@@ -459,6 +461,8 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
       rationale: "submitted-state DOM marker present",
     });
     (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
       return null;

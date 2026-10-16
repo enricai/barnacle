@@ -73,7 +73,8 @@ const testLogger = {
 function makeFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) =>
-      expr === "location.href" ? childUrls.current : { html: 0, text: "0:" },
+      answerCentreHitTest(expr) ??
+      (expr === "location.href" ? childUrls.current : { html: 0, text: "0:" }),
     locator: () => ({
       first: () => ({
         isChecked: async () => false,

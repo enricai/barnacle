@@ -172,6 +172,8 @@ function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
     },
   };
   return (async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const source = String(expr);
     const fn = new Function("document", "Event", "XPathResult", `return (${source});`) as (
       d: unknown,

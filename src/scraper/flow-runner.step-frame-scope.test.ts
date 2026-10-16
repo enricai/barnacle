@@ -160,6 +160,8 @@ function makeChildFrameTarget(
     clickByDeepIndexResult = { clicked: false },
   } = opts;
   const evaluate = vi.fn(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const source = String(expr);
     if (source.includes("groupPresent")) {
       return radioGroupPresent ? { groupPresent: true, groups: [] } : { groupPresent: false };
