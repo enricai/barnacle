@@ -48,7 +48,7 @@ function buildHarness(params: { announce: Announce; commits: string; recycle?: b
     } else if (params.announce === "chip") {
       (document.querySelector('[data-automation-id="selectedItemList"]') as Element).innerHTML =
         `<li>${label}</li>`;
-    } else {
+    } else if (params.announce === "none") {
       (
         document.querySelector('[data-automation-id="promptSelectionLabel"]') as Element
       ).textContent = label;
@@ -220,8 +220,16 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
     expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('instead of "Alpha"'));
   });
 
-  it("keeps the existing union when nothing is readable", async () => {
+  it("falls back to the widget's own value when nothing is announced", async () => {
     const { trajectory } = await run(buildHarness({ announce: "none", commits: "Alpha" }));
     expect(trajectory).toEqual([{ stepIndex: 10, verifiedBy: "dom", targetId: "loc-widget" }]);
+  });
+
+  it("rejects a wrong commit read from the widget's own value when nothing is announced", async () => {
+    const { trajectory } = await run(buildHarness({ announce: "none", commits: "Beta" }));
+    expect(trajectory).toEqual([]);
+    expect(testLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining('committed "beta" instead of "Alpha"')
+    );
   });
 });
