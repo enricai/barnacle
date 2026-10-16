@@ -9,8 +9,8 @@ describe("primitiveOptionLabel", () => {
     expect(label).toContain('question "Password"');
   });
 
-  it("keeps option text for non-fill steps", () => {
-    expect(primitiveOptionLabel("United States", null)).toBe('option "United States"');
+  it("keeps only the shape of option text for non-fill steps", () => {
+    expect(primitiveOptionLabel("United States", null)).toBe('option "Aaaaaa Aaaaaa"');
   });
 
   it("still masks the emailStep code", () => {

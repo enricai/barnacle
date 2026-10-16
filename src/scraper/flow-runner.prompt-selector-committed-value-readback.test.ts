@@ -28,6 +28,7 @@ const widgetHtml = (announce: Announce): string => `
     <div id="loc-widget" role="combobox" aria-haspopup="listbox" aria-invalid="false" tabindex="0">
       ${announce === "describedby" ? '<span id="loc-desc"></span><div id="loc-inner" aria-describedby="loc-desc"></div>' : ""}
       ${announce === "chip" ? '<span id="loc-desc">Expanded</span><div aria-describedby="loc-desc"></div><ul data-automation-id="selectedItemList"></ul>' : ""}
+      ${announce === "none" ? '<span data-automation-id="promptSelectionLabel"></span>' : ""}
     </div>
   </div>
 </div>`;
@@ -47,6 +48,10 @@ function buildHarness(params: { announce: Announce; commits: string; recycle?: b
     } else if (params.announce === "chip") {
       (document.querySelector('[data-automation-id="selectedItemList"]') as Element).innerHTML =
         `<li>${label}</li>`;
+    } else {
+      (
+        document.querySelector('[data-automation-id="promptSelectionLabel"]') as Element
+      ).textContent = label;
     }
   };
 

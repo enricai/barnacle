@@ -11064,7 +11064,8 @@ function maskLoggedValue(text: string, sensitiveValue?: string): string {
  * Builds the "option ..., question ..." log label shared by the select,
  * checkbox, radio and prompt-selector primitives. A value parsed from a FILL
  * step is typed user data (names, emails, passwords), so it is logged only as
- * its length; other options are catalog text and stay readable.
+ * its length; other options are still caller answers, so they keep only
+ * their shape via {@link maskLoggedValue}.
  */
 export function primitiveOptionLabel(
   option: string,
