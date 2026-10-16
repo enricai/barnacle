@@ -184,38 +184,7 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(60);
   });
 
-  it("keeps polling a half-transitioned page past the text quiet window until it advances", async () => {
-    const f = makeFake(() => {});
-    const text = (): string => (f.polls() >= 13 ? "body" : "header");
-    await settleAfterClick(
-      f.page,
-      f.counter,
-      0,
-      true,
-      async () => text(),
-      "pre",
-      undefined,
-      (sig) => sig === "body"
-    );
-    expect(f.polls()).toBe(22);
-  });
-
-  it("stops waiting on a half-transition once the extra budget is spent", async () => {
-    const f = makeFake(() => {});
-    await settleAfterClick(
-      f.page,
-      f.counter,
-      0,
-      true,
-      async () => "header",
-      "pre",
-      undefined,
-      () => false
-    );
-    expect(f.polls()).toBe(30);
-  });
-
-  it("pays no extra wait when the text never moved", async () => {
+  it("gives up at 14 polls when the text never moved", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(
       f.page,
@@ -223,10 +192,24 @@ describe("settleAfterClick", () => {
       0,
       true,
       async () => "same",
-      "same",
-      undefined,
-      () => false
+      "same"
     );
     expect(f.polls()).toBe(14);
+  });
+
+  it("ends only after a body re-render following a header flip when the probe sees mutations", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 10 ? "body" : f.polls() >= 1 ? "header" : "pre";
+    await settleAfterClick(
+      f.page,
+      f.counter,
+      0,
+      true,
+      async () => text(),
+      "pre",
+      async () => ({ pending: 0, mutations: f.polls() >= 10 ? 1 : 0 })
+    );
+    expect(f.polls()).toBeGreaterThanOrEqual(19);
   });
 });

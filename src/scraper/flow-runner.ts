@@ -112,7 +112,6 @@ import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
   hasPageAdvanced,
-  hasPageBodySwapped,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
@@ -1474,8 +1473,7 @@ export async function settleWithPageQuiescence(
   signalCounter: { n: number },
   preNetworkCount: number,
   submitShaped: boolean,
-  preVisibleTextSignature: string,
-  advanced?: (visibleTextSignature: string) => boolean
+  preVisibleTextSignature: string
 ): Promise<void> {
   await settleAfterClick(
     page,
@@ -1484,31 +1482,8 @@ export async function settleWithPageQuiescence(
     submitShaped,
     () => readSettleTextSignature(target),
     preVisibleTextSignature,
-    () => readPageQuiescence(target),
-    advanced
+    () => readPageQuiescence(target)
   );
-}
-
-/**
- * Builds the "has the page finished advancing" test a mid-flow submit settles
- * against. It is the body-swap half of the {@link hasPageAdvanced} the phantom
- * classifier credits with, so a header that flipped before its body re-rendered
- * keeps settle polling while the classifier still credits whatever is left once
- * the wait is spent.
- * Undefined for any other step, which keeps the plain quiet-window settle.
- */
-function pageAdvancedSince(
-  preVisibleTextSignature: string,
-  midFlowSubmit: boolean
-): ((visibleTextSignature: string) => boolean) | undefined {
-  if (!midFlowSubmit) return undefined;
-  const pre = {
-    networkCount: 0,
-    url: "",
-    bodyHtmlLength: 0,
-    visibleTextSignature: preVisibleTextSignature,
-  };
-  return (visibleTextSignature) => hasPageBodySwapped(pre, { ...pre, visibleTextSignature });
 }
 
 /**
@@ -1537,6 +1512,8 @@ export async function snapshotPage(
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
+    // Arms the quiescence probe before the click so early requests and mutations are counted.
+    await Promise.resolve(target.evaluate(QUIESCENCE_PROBE_EXPR)).catch(() => undefined);
     const result = await target.evaluate(DOM_SNAPSHOT_EXPR);
     if (
       result !== null &&
@@ -3656,17 +3633,7 @@ export async function judgeStepOutcome(params: {
       isFinalStep,
       flowHasSubmitSemantics: params.flowHasSubmitSemantics,
     }) || params.elementSubmitShaped === true,
-    params.preVisibleTextSignature,
-    pageAdvancedSince(
-      params.preVisibleTextSignature,
-      isMidFlowSubmitShapedStep({
-        step,
-        submitStep: params.submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-        elementSubmitShaped: params.elementSubmitShaped,
-      })
-    )
+    params.preVisibleTextSignature
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
@@ -7443,8 +7410,7 @@ async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
-  pre: StepSnapshot,
-  midFlowSubmit = false
+  pre: StepSnapshot
 ): Promise<StepSnapshot> {
   if (page)
     await settleWithPageQuiescence(
@@ -7453,8 +7419,7 @@ async function settleAndSnapshotPostClick(
       signalCounter,
       pre.networkCount,
       true,
-      pre.visibleTextSignature,
-      pageAdvancedSince(pre.visibleTextSignature, midFlowSubmit)
+      pre.visibleTextSignature
     );
   return snapshotPage(target, signalCounter, page);
 }
@@ -14603,8 +14568,7 @@ export async function executeStepWithHealing(params: {
         signalCounter,
         pre.networkCount,
         isSettleWaitStep || resolvedElementIsSubmitShaped,
-        pre.visibleTextSignature,
-        pageAdvancedSince(pre.visibleTextSignature, stepIsMidFlowSubmit)
+        pre.visibleTextSignature
       );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
@@ -15360,17 +15324,7 @@ export async function executeStepWithHealing(params: {
             signalCounter,
             pre.networkCount,
             isSettleWaitStep || retryResolvedElementIsSubmitShaped,
-            pre.visibleTextSignature,
-            pageAdvancedSince(
-              pre.visibleTextSignature,
-              isMidFlowSubmitShapedStep({
-                step,
-                submitStep,
-                isFinalStep,
-                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-              })
-            )
+            pre.visibleTextSignature
           );
           const retryPost = await snapshotPage(
             frameTarget ?? mainFrameTarget(page),
