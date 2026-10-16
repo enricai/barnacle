@@ -364,11 +364,11 @@ describe("segmented date primitive obscured click point", () => {
       instruction: WORK_FROM,
     });
     expect(id).toBe("segmented-date-0");
-    const escape = events.indexOf("escape");
+    const escapeAt = events.indexOf("escape");
     const click = events.indexOf("click");
     const firstDigit = events.findIndex((e) => e.startsWith("digit:"));
-    expect(escape).toBeGreaterThanOrEqual(0);
-    expect(click).toBeGreaterThan(escape);
+    expect(escapeAt).toBeGreaterThanOrEqual(0);
+    expect(click).toBeGreaterThan(escapeAt);
     expect(firstDigit).toBeGreaterThan(click);
     expect(events.filter((e) => e.startsWith("digit:")).map((e) => e.slice(6))).toEqual([
       "0",
