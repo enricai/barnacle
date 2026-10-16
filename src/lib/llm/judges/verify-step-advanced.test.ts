@@ -80,6 +80,7 @@ describe("verifyStepAdvancedWithLLM", () => {
     expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("Required-field markers");
     expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("not errors");
     expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("explicit error summary or message");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("Shared page chrome");
     expect(STEP_ADVANCED_SYSTEM_PROMPT).not.toContain("the same form");
   });
 
