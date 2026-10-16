@@ -464,7 +464,7 @@ function walkNavigateToFacets(
           origin: "step",
           literals: collectStepFacetLiterals(step.step, env),
           kind: deriveFacetKind(step.payloadField),
-          kindHints: [],
+          kindHints: collectStepFacetKindHints(step.step, env),
         });
       }
       continue;
@@ -522,6 +522,46 @@ function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): 
     primary,
     findInstructionSpans(instruction).map((span) => span.text)
   );
+}
+
+const STEP_KIND_STOP_WORDS = new Set([
+  "facet",
+  "filter",
+  "field",
+  "value",
+  "option",
+  "selection",
+  "the",
+  "a",
+  "an",
+  "dropdown",
+  "drop-down",
+  "selector",
+  "menu",
+  "list",
+  "widget",
+  "question",
+]);
+
+/**
+ * Element kinds a click step's own prose names: the noun phrase trailing the
+ * value span ("select the 'Lisbon' city option" names `city`), so a facet whose
+ * field name differs from the page's vocabulary can still own the element of
+ * that kind. Reads only the generic instruction grammar, no site vocabulary.
+ */
+function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv): string[] {
+  const value = extractStepPersonaValue(instruction, env);
+  const span = findInstructionSpans(instruction).find((candidate) => candidate.text === value);
+  if (span === undefined) return [];
+  const phrase = instruction
+    .slice(span.end)
+    .split(/[.,;:]|\b(?:from|in|on|for|with|and|then|to)\b/i)[0]!;
+  const words = phrase
+    .split(/\s+/)
+    .map((word) => word.replace(/^['"]+|['"]+$/g, ""))
+    .filter((word) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(word));
+  const kindWords = words.filter((word) => !STEP_KIND_STOP_WORDS.has(word.toLowerCase()));
+  return [...new Set([...(kindWords.length > 1 ? [kindWords.join(" ")] : []), ...kindWords])];
 }
 
 function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
