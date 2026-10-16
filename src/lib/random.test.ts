@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { pickRandom, randomIntInclusive } from "@/lib/random";
+import { generateThrowawayPassword, pickRandom, randomIntInclusive } from "@/lib/random";
 
 describe("lib/random randomIntInclusive", () => {
   afterEach(() => {
@@ -71,5 +71,19 @@ describe("lib/random pickRandom", () => {
   it("picks the last element when Math.random approaches 1", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.9999999);
     expect(pickRandom([1, 2, 3])).toBe(3);
+  });
+});
+
+describe("lib/random generateThrowawayPassword", () => {
+  it("includes every character class, is 24 chars, and avoids template-unsafe characters", () => {
+    for (let i = 0; i < 200; i++) {
+      const password = generateThrowawayPassword();
+      expect(password).toHaveLength(24);
+      expect(password).toMatch(/[A-Z]/);
+      expect(password).toMatch(/[a-z]/);
+      expect(password).toMatch(/[0-9]/);
+      expect(password).toMatch(/[!@#%^*()\-+=?.]/);
+      expect(password).not.toMatch(/["'`\\$]/);
+    }
   });
 });
