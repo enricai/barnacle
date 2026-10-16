@@ -204,4 +204,22 @@ describe("settleAfterClick", () => {
     );
     expect(f.polls()).toBeGreaterThanOrEqual(19);
   });
+
+  it("returns only after a body re-render ~10s after a header flip with no counted network", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 10 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    expect(f.polls()).toBeGreaterThanOrEqual(19);
+    expect(f.polls()).toBeLessThan(60);
+  });
+
+  it("waits while the body keeps growing after a header flip, then ends once it stops", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() === 0 ? "example.com pre" : `header${"x".repeat(Math.min(f.polls(), 12))}`;
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    expect(f.polls()).toBeGreaterThan(12);
+    expect(f.polls()).toBeLessThan(60);
+  });
 });
