@@ -20,7 +20,7 @@ const OWN_BACKEND_HOST = "www.gql-kind-suffixed-six-element-parity-fixture.examp
 
 const FILTERS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "PARIS;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
   "GOC;filterType=hiddenCove",
@@ -78,7 +78,7 @@ function generate(): string {
           navigateTo: `https://${OWN_BACKEND_HOST}/#/trips/december-2026`,
           payloadField: "tripMonth",
         },
-        { step: "click the 'Bahamas' option", payloadField: "destination" },
+        { step: "click the 'Paris' option", payloadField: "destination" },
         {
           step: "navigate to the theme page",
           navigateTo: `https://${OWN_BACKEND_HOST}/#/theme/merry`,

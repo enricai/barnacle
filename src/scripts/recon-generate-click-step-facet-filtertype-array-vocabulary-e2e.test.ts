@@ -17,7 +17,7 @@ const OWN_BACKEND_HOST = "www.click-facet-filtertype-vocabulary-fixture.example.
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "PARIS;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
   "GOC;filterType=hiddenCove",
@@ -25,7 +25,7 @@ const FIVE_ELEMENTS = [
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the search bar and select the 'Paris' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
   "Open the length of stay (number of nights) filter dropdown in the search bar and select the '4' nights option, keeping the other filters that are already applied";
 
@@ -180,7 +180,7 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
     }
     for (const gone of [
       "2026-12;filterType=date",
-      "BAHAMAS;filterType=destination",
+      "PARIS;filterType=destination",
       "MERRY;filterType=theme",
       "WW;filterType=ship",
       "GOC;filterType=hiddenCove",

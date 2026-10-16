@@ -16,14 +16,14 @@ const OWN_BACKEND_HOST = "www.click-step-five-element-array-threading-fixture.ex
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=stay",
-  "BAHAMAS;filterType=region",
+  "PARIS;filterType=region",
   "MERRY;filterType=theme",
   "WW;filterType=carrier",
   "EXTRA;filterType=venue",
 ];
 
 const REGION_STEP =
-  "Open the region filter dropdown in the search bar and select the 'Bahamas' region option, keeping the other filters that are already applied";
+  "Open the region filter dropdown in the search bar and select the 'Paris' region option, keeping the other filters that are already applied";
 
 /**
  * Proves, through the real `recon:generate` CLI, that a region facet declared
@@ -145,7 +145,7 @@ describe("recon-generate CLI — click-step facet threaded into a five-element f
     expect(contract, contract).toMatch(/payload\.theme[^`]*;filterType=theme/);
     expect(contract, contract).toMatch(/payload\.carrier[^`]*;filterType=carrier/);
     expect(contract, contract).toMatch(/payload\.venue[^`]*;filterType=venue/);
-    expect(contract, contract).not.toContain("BAHAMAS;filterType=region");
+    expect(contract, contract).not.toContain("PARIS;filterType=region");
     expect(contract, contract).not.toContain("2026-12;filterType=stay");
     expect(contract, contract).not.toContain('"MERRY;filterType=theme"');
     expect(contract, contract).not.toContain('"WW;filterType=carrier"');
