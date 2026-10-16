@@ -210,6 +210,39 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     }
   );
 
+  it.each([
+    ["No results", "No results"],
+    ["No Items.", "No Items."],
+    ["query echo", "Sweden - searching"],
+    ["query echo (case differs)", "SWEDEN"],
+  ])(
+    "sends exactly one Enter and commits when the pre-Enter list is a placeholder (%s)",
+    async (_name, placeholderText) => {
+      const stagehandAct = vi.fn();
+      const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+        html: SEARCH_ON_SUBMIT_HTML,
+        popupByWidgetId: {
+          "country-widget": { options: OPTIONS, searchOnSubmit: true, placeholderText },
+        },
+      });
+      const merged = {
+        ...baseParams(page as unknown as Page, stagehandAct, ""),
+        frameTarget: target,
+        step: "for 'Country of residence' select 'Sweden'",
+      };
+
+      const result = await executeStepWithHealing(
+        merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+      );
+
+      expect(result).toBe("completed");
+      expect(enterKeyDowns(cdpEvents)).toBe(1);
+      expect(
+        window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+      ).toBe("Sweden");
+    }
+  );
+
   it("sends Enter when the list holds only a shorter chip the request merely contains", async () => {
     const stagehandAct = vi.fn();
     const { page, target, window, cdpEvents } = buildPromptWidgetHarness({

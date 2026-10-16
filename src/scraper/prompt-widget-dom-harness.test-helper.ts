@@ -92,6 +92,12 @@ export interface PopupSpec {
    */
   searchOnSubmit?: boolean;
   /**
+   * With `searchOnSubmit`, the placeholder row text shown before Enter
+   * (default "No Items."). The literal token `{query}` is replaced by the
+   * filter value, modeling a list that echoes the query.
+   */
+  placeholderText?: string;
+  /**
    * With `searchOnSubmit`, successive label sets applied IN PLACE (same option
    * nodes, different text) — one per `page.waitForTimeout` call after Enter —
    * modeling a list that re-renders N times while reusing its DOM nodes.
@@ -240,7 +246,13 @@ export function buildPromptWidgetHarness(params: {
       const triggerInput = widgetEl.querySelector("input");
       if (triggerInput) triggerInput.setAttribute("data-test-filter", widgetEl.id);
     }
-    const searchHtml = awaitingSubmit ? `<li data-test-placeholder="true">No Items.</li>` : "";
+    const placeholder = (state.spec.placeholderText ?? "No Items.").replace(
+      "{query}",
+      state.filter
+    );
+    const searchHtml = awaitingSubmit
+      ? `<li data-test-placeholder="true">${placeholder}</li>`
+      : "";
     const optsHtml = shown
       .map((o, i) => {
         const label = optionLabel(o);
