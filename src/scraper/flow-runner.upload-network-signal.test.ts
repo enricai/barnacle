@@ -48,6 +48,18 @@ describe("waitForUploadNetworkSignal", () => {
     ).toBe(false);
   });
 
+  it("rejects an explicit empty-body POST to an attachments listing URL", async () => {
+    expect(
+      await run({
+        method: "POST",
+        status: 200,
+        url: "https://api.example.com/attachments",
+        hasBody: false,
+        multipart: false,
+      })
+    ).toBe(false);
+  });
+
   it("rejects a non-upload POST even with a body", async () => {
     expect(
       await run({
