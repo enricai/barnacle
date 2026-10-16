@@ -168,3 +168,29 @@ describe("emitted applicant contract — canonical keys across every extend-fiel
     expectAccepts(block);
   });
 });
+
+describe("emitted applicant contract — forced browserFlowOnly entry", () => {
+  it("a forced browserFlowOnly contract with a non-null inputBody still emits the applicant contract and enters on payload.ClickUrl", () => {
+    const inputBody = { query: "unrelated", page: 1 };
+    const { code, payloadFieldNames } = emitBrowserFlowTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      flowSteps: FLOW_STEPS,
+      isSubmissionFlow: true,
+      browserFlowOnly: true,
+      inputBody,
+      vocabulary,
+    });
+    expect(code).toContain("payload.Phone");
+
+    const contract = emit({ omitExecuteHttp: true, inputBody, payloadFieldNames });
+    expect(contract).toContain("ApplicantContactSchema");
+    expect(contract).toContain("ClickUrl");
+    expect(contract).toContain("Answers");
+    expect(contract).toContain("payload.ClickUrl");
+    const block = payloadBlock(contract);
+    expect(extraKeys(block)).toEqual(EXPECTED_EXTRA_KEYS);
+    expectAccepts(block);
+  });
+});
