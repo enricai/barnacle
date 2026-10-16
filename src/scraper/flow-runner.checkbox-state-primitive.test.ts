@@ -169,14 +169,82 @@ describe("tryCheckboxStatePrimitive", () => {
     expect(s.clicks.length).toBeGreaterThan(0);
   });
 
-  it("falls back to the box when the label click point is obscured", async () => {
+  const POPUP = `<div id="pop" role="listbox"></div>`;
+  const CHECK = "Check the 'I agree to the terms' checkbox";
+
+  function obscuredBy(
+    s: ReturnType<typeof setup>,
+    cover: () => unknown,
+    clearable: boolean
+  ): { escapes: string[]; page: never } {
+    const escapes: string[] = [];
+    (s.doc as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () => {
+      const pop = s.doc.getElementById("pop");
+      return pop ? cover() : s.doc.querySelector("[data-barnacle-cbstate]");
+    };
+    const page = {
+      sendCDP: async (_m: string, p: { type: string; key: string }): Promise<void> => {
+        if (p.type !== "keyDown") return;
+        escapes.push(p.key);
+        if (clearable) s.doc.getElementById("pop")?.remove();
+      },
+      waitForTimeout: async (): Promise<void> => undefined,
+    } as never;
+    return { escapes, page };
+  }
+
+  it("dismisses an obscuring popup, then clicks and verifies the state", async () => {
+    const s = setup(one.replace(" checked", "") + POPUP);
+    const o = obscuredBy(s, () => s.doc.getElementById("pop"), true);
+    const id = await tryCheckboxStatePrimitive({
+      page: o.page,
+      target: s.target,
+      instruction: CHECK,
+      logger: LOGGER,
+    });
+    expect(id).toBe("a");
+    expect(o.escapes).toEqual(["Escape"]);
+    expect(s.clicks).toEqual(['[data-barnacle-cbstate="box"]']);
+    expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("falls through without clicking when the popup survives dismissal", async () => {
+    const s = setup(one.replace(" checked", "") + POPUP);
+    const o = obscuredBy(s, () => s.doc.getElementById("pop"), false);
+    const id = await tryCheckboxStatePrimitive({
+      page: o.page,
+      target: s.target,
+      instruction: CHECK,
+      logger: LOGGER,
+    });
+    expect(id).toBeNull();
+    expect(o.escapes.length).toBeGreaterThan(0);
+    expect(s.clicks).toEqual([]);
+    expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("does not dismiss anything for an already-correct box", async () => {
+    const s = setup(one + POPUP);
+    const o = obscuredBy(s, () => s.doc.getElementById("pop"), true);
+    const id = await tryCheckboxStatePrimitive({
+      page: o.page,
+      target: s.target,
+      instruction: CHECK,
+      logger: LOGGER,
+    });
+    expect(id).toBe("a");
+    expect(o.escapes).toEqual([]);
+    expect(s.clicks).toEqual([]);
+  });
+
+  it("falls back to the box when only the label click point is obscured", async () => {
     const s = setup(one.replace(" checked", ""));
     (s.doc as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () =>
       s.doc.querySelector("[data-barnacle-cbstate=box]");
     const id = await tryCheckboxStatePrimitive({
       page: s.page,
       target: s.target,
-      instruction: "Check the 'I agree to the terms' checkbox",
+      instruction: CHECK,
       logger: LOGGER,
     });
     expect(id).toBe("a");
@@ -189,7 +257,7 @@ describe("tryCheckboxStatePrimitive", () => {
     const id = await tryCheckboxStatePrimitive({
       page: s.page,
       target: s.target,
-      instruction: "Check the 'I agree to the terms' checkbox",
+      instruction: CHECK,
       logger: LOGGER,
     });
     expect(id).toBeNull();
