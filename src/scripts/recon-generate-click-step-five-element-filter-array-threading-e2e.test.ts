@@ -101,6 +101,21 @@ function generate(): { contract: string; output: string } {
           navigateTo: `https://${OWN_BACKEND_HOST}/#/lodging/december-2026,paris-trips,west-hub,north-pier`,
           payloadField: "stayMonth",
         },
+        {
+          step: "navigate to the theme page",
+          navigateTo: `https://${OWN_BACKEND_HOST}/#/lodging/paris-trips`,
+          payloadField: "theme",
+        },
+        {
+          step: "navigate to the carrier page",
+          navigateTo: `https://${OWN_BACKEND_HOST}/#/lodging/west-hub`,
+          payloadField: "carrier",
+        },
+        {
+          step: "navigate to the venue page",
+          navigateTo: `https://${OWN_BACKEND_HOST}/#/lodging/north-pier`,
+          payloadField: "venue",
+        },
         { step: REGION_STEP, payloadField: "region" },
         { step: "submit the quote", submitStep: true },
       ],
@@ -126,7 +141,14 @@ describe("recon-generate CLI — click-step facet threaded into a five-element f
 
     expect(contract, contract).toMatch(/payload\.region[^`]*;filterType=region/);
     expect(contract, contract).toMatch(/payload\.stayMonth[^`]*;filterType=stay/);
+    console.log(contract);
+    expect(contract, contract).toMatch(/payload\.theme[^`]*;filterType=theme/);
+    expect(contract, contract).toMatch(/payload\.carrier[^`]*;filterType=carrier/);
+    expect(contract, contract).toMatch(/payload\.venue[^`]*;filterType=venue/);
     expect(contract, contract).not.toContain("BAHAMAS;filterType=region");
     expect(contract, contract).not.toContain("2026-12;filterType=stay");
+    expect(contract, contract).not.toContain('"MERRY;filterType=theme"');
+    expect(contract, contract).not.toContain('"WW;filterType=carrier"');
+    expect(contract, contract).not.toContain('"EXTRA;filterType=venue"');
   }, 30_000);
 });
