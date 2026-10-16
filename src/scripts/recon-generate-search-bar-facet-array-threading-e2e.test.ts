@@ -13,11 +13,11 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
-const OWN_BACKEND_HOST = "www.quote-bar-facet-array-threading-fixture.example.com";
+const OWN_BACKEND_HOST = "www.search-bar-facet-array-threading-fixture.example.com";
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "PARIS;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
   "EXTRA;filterType=venue",
@@ -25,7 +25,7 @@ const FIVE_ELEMENTS = [
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the search bar and select the 'Paris' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
   "Open the length of stay (number of nights) filter dropdown in the search bar and select the '4' nights option, keeping the other filters that are already applied";
 
@@ -95,11 +95,11 @@ afterEach(() => {
 });
 
 function generate(filters: string[]): { contract: string; browserFlow: string; output: string } {
-  workDir = mkdtempSync(join(tmpdir(), "barnacle-quote-bar-facet-array-"));
+  workDir = mkdtempSync(join(tmpdir(), "barnacle-search-bar-facet-array-"));
   const runRoot = join(workDir, "run");
   writeRunDir(runRoot, buildCaptures(filters));
 
-  const siteId = `quote-bar-facet-array-threading-test-${process.pid}`;
+  const siteId = `search-bar-facet-array-threading-test-${process.pid}`;
   siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
   mkdirSync(siteOutDir, { recursive: true });
   writeFileSync(
@@ -155,7 +155,7 @@ describe("recon-generate CLI — click and navigateTo facets threaded into a fil
     expect(contract, contract).toMatch(/payload\.ship[^`]*;filterType=ship/);
     for (const gone of [
       "2026-12;filterType=date",
-      "BAHAMAS;filterType=destination",
+      "PARIS;filterType=destination",
       "WW;filterType=ship",
       "4;filterType=night",
     ]) {
@@ -189,6 +189,8 @@ describe("recon-generate CLI — click and navigateTo facets threaded into a fil
     const { contract, browserFlow, output } = generate(FIVE_ELEMENTS);
 
     expect(output).toContain("declared payloadField nights is read by no emitted request");
+    expect(contract, contract).toMatch(/nights: z\.[^\n]*\.optional\(\)/);
+    expect(contract, contract).not.toMatch(/nights: z\.(?![^\n]*\.optional\(\))/);
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract, contract).toMatch(/payload\.month[^`]*;filterType=date/);
     expect(contract, contract).toMatch(/payload\.ship[^`]*;filterType=ship/);

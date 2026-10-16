@@ -161,7 +161,7 @@ describe("recon-generate CLI — click-step facets threaded into a filters array
     expect(order, "captured element order is preserved").toEqual([...order].sort((a, b) => a - b));
   }, 30_000);
 
-  it("threads both facets into the quote-bar filters expression of the six-element body", () => {
+  it("threads both facets into the search-bar filters expression of the six-element body", () => {
     const { contract } = generate(SIX_ELEMENTS);
     const filtersExpression = contract.slice(contract.indexOf("filters"));
 
