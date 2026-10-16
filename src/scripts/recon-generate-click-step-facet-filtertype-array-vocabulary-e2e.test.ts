@@ -222,8 +222,6 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
     ]) {
       expect(contract, contract).toMatch(facetElement(field, kind));
     }
-    expect(unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS)).toEqual([
-      "nights",
-    ]);
+    expect(unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS)).toEqual([]);
   }, 30_000);
 });
