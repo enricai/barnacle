@@ -134,6 +134,15 @@ describe("recon-generate CLI — declared facets with no request evidence", () =
     expect(output).not.toContain("declared payloadField category is read by no emitted request");
   }, 30_000);
 
+  it("reports unread facets in the review checklist, but not threaded ones", () => {
+    const { output } = generate();
+
+    expect(output).toContain("[ ] Declared payloadField nights is read by no emitted request");
+    expect(output).toContain("[ ] Declared payloadField region is read by no emitted request");
+    expect(output).not.toContain("Declared payloadField destination is read by no emitted request");
+    expect(output).not.toContain("Declared payloadField category is read by no emitted request");
+  }, 30_000);
+
   it("emits unread facets optional, keeps threaded facets threaded, and falls back in the browser flow", () => {
     const { contract, browserFlow } = generate();
 
