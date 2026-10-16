@@ -14,7 +14,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -117,6 +117,11 @@ import {
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
+import {
+  defaultCapturesDir,
+  listCaptureFiles,
+  readCaptureFile,
+} from "@/scraper/runtime-capture-store";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import {
@@ -152,7 +157,6 @@ import {
   UPLOAD_AFFORDANCE_CONTROL_SELECTOR,
   UPLOAD_AFFORDANCE_MATCHER_EXPR,
 } from "@/scraper/upload-affordance-expr";
-import { defaultCapturesDir, listCaptureFiles, readCaptureFile } from "@/scraper/runtime-capture-store";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 import type { Capture } from "@/scripts/recon-shared";
 import { pollTestmailInbox, type TestmailInbox, type TestmailMessage } from "@/testmail/client";
