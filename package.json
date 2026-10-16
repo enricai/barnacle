@@ -116,6 +116,10 @@
       "types": "./dist/lib/random.d.ts",
       "default": "./dist/lib/random.js"
     },
+    "./lib/tracking-click": {
+      "types": "./dist/lib/tracking-click.d.ts",
+      "default": "./dist/lib/tracking-click.js"
+    },
     "./lib/url-capture": {
       "types": "./dist/lib/url-capture.d.ts",
       "default": "./dist/lib/url-capture.js"
