@@ -6569,7 +6569,9 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
     const onlySegment = partStep ? partOf(enumerated.groups[gi] as SegmentedDateGroup) : null;
-    const active = widths.flatMap((_, si) => (onlySegment === null || si === onlySegment ? [si] : []));
+    const active = widths.flatMap((_, si) =>
+      onlySegment === null || si === onlySegment ? [si] : []
+    );
     const sliceFor = (si: number): string => {
       if (onlySegment !== null) return value.digits;
       const start = widths.slice(0, si).reduce((a, b) => a + b, 0);
@@ -6633,9 +6635,12 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     // page whose CDP channel does not reach the widget.
     const typeViaLocator = async (): Promise<void> => {
       for (const [k, digits] of segmentDigits.entries()) {
-        await target.locator(segmentSelector(active[k] ?? 0)).first().type(digits, {
-          delay: SEGMENTED_DATE_KEY_DELAY_MS,
-        });
+        await target
+          .locator(segmentSelector(active[k] ?? 0))
+          .first()
+          .type(digits, {
+            delay: SEGMENTED_DATE_KEY_DELAY_MS,
+          });
       }
     };
     const typeViaKeyEvents = async (): Promise<void> => {

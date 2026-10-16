@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  parseSegmentedPartStep,
-  trySegmentedDateSpinbuttonPrimitive,
-} from "@/scraper/flow-runner";
+import { parseSegmentedPartStep, trySegmentedDateSpinbuttonPrimitive } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 function harness(honourKeys: boolean): { target: FrameTarget; page: never; sent: string[] } {
@@ -25,7 +22,7 @@ function harness(honourKeys: boolean): { target: FrameTarget; page: never; sent:
       }
       if (expr.includes("scrollIntoView")) return { state: "hit" };
       if (expr.includes("aria-valuenow")) {
-        const k = expr.includes(':1"]') ? 1 : 0;
+        const k = expr.includes("0:1") ? 1 : 0;
         return honourKeys ? [k === 1 ? 2020 : 1] : [Number.NaN];
       }
       return undefined;
