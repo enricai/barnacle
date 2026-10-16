@@ -301,4 +301,110 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
       window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
     ).toBe("Sweden");
   });
+
+  it("commits the requested option after two node-reusing re-renders within the settle window", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: {
+        "country-widget": { options: OPTIONS, searchOnSubmit: true, reuseRenders: RENDERS },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Norway'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Norway");
+  });
+
+  it("commits the requested option after a single virtualized re-render for a different option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: {
+        "country-widget": {
+          options: OPTIONS,
+          searchOnSubmit: true,
+          reuseRenders: [["Denmark", "Norway", "Sweden"]],
+        },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Denmark'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Denmark");
+  });
+
+  it("never commits a wrong item when the list streams a re-render during the click delivery gap", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    let streamed = false;
+    type Loc = { click: () => Promise<void> };
+    const streamBeforeClick =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          click: async (): Promise<void> => {
+            const nodes = Array.from(window.document.querySelectorAll("[role='option']"));
+            if (!streamed && nodes.length > 1 && selector.includes("data-bcl-prompt-opt-idx")) {
+              streamed = true;
+              const texts = nodes.map((n) => n.textContent?.trim() ?? "");
+              nodes.forEach((n, i) => {
+                const text = texts[(i + 1) % texts.length] ?? "";
+                n.textContent = text;
+                n.setAttribute("data-automation-label", text);
+              });
+            }
+            await loc.click();
+          },
+        };
+      };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = streamBeforeClick(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = streamBeforeClick(targetLoc.locator);
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const outcome = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).then(
+      (r) => r,
+      (e: unknown) => e
+    );
+
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    if (outcome === "completed") expect(committed).toBe("Sweden");
+    else expect(outcome).toBeInstanceOf(StepVerificationError);
+  });
 });
