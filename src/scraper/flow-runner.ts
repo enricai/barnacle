@@ -7024,6 +7024,29 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
 }
 
 /**
+ * Settles after a click and returns the post-click snapshot, so the settle
+ * wait and the phantom classifier decide from the same reader and baseline.
+ * Without a page there is nothing to wait on and the snapshot is taken as-is.
+ */
+async function settleAndSnapshotPostClick(
+  target: FrameTarget,
+  signalCounter: { n: number },
+  page: Page | undefined,
+  pre: StepSnapshot
+): Promise<StepSnapshot> {
+  if (page)
+    await settleAfterClick(
+      page,
+      signalCounter,
+      pre.networkCount,
+      true,
+      async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
+      pre.visibleTextSignature
+    );
+  return snapshotPage(target, signalCounter, page);
+}
+
+/**
  * Shared in-page discovery of the widget's callback, used identically by
  * `injectCaptchaTokenAndSubmit`'s precheck (to decide the branch) and its
  * invoke step (to re-resolve and call it) without ever marshalling a
@@ -7358,16 +7381,12 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
-      if (verification.page)
-        await settleAfterClick(
-          verification.page,
-          verification.signalCounter,
-          pre.networkCount,
-          true,
-          async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
-          pre.visibleTextSignature
-        );
-      const post = await snapshotPage(target, verification.signalCounter, verification.page);
+      const post = await settleAndSnapshotPostClick(
+        target,
+        verification.signalCounter,
+        verification.page,
+        pre
+      );
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
         pre,
@@ -7390,20 +7409,11 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
-          if (verification.page)
-            await settleAfterClick(
-              verification.page,
-              verification.signalCounter,
-              post.networkCount,
-              true,
-              async () =>
-                (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
-              post.visibleTextSignature
-            );
-          const runnerUpPost = await snapshotPage(
+          const runnerUpPost = await settleAndSnapshotPostClick(
             target,
             verification.signalCounter,
-            verification.page
+            verification.page,
+            post
           );
           const runnerUpVerdict = classifyPhantomClick({
             actResultSuccess: true,
