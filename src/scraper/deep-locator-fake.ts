@@ -972,7 +972,7 @@ export function makeFakeFrameResolutionPage(
       }
       // The resolver's non-empty tiebreak probe; a genuine attached frame has
       // content.
-      if (/document\.body/.test(String(expression))) {
+      if (String(expression).startsWith("!!(document.body")) {
         return resolveAfterProbeDelay(true, probeDelayMs);
       }
       return (await options.onFrameEvaluate?.(expression)) ?? null;

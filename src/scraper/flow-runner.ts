@@ -124,6 +124,7 @@ import {
   recordRuntimeCapture,
   withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
+import { SEGMENT_OWNER_JS } from "@/scraper/segmented-date-spinbutton";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
 import {
@@ -4332,6 +4333,28 @@ export interface VerifyFillReadbackResult {
 }
 
 /**
+ * Pre-write check for the observe-act fill override: a lone-segment write
+ * (insertText) cannot compose a date, so callers refuse before any write.
+ * An evaluate error propagates so the attempt fails rather than writing blind;
+ * only a selector form with no XPath body (nothing to resolve) answers false.
+ */
+export async function isDateSegmentAtSelector(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (xpath === null) return false;
+  const expr = `(() => {
+    const result = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el) return false;
+    ${SEGMENT_OWNER_JS}
+    return isDateSegment(el);
+  })()`;
+  return (await target.evaluate(expr)) === true;
+}
+
+/**
  * Read back an element's value after a fill action and compare to the
  * expected value. Catches silent-value-rejection cases that the verifier's
  * existing signals (network/url/dom/htmlDelta/textChanged) miss:
@@ -6510,7 +6533,7 @@ function pickSegmentedDateGroup(
   // A group under another heading is not the field the step names, however
   // well its label matches: the step's own words must find the section.
   // A section that only repeats the group's own label is no heading at all
-  // (Workday enumerates "From*" as both), so it cannot name another section.
+  // (a widget may enumerate "From*" as both), so it cannot name another section.
   const namesOtherSection = (group: SegmentedDateGroup): boolean => {
     const section = segmentedDateTokens(group.section ?? "");
     const label = segmentedDateTokens(group.label ?? "");
@@ -6561,7 +6584,7 @@ function pickSegmentedDateGroup(
   if (leaders.length > 1) {
     // A nested group is one wrapper's slice of a larger date widget (e.g. the
     // Year half of "From MM/YYYY"), so it only ties with a standalone group of
-    // the same label when no section text separates them — Workday renders
+    // the same label when no section text separates them — a form may render
     // "Work Experience 1 From" and "Education 1 From" with no heading the
     // enumerator can see. The standalone group is the field the step names.
     const standalone = leaders.filter((i) => !groups[i]?.nested);
@@ -6573,65 +6596,6 @@ function pickSegmentedDateGroup(
   const only = groups.flatMap((g, i) => (compatible(g) && !g.nested ? [i] : []));
   return only.length === 1 ? (only[0] ?? null) : null;
 }
-
-/**
- * In-page helpers shared by the date-segment enumeration and the fill
- * readback so "is this spinbutton one segment of a multi-segment widget" has a
- * single definition; defines `spins`, `ownerOf` and `isDateSegment`.
- */
-const SEGMENT_OWNER_JS = `
-  const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
-  const styleOf = (node) => {
-    try { return typeof getComputedStyle === "function" ? getComputedStyle(node) : window.getComputedStyle(node); } catch { return null; }
-  };
-  const isHidden = (el) => {
-    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
-      if (hiddenAttr(node)) return true;
-      const style = styleOf(node);
-      if (style && (style.display === "none" || style.visibility === "hidden")) return true;
-    }
-    return false;
-  };
-  const spins = Array.from(document.querySelectorAll("input[role='spinbutton']")).filter((el) => !isHidden(el));
-  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
-  const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
-    const ref = id ? document.getElementById(id) : null;
-    return ref ? norm(ref.textContent) : "";
-  }).join(" ");
-  const legendOf = (node) => {
-    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
-    return legend ? norm(legend.textContent) : "";
-  };
-  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
-  const tiedToSpin = (l) => l.querySelector("input,[role='spinbutton']") || (l.getAttribute("for") && spins.some((sp) => sp.id === l.getAttribute("for")));
-  const hasCaption = (node) => namedBy(node) !== "" || Array.from(node.querySelectorAll("label,legend")).some((l) => !tiedToSpin(l));
-  const captionOwnerOf = (el) => {
-    const explicit = el.closest("fieldset,[role='group']");
-    if (explicit) return explicit;
-    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
-      if (hasCaption(node)) return node;
-    }
-    return null;
-  };
-  const bareSpins = spins.filter((sp) => !captionOwnerOf(sp));
-  const hasOtherControl = (node) => Array.from(node.querySelectorAll("input,select,textarea")).some((c) => !spins.includes(c) && c.type !== "hidden");
-  // Segments that each sit in their own uncaptioned wrapper share no
-  // fieldset/caption, so the nearest ancestor holding several bare spinbuttons
-  // (and no other form control) is the widget they belong to.
-  const bareOwnerOf = (el) => {
-    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
-      if (hasOtherControl(node)) break;
-      if (bareSpins.filter((sp) => node.contains(sp)).length > 1) return node;
-    }
-    return el.parentElement;
-  };
-  const ownerOf = (el) => captionOwnerOf(el) || bareOwnerOf(el);
-  const isDateSegment = (el) => {
-    if (!el.getAttribute || el.getAttribute("role") !== "spinbutton" || !spins.includes(el)) return false;
-    const box = ownerOf(el);
-    return spins.filter((sp) => ownerOf(sp) === box).length > 1;
-  };
-`;
 
 const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
 
@@ -6694,15 +6658,21 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const prior = seg.getAttribute(attr);
     seg.setAttribute(attr, prior ? prior + " " + token : token);
   };
-  const addGroup = (segs, box, nested) => {
+  const addGroup = (segs, box, nested, outer) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
     let inner = null;
-    for (let node = segs[0].parentElement; node && node !== box && box.contains(node) && !inner; node = node.parentElement) {
-      if (segs.every((seg) => node.contains(seg)) && hasCaption(node)) inner = node;
+    // A wrapper holding one segment is captioned by the nearest ancestor that
+    // holds that segment and no other: a caption over several segments names
+    // the whole date, never one slice of it.
+    const top = outer || box;
+    const soleOwner = (node) => !outer || spins.filter((sp) => node.contains(sp)).length === segs.length;
+    for (let node = segs[0].parentElement; node && node !== top && top.contains(node) && !inner; node = node.parentElement) {
+      if (segs.every((seg) => node.contains(seg)) && hasCaption(node) && soleOwner(node)) inner = node;
     }
+    if (inner === box) inner = null;
     const labelBox = inner || box;
-    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ") || Array.from(new Set(segs.map((seg) => ownKey(seg)).filter(Boolean))).join(" ");
     const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
@@ -6725,7 +6695,7 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     const wrap = seg.closest("label");
     if (wrap) parts.push(norm(wrap.textContent));
-    return keyOf(parts.filter(Boolean).join(" "));
+    return keyOf(Array.from(new Set(parts.filter(Boolean))).join(" "));
   };
   // A container's legend names the whole section; the field a segment belongs
   // to is the caption naming it, or the caption nearest before it with no other
@@ -6739,8 +6709,15 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       if (el === boxLegend) return;
       if (el.matches("label,legend")) {
         const target = el.getAttribute("for");
-        if (isHidden(el) || el.querySelector("input,select,textarea,[role='spinbutton']") || (target && box.querySelector("[id='" + target + "']"))) return;
-        current = keyOf(el.textContent);
+        if (isHidden(el) || el.querySelector("input,select,textarea,[role='spinbutton']")) return;
+        const text = keyOf(el.textContent);
+        // A label tied to one of these segments names the field that segment
+        // opens; its text is only a part word ("Month") when it names nothing.
+        if (target && box.querySelector("[id='" + target + "']")) {
+          if (own.has(box.querySelector("[id='" + target + "']")) && text) current = text;
+          return;
+        }
+        current = text;
         return;
       }
       if (!own.has(el)) {
@@ -6763,10 +6740,8 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     // A shared fieldset can hold several independent dates (From and To year
     // spinbuttons side by side); each wrapper is then its own candidate group.
-    if (byParent.size > 1) {
-      byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent]));
-      return;
-    }
+    const split = byParent.size > 1;
+    if (split) byParent.forEach((inner, parent) => nestedCandidates.push([inner, parent, box]));
     const keys = fieldKeys(segs, box);
     const runs = [];
     segs.forEach((seg, si) => {
@@ -6774,9 +6749,13 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
       if (last && last.key === keys[si]) last.segs.push(seg);
       else runs.push({ key: keys[si], segs: [seg] });
     });
-    runs.filter((run) => run.key).forEach((run) => captionRuns.push({ run, box, outerIndex, whole: run.segs.length === segs.length }));
+    // Segments that each sit in their own display wrapper still form one date
+    // when a shared caption names them, so the caption run is a candidate too;
+    // a run that is exactly one wrapper's segments is already that wrapper's group.
+    const isWrapperGroup = (run) => split && byParent.get(run.segs[0].parentElement).length === run.segs.length && run.segs.every((seg) => seg.parentElement === run.segs[0].parentElement);
+    runs.filter((run) => run.key && !isWrapperGroup(run)).forEach((run) => captionRuns.push({ run, box, outerIndex, whole: run.segs.length === segs.length }));
   });
-  nestedCandidates.forEach(([inner, parent]) => addGroup(inner, parent, true));
+  nestedCandidates.forEach(([inner, parent, outer]) => addGroup(inner, parent, true, outer));
   captionRuns.forEach(({ run, box, outerIndex, whole }) => {
     const outer = groups[outerIndex];
     const same = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === b.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -6807,9 +6786,9 @@ const SEGMENTED_DATE_CLEAR_EXPR = `(() => {
  *
  * Why this exists: such widgets keep each segment's value in component state
  * driven by `keydown`/`beforeinput`; `fill`/`insertText` bypasses that and
- * garbles the segments. Returns a marker id on commit, or null on no
- * spinbuttons, an unresolvable group, or any segment mismatch so the caller
- * falls through to the cascade.
+ * garbles the segments. Returns a marker id on commit, or null on any
+ * non-commit. Callers that must tell "not applicable" from "refused" use
+ * `runSegmentedDateSpinbuttonPrimitive`.
  */
 export async function trySegmentedDateSpinbuttonPrimitive(params: {
   page: Page;
@@ -6817,16 +6796,44 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
   instruction: string;
   logger: Logger;
 }): Promise<string | null> {
+  const outcome = await runSegmentedDateSpinbuttonPrimitive(params);
+  return outcome.kind === "committed" ? outcome.targetId : null;
+}
+
+export type SegmentedDateOutcome =
+  | { kind: "committed"; targetId: string }
+  | { kind: "not-applicable" }
+  | { kind: "refused"; reason: string };
+
+/**
+ * Same as `trySegmentedDateSpinbuttonPrimitive` but distinguishes "this step
+ * is not a segmented date here" (fall through to the cascade) from "a
+ * width-compatible segment group exists and the primitive could not deliver"
+ * (refused: the cascade would write the value via insertText and garble the
+ * segments, so the caller must fail the step instead).
+ */
+export async function runSegmentedDateSpinbuttonPrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<SegmentedDateOutcome> {
   const { page, target, instruction, logger } = params;
+  const notApplicable: SegmentedDateOutcome = { kind: "not-applicable" };
+  const refuse = (reason: string): SegmentedDateOutcome => {
+    logger.warn(`segmented date primitive: refused: ${reason}`);
+    return { kind: "refused", reason };
+  };
+  let groupChosen = false;
   const whole = parseSegmentedDateValue(instruction);
   const part = parseSegmentedPartStep(instruction);
-  if (!whole && !part) return null;
+  if (!whole && !part) return notApplicable;
   const sendCDP = frameCdpSender(page, target);
   try {
     const enumerated = (await target.evaluate(SEGMENTED_DATE_ENUMERATE_EXPR)) as {
       groups: SegmentedDateGroup[];
     };
-    if (!enumerated?.groups?.length) return null;
+    if (!enumerated?.groups?.length) return notApplicable;
     const wholeGi = whole ? resolveSegmentedDateGroup(instruction, enumerated.groups) : null;
     const partStep = wholeGi === null ? part : null;
     const value = (wholeGi !== null ? whole : part) as { digits: string; valueSpan: string };
@@ -6846,10 +6853,21 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         ? pickSegmentedDateGroup(instruction, enumerated.groups, partStep, partFits)
         : null);
     if (gi === null) {
-      logger.info("segmented date primitive: no unambiguous group; falling through");
       await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
-      return null;
+      const widthCompatible = enumerated.groups.some(
+        (group) =>
+          (whole !== null &&
+            group.segmentMaxes.reduce((sum, max) => sum + String(max).length, 0) ===
+              whole.digits.length) ||
+          (partStep !== null && partFits(group))
+      );
+      if (widthCompatible) {
+        return refuse("a width-compatible date group exists but the target group is ambiguous");
+      }
+      logger.info("segmented date primitive: no compatible group; falling through");
+      return notApplicable;
     }
+    groupChosen = true;
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
     const onlySegment = partStep ? partOf(enumerated.groups[gi] as SegmentedDateGroup) : null;
@@ -6949,18 +6967,18 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     if (!matches(actual)) actual = await readSegments();
     await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
     if (!matches(actual)) {
-      logger.info(
-        `segmented date primitive: readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}; falling through`
+      return refuse(
+        `readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}`
       );
-      return null;
     }
     logger.info(
       `segmented date primitive: committed segments ${maskDateDigits(JSON.stringify(actual))}`
     );
-    return `segmented-date-${gi}`;
+    return { kind: "committed", targetId: `segmented-date-${gi}` };
   } catch (err) {
+    if (groupChosen) return refuse(`delivery threw: ${toErrorMessage(err)}`);
     logger.warn(`segmented date primitive: threw: ${toErrorMessage(err)}; falling through`);
-    return null;
+    return notApplicable;
   }
 }
 
@@ -12412,15 +12430,21 @@ export async function executeStepWithHealing(params: {
 
   // Multi-segment date spinbuttons need real key events; the cascade's
   // insertText would garble the segments. Falls through on null.
-  const segmentedDateTargetId = await trySegmentedDateSpinbuttonPrimitive({
+  const segmentedDate = await runSegmentedDateSpinbuttonPrimitive({
     page,
     target: selectFrameTarget,
     instruction: step,
     logger,
   });
-  if (segmentedDateTargetId !== null) {
+  if (segmentedDate.kind === "refused") {
+    throw new StepVerificationError(
+      `${formatStepPrefix(stepIndex, totalSteps)} (${redactPii(step).slice(0, 60)}) segmented date could not be delivered: ${segmentedDate.reason}`,
+      "cascade-exhausted"
+    );
+  }
+  if (segmentedDate.kind === "committed") {
     logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by segmented-date primitive`);
-    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDateTargetId });
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: segmentedDate.targetId });
     return "completed";
   }
 
@@ -14109,6 +14133,21 @@ export async function executeStepWithHealing(params: {
                 arguments: [actuation.value],
               };
             }
+          }
+          if (
+            overriddenTarget.method === "fill" &&
+            (await isDateSegmentAtSelector(
+              frameTarget ?? mainFrameTarget(page),
+              overriddenTarget.selector
+            ))
+          ) {
+            record.errorMessage = `refused fill on a date segment: "${target.description.slice(0, 60)}" (a lone-segment write cannot compose a date)`;
+            attempts.push(record);
+            failureReasons.push(record.errorMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+            );
+            continue;
           }
           params.abortSignal?.throwIfAborted();
           // Stagehand's internal Locator.click() does not scroll past sticky

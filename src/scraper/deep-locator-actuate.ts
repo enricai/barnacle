@@ -38,6 +38,7 @@ import {
   type FrameTarget,
   probeAttachedFrameTarget,
 } from "@/scraper/frame-target";
+import { SEGMENT_OWNER_JS } from "@/scraper/segmented-date-spinbutton";
 import { WatchdogTimeoutError, withWatchdog } from "@/scraper/watchdog";
 
 const logger = getLogger({ name: "scraper/deep-locator-actuate" });
@@ -145,6 +146,26 @@ function isFrameCandidateWriteResult(entry: unknown): entry is FrameCandidateWri
   if (typeof result.written !== "boolean") return false;
   if (result.written) return typeof result.readBack === "string";
   return result.reason === "out-of-range" || result.reason === "not-actionable";
+}
+
+/**
+ * Wraps a write expression so the shared detector runs in the SAME evaluate,
+ * before any write: a date segment reports `not-actionable`, which makes the
+ * caller return `false` without the legacy `Locator.fill` fallback.
+ */
+function guardAgainstDateSegmentWrite(
+  innerSelector: string,
+  index: number,
+  writeExpr: string
+): string {
+  return `(() => {
+    const target = Array.from(document.querySelectorAll(${JSON.stringify(innerSelector)}))[${JSON.stringify(index)}];
+    if (target) {
+      ${SEGMENT_OWNER_JS}
+      if (isDateSegment(target)) return { written: false, reason: "not-actionable" };
+    }
+    return ${writeExpr};
+  })()`;
 }
 
 /**
@@ -271,7 +292,11 @@ export async function fillDeepLocatorCandidate(
         hopSelector,
         index,
         { ...timeoutOptions, frameTarget },
-        buildFillFrameCandidateExpr(innerSelector, index, value),
+        guardAgainstDateSegmentWrite(
+          innerSelector,
+          index,
+          buildFillFrameCandidateExpr(innerSelector, index, value)
+        ),
         "fill"
       )
     : null;
