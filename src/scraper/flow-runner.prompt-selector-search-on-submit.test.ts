@@ -371,4 +371,96 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
       window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
     ).toBe("Sweden");
   });
+
+  it("commits after Enter for a fill-shaped step against a placeholder-only list", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": { options: ["University of Texas", "University of Utah"], searchOnSubmit: true },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "Fill the Country of residence field with 'University of Texas'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(stagehandAct).not.toHaveBeenCalled();
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("University of Texas");
+  });
+
+  it("stops at the Enter cap and commits nothing when the list never names the request", async () => {
+    const stagehandAct = vi.fn().mockResolvedValue(undefined);
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": { options: ["Norway", "Denmark", "Finland"], searchOnSubmit: true },
+      },
+    });
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+
+    expect(enterKeyDowns(cdpEvents)).toBeLessThanOrEqual(2);
+    expect(enterKeyDowns(cdpEvents)).toBeGreaterThan(0);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("");
+  });
+
+  it("delivers Enter through the child frame's own session when the target has one", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS, searchOnSubmit: true } },
+    });
+    const frameSends: { method: string; params: unknown }[] = [];
+    const frameSend = async (method: string, params?: unknown): Promise<void> => {
+      frameSends.push({ method, params });
+      await (page as unknown as { sendCDP: (m: string, p?: unknown) => Promise<void> }).sendCDP(
+        method,
+        params
+      );
+    };
+    (target as unknown as { frame: unknown }).frame = { session: { send: frameSend } };
+    const pageSend = (page as unknown as { sendCDP: (m: string, p?: unknown) => Promise<void> })
+      .sendCDP;
+    const pageOnly: { method: string; params: unknown }[] = [];
+    (page as unknown as { sendCDP: unknown }).sendCDP = async (m: string, p?: unknown) => {
+      pageOnly.push({ method: m, params: p });
+      return pageSend(m, p);
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(enterKeyDowns(frameSends)).toBe(1);
+    expect(enterKeyDowns(pageOnly.filter((e) => !frameSends.includes(e)))).toBe(1);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Sweden");
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+  });
 });
