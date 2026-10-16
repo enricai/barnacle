@@ -930,3 +930,55 @@ describe("fillDeepLocatorCandidate/selectDeepLocatorCandidateOption legacy-fallb
     await assertion;
   });
 });
+
+describe("fillDeepLocatorCandidate date-segment refusal", () => {
+  it("returns false without writing when the candidate is a date segment", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, [""]);
+    const page = makeFakePage(frame);
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: false,
+      reason: "not-actionable",
+    }));
+
+    const result = await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input[role=spinbutton]",
+      0,
+      "12",
+      { frameTarget }
+    );
+
+    expect(result).toBe(false);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(frame.get(`${FRAME_SELECTOR} >> input`)?.elements[0]?.filledWith).toBeNull();
+  });
+
+  it("embeds the shared detector ahead of the write in the evaluated expression", async () => {
+    const frame: FakeDeepLocatorFrame = new Map();
+    registerDeepLocatorHopElements(frame, `${FRAME_SELECTOR} >> input`, [""]);
+    const page = makeFakePage(frame);
+    const { frameTarget, evaluateSpy } = makeFakeFrameTarget(async () => ({
+      written: false,
+      reason: "not-actionable",
+    }));
+
+    await fillDeepLocatorCandidate(
+      // biome-ignore lint/suspicious/noExplicitAny: fake Page surface for the delegate contract under test
+      page as any,
+      FRAME_SELECTOR,
+      "input",
+      0,
+      "Ada",
+      { frameTarget }
+    );
+
+    const expr = String(evaluateSpy.mock.calls[0]?.[0]);
+    expect(expr.indexOf("isDateSegment(target)")).toBeGreaterThan(-1);
+    expect(expr.indexOf("isDateSegment(target)")).toBeLessThan(
+      expr.indexOf("insertText") === -1 ? Infinity : expr.indexOf("insertText")
+    );
+  });
+});
