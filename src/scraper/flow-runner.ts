@@ -9683,6 +9683,41 @@ function frameCdpSender(
     target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
 }
 
+/**
+ * Clicks at a frame-local viewport point through the same CDP route as keys, so
+ * the press lands where the hit test just ran instead of re-resolving a locator.
+ * A same-process child frame has no session of its own, so its offset in the
+ * page is added to reach page coordinates.
+ */
+async function dispatchTrustedClick(
+  page: Page,
+  target: FrameTarget,
+  x: number,
+  y: number
+): Promise<void> {
+  if (target.frame === null) {
+    await page.click(x, y);
+    return;
+  }
+  const send = frameCdpSender(page, target);
+  const offset = target.frame.session
+    ? { x: 0, y: 0 }
+    : (((await target
+        .evaluate(
+          `(() => {
+            const f = window.frameElement;
+            if (!f) return null;
+            const r = f.getBoundingClientRect();
+            return { x: r.left, y: r.top };
+          })()`
+        )
+        .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 });
+  const point = { x: x + offset.x, y: y + offset.y, button: "left", clickCount: 1 };
+  await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point });
+}
+
 async function sendTrustedKey(
   page: Page,
   target: FrameTarget,
@@ -9944,27 +9979,24 @@ async function commitPromptOption(params: {
         await clickCentredTrusted(target, optionSel, {
           label: "prompt-selector option",
           expectText: expectedDomText,
-          clickAtPoint:
-            target.frame === null
-              ? async (x, y) => {
-                  const stillThere = await target
-                    .evaluate(
-                      `((x, y, want) => {
-                        const hit = document.elementFromPoint(x, y);
-                        const el = hit && hit.closest(${JSON.stringify(optionSel)});
-                        return !!el && (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
-                      })(${x}, ${y}, ${JSON.stringify(expectedDomText)})`
-                    )
-                    .catch(() => false);
-                  if (!stillThere) {
-                    throw new CentredClickError(
-                      "centred click: prompt-selector option identity mismatch at click point, click withheld",
-                      "mismatch"
-                    );
-                  }
-                  await page.click(x, y);
-                }
-              : undefined,
+          clickAtPoint: async (x, y) => {
+            const stillThere = await target
+              .evaluate(
+                `((x, y, want) => {
+                  const hit = document.elementFromPoint(x, y);
+                  const el = hit && hit.closest(${JSON.stringify(optionSel)});
+                  return !!el && (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
+                })(${x}, ${y}, ${JSON.stringify(expectedDomText)})`
+              )
+              .catch(() => false);
+            if (!stillThere) {
+              throw new CentredClickError(
+                "centred click: prompt-selector option identity mismatch at click point, click withheld",
+                "mismatch"
+              );
+            }
+            await dispatchTrustedClick(page, target, x, y);
+          },
           verifyBeforeClick: async () =>
             (await target
               .evaluate(
