@@ -7,6 +7,8 @@
  * object, not a candidates/observations array.
  */
 
+import { readFileSync } from "node:fs";
+
 import type Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 
@@ -158,5 +160,14 @@ describe("verifySubmitWithLLM", () => {
     expect(nonFinal.system).toContain("title is not evidence");
     expect(nonFinal.system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(true);
     expect(nonFinal.user).not.toContain("PAGE TITLE");
+  });
+
+  it("recon-browser submit-judge call derives finality via the shared context builder like judgeStepOutcome", () => {
+    const recon = readFileSync("src/scripts/recon-browser.ts", "utf8");
+    const call = recon.slice(recon.indexOf("await verifySubmitWithLLM({"));
+    const ctx = call.slice(0, call.indexOf("pageUrl:"));
+    expect(ctx).toContain("buildSubmitJudgeStepContext({");
+    expect(ctx).toContain("isFinalStep: i === plan.length - 1");
+    expect(ctx).not.toContain("isFinalStep: true");
   });
 });
