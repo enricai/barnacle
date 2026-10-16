@@ -6287,9 +6287,8 @@ export function resolveSegmentedDateGroup(
     ).length;
   };
   const bestSection = Math.max(0, ...groups.filter(compatible).map((group) => sectionScore(group)));
-  let best = -1;
   let bestScore = -1;
-  let tied = false;
+  let leaders: number[] = [];
   groups.forEach((group, index) => {
     if (!compatible(group)) return;
     const own = segmentedDateTokens(group.label ?? group.context);
@@ -6307,14 +6306,22 @@ export function resolveSegmentedDateGroup(
     const score = sectionScore(group);
     if (score < bestSection) return;
     if (score > bestScore) {
-      best = index;
       bestScore = score;
-      tied = false;
+      leaders = [index];
     } else if (score === bestScore) {
-      tied = true;
+      leaders.push(index);
     }
   });
-  if (best >= 0) return tied ? null : best;
+  if (leaders.length === 1) return leaders[0] ?? null;
+  if (leaders.length > 1) {
+    // A nested group is one wrapper's slice of a larger date widget (e.g. the
+    // Year half of "From MM/YYYY"), so it only ties with a standalone group of
+    // the same label when no section text separates them — Workday renders
+    // "Work Experience 1 From" and "Education 1 From" with no heading the
+    // enumerator can see. The standalone group is the field the step names.
+    const standalone = leaders.filter((i) => !groups[i]?.nested);
+    return standalone.length === 1 ? (standalone[0] ?? null) : null;
+  }
   // A step that names no field at all can only mean the one date widget on the
   // page; a named field that matched no label must never fall back to it.
   if (quoted.length > 0 || stepTokens.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t))) return null;
