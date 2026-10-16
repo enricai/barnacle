@@ -54,6 +54,7 @@ import {
   type Capture,
   type RateLimitFinding,
   type ReplayResult,
+  readBrowserFlowOnly,
   readCaptureDir,
   readJsonDir,
   readOwnBackendHostnames,
@@ -11787,22 +11788,6 @@ export interface FallbackGateSpec {
 }
 
 /**
- * Reads the flow file's `browserFlowOnly: true` opt-in, which forces the
- * browser-flow-only emit for a submission flow whose HTTP analysis would
- * otherwise produce an executeHttp path. Anything but a literal `true` (or an
- * unreadable/legacy bare-array file) is "not opted in".
- */
-export function parseBrowserFlowOnlyOptIn(flowFileContents: string): boolean {
-  try {
-    const raw: unknown = JSON.parse(flowFileContents);
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
-    return (raw as { browserFlowOnly?: unknown }).browserFlowOnly === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Parses `browserFallbackGate`/`httpTimeoutMs` out of an object-form
  * recon-flow.json, mirroring {@link parseFoldReturnSpec}'s null-safe pattern:
  * a missing file, a legacy bare-array flow, or a malformed declaration all
@@ -14248,7 +14233,7 @@ export function emitContractTs(opts: {
     payloadFieldNames,
   });
   const isReservedByApplicantContactSchema = (name: string): boolean =>
-    usesApplicantContactSchema && applicantContactFieldNames.has(name);
+    usesApplicantContactSchema && applicantContactFieldNames.has(canonicalPayloadField(name));
   // A missing inputBody, or one with no ApplicantContactSchema evidence,
   // means this is not a job-application submission flow. The former keeps
   // its own read-flow `{ query }` contract untouched; the latter (a body WAS
@@ -14393,7 +14378,7 @@ export function emitContractTs(opts: {
     // The browser-flow-only emit canonicalises its own splices already; this
     // covers a caller handing over vocabulary-row names directly, so one never
     // becomes a required key beside the base schema's own equivalent.
-    const canonicaliseNames = usesApplicantContactSchema && omitExecuteHttp && isSubmissionFlow;
+    const canonicaliseNames = usesApplicantContactSchema;
     for (const rawName of [...payloadFieldNames].sort()) {
       const name = canonicaliseNames ? canonicalPayloadField(rawName) : rawName;
       if (isReservedByApplicantContactSchema(name)) continue;
@@ -15669,7 +15654,15 @@ export function emitConfigManifest(opts: {
     browserFlowOnly = false,
     env = process.env,
   } = opts;
-  const canonicalise = isSubmissionFlow && browserFlowOnly;
+  // Raw (uncanonicalised) splice names are the evidence for a body-less flow;
+  // the decision must be made on them before canonicalising, or it is circular.
+  const canonicalise = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
+      .payloadFieldNames,
+  });
   const payloadFieldNames = new Set<string>();
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
@@ -15948,7 +15941,13 @@ export function emitBrowserFlowTs(opts: {
     env = process.env,
   } = opts;
 
-  const canonicalise = isSubmissionFlow && browserFlowOnly;
+  const canonicalise = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames: computeFlowPayloadFieldNames(flowSteps, vocabulary, env, false)
+      .payloadFieldNames,
+  });
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
@@ -15959,14 +15958,7 @@ export function emitBrowserFlowTs(opts: {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
   }
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
-  const contractCarriesResume =
-    hasMultipartStep ||
-    contractUsesApplicantContactSchema({
-      inputBody,
-      isSubmissionFlow,
-      browserFlowOnly,
-      payloadFieldNames,
-    });
+  const contractCarriesResume = hasMultipartStep || canonicalise;
   const knownFieldValues = buildKnownFieldValues(
     flowSteps,
     vocabulary ?? EMPTY_VOCABULARY,
@@ -16660,13 +16652,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  const browserFlowOnlyOptIn = (() => {
-    try {
-      return parseBrowserFlowOnlyOptIn(readFileSync(flowFile, "utf8"));
-    } catch {
-      return false;
-    }
-  })();
+  const browserFlowOnlyOptIn = existsSync(flowFile) ? readBrowserFlowOnly(flowFile) : false;
 
   // Flow-declared signals that isolate the submission POSTs from same-origin
   // page chrome. Threaded into action-sequence extraction and header derivation
@@ -16706,9 +16692,17 @@ async function main(): Promise<void> {
    * already written its output and there is nothing left for main() to do.
    */
   function generateFromCaptures(activeCaptures: Capture[]): TsGenerationResult | null {
+    if (activeCaptures.length === 0 && !allowEmptyCapture) {
+      throw new Error(
+        "empty capture pool: no captures remain to derive a base URL from (a placeholder origin would leak into the contract)"
+      );
+    }
+    // An opted-in empty capture has no origin to derive; "" leaves the
+    // operator's siteBaseUrls config as the only source instead of a
+    // placeholder origin leaking into the contract.
     const baseUrl =
       activeCaptures.length === 0
-        ? "https://example.com"
+        ? ""
         : deriveBaseUrl(activeCaptures, ownBackendHostnames, submitPatterns);
     // Gate on the flow's declared own-backend hosts (or the registrable-domain
     // fallback of baseUrl) via the same predicate recon-http.ts applies at

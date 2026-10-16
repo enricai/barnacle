@@ -3,11 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  contractUsesApplicantContactSchema,
-  emitContractTs,
-  parseBrowserFlowOnlyOptIn,
-} from "@/scripts/recon-generate";
+import { contractUsesApplicantContactSchema, emitContractTs } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -439,17 +435,6 @@ describe("contractUsesApplicantContactSchema with browserFlowOnly", () => {
         browserFlowOnly: true,
       })
     ).toBe(false);
-  });
-
-  it("parses the flow-file opt-in only for a literal true", () => {
-    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: true }))).toBe(
-      true
-    );
-    expect(parseBrowserFlowOnlyOptIn(JSON.stringify({ steps: [], browserFlowOnly: "yes" }))).toBe(
-      false
-    );
-    expect(parseBrowserFlowOnlyOptIn("[]")).toBe(false);
-    expect(parseBrowserFlowOnlyOptIn("nope")).toBe(false);
   });
 });
 
