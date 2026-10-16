@@ -33,8 +33,8 @@ describe("emitContractTs — payload schema field dedup against ApplicantContact
         "State",
         "PostalCode",
         "Email",
-        "MobilePhone",
-        "AddressLine1",
+        "PreferredShift",
+        "DesiredSalary",
       ]),
     });
 
@@ -49,8 +49,8 @@ describe("emitContractTs — payload schema field dedup against ApplicantContact
     }
     expect(payloadSchemaBlock.split("Email:").length - 1).toBe(1);
 
-    expect(payloadSchemaBlock).toContain("MobilePhone: z.string()");
-    expect(payloadSchemaBlock).toContain("AddressLine1: z.string()");
+    expect(payloadSchemaBlock).toContain("PreferredShift: z.string()");
+    expect(payloadSchemaBlock).toContain("DesiredSalary: z.string()");
 
     const payloadSchemaExtendCount = (payloadSchemaBlock.match(/\.extend\(\{/g) ?? []).length;
     expect(payloadSchemaExtendCount).toBe(1);
@@ -71,12 +71,12 @@ describe("emitContractTs — payload schema field dedup against ApplicantContact
       auxFiles: [],
       multiStepBody: undefined,
       inputBody,
-      payloadFieldNames: new Set(["MobilePhone"]),
+      payloadFieldNames: new Set(["PreferredShift"]),
     });
 
-    expect(source).toContain("MobilePhone: z.string()");
+    expect(source).toContain("PreferredShift: z.string()");
     expect(source).toContain(
-      "ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n  MobilePhone: z.string(),\n})"
+      "ApplicantContactSchema.extend({\n  Email: z.email(),\n  ClickUrl: z.string().min(1),\n  Answers: multipartJsonObject(z.record(z.string(), z.unknown())),\n  PreferredShift: z.string(),\n})"
     );
   });
 });
