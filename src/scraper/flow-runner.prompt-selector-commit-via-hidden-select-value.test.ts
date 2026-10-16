@@ -4,7 +4,6 @@ import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { maskValueShape } from "@/lib/pii-redaction";
-import { answerCentreHitTest, withDirectClick } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -173,7 +172,30 @@ function buildHarness(params: {
     select.selectedIndex = idx;
   };
 
+  const rectIds = new Map<number, Element>();
+  const rectIdOf = new WeakMap<object, number>();
+  const stubRect = (el: Element): void => {
+    if (rectIdOf.has(el)) return;
+    const id = rectIds.size + 1;
+    rectIds.set(id, el);
+    rectIdOf.set(el, id);
+    Object.defineProperty(el, "getBoundingClientRect", {
+      value: () => ({
+        left: id * 10,
+        right: id * 10 + 10,
+        top: 0,
+        bottom: 10,
+        width: 10,
+        height: 10,
+      }),
+    });
+  };
+  Object.defineProperty(document, "elementFromPoint", {
+    value: (x: number): Element | null => rectIds.get(Math.floor(x / 10)) ?? null,
+  });
+
   const runExpr = (expr: string): unknown => {
+    for (const el of Array.from(document.querySelectorAll("*"))) stubRect(el as Element);
     const fn = new window.Function("document", "window", "CSS", `return (${expr});`) as (
       d: unknown,
       w: unknown,
@@ -184,21 +206,23 @@ function buildHarness(params: {
 
   const resolveFirst = (selector: string): Element | null => {
     try {
-      return document.querySelector(selector);
+      const el = document.querySelector(selector);
+      if (el) stubRect(el);
+      return el;
     } catch {
       return null;
     }
   };
 
-  const locator = (selector: string) => ({
-    count: async (): Promise<number> => {
-      try {
-        return document.querySelectorAll(selector).length;
-      } catch {
-        return 0;
-      }
-    },
-    first: () => ({
+  const locator = (selector: string) => {
+    const handle = {
+      count: async (): Promise<number> => {
+        try {
+          return document.querySelectorAll(selector).length;
+        } catch {
+          return 0;
+        }
+      },
       click: async (): Promise<void> => {
         clicks.push(selector);
         const el = resolveFirst(selector);
@@ -218,23 +242,24 @@ function buildHarness(params: {
       fill: async (): Promise<void> => undefined,
       isChecked: async (): Promise<boolean> => false,
       inputValue: async (): Promise<string> => "",
-    }),
-  });
+      first: (): unknown => handle,
+    };
+    return handle;
+  };
 
-  const evaluate = async (expr: unknown): Promise<unknown> =>
-    answerCentreHitTest(expr) ?? runExpr(String(expr));
+  const evaluate = async (expr: unknown): Promise<unknown> => runExpr(String(expr));
 
   const page = {
     evaluate,
     url: () => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
-    locator: withDirectClick(locator),
+    locator: locator,
     waitForTimeout: async (): Promise<void> => undefined,
   };
 
   const target = {
     evaluate,
-    locator: withDirectClick(locator),
+    locator: locator,
     url: async (): Promise<string> => "https://careers.example.com/apply/job/1",
     title: async (): Promise<string> => "Apply",
     frame: null,

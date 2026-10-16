@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { StepVerificationError } from "@/scraper/errors";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
@@ -158,5 +159,146 @@ describe("flow-runner/tryPromptSelectorPrimitive virtualized list (real DOM)", (
       "[data-automation-id='promptSelectionLabel']"
     )?.textContent;
     expect(committed).toBe("Sweden");
+  });
+
+  it("never clicks a node that scrollIntoView re-binds to another item, and re-resolves to the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    const clickedTexts: string[] = [];
+    let rebound = false;
+    const originalEvaluate = target.evaluate.bind(target) as (e: unknown) => Promise<unknown>;
+    (target as unknown as { evaluate: (e: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ): Promise<unknown> => {
+      const source = String(expr);
+      const selector = /querySelector\("(\[data-bcl-prompt-opt-idx=[^\]]*\])"\)/.exec(source)?.[1];
+      if (!source.includes("scrollIntoView") || !selector) return originalEvaluate(expr);
+      const node = window.document.querySelector(selector.replace(/\\"/g, '"'));
+      if (!node) return { state: "missing" };
+      if (!rebound && node.textContent?.trim() === "Sweden") {
+        rebound = true;
+        const other = Array.from(window.document.querySelectorAll("[role='option']")).find(
+          (n) => n.textContent?.trim() === "Denmark"
+        );
+        for (const [n, text] of [
+          [node, "Denmark"],
+          [other, "Sweden"],
+        ] as const) {
+          if (!n) continue;
+          n.textContent = text;
+          n.setAttribute("data-automation-label", text);
+        }
+      }
+      const expected = /actual !== "([^"]*)"/.exec(source)?.[1];
+      const actual = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (expected !== undefined && actual !== expected) return { state: "mismatch" };
+      if (expected !== undefined) clickedTexts.push(actual);
+      return { state: "hit" };
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(rebound).toBe(true);
+    expect(clickedTexts).not.toContain("Denmark");
+    expect(clickedTexts.every((t) => t === "Sweden")).toBe(true);
+  });
+
+  it("does not credit a step whose click commits a different item than the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    type Loc = { click: () => Promise<void> };
+    const swapOnClick =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          click: async (): Promise<void> => {
+            const node = window.document.querySelector(selector);
+            if (node?.getAttribute("role") === "option" && node.textContent?.trim() === "Sweden") {
+              node.textContent = "Denmark";
+              node.setAttribute("data-automation-label", "Denmark");
+            }
+            await loc.click();
+          },
+        };
+      };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = swapOnClick(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = swapOnClick(targetLoc.locator);
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const outcome = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).then(
+      (r) => r,
+      (e: unknown) => e
+    );
+
+    const committed = window.document.querySelector(
+      "[data-automation-id='promptSelectionLabel']"
+    )?.textContent;
+    expect(committed).toBe("Denmark");
+    expect(outcome).not.toBe("completed");
+    expect(outcome).toBeInstanceOf(StepVerificationError);
+  });
+
+  it("withholds the click when a re-render lands between the centring pass and the click", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window } = buildPromptWidgetHarness({
+      html: VIRTUALIZED_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS } },
+    });
+    let rebound = false;
+    const originalEvaluate = target.evaluate.bind(target) as (e: unknown) => Promise<unknown>;
+    (target as unknown as { evaluate: (e: unknown) => Promise<unknown> }).evaluate = async (
+      expr: unknown
+    ): Promise<unknown> => {
+      const nodes = Array.from(window.document.querySelectorAll("[role='option']"));
+      if (String(expr).includes("scrollIntoView") && !rebound && nodes.length > 1) {
+        rebound = true;
+        const texts = nodes.map((n) => n.textContent?.trim() ?? "");
+        nodes.forEach((n, i) => {
+          const text = texts[(i + 1) % texts.length] ?? "";
+          n.textContent = text;
+          n.setAttribute("data-automation-label", text);
+        });
+      }
+      return originalEvaluate(expr);
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(rebound).toBe(true);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Sweden");
   });
 });

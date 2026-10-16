@@ -113,7 +113,7 @@ import {
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
-import { guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import { CLICK_INTENT_RE, guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
@@ -973,8 +973,6 @@ const ATTEMPT_BACKOFF_MS = 1_000;
  * actionable.
  */
 const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
-
-const CLICK_INTENT_RE = /\bclick\b/i;
 
 /**
  * Shared pre-click centre + hit-test for a Stagehand-resolved selector, so
@@ -8653,9 +8651,19 @@ async function tryPromptSelectorPrimitive(params: {
       }
       const options = [];
       for (let i = 0; i < opts.length; i++) {
-        opts[i].setAttribute(markAttr, String(i));
         const label = optionLabel(opts[i]);
-        options.push({ oIdx: i, text: label });
+        const ids = window.__bclOptionNodeIds || (window.__bclOptionNodeIds = { map: new WeakMap(), next: 0 });
+        if (!ids.map.has(opts[i])) ids.map.set(opts[i], ids.next++);
+        // Stamped with the node's own identity, not its list position: a
+        // re-enumeration after a virtualized re-render or scroll can reorder
+        // positions, so a positional stamp would re-address a different item.
+        opts[i].setAttribute(markAttr, String(ids.map.get(opts[i])));
+        options.push({
+          oIdx: i,
+          text: label,
+          nodeId: ids.map.get(opts[i]),
+          domText: (opts[i].textContent || "").replace(/\\s+/g, " ").trim(),
+        });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
       // popup from the document-wide last-resort fallback in
@@ -8670,7 +8678,7 @@ async function tryPromptSelectorPrimitive(params: {
     type EnumerateOptionsResult = {
       optionsPresent: boolean;
       searchable?: boolean;
-      options?: { oIdx: number; text: string }[];
+      options?: PromptOptionRead[];
       scopeIsDocument?: boolean;
     };
     // Pre-check (single evaluate, no polling): a PRIOR primitive call on this
@@ -8783,24 +8791,47 @@ async function tryPromptSelectorPrimitive(params: {
       return null;
     }
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
-    let optionsFiltered = await pollEnumerate<EnumerateOptionsResult>(
-      page,
-      target,
-      enumerateOptionsExpr,
-      isOwnScopePopup
-    );
+    let optionsFiltered: EnumerateOptionsResult | null =
+      await pollEnumerate<EnumerateOptionsResult>(
+        page,
+        target,
+        enumerateOptionsExpr,
+        isOwnScopePopup
+      );
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
-    for (
-      let submit = 0;
-      submit < PROMPT_SELECTOR_MAX_ENTER_SUBMITS &&
-      !promptOptionsNameOption(optionsFiltered, option);
-      submit++
-    ) {
+    // The list is settled BEFORE each submit decision, so a search-as-you-type
+    // list still re-rendering (stale rows from the prior query) never reads as
+    // "names nothing", and the precondition is re-read right before the key
+    // press so a list that loaded in the meantime is not submitted at.
+    for (let submit = 0; ; submit++) {
+      optionsFiltered = optionsFiltered?.optionsPresent
+        ? await readStablePromptOptions<EnumerateOptionsResult>(
+            page,
+            target,
+            enumerateOptionsExpr,
+            optionsFiltered
+          )
+        : null;
+      if (
+        !optionsFiltered ||
+        promptOptionsNameOption(optionsFiltered, option) ||
+        submit >= PROMPT_SELECTOR_MAX_ENTER_SUBMITS
+      ) {
+        break;
+      }
+      const live = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
+      if (promptOptionsNameOption(live, option)) {
+        optionsFiltered = live;
+        continue;
+      }
       logger.info(
         `prompt-selector primitive: filtered list for ${optLabel} names no matching option; submitting with Enter`
       );
       try {
+        await target.evaluate(
+          `(() => { const el = document.querySelector('[${PROMPT_OPTION_MARK_ATTR}-search="1"]'); if (el) el.focus(); })()`
+        );
         await sendTrustedEnter(page);
       } catch (err) {
         logger.info(
@@ -8816,17 +8847,9 @@ async function tryPromptSelectorPrimitive(params: {
         (r) => isOwnScopePopup(r) && promptOptionsNameOption(r, option)
       );
     }
-    if (optionsFiltered?.optionsPresent) {
-      optionsFiltered = await readStablePromptOptions<EnumerateOptionsResult>(
-        page,
-        target,
-        enumerateOptionsExpr,
-        optionsFiltered
-      );
-    }
     if (!optionsFiltered?.optionsPresent) {
       logger.info(
-        `prompt-selector primitive: filtered popup for ${optLabel} rendered no options; falling through`
+        `prompt-selector primitive: filtered popup for ${optLabel} rendered no stable options; falling through`
       );
       return null;
     }
@@ -8855,19 +8878,27 @@ async function tryPromptSelectorPrimitive(params: {
 const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
 
 /**
- * Re-reads the filtered list until two consecutive reads carry identical
- * ordered option text, so the committer never picks from a list that is still
- * re-rendering. The last read is returned because each read re-marks the live
- * nodes; an earlier read's marks may point at detached elements. Bounded: after
- * the cap the latest read is returned as-is.
+ * One enumerated option. `nodeId` is the in-page identity of the stamped node
+ * and `domText` its own text content (what the click-time identity check sees).
  */
-async function readStablePromptOptions<T extends { options?: { text: string }[] }>(
+type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string };
+
+/**
+ * Re-reads the filtered list until two consecutive reads carry identical
+ * ordered option text AND node identity, so a virtualized list that reuses
+ * nodes is never treated as settled. The last read is returned because each
+ * read re-marks the live nodes; an earlier read's marks may point at detached
+ * elements. Returns null when the list is still changing at the cap, so the
+ * committer is never handed an unsettled list.
+ */
+async function readStablePromptOptions<T extends { options?: PromptOptionRead[] }>(
   page: Page,
   target: FrameTarget,
   enumerateOptionsExpr: string,
   initial: T
-): Promise<T> {
-  const key = (r: T): string => JSON.stringify((r?.options ?? []).map((o) => o.text));
+): Promise<T | null> {
+  const key = (r: T): string =>
+    JSON.stringify((r?.options ?? []).map((o) => [o.text, o.nodeId ?? null]));
   let current = initial;
   for (let read = 0; read < PROMPT_SELECTOR_MAX_STABLE_READS; read++) {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
@@ -8877,8 +8908,11 @@ async function readStablePromptOptions<T extends { options?: { text: string }[] 
     if (stable) return current;
   }
   logger.info("prompt-selector primitive: filtered list still changing after stable-read cap");
-  return current;
+  return null;
 }
+
+/** Cap on click-time re-resolves when the stamped node is re-bound mid-scroll. */
+const PROMPT_SELECTOR_MAX_CLICK_RESOLVES = 3;
 
 /** Cap on trusted Enter submits for a search-on-submit prompt selector. */
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
@@ -8888,16 +8922,32 @@ function normPromptOptionText(s: string): string {
   return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** Entries a widget renders when it holds no results (e.g. "No Items.", "No results for x"). */
+const PROMPT_PLACEHOLDER_RE =
+  /^(no\b|nothing\b|none$|loading|searching|type to search|press enter|hit enter|search for|\.\.\.)|\b(no (results?|items?|matches|options?|data|records)|not found|nothing found|0 results?)\b/;
+
 /**
- * Detects a list that still needs a submit: true only when some option's text
- * equals the requested option, so any placeholder wording is treated alike.
+ * Detects whether the list already names the requested option, so the submit
+ * decision never fires Enter at a widget that searches as you type. Looser than
+ * commitPromptOption's exact detMatch on purpose: a rendered label that differs
+ * by a prefix or suffix still means the list answered the query. A shorter
+ * entry the request merely contains (a chip "Oslo" for "University of Oslo")
+ * names nothing requested. Placeholder entries never count, even when they
+ * echo the requested text.
  */
 function promptOptionsNameOption(
   result: { options?: { text: string }[] } | null | undefined,
   option: string
 ): boolean {
   const want = normPromptOptionText(option);
-  return (result?.options ?? []).some((o) => normPromptOptionText(o.text) === want);
+  if (want === "") return true;
+  return (result?.options ?? []).some((o) => {
+    const text = normPromptOptionText(o.text);
+    if (text === "") return false;
+    if (text === want) return true;
+    if (PROMPT_PLACEHOLDER_RE.test(text)) return false;
+    return text.includes(want);
+  });
 }
 
 /** Dispatches a trusted Enter to the focused element (the filter input) via CDP. */
@@ -8937,7 +8987,7 @@ async function commitPromptOption(params: {
   option: string;
   questionLabel: string | null;
   chosen: { wIdx: number; label: string };
-  optionsResult: { options?: { oIdx: number; text: string }[] };
+  optionsResult: { options?: PromptOptionRead[] };
   enumerateOptionsExpr: string;
 }): Promise<string | null> {
   const {
@@ -9003,41 +9053,64 @@ async function commitPromptOption(params: {
     const matchReason = detMatch ? "deterministic" : `LLM: ${(verdict?.reason ?? "").slice(0, 60)}`;
 
     // A virtualized list may reuse nodes between the read and the click, so the
-    // stamped index can now point at a different item: re-stamp and re-resolve
-    // the matched option by text, then click the index from that fresh read.
+    // stamped index can point at a different item. Each attempt re-stamps and
+    // re-resolves the matched option by text, and the click itself asserts the
+    // node still carries that item's text after the centring scroll; a mismatch
+    // re-resolves instead of clicking.
     const wantChosenText = norm(chosenOption.text);
-    const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
-      options?: { oIdx: number; text: string }[];
-    } | null;
-    const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
-    const freshOption = freshMatches.find((o) => o.oIdx === chosenOption.oIdx) ?? freshMatches[0];
-    if (!freshOption) {
-      logger.info(
-        `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
-      );
-      return null;
+    let clicked = false;
+    for (let attempt = 0; attempt < PROMPT_SELECTOR_MAX_CLICK_RESOLVES && !clicked; attempt++) {
+      const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
+        options?: PromptOptionRead[];
+      } | null;
+      const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+      const freshOption =
+        freshMatches.find((o) => o.nodeId !== undefined && o.nodeId === chosenOption.nodeId) ??
+        freshMatches[0];
+      if (!freshOption) {
+        logger.info(
+          `prompt-selector primitive: matched option no longer present for ${optLabel}; falling through`
+        );
+        return null;
+      }
+      const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.nodeId ?? freshOption.oIdx}"]`;
+      try {
+        const expectedDomText = freshOption.domText ?? wantChosenText;
+        await clickCentredTrusted(target, optionSel, {
+          label: "prompt-selector option",
+          expectText: expectedDomText,
+          verifyBeforeClick: async () =>
+            (await target
+              .evaluate(
+                `((sel, want) => {
+                  const el = document.querySelector(sel);
+                  if (!el || !el.isConnected) return false;
+                  return (el.textContent || "").replace(/\\s+/g, " ").trim() === want;
+                })(${JSON.stringify(optionSel)}, ${JSON.stringify(expectedDomText)})`
+              )
+              .catch(() => null)) !== false,
+        });
+        clicked = true;
+      } catch (err) {
+        const mismatch = toErrorMessage(err).includes("identity mismatch");
+        logger.info(
+          `prompt-selector primitive: option click ${mismatch ? "withheld" : "failed"} for ${optLabel}: ${toErrorMessage(err)}; ${mismatch ? "re-resolving" : "falling through"}`
+        );
+        if (!mismatch) return null;
+      }
     }
-
-    const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.oIdx}"]`;
-    try {
-      await clickCentredTrusted(target, optionSel, { label: "prompt-selector option" });
-    } catch (err) {
-      logger.info(
-        `prompt-selector primitive: option click failed for ${optLabel}: ${toErrorMessage(err)}; falling through`
-      );
-      return null;
-    }
+    if (!clicked) return null;
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
-    const isRequestedLeaf = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
+    const isRequestedOption = norm(chosenOption.text) === wantOpt;
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
-      if (!w) return { ok: false, id: "" };
+      if (!w) return { ok: false, id: "", stillInvalid: false };
       const text = currentText(w, valueSel, emptyRx);
       const textMatches = wantText ? text.includes(wantText) : text !== "";
       let node = w;
@@ -9091,14 +9164,14 @@ async function commitPromptOption(params: {
           cnode = cnode.parentElement;
         }
       }
-      // A category click may leave the widget's aria-invalid unset until final
-      // submit, so !stillInvalid alone only counts as success when this click
-      // landed on the requested leaf option, not an intermediate category.
-      return { ok: textMatches || (isRequestedLeaf && !stillInvalid) || hiddenSelectMatches, id: w.id || "" };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedLeaf)})`;
-    const readback = (await target.evaluate(readbackExpr).catch(() => ({ ok: false, id: "" }))) as {
+      return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
+    const readback = (await target
+      .evaluate(readbackExpr)
+      .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
       ok: boolean;
       id: string;
+      stillInvalid: boolean;
     };
     if (readback?.ok) {
       logger.info(
@@ -9132,6 +9205,14 @@ async function commitPromptOption(params: {
         `prompt-selector primitive: selection for ${optLabel} did not commit; falling through to cascade`
       );
       return null;
+    }
+    // Category click on the requested option: the drill itself is the observed
+    // effect, and it never commits a value, so only a widget not flagged invalid counts.
+    if (isRequestedOption && !readback.stillInvalid) {
+      logger.info(
+        `prompt-selector primitive: requested option "${chosenOption.text.slice(0, 40)}" for ${optLabel} opened a new option set (${matchReason})`
+      );
+      return readback?.id ?? "";
     }
     logger.info(
       `prompt-selector primitive: click for ${optLabel} drilled the popup to a new option set; re-matching at the new level`
@@ -12288,8 +12369,9 @@ export async function executeStepWithHealing(params: {
     // click-intent instruction resolve it with observe first and centre it;
     // a sticky bar otherwise swallows Stagehand's own click. Throws when the
     // control stays covered so the attempt fails instead of clicking an overlay.
-    const preCentreNaturalLanguageClick = async (instruction: string): Promise<void> => {
-      if (!CLICK_INTENT_RE.test(instruction)) return;
+    // Resolves true once the observe ran, so guardedAct skips its own pass.
+    const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
+      if (!CLICK_INTENT_RE.test(instruction)) return false;
       const observed = await guardedObserve(
         stagehand,
         instruction,
@@ -12298,7 +12380,7 @@ export async function executeStepWithHealing(params: {
         frameTarget
       ).catch(() => [] as Action[]);
       const first = observed[0];
-      if (first?.method !== "click" || !first.selector) return;
+      if (first?.method !== "click" || !first.selector) return true;
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector,
@@ -12307,6 +12389,7 @@ export async function executeStepWithHealing(params: {
         true
       );
       if (failure) throw new Error(failure);
+      return true;
     };
 
     try {
@@ -12378,13 +12461,14 @@ export async function executeStepWithHealing(params: {
         record.technique = "act-string";
         record.instruction = step;
         params.abortSignal?.throwIfAborted();
-        await preCentreNaturalLanguageClick(step);
+        const preCentred = await preCentreNaturalLanguageClick(step);
         const result = await guardedAct(
           stagehand,
           step,
           { timeout: STEP_WATCHDOG_MS },
           captureFn,
-          frameTarget ?? mainFrameTarget(page)
+          frameTarget ?? mainFrameTarget(page),
+          preCentred
         );
         record.actResultSuccess = result.success;
         record.actResultDescription = result.actionDescription;
@@ -13346,13 +13430,14 @@ export async function executeStepWithHealing(params: {
           } else {
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
-            await preCentreNaturalLanguageClick(rephrased);
+            const preCentred = await preCentreNaturalLanguageClick(rephrased);
             const result = await guardedAct(
               stagehand,
               rephrased,
               { timeout: STEP_WATCHDOG_MS },
               captureFn,
-              frameTarget ?? mainFrameTarget(page)
+              frameTarget ?? mainFrameTarget(page),
+              preCentred
             );
             record.actResultSuccess = result.success;
             record.actResultDescription = result.actionDescription;

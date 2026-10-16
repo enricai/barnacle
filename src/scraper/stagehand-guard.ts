@@ -98,6 +98,9 @@ const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
 const logger = getLogger({ name: "scraper/stagehand-guard" });
 
+/** Instructions that name a click; only these are worth an observe to find a click point. */
+export const CLICK_INTENT_RE = /\bclick\b/i;
+
 const TRANSIENT_RETRIES = 2;
 const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
 
@@ -272,7 +275,9 @@ async function resolveClickAction(
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
 ): Promise<Action | undefined> {
-  if (typeof stagehand.observe !== "function") return undefined;
+  if (typeof stagehand.observe !== "function" || !CLICK_INTENT_RE.test(instruction)) {
+    return undefined;
+  }
   const observeOptions = frameScopedOptions<ObserveOptions>(
     options?.timeout ? { timeout: options.timeout } : {},
     frameTarget
@@ -361,7 +366,9 @@ async function centreAction(
  * now fails the attempt instead of blocking the step forever.
  *
  * Click targets are centred and hit-tested before Stagehand acts (see
- * `preCentreClickTarget`); a given `frameTarget` scopes that pass. The
+ * `preCentreClickTarget`); a given `frameTarget` scopes that pass, and
+ * `preCentred` skips it when the caller already resolved and centred the
+ * target, so one click does not cost two observe calls. The
  * trailing `frameTarget` param is not forwarded into
  * `ActOptions` — `ActOptions` has no `selector` field, and its `page`
  * override only accepts a full Playwright/Puppeteer/Patchright/understudy
@@ -378,7 +385,8 @@ export async function guardedAct(
   input: string | Action,
   options?: ActOptions,
   captureFn?: StagehandCaptureFn,
-  frameTarget?: FrameTarget
+  frameTarget?: FrameTarget,
+  preCentred = false
 ): Promise<ActResult> {
   const callId = randomUUID();
   // Request values travel as Stagehand `variables`, substituted only when
@@ -391,7 +399,7 @@ export async function guardedAct(
   const userContent = actInstructionOf(sendInput);
   const t0 = performance.now();
   try {
-    await preCentreClickTarget(stagehand, sendInput, sendOptions, frameTarget);
+    if (!preCentred) await preCentreClickTarget(stagehand, sendInput, sendOptions, frameTarget);
     // Stagehand's `act` has two overloads (string and Action) that share the
     // same runtime implementation (dispatch is via `isObserveResult` inside
     // Stagehand). The two branches LOOK identical but TS can't resolve the

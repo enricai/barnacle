@@ -19,7 +19,7 @@ export const DEFAULT_CENTRED_CLICK_ATTEMPTS = 3;
 /** Outcome of one in-page centre + hit-test pass. */
 export interface CentredHitTestResult {
   /** `"hit"` when the centre point resolves to the target; otherwise why not. */
-  state: "hit" | "occluded" | "missing";
+  state: "hit" | "occluded" | "missing" | "mismatch";
   /** Short description of the element covering the point, when occluded. */
   occluder?: string;
 }
@@ -41,6 +41,19 @@ export interface CentredTrustedClickOptions {
   attempts?: number;
   /** Names the target in logs and errors. */
   label?: string;
+  /**
+   * Normalised text (whitespace collapsed, trimmed) the target must still have
+   * after the centring scroll; a virtualized list can re-bind the node to a
+   * different item mid-scroll. A mismatch withholds the click.
+   */
+  expectText?: string;
+  /**
+   * Re-checks the target's identity in a separate call after the centring pass
+   * and immediately before the click, so a re-render that landed while the
+   * centring call was in flight (or that no in-page check could see) still
+   * withholds the click. Resolving `false` is reported as an identity mismatch.
+   */
+  verifyBeforeClick?: () => Promise<boolean>;
 }
 
 /**
@@ -48,10 +61,24 @@ export interface CentredTrustedClickOptions {
  * the content-box centre, walking up through shadow-root hosts so a target
  * inside a shadow tree still counts as hit by its own descendants.
  */
-export const CENTRE_AND_HIT_TEST_FN = `function () {
+export const CENTRE_AND_HIT_TEST_FN = buildCentreAndHitTestFn();
+
+/**
+ * Builds the centring function; with `expectText` the identity check runs in
+ * the same synchronous in-page call, after the scroll and before the hit-test,
+ * so no await gap lets a re-render swap the node in between.
+ */
+export function buildCentreAndHitTestFn(expectText?: string): string {
+  const identityCheck =
+    expectText === undefined
+      ? ""
+      : `
+  const actual = (el.textContent || "").replace(/\\s+/g, " ").trim();
+  if (actual !== ${JSON.stringify(expectText)}) return { state: "mismatch" };`;
+  return `function () {
   const el = this;
   if (!el || !el.isConnected) return { state: "missing" };
-  el.scrollIntoView({ block: "center", inline: "center" });
+  el.scrollIntoView({ block: "center", inline: "center" });${identityCheck}
   const rect = el.getBoundingClientRect();
   const cs = getComputedStyle(el);
   const px = (v) => parseFloat(v) || 0;
@@ -72,17 +99,18 @@ export const CENTRE_AND_HIT_TEST_FN = `function () {
   const id = hit && hit.id ? "#" + hit.id : "";
   return { state: "occluded", occluder: tag + id };
 }`;
+}
 
 /**
  * Thrown by {@link centreAndHitTest} when no pass lands on the target. `state`
- * lets callers tell an occluder (never click) from a target the evaluating
- * document cannot see (Stagehand may still resolve it across a frame or shadow
- * boundary).
+ * lets callers tell an occluder or a re-bound node (never click) from a target
+ * the evaluating document cannot see (Stagehand may still resolve it across a
+ * frame or shadow boundary).
  */
 export class CentredClickError extends Error {
   constructor(
     message: string,
-    readonly state: "occluded" | "missing"
+    readonly state: "occluded" | "missing" | "mismatch"
   ) {
     super(message);
     this.name = "CentredClickError";
@@ -96,7 +124,9 @@ export class CentredClickError extends Error {
  * guarantee a clear click point first. Retries re-centre because a lazy-loaded
  * layout shift or a sticky bar can move between passes.
  *
- * @throws when the target is missing or still occluded after all attempts.
+ * @throws when the target is missing, fails the `expectText` identity check
+ * (no retry: the node was re-bound), or is still occluded after all attempts —
+ * never clicks an overlay.
  */
 export async function centreAndHitTest(
   evaluateOnElement: EvaluateOnElementFn,
@@ -104,13 +134,36 @@ export async function centreAndHitTest(
 ): Promise<void> {
   const attempts = Math.max(1, opts.attempts ?? DEFAULT_CENTRED_CLICK_ATTEMPTS);
   const label = opts.label ?? "target";
+  const centreFn =
+    opts.expectText === undefined
+      ? CENTRE_AND_HIT_TEST_FN
+      : buildCentreAndHitTestFn(opts.expectText);
   let last: CentredHitTestResult = { state: "missing" };
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const result = await evaluateOnElement(CENTRE_AND_HIT_TEST_FN);
-    last = result?.state === "hit" || result?.state === "occluded" ? result : { state: "missing" };
-    if (last.state === "hit") return;
+    const result = await evaluateOnElement(centreFn);
+    if (typeof result?.state !== "string") {
+      throw new TypeError(`hit-test probe for ${label} returned no state`);
+    }
+    last =
+      result.state === "hit" || result.state === "occluded" || result.state === "mismatch"
+        ? result
+        : { state: "missing" };
+    if (last.state === "hit") {
+      if (opts.verifyBeforeClick && !(await opts.verifyBeforeClick())) {
+        last = { state: "mismatch" };
+        break;
+      }
+      return;
+    }
+    if (last.state === "mismatch") break;
     logger.warn(
       `click point for ${label} not on target (${last.state}${last.occluder ? `, covered by ${last.occluder}` : ""}), attempt: ${attempt}/${attempts}`
+    );
+  }
+  if (last.state === "mismatch") {
+    throw new CentredClickError(
+      `centred click: ${label} identity mismatch after scroll, click withheld`,
+      "mismatch"
     );
   }
   throw new CentredClickError(
@@ -141,7 +194,7 @@ export async function clickAfterCentredHitTest(
  * Builds the in-frame expression resolving `selector` (css, or `xpath=` /
  * bare xpath beginning with `/` or `(`) and applying the centring function.
  */
-function buildSelectorExpression(selector: string): string {
+function buildSelectorExpression(selector: string, expectText?: string): string {
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
   const isXpath = stripped.startsWith("/") || stripped.startsWith("(");
   const lookup = isXpath
@@ -150,7 +203,7 @@ function buildSelectorExpression(selector: string): string {
   return `(() => {
     const el = ${lookup};
     if (!el) return { state: "missing" };
-    return (${CENTRE_AND_HIT_TEST_FN}).call(el);
+    return (${buildCentreAndHitTestFn(expectText)}).call(el);
   })()`;
 }
 
@@ -173,7 +226,7 @@ export async function clickCentredTrusted(
   selector: string,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
-  const expression = buildSelectorExpression(selector);
+  const expression = buildSelectorExpression(selector, opts.expectText);
   await clickAfterCentredHitTest(
     firstMatchClickable(target.locator(selector)),
     () => target.evaluate<CentredHitTestResult>(expression),
@@ -190,7 +243,7 @@ export async function centreSelectorForClick(
   selector: string,
   opts: CentredTrustedClickOptions = {}
 ): Promise<void> {
-  const expression = buildSelectorExpression(selector);
+  const expression = buildSelectorExpression(selector, opts.expectText);
   await centreAndHitTest(() => target.evaluate<CentredHitTestResult>(expression), {
     label: selector,
     ...opts,

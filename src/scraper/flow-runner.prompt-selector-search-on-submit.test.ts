@@ -175,4 +175,167 @@ describe("flow-runner/tryPromptSelectorPrimitive search-on-submit (real DOM)", (
     )?.textContent;
     expect(committed).toBe("Sweden");
   });
+
+  it.each([
+    ["exact label", ["Norway", "Sweden", "Denmark"], "Sweden", "Sweden"],
+    ["suffix label", ["Norway", "Sweden (SE)", "Denmark"], "Sweden", "Sweden (SE)"],
+    ["prefix label", ["Norway", "Kingdom of Sweden", "Denmark"], "Sweden", "Kingdom of Sweden"],
+  ])(
+    "sends no Enter for a filter-as-you-type typeahead (%s)",
+    async (_name, options, requested, expectedCommit) => {
+      const stagehandAct = vi.fn();
+      const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+        html: SEARCH_ON_SUBMIT_HTML,
+        popupByWidgetId: {
+          "country-widget": { options, searchable: true },
+        },
+      });
+      const merged = {
+        ...baseParams(page as unknown as Page, stagehandAct, ""),
+        frameTarget: target,
+        step: `for 'Country of residence' select '${requested}'`,
+      };
+
+      const result = await executeStepWithHealing(
+        merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+      ).catch(() => "failed");
+
+      expect(enterKeyDowns(cdpEvents)).toBe(0);
+      if (expectedCommit !== requested) return;
+      expect(result).toBe("completed");
+      const committed = window.document.querySelector(
+        "[data-automation-id='promptSelectionLabel']"
+      )?.textContent;
+      expect(committed).toBe(expectedCommit);
+    }
+  );
+
+  it("sends Enter when the list holds only a shorter chip the request merely contains", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: {
+        "country-widget": {
+          options: ["Oslo", "University of Oslo", "University of Bergen"],
+          searchOnSubmit: true,
+        },
+      },
+    });
+    type Loc = { first: () => { fill?: (v: string) => Promise<void> } };
+    const withChip =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          first: () => {
+            const el = loc.first();
+            const fill = el.fill?.bind(el);
+            if (!fill) return el;
+            return {
+              ...el,
+              fill: async (value: string): Promise<void> => {
+                await fill(value);
+                const chip = window.document.createElement("li");
+                chip.setAttribute("role", "option");
+                chip.textContent = "Oslo";
+                window.document
+                  .querySelector("[data-test-popup-for] [role='listbox']")
+                  ?.append(chip);
+              },
+            };
+          },
+        };
+      };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = withChip(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = withChip(targetLoc.locator);
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'University of Oslo'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(enterKeyDowns(cdpEvents)).toBe(1);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("University of Oslo");
+  });
+
+  it("sends no Enter when a search-as-you-type list shows stale rows first and settles on the requested option", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target, window, cdpEvents } = buildPromptWidgetHarness({
+      html: SEARCH_ON_SUBMIT_HTML,
+      popupByWidgetId: { "country-widget": { options: OPTIONS, searchable: true } },
+    });
+    let restore: (() => void) | null = null;
+    type Loc = { first: () => { fill?: (v: string) => Promise<void> } };
+    const staleAfterFill =
+      (original: (s: string) => unknown) =>
+      (selector: string): unknown => {
+        const loc = original(selector) as Loc;
+        return {
+          ...loc,
+          first: () => {
+            const el = loc.first();
+            const fill = el.fill?.bind(el);
+            if (!fill) return el;
+            return {
+              ...el,
+              fill: async (value: string): Promise<void> => {
+                await fill(value);
+                const nodes = Array.from(window.document.querySelectorAll("[role='option']"));
+                const texts = nodes.map((n) => n.textContent ?? "");
+                const setText = (
+                  n: { textContent: string | null; setAttribute: (k: string, v: string) => void },
+                  text: string
+                ): void => {
+                  n.textContent = text;
+                  n.setAttribute("data-automation-label", text);
+                };
+                for (const n of nodes) setText(n, "Previous results");
+                restore = () => {
+                  nodes.forEach((n, i) => {
+                    setText(n, texts[i] ?? "");
+                  });
+                };
+              },
+            };
+          },
+        };
+      };
+    const pageLoc = page as unknown as { locator: (s: string) => unknown };
+    pageLoc.locator = staleAfterFill(pageLoc.locator);
+    const targetLoc = target as unknown as { locator: (s: string) => unknown };
+    targetLoc.locator = staleAfterFill(targetLoc.locator);
+    const timed = page as unknown as { waitForTimeout: () => Promise<void> };
+    const originalWait = timed.waitForTimeout.bind(page);
+    let waits = 0;
+    timed.waitForTimeout = async () => {
+      if (restore) waits += 1;
+      if (waits === 2) (restore as (() => void) | null)?.();
+      await originalWait();
+    };
+    const merged = {
+      ...baseParams(page as unknown as Page, stagehandAct, ""),
+      frameTarget: target,
+      step: "for 'Country of residence' select 'Sweden'",
+    };
+
+    const result = await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    );
+
+    expect(result).toBe("completed");
+    expect(enterKeyDowns(cdpEvents)).toBe(0);
+    expect(
+      window.document.querySelector("[data-automation-id='promptSelectionLabel']")?.textContent
+    ).toBe("Sweden");
+  });
 });
