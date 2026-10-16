@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ReconVocabulary } from "@/recon/vocabulary";
+import { buildConfigPlugin } from "@/plugins/config-plugin";
 import { emitBrowserFlowTs, emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 /** Concatenation trick so Biome's noTemplateCurlyInString rule doesn't flag the literal. */
@@ -102,5 +103,14 @@ describe("emitConfigManifest account-creation maxAttempts", () => {
 
   it("omits maxAttempts without the token", () => {
     expect(emit(["Click the Apply button"]).spec).not.toHaveProperty("maxAttempts");
+  });
+
+  it("loads through buildConfigPlugin and forwards maxAttempts", async () => {
+    const manifest = emit([
+      `Fill in the Password field with '${RECON_PASSWORD_TOKEN}'`,
+      "Click the Sign up button",
+    ]);
+    const plugin = await buildConfigPlugin(manifest);
+    expect(plugin.meta.maxAttempts).toBe(1);
   });
 });
