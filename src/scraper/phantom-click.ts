@@ -253,6 +253,19 @@ function headWordSimilarity(pre: string, post: string): number {
   return shared / union.size;
 }
 
+/** Words dropped AND introduced in the head for it to count as swapped copy. */
+const PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS = 2;
+
+function isHeadSwapped(pre: string, post: string): boolean {
+  const preWords = textHeadWords(pre);
+  const postWords = textHeadWords(post);
+  const dropped = [...preWords].filter((w) => !postWords.has(w)).length;
+  const added = [...postWords].filter((w) => !preWords.has(w)).length;
+  return (
+    dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS && added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS
+  );
+}
+
 /**
  * Decides whether the page demonstrably advanced (a wizard step swapped
  * content) from pre/post snapshots alone, so a network-free, URL-stable
@@ -281,7 +294,10 @@ export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSna
   ) {
     return true;
   }
-  return similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY;
+  if (similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY) return true;
+  // Shared chrome (nav, footer) inflates similarity when a wizard swaps only
+  // its header and body copy within the 200-char head.
+  return isHeadSwapped(preSig, postSig);
 }
 
 /**
