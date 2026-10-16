@@ -464,7 +464,7 @@ function walkNavigateToFacets(
           origin: "step",
           literals: collectStepFacetLiterals(step.step, env),
           kind: deriveFacetKind(step.payloadField),
-          kindHints: [],
+          kindHints: collectStepFacetKindHints(step.step, env),
         });
       }
       continue;
@@ -522,6 +522,46 @@ function collectStepFacetLiterals(instruction: string, env: NodeJS.ProcessEnv): 
     primary,
     findInstructionSpans(instruction).map((span) => span.text)
   );
+}
+
+const STEP_KIND_STOP_WORDS = new Set([
+  "facet",
+  "filter",
+  "field",
+  "value",
+  "option",
+  "selection",
+  "the",
+  "a",
+  "an",
+  "dropdown",
+  "drop-down",
+  "selector",
+  "menu",
+  "list",
+  "widget",
+  "question",
+]);
+
+/**
+ * Element kinds a click step's own prose names: the noun phrase trailing the
+ * value span ("select the 'Lisbon' city option" names `city`), so a facet whose
+ * field name differs from the page's vocabulary can still own the element of
+ * that kind. Reads only the generic instruction grammar, no site vocabulary.
+ */
+function collectStepFacetKindHints(instruction: string, env: NodeJS.ProcessEnv): string[] {
+  const value = extractStepPersonaValue(instruction, env);
+  const span = findInstructionSpans(instruction).find((candidate) => candidate.text === value);
+  if (span === undefined) return [];
+  const phrase = instruction
+    .slice(span.end)
+    .split(/[.,;:]|\b(?:from|in|on|for|with|and|then|to)\b/i)[0]!;
+  const words = phrase
+    .split(/\s+/)
+    .map((word) => word.replace(/^['"]+|['"]+$/g, ""))
+    .filter((word) => /^[A-Za-z][A-Za-z0-9_-]*$/.test(word));
+  const kindWords = words.filter((word) => !STEP_KIND_STOP_WORDS.has(word.toLowerCase()));
+  return [...new Set([...(kindWords.length > 1 ? [kindWords.join(" ")] : []), ...kindWords])];
 }
 
 function collectHashFacetLiterals(url: string, previousHash: string | undefined): string[] {
@@ -7800,16 +7840,36 @@ export function resolveRecurringNavigateToFacets(
   // recurs in one vocabulary (a hash slug, a quoted label) says nothing about
   // the same facet's element in another (`WW;filterType=ship`).
   const claimedLiterals = new Set<string>();
-  const aliased = declared.flatMap((facet) => {
-    const literal = findKindKeyedLiteral(facet, actions);
-    if (literal === undefined || declared.some(({ value }) => value === literal)) return [];
-    if (claimedLiterals.has(literal)) return [];
-    claimedLiterals.add(literal);
-    const known = [facet.value, ...(facet.literals ?? [])];
-    if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
-    const valueMap = new Map(facet.value.length > 0 ? [[facet.value, literal]] : []);
-    return [{ ...facet, value: literal, literals: [literal], keyedByKind: true, valueMap }];
-  });
+  const pairsByField = new Map<string, [string, string][]>();
+  const aliased = declared
+    .flatMap((facet) =>
+      findKindKeyedLiterals(facet, actions).flatMap((literal) => {
+        if (declared.some(({ value }) => value === literal)) return [];
+        if (claimedLiterals.has(literal)) return [];
+        claimedLiterals.add(literal);
+        const known = [facet.value, ...(facet.literals ?? [])];
+        // A case-only variant is already owned by the declared facet, whose
+        // renderer re-cases any caller value to the captured element's casing.
+        if (known.some((candidate) => candidate.toLowerCase() === literal.toLowerCase())) return [];
+        // The traffic carries codes, not which declared value each belongs to;
+        // pair only where the code abbreviates the value, never by position.
+        const sameField = declared.filter(
+          ({ field, value }) => field === facet.field && value.length > 0
+        );
+        const abbreviated = sameField.filter(({ value }) => abbreviates(literal, value));
+        const owners = abbreviated.length > 0 || sameField.length !== 1 ? abbreviated : sameField;
+        if (owners.length > 0)
+          pairsByField.set(facet.field, [
+            ...(pairsByField.get(facet.field) ?? []),
+            ...owners.map((owner): [string, string] => [owner.value, literal]),
+          ]);
+        return [{ ...facet, value: literal, literals: [literal], keyedByKind: true }];
+      })
+    )
+    .map((alias) => {
+      const pairs = pairsByField.get(alias.field) ?? [];
+      return pairs.length === 0 ? alias : { ...alias, valueMap: new Map(pairs) };
+    });
   if (unreachable.length === 0 && aliased.length === 0) return resolvedDeclared;
   const aliasedFields = new Set(aliased.map(({ field }) => field));
   const awaiting = unreachable.filter(({ field }) => !aliasedFields.has(field));
@@ -7834,16 +7894,18 @@ export function resolveRecurringNavigateToFacets(
 }
 
 /**
- * The literal a facet takes in the code vocabulary: the captured request
+ * The literals a facet takes in the code vocabulary: the captured request
  * element (query value or body string leaf) whose `<literal><delim>key=<kind>`
  * suffix names the facet's own kind. Derived from the traffic itself, so it
  * never depends on how many other facets or transitions the flow declared.
- * Returns `undefined` unless exactly one distinct literal carries the kind.
+ * A kind carrying several distinct literals across captures yields each of
+ * them, so every element of the kind is owned instead of none; the month
+ * evidence narrows them only when it singles out some of them.
  */
-function findKindKeyedLiteral(
+function findKindKeyedLiterals(
   facet: NavigateToFacetBinding,
   actions: readonly Pick<ActionStep, "capture">[]
-): string | undefined {
+): string[] {
   const byTier = new Map<number, Set<string>>();
   const sameMonth = new Set<string>();
   const facetMonths = new Set(
@@ -7880,9 +7942,9 @@ function findKindKeyedLiteral(
     }
   }
   const closest = [...byTier.entries()].sort(([a], [b]) => a - b)[0]?.[1];
-  if (closest !== undefined && closest.size === 1) return [...closest][0];
-  const sameMonthInKind = [...(closest ?? sameMonth)].filter((literal) => sameMonth.has(literal));
-  return sameMonthInKind.length === 1 ? sameMonthInKind[0] : undefined;
+  if (closest === undefined) return sameMonth.size === 1 ? [...sameMonth] : [];
+  const sameMonthInKind = [...closest].filter((literal) => sameMonth.has(literal));
+  return sameMonthInKind.length > 0 && closest.size > 1 ? sameMonthInKind : [...closest];
 }
 
 /**
@@ -9743,6 +9805,19 @@ function facetCaseMethod(
   if (prefix === facet.value.toUpperCase()) return "toUpperCase";
   if (prefix === facet.value.toLowerCase()) return "toLowerCase";
   return undefined;
+}
+
+/** True when `code`'s letters occur in order within `value`, starting at its first letter (`LIS` in `Lisbon`). */
+function abbreviates(code: string, value: string): boolean {
+  const letters = code.toLowerCase().replace(/[^a-z]/g, "");
+  const target = value.toLowerCase();
+  if (letters.length === 0 || letters[0] !== target[0]) return false;
+  let from = 0;
+  for (const letter of letters) {
+    from = target.indexOf(letter, from) + 1;
+    if (from === 0) return false;
+  }
+  return true;
 }
 
 /**
@@ -15387,6 +15462,17 @@ function unreadDeclaredPayloadFields(
   );
 }
 
+/**
+ * Review-checklist lines for declared payload fields no emitted request reads,
+ * so a reviewer sees the silently-optionalized field outside the log stream.
+ */
+export function unreadPayloadFieldChecklistLines(fields: ReadonlySet<string>): string[] {
+  return [...fields].map(
+    (field) =>
+      `Declared payloadField ${field} is read by no emitted request and was emitted optional — confirm it should affect the request, or drop it`
+  );
+}
+
 /** A flow step as read from recon-flow.json, carrying the optional splicer hints. */
 type FlowStepInput =
   | string
@@ -17403,7 +17489,12 @@ async function main(): Promise<void> {
   logger.info(`wrote ${outDir}/contract.ts`);
   // Same opts fed to emitContractTs above, so this can never drift from what
   // the header used to embed.
-  const checklist = buildContractChecklist(final.contractOpts);
+  const checklist = [
+    ...buildContractChecklist(final.contractOpts),
+    ...unreadPayloadFieldChecklistLines(
+      unreadDeclaredPayloadFields(final.contractCode, final.browserFlow.code, flowSteps)
+    ),
+  ];
   logger.info(
     `review checklist for ${outDir}/contract.ts:\n${checklist.map((item) => `  [ ] ${item}`).join("\n")}`
   );

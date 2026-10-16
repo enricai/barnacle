@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { unreferencedDeclaredPayloadFields } from "@/scripts/recon-generate";
+import {
+  unreadPayloadFieldChecklistLines,
+  unreferencedDeclaredPayloadFields,
+} from "@/scripts/recon-generate";
 
 describe("unreferencedDeclaredPayloadFields", () => {
   const contract = "Facet: z.string(),\nOther: z.string(),\nconst x = payload.Other;";
@@ -53,5 +56,37 @@ describe("unreferencedDeclaredPayloadFields nested braces", () => {
         { step: "pick", payloadField: "Facet" },
       ])
     ).toEqual([]);
+  });
+});
+
+describe("unreadPayloadFieldChecklistLines", () => {
+  it("emits one checklist line per unread field and none for a threaded set", () => {
+    const lines = unreadPayloadFieldChecklistLines(new Set(["Facet"]));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Facet");
+    expect(unreadPayloadFieldChecklistLines(new Set())).toEqual([]);
+  });
+
+  it("emits a line for each of several unread fields, naming each", () => {
+    const lines = unreadPayloadFieldChecklistLines(new Set(["Facet", "Other"]));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("Facet");
+    expect(lines[1]).toContain("Other");
+  });
+
+  it("reports a field whose only mention is incidental text, not a request-body read", () => {
+    const steps = [{ step: "pick", payloadField: "Facet" }];
+    const unread = unreferencedDeclaredPayloadFields(
+      "Facet: z.string(),",
+      '// payload.Facet\nconst s = "payload.Facet";',
+      steps
+    );
+    expect(unreadPayloadFieldChecklistLines(new Set(unread))).toHaveLength(1);
+    const threaded = unreferencedDeclaredPayloadFields(
+      "Facet: z.string(),",
+      "send(payload.Facet);",
+      steps
+    );
+    expect(unreadPayloadFieldChecklistLines(new Set(threaded))).toEqual([]);
   });
 });
