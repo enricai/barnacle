@@ -132,7 +132,6 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
   firstMatchClickable,
-  isClickPointUnobscured,
   probeClickPoint,
 } from "@/scraper/trusted-click";
 import {
@@ -6618,13 +6617,7 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       try {
         // An open option popup can cover the field; clear it so the trusted
         // click lands on the segment instead of falling back to a bare focus().
-        const clear =
-          (await isClickPointUnobscured(target, selector)) ||
-          (await dismissLeftoverPromptPopups(page, target).then(
-            () => isClickPointUnobscured(target, selector),
-            () => false
-          ));
-        if (clear) {
+        if (await clearObscuringPopup(page, target, selector)) {
           await clickCentredTrusted(target, selector, { label: "date segment" });
         }
       } catch {
@@ -9546,8 +9539,45 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
         return false;
       });
     if (!trusted || attempt > 0) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
-    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS).catch(() => undefined);
+    await settleAfterEscape(page);
   }
+}
+
+/** Waits for a dismissed popup to unpaint; a page without a timer seam just proceeds. */
+async function settleAfterEscape(page: Page): Promise<void> {
+  await Promise.resolve()
+    .then(() => page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS))
+    .catch(() => undefined);
+}
+
+/**
+ * Clears whatever popup paints over `selector`'s click point so the caller's
+ * trusted click lands on the field. The hit test, not the popup's markup, is
+ * the evidence: a named occluder gets the listbox-aware dismissal first and
+ * then a plain Escape for popups that dismissal does not recognise. Resolves
+ * true only when a fresh hit test reaches the field; an indeterminate probe
+ * (no layout, nothing at the point) is never treated as covered.
+ */
+async function clearObscuringPopup(
+  page: Page,
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const covered = (probe: Awaited<ReturnType<typeof probeClickPoint>>): boolean =>
+    probe?.state === "occluded" && probe.occluder !== undefined && probe.occluder !== "none";
+  const first = await probeClickPoint(target, selector);
+  if (first?.state === "hit") return true;
+  if (!covered(first)) return false;
+  await dismissLeftoverPromptPopups(page, target).catch(() => undefined);
+  const afterListbox = await probeClickPoint(target, selector);
+  if (afterListbox?.state === "hit") return true;
+  if (!covered(afterListbox)) return false;
+  const trusted = await sendTrustedEscape(page)
+    .then(() => true)
+    .catch(() => false);
+  if (!trusted) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
+  await settleAfterEscape(page);
+  return (await probeClickPoint(target, selector))?.state === "hit";
 }
 
 /**

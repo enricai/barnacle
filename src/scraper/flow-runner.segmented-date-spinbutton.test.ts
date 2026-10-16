@@ -406,4 +406,50 @@ describe("segmented date primitive obscured click point", () => {
     expect(events).toContain("focus");
     expect(id).toBe("segmented-date-0");
   });
+
+  it("dismisses a popup the listbox heuristic does not recognise, on a page with no timer seam", async () => {
+    const events: string[] = [];
+    let popupOpen = true;
+    const { target: base } = harness(GROUPS, [1, 2020]);
+    const baseEvaluate = base.evaluate as unknown as (expr: string) => Promise<unknown>;
+    const target = {
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("elementFromPoint")) {
+          return popupOpen ? { state: "occluded", occluder: "div#calendar" } : { state: "hit" };
+        }
+        if (expr.includes("activeListContainer")) return 0;
+        return baseEvaluate(expr);
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {
+          events.push("click");
+        },
+      })),
+    } as unknown as FrameTarget;
+    const page = {
+      sendCDP: async (_m: string, a: { type: string; key: string }) => {
+        if (a.type !== "keyDown") return;
+        events.push(a.key === "Escape" ? "escape" : `digit:${a.key}`);
+        if (a.key === "Escape") popupOpen = false;
+      },
+    } as never;
+    const id = await trySegmentedDateSpinbuttonPrimitive({
+      page,
+      target,
+      logger,
+      instruction: WORK_FROM,
+    });
+    expect(id).toBe("segmented-date-0");
+    const escapeAt = events.indexOf("escape");
+    expect(escapeAt).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("click")).toBeGreaterThan(escapeAt);
+    expect(events.findIndex((e) => e.startsWith("digit:"))).toBeGreaterThan(
+      events.indexOf("click")
+    );
+  });
 });
