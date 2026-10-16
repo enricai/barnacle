@@ -3,6 +3,7 @@ import type { FrameTarget } from "@/scraper/frame-target";
 import {
   buildCentreAndHitTestFn,
   CENTRE_AND_HIT_TEST_FN,
+  CentredClickError,
   type CentredHitTestResult,
   centreSelectorForClick,
   clickAfterCentredHitTest,
@@ -199,5 +200,80 @@ describe("clickCentredTrusted expectText", () => {
       new Function(`return (${buildCentreAndHitTestFn(expected)})`)().call(make(text));
     expect(run("Row 7", "Row 8").state).toBe("mismatch");
     expect(() => run("Row 7", "  Row\n   7 ")).toThrow(/getBoundingClientRect/);
+  });
+});
+
+describe("centre probe executed against a fake element", () => {
+  interface ScrollCall {
+    block: string;
+    behavior: string;
+  }
+
+  function fakeElement(opts: { footerCoversAfterScroll: boolean }): {
+    el: object;
+    scrolls: ScrollCall[];
+  } {
+    const scrolls: ScrollCall[] = [];
+    const footer = { tagName: "FOOTER", id: "bar", parentNode: null };
+    const el: Record<string, unknown> = {
+      isConnected: true,
+      tagName: "BUTTON",
+      parentNode: null,
+      scrollIntoView: (o: ScrollCall): void => {
+        scrolls.push(o);
+      },
+      getBoundingClientRect: () => ({ left: 0, right: 100, top: 0, bottom: 40 }),
+    };
+    el.getRootNode = () => ({
+      elementFromPoint: () => {
+        const settled = scrolls.some((s) => s.behavior === "instant");
+        return settled && !opts.footerCoversAfterScroll ? el : footer;
+      },
+    });
+    return { el, scrolls };
+  }
+
+  function runProbe(el: object): CentredHitTestResult {
+    vi.stubGlobal("getComputedStyle", () => ({}));
+    try {
+      return new Function(`return (${CENTRE_AND_HIT_TEST_FN})`)().call(el);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("reports hit when the instant scroll moves the control clear of a sticky bottom:0 footer", () => {
+    const { el, scrolls } = fakeElement({ footerCoversAfterScroll: false });
+    expect(runProbe(el)).toEqual({ state: "hit" });
+    expect(scrolls).toEqual([{ block: "center", inline: "center", behavior: "instant" }]);
+  });
+
+  it("re-centres on each retry pass so no pass reads a pre-scroll position", async () => {
+    const { el, scrolls } = fakeElement({ footerCoversAfterScroll: false });
+    const results: CentredHitTestResult[] = [{ state: "occluded", occluder: "footer#bar" }];
+    const evaluateOnElement = vi.fn(async (fn: string) => {
+      const r = results.shift();
+      if (r) return r;
+      expect(fn).toBe(CENTRE_AND_HIT_TEST_FN);
+      return runProbe(el);
+    });
+    const click = vi.fn(async () => {});
+    await clickAfterCentredHitTest({ click }, evaluateOnElement);
+    expect(evaluateOnElement).toHaveBeenCalledTimes(2);
+    expect(scrolls).toHaveLength(1);
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws CentredClickError without clicking when still occluded after every attempt", async () => {
+    const { el, scrolls } = fakeElement({ footerCoversAfterScroll: true });
+    const click = vi.fn(async () => {});
+    const err = await clickAfterCentredHitTest({ click }, async () => runProbe(el), {
+      attempts: 3,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CentredClickError);
+    expect((err as CentredClickError).state).toBe("occluded");
+    expect((err as Error).message).toMatch(/occluded by footer#bar after 3 attempts/);
+    expect(scrolls).toHaveLength(3);
+    expect(click).not.toHaveBeenCalled();
   });
 });
