@@ -130,13 +130,14 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
       .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
     const target = makeChildTarget(childEvaluate);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] = [];
     (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       signalCounter.n = 1;
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
         url: "https://apply.example.com/attachment_upload",
+        hasBody: true,
       });
     });
 
@@ -164,13 +165,14 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
     const page = makeFakePage(pageEvaluate);
     const target = mainFrameTarget(page);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] = [];
     (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       signalCounter.n = 1;
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
         url: "https://apply.example.com/attachment_upload",
+        hasBody: true,
       });
     });
 

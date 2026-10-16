@@ -447,6 +447,8 @@ export function wireSignalCapture(
         method: capture.method,
         status: capture.status,
         url: capture.url,
+        hasBody: (req.requestPostData ?? "").length > 0,
+        multipart: /^multipart\//i.test(requestContentType(req.requestHeaders)),
       });
       if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
         recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
@@ -5333,7 +5335,21 @@ const UPLOAD_URL_PATTERNS = [
 ] as const;
 
 /** One entry of the recent-network-capture window shared across upload helpers. */
-type CaptureMeta = { method: string; status: number; url: string };
+type CaptureMeta = {
+  method: string;
+  status: number;
+  url: string;
+  /** Request carried a non-empty post body (CDP omits it for some binary bodies, hence `multipart`). */
+  hasBody?: boolean;
+  /** Request Content-Type was multipart/*, the shape of a browser file upload. */
+  multipart?: boolean;
+};
+
+/** Case-insensitive Content-Type lookup; CDP preserves the page's header casing. */
+function requestContentType(headers: Record<string, string>): string {
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+  return key ? (headers[key] ?? "") : "";
+}
 
 /** Fixture shape carried by the upload helpers (never null past the guard). */
 type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
@@ -5342,10 +5358,10 @@ type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
  * Poll the recent-capture window for an upload-related POST after a file has
  * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
  * the click-to-surface path, and the CDP native-chooser path all verify the
- * same way. Returns true as soon as a non-GET capture whose URL matches
- * {@link UPLOAD_URL_PATTERNS} lands; false if the timeout elapses first.
+ * same way. Returns true as soon as a non-GET capture that is multipart, or has a
+ * non-empty body and a URL matching {@link UPLOAD_URL_PATTERNS}, lands; false if the timeout elapses first.
  */
-async function waitForUploadNetworkSignal(params: {
+export async function waitForUploadNetworkSignal(params: {
   page: Page;
   fixture: UploadFixture;
   logger: Logger;
@@ -5363,6 +5379,8 @@ async function waitForUploadNetworkSignal(params: {
       const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
       const uploadCapture = newCaptures.find((cap) => {
         if (cap.method === "GET") return false;
+        if (cap.multipart) return true;
+        if (!cap.hasBody) return false;
         const lowerUrl = cap.url.toLowerCase();
         return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
       });
