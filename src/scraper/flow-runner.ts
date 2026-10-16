@@ -4333,6 +4333,31 @@ export interface VerifyFillReadbackResult {
 }
 
 /**
+ * Pre-write check for the observe-act fill override: a lone-segment write
+ * (insertText) cannot compose a date, so callers refuse before any write.
+ * Fails open (false) when the selector or evaluate cannot answer.
+ */
+export async function isDateSegmentAtSelector(
+  target: FrameTarget,
+  selector: string
+): Promise<boolean> {
+  const xpath = xpathBodyForEvaluate(selector);
+  if (xpath === null) return false;
+  const expr = `(() => {
+    const result = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue;
+    if (!el) return false;
+    ${SEGMENT_OWNER_JS}
+    return isDateSegment(el);
+  })()`;
+  try {
+    return (await target.evaluate(expr)) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Read back an element's value after a fill action and compare to the
  * expected value. Catches silent-value-rejection cases that the verifier's
  * existing signals (network/url/dom/htmlDelta/textChanged) miss:
@@ -14051,6 +14076,21 @@ export async function executeStepWithHealing(params: {
                 arguments: [actuation.value],
               };
             }
+          }
+          if (
+            overriddenTarget.method === "fill" &&
+            (await isDateSegmentAtSelector(
+              frameTarget ?? mainFrameTarget(page),
+              overriddenTarget.selector
+            ))
+          ) {
+            record.errorMessage = `refused fill on a date segment: "${target.description.slice(0, 60)}" (a lone-segment write cannot compose a date)`;
+            attempts.push(record);
+            failureReasons.push(record.errorMessage);
+            logger.info(
+              `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${record.errorMessage}`
+            );
+            continue;
           }
           params.abortSignal?.throwIfAborted();
           // Stagehand's internal Locator.click() does not scroll past sticky
