@@ -4259,8 +4259,8 @@ export async function verifyFillReadback(
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
-    const siblings = el.parentElement ? el.parentElement.querySelectorAll("[role='spinbutton']").length : 0;
-    if (el.getAttribute && el.getAttribute("role") === "spinbutton" && siblings > 1) {
+    ${SEGMENT_OWNER_JS}
+    if (isDateSegment(el)) {
       return { outcome: "segment", postValue: el.value || el.getAttribute("aria-valuenow") || "", tag };
     }
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
@@ -6322,13 +6322,12 @@ export function resolveSegmentedDateGroup(
   return only.length === 1 ? (only[0] ?? null) : null;
 }
 
-const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
-
-/** Exported so tests can run the real DOM enumeration against markup. */
-export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
-  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
-  const stale = document.querySelectorAll("[" + attr + "]");
-  stale.forEach((el) => el.removeAttribute(attr));
+/**
+ * In-page helpers shared by the date-segment enumeration and the fill
+ * readback so "is this spinbutton one segment of a multi-segment widget" has a
+ * single definition; defines `spins`, `ownerOf` and `isDateSegment`.
+ */
+const SEGMENT_OWNER_JS = `
   const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
   const styleOf = (node) => {
     try { return typeof getComputedStyle === "function" ? getComputedStyle(node) : window.getComputedStyle(node); } catch { return null; }
@@ -6342,12 +6341,42 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     return false;
   };
   const spins = Array.from(document.querySelectorAll("input[role='spinbutton']")).filter((el) => !isHidden(el));
-  if (spins.length === 0) return { groups: [] };
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
   const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
     const ref = id ? document.getElementById(id) : null;
     return ref ? norm(ref.textContent) : "";
   }).join(" ");
+  const legendOf = (node) => {
+    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+    return legend ? norm(legend.textContent) : "";
+  };
+  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
+  const tiedToSpin = (l) => l.querySelector("input,[role='spinbutton']") || (l.getAttribute("for") && spins.some((sp) => sp.id === l.getAttribute("for")));
+  const hasCaption = (node) => namedBy(node) !== "" || Array.from(node.querySelectorAll("label,legend")).some((l) => !tiedToSpin(l));
+  const ownerOf = (el) => {
+    const explicit = el.closest("fieldset,[role='group']");
+    if (explicit) return explicit;
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (hasCaption(node)) return node;
+    }
+    return el.parentElement;
+  };
+  const isDateSegment = (el) => {
+    if (!el.getAttribute || el.getAttribute("role") !== "spinbutton" || !spins.includes(el)) return false;
+    const box = ownerOf(el);
+    return spins.filter((sp) => box.contains(sp)).length > 1;
+  };
+`;
+
+const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
+
+/** Exported so tests can run the real DOM enumeration against markup. */
+export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
+  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
+  const stale = document.querySelectorAll("[" + attr + "]");
+  stale.forEach((el) => el.removeAttribute(attr));
+  ${SEGMENT_OWNER_JS}
+  if (spins.length === 0) return { groups: [] };
   const headingSibling = (node) => {
     let prevSib = node.previousElementSibling;
     for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
@@ -6355,11 +6384,6 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     return "";
   };
-  const legendOf = (node) => {
-    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
-    return legend ? norm(legend.textContent) : "";
-  };
-  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
   const sectionOf = (box, includeSelf) => {
     const parts = [includeSelf ? namedBy(box) : "", headingSibling(box)];
     let node = box.parentElement;
@@ -6373,16 +6397,6 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     if (caption) return norm(caption.textContent);
     const prev = box.previousElementSibling;
     return prev && prev.matches("label,legend") && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
-  };
-  const tiedToSpin = (l) => l.querySelector("input,[role='spinbutton']") || (l.getAttribute("for") && spins.some((sp) => sp.id === l.getAttribute("for")));
-  const hasCaption = (node) => namedBy(node) !== "" || Array.from(node.querySelectorAll("label,legend")).some((l) => !tiedToSpin(l));
-  const ownerOf = (el) => {
-    const explicit = el.closest("fieldset,[role='group']");
-    if (explicit) return explicit;
-    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
-      if (hasCaption(node)) return node;
-    }
-    return el.parentElement;
   };
   const byContainer = new Map();
   for (const el of spins) {
