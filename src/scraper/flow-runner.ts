@@ -7064,12 +7064,12 @@ async function settleAndSnapshotPostClick(
   pre: StepSnapshot
 ): Promise<StepSnapshot> {
   if (page)
-    await settleAfterClick(
+    await settleWithPageQuiescence(
       page,
+      target,
       signalCounter,
       pre.networkCount,
       true,
-      async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
       pre.visibleTextSignature
     );
   return snapshotPage(target, signalCounter, page);
@@ -14826,15 +14826,12 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleAfterClick(
+          await settleWithPageQuiescence(
             page,
+            frameTarget ?? mainFrameTarget(page),
             signalCounter,
             pre.networkCount,
             isSettleWaitStep,
-            async () => {
-              const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
-              return snap.visibleTextSignature;
-            },
             pre.visibleTextSignature
           );
           const retryPost = await snapshotPage(

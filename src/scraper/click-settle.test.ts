@@ -155,7 +155,7 @@ describe("settleAfterClick", () => {
       "pre",
       async () => ({ pending: f.polls() < 12 ? 1 : 0, mutations: f.polls() >= 12 ? 1 : 0 })
     );
-    expect(f.polls()).toBe(16);
+    expect(f.polls()).toBe(21);
   });
 
   it("still gives up at 14 polls on a no-op click when the page reports idle", async () => {

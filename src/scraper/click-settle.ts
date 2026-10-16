@@ -95,7 +95,7 @@ export async function settleAfterClick(
     }
     if (seen) {
       quiet += 1;
-      if (quiet >= (textMoved && q === undefined ? TEXT_QUIET_POLLS : QUIET_POLLS)) return;
+      if (quiet >= (textMoved ? TEXT_QUIET_POLLS : QUIET_POLLS)) return;
       continue;
     }
     if (!submitShaped || elapsed >= IDLE_GIVE_UP_MS) return;
