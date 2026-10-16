@@ -7,7 +7,8 @@ import { emitBrowserFlowTs } from "@/scripts/recon-generate";
  * generated browser flow: one emitBrowserFlowTs call carrying every
  * operational literal that must stay literal (button name, device-type
  * dropdown, two Yes/No screening answers) alongside every genuinely-personal
- * value that must splice (name, email, state, phone number), in the same
+ * value that must splice (name, email, state, phone number -- the vocabulary's
+ * `MobilePhone` canonicalises onto ApplicantContactSchema's `Phone`), in the same
  * flow so a future change can't regress one guard while an isolated
  * single-mechanism test keeps passing.
  */
@@ -56,7 +57,7 @@ describe("emitBrowserFlowTs — composite evidence scenario: operational literal
     expect(block).toContain(`$${"{payload.LastName}"}`);
     expect(block).toContain(`$${"{payload.Email}"}`);
     expect(block).toContain(`$${"{payload.State}"}`);
-    expect(block).toContain(`$${"{payload.MobilePhone}"}`);
+    expect(block).toContain(`$${"{payload.Phone}"}`);
 
     expect(block).toContain("'Sign in with email'");
     expect(block).toContain("'Mobile'");
