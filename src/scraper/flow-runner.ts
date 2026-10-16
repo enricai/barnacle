@@ -6180,29 +6180,63 @@ export function parseSegmentedDateValue(
   return null;
 }
 
+/** Keeps a typed date's shape (segment count and widths) in logs without its digits. */
+function maskDateDigits(text: string): string {
+  return text.replace(/\d/g, "9");
+}
+
 function segmentedDateTokens(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
+const SEGMENTED_DATE_PART_LABELS = new Set(["mm", "dd", "yyyy", "yy", "month", "day", "year"]);
+const SEGMENTED_DATE_FIELD_NOUNS = new Set([
+  "date",
+  "field",
+  "group",
+  "input",
+  "spinbutton",
+  "segment",
+  "value",
+  "part",
+]);
+const SEGMENTED_DATE_NAMING_DETERMINERS = new Set(["the", "its", "this", "that", "for", "of"]);
+
 /**
- * Words that name WHICH of several dates a step targets ("the To date"). Prose
- * around them ("auto-advances from month to year") uses the same words with no
- * targeting intent, so they only count when they sit in a field position.
+ * Step tokens with the field words that are mere prose removed. "from"/"to"
+ * only name a date field when a determiner precedes them ("the To date"), a
+ * field noun follows ("From date"), or they are capitalised mid-sentence;
+ * "auto-advances from month to year" names nothing and must never select a
+ * group labelled "From".
  */
-const SEGMENTED_DATE_FIELD_WORDS = ["from", "to", "start", "end", "since", "until", "through"];
-const SEGMENTED_DATE_FIELD_POSITION_RE = new RegExp(
-  `\\b(?:the|its|this|that)\\s+(${SEGMENTED_DATE_FIELD_WORDS.join("|")})\\b(?=\\s+(?:date|month|year|day|mm|dd|yyyy|part|segment|spinbutton|field|group|input)\\b)`,
-  "gi"
-);
+function segmentedDateStepTokens(text: string): string[] {
+  const words = text.match(/[A-Za-z0-9]+/g) ?? [];
+  return words.flatMap((word, i) => {
+    const token = word.toLowerCase();
+    if (!SEGMENTED_DATE_FIELD_WORDS.has(token)) return [token];
+    const prev = (words[i - 1] ?? "").toLowerCase();
+    const next = (words[i + 1] ?? "").toLowerCase();
+    const named =
+      SEGMENTED_DATE_NAMING_DETERMINERS.has(prev) ||
+      SEGMENTED_DATE_FIELD_NOUNS.has(next) ||
+      (i > 0 && /^[A-Z]/.test(word));
+    return named ? [token] : [];
+  });
+}
 
 /**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
- * digit count are dropped. A group is only eligible when a quoted target field
- * from the step (e.g. 'From') matches its OWN label; the surrounding section
- * text only breaks ties between eligible groups. Returns the index into
- * `groups`, or `null` when nothing matches or the best match is tied — writing
- * a date into a group that merely fits the width would corrupt another field.
+ * digit count are dropped. A group is only eligible when a field the step names
+ * (quoted, e.g. 'From', or unquoted in field position, e.g. "the To date")
+ * matches its OWN label as whole words — a group with no `label` is judged by
+ * its whole `context`. The section the step names ("Work Experience 1") is
+ * then resolved: when a width-fitting group elsewhere matches the step's
+ * section words better than any eligible group does, the named section renders
+ * no such field and the step resolves to nothing rather than to another
+ * section's. Returns the index into `groups`, or `null` when nothing matches
+ * or the best match is tied — writing a date into a group that merely fits the
+ * width would corrupt another field.
  */
 export function resolveSegmentedDateGroup(
   instruction: string,
@@ -6213,10 +6247,15 @@ export function resolveSegmentedDateGroup(
   const valueTokens = segmentedDateTokens(value.valueSpan).join(" ");
   const quoted = findQuotedSpans(instruction)
     .map((s) => segmentedDateTokens(s.text.trim()))
-    .filter((t) => t.length > 0 && t.join(" ") !== valueTokens);
-  const stepTokens = segmentedDateTokens(
+    .filter(
+      (t) =>
+        t.length > 0 &&
+        t.join(" ") !== valueTokens &&
+        !(t.length === 1 && SEGMENTED_DATE_PART_LABELS.has(t[0] ?? ""))
+    );
+  const stepTokens = segmentedDateStepTokens(
     instruction.replace(value.valueSpan, " barnaclevalue ")
-  ).filter((t, i, all) => !(t === "to" && all[i + 1] === "barnaclevalue"));
+  );
   const targets = quoted.length > 0 ? quoted : [stepTokens];
   const contains = (hay: readonly string[], needle: readonly string[]): boolean => {
     for (let i = 0; i + needle.length <= hay.length; i++) {
@@ -6228,6 +6267,18 @@ export function resolveSegmentedDateGroup(
     group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
     value.digits.length;
   const stepSet = new Set(stepTokens);
+  const sectionScore = (group: SegmentedDateGroup): number => {
+    const own = new Set(segmentedDateTokens(group.label ?? ""));
+    const sectionTokens = new Set(segmentedDateTokens(group.section ?? group.context));
+    return [...sectionTokens].filter(
+      (t) =>
+        stepSet.has(t) &&
+        !own.has(t) &&
+        !SEGMENTED_DATE_STOPWORDS.has(t) &&
+        !SEGMENTED_DATE_FIELD_WORDS.has(t)
+    ).length;
+  };
+  const bestSection = Math.max(0, ...groups.filter(compatible).map((group) => sectionScore(group)));
   let best = -1;
   let bestScore = -1;
   let tied = false;
@@ -6235,11 +6286,18 @@ export function resolveSegmentedDateGroup(
     if (!compatible(group)) return;
     const own = segmentedDateTokens(group.label ?? group.context);
     if (own.length === 0) return;
-    if (!targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))) return;
-    const sectionTokens = new Set(segmentedDateTokens(group.section ?? ""));
-    const score = [...sectionTokens].filter(
-      (t) => stepSet.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
-    ).length;
+    const namesOwnField =
+      group.label === undefined &&
+      quoted.length === 0 &&
+      own.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t) && stepSet.has(t));
+    if (
+      !namesOwnField &&
+      !targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))
+    ) {
+      return;
+    }
+    const score = sectionScore(group);
+    if (score < bestSection) return;
     if (score > bestScore) {
       best = index;
       bestScore = score;
@@ -6264,11 +6322,14 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const stale = document.querySelectorAll("[" + attr + "]");
   stale.forEach((el) => el.removeAttribute(attr));
   const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
+  const styleOf = (node) => {
+    try { return typeof getComputedStyle === "function" ? getComputedStyle(node) : window.getComputedStyle(node); } catch { return null; }
+  };
   const isHidden = (el) => {
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       if (hiddenAttr(node)) return true;
-      const style = window.getComputedStyle(node);
-      if (style.display === "none" || style.visibility === "hidden") return true;
+      const style = styleOf(node);
+      if (style && (style.display === "none" || style.visibility === "hidden")) return true;
     }
     return false;
   };
@@ -6501,12 +6562,12 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
     if (!matches(actual)) {
       logger.info(
-        `segmented date primitive: readback ${maskValueShape(JSON.stringify(actual))} != ${maskValueShape(JSON.stringify(expected))}; falling through`
+        `segmented date primitive: readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}; falling through`
       );
       return null;
     }
     logger.info(
-      `segmented date primitive: committed segments ${maskValueShape(JSON.stringify(actual))}`
+      `segmented date primitive: committed segments ${maskDateDigits(JSON.stringify(actual))}`
     );
     return `segmented-date-${gi}`;
   } catch (err) {

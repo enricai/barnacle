@@ -52,45 +52,59 @@ describe("flow-runner/segmented date group resolution", () => {
   it("does not parse phone numbers", () => {
     expect(parseSegmentedDateValue("Fill the phone with '555-123-4567'")).toBeNull();
   });
+});
 
-  describe("own-label matching", () => {
-    const YEAR_STEP = "Click the Year spinbutton in the 'From' date of Education 1 and type '2015'";
-    const TO_STEP =
-      "Click the 'MM' month part of the 'To' date in Work Experience 1 and type '122024' in one go — the date field auto-advances from month to year";
-    const own = (ownLabel: string, context = "Education 1"): SegmentedDateGroup => ({
-      segmentMaxes: [9999],
-      context,
-      ownLabel,
-    });
-    const own2 = (ownLabel: string): SegmentedDateGroup => ({
-      segmentMaxes: [12, 9999],
-      context: `Work Experience 1 ${ownLabel}`,
-      ownLabel,
-    });
+describe("segmented date resolution from context alone", () => {
+  const g = (context: string, maxes: number[]): SegmentedDateGroup => ({
+    segmentMaxes: maxes,
+    context,
+  });
+  const PROSE_TO_STEP =
+    "Click the 'MM' month part of the 'To' date in Work Experience 1 and type '122024' — the field auto-advances from month to year";
 
-    it("resolves a Year step only to the group whose own label has 'From'", () => {
-      expect(resolveSegmentedDateGroup(YEAR_STEP, [own("To"), own("From")])).toBe(1);
-    });
+  it("leaves the only rendered From group untouched when the step targets To", () => {
+    expect(
+      resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", [
+        g("Work Experience 1 From", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
 
-    it("returns null for a lone group labelled otherwise", () => {
-      expect(resolveSegmentedDateGroup(YEAR_STEP, [own("Graduation")])).toBeNull();
-    });
+  it("does not let prose 'from' pick a From group of another section for a To step", () => {
+    expect(
+      resolveSegmentedDateGroup(PROSE_TO_STEP, [
+        g("Work Experience 1 From", [12, 9999]),
+        g("Education 1 From", [12, 9999]),
+        g("Education 1 To", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
 
-    it("matches the own label as a whole word, not a substring", () => {
-      expect(resolveSegmentedDateGroup(YEAR_STEP, [own("Fromage")])).toBeNull();
-    });
+  it("does not write a To value into a group labelled only Start date", () => {
+    expect(
+      resolveSegmentedDateGroup("Enter '122024' as the Job 1 To date", [
+        g("Job 1 Start date", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
 
-    it("keeps resolving the 'To' group for the MM/To step", () => {
-      expect(resolveSegmentedDateGroup(TO_STEP, [own2("From"), own2("To")])).toBe(1);
-    });
+  it("types an unquoted To step into the To group among From and To", () => {
+    const groups = [g("Job 1 From", [12, 9999]), g("Job 1 To", [12, 9999])];
+    expect(resolveSegmentedDateGroup("Enter '122024' as the Job 1 To date", groups)).toBe(1);
+    expect(resolveSegmentedDateGroup(PROSE_TO_STEP, groups)).toBe(1);
+  });
 
-    it("does not let the prose word 'from' select a From group", () => {
-      expect(resolveSegmentedDateGroup(TO_STEP, [own2("From")])).toBeNull();
-    });
+  it("leaves a lone To year group untouched when the step names the From year", () => {
+    expect(
+      resolveSegmentedDateGroup("Type '2015' into the From Year spinbutton of Education 1", [
+        g("Education 1 To", [9999]),
+      ])
+    ).toBeNull();
+  });
 
-    it("ignores MM/Year part labels when deciding candidacy", () => {
-      const step = "Click the 'Year' spinbutton and type '2015'";
-      expect(resolveSegmentedDateGroup(step, [own("Graduation")])).toBe(0);
-    });
+  it("still targets a lone group when the step names no field", () => {
+    expect(resolveSegmentedDateGroup("type '012020'", [g("Employment period", [12, 9999])])).toBe(
+      0
+    );
   });
 });
