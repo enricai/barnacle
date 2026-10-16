@@ -7,7 +7,11 @@ interface Harness {
   order: string[];
 }
 
-function harness(opts: { clickFails?: boolean; readbackOk?: boolean[]; centreState?: string }): Harness {
+function harness(opts: {
+  clickFails?: boolean;
+  readbackOk?: boolean[];
+  centreState?: string;
+}): Harness {
   const order: string[] = [];
   const readbacks = [...(opts.readbackOk ?? [])];
   const target = {
