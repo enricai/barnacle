@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ReconVocabulary } from "@/recon/vocabulary";
-import { emitBrowserFlowTs, emitContractTs } from "@/scripts/recon-generate";
+import { emitBrowserFlowTs, emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 /** Concatenation trick so Biome's noTemplateCurlyInString rule doesn't flag the literal. */
 const RECON_PASSWORD_TOKEN = `$${"{RECON_PASSWORD}"}`;
@@ -83,5 +83,24 @@ describe("execute() context parameter reflects usage", () => {
     const source = emitContractTs({ ...CONTRACT_BASE, omitExecuteHttp: false });
     expect(source).toContain("invoked only when hot path fails");
     expect(source).toMatch(/[^_]context: SitePluginContext/);
+  });
+});
+
+describe("emitConfigManifest account-creation maxAttempts", () => {
+  const emit = (flowSteps: string[]): { spec: Record<string, unknown> } =>
+    JSON.parse(
+      emitConfigManifest({ siteId: "test-site", baseUrl: "https://example.org", flowSteps })
+    );
+
+  it("emits spec.maxAttempts: 1 for a RECON_PASSWORD flow", () => {
+    const manifest = emit([
+      `Fill in the Password field with '${RECON_PASSWORD_TOKEN}'`,
+      "Click the Sign up button",
+    ]);
+    expect(manifest.spec.maxAttempts).toBe(1);
+  });
+
+  it("omits maxAttempts without the token", () => {
+    expect(emit(["Click the Apply button"]).spec).not.toHaveProperty("maxAttempts");
   });
 });

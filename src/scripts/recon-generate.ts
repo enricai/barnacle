@@ -15608,6 +15608,15 @@ function buildCompositeStepInstructionExpr(
 }
 
 /**
+ * Whether a flow step splices the reserved password token — the single signal
+ * both emitters use to decide the flow creates an account and must not retry.
+ */
+function stepUsesReconPassword(step: FlowStepInput): boolean {
+  const instruction = typeof step === "string" ? step : step.step;
+  return instruction.includes(RECON_PASSWORD_TOKEN);
+}
+
+/**
  * Build the emitted instruction expression for a step whose splice site is the
  * reserved `${RECON_PASSWORD}` token: a backtick template literal with the
  * token replaced by `${throwawayPassword}`, the per-run credential minted by
@@ -15861,6 +15870,7 @@ export function emitConfigManifest(opts: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
+      ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -16080,7 +16090,7 @@ export function emitBrowserFlowTs(opts: {
     // piece of the caller's applicant identity, so it never reaches
     // resolveStepPayloadField/vocabulary and never routes through
     // payload.<field>. It gets a generated throwaway credential instead.
-    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+    if (stepUsesReconPassword(step)) {
       usesThrowawayPassword = true;
       const instructionExpr = buildPasswordInstructionExpr(instruction);
       const optional = isObj ? step.optional === true : false;
