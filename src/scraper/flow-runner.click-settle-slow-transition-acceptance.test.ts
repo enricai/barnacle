@@ -127,6 +127,8 @@ function makeHeaderThenBodyPage(): VirtualPage {
   return vp;
 }
 
+const EMPTY_STAGE = { fromMs: 0, html: 0, text: "" };
+
 interface Stage {
   fromMs: number;
   html: number;
@@ -145,7 +147,8 @@ function makeTimelinePage(stages: Stage[]): VirtualPage {
       const src = String(expr);
       if (src.includes("outerHTML")) {
         const elapsed = clickedAt === null ? 0 : clock.now - clickedAt;
-        const stage = [...stages].reverse().find((s) => elapsed >= s.fromMs) ?? stages[0];
+        const stage =
+          [...stages].reverse().find((s) => elapsed >= s.fromMs) ?? stages[0] ?? EMPTY_STAGE;
         return { html: stage.html, text: stage.text };
       }
       if (src.includes("isInvalid")) return 0;
