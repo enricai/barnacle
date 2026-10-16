@@ -4512,7 +4512,7 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 
   it("promotes every spliced field into the request schema (no drift)", () => {
-    expect(Object.keys(manifest.spec.request.properties).sort()).toEqual(["Email", "FirstName"]);
+    expect(Object.keys(manifest.spec.request.properties).sort()).toEqual(["Email", "FirstName", "TrackingUrl"]);
   });
 
   it("preserves submit and upload/optional flags on object-form steps", () => {
@@ -4840,7 +4840,7 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
 
   it("does not leak the vendor site-dump field names into the public bodySchema", () => {
     const payloadSchemaMatch = contract.match(
-      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*;/
+      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
