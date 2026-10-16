@@ -250,9 +250,7 @@ export function buildPromptWidgetHarness(params: {
       "{query}",
       state.filter
     );
-    const searchHtml = awaitingSubmit
-      ? `<li data-test-placeholder="true">${placeholder}</li>`
-      : "";
+    const searchHtml = awaitingSubmit ? `<li data-test-placeholder="true">${placeholder}</li>` : "";
     const optsHtml = shown
       .map((o, i) => {
         const label = optionLabel(o);
