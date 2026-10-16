@@ -310,7 +310,11 @@ describe("identity held across click delivery", () => {
   it("verifies after the hit-test and before delivering at the point", async () => {
     const order: string[] = [];
     await clickAfterCentredHitTest(
-      { click: async () => order.push("click") as unknown as void },
+      {
+        click: async () => {
+          order.push("click");
+        },
+      },
       async () => {
         order.push("hit-test");
         return { state: "hit", x: 10, y: 20 };
