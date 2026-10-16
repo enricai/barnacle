@@ -9662,7 +9662,10 @@ function promptOptionsNameOption(
  * session when it has one, otherwise the page's, so keys reach the frame that
  * holds the focused element.
  */
-function frameCdpSender(page: Page, target: FrameTarget): (method: string, args: object) => Promise<unknown> {
+function frameCdpSender(
+  page: Page,
+  target: FrameTarget
+): (method: string, args: object) => Promise<unknown> {
   return (method, args) =>
     target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
 }
