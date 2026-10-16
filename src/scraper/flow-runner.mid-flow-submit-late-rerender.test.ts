@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -66,6 +67,8 @@ function makePage(lateRender: boolean, bodyDelayMs = 8000): VirtualPage {
   let settleDone = false;
   const page = {
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("outerHTML")) {
         const elapsed = clickedAt === null ? 0 : clock.now - clickedAt;

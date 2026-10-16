@@ -1,6 +1,7 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 import type { Logger } from "@/types/logging";
@@ -149,6 +150,8 @@ function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
     },
   };
   return (async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const source = String(expr);
     const fn = new Function("document", "Event", "XPathResult", `return (${source});`) as (
       d: unknown,

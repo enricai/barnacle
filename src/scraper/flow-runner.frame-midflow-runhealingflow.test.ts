@@ -166,8 +166,15 @@ describe("flow-runner/runHealingFlow — resolves a mid-flow iframe per step", (
       frameSelector: FRAME_SELECTOR,
     });
 
-    expect(guardedObserve.mock.calls).toHaveLength(2);
-    const [firstStepCall, secondStepCall] = guardedObserve.mock.calls as [unknown[], unknown[]];
+    // Each verb-less click step observes twice: once to centre the click point
+    // before the act, once for the step's own candidate observe.
+    expect(guardedObserve.mock.calls).toHaveLength(4);
+    const [firstStepCall, , secondStepCall] = guardedObserve.mock.calls as [
+      unknown[],
+      unknown[],
+      unknown[],
+      unknown[],
+    ];
     const firstStepTarget = firstStepCall.at(-1) as {
       frame: unknown;
       frameSelector: string | null;

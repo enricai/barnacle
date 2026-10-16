@@ -25,6 +25,7 @@ vi.mock("@/config", async (importOriginal) => {
   };
 });
 
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import {
   type FakeDeepLocatorFrame,
   makeFakeDeepLocator,
@@ -72,7 +73,8 @@ const testLogger = {
 function makeFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) =>
-      expr === "location.href" ? childUrls.current : { html: 0, text: "0:" },
+      answerCentreHitTest(expr) ??
+      (expr === "location.href" ? childUrls.current : { html: 0, text: "0:" }),
     locator: () => ({
       first: () => ({
         isChecked: async () => false,
@@ -154,6 +156,8 @@ function makeFakeTopPage(
   };
   const page = {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
@@ -202,6 +206,8 @@ function makeFakeTopPage(
 function makeDelayedFakeChildFrame(childUrls: { current: string }) {
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       await sleepMs(PROBE_DELAY_MS);
       return expr === "location.href" ? childUrls.current : { html: 0, text: "0:" };
     },
@@ -246,6 +252,8 @@ function makeDelayedFakeTopPage(
   };
   const page = {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       await sleepMs(PROBE_DELAY_MS);
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
@@ -358,7 +366,7 @@ describe("flow-runner frame re-resolution — no declared frameSelector is a no-
     const topUrl = { current: "https://jobs.example.com/apply" };
     const session = { on: () => {}, off: () => {} };
     const page = {
-      evaluate: async () => null,
+      evaluate: async (expr: unknown) => answerCentreHitTest(expr) ?? null,
       url: () => topUrl.current,
       title: async () => "Apply",
       locator: () => ({

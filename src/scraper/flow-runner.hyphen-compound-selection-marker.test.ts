@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { StepVerificationError } from "@/scraper/errors";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -173,6 +174,8 @@ function makeTarget(window: Window, optionEl: HappyDomElement): FrameTarget {
   };
 
   const evaluate = (async (expr: unknown): Promise<unknown> => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const src = String(expr);
     const fn = new window.Function("document", `return (${src});`) as (d: unknown) => unknown;
     return fn(document);

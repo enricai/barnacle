@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
@@ -103,6 +104,8 @@ function makeChildTarget(
   opts: { invalidCount: () => number; n16ClickResult: () => Record<string, unknown> }
 ): FrameTarget {
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const src = String(expr);
     if (src.includes("outerHTML") && src.includes("innerText")) {
       return { html: 0, text: "0:" };
@@ -157,7 +160,9 @@ function makeChildTarget(
 /** Fake `Page`: only the surface `executeStepWithHealing`'s non-frame-scoped calls touch (page.title(), page.waitForTimeout()). Its `evaluate`/`locator` must never fire — every probe in this region is frame-scoped. */
 function fakePage(getUrl: () => string = () => `${CHILD_ORIGIN}/application/abc-123`): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),
@@ -356,6 +361,8 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
     let snapshotCallCount = 0;
     const originalEvaluate = childTarget.evaluate;
     childTarget.evaluate = vi.fn().mockImplementation(async (expr: string) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       if (expr.includes("outerHTML") && expr.includes("innerText")) {
         snapshotCallCount += 1;
         return snapshotCallCount <= 1 ? { html: 0, text: "0:" } : { html: 500, text: "1:x" };
@@ -454,6 +461,8 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
       rationale: "submitted-state DOM marker present",
     });
     (page.evaluate as ReturnType<typeof vi.fn>).mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes('querySelectorAll("[class],[aria-invalid]")')) return 0;
       return null;

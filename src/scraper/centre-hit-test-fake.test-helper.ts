@@ -4,7 +4,7 @@ import { CENTRE_AND_HIT_TEST_FN, type CentredHitTestResult } from "@/scraper/tru
 // shares the source up to the scroll; the identity check is spliced in after.
 const CENTRE_FN_PREAMBLE = CENTRE_AND_HIT_TEST_FN.slice(
   0,
-  CENTRE_AND_HIT_TEST_FN.indexOf('inline: "center" });') + 'inline: "center" });'.length
+  CENTRE_AND_HIT_TEST_FN.indexOf("});") + "});".length
 );
 
 /**

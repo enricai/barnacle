@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { type AttemptRecord, executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -41,7 +42,9 @@ const TOGGLE_STEP = "click the toggle to switch to the registration view";
 /** Fake `Page` whose `url()` reads from a mutable holder so a scenario can script the pre/post snapshot pair. */
 function fakePage(urls: { current: string }): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),

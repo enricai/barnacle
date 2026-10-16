@@ -1,5 +1,6 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import * as deepLocatorCandidatesModule from "@/scraper/deep-locator-candidates";
 import {
@@ -117,6 +118,8 @@ function makeFakeChildFrame(
 ) {
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       if (expr === "location.href") return childUrls.current;
       if (typeof expr === "string" && expr.includes("querySelectorAll")) {
         return routeScanExpression(expr, deepLocatorFrame);
@@ -174,6 +177,8 @@ function makeFakeTopPage(
   };
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const iframeSrcMatch = /document\.querySelector\((.+?)\)/.exec(String(expr));
       if (iframeSrcMatch) {
         const selector = JSON.parse(iframeSrcMatch[1] as string) as string;
@@ -366,6 +371,8 @@ describe("flow-runner/executeStepWithHealing — deep-submit-locator re-rank rec
       accessibleName: "place order",
     };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) {
         rankCallCount += 1;
@@ -506,6 +513,8 @@ describe("flow-runner/executeStepWithHealing — deep-submit-locator re-rank rec
       accessibleName: "",
     };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) {
         rankCallCount += 1;

@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -110,6 +111,8 @@ function makeMixedFlowPage(state: AcceptanceSequenceState): Page {
   const session = { on: () => {}, off: () => {} };
   return {
     evaluate: async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("isCommittedValueControl")) {
         // SELECTION_STATE_MAP_EXPR: pre-action per-element baseline, keyed by

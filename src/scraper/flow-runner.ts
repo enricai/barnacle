@@ -118,7 +118,12 @@ import {
 import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quoted-spans";
 import { raceAgainstTeardown } from "@/scraper/session-teardown";
 import { regateSpaAfterOriginChange, waitForSpaReady } from "@/scraper/spa-readiness";
-import { CLICK_INTENT_RE, guardedAct, guardedObserve } from "@/scraper/stagehand-guard";
+import {
+  guardedAct,
+  guardedObserve,
+  hasClickIntent,
+  isTrustedClickMethod,
+} from "@/scraper/stagehand-guard";
 import {
   buildClickByDeepIndexExpr,
   buildRankSubmitCandidatesExpr,
@@ -1034,30 +1039,17 @@ const N16_TRUSTED_CLICK_TIMEOUT_MS = 3_000;
 /**
  * Shared pre-click centre + hit-test for a Stagehand-resolved selector, so
  * observe-act and the natural-language act attempts share one routine.
- * Returns a failure message when the control stays covered, null otherwise.
+ * Returns a failure message when the control cannot be centred and hit-tested
+ * (covered, unresolved, or the page cannot answer the probe), null otherwise.
  */
 async function centreObservedClickTarget(
   target: FrameTarget,
-  selector: string,
-  onUnavailable: (message: string) => void,
-  deferWhenMissing = false
+  selector: string
 ): Promise<string | null> {
   try {
     await centreSelectorForClick(target, selector);
     return null;
   } catch (err) {
-    // A TypeError means the page cannot answer the hit-test probe (no
-    // evaluate seam), not that the control is covered; defer to the act.
-    if (err instanceof TypeError) {
-      onUnavailable(`centre hit-test unavailable: ${toErrorMessage(err)}`);
-      return null;
-    }
-    // Stagehand's own resolution of a natural-language act can differ from the
-    // observe result, so an unresolvable element there is the act's to judge.
-    if (deferWhenMissing && toErrorMessage(err).includes("is not in the document")) {
-      onUnavailable(`centre target unresolved: ${toErrorMessage(err)}`);
-      return null;
-    }
     return `observed click target not clickable: ${toErrorMessage(err)}`;
   }
 }
@@ -13267,22 +13259,19 @@ export async function executeStepWithHealing(params: {
     // control stays covered so the attempt fails instead of clicking an overlay.
     // Resolves true once the observe ran, so guardedAct skips its own pass.
     const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
-      if (!CLICK_INTENT_RE.test(instruction)) return false;
+      if (!hasClickIntent(instruction)) return false;
       const observed = await guardedObserve(
         stagehand,
         instruction,
         { timeout: STEP_WATCHDOG_MS },
         captureFn,
         frameTarget
-      ).catch(() => [] as Action[]);
+      );
       const first = observed[0];
-      if (first?.method !== "click" || !first.selector) return true;
+      if (!isTrustedClickMethod(first?.method) || !first?.selector) return true;
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
-        first.selector,
-        (msg) =>
-          logger.debug(`${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`),
-        true
+        first.selector
       );
       if (failure) throw new Error(failure);
       return true;
@@ -13964,14 +13953,10 @@ export async function executeStepWithHealing(params: {
           // bars, so centre + hit-test the observed control first; an
           // unrecoverable occlusion fails the attempt instead of clicking an
           // overlay.
-          if (overriddenTarget.method === "click") {
+          if (isTrustedClickMethod(overriddenTarget.method)) {
             const centreFailure = await centreObservedClickTarget(
               frameTarget ?? mainFrameTarget(page),
-              overriddenTarget.selector,
-              (msg) =>
-                logger.debug(
-                  `${formatStepPrefix(stepIndex, totalSteps)} attempt ${attempt}: ${msg}`
-                )
+              overriddenTarget.selector
             );
             if (centreFailure) {
               record.errorMessage = centreFailure;

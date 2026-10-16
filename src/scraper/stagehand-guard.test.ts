@@ -32,6 +32,18 @@ vi.mock("@/lib/telemetry/call-capture", async () => {
   };
 });
 
+const hopResolver = vi.fn();
+vi.mock("@/scraper/frame-target", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/scraper/frame-target")>();
+  return {
+    ...actual,
+    resolveFrameTarget: (...args: Parameters<typeof actual.resolveFrameTarget>) =>
+      hopResolver.getMockImplementation()
+        ? hopResolver(...args)
+        : actual.resolveFrameTarget(...args),
+  };
+});
+
 import {
   guardedAct,
   guardedExtract,
@@ -759,6 +771,41 @@ describe("guardedAct pre-centring", () => {
     expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe("click go");
   });
 
+  it.each([
+    "Select 'No' from the 'Select One' dropdown",
+    "Choose No for the returning customer question",
+    "Open the Select One dropdown",
+  ])("centres a select-style string instruction (%s) before acting", async (instruction) => {
+    const action: Action = { selector: "#trigger", description: "t", method: "click" };
+    const { sh, order } = fakeClickStagehand([action]);
+    await guardedAct(sh, instruction);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
+  it.each(["Answer No to the returning customer question", "Continue to the next page"])(
+    "centres a string instruction with no click verb (%s) before acting",
+    async (instruction) => {
+      const action: Action = { selector: "#trigger", description: "t", method: "click" };
+      const { sh, order } = fakeClickStagehand([action]);
+      await guardedAct(sh, instruction);
+      expect(order).toEqual(["centre", "act"]);
+    }
+  );
+
+  it("centres a doubleClick action before acting", async () => {
+    const action: Action = { selector: "#row", description: "r", method: "doubleClick" };
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, action);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
+  it("does not observe a fill-style string instruction", async () => {
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, "Enter Jane into the first name field");
+    expect(sh.observe).not.toHaveBeenCalled();
+    expect(order).toEqual(["act"]);
+  });
+
   it("scopes the string-instruction resolution to the step's frame", async () => {
     const { sh } = fakeClickStagehand([]);
     const frameTarget = fakeChildFrameTarget("iframe#apply_frame");
@@ -769,13 +816,57 @@ describe("guardedAct pre-centring", () => {
     });
   });
 
-  it("still acts when the click point stays occluded after centring", async () => {
+  it("rejects without acting when the click point stays occluded after centring", async () => {
     const action: Action = { selector: "#go", description: "go", method: "click" };
     const { sh } = fakeClickStagehand([action]);
     const frameTarget = fakeMainFrameTarget();
     vi.mocked(frameTarget.evaluate).mockResolvedValue({ state: "occluded", occluder: "div#bar" });
-    await guardedAct(sh, "click go", undefined, undefined, frameTarget);
-    expect(sh.act).toHaveBeenCalledWith("click go", undefined);
+    await expect(guardedAct(sh, "click go", undefined, undefined, frameTarget)).rejects.toThrow();
+    expect(sh.act).not.toHaveBeenCalled();
+  });
+
+  it("rejects without acting when observe errors for a click instruction", async () => {
+    const { sh } = fakeClickStagehand([]);
+    vi.mocked(sh.observe).mockRejectedValue(new Error("observe boom"));
+    await expect(guardedAct(sh, "click go")).rejects.toThrow();
+    expect(sh.act).not.toHaveBeenCalled();
+  });
+
+  it("rejects without acting when a frame-hop click target's frame is not attached", async () => {
+    const action: Action = {
+      selector: "iframe#f >> #go",
+      description: "go",
+      method: "click",
+    };
+    const { sh } = fakeClickStagehand([]);
+    hopResolver.mockResolvedValue({ ...fakeMainFrameTarget(), declaredFrameSelector: "iframe#f" });
+    try {
+      await expect(guardedAct(sh, action)).rejects.toThrow();
+      expect(sh.act).not.toHaveBeenCalled();
+    } finally {
+      hopResolver.mockReset();
+    }
+  });
+
+  it("centres a frame-hop click target in the child frame before acting", async () => {
+    const action: Action = {
+      selector: "iframe#f >> #go",
+      description: "go",
+      method: "click",
+    };
+    const { sh, order } = fakeClickStagehand([]);
+    const child = fakeChildFrameTarget("iframe#f");
+    vi.mocked(child.evaluate).mockImplementation(async () => {
+      order.push("centre-child");
+      return { state: "hit" };
+    });
+    hopResolver.mockResolvedValue(child);
+    try {
+      await guardedAct(sh, action);
+      expect(order).toEqual(["centre-child", "act"]);
+    } finally {
+      hopResolver.mockReset();
+    }
   });
 
   it("acts without centring when the stagehand context exposes no active page", async () => {

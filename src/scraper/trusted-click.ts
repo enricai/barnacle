@@ -78,7 +78,7 @@ export function buildCentreAndHitTestFn(expectText?: string): string {
   return `function () {
   const el = this;
   if (!el || !el.isConnected) return { state: "missing" };
-  el.scrollIntoView({ block: "center", inline: "center" });${identityCheck}
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });${identityCheck}
   const rect = el.getBoundingClientRect();
   const cs = getComputedStyle(el);
   const px = (v) => parseFloat(v) || 0;

@@ -21,6 +21,7 @@ import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RephraseModel } from "@/lib/llm/anthropic-client";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 vi.mock("@/config", () => ({
@@ -6078,6 +6079,8 @@ describe("recon-browser/runHealingFlow — phantom-submit escalation, end-to-end
     const { deepIndexClicked, onDeepClick, getUrl } = params;
     const session = { on: () => {}, off: () => {} };
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) {
         return [{ deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" }];

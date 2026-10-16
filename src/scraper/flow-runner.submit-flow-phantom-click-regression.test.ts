@@ -1,5 +1,6 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { SubmitCandidate } from "@/scraper/submit-control";
@@ -46,6 +47,8 @@ describe("flow-runner/runHealingFlow — submit-flow phantom-click escalation st
       { deepIndex: 7, tier: 3, tag: "button", accessibleName: "submit" },
     ];
     const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
       const src = String(expr);
       if (src.includes("ranked.sort")) return rankedCandidates;
       if (src.includes('__mouse("click"')) return { clicked: false };

@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { StepVerificationError } from "@/scraper/errors";
 import { executeStepWithHealing, verifyDomEffect } from "@/scraper/flow-runner";
@@ -167,6 +168,8 @@ function makeEvaluate(htmlRoot: FakeElement): FrameTarget["evaluate"] {
     },
   };
   return (async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const source = String(expr);
     const fn = new Function("document", "Event", "XPathResult", `return (${source});`) as (
       d: unknown,
@@ -183,7 +186,9 @@ function makeStagehand(): Stagehand {
 
 function fakePage(): Page {
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),

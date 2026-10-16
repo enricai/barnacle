@@ -1,5 +1,6 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 
 import { CdpTransportClosedError } from "@/scraper/errors";
 import {
@@ -59,7 +60,11 @@ function makeFakePage(urls: { current: string }): Page {
   return {
     url: () => urls.current,
     title: vi.fn().mockResolvedValue("Details"),
-    evaluate: vi.fn().mockResolvedValue({ html: 0, text: "0:" }),
+    evaluate: vi
+      .fn()
+      .mockImplementation(
+        async (expr: unknown) => answerCentreHitTest(expr) ?? { html: 0, text: "0:" }
+      ),
     locator: vi.fn().mockReturnValue({
       first: () => ({
         isChecked: vi.fn().mockResolvedValue(false),

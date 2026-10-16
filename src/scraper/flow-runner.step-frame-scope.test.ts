@@ -1,9 +1,9 @@
 import type { Anthropic } from "@anthropic-ai/sdk";
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
 import type { RephraseModel } from "@/lib/llm/anthropic-client";
 import type { LlmCallInput } from "@/lib/telemetry/call-capture";
+import { answerCentreHitTest } from "@/scraper/centre-hit-test-fake.test-helper";
 import { type FakeDeepLocatorFrame, makeFakeDeepLocator } from "@/scraper/deep-locator-fake";
 import type { HealingFlowStep } from "@/scraper/flow-runner";
 import { resetBillingErrorFlagForTests, runHealingFlow } from "@/scraper/flow-runner";
@@ -160,6 +160,8 @@ function makeChildFrameTarget(
     clickByDeepIndexResult = { clicked: false },
   } = opts;
   const evaluate = vi.fn(async (expr: unknown) => {
+    const centred = answerCentreHitTest(expr);
+    if (centred) return centred;
     const source = String(expr);
     if (source.includes("groupPresent")) {
       return radioGroupPresent ? { groupPresent: true, groups: [] } : { groupPresent: false };
@@ -220,7 +222,9 @@ function fakeFlowPage(
 ): Page {
   const session = { on: () => {}, off: () => {} };
   return {
-    evaluate: vi.fn().mockResolvedValue(null),
+    evaluate: vi
+      .fn()
+      .mockImplementation(async (expr: unknown) => answerCentreHitTest(expr) ?? null),
     url: getUrl,
     title: vi.fn().mockResolvedValue("Apply"),
     deepLocator: makeFakeDeepLocator(deepLocatorFrame),
