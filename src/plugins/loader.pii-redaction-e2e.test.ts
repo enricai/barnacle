@@ -180,7 +180,10 @@ describe("dispatch() keeps request values out of telemetry and error replies", (
     };
     expect(generated.password.length).toBeGreaterThan(20);
     for (const [sink, text] of Object.entries(outputs)) {
-      for (const sentinel of [...SENTINELS, new RegExp(generated.password.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))]) {
+      for (const sentinel of [
+        ...SENTINELS,
+        new RegExp(generated.password.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      ]) {
         expect({ sink, leaked: sentinel.test(text) }).toEqual({ sink, leaked: false });
       }
     }

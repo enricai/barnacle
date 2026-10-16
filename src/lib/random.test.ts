@@ -83,7 +83,7 @@ describe("lib/random generateThrowawayPassword", () => {
       expect(password).toMatch(/[A-Z]/);
       expect(password).toMatch(/[a-z]/);
       expect(password).toMatch(/[0-9]/);
-      expect(password).toMatch(/[!@#%^*()\-+=?.]/);
+      expect(password).toMatch(/[!@#%^*()+=?.]/);
       expect(password).not.toMatch(/["'`\\$]/);
     }
   });
@@ -96,9 +96,9 @@ describe("lib/random generateThrowawayPassword sampling", () => {
       expect(password).toMatch(/[A-Z]/);
       expect(password).toMatch(/[a-z]/);
       expect(password).toMatch(/[0-9]/);
-      expect(password).toMatch(/[^A-Za-z0-9]/);
+      expect(password).toMatch(/[^A-Za-z0-9\-_]/);
       expect(password).toMatch(/.{8,}/);
-      expect(password).not.toMatch(/['"`\\]/);
+      expect(password).not.toMatch(/['"`\\$\s]/);
     }
   });
 

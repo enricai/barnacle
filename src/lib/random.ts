@@ -35,7 +35,8 @@ export function pickRandom<T>(arr: readonly T[]): T {
 const UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const LOWERCASE = "abcdefghijklmnopqrstuvwxyz";
 const DIGITS = "0123456789";
-const SPECIALS = "!@#%^*()-+=?.";
+// No `-`/`_`: some policies do not count them as special characters.
+const SPECIALS = "!@#%^*()+=?.";
 const PASSWORD_LENGTH = 24;
 
 function pickChar(charset: string): string {
