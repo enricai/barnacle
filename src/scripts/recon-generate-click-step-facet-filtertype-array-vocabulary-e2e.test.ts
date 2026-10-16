@@ -167,14 +167,15 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
   it("threads every declared facet into its own element and keeps no literal", () => {
     const { contract, browserFlow } = generate(SIX_ELEMENTS);
 
-    for (const [field, kind] of [
+    const facets: Array<[string, string]> = [
       ["destination", "destination"],
       ["nights", "night"],
       ["sailMonth", "date"],
       ["theme", "theme"],
       ["ship", "ship"],
       ["privateIsland", "privateIsland"],
-    ]) {
+    ];
+    for (const [field, kind] of facets) {
       expect(contract, contract).toMatch(facetElement(field, kind));
     }
     for (const gone of [
@@ -213,13 +214,14 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
 
     expect(output).toContain("declared payloadField nights is read by no emitted request");
 
-    for (const [field, kind] of [
+    const facets: Array<[string, string]> = [
       ["destination", "destination"],
       ["sailMonth", "date"],
       ["theme", "theme"],
       ["ship", "ship"],
       ["privateIsland", "privateIsland"],
-    ]) {
+    ];
+    for (const [field, kind] of facets) {
       expect(contract, contract).toMatch(facetElement(field, kind));
     }
     expect(unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS)).toEqual([]);
