@@ -63,6 +63,14 @@ describe("parseCheckStateStep", () => {
   });
 });
 
+const check = (s: ReturnType<typeof setup>): Promise<string | null> =>
+  tryCheckboxStatePrimitive({
+    page: s.page,
+    target: s.target,
+    instruction: "Check the 'I agree to the terms' checkbox",
+    logger: LOGGER,
+  });
+
 describe("tryCheckboxStatePrimitive", () => {
   const one = `<input type="checkbox" id="a" checked><label for="a">I agree to the terms</label>`;
 
@@ -188,9 +196,45 @@ describe("tryCheckboxStatePrimitive", () => {
     expect(s.clicks).toEqual([]);
   });
 
+  describe("obscuring popup", () => {
+    const withPopup = (
+      escapeClears: boolean
+    ): { s: ReturnType<typeof setup>; escapes: number[] } => {
+      const s = setup(
+        `${one.replace(" checked", "")}<ul role="listbox" id="popup"><li>Option</li></ul>`
+      );
+      const escapes: number[] = [];
+      (s.doc as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () =>
+        s.doc.getElementById("popup") ?? s.doc.querySelector("[data-barnacle-cbstate]");
+      s.page = {
+        sendCDP: async (_m: string, a: { type: string; key: string }): Promise<void> => {
+          if (a.type !== "keyDown") return;
+          escapes.push(s.clicks.length);
+          if (escapeClears) s.doc.getElementById("popup")?.remove();
+        },
+        waitForTimeout: async (): Promise<void> => undefined,
+      } as never;
+      return { s, escapes };
+    };
+
+    it("dismisses the popup, then ticks the box with one click", async () => {
+      const { s, escapes } = withPopup(true);
+      expect(await check(s)).toBe("a");
+      expect(escapes).toEqual([0]);
+      expect(s.clicks).toHaveLength(1);
+      expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("falls through without clicking when the popup survives dismissal", async () => {
+      const { s } = withPopup(false);
+      expect(await check(s)).toBeNull();
+      expect(s.clicks).toEqual([]);
+    });
+  });
+
   it("clears its marker attributes afterwards", async () => {
     const s = setup(one.replace(" checked", ""));
-    await run(s, "Check the 'I agree to the terms' checkbox");
+    await check(s);
     expect(s.doc.querySelector("[data-barnacle-cbstate]")).toBeNull();
   });
 
