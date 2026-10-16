@@ -5339,7 +5339,7 @@ type CaptureMeta = {
   method: string;
   status: number;
   url: string;
-  /** Request carried a non-empty post body (CDP omits it for some binary bodies, hence `multipart`). */
+  /** Request carried a non-empty post body (CDP omits it for some binary bodies, hence `multipart`). Absent means unknown, not empty. */
   hasBody?: boolean;
   /** Request Content-Type was multipart/*, the shape of a browser file upload. */
   multipart?: boolean;
@@ -5358,8 +5358,8 @@ type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
  * Poll the recent-capture window for an upload-related POST after a file has
  * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
  * the click-to-surface path, and the CDP native-chooser path all verify the
- * same way. Returns true as soon as a non-GET capture that is multipart, or has a
- * non-empty body and a URL matching {@link UPLOAD_URL_PATTERNS}, lands; false if the timeout elapses first.
+ * same way. Returns true as soon as a non-GET capture that is multipart, or is not
+ * known to be body-less and has a URL matching {@link UPLOAD_URL_PATTERNS}, lands; false if the timeout elapses first.
  */
 export async function waitForUploadNetworkSignal(params: {
   page: Page;
@@ -5380,7 +5380,7 @@ export async function waitForUploadNetworkSignal(params: {
       const uploadCapture = newCaptures.find((cap) => {
         if (cap.method === "GET") return false;
         if (cap.multipart) return true;
-        if (!cap.hasBody) return false;
+        if (cap.hasBody === false) return false;
         const lowerUrl = cap.url.toLowerCase();
         return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
       });

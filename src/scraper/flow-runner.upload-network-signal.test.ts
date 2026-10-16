@@ -42,10 +42,10 @@ async function run(capture: Meta): Promise<boolean> {
 }
 
 describe("waitForUploadNetworkSignal", () => {
-  it("rejects a URL-matching POST with no body", async () => {
+  it("accepts a URL-matching POST whose body metadata is unknown", async () => {
     expect(
       await run({ method: "POST", status: 200, url: "https://a.example.com/attachments" })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("rejects an explicit empty-body POST to an attachments listing URL", async () => {
