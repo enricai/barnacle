@@ -57,12 +57,7 @@ function pickChar(charset: string): string {
  */
 export function generateThrowawayPassword(): string {
   const all = UPPERCASE + LOWERCASE + DIGITS + SPECIALS;
-  const chars = [
-    pickChar(UPPERCASE),
-    pickChar(LOWERCASE),
-    pickChar(DIGITS),
-    pickChar(SPECIALS),
-  ];
+  const chars = [pickChar(UPPERCASE), pickChar(LOWERCASE), pickChar(DIGITS), pickChar(SPECIALS)];
   while (chars.length < PASSWORD_LENGTH) chars.push(pickChar(all));
   for (let i = chars.length - 1; i > 0; i--) {
     const j = randomInt(i + 1);
