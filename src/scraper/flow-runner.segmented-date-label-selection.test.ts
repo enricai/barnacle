@@ -53,4 +53,48 @@ describe("segmented date own-label selection", () => {
       resolveSegmentedDateGroup("type '012020' into the date", enumerate(group("Start")))
     ).toBe(0);
   });
+
+  const UNQUOTED_TO_STEP =
+    "Click the MM month part of the To date in Work Experience 1 and type '122024' in one go — the date field auto-advances from month to year";
+
+  function section(heading: string, label: string): string {
+    return `<section><h3>${heading}</h3>${group(label)}</section>`;
+  }
+
+  it("does not let the prose word 'from' select the From group for an unquoted To step", () => {
+    expect(
+      resolveSegmentedDateGroup(UNQUOTED_TO_STEP, enumerate(section("Work Experience 1", "From")))
+    ).toBeNull();
+  });
+
+  it("picks the To group for an unquoted To step when both are rendered", () => {
+    const html = section("Work Experience 1", "From") + section("Work Experience 1", "To");
+    expect(resolveSegmentedDateGroup(UNQUOTED_TO_STEP, enumerate(html))).toBe(1);
+  });
+
+  it("does not write a To value into a group labelled only Start date", () => {
+    expect(
+      resolveSegmentedDateGroup(
+        UNQUOTED_TO_STEP,
+        enumerate(section("Work Experience 1", "Start date"))
+      )
+    ).toBeNull();
+  });
+
+  it("does not take another section's To when the named section renders no To", () => {
+    const html =
+      section("Work Experience 1", "From") +
+      section("Education 1", "From") +
+      section("Education 1", "To");
+    expect(resolveSegmentedDateGroup(TO_STEP, enumerate(html))).toBeNull();
+  });
+
+  it("still resolves the named section's To among several sections", () => {
+    const html =
+      section("Education 1", "From") +
+      section("Education 1", "To") +
+      section("Work Experience 1", "From") +
+      section("Work Experience 1", "To");
+    expect(resolveSegmentedDateGroup(TO_STEP, enumerate(html))).toBe(3);
+  });
 });

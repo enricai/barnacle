@@ -148,6 +148,6 @@ describe("judgeStepOutcome non-final settle baseline", () => {
     settle.mockClear();
     stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
     await judgeStepOutcome(params(false, ["a", "b", "b"]));
-    expect(settle.mock.calls[0]?.[4]).toBe("12:Create account");
+    expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
   });
 });

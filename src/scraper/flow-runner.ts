@@ -787,6 +787,35 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   return "";
 })`;
 /**
+ * Browser-side expression reading what a prompt-selector widget ANNOUNCES it
+ * committed, lowercased and whitespace-collapsed, or `""` when nothing is
+ * readable. The announcement is ground truth over any inferred state: first the
+ * "N items selected, X" `aria-describedby` node on the container or one of its
+ * descendants (the trigger union may resolve to the OUTER container, so the
+ * container's own attribute alone misses it), else the nearest
+ * `selectedItemList` — while a popup is open the description can read only
+ * "Expanded", hence the fallback. Shared by the pick read-back and the
+ * act-success guard so the two never disagree on what the widget committed.
+ */
+const PROMPT_ANNOUNCED_VALUE_EXPR = `((w) => {
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+  const announceRx = /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/;
+  for (const el of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) {
+    for (const ref of (el.getAttribute("aria-describedby") || "").split(/\\s+/)) {
+      const refEl = ref ? document.getElementById(ref) : null;
+      const m = refEl ? announceRx.exec(norm(refEl.textContent)) : null;
+      if (m && m[1]) return m[1];
+    }
+  }
+  let anode = w;
+  for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anode; d++) {
+    const list = anode.querySelector ? anode.querySelector('[data-automation-id="selectedItemList"]') : null;
+    if (list && norm(list.textContent)) return norm(list.textContent);
+    anode = anode.parentElement;
+  }
+  return "";
+})`;
+/**
  * Browser-side expression resolving ONE trigger-union hit to its widget
  * container. A single widget often matches {@link PROMPT_TRIGGER_SELECTORS} more
  * than once (e.g. an outer container AND its inner filter input both carry
@@ -1633,16 +1662,21 @@ const ADVANCE_STEP_PHRASES: readonly string[] = [
 export const ADVANCE_CLICK_RX = /\b(next|continue|proceed|advance)\b/i;
 
 /**
- * Page-level error summary ("Errors Found", role=alert, error-summary
- * containers) check, evaluated in the page after an advance click. Network and
- * text movement on a page showing its own validation summary is the form
- * rejecting the advance, not progress.
+ * Page-level error summary check, evaluated in the page after an advance
+ * click: an error-summary container, a visible `role=alert` that mentions an
+ * error, or a heading/button whose WHOLE text is "Errors Found" / "N errors
+ * found" (prose such as "no errors found" is not a summary). Network and text
+ * movement on a page showing its own validation summary is the form rejecting
+ * the advance, not progress.
  */
-const ERROR_SUMMARY_EXPR = `(() => {
+export const ERROR_SUMMARY_EXPR = `(() => {
   const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-  const sel = '[role="alert"],[class*="error-summary" i],[class*="errorsummary" i],[class*="validation-summary" i],[id*="error-summary" i]';
-  if (Array.from(document.querySelectorAll(sel)).some((e) => vis(e) && (e.textContent || "").trim())) return true;
-  return /\\bErrors? Found\\b/i.test(document.body ? document.body.innerText : "");
+  const text = (e) => (e.textContent || "").trim();
+  const summarySel = '[class*="error-summary" i],[class*="errorsummary" i],[class*="validation-summary" i],[id*="error-summary" i]';
+  if (Array.from(document.querySelectorAll(summarySel)).some((e) => vis(e) && text(e))) return true;
+  if (Array.from(document.querySelectorAll('[role="alert"]')).some((e) => vis(e) && /\\berrors?\\b/i.test(text(e)))) return true;
+  const titles = 'h1,h2,h3,h4,h5,h6,[role="heading"],button,[role="button"]';
+  return Array.from(document.querySelectorAll(titles)).some((e) => vis(e) && /^(?:\\d+\\s+)?errors?\\s+found$/i.test(text(e)));
 })()`;
 
 /**
@@ -4281,10 +4315,16 @@ export interface VerifyPromptSelectorCommittedResult {
  * `tryPromptSelectorPrimitive`'s widget-container walk). Returns
  * `isPromptWidget: false` for a resolved element that isn't part of this
  * widget family at all, so a non-prompt click/fill is untouched.
+ *
+ * When the step names the option it wants (`requestedOption`), "committed"
+ * means the widget's announced/readable value names THAT option: a widget that
+ * holds a different option is a wrong commit, not a landed one. Without a
+ * requested option any readable value counts, as before.
  */
 export async function verifyPromptSelectorCommitted(
   target: FrameTarget,
-  selector: string
+  selector: string,
+  requestedOption?: string | null
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
   const xpath = xpathBodyForEvaluate(selector);
   if (xpath === null) return null;
@@ -4293,13 +4333,17 @@ export async function verifyPromptSelectorCommitted(
     const valueSel = ${JSON.stringify(PROMPT_VALUE_SELECTORS)};
     const emptyRx = new RegExp(${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)});
     const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+    const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
+    const squash = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const want = squash(${JSON.stringify(requestedOption ?? "")});
     const xpath = ${JSON.stringify(xpath)};
     const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const el = result.singleNodeValue;
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) return { isPromptWidget: false, committed: false };
-    return { isPromptWidget: true, committed: currentText(widget, valueSel, emptyRx) !== "" };
+    const value = announcedValue(widget) || currentText(widget, valueSel, emptyRx);
+    return { isPromptWidget: true, committed: value !== "" && (!want || squash(value).includes(want)) };
   })()`;
   try {
     const raw = await target.evaluate(expr);
@@ -6141,6 +6185,17 @@ function segmentedDateTokens(text: string): string[] {
 }
 
 /**
+ * Words that name WHICH of several dates a step targets ("the To date"). Prose
+ * around them ("auto-advances from month to year") uses the same words with no
+ * targeting intent, so they only count when they sit in a field position.
+ */
+const SEGMENTED_DATE_FIELD_WORDS = ["from", "to", "start", "end", "since", "until", "through"];
+const SEGMENTED_DATE_FIELD_POSITION_RE = new RegExp(
+  `\\b(?:the|its|this|that)\\s+(${SEGMENTED_DATE_FIELD_WORDS.join("|")})\\b(?=\\s+(?:date|month|year|day|mm|dd|yyyy|part|segment|spinbutton|field|group|input)\\b)`,
+  "gi"
+);
+
+/**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
  * digit count are dropped. A group is only eligible when a quoted target field
@@ -6586,17 +6641,18 @@ export function parseCheckStep(instruction: string): { label: string } | null {
 export function parseCheckStateStep(
   instruction: string
 ): { label: string; desired: boolean; sectionWords: string[] } | null {
-  const verb = /^\s*(un)?check\b/i.exec(instruction);
   const parsed = parseCheckStep(instruction);
-  if (!verb || !parsed) return null;
-  const found = matchQuotedAfter(instruction, /\b(?:un)?check\s+(?:the\s+)?(?=')/i);
-  const rest = found ? instruction.slice(found.phrase.end) : "";
-  const tail = rest.replace(/^.*?\bcheckbox\b/i, "");
+  const found = matchQuotedAfter(instruction, /\b(un)?check\s+(?:the\s+)?(?=')/i);
+  if (!parsed || !found) return null;
+  const outside =
+    instruction.slice(0, found.match.index) +
+    " " +
+    instruction.slice(found.phrase.end).replace(/^.*?\bcheckbox\b/i, "");
   const stop = new Set(["the", "for", "and", "section", "under", "this", "that", "with", "from"]);
-  const sectionWords = (tail.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter(
-    (w) => !stop.has(w)
+  const sectionWords = (outside.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (w) => !stop.has(w) && (w.length >= 3 || /^\d+$/.test(w))
   );
-  return { label: parsed.label, desired: !verb[1], sectionWords };
+  return { label: parsed.label, desired: !found.match[1], sectionWords };
 }
 
 /** Strips wrapping single quotes a parser's capture group may include (e.g. when a flow author quotes the field name itself), so a probe label compares plain text against plain text. */
@@ -7795,15 +7851,14 @@ export async function tryCheckboxStatePrimitive(params: {
   if (!parsed) return null;
   const attr = CHECKBOX_STATE_MARKER_ATTR;
   const stampExpr = `((label, words) => {
-    const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").replace(/\\s*[*:]+$/, "").trim().toLowerCase();
     const want = norm(label);
     document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"));
     const visible = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden";
     const labelsOf = (cb) => {
       const out = [];
       if (cb.id) {
-        const esc = (window.CSS && CSS.escape) ? CSS.escape(cb.id) : cb.id;
-        document.querySelectorAll('label[for="' + esc + '"]').forEach((l) => out.push(l));
+        document.querySelectorAll("label").forEach((l) => { if (l.getAttribute("for") === cb.id) out.push(l); });
       }
       const w = cb.closest("label");
       if (w && !out.includes(w)) out.push(w);
@@ -7820,6 +7875,11 @@ export async function tryCheckboxStatePrimitive(params: {
       const names = ls.map((l) => norm(l.textContent));
       const al = cb.getAttribute("aria-label");
       if (al) names.push(norm(al));
+      const alb = cb.getAttribute("aria-labelledby");
+      if (alb) {
+        const refs = alb.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
+        if (refs.length > 0) names.push(norm(refs.map((r) => r.textContent).join(" ")));
+      }
       if (!names.includes(want)) continue;
       if (!visible(cb) && !ls.some(visible)) continue;
       hits.push({ cb, ls });
@@ -7833,12 +7893,22 @@ export async function tryCheckboxStatePrimitive(params: {
         if (lg) parts.push(lg.textContent);
         const hd = n.querySelector(":scope > h2, :scope > h3, :scope > h4");
         if (hd) parts.push(hd.textContent);
+        let sib = n.previousElementSibling;
+        for (let hop = 0; hop < 3 && sib; hop++, sib = sib.previousElementSibling) {
+          if (!sib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) continue;
+          parts.push(sib.textContent);
+          break;
+        }
       }
       return norm(parts.join(" "));
     };
     if (hits.length > 1 && words.length > 0) {
-      const narrowed = hits.filter((h) => { const t = sectionText(h.cb); return words.some((w) => t.includes(w)); });
-      if (narrowed.length > 0) hits = narrowed;
+      const scored = hits.map((h) => {
+        const tokens = new Set(sectionText(h.cb).match(/[a-z0-9]+/g) || []);
+        return { h, score: words.filter((w) => tokens.has(w)).length };
+      });
+      const top = Math.max(...scored.map((x) => x.score));
+      if (top > 0) hits = scored.filter((x) => x.score === top).map((x) => x.h);
     }
     if (hits.length === 0) return { status: "none" };
     if (hits.length > 1) return { status: "ambiguous" };
@@ -8556,6 +8626,30 @@ export async function applyRadioSelection(
 }
 
 /**
+ * Extracts the option a step wants committed into a prompt-selector widget,
+ * with the question label that scopes which widget. Flow/replan generation
+ * words this as a SELECT, a FILL of the widget's search box, a radio-style
+ * answer click, or a cascading-multiselect category/leaf click, so all four
+ * shapes resolve to one `{ option, questionLabel }` — shared by the picking
+ * primitive and the act-success committed-value guard so both compare the page
+ * against the same requested value.
+ */
+function parsePromptSelectorStep(
+  instruction: string
+): { option: string; questionLabel: string | null; isFill: boolean } | null {
+  const select = parseSelectStep(instruction);
+  if (select) return { ...select, isFill: false };
+  const fill = parseFillStep(instruction);
+  if (fill) {
+    return { option: fill.value, questionLabel: stripQuotedLabel(fill.fieldLabel), isFill: true };
+  }
+  const answer = parseRadioStep(instruction);
+  if (answer) return { ...answer, isFill: false };
+  const optionClick = parseWidgetOptionClickStep(instruction);
+  return optionClick ? { option: optionClick.option, questionLabel: null, isFill: false } : null;
+}
+
+/**
  * Answer a native-control-less popup-dropdown widget (a combobox that opens a
  * listbox popup and renders NO `<select>`/`<input>` a focused `<select>`/
  * `<input>` probe can see). Detected by a cross-vendor UNION of shape signals
@@ -8635,23 +8729,10 @@ async function tryPromptSelectorPrimitive(params: {
   // shape), then parseWidgetOptionClickStep (option only, no question
   // label) so the widget-matching/open/readback phases below run unchanged
   // regardless of which verb the instruction used.
-  const parsedSelect = parseSelectStep(instruction);
-  const parsedFill = parsedSelect ? null : parseFillStep(instruction);
-  const parsedAnswer = parsedSelect || parsedFill ? null : parseRadioStep(instruction);
-  const parsedOptionClick =
-    parsedSelect || parsedFill || parsedAnswer ? null : parseWidgetOptionClickStep(instruction);
-  const parsed = parsedSelect
-    ? parsedSelect
-    : parsedFill
-      ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
-      : parsedAnswer
-        ? parsedAnswer
-        : parsedOptionClick
-          ? { option: parsedOptionClick.option, questionLabel: null }
-          : null;
+  const parsed = parsePromptSelectorStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsedFill !== null);
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsed.isFill);
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -9384,12 +9465,13 @@ async function commitPromptOption(params: {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
     const isRequestedOption = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+      const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "", stillInvalid: false };
       const text = currentText(w, valueSel, emptyRx);
@@ -9445,33 +9527,22 @@ async function commitPromptOption(params: {
           cnode = cnode.parentElement;
         }
       }
-      // The widget's own announcement of what it committed is ground truth when
-      // readable: aria-describedby nodes ("N items selected, X") on the container
-      // and its descendants, else the nearest selectedItemList. While a popup is
-      // open the description can read only "Expanded", hence the fallback.
-      let committed = "";
-      const announceRx = /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/;
-      for (const el of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) {
-        for (const ref of (el.getAttribute("aria-describedby") || "").split(/\\s+/)) {
-          const refEl = ref ? document.getElementById(ref) : null;
-          const m = refEl ? announceRx.exec(norm(refEl.textContent)) : null;
-          if (m && m[1]) { committed = m[1]; break; }
-        }
-        if (committed) break;
-      }
-      if (!committed) {
-        let anode = w;
-        for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anode && !committed; d++) {
-          const list = anode.querySelector ? anode.querySelector('[data-automation-id="selectedItemList"]') : null;
-          if (list) committed = norm(list.textContent);
-          anode = anode.parentElement;
-        }
-      }
+      // The widget's own announcement of what it committed is ground truth when readable.
+      const committed = announcedValue(w);
       if (committed) {
         return { ok: !!wantText && committed.includes(wantText), id: w.id || "", stillInvalid, committed };
       }
+      // A wrong option leaves the widget valid, so !stillInvalid proves nothing
+      // once the widget's own value is readable: a readable value naming another
+      // option is a wrong commit. The "Expanded"/"Collapsed" state words are
+      // announcements, not values. Only a requested-leaf click is refused here —
+      // a category click that swapped the popup must still reach the drill check.
+      const stateOnly = /^(?:expanded|collapsed)\\.?$/.test(text);
+      if (isRequestedLeaf && text !== "" && !stateOnly && !textMatches && !hiddenSelectMatches) {
+        return { ok: false, id: w.id || "", stillInvalid, committed: text };
+      }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)})`;
     type PromptReadback = { ok: boolean; id: string; stillInvalid: boolean; committed?: string };
     const runReadback = async (): Promise<PromptReadback> =>
       (await target
@@ -10886,7 +10957,7 @@ export function primitiveOptionLabel(
   option: string,
   questionLabel: string | null | undefined,
   redactValue?: string,
-  fromFill = false,
+  fromFill = false
 ): string {
   const shown = fromFill ? `[${option.length}-char typed value]` : maskLoggedValue(option, redactValue).slice(0, 40);
   return `option "${shown}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
@@ -14171,7 +14242,8 @@ export async function executeStepWithHealing(params: {
         const readbackTarget = frameTarget ?? mainFrameTarget(page);
         const promptReadback = await verifyPromptSelectorCommitted(
           readbackTarget,
-          readbackSelector
+          readbackSelector,
+          parsePromptSelectorStep(step)?.option
         );
         if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
           promptSelectorRejected = true;

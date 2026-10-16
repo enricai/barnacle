@@ -93,6 +93,27 @@ describe("tryCheckboxStatePrimitive", () => {
     expect((s.doc.getElementById("c") as HTMLInputElement).checked).toBe(false);
   });
 
+  it("tells numbered sections apart by their digit and a heading sibling", async () => {
+    const s = setup(`
+      <h4>Work Experience 1</h4><div>
+        <input type="checkbox" id="b" checked><label for="b">I currently work here</label></div>
+      <h4>Work Experience 2</h4><div>
+        <input type="checkbox" id="c" checked><label for="c">I currently work here</label></div>`);
+    expect(await run(s, "In Work Experience 2, uncheck the 'I currently work here' checkbox")).toBe(
+      "c"
+    );
+    expect((s.doc.getElementById("b") as HTMLInputElement).checked).toBe(true);
+    expect((s.doc.getElementById("c") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("names an ARIA checkbox through aria-labelledby", async () => {
+    const s = setup(
+      `<span id="lbl">Subscribe</span><div role="checkbox" id="r" aria-checked="true" aria-labelledby="lbl"></div>`
+    );
+    expect(await run(s, "Check the 'Subscribe' checkbox")).toBe("r");
+    expect(s.clicks).toEqual([]);
+  });
+
   it("falls through when ambiguous or missing", async () => {
     const two = `<input type="checkbox" id="b"><label for="b">Terms</label><input type="checkbox" id="c"><label for="c">Terms</label>`;
     expect(await run(setup(two), "Check the 'Terms' checkbox")).toBeNull();
