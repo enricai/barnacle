@@ -6538,9 +6538,8 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
 }): Promise<string | null> {
   const { page, target, instruction, logger } = params;
   const whole = parseSegmentedDateValue(instruction);
-  const partStep = whole ? null : parseSegmentedPartStep(instruction);
-  const value = whole ?? partStep;
-  if (!value) return null;
+  const part = parseSegmentedPartStep(instruction);
+  if (!whole && !part) return null;
   const sendCDP = (method: string, args: object): Promise<unknown> =>
     target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
   try {
@@ -6548,6 +6547,9 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       groups: SegmentedDateGroup[];
     };
     if (!enumerated?.groups?.length) return null;
+    const wholeGi = whole ? resolveSegmentedDateGroup(instruction, enumerated.groups) : null;
+    const partStep = wholeGi === null ? part : null;
+    const value = (wholeGi !== null ? whole : part) as { digits: string; valueSpan: string };
     const partOf = (group: SegmentedDateGroup): number | null =>
       partStep ? segmentIndexForPart(group, partStep.part) : null;
     const partFits = (group: SegmentedDateGroup): boolean => {
@@ -6558,9 +6560,11 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         value.digits.length <= String(group.segmentMaxes[si] ?? 0).length
       );
     };
-    const gi = partStep
-      ? pickSegmentedDateGroup(instruction, enumerated.groups, partStep, partFits)
-      : resolveSegmentedDateGroup(instruction, enumerated.groups);
+    const gi =
+      wholeGi ??
+      (partStep
+        ? pickSegmentedDateGroup(instruction, enumerated.groups, partStep, partFits)
+        : null);
     if (gi === null) {
       logger.info("segmented date primitive: no unambiguous group; falling through");
       await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
