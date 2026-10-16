@@ -74,6 +74,7 @@ interface Scenario {
   initialBody: (d: Doc) => void;
   rerender: ((d: Doc) => void) | null;
   rerenderDelayMs: number;
+  uncountedRequest?: boolean;
 }
 
 /** Fills `#out` so the document hits the target visible-text length and serialized byte size. */
@@ -97,6 +98,8 @@ const REPORT: Scenario = {
   rerender: (d) => shapeBody(d, POST_TEXT_LEN, POST_BYTES),
   rerenderDelayMs: RERENDER_DELAY_MS,
 };
+
+const LATE: Scenario = { ...REPORT, rerenderDelayMs: 12000, uncountedRequest: true };
 
 const GROWTH: Scenario = {
   title: "Join",
@@ -156,6 +159,13 @@ function buildWorld(sc: Scenario, actions: "click" | "none" = "click"): World {
     if (sc.hdrAfter !== null) hdr.textContent = sc.hdrAfter;
   });
 
+  let resolveRequest: (() => void) | null = null;
+  let requestStarted = false;
+  (window as unknown as { fetch: () => Promise<void> }).fetch = () =>
+    new Promise<void>((res) => {
+      resolveRequest = res;
+    });
+
   const root = document.documentElement as unknown as HappyDomElement;
   const win = window as unknown as { XPathResult?: unknown };
   win.XPathResult = { FIRST_ORDERED_NODE_TYPE: 9 };
@@ -183,9 +193,19 @@ function buildWorld(sc: Scenario, actions: "click" | "none" = "click"): World {
     }),
     waitForTimeout: async (ms: number): Promise<void> => {
       now += ms;
+      if (
+        sc.uncountedRequest &&
+        clickedAt !== null &&
+        !requestStarted &&
+        (window as unknown as { __settleQ?: unknown }).__settleQ
+      ) {
+        requestStarted = true;
+        void (window as unknown as { fetch: () => Promise<void> }).fetch();
+      }
       if (sc.rerender && clickedAt !== null && !rendered && now - clickedAt >= sc.rerenderDelayMs) {
         rendered = true;
         sc.rerender(document as unknown as Doc);
+        (resolveRequest as (() => void) | null)?.();
       }
     },
     getSessionForFrame: () => session,
@@ -300,6 +320,30 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     expect(logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))).toBe(
       false
     );
+  });
+
+  it("credits a re-render landing beyond the old quiet window with no network", async () => {
+    const world = buildWorld(LATE);
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(world.rendered()).toBe(true);
+    expect(world.postMetrics()).toEqual({ text: POST_TEXT_LEN, bytes: POST_BYTES });
+    expect(outcome).toBe("completed");
+    expect(world.counter.n).toBe(0);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    expect(logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))).toBe(
+      false
+    );
+  });
+
+  it("does not credit the late re-render on the final step", async () => {
+    const world = buildWorld(LATE);
+
+    const outcome = await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
+
+    expect(outcome).not.toBe("completed");
   });
 
   it("keeps the give-up for a genuine no-op click", async () => {
