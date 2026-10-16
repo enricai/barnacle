@@ -4335,7 +4335,8 @@ export interface VerifyFillReadbackResult {
 /**
  * Pre-write check for the observe-act fill override: a lone-segment write
  * (insertText) cannot compose a date, so callers refuse before any write.
- * Fails open (false) when the selector or evaluate cannot answer.
+ * An evaluate error propagates so the attempt fails rather than writing blind;
+ * only a selector form with no XPath body (nothing to resolve) answers false.
  */
 export async function isDateSegmentAtSelector(
   target: FrameTarget,
@@ -4350,11 +4351,7 @@ export async function isDateSegmentAtSelector(
     ${SEGMENT_OWNER_JS}
     return isDateSegment(el);
   })()`;
-  try {
-    return (await target.evaluate(expr)) === true;
-  } catch {
-    return false;
-  }
+  return (await target.evaluate(expr)) === true;
 }
 
 /**
