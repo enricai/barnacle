@@ -8154,7 +8154,14 @@ export async function tryCheckboxStatePrimitive(params: {
     let overlaid = false;
     let trustedDelivered = false;
     for (const sel of clickSels) {
-      const probe = await probeClickPoint(target, sel);
+      const firstProbe = await probeClickPoint(target, sel);
+      const probe =
+        firstProbe?.state === "occluded" && firstProbe.occluder !== "none"
+          ? await dismissLeftoverPromptPopups(page, target).then(
+              () => probeClickPoint(target, sel),
+              () => firstProbe
+            )
+          : firstProbe;
       if (probe?.state === "occluded" && probe.occluder !== "none") {
         overlaid = true;
         continue;
