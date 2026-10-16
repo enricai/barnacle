@@ -2,8 +2,8 @@ import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
-import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { PopupSpec } from "@/scraper/prompt-widget-dom-harness.test-helper";
+import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
 vi.mock("@/lib/llm/judges/select-option", () => ({
@@ -47,7 +47,8 @@ const TWICE = [
   ["Denmark", "Norway", "Sweden"],
   ["Sweden", "Denmark", "Norway"],
 ];
-const ONCE = [["Norway", "Denmark", "Sweden"]];
+const NEAR_OPTIONS = ["Denmark", "Denmark Island"];
+const ONCE = [["Denmark Island", "Denmark"]];
 
 const MODES: [string, Partial<PopupSpec>][] = [
   ["Enter-loaded", { searchOnSubmit: true }],
@@ -64,7 +65,10 @@ async function selectCountry(
     popupByWidgetId: { "country-widget": spec },
   });
   const result = await executeStepWithHealing({
-    stagehand: { act: stagehandAct, observe: vi.fn().mockResolvedValue([]) } as unknown as Stagehand,
+    stagehand: {
+      act: stagehandAct,
+      observe: vi.fn().mockResolvedValue([]),
+    } as unknown as Stagehand,
     page: page as unknown as Page,
     frameTarget: target,
     step: `for 'Country of residence' select '${option}'`,
@@ -121,7 +125,7 @@ describe("flow-runner/tryPromptSelectorPrimitive in-place re-renders (real DOM)"
 
     it(`${name}: commits the requested option after a single re-render for another option`, async () => {
       const { result, committed } = await selectCountry(
-        { options: OPTIONS, ...mode, reuseRenders: ONCE },
+        { options: NEAR_OPTIONS, ...mode, reuseRenders: ONCE },
         "Denmark"
       );
 
