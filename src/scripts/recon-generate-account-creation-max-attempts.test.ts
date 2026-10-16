@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-
-import type { ReconVocabulary } from "@/recon/vocabulary";
 import { buildConfigPlugin } from "@/plugins/config-plugin";
+import type { ReconVocabulary } from "@/recon/vocabulary";
 import { emitBrowserFlowTs, emitConfigManifest, emitContractTs } from "@/scripts/recon-generate";
 
 /** Concatenation trick so Biome's noTemplateCurlyInString rule doesn't flag the literal. */
