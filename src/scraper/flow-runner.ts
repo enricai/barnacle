@@ -69,7 +69,12 @@ import {
   HCAPTCHA_CALLBACK_REGISTRY_GLOBAL,
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
-import { QUIESCENCE_PROBE_EXPR, type SettlePage, settleAfterClick } from "@/scraper/click-settle";
+import {
+  QUIESCENCE_PROBE_EXPR,
+  type SettlePage,
+  settleAfterClick,
+  settleAndSnapshot,
+} from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
   selectDeepLocatorCandidateOption,
@@ -13152,12 +13157,15 @@ export async function executeStepWithHealing(params: {
             // burn the step budget probing all of them.
             const runnerUp = ranked[1];
             if (runnerUp) {
+              const midTarget = frameTarget ?? mainFrameTarget(page);
               const midPost = await settleAndSnapshot({
                 page,
-                target: frameTarget ?? mainFrameTarget(page),
-                signalCounter,
+                counter: signalCounter,
                 pre,
                 submitShaped: true,
+                snapshot: (withPage) =>
+                  snapshotPage(midTarget, signalCounter, withPage ? page : undefined),
+                readQuiescence: async () => midTarget.evaluate(QUIESCENCE_PROBE_EXPR),
               });
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,

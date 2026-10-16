@@ -94,18 +94,18 @@ interface World {
 }
 
 /**
- * The step's first click (act-string) is always a no-op. Only the site under
+ * The step's first click (act-string, and its el.click() fallback) lands on a decoy, so it is a no-op. Only the site under
  * test issues a click that reaches the real control; when `advances` is false
  * that click is a no-op too.
  */
 function buildWorld(site: Site, advances: boolean): World {
   const window = new Window({ url: URL });
   const document = window.document;
-  document.body.innerHTML = `<div><h1 id="hdr">Sign In</h1><div id="out"></div><button id="theControl" type="button">Create Account</button></div>`;
+  document.body.innerHTML = `<div><h1 id="hdr">Sign In</h1><div id="out"></div><button id="theControl" type="button">Create Account</button><span id="decoy">x</span></div>`;
   shapeBody(document as unknown as Doc, PRE_TEXT_LEN, PRE_BYTES);
   const control = document.getElementById("theControl") as unknown as HappyDomElement;
   const hdr = document.getElementById("hdr") as unknown as HappyDomElement;
-  const controlXPath = xpathFor(control);
+  const decoyXPath = xpathFor(document.getElementById("decoy") as unknown as HappyDomElement);
 
   let now = 0;
   let clickedAt: number | null = null;
@@ -119,6 +119,13 @@ function buildWorld(site: Site, advances: boolean): World {
     clickedAt = now;
     hdr.textContent = "Signed in as jane@example.com";
   });
+
+  let resolveRequest: (() => void) | null = null;
+  let requestStarted = false;
+  (window as unknown as { fetch: () => Promise<void> }).fetch = () =>
+    new Promise<void>((res) => {
+      resolveRequest = res;
+    });
 
   const root = document.documentElement as unknown as HappyDomElement;
   const win = window as unknown as { XPathResult?: unknown };
@@ -141,19 +148,18 @@ function buildWorld(site: Site, advances: boolean): World {
     const isRank = src.includes("deepElements") && src.includes("ranked.sort");
     const isClick = src.includes("deepElements") && src.includes("clicked: true");
     if (site === "rephrase" && (isRank || isClick)) return isRank ? [] : { clicked: false };
-    if (site === "runner-up" && isRank) {
-      return [
-        { deepIndex: 0, tier: 3, tag: "button", accessibleName: "Create Account" },
-        { deepIndex: 1, tier: 2, tag: "div", accessibleName: "Create Account" },
-      ];
+    if (isRank) {
+      const top = { deepIndex: 0, tier: 3, tag: "button", accessibleName: "Create Account" };
+      return site === "runner-up"
+        ? [top, { deepIndex: 1, tier: 2, tag: "div", accessibleName: "Create Account" }]
+        : [top];
     }
-    if (site === "runner-up" && isClick) {
+    if (isClick) {
       const idx = src.includes("all[1]") ? 1 : 0;
       clicks.push(idx);
-      if (idx === 1) clickControl();
+      if (idx === (site === "runner-up" ? 1 : 0)) clickControl();
       return { clicked: true };
     }
-    if (isClick) clicks.push(0);
     return realEvaluate(expr);
   };
 
@@ -164,16 +170,24 @@ function buildWorld(site: Site, advances: boolean): World {
     title: async () => "Sign In",
     locator: () => ({
       first: () => ({
-        click: async () => clickControl(),
         isChecked: async () => false,
         inputValue: async () => "",
       }),
     }),
     waitForTimeout: async (ms: number): Promise<void> => {
       now += ms;
+      if (
+        clickedAt !== null &&
+        !requestStarted &&
+        (window as unknown as { __settleQ?: unknown }).__settleQ
+      ) {
+        requestStarted = true;
+        void (window as unknown as { fetch: () => Promise<void> }).fetch();
+      }
       if (clickedAt !== null && !rendered && now - clickedAt >= RERENDER_DELAY_MS) {
         rendered = true;
         shapeBody(document as unknown as Doc, POST_TEXT_LEN, POST_BYTES);
+        (resolveRequest as (() => void) | null)?.();
       }
     },
     getSessionForFrame: () => session,
@@ -187,7 +201,7 @@ function buildWorld(site: Site, advances: boolean): World {
       success: true,
       message: "clicked",
       actionDescription: "clicked",
-      actions: [{ selector: `xpath=${controlXPath}`, description: "control", method: "click" }],
+      actions: [{ selector: `xpath=${decoyXPath}`, description: "control", method: "click" }],
     };
   });
   const stagehand = {
@@ -262,7 +276,6 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit at bypass sites
     const world = buildWorld("deep-locator", true);
 
     const outcome = await executeStepWithHealing(params(world, false));
-
     expect(outcome).toBe("completed");
     expect(world.rendered()).toBe(true);
     expect(world.clicks()).toEqual([0]);
