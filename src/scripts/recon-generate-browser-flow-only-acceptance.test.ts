@@ -66,7 +66,7 @@ interface Generation {
 
 /** Runs the real generator CLI over the wizard-checkout captures, returning the
  * exit status and every emitted .ts file. */
-function generate(flow: Record<string, unknown>): Generation {
+function generate(flow: Record<string, unknown>, options: { emptyCaptures?: boolean } = {}): Generation {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-bfo-acceptance-"));
   const runRoot = join(workDir, "run");
   const capturesDir = join(runRoot, "graphql");
@@ -74,7 +74,8 @@ function generate(flow: Record<string, unknown>): Generation {
   mkdirSync(join(runRoot, "replays"), { recursive: true });
   mkdirSync(join(runRoot, "aux"), { recursive: true });
   writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-  buildWizardCheckoutCaptures().forEach((capture, index) => {
+  const captures = options.emptyCaptures ? [] : buildWizardCheckoutCaptures();
+  captures.forEach((capture, index) => {
     writeFileSync(
       join(capturesDir, `${String(index).padStart(3, "0")}-checkout-action.json`),
       JSON.stringify(capture)
@@ -182,5 +183,13 @@ describe("browser-flow-only job-application contract — all mechanisms together
     expect(output).toMatch(/ownBackendHostnames matched no capture/);
     expect(files["contract.ts"]).toBeUndefined();
     expect(output).not.toMatch(/placeholder/i);
+  }, 60_000);
+
+  it("fails generation without emitting any file when the capture pool is empty", () => {
+    const { status, files, output } = generate(FLOW, { emptyCaptures: true });
+    expect(status).not.toBe(0);
+    expect(files["contract.ts"]).toBeUndefined();
+    expect(Object.values(files).join("\n")).not.toContain("https://example.com");
+    expect(output).not.toContain("defaultBaseUrl");
   }, 60_000);
 });
