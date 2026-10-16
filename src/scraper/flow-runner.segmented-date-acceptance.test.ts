@@ -26,14 +26,14 @@ const doc = (): Doc => (globalThis as unknown as { document: Doc }).document;
 const seg = (id: string, max: number, label: string): string =>
   `<div><input id="${id}" role="spinbutton" aria-label="${label}" aria-valuemax="${max}" /></div>`;
 const monthYear = (p: string): string => seg(`${p}-m`, 12, "Month") + seg(`${p}-y`, 9999, "Year");
-const section = (title: string, label: string, p: string, segs: string): string =>
+const section = (title: string, label: string, segs: string): string =>
   `<section><h3>${title}</h3><div role="group" aria-label="${label}">${segs}</div></section>`;
 
 const PAGE =
-  section("Work Experience 1", "From", "wf", monthYear("wf")) +
-  section("Work Experience 1", "To", "wt", monthYear("wt")) +
-  section("Education 1", "From", "ef", seg("ef-y", 9999, "Year")) +
-  section("Education 1", "To", "et", seg("et-y", 9999, "Year"));
+  section("Work Experience 1", "From", monthYear("wf")) +
+  section("Work Experience 1", "To", monthYear("wt")) +
+  section("Education 1", "From", seg("ef-y", 9999, "Year")) +
+  section("Education 1", "To", seg("et-y", 9999, "Year"));
 
 function install(html: string): void {
   doc().body.innerHTML = html;
@@ -114,7 +114,7 @@ describe("segmented date acceptance (neutral markup, report steps)", () => {
   });
 
   it("types per-segment and lone whole-date steps into a lone widget", async () => {
-    const lone = section("Dates", "Period", "p", monthYear("wf"));
+    const lone = section("Dates", "Period", monthYear("wf"));
     install(lone);
     expect(await type("type '01' into Month")).not.toBeNull();
     expect(await type("type '2020' into Year")).not.toBeNull();
