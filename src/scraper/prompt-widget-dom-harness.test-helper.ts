@@ -98,8 +98,9 @@ export interface PopupSpec {
    */
   placeholderText?: string;
   /**
-   * With `searchOnSubmit`, successive label sets applied IN PLACE (same option
-   * nodes, different text) — one per `page.waitForTimeout` call after Enter —
+   * With `searchOnSubmit` (after Enter) or `searchable` (after the filter is
+   * filled), successive label sets applied IN PLACE (same option
+   * nodes, different text) — one per `page.waitForTimeout` call —
    * modeling a list that re-renders N times while reusing its DOM nodes.
    */
   reuseRenders?: string[][];
@@ -505,7 +506,8 @@ export function buildPromptWidgetHarness(params: {
       for (const state of openState.values()) {
         const renders = state.spec.reuseRenders;
         const step = state.renderStep ?? 0;
-        if (!state.submitted || !renders || step >= renders.length) continue;
+        const live = state.submitted || (state.spec.searchable && state.filter !== "");
+        if (!live || !renders || step >= renders.length) continue;
         const popup = document.querySelector(`[data-test-popup-for="${widgetIdOf(state)}"]`);
         const nodes = Array.from(popup?.querySelectorAll("[role='option']") ?? []);
         nodes.forEach((node, i) => {
