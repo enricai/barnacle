@@ -54,4 +54,15 @@ describe("segmented date wrapper-per-segment grouping", () => {
     const i = resolveSegmentedDateGroup("'Finish' date in Employment 1, '122024'", groups);
     expect(i === null ? null : groups[i]?.label).toBe("Finish");
   });
+  it("groups own-wrapper and shared-wrapper segment markup identically", () => {
+    const bare = (label: string, max: number): string =>
+      `<input aria-label="${label}" role="spinbutton" aria-valuemax="${max}" />`;
+    const own = field("From", seg("MM", 12) + seg("YYYY", 9999));
+    const shared = field("From", bare("MM", 12) + bare("YYYY", 9999));
+    for (const html of [own, shared]) {
+      const groups = enumerate(html).filter((g) => !g.nested);
+      expect(groups.map((g) => g.segmentMaxes)).toEqual([[12, 9999]]);
+      expect(groups.map((g) => g.label)).toEqual(["From"]);
+    }
+  });
 });
