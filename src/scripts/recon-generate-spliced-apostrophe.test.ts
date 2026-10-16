@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseFillStep } from "@/scraper/flow-runner";
-import { escapeQuotedValue } from "@/scraper/quoted-spans";
 import { buildStepInstructionExpr } from "@/scripts/recon-generate";
 
 const INSTRUCTION = "Fill in the Last name field with 'Placeholder'";
 
 function runEmitted(expr: string, payload: Record<string, string>): string {
-  return new Function("payload", "escapeQuotedValue", `return ${expr};`)(
-    payload,
-    escapeQuotedValue
-  ) as string;
+  return new Function("payload", `return ${expr};`)(payload) as string;
 }
 
 describe("emitted instruction splice with apostrophes", () => {

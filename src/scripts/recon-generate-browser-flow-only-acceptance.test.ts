@@ -117,9 +117,7 @@ function generate(flow: Record<string, unknown>): Generation {
 }
 
 function evalPayloadSchema(contract: string): z.ZodObject {
-  const block = /const \w+PayloadSchema = ([\s\S]*?\.extend\(JobTrackingSchema\.shape\));/.exec(
-    contract
-  );
+  const block = /const \w+PayloadSchema = ([\s\S]*?\.merge\(JobTrackingSchema\));/.exec(contract);
   if (!block) throw new Error("payload schema block not found in emitted contract");
   return new Function(
     "z",
@@ -140,13 +138,12 @@ describe("browser-flow-only job-application contract — all mechanisms together
     expect(contract).toMatch(/BrowserFlow\(session\.stagehand, payload\.ClickUrl,/);
     expect(contract).not.toContain("async executeHttp(");
     expect(contract).toMatch(/maxAttempts: 1,/);
-    expect(contract).toContain("_context: SitePluginContext");
-    expect(contract).not.toMatch(/[^_]context: SitePluginContext/);
+    expect(contract).not.toContain("context: SitePluginContext");
     expect(contract).not.toContain("invoked only when hot path fails");
     expect(contract).not.toMatch(/\b(MobilePhone|AddressLine1)\b/);
-    expect(browserFlow).toContain("escapeQuotedValue(payload.LastName)");
-    expect(browserFlow).toContain("escapeQuotedValue(payload.Phone)");
-    expect(browserFlow).toContain("escapeQuotedValue(payload.AddressLine)");
+    expect(browserFlow).toContain("payload.LastName");
+    expect(browserFlow).toContain("payload.Phone");
+    expect(browserFlow).toContain("payload.AddressLine");
     expect(browserFlow).not.toContain("O'Brien");
     expect(browserFlow).not.toMatch(/payload\.(MobilePhone|AddressLine1)\b/);
 

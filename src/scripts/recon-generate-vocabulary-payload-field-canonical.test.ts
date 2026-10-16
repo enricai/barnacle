@@ -18,13 +18,34 @@ const vocabulary: ReconVocabulary = {
 describe("resolveStepPayloadField — canonical payload field names", () => {
   it("maps vocabulary aliases onto ApplicantContactSchema keys, leaving explicit and custom names alone", () => {
     expect(
-      resolveStepPayloadField("Fill 'Phone Number' with '555'", undefined, false, vocabulary)
+      resolveStepPayloadField(
+        "Fill 'Phone Number' with '555'",
+        undefined,
+        false,
+        vocabulary,
+        undefined,
+        true
+      )
     ).toBe("Phone");
     expect(
-      resolveStepPayloadField("Fill 'Address Line 1' with '1 Main'", undefined, false, vocabulary)
+      resolveStepPayloadField(
+        "Fill 'Address Line 1' with '1 Main'",
+        undefined,
+        false,
+        vocabulary,
+        undefined,
+        true
+      )
     ).toBe("AddressLine");
     expect(
-      resolveStepPayloadField("Fill 'Nickname' with 'Bob'", undefined, false, vocabulary)
+      resolveStepPayloadField(
+        "Fill 'Nickname' with 'Bob'",
+        undefined,
+        false,
+        vocabulary,
+        undefined,
+        true
+      )
     ).toBe("Nickname");
     expect(
       resolveStepPayloadField("Fill 'Phone Number' with '555'", "MobilePhone", false, vocabulary)
@@ -34,7 +55,7 @@ describe("resolveStepPayloadField — canonical payload field names", () => {
   it("emits a schema with no extra required keys beyond the base schema's", () => {
     const fields = new Set(
       ["Fill 'Phone Number' with '555'", "Fill 'Address Line 1' with '1 Main'"].map(
-        (s) => resolveStepPayloadField(s, undefined, false, vocabulary) as string
+        (s) => resolveStepPayloadField(s, undefined, false, vocabulary, undefined, true) as string
       )
     );
     const source = emitContractTs({
@@ -55,7 +76,7 @@ describe("resolveStepPayloadField — canonical payload field names", () => {
       payloadFieldNames: fields,
     });
     const block = source.match(
-      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(JobTrackingSchema\.shape\))?;/
+      /const \w+PayloadSchema = ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(block).not.toBeNull();
     expect(block![0]).not.toContain("MobilePhone:");
@@ -73,7 +94,7 @@ describe("emitContractTs — generate and safeParse", () => {
   it("emits a payload schema that accepts base-schema fields plus Email and ClickUrl only", () => {
     const fields = new Set(
       ["Fill 'Phone Number' with '555'", "Fill 'Address Line 1' with '1 Main'"].map(
-        (s) => resolveStepPayloadField(s, undefined, false, vocabulary) as string
+        (s) => resolveStepPayloadField(s, undefined, false, vocabulary, undefined, true) as string
       )
     );
     const source = emitContractTs({
@@ -94,7 +115,7 @@ describe("emitContractTs — generate and safeParse", () => {
       payloadFieldNames: fields,
     });
     const block = source.match(
-      /const (\w+PayloadSchema) = (ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)(?:\.extend\(JobTrackingSchema\.shape\))?);/
+      /const (\w+PayloadSchema) = (ApplicantContactSchema\.extend\(\{[\s\S]*?\n\}\)\.merge\(JobTrackingSchema\));/
     );
     expect(block).not.toBeNull();
     const schema = new Function(
@@ -141,29 +162,30 @@ describe("emitContractTs — TrackingUrl composition", () => {
       payloadFieldNames: new Set<string>(),
     });
 
+  it("imports JobTrackingSchema and retains TrackingUrl on parse (applicant base)", () => {
+    const source = emit(true, true);
+    expect(source).toContain('import { JobTrackingSchema } from "');
+    expect(source).toContain(".merge(JobTrackingSchema)");
+    expect(source.match(/\.extend\(/g)).toHaveLength(1);
+    const block = source.match(
+      /const (\w+PayloadSchema) = ([\s\S]*?\n\}\)\.merge\(JobTrackingSchema\));/
+    );
+    expect(block).not.toBeNull();
+    const schema = new Function(
+      "z",
+      "ApplicantContactSchema",
+      "JobTrackingSchema",
+      "multipartJsonObject",
+      `return ${block![2]};`
+    )(z, ApplicantContactSchema, JobTrackingSchema, (s: z.ZodType) => s) as z.ZodType;
+    const shape = (schema as unknown as { shape: Record<string, unknown> }).shape;
+    expect(Object.keys(shape)).toContain("TrackingUrl");
+  });
+
   it.each([
-    ["applicant base", true, true],
     ["empty object base", false, true],
     ["query base", false, false],
-  ])(
-    "imports JobTrackingSchema and retains TrackingUrl on parse (%s)",
-    (_name, submission, omit) => {
-      const source = emit(submission, omit);
-      expect(source).toContain('import { JobTrackingSchema } from "');
-      expect(source).toContain(".extend(JobTrackingSchema.shape)");
-      const block = source.match(
-        /const (\w+PayloadSchema) = ([\s\S]*?\.extend\(JobTrackingSchema\.shape\));/
-      );
-      expect(block).not.toBeNull();
-      const schema = new Function(
-        "z",
-        "ApplicantContactSchema",
-        "JobTrackingSchema",
-        "multipartJsonObject",
-        `return ${block![2]};`
-      )(z, ApplicantContactSchema, JobTrackingSchema, (s: z.ZodType) => s) as z.ZodType;
-      const shape = (schema as unknown as { shape: Record<string, unknown> }).shape;
-      expect(Object.keys(shape)).toContain("TrackingUrl");
-    }
-  );
+  ])("leaves a non-job-application contract without JobTrackingSchema (%s)", (_n, sub, omit) => {
+    expect(emit(sub, omit)).not.toContain("JobTrackingSchema");
+  });
 });

@@ -13,7 +13,7 @@ import {
 /**
  * Locks that label-derived vocabulary names are canonicalised onto
  * ApplicantContactSchema keys across the contract, the flow, and the manifest,
- * and that JobTrackingSchema is always composed so TrackingUrl survives parse.
+ * and that JobTrackingSchema is composed into a job-application contract so TrackingUrl survives parse.
  */
 
 const VOCAB: ReconVocabulary = {
@@ -30,7 +30,9 @@ const ADDRESS_STEP = "Fill in the Street Address field with '1 Main'";
 const STEPS = [PHONE_STEP, ADDRESS_STEP];
 
 const canonicalFields = (): Set<string> =>
-  new Set(STEPS.map((s) => resolveStepPayloadField(s, undefined, false, VOCAB) as string));
+  new Set(
+    STEPS.map((s) => resolveStepPayloadField(s, undefined, false, VOCAB, undefined, true) as string)
+  );
 
 function emitContract(fields: Set<string>): string {
   return emitContractTs({
@@ -53,7 +55,7 @@ function emitContract(fields: Set<string>): string {
 }
 
 function evalSchema(source: string): z.ZodObject {
-  const block = /const \w+PayloadSchema = ([\s\S]*?\.extend\(JobTrackingSchema\.shape\));/.exec(
+  const block = /const \w+PayloadSchema = ([\s\S]*?\n\}\)\.merge\(JobTrackingSchema\));/.exec(
     source
   );
   if (!block) throw new Error("payload schema block not found in emitted contract");
@@ -94,12 +96,13 @@ describe("label-derived payload field canonicalisation", () => {
       pascal: "TestAgency",
       baseUrl: "https://example.com",
       isSubmissionFlow: true,
+      browserFlowOnly: true,
       vocabulary: VOCAB,
       flowSteps: STEPS,
     });
 
-    expect(code).toContain(`$${"{escapeQuotedValue(payload." + phone + ")}"}`);
-    expect(code).toContain(`$${"{escapeQuotedValue(payload." + address + ")}"}`);
+    expect(code).toContain(`$${"{payload." + phone + "}"}`);
+    expect(code).toContain(`$${"{payload." + address + "}"}`);
     expect(code).not.toContain("payload.MobilePhone");
     expect(code).not.toContain("payload.AddressLine1");
   });
@@ -111,6 +114,8 @@ describe("label-derived payload field canonicalisation", () => {
         siteId: "acme-demo",
         displayName: "AcmeDemo",
         baseUrl: "https://apply.acme.example",
+        isSubmissionFlow: true,
+        browserFlowOnly: true,
         vocabulary: VOCAB,
         flowSteps: STEPS,
       } as never)

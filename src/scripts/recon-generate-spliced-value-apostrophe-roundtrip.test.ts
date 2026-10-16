@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseFillStep, parseSelectStep } from "@/scraper/flow-runner";
-import { escapeQuotedValue } from "@/scraper/quoted-spans";
 import { buildStepInstructionExpr } from "@/scripts/recon-generate";
 
 const VALUES = ["O'Brien", "12 King's Row", "Smith'", "5'10"];
 
 function runEmitted(expr: string, payload: Record<string, string>): string {
-  return new Function("payload", "escapeQuotedValue", `return ${expr};`)(
-    payload,
-    escapeQuotedValue
-  ) as string;
+  return new Function("payload", `return ${expr};`)(payload) as string;
 }
 
 describe("spliced values with non-letter-flanked apostrophes", () => {

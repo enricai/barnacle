@@ -72,10 +72,10 @@ describe("account-creation flows emit meta.maxAttempts: 1", () => {
 });
 
 describe("execute() context parameter reflects usage", () => {
-  it("emits _context and no hot-path-fallback comment for browser-only reading payload.ClickUrl", () => {
+  it("omits the context parameter and the hot-path-fallback comment for browser-only reading payload.ClickUrl", () => {
     const source = emitContractTs({ ...CONTRACT_BASE, omitExecuteHttp: true });
-    expect(source).toContain("_context: SitePluginContext");
-    expect(source).not.toMatch(/[^_]context: SitePluginContext/);
+    expect(source).not.toContain("context: SitePluginContext");
+    expect(source).not.toMatch(/import type \{[^}]*SitePluginContext/);
     expect(source).not.toContain("invoked only when hot path fails");
   });
 

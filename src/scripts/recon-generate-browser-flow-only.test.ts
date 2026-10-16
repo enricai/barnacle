@@ -509,9 +509,9 @@ describe("emitContractTs — account-creation retry policy and execute() context
     expect(emitContractTs(base)).not.toContain("maxAttempts");
   });
 
-  it("declares _context and drops the hot-path comment when execute reads payload.ClickUrl", () => {
+  it("omits the context parameter and the hot-path comment when execute reads payload.ClickUrl", () => {
     const source = emitContractTs(base);
-    expect(source).toMatch(/_context: SitePluginContext/);
+    expect(source).not.toContain("context: SitePluginContext");
     expect(source).not.toContain("invoked only when hot path fails");
   });
 });

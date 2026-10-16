@@ -49,7 +49,7 @@ import { loadReconVocabulary, VOCABULARY_NONE } from "@/recon/load-vocabulary";
 import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/value-constraints";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
-import { escapeQuotedValue, findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
+import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
 import {
   type Capture,
   type RateLimitFinding,
@@ -240,6 +240,9 @@ function toPascalCase(siteId: string): string {
  *   label match names, or it is not that field's datum (e.g. a device-type
  *   dropdown's `'Mobile'` looks like a phone-number field by label alone, but
  *   is nothing like the number the Fill step already bound).
+ * @param canonicalise map a vocabulary row's name onto the equivalent
+ *   `ApplicantContactSchema` key ({@link canonicalPayloadField}); set by the
+ *   job-application emit paths whose contract extends that base schema
  * @returns the PascalCase payload field name to splice, or null to keep literal
  */
 export function resolveStepPayloadField(
@@ -247,7 +250,8 @@ export function resolveStepPayloadField(
   explicit?: string,
   forceNone?: boolean,
   vocabulary: ReconVocabulary = EMPTY_VOCABULARY,
-  knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES
+  knownFieldValues: ReadonlyMap<string, string> = EMPTY_KNOWN_FIELD_VALUES,
+  canonicalise = false
 ): string | null {
   if (forceNone) return null;
   if (explicit) return explicit;
@@ -275,12 +279,13 @@ export function resolveStepPayloadField(
   const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
   for (const [rx, field] of vocabulary.table) {
     if (!rx.test(instruction)) continue;
-    if (!isSelectStep) return canonicalPayloadField(field);
+    const resolved = canonicalise ? canonicalPayloadField(field) : field;
+    if (!isSelectStep) return resolved;
     const answer = pickedQuotedValue(instruction);
     if (answer !== null && OPERATIONAL_ANSWER.test(answer.trim())) return null;
-    const known = knownFieldValues.get(field);
+    const known = knownFieldValues.get(resolved);
     if (known !== undefined && answer !== known) return null;
-    return canonicalPayloadField(field);
+    return resolved;
   }
   return null;
 }
@@ -290,7 +295,7 @@ export function resolveStepPayloadField(
  * consumer's `MobilePhone` does not become an extra required key beside
  * `Phone`. Names the base schema has no equivalent for pass through.
  */
-function canonicalPayloadField(field: string): string {
+export function canonicalPayloadField(field: string): string {
   if (applicantContactFieldNames.has(field) || baseContractFieldNames.has(field)) return field;
   const canonical = resolveCanonicalAtsFieldName(field);
   return canonical !== null && applicantContactFieldNames.has(canonical) ? canonical : field;
@@ -305,7 +310,8 @@ function canonicalPayloadField(field: string): string {
 function fieldForFillStep(
   step: FlowStepInput,
   vocabulary: ReconVocabulary,
-  knownFieldValues?: ReadonlyMap<string, string>
+  knownFieldValues?: ReadonlyMap<string, string>,
+  canonicalise = false
 ): string | null {
   const isObj = typeof step !== "string";
   const instruction = isObj ? step.step : step;
@@ -314,12 +320,14 @@ function fieldForFillStep(
     isObj ? step.payloadField : undefined,
     isObj ? step.payloadFieldNone : undefined,
     vocabulary,
-    knownFieldValues
+    knownFieldValues,
+    canonicalise
   );
   if (vocabField !== null) return vocabField;
   if (isObj && step.payloadFieldNone) return null;
   if (vocabulary.exclusions.some((rx) => rx.test(instruction))) return null;
-  return deriveFillLabelField(instruction);
+  const labelField = deriveFillLabelField(instruction);
+  return canonicalise && labelField !== null ? canonicalPayloadField(labelField) : labelField;
 }
 
 /**
@@ -334,14 +342,15 @@ function fieldForFillStep(
 export function buildKnownFieldValues(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  canonicalise = false
 ): Map<string, string> {
   const known = new Map<string, string>();
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
-    const field = fieldForFillStep(step, vocabulary);
+    const field = fieldForFillStep(step, vocabulary, undefined, canonicalise);
     if (field === null) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
@@ -14306,10 +14315,15 @@ export function emitContractTs(opts: {
   // as required strings (z.email() for Email per the repo's z.string().email()→
   // z.email() migration) so those references typecheck in the generated flow.
   if (payloadFieldNames) {
-    for (const name of [...payloadFieldNames].sort()) {
+    // The browser-flow-only emit canonicalises its own splices already; this
+    // covers a caller handing over vocabulary-row names directly, so one never
+    // becomes a required key beside the base schema's own equivalent.
+    const canonicaliseNames = usesApplicantContactSchema && omitExecuteHttp && isSubmissionFlow;
+    for (const rawName of [...payloadFieldNames].sort()) {
+      const name = canonicaliseNames ? canonicalPayloadField(rawName) : rawName;
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = name === "Email" ? "z.email()" : "z.string()";
-      const suffix = optionalPayloadFieldNames.has(name) ? ".optional()" : "";
+      const suffix = optionalPayloadFieldNames.has(rawName) ? ".optional()" : "";
       addExtendField(name, `  ${name}: ${zod}${suffix},`);
     }
   }
@@ -14538,12 +14552,12 @@ export function emitContractTs(opts: {
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
-  // Composed unconditionally: zod strips unknown keys, so without it the
-  // TrackingUrl the engine's fireTrackingClick reads never survives parse.
-  const trackingExtension = extendFields.has("TrackingUrl")
-    ? ""
-    : ".extend(JobTrackingSchema.shape)";
-  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingExtension}`;
+  // zod strips unknown keys, so without composing it a job-application
+  // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
+  // rather than a second extend keeps the schema to a single `.extend()`.
+  const composesJobTracking = usesApplicantContactSchema && !extendFields.has("TrackingUrl");
+  const trackingMerge = composesJobTracking ? ".merge(JobTrackingSchema)" : "";
+  const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
   // (usesApplicantContactSchema); multipartBoolean() is only imported when a
@@ -14564,9 +14578,9 @@ export function emitContractTs(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
-  const jobTrackingImport = extendFields.has("TrackingUrl")
-    ? ""
-    : `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
+  const jobTrackingImport = composesJobTracking
+    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
+    : "";
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15146,8 +15160,13 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
-  const executeReadsBaseUrl = !usesApplicantContactSchema;
-  const executeContextName = executeReadsBaseUrl || !omitExecuteHttp ? "context" : "_context";
+  // Applicant contracts enter on payload.ClickUrl, so a browser-flow-only
+  // execute has nothing left to read from the context.
+  const executeOmitsContext = omitExecuteHttp && usesApplicantContactSchema;
+  const executeContextParam = executeOmitsContext ? "" : `,\n    context: SitePluginContext`;
+  const sitePluginImports = executeOmitsContext
+    ? "SitePlugin, SitePluginResult"
+    : "SitePlugin, SitePluginContext, SitePluginResult";
   const executeDocComment = omitExecuteHttp
     ? ""
     : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
@@ -15174,7 +15193,7 @@ ${bottleneckImport}import { z } from "zod/v4";
 
 ${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
-import type { SitePlugin, SitePluginContext, SitePluginResult } from "${ENGINE_PKG}/site-plugin";
+import type { ${sitePluginImports} } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
 ${baseHeadersBlock}${limiterBlock}
 export const ${pascal}ResponseSchema = ${responseSchemaExpr};
@@ -15211,8 +15230,7 @@ export const ${camel}Plugin: SitePlugin<${pascal}Payload, ${pascal}Response> = {
 ${executeHttpMethodBlock}
 ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
-    session: BrowserSession,
-    ${executeContextName}: SitePluginContext
+    session: BrowserSession${executeContextParam}
   ): Promise<SitePluginResult<${pascal}Response>> {
     const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
@@ -15417,7 +15435,7 @@ export function buildStepInstructionExpr(
     capturedFallback && captured !== null
       ? `payload.${field} ?? ${JSON.stringify(captured)}`
       : `payload.${field}`;
-  return `\`${escapeForTemplateLiteral(site.before)}\${escapeQuotedValue(${read})}${escapeForTemplateLiteral(site.after)}\``;
+  return `\`${escapeForTemplateLiteral(site.before)}\${${read}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15434,7 +15452,7 @@ function buildCompositeStepInstructionExpr(
 ): string {
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
-  return `\`${escapeForTemplateLiteral(site.before)}\${escapeQuotedValue(payload.${fieldA})} \${escapeQuotedValue(payload.${fieldB})}${escapeForTemplateLiteral(site.after)}\``;
+  return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
 }
 
 /**
@@ -15565,8 +15583,14 @@ export function emitConfigManifest(opts: {
     browserFlowOnly = false,
     env = process.env,
   } = opts;
+  const canonicalise = isSubmissionFlow && browserFlowOnly;
   const payloadFieldNames = new Set<string>();
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
 
   const steps = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
@@ -15598,7 +15622,8 @@ export function emitConfigManifest(opts: {
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     if (field !== null) payloadFieldNames.add(field);
     const rewritten = buildManifestInstruction(instruction, field);
@@ -15647,7 +15672,15 @@ export function emitConfigManifest(opts: {
       requestProperties[name] = { type: jsonSchemaTypeOf(value) };
     }
   }
-  requestProperties.TrackingUrl ??= { type: "string" };
+  const usesApplicantContactSchema = contractUsesApplicantContactSchema({
+    inputBody,
+    isSubmissionFlow,
+    browserFlowOnly,
+    payloadFieldNames,
+  });
+  // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
+  // without it would drop the TrackingUrl the engine reads after submission.
+  if (usesApplicantContactSchema) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -15657,14 +15690,7 @@ export function emitConfigManifest(opts: {
   // Same decision emitBrowserFlowTs makes: only a flow that uploads AND whose
   // contract carries Resume fields is multipart, so buildUploadFixture agrees.
   const hasUploadStep = flowSteps.some((s) => typeof s !== "string" && s.upload === true);
-  const contractCarriesResume =
-    hasMultipartStep ||
-    contractUsesApplicantContactSchema({
-      inputBody,
-      isSubmissionFlow,
-      browserFlowOnly,
-      payloadFieldNames,
-    });
+  const contractCarriesResume = hasMultipartStep || usesApplicantContactSchema;
   const multipart = hasUploadStep && contractCarriesResume;
 
   const manifest = {
@@ -15714,7 +15740,8 @@ export function emitConfigManifest(opts: {
 function computeFlowPayloadFieldNames(
   flowSteps: FlowStepInput[],
   vocabulary: ReconVocabulary | undefined,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  canonicalise = false
 ): { payloadFieldNames: Set<string>; optionalPayloadFieldNames: Set<string> } {
   const payloadFieldNames = new Set<string>();
   // Widest wins: a field is only optional if EVERY step that registers it
@@ -15728,7 +15755,12 @@ function computeFlowPayloadFieldNames(
       optionalPayloadFieldNames.delete(field);
     }
   };
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
   for (const step of flowSteps) {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -15758,7 +15790,8 @@ function computeFlowPayloadFieldNames(
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -15829,10 +15862,12 @@ export function emitBrowserFlowTs(opts: {
     env = process.env,
   } = opts;
 
+  const canonicalise = isSubmissionFlow && browserFlowOnly;
   const { payloadFieldNames, optionalPayloadFieldNames } = computeFlowPayloadFieldNames(
     flowSteps,
     vocabulary,
-    env
+    env,
+    canonicalise
   );
   for (const field of capturedFallbackFields) {
     if (payloadFieldNames.has(field)) optionalPayloadFieldNames.add(field);
@@ -15846,7 +15881,12 @@ export function emitBrowserFlowTs(opts: {
       browserFlowOnly,
       payloadFieldNames,
     });
-  const knownFieldValues = buildKnownFieldValues(flowSteps, vocabulary ?? EMPTY_VOCABULARY, env);
+  const knownFieldValues = buildKnownFieldValues(
+    flowSteps,
+    vocabulary ?? EMPTY_VOCABULARY,
+    env,
+    canonicalise
+  );
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
 
@@ -15894,7 +15934,8 @@ export function emitBrowserFlowTs(opts: {
       isObj ? step.payloadField : undefined,
       isObj ? step.payloadFieldNone : undefined,
       vocabulary,
-      knownFieldValues
+      knownFieldValues,
+      canonicalise
     );
     const composite =
       field === null && !(isObj && step.payloadFieldNone)
@@ -15971,7 +16012,7 @@ import type { Stagehand } from "@browserbasehq/stagehand";${isSubmissionFlow ? `
 import { buildAnthropicClient, buildRephraseModel } from "${ENGINE_PKG}/lib/llm/anthropic-client";
 import { getLogger } from "${ENGINE_PKG}/lib/logging";${usesThrowawayPassword ? `\nimport { generateThrowawayPassword } from "${ENGINE_PKG}/lib/random";` : ""}
 import { type HealingFlowStep, runHealingFlow } from "${ENGINE_PKG}/scraper/flow-runner";
-${stepLiterals.some((literal) => literal.includes("escapeQuotedValue(")) ? `import { escapeQuotedValue } from "${ENGINE_PKG}/scraper/quoted-spans";\n` : ""}import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
+import { waitForSpaReady } from "${ENGINE_PKG}/scraper/spa-readiness";
 import { guardedExtract } from "${ENGINE_PKG}/scraper/stagehand-guard";${usesEmailStep ? `\nimport { testmailInboxFromAddress } from "${ENGINE_PKG}/testmail/client";` : ""}
 import type { SessionProxyTuple } from "${ENGINE_PKG}/types/session-proxy";
 import ${
