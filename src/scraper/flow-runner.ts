@@ -203,7 +203,7 @@ export function wireSignalCapture(
     counter: { n: number };
     signalCounter: { n: number };
     recentCaptures: string[];
-    recentCaptureMeta: { method: string; status: number; url: string }[];
+    recentCaptureMeta: CaptureMeta[];
     getCurrentPhase: () => string;
     getCurrentPageOrigin: () => string;
     onCapture?: (capture: Capture, filename: string) => void;
@@ -447,6 +447,8 @@ export function wireSignalCapture(
         method: capture.method,
         status: capture.status,
         url: capture.url,
+        hasBody: (req.requestPostData ?? "").length > 0,
+        multipart: /^multipart\//i.test(requestContentType(req.requestHeaders)),
       });
       if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
         recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
@@ -1564,7 +1566,7 @@ export async function resolveDumpPageIdentity(
  * AND a 5xx status. Returns the matched URL when found; null otherwise.
  */
 export function findRecentBackendError(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
   /**
    * Hostnames considered "the site's own backend." Replaces the prior
@@ -1624,7 +1626,7 @@ async function isLandedUrlPlausibleForStep(
  * clean skip.
  */
 export function findRecentPageTransition(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
 }): string | null {
   const { recentCaptureMeta, preMetaLength } = params;
@@ -2468,7 +2470,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
 export function describeAttemptEffectSignals(
   pre: StepSnapshot,
   post: StepSnapshot,
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[],
+  recentCaptureMeta: readonly CaptureMeta[],
   preMetaLength: number
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
@@ -5333,7 +5335,21 @@ const UPLOAD_URL_PATTERNS = [
 ] as const;
 
 /** One entry of the recent-network-capture window shared across upload helpers. */
-type CaptureMeta = { method: string; status: number; url: string };
+type CaptureMeta = {
+  method: string;
+  status: number;
+  url: string;
+  /** Request carried a non-empty post body (CDP omits it for some binary bodies, hence `multipart`). */
+  hasBody?: boolean;
+  /** Request Content-Type was multipart/*, the shape of a browser file upload. */
+  multipart?: boolean;
+};
+
+/** Case-insensitive Content-Type lookup; CDP preserves the page's header casing. */
+function requestContentType(headers: Record<string, string>): string {
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+  return key ? (headers[key] ?? "") : "";
+}
 
 /** Fixture shape carried by the upload helpers (never null past the guard). */
 type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
@@ -5342,10 +5358,10 @@ type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
  * Poll the recent-capture window for an upload-related POST after a file has
  * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
  * the click-to-surface path, and the CDP native-chooser path all verify the
- * same way. Returns true as soon as a non-GET capture whose URL matches
- * {@link UPLOAD_URL_PATTERNS} lands; false if the timeout elapses first.
+ * same way. Returns true as soon as a non-GET capture that is multipart, or has a
+ * non-empty body and a URL matching {@link UPLOAD_URL_PATTERNS}, lands; false if the timeout elapses first.
  */
-async function waitForUploadNetworkSignal(params: {
+export async function waitForUploadNetworkSignal(params: {
   page: Page;
   fixture: UploadFixture;
   logger: Logger;
@@ -5363,6 +5379,8 @@ async function waitForUploadNetworkSignal(params: {
       const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
       const uploadCapture = newCaptures.find((cap) => {
         if (cap.method === "GET") return false;
+        if (cap.multipart) return true;
+        if (!cap.hasBody) return false;
         const lowerUrl = cap.url.toLowerCase();
         return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
       });
@@ -5448,7 +5466,7 @@ async function tryUploadPrimitive(params: {
    * in the ATS's framework state — false positive. K'1 catches this by
    * filtering the network signal by URL keyword.
    */
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
@@ -11798,7 +11816,7 @@ export async function executeStepWithHealing(params: {
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
-  recentCaptureMeta: { method: string; status: number; url: string }[];
+  recentCaptureMeta: CaptureMeta[];
   anthropic: Anthropic | null;
   /**
    * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM`
@@ -16224,7 +16242,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let activePage = page;
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  const recentCaptureMeta: CaptureMeta[] = [];
   const start = Date.now();
   let submitVerified = false;
   let submitStepSkipped = false;

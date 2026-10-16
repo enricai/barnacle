@@ -125,7 +125,8 @@ describe("flow-runner/surfaceAndUpload — dropzone-strategy frame targeting", (
       .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
     const target = makeChildTarget(childEvaluate);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] =
+      [];
     // waitForUploadNetworkSignal polls via page.waitForTimeout; bump the
     // signal counter and append the matching capture on the first poll so
     // the drag-drop-onto-dropzone success path resolves immediately instead
@@ -136,6 +137,7 @@ describe("flow-runner/surfaceAndUpload — dropzone-strategy frame targeting", (
         method: "POST",
         status: 200,
         url: "https://apply.example.com/attachment_upload",
+        hasBody: true,
       });
     });
 
