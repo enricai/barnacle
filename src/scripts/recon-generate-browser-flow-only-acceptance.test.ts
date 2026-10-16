@@ -66,7 +66,10 @@ interface Generation {
 
 /** Runs the real generator CLI over the wizard-checkout captures, returning the
  * exit status and every emitted .ts file. */
-function generate(flow: Record<string, unknown>, options: { emptyCaptures?: boolean } = {}): Generation {
+function generate(
+  flow: Record<string, unknown>,
+  options: { emptyCaptures?: boolean } = {}
+): Generation {
   workDir = mkdtempSync(join(tmpdir(), "barnacle-bfo-acceptance-"));
   const runRoot = join(workDir, "run");
   const capturesDir = join(runRoot, "graphql");
