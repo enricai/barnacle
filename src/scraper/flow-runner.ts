@@ -9668,7 +9668,7 @@ async function commitPromptOption(params: {
     if (!readback?.ok && readback?.committed) {
       await dismissLeftoverPromptPopups(page, target);
       logger.info(
-        `prompt-selector primitive: committed "${readback.committed.slice(0, 40)}" instead of "${chosenOption.text.slice(0, 40)}" for ${optLabel}; falling through`
+        `prompt-selector primitive: committed "${maskValueShape(readback.committed)}" instead of "${maskValueShape(chosenOption.text)}" for ${optLabel}; falling through`
       );
       return null;
     }
@@ -9709,7 +9709,7 @@ async function commitPromptOption(params: {
     // effect, and it never commits a value, so only a widget not flagged invalid counts.
     if (isRequestedOption && !readback.stillInvalid) {
       logger.info(
-        `prompt-selector primitive: requested option "${chosenOption.text.slice(0, 40)}" for ${optLabel} opened a new option set (${matchReason})`
+        `prompt-selector primitive: requested option "${maskValueShape(chosenOption.text)}" for ${optLabel} opened a new option set (${matchReason})`
       );
       return readback?.id ?? "";
     }

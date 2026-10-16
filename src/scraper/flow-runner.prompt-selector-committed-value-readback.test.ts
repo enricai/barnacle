@@ -200,8 +200,9 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
     const { trajectory } = await run(buildHarness({ announce: "describedby", commits: "Beta" }));
     expect(trajectory).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('committed "beta" instead of "Alpha"')
+      expect.stringContaining('committed "aaaa" instead of "Aaaaa"')
     );
+    expect(testLogger.info).not.toHaveBeenCalledWith(expect.stringMatching(/beta/i));
   });
 
   it("credits a correct commit announced via a descendant's aria-describedby", async () => {
@@ -217,7 +218,7 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
   it("rejects a wrong commit read from selectedItemList", async () => {
     const { trajectory } = await run(buildHarness({ announce: "chip", commits: "Beta" }));
     expect(trajectory).toEqual([]);
-    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('instead of "Alpha"'));
+    expect(testLogger.info).toHaveBeenCalledWith(expect.stringContaining('instead of "Aaaaa"'));
   });
 
   it("falls back to the widget's own value when nothing is announced", async () => {
@@ -229,7 +230,7 @@ describe("flow-runner/commitPromptOption trusts the widget's announced committed
     const { trajectory } = await run(buildHarness({ announce: "none", commits: "Beta" }));
     expect(trajectory).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('committed "beta" instead of "Alpha"')
+      expect.stringContaining('committed "aaaa" instead of "Aaaaa"')
     );
   });
 });

@@ -86,7 +86,7 @@ describe("prompt-selector read-back compares the widget's readable value to the 
     );
     expect(trajectory).toEqual([]);
     expect(testLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining('committed "chemistry" instead of "Geology"')
+      expect.stringContaining('committed "aaaaaaaaa" instead of "Aaaaaaa"')
     );
   });
 
