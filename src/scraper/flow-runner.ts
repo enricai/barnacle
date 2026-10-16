@@ -133,6 +133,7 @@ import {
   clickCentredTrusted,
   firstMatchClickable,
   isClickPointUnobscured,
+  probeClickPoint,
 } from "@/scraper/trusted-click";
 import {
   FIND_DROP_ZONE_EXPR,
@@ -799,12 +800,19 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
  */
 const PROMPT_ANNOUNCED_VALUE_EXPR = `((w) => {
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
-  const announceRx = /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/;
+  const announceRxs = [
+    /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/,
+    /^(?:currently\\s+)?selected(?:\\s+(?:item|option|value))?\\s*[:,-]\\s*(.+)$/,
+    /^(.+?)\\s+(?:is\\s+)?selected\\.?$/,
+  ];
   for (const el of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) {
     for (const ref of (el.getAttribute("aria-describedby") || "").split(/\\s+/)) {
       const refEl = ref ? document.getElementById(ref) : null;
-      const m = refEl ? announceRx.exec(norm(refEl.textContent)) : null;
-      if (m && m[1]) return m[1];
+      const said = refEl ? norm(refEl.textContent) : "";
+      for (const rx of announceRxs) {
+        const m = rx.exec(said);
+        if (m && m[1] && !/^\\d+\\s+items?$/.test(m[1])) return m[1];
+      }
     }
   }
   let anode = w;
@@ -7915,7 +7923,9 @@ export async function tryCheckboxStatePrimitive(params: {
     const norm = (s) => (s || "").replace(/\\s+/g, " ").replace(/\\s*[*:]+$/, "").trim().toLowerCase();
     const want = norm(label);
     document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"));
-    const visible = (e) => !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden";
+    const visible = (e) => {
+      try { return !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden"; } catch { return !!e; }
+    };
     const labelsOf = (cb) => {
       const out = [];
       if (cb.id) {
@@ -8002,17 +8012,44 @@ export async function tryCheckboxStatePrimitive(params: {
       return id;
     }
     const clickSels = [...(stamped.hasLabel ? [`[${attr}="label"]`] : []), `[${attr}="box"]`];
-    for (const sel of clickSels) {
-      if (!(await isClickPointUnobscured(target, sel))) continue;
-      await clickCentredTrusted(target, sel, { label: "checkbox" });
+    const reachedDesired = async (): Promise<boolean> => {
       for (let i = 0; i < CHECKBOX_STATE_POLL_ATTEMPTS; i++) {
-        await page.waitForTimeout(CHECKBOX_STATE_POLL_MS);
-        if ((await target.evaluate(stateExpr)) === parsed.desired) {
-          logger.info(
-            `checkbox state primitive: "${parsed.label.slice(0, 40)}" now ${parsed.desired ? "checked" : "unchecked"}`
-          );
-          return id;
-        }
+        await page.waitForTimeout(CHECKBOX_STATE_POLL_MS).catch(() => undefined);
+        if ((await target.evaluate(stateExpr)) === parsed.desired) return true;
+      }
+      return false;
+    };
+    const succeed = (): string => {
+      logger.info(
+        `checkbox state primitive: "${parsed.label.slice(0, 40)}" now ${parsed.desired ? "checked" : "unchecked"}`
+      );
+      return id;
+    };
+    let overlaid = false;
+    let trustedDelivered = false;
+    for (const sel of clickSels) {
+      const probe = await probeClickPoint(target, sel);
+      if (probe?.state === "occluded" && probe.occluder !== "none") {
+        overlaid = true;
+        continue;
+      }
+      if (probe?.state !== "hit") continue;
+      const delivered = await clickCentredTrusted(target, sel, { label: "checkbox" })
+        .then(() => true)
+        .catch(() => false);
+      trustedDelivered ||= delivered;
+      if (delivered && (await reachedDesired())) return succeed();
+    }
+    // A hit test that cannot resolve a point at all (no layout) says nothing
+    // about whether a programmatic click toggles the box, so it is tried once;
+    // a named overlay or an already-delivered trusted click that did not flip the
+    // box is left to the cascade, since a second click could toggle it back.
+    if (!overlaid && !trustedDelivered) {
+      for (const sel of clickSels) {
+        await target.evaluate(
+          `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el) el.click(); })()`
+        );
+        if (await reachedDesired()) return succeed();
       }
     }
     logger.warn(
@@ -9334,8 +9371,9 @@ const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
   const visible = (el) => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
       if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
-      const cs = getComputedStyle(n);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      let cs = null;
+      try { cs = getComputedStyle(n); } catch { cs = null; }
+      if (cs && (cs.display === "none" || cs.visibility === "hidden")) return false;
     }
     return true;
   };
@@ -9346,8 +9384,20 @@ const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
 })()`;
 
 /**
+ * Synthetic Escape for a page whose CDP channel is unavailable or whose popup
+ * ignored the trusted one: the popup's own keydown handler is what closes it.
+ */
+const IN_PAGE_ESCAPE_EXPR = `(() => {
+  const el = document.activeElement || document.body;
+  for (const type of ["keydown", "keyup"]) {
+    el.dispatchEvent(new KeyboardEvent(type, { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
+  }
+})()`;
+
+/**
  * Closes any popup still painted after a verified commit so it cannot
- * intercept the next field's click. Best-effort: Escape failures are logged.
+ * intercept the next field's click. Best-effort: a trusted Escape first, then
+ * a synthetic one when the trusted dispatch failed or left the popup painted.
  */
 export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -9356,13 +9406,14 @@ export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarge
       .catch(() => 0)) as number;
     if (!count) return;
     logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
-    try {
-      await sendTrustedEscape(page);
-    } catch (err) {
-      logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
-      return;
-    }
-    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
+    const trusted = await sendTrustedEscape(page)
+      .then(() => true)
+      .catch((err) => {
+        logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
+        return false;
+      });
+    if (!trusted || attempt > 0) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS).catch(() => undefined);
   }
 }
 

@@ -217,3 +217,24 @@ describe("step ordering", () => {
     expect(state).toBeLessThan(at("trySegmentedDateSpinbuttonPrimitive"));
   });
 });
+
+describe("tryCheckboxStatePrimitive without layout", () => {
+  const one = `<input type="checkbox" id="a" checked><label for="a">I agree to the terms</label>
+    <input type="checkbox" id="b" checked><label for="b">Send me offers</label>`;
+  const bare = (s: ReturnType<typeof setup>, instruction: string): Promise<string | null> =>
+    tryCheckboxStatePrimitive({ page: s.page, target: s.target, instruction, logger: LOGGER });
+
+  it("unticks only the labelled box when no hit test can resolve a point", async () => {
+    const s = setup(one, false);
+    expect(await bare(s, "Uncheck the 'I agree to the terms' checkbox")).toBe("a");
+    expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(false);
+    expect((s.doc.getElementById("b") as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("never clicks a box that already holds the requested state", async () => {
+    const s = setup(one, false);
+    expect(await bare(s, "Check the 'I agree to the terms' checkbox")).toBe("a");
+    expect((s.doc.getElementById("a") as HTMLInputElement).checked).toBe(true);
+    expect(s.clicks).toEqual([]);
+  });
+});
