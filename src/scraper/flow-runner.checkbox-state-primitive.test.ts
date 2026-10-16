@@ -326,7 +326,7 @@ describe("step ordering", () => {
     const state = at("tryCheckboxStatePrimitive");
     expect(state).toBeGreaterThan(0);
     expect(state).toBeLessThan(at("tryPromptSelectorPrimitive"));
-    expect(state).toBeLessThan(at("trySegmentedDateSpinbuttonPrimitive"));
+    expect(state).toBeLessThan(at("runSegmentedDateSpinbuttonPrimitive"));
   });
 });
 

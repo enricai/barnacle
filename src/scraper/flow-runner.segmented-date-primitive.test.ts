@@ -1,6 +1,10 @@
 import type { Stagehand } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
-import { executeStepWithHealing, trySegmentedDateSpinbuttonPrimitive } from "@/scraper/flow-runner";
+import {
+  executeStepWithHealing,
+  runSegmentedDateSpinbuttonPrimitive,
+  trySegmentedDateSpinbuttonPrimitive,
+} from "@/scraper/flow-runner";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 function harness(honourKeys: boolean): {
@@ -111,5 +115,72 @@ describe("executeStepWithHealing segmented-date wiring", () => {
     } as unknown as Parameters<typeof executeStepWithHealing>[0]);
     expect(result).toBe("completed");
     expect(act).not.toHaveBeenCalled();
+  });
+});
+
+describe("runSegmentedDateSpinbuttonPrimitive refusal", () => {
+  const group = (label: string): Record<string, unknown> => ({
+    segmentMaxes: [12, 2099],
+    context: "Start date",
+    label,
+    section: "Start date",
+  });
+  const build = (groups: unknown[], honourKeys: boolean): FrameTarget =>
+    ({
+      frame: null,
+      frameSelector: null,
+      evaluate: vi.fn(async (expr: string) => {
+        if (expr.includes("aria-valuemax")) return { groups };
+        if (expr.includes("aria-valuenow")) return honourKeys ? [1, 2020] : [0, 0];
+        return undefined;
+      }),
+      locator: vi.fn(() => ({
+        first() {
+          return this;
+        },
+        click: async (): Promise<void> => {},
+        type: vi.fn(async (): Promise<void> => {}),
+      })),
+    }) as unknown as FrameTarget;
+  const page = { sendCDP: async (): Promise<void> => {} } as never;
+
+  it("refuses on a readback mismatch", async () => {
+    const out = await runSegmentedDateSpinbuttonPrimitive({
+      page,
+      target: build([group("From")], false),
+      instruction: "Enter 'From' date '012020'",
+      logger,
+    });
+    expect(out.kind).toBe("refused");
+  });
+
+  it("refuses when two compatible groups tie", async () => {
+    const out = await runSegmentedDateSpinbuttonPrimitive({
+      page,
+      target: build([group("Date"), group("Date")], true),
+      instruction: "Enter date '012020'",
+      logger,
+    });
+    expect(out.kind).toBe("refused");
+  });
+
+  it("is not-applicable when no group is width-compatible", async () => {
+    const out = await runSegmentedDateSpinbuttonPrimitive({
+      page,
+      target: build([group("From")], true),
+      instruction: "Enter 'From' date '01202099'",
+      logger,
+    });
+    expect(out.kind).toBe("not-applicable");
+  });
+
+  it("is not-applicable with no spinbuttons", async () => {
+    const out = await runSegmentedDateSpinbuttonPrimitive({
+      page,
+      target: build([], true),
+      instruction: "Enter 'From' date '012020'",
+      logger,
+    });
+    expect(out.kind).toBe("not-applicable");
   });
 });
