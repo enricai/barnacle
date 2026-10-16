@@ -3,10 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  contractUsesApplicantContactSchema,
-  emitContractTs,
-} from "@/scripts/recon-generate";
+import { contractUsesApplicantContactSchema, emitContractTs } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildWizardCheckoutCaptures } from "@/scripts/recon-generate-multicall-fixture";
 
