@@ -15,8 +15,6 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.kind-keyed-array-other-endpoint-fixture.example.com";
 
-const CITY_STEP =
-  "Open the destination dropdown in the catalogue toolbar and select the 'Lisbon' city option";
 const STAY_STEP =
   "Open the stay length dropdown in the catalogue toolbar and select the '3' nights option";
 
