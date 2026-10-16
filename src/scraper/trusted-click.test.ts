@@ -244,7 +244,7 @@ describe("centre probe executed against a fake element", () => {
 
   it("reports hit when the instant scroll moves the control clear of a sticky bottom:0 footer", () => {
     const { el, scrolls } = fakeElement({ footerCoversAfterScroll: false });
-    expect(runProbe(el)).toEqual({ state: "hit" });
+    expect(runProbe(el)).toEqual({ state: "hit", x: 50, y: 20 });
     expect(scrolls).toEqual([{ block: "center", inline: "center", behavior: "instant" }]);
   });
 
@@ -274,6 +274,69 @@ describe("centre probe executed against a fake element", () => {
     expect((err as CentredClickError).state).toBe("occluded");
     expect((err as Error).message).toMatch(/occluded by footer#bar after 3 attempts/);
     expect(scrolls).toHaveLength(3);
+    expect(click).not.toHaveBeenCalled();
+  });
+});
+
+describe("identity held across click delivery", () => {
+  const hitAt = async (): Promise<CentredHitTestResult> => ({ state: "hit", x: 10, y: 20 });
+
+  it("withholds both click paths when the text changes after the hit-test", async () => {
+    const click = vi.fn(async () => {});
+    const clickAtPoint = vi.fn(async () => {});
+    let text = "Row 7";
+    await expect(
+      clickAfterCentredHitTest({ click }, hitAt, {
+        expectText: "Row 7",
+        clickAtPoint,
+        verifyBeforeClick: async () => {
+          text = "Row 8";
+          return text === "Row 7";
+        },
+      })
+    ).rejects.toThrow(/identity mismatch/);
+    expect(click).not.toHaveBeenCalled();
+    expect(clickAtPoint).not.toHaveBeenCalled();
+  });
+
+  it("reports a CentredClickError with state mismatch", async () => {
+    const error = await clickAfterCentredHitTest({ click: vi.fn() }, hitAt, {
+      verifyBeforeClick: async () => false,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CentredClickError);
+    expect((error as CentredClickError).state).toBe("mismatch");
+  });
+
+  it("verifies after the hit-test and before delivering at the point", async () => {
+    const order: string[] = [];
+    await clickAfterCentredHitTest(
+      { click: async () => order.push("click") as unknown as void },
+      async () => {
+        order.push("hit-test");
+        return { state: "hit", x: 10, y: 20 };
+      },
+      {
+        verifyBeforeClick: async () => {
+          order.push("verify");
+          return true;
+        },
+        clickAtPoint: async (x, y) => {
+          order.push(`point:${x},${y}`);
+        },
+      }
+    );
+    expect(order).toEqual(["hit-test", "verify", "point:10,20"]);
+  });
+
+  it("does not fall back to Locator.click when point delivery reports a mismatch", async () => {
+    const click = vi.fn(async () => {});
+    await expect(
+      clickAfterCentredHitTest({ click }, hitAt, {
+        clickAtPoint: async () => {
+          throw new CentredClickError("identity mismatch at delivery", "mismatch");
+        },
+      })
+    ).rejects.toThrow(/identity mismatch/);
     expect(click).not.toHaveBeenCalled();
   });
 });
