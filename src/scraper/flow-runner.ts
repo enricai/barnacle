@@ -5528,7 +5528,8 @@ async function tryUploadPrimitive(params: {
  * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
  * mounted after a click) and verify. Extracted verbatim from the original
  * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
- * path share one setInputFiles + framework-change-dispatch + network/DOM verify implementation. Returns true only on a verified signal
+ * path share one setInputFiles + framework-change-dispatch + network/DOM verify implementation.
+ * Returns true only on a verified signal
  * (upload POST or populated `.files`).
  */
 export async function attachToSurfacedInput(params: {
