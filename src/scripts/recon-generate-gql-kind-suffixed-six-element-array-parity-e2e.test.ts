@@ -23,7 +23,7 @@ const FILTERS = [
   "BAHAMAS;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
-  "GOC;filterType=privateIsland",
+  "GOC;filterType=hiddenCove",
   "4;filterType=night",
 ];
 
@@ -76,7 +76,7 @@ function generate(): string {
         {
           step: "navigate to the month",
           navigateTo: `https://${OWN_BACKEND_HOST}/#/trips/december-2026`,
-          payloadField: "sailMonth",
+          payloadField: "tripMonth",
         },
         { step: "click the 'Bahamas' option", payloadField: "destination" },
         {
@@ -92,7 +92,7 @@ function generate(): string {
         {
           step: "navigate to the island page",
           navigateTo: `https://${OWN_BACKEND_HOST}/#/island/goc`,
-          payloadField: "privateIsland",
+          payloadField: "hiddenCove",
         },
         { step: "click the '4' option", payloadField: "nights" },
         { step: "browse trips" },
@@ -115,16 +115,16 @@ describe("recon-generate CLI — GraphQL six-element kind-suffixed array parity 
     const contract = generate();
 
     const facets: Array<[string, string]> = [
-      ["sailMonth", "date"],
+      ["tripMonth", "date"],
       ["destination", "destination"],
       ["theme", "theme"],
       ["ship", "ship"],
-      ["privateIsland", "privateIsland"],
+      ["hiddenCove", "hiddenCove"],
       ["nights", "night"],
     ];
     for (const [field, kind] of facets) {
       expect(contract, contract).toMatch(
-        new RegExp("payload\\." + field + "[^\\x60]*;filterType=" + kind)
+        new RegExp(`payload\\.${field}[^\\x60]*;filterType=${kind}`)
       );
     }
     for (const literal of FILTERS) expect(contract).not.toContain(literal);

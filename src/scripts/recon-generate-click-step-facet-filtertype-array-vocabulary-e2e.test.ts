@@ -20,7 +20,7 @@ const FIVE_ELEMENTS = [
   "BAHAMAS;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
-  "GOC;filterType=privateIsland",
+  "GOC;filterType=hiddenCove",
 ];
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
@@ -31,9 +31,9 @@ const NIGHTS_STEP =
 
 const DECLARED_STEPS = [
   { step: "navigate to the ship page", payloadField: "ship" },
-  { step: "navigate to the ship's month", payloadField: "sailMonth" },
+  { step: "navigate to the trip's month", payloadField: "tripMonth" },
   { step: "navigate to the theme page", payloadField: "theme" },
-  { step: "navigate to the private island page", payloadField: "privateIsland" },
+  { step: "navigate to the hidden cove page", payloadField: "hiddenCove" },
   { step: DESTINATION_STEP, payloadField: "destination" },
   { step: NIGHTS_STEP, payloadField: "nights" },
 ];
@@ -115,9 +115,9 @@ function generate(filters: string[]): { contract: string; browserFlow: string; o
           payloadField: "ship",
         },
         {
-          step: "navigate to the ship's month",
+          step: "navigate to the trip's month",
           navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/west-hub/december-2026`,
-          payloadField: "sailMonth",
+          payloadField: "tripMonth",
         },
         {
           step: "navigate to the theme page",
@@ -125,9 +125,9 @@ function generate(filters: string[]): { contract: string; browserFlow: string; o
           payloadField: "theme",
         },
         {
-          step: "navigate to the private island page",
+          step: "navigate to the hidden cove page",
           navigateTo: `https://${OWN_BACKEND_HOST}/#/island/palm-cay`,
-          payloadField: "privateIsland",
+          payloadField: "hiddenCove",
         },
         { step: DESTINATION_STEP, payloadField: "destination" },
         { step: NIGHTS_STEP, payloadField: "nights" },
@@ -154,7 +154,7 @@ function generate(filters: string[]): { contract: string; browserFlow: string; o
 }
 
 function facetElement(field: string, kind: string): RegExp {
-  return new RegExp("payload\\." + field + "[^\\x60]*;filterType=" + kind);
+  return new RegExp(`payload\\.${field}[^\\x60]*;filterType=${kind}`);
 }
 
 /**
@@ -170,10 +170,10 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
     const facets: Array<[string, string]> = [
       ["destination", "destination"],
       ["nights", "night"],
-      ["sailMonth", "date"],
+      ["tripMonth", "date"],
       ["theme", "theme"],
       ["ship", "ship"],
-      ["privateIsland", "privateIsland"],
+      ["hiddenCove", "hiddenCove"],
     ];
     for (const [field, kind] of facets) {
       expect(contract, contract).toMatch(facetElement(field, kind));
@@ -183,7 +183,7 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
       "BAHAMAS;filterType=destination",
       "MERRY;filterType=theme",
       "WW;filterType=ship",
-      "GOC;filterType=privateIsland",
+      "GOC;filterType=hiddenCove",
       "4;filterType=night",
     ]) {
       expect(contract, contract).not.toContain(gone);
@@ -198,7 +198,7 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
       ";filterType=destination",
       ";filterType=theme",
       ";filterType=ship",
-      ";filterType=privateIsland",
+      ";filterType=hiddenCove",
       ";filterType=night",
     ].map((kind) => contract.indexOf(kind));
 
@@ -216,10 +216,10 @@ describe("recon-generate CLI — click and navigateTo facets in a kind-suffixed 
 
     const facets: Array<[string, string]> = [
       ["destination", "destination"],
-      ["sailMonth", "date"],
+      ["tripMonth", "date"],
       ["theme", "theme"],
       ["ship", "ship"],
-      ["privateIsland", "privateIsland"],
+      ["hiddenCove", "hiddenCove"],
     ];
     for (const [field, kind] of facets) {
       expect(contract, contract).toMatch(facetElement(field, kind));
