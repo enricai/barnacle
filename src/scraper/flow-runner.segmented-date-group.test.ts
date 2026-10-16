@@ -107,4 +107,54 @@ describe("segmented date resolution from context alone", () => {
       0
     );
   });
+
+  it("prefers the standalone group over a nested slice of another widget when no section separates them", () => {
+    // Groups exactly as Workday's Parkland wizard enumerated them live (2026-10-16):
+    // no section heading visible, the Work Experience From widget [12, 9999] also
+    // surfaces its Year wrapper as a nested [9999] group labelled "From*".
+    const live: SegmentedDateGroup[] = [
+      { segmentMaxes: [12, 9999], context: "From* From*", label: "From*", section: "From*" },
+      { segmentMaxes: [9999], context: "From* From*", label: "From*", section: "From*" },
+      {
+        segmentMaxes: [9999],
+        context: "To (Actual or Expected)* To (Actual or Expected)*",
+        label: "To (Actual or Expected)*",
+        section: "To (Actual or Expected)*",
+      },
+      {
+        segmentMaxes: [12],
+        context: "From* From*",
+        label: "From*",
+        section: "From*",
+        nested: true,
+      },
+      {
+        segmentMaxes: [9999],
+        context: "From* From*",
+        label: "From*",
+        section: "From*",
+        nested: true,
+      },
+    ];
+    expect(
+      resolveSegmentedDateGroup(
+        "Click the Year spinbutton in the 'From' date of Education 1 and type '2016'",
+        live
+      )
+    ).toBe(1);
+    expect(
+      resolveSegmentedDateGroup(
+        "Click the Year spinbutton in the 'To' date of Education 1 and type '2020'",
+        live
+      )
+    ).toBe(2);
+  });
+
+  it("still refuses a tie between two standalone groups", () => {
+    const twins: SegmentedDateGroup[] = [
+      { segmentMaxes: [9999], context: "From", label: "From" },
+      { segmentMaxes: [9999], context: "From", label: "From" },
+    ];
+    expect(resolveSegmentedDateGroup("type '2016' into the 'From' date", twins)).toBeNull();
+  });
 });
