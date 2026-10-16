@@ -19,6 +19,8 @@ const logger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
+type Meta = { method: string; status: number; url: string; hasBody?: boolean };
+
 const STEP =
   "Upload the resume file using the 'Select files' button in the Resume/CV upload section";
 const OTHER_CAPTURE = { method: "GET", status: 200, url: "https://x.example.com/config.json" };
@@ -34,13 +36,16 @@ function setup(opts: { inputTakes: boolean; fileName: string; seedCapture?: bool
   send: ReturnType<typeof vi.fn>;
 } {
   const signalCounter = { n: 0 };
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = opts.seedCapture
-    ? [OTHER_CAPTURE]
-    : [];
+  const recentCaptureMeta: Meta[] = opts.seedCapture ? [OTHER_CAPTURE] : [];
   const handlers: Record<string, (p?: object) => void> = {};
   const emitUploadPost = (): void => {
     setTimeout(() => {
-      recentCaptureMeta.push({ method: "POST", status: 200, url: "https://x.example.com/upload" });
+      recentCaptureMeta.push({
+        method: "POST",
+        status: 200,
+        url: "https://x.example.com/upload",
+        hasBody: true,
+      });
       signalCounter.n += 1;
     }, 10);
   };
@@ -80,7 +85,10 @@ function setup(opts: { inputTakes: boolean; fileName: string; seedCapture?: bool
     url: () => Promise.resolve("https://x.example.com"),
     title: () => Promise.resolve("x"),
   } as unknown as FrameTarget;
-  const page = { waitForTimeout: () => new Promise((r) => setTimeout(r, 5)) } as unknown as Page;
+  const page = {
+    url: () => "https://x.example.com",
+    waitForTimeout: () => new Promise((r) => setTimeout(r, 5)),
+  } as unknown as Page;
   return {
     run: () =>
       executeStepWithHealing({
