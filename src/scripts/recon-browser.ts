@@ -111,6 +111,7 @@ import {
   renderUnfocusedObserve,
   STEP_WATCHDOG_MS,
   selectBodyExcerpt,
+  settleWithPageQuiescence,
   snapshotPage,
   stripNegatedSubmitClauses,
   TRAILING_GRACE_WINDOW,
@@ -3046,6 +3047,7 @@ async function main(): Promise<void> {
         // in-frame navigation would otherwise be invisible to the top-level
         // page.url() this used to read.
         const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
+        const networkAtStepStart = signalCounter.n;
         const textAtStepStart = step.submitStep
           ? (await snapshotPage(frameTarget, signalCounter).catch(() => undefined))
               ?.visibleTextSignature
@@ -3231,14 +3233,26 @@ async function main(): Promise<void> {
           const urlAdvanced =
             !step.submitStep &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
+          const settledText =
+            !urlAdvanced && step.submitStep === true && textAtStepStart !== undefined
+              ? await settleWithPageQuiescence(
+                  page,
+                  frameTarget,
+                  signalCounter,
+                  networkAtStepStart,
+                  true,
+                  textAtStepStart
+                )
+                  .then(() => snapshotPage(frameTarget, signalCounter))
+                  .catch(() => undefined)
+              : undefined;
           const domAdvanced =
             !urlAdvanced &&
             step.submitStep === true &&
             hasSubmitStepDomAdvanced(
               i === plan.length - 1,
               textAtStepStart,
-              (await snapshotPage(frameTarget, signalCounter).catch(() => undefined))
-                ?.visibleTextSignature
+              settledText?.visibleTextSignature
             );
           if (urlAdvanced || domAdvanced) {
             logger.info(
