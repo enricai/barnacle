@@ -130,4 +130,17 @@ describe("segmented date acceptance (neutral markup, report steps)", () => {
       expect(await readback(id)).toBe("segment");
     }
   });
+
+  it("groups caption-less wrapper-per-segment markup and delivers per-segment steps", async () => {
+    const bare = `<form><div>${seg("wf-m", 12, "Month")}${seg("wf-y", 9999, "Year")}</div></form>`;
+    install(bare);
+    expect(enumerate().filter((g) => !g.nested)).toHaveLength(1);
+    expect(await type("type '11' into Month")).not.toBeNull();
+    expect(await type("type '1999' into Year")).not.toBeNull();
+    expect(values()).toMatchObject({ "wf-m": "11", "wf-y": "1999" });
+    install(bare);
+    expect(await type("type '062019'")).not.toBeNull();
+    expect(values()).toMatchObject({ "wf-m": "06", "wf-y": "2019" });
+    for (const id of ["wf-m", "wf-y"]) expect(await readback(id)).toBe("segment");
+  });
 });
