@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { redactSecrets } from "@/lib/pii-redaction";
 import { generateThrowawayPassword, pickRandom, randomIntInclusive } from "@/lib/random";
 
 describe("lib/random randomIntInclusive", () => {
@@ -85,5 +86,24 @@ describe("lib/random generateThrowawayPassword", () => {
       expect(password).toMatch(/[!@#%^*()\-+=?.]/);
       expect(password).not.toMatch(/["'`\\$]/);
     }
+  });
+});
+
+describe("lib/random generateThrowawayPassword sampling", () => {
+  it("satisfies complexity policies and avoids quoting characters across 2000 samples", () => {
+    for (let i = 0; i < 2000; i++) {
+      const password = generateThrowawayPassword();
+      expect(password).toMatch(/[A-Z]/);
+      expect(password).toMatch(/[a-z]/);
+      expect(password).toMatch(/[0-9]/);
+      expect(password).toMatch(/[^A-Za-z0-9]/);
+      expect(password).toMatch(/.{8,}/);
+      expect(password).not.toMatch(/['"`\\]/);
+    }
+  });
+
+  it("registers the generated value for redaction", () => {
+    const password = generateThrowawayPassword();
+    expect(redactSecrets(`value=${password}`)).not.toContain(password);
   });
 });
