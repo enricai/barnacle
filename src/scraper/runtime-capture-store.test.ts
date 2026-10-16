@@ -1,8 +1,12 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 
-import { describe, expect, it } from "vitest";
+process.env.RECON_RUN_ID = "runtime-capture-store-test";
+const RECON_TMP = mkdtempSync(join(tmpdir(), "recon-runtime-store-"));
+process.env.RECON_OUT_DIR = RECON_TMP;
+
 import {
   defaultCapturesDir,
   listCaptureFiles,
@@ -14,15 +18,15 @@ import {
 import type { Capture } from "@/scripts/recon-shared";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 
-function makeCapture(method: string): Capture {
+function makeCapture(method: string, url: string): Capture {
   return {
-    timestamp: "t",
-    phase: "p",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    phase: "test",
     method,
-    url: "https://example.com/x",
+    url,
     status: 200,
     requestHeaders: {},
-    requestPostData: null,
+    requestPostData: method === "POST" ? '{"q":1}' : null,
     responseHeaders: {},
     responseBody: { ok: true },
     operationName: null,
@@ -32,56 +36,107 @@ function makeCapture(method: string): Capture {
   };
 }
 
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 1));
+
 describe("runtime capture store", () => {
-  it("lists and reads recorded captures via the default dir", () => {
-    withRuntimeCaptureStore(() => {
-      recordRuntimeCapture("1-a.json", makeCapture("POST"));
-      const dir = defaultCapturesDir();
-      expect(listCaptureFiles(dir)).toEqual(["1-a.json"]);
-      expect(readCaptureFile(dir, "1-a.json")?.responseBody).toEqual({ ok: true });
-    });
+  afterAll(() => {
+    rmSync(RECON_TMP, { recursive: true, force: true });
   });
 
-  it("isolates concurrent scopes", async () => {
-    const seen = await Promise.all([
-      withRuntimeCaptureStore(async () => {
-        recordRuntimeCapture("1-a.json", makeCapture("POST"));
-        await new Promise((r) => setTimeout(r, 5));
-        return listCaptureFiles(defaultCapturesDir());
-      }),
-      withRuntimeCaptureStore(async () => {
-        await new Promise((r) => setTimeout(r, 1));
-        return listCaptureFiles(defaultCapturesDir());
-      }),
-    ]);
-    expect(seen).toEqual([["1-a.json"], []]);
-  });
-
-  it("drops GET response bodies", () => {
-    withRuntimeCaptureStore(() => {
-      recordRuntimeCapture("1-g.json", makeCapture("GET"));
-      expect(readCaptureFile(defaultCapturesDir(), "1-g.json")?.responseBody).toBeNull();
-    });
-  });
-
-  it("evicts the oldest past the cap", () => {
-    withRuntimeCaptureStore(() => {
-      for (let i = 0; i <= RUNTIME_CAPTURE_LIMIT; i++) {
-        recordRuntimeCapture(`${i}-a.json`, makeCapture("POST"));
-      }
-      const files = listCaptureFiles(defaultCapturesDir());
-      expect(files).toHaveLength(RUNTIME_CAPTURE_LIMIT);
-      expect(files).not.toContain("0-a.json");
-    });
-  });
-
-  it("falls through to recon dir and disk outside a scope", () => {
+  it("resolves the default dir to the recon dir outside a scope and the store inside", () => {
     expect(defaultCapturesDir()).toBe(resolveReconRunDir().graphqlDir);
+    withRuntimeCaptureStore(() => {
+      const dir = defaultCapturesDir();
+      expect(dir).not.toBe(resolveReconRunDir().graphqlDir);
+      expect(dir.startsWith("memory:")).toBe(true);
+    });
+  });
+
+  it("returns recorded captures through the reader", () => {
+    withRuntimeCaptureStore(() => {
+      const dir = defaultCapturesDir();
+      const capture = makeCapture("POST", "https://shop.example.com/api");
+      recordRuntimeCapture("a.json", capture);
+      expect(listCaptureFiles(dir)).toEqual(["a.json"]);
+      expect(readCaptureFile(dir, "a.json")).toEqual(capture);
+      expect(readCaptureFile(dir, "missing.json")).toBeNull();
+    });
+  });
+
+  it("is a no-op outside a scope", () => {
+    recordRuntimeCapture("x.json", makeCapture("POST", "https://shop.example.com/api"));
+    expect(listCaptureFiles(defaultCapturesDir())).toEqual([]);
+  });
+
+  it("isolates overlapping scopes", async () => {
+    const run = async (name: string, other: string): Promise<string[]> =>
+      withRuntimeCaptureStore(async () => {
+        const dir = defaultCapturesDir();
+        recordRuntimeCapture(`${name}-1.json`, makeCapture("POST", "https://shop.example.com/1"));
+        await tick();
+        recordRuntimeCapture(`${name}-2.json`, makeCapture("POST", "https://shop.example.com/2"));
+        await tick();
+        expect(readCaptureFile(dir, `${other}-1.json`)).toBeNull();
+        return listCaptureFiles(dir);
+      });
+    const [a, b] = await Promise.all([run("a", "b"), run("b", "a")]);
+    expect(a).toEqual(["a-1.json", "a-2.json"]);
+    expect(b).toEqual(["b-1.json", "b-2.json"]);
+  });
+
+  it("does not let a scope read another scope's dir", () => {
+    const outerDir = withRuntimeCaptureStore(() => {
+      recordRuntimeCapture("a.json", makeCapture("POST", "https://shop.example.com/api"));
+      return defaultCapturesDir();
+    });
+    withRuntimeCaptureStore(() => {
+      expect(listCaptureFiles(outerDir)).toEqual([]);
+    });
+  });
+
+  it("drops GET response bodies but keeps POST bodies", () => {
+    withRuntimeCaptureStore(() => {
+      const dir = defaultCapturesDir();
+      recordRuntimeCapture("get.json", makeCapture("GET", "https://shop.example.com/asset"));
+      recordRuntimeCapture("post.json", makeCapture("POST", "https://shop.example.com/api"));
+      expect(readCaptureFile(dir, "get.json")?.responseBody).toBeNull();
+      expect(readCaptureFile(dir, "post.json")?.responseBody).toEqual({ ok: true });
+    });
+  });
+
+  it("evicts the oldest captures past the limit", () => {
+    withRuntimeCaptureStore(() => {
+      const dir = defaultCapturesDir();
+      for (let i = 0; i < RUNTIME_CAPTURE_LIMIT + 5; i++) {
+        recordRuntimeCapture(`c${i}.json`, makeCapture("POST", "https://shop.example.com/api"));
+      }
+      const files = listCaptureFiles(dir);
+      expect(files).toHaveLength(RUNTIME_CAPTURE_LIMIT);
+      expect(files[0]).toBe("c5.json");
+      expect(readCaptureFile(dir, "c0.json")).toBeNull();
+    });
+  });
+
+  it("reads from disk outside a scope, skipping decoded sidecars", () => {
     const dir = mkdtempSync(join(tmpdir(), "caps-"));
-    writeFileSync(join(dir, "1-a.json"), JSON.stringify(makeCapture("POST")));
+    writeFileSync(
+      join(dir, "1-a.json"),
+      JSON.stringify(makeCapture("POST", "https://shop.example.com/x"))
+    );
     writeFileSync(join(dir, "1-a.decoded.json"), "{}");
     expect(listCaptureFiles(dir)).toEqual(["1-a.json"]);
     expect(readCaptureFile(dir, "1-a.json")?.method).toBe("POST");
     expect(readCaptureFile(dir, "missing.json")).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes nothing to disk", () => {
+    withRuntimeCaptureStore(() => {
+      recordRuntimeCapture("a.json", makeCapture("POST", "https://shop.example.com/api"));
+    });
+    const files = readdirSync(RECON_TMP, { recursive: true, withFileTypes: true }).filter((e) =>
+      e.isFile()
+    );
+    expect(files).toEqual([]);
   });
 });
