@@ -771,6 +771,24 @@ describe("guardedAct pre-centring", () => {
     expect((sh.act as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe("click go");
   });
 
+  it.each([
+    "Select 'No' from the 'Select One' dropdown",
+    "Choose No for the returning customer question",
+    "Open the Select One dropdown",
+  ])("centres a select-style string instruction (%s) before acting", async (instruction) => {
+    const action: Action = { selector: "#trigger", description: "t", method: "click" };
+    const { sh, order } = fakeClickStagehand([action]);
+    await guardedAct(sh, instruction);
+    expect(order).toEqual(["centre", "act"]);
+  });
+
+  it("does not observe a fill-style string instruction", async () => {
+    const { sh, order } = fakeClickStagehand([]);
+    await guardedAct(sh, "Enter Jane into the first name field");
+    expect(sh.observe).not.toHaveBeenCalled();
+    expect(order).toEqual(["act"]);
+  });
+
   it("scopes the string-instruction resolution to the step's frame", async () => {
     const { sh } = fakeClickStagehand([]);
     const frameTarget = fakeChildFrameTarget("iframe#apply_frame");

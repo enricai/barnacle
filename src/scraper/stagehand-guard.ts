@@ -94,8 +94,13 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
  */
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
 
-/** Instructions that name a click; only these are worth an observe to find a click point. */
-export const CLICK_INTENT_RE = /\bclick\b/i;
+/**
+ * Instructions whose act resolves to a click on a control (a "Select No" or
+ * "Open the dropdown" step clicks a button just like "Click Next"); only these
+ * are worth an observe to find a click point. Fill/type steps are excluded.
+ */
+export const CLICK_INTENT_RE =
+  /\b(?:click|tap|press|select|choose|pick|open|toggle|check|uncheck|expand|submit)\b/i;
 
 const TRANSIENT_RETRIES = 2;
 const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
