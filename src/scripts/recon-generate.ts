@@ -17437,7 +17437,7 @@ async function main(): Promise<void> {
     // Emit the browser flow first so the SAME payloadFieldNames set that drives
     // its `payload.<field>` splices also extends the contract's payload schema —
     // the two artifacts can't drift because one accumulator feeds both.
-    const browserFlow = emitBrowserFlowTs({
+    const browserFlowOpts = {
       siteId,
       pascal,
       baseUrl,
@@ -17448,7 +17448,8 @@ async function main(): Promise<void> {
       inputBody,
       vocabulary,
       frameSelector,
-    });
+    };
+    const browserFlow = emitBrowserFlowTs(browserFlowOpts);
 
     const contractOpts = {
       siteId,
@@ -17517,15 +17518,7 @@ async function main(): Promise<void> {
         ? { browserFlow, contractOpts, contractCode: firstContractCode }
         : (() => {
             const fallbackBrowserFlow = emitBrowserFlowTs({
-              siteId,
-              pascal,
-              baseUrl,
-              flowSteps,
-              isSubmissionFlow,
-              hasMultipartStep,
-              browserFlowOnly,
-              vocabulary,
-              frameSelector,
+              ...browserFlowOpts,
               capturedFallbackFields: unread,
             });
             const optionalized = {
