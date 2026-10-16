@@ -20,13 +20,31 @@ const SUBMIT_INPUT = {
   submittedStateSelectors: [],
 };
 
+function judgeTarget(read: () => string): {
+  url: () => Promise<string>;
+  evaluate: (expr: string) => Promise<unknown>;
+} {
+  return {
+    url: async () => "u",
+    evaluate: async (expr: string) => {
+      if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
+      const t = read();
+      if (expr.includes("outerHTML"))
+        return { html: t.length, text: `${t.length}:${t.slice(0, 200)}`, values: "", state: "" };
+      return t;
+    },
+  };
+}
+
 function run(body: string, pre: string): ReturnType<typeof judgeStepOutcome> {
   return judgeStepOutcome({
     client: {} as never,
     step: "click continue",
     isFinalStep: false,
+    submitStep: false,
+    flowHasSubmitSemantics: false,
     page: { waitForTimeout: async () => {} },
-    target: { evaluate: async () => body } as never,
+    target: judgeTarget(() => body) as never,
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: pre,
