@@ -621,6 +621,37 @@ describe("dispatch — executeHttp hot-path branches", () => {
       expect(result.data).toEqual({ result: "ok" });
     });
 
+    it.each<[string, string, { method?: string; body?: string; headers?: Record<string, string> }]>(
+      [
+        ["an invalid URL", "not a valid url", {}],
+        [
+          "an invalid header value",
+          "https://api.example.test/items",
+          { headers: { "X-Bad": "a\nb" } },
+        ],
+        ["a GET with a body", "https://api.example.test/items", { method: "GET", body: "{}" }],
+      ]
+    )("does not cascade a request fetch rejects before sending (%s)", async (_label, url, init) => {
+      const realFetch = globalThis.fetch;
+      vi.stubGlobal("fetch", vi.fn(realFetch));
+      const client = createHttpClient({
+        schema: Schema,
+        bottleneck: new Bottleneck({ maxConcurrent: 1, minTime: 0 }),
+        baseHeaders: {},
+      });
+      const buggyPlugin: SitePlugin<unknown, unknown> = {
+        ...httpPlugin,
+        meta: { ...httpPlugin.meta, siteId: "client-site" },
+        executeHttp: async () => ({ data: await client(url, init) }),
+      };
+      await expect(dispatch(buggyPlugin, {}, stubContext)).rejects.toBeInstanceOf(
+        ScrapeFailureError
+      );
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+      expect(mockPluginExecute).not.toHaveBeenCalled();
+      expect(mockRecordFallbackActivation).not.toHaveBeenCalled();
+    });
+
     it.each([
       [429, ThrottledRequestError],
       [404, ScrapeFailureError],

@@ -72,12 +72,22 @@ export const mySitePlugin: SitePlugin<MySitePayload, MySiteResponse> = {
 ```
 
 The hot path falls back to `execute()` when it throws `HttpSchemaError`,
-`HttpBotChallengeError`, `HttpServerError` or `HttpTransportError`. The engine's
-HTTP clients already throw `HttpTransportError` when no response arrives (a
-connection reset or refused, a DNS failure, a socket hang-up, an abort or a
-timeout). A plugin that sends requests through its own client should throw the
-same class for those failures, so they also reach the browser fallback instead
-of failing the request:
+`HttpBotChallengeError`, `HttpServerError` or `HttpTransportError`.
+`createHttpClient` already throws `HttpTransportError` when no response arrives
+(a connection reset or refused, a DNS failure, a socket hang-up, an abort or a
+timeout). It does not for a request that fetch rejects before sending (an
+invalid URL or header value, a GET with a body): that is a plugin bug, so it
+fails the request as `UnknownScraperError` with no retry and no fallback.
+`rawFetch` surfaces network errors as `HttpServerError` instead, which also
+falls back.
+
+An abort counts as a transport failure whoever triggered it, so a plugin that
+deliberately aborts its own request and lets the error escape `executeHttp`
+also cascades into `execute()`; catch it in the plugin if that is not wanted.
+
+A plugin that sends requests through its own client should throw
+`HttpTransportError` for network failures, so they also reach the browser
+fallback instead of failing the request:
 
 ```ts
 import { HttpTransportError } from "@enricai/barnacle/scraper/errors";

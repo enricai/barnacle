@@ -416,6 +416,50 @@ function errorDetail(err: unknown): string {
 }
 
 /**
+ * Error codes Node's fetch (undici) puts on `cause` when the request never got
+ * a response from the network: socket resets, refusals, DNS failures, timeouts
+ * and unreachable routes. Every `UND_ERR_*` code is matched by prefix.
+ */
+const NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EPIPE",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+]);
+
+const MAX_CAUSE_DEPTH = 4;
+
+/**
+ * True when `err` or one of its first few `cause`s carries a network/undici
+ * error code. The walk is bounded so a self-referencing cause cannot loop.
+ */
+function hasNetworkCauseCode(err: unknown, depth = 0): boolean {
+  if (depth > MAX_CAUSE_DEPTH || err === null || typeof err !== "object") return false;
+  const code = "code" in err ? err.code : undefined;
+  if (typeof code === "string" && (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))) {
+    return true;
+  }
+  return "cause" in err && hasNetworkCauseCode(err.cause, depth + 1);
+}
+
+/**
+ * True when a fetch rejection means the network failed to deliver a response,
+ * as opposed to fetch refusing the request before any I/O (an invalid URL or
+ * header value, a GET with a body). Node reports the former as `TypeError:
+ * fetch failed` with the reason on `cause`; the latter are plugin bugs that a
+ * retry or a browser session cannot fix.
+ */
+function isNetworkFailure(err: unknown): boolean {
+  if (isAbortOrTimeout(err)) return true;
+  if (err instanceof TypeError && err.message === "fetch failed") return true;
+  return hasNetworkCauseCode(err);
+}
+
+/**
  * Converts a failure that left the hot path without a usable response into an
  * {@link HttpTransportError}, so dispatch can cascade it into the browser
  * fallback. A plain network failure (reset, refused, DNS, socket hang up) is
@@ -423,13 +467,26 @@ function errorDetail(err: unknown): string {
  * in p-retry's `AbortError` because the signal fired on purpose and a retry
  * would only time out again.
  */
-function toTransportFailure(err: unknown, label: string): HttpTransportError | AbortError {
+function transportFailure(err: unknown, label: string): HttpTransportError | AbortError {
   if (isAbortOrTimeout(err)) {
     return new AbortError(
       new HttpTransportError(`${label}: aborted or timed out: ${errorDetail(err)}`, { cause: err })
     );
   }
   return new HttpTransportError(`${label}: ${errorDetail(err)}`, { cause: err });
+}
+
+/**
+ * Classifies a fetch rejection. Only a real network failure, abort or timeout
+ * becomes an {@link HttpTransportError}; anything else is a request fetch
+ * refused to send, so it is wrapped in `AbortError(UnknownScraperError)`:
+ * retrying it or cascading it into a browser session would only hide the bug.
+ */
+function toTransportFailure(err: unknown, label: string): HttpTransportError | AbortError {
+  if (isNetworkFailure(err)) return transportFailure(err, label);
+  return new AbortError(
+    new UnknownScraperError(`${label}: request rejected before sending: ${errorDetail(err)}`)
+  );
 }
 
 /**
@@ -441,7 +498,7 @@ async function readBodyOrThrow(response: Response, url: string): Promise<string>
   try {
     return await response.text();
   } catch (err) {
-    throw toTransportFailure(err, `reading the response body from ${url} failed`);
+    throw transportFailure(err, `reading the response body from ${url} failed`);
   }
 }
 
@@ -490,6 +547,9 @@ async function rethrowCallerAbortAsTransport<T>(
  * reset/refused, DNS failure, socket hang up, abort, timeout), which is also a
  * fallback trigger. Network failures are retried up to 2 times with
  * exponential backoff first; an abort or timeout is not retried.
+ * Throws `UnknownScraperError` without retrying when fetch rejects the request
+ * before any network I/O (invalid URL or header value, GET with a body) — a
+ * plugin bug, so NOT a fallback trigger.
  */
 export function createHttpClient<TResponse>(
   options: HttpClientOptions<TResponse>
