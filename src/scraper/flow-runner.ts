@@ -9648,12 +9648,24 @@ function promptOptionsNameOption(
 ): boolean {
   const want = normPromptOptionText(option);
   if (want === "") return true;
-  return (result?.options ?? []).some((o) => {
+  return realPromptOptions(result?.options ?? [], option).some((o) => {
+    const text = normPromptOptionText(o.text);
+    return text === want || text.includes(want);
+  });
+}
+
+/**
+ * Single classification of which rendered entries are real options, shared by
+ * the submit decision and the committer so they cannot disagree. Placeholders
+ * ("No Items.", "No results for x") are dropped, except an entry that is
+ * exactly the requested text, which is the user's own option.
+ */
+function realPromptOptions<T extends { text: string }>(options: T[], option: string): T[] {
+  const want = normPromptOptionText(option);
+  return options.filter((o) => {
     const text = normPromptOptionText(o.text);
     if (text === "") return false;
-    if (text === want) return true;
-    if (PROMPT_PLACEHOLDER_RE.test(text)) return false;
-    return text.includes(want);
+    return text === want || !PROMPT_PLACEHOLDER_RE.test(text);
   });
 }
 
@@ -9848,7 +9860,7 @@ async function commitPromptOption(params: {
 
   let optionsResult = params.optionsResult;
   for (let depth = 0; depth <= PROMPT_SELECTOR_MAX_DRILL_DEPTH; depth++) {
-    const options = optionsResult.options ?? [];
+    const options = realPromptOptions(optionsResult.options ?? [], option);
     const detMatch = options.find((o) => norm(o.text) === wantOpt) ?? null;
     if (detMatch === null && (anthropic === null || options.length === 0)) {
       logger.info(
@@ -9899,7 +9911,7 @@ async function commitPromptOption(params: {
       const fresh = (await target.evaluate(enumerateOptionsExpr).catch(() => null)) as {
         options?: PromptOptionRead[];
       } | null;
-      const freshMatches = (fresh?.options ?? []).filter((o) => norm(o.text) === wantChosenText);
+      const freshMatches = realPromptOptions(fresh?.options ?? [], option).filter((o) => norm(o.text) === wantChosenText);
       const freshOption =
         freshMatches.find((o) => o.nodeId !== undefined && o.nodeId === chosenOption.nodeId) ??
         freshMatches[0];
