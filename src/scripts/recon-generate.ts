@@ -255,7 +255,7 @@ export function resolveStepPayloadField(
   canonicalise = false
 ): string | null {
   if (forceNone) return null;
-  if (explicit) return explicit;
+  if (explicit) return canonicalise ? canonicalPayloadField(explicit) : explicit;
   // A control's own name (a button/link/tab label) is never a fill/select VALUE,
   // even when it happens to contain a word a vocabulary row also matches.
   if (namesAControl(instruction)) return null;
@@ -14389,6 +14389,9 @@ export function emitContractTs(opts: {
   const extendFields = new Map<string, string>();
   const structuredFieldNames = new Set<string>();
   const addExtendField = (name: string, line: string): void => {
+    // JobTrackingSchema owns TrackingUrl (optional URL); a discovered or
+    // spliced string would shadow it as a required field callers cannot supply.
+    if (name === "TrackingUrl") return;
     if (structuredFieldNames.has(name)) return;
     extendFields.set(name, line);
   };
@@ -14696,8 +14699,7 @@ export function emitContractTs(opts: {
   // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
-  const composesJobTracking = !extendFields.has("TrackingUrl");
-  const trackingMerge = composesJobTracking ? ".merge(JobTrackingSchema)" : "";
+  const trackingMerge = ".merge(JobTrackingSchema)";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
@@ -14719,9 +14721,7 @@ export function emitContractTs(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
-  const jobTrackingImport = composesJobTracking
-    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
-    : "";
+  const jobTrackingImport = `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15315,9 +15315,13 @@ ${executeHttpBody}
   const executeDocComment = omitExecuteHttp
     ? ""
     : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
-  const maxAttemptsLiteral = createsAccount
-    ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
-    : "";
+  // Derived here as well as from the caller's flag: a caller that hands over
+  // flowSteps but not the browser-flow emitter's signal must not ship a
+  // retry-enabled account-creating flow.
+  const maxAttemptsLiteral =
+    createsAccount || contractFlowSteps.some(stepUsesReconPassword)
+      ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
+      : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -15506,8 +15510,13 @@ export function unreferencedDeclaredPayloadFields(
   for (const step of flowSteps) {
     if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
   }
+  // An applicant-contract flow splices the canonical name for an explicit
+  // vocabulary-row alias, so either spelling counts as a read.
   return [...declared].filter(
-    (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
+    (name) =>
+      ![name, canonicalPayloadField(name)].some((candidate) =>
+        new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode)
+      )
   );
 }
 

@@ -113,3 +113,14 @@ describe("emitConfigManifest account-creation maxAttempts", () => {
     expect(plugin.meta.maxAttempts).toBe(1);
   });
 });
+
+describe("contract derives account creation from its own flowSteps", () => {
+  it("emits maxAttempts: 1 when flowSteps splice the password token and no createsAccount flag is passed", () => {
+    const source = emitContractTs({
+      ...CONTRACT_BASE,
+      omitExecuteHttp: true,
+      flowSteps: [`Fill in the Password field with '${RECON_PASSWORD_TOKEN}'`],
+    });
+    expect(source).toMatch(/maxAttempts: 1,/);
+  });
+});

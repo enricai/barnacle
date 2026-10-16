@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
+import { JobTrackingSchema } from "@/lib/job-tracking";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 
 /**
@@ -111,7 +112,7 @@ function readPayloadSchema(siteOutDir: string): ReturnType<typeof z.object> {
   const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
   const match = /const \w+PayloadSchema = ([\s\S]*?);\n/.exec(contract);
   if (!match) throw new Error(`no PayloadSchema declaration found in ${contract}`);
-  return new Function("z", `return ${match[1]};`)(z);
+  return new Function("z", "JobTrackingSchema", `return ${match[1]};`)(z, JobTrackingSchema);
 }
 
 /**

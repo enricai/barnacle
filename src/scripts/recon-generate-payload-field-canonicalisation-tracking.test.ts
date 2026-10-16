@@ -229,3 +229,15 @@ describe("deriveBaseUrl with unmatched ownBackendHostnames", () => {
     expect(message).not.toContain("https://example.com");
   });
 });
+
+describe("canonicalisation beyond the original vocabulary rows", () => {
+  it("collapses other phone/address label variants and an explicit alias onto base keys", () => {
+    const variants = ["CellPhoneNumber", "Telephone", "Address", "StreetAddress1"];
+    const source = emitContract(new Set(variants));
+    const extras = [...source.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1]);
+    for (const variant of variants) expect(extras).not.toContain(variant);
+    expect(
+      resolveStepPayloadField("Fill in the field", "MobilePhone", false, VOCAB, undefined, true)
+    ).toBe("Phone");
+  });
+});

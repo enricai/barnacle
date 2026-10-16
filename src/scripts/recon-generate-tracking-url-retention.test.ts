@@ -54,3 +54,26 @@ describe("emitContractTs — TrackingUrl retained after parse", () => {
     expect(Object.keys(shape)).toContain("TrackingUrl");
   });
 });
+
+describe("a discovered TrackingUrl field never shadows JobTrackingSchema", () => {
+  it("composes JobTrackingSchema and emits no required TrackingUrl string", () => {
+    const source = emitContractTs({
+      siteId: "test-site",
+      pascal: "TestSite",
+      baseUrl: "https://api.example.com",
+      baseHeaders: {},
+      minTime: 100,
+      safeRps: 10,
+      responseBody: {},
+      gql: false,
+      gqlQuery: null,
+      endpointPath: "/apply",
+      auxFiles: [],
+      omitExecuteHttp: true,
+      isSubmissionFlow: true,
+      discoveredFormFields: new Set(["TrackingUrl"]),
+    });
+    expect(source).toContain(".merge(JobTrackingSchema)");
+    expect(source).not.toMatch(/TrackingUrl: z\.string\(\)/);
+  });
+});

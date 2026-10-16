@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
+import { JobTrackingSchema } from "@/lib/job-tracking";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
@@ -137,7 +138,10 @@ describe("recon-generate CLI — vocabulary-derived enum and capacity-bounded nu
     );
     expect(payloadSchemaMatch, contract).not.toBeNull();
     const payloadSchemaExpr = payloadSchemaMatch![1]!;
-    const PayloadSchema = new Function("z", `return ${payloadSchemaExpr};`)(z) as z.ZodType;
+    const PayloadSchema = new Function("z", "JobTrackingSchema", `return ${payloadSchemaExpr};`)(
+      z,
+      JobTrackingSchema
+    ) as z.ZodType;
 
     const BASE_VALID_PAYLOAD = {
       BaseUrl: `https://${OWN_BACKEND_HOST}`,

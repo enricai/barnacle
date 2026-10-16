@@ -4512,7 +4512,11 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   });
 
   it("promotes every spliced field into the request schema (no drift)", () => {
-    expect(Object.keys(manifest.spec.request.properties).sort()).toEqual(["Email", "FirstName", "TrackingUrl"]);
+    expect(Object.keys(manifest.spec.request.properties).sort()).toEqual([
+      "Email",
+      "FirstName",
+      "TrackingUrl",
+    ]);
   });
 
   it("preserves submit and upload/optional flags on object-form steps", () => {

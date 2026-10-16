@@ -15,12 +15,26 @@ describe("resolveCanonicalAtsFieldName", () => {
     ["Legal Last Name", "LastName"],
     ["Surname", "LastName"],
     ["Family Name", "LastName"],
+    ["CellPhoneNumber", "Phone"],
+    ["MobileNumber", "Phone"],
+    ["Telephone", "Phone"],
+    ["PrimaryPhone", "Phone"],
+    ["Address", "AddressLine"],
+    ["Address1", "AddressLine"],
+    ["StreetAddress1", "AddressLine"],
+    ["Street Address Line 1", "AddressLine"],
   ])("resolves %s to %s", (label, expected) => {
     expect(resolveCanonicalAtsFieldName(label)).toBe(expected);
   });
 
   it("returns null for an unrelated label", () => {
     expect(resolveCanonicalAtsFieldName("Employer Name")).toBeNull();
+  });
+
+  it("does not map email, second-line, or other-entity address labels onto the base fields", () => {
+    expect(resolveCanonicalAtsFieldName("EmailAddress")).toBeNull();
+    expect(resolveCanonicalAtsFieldName("Address Line 2")).toBeNull();
+    expect(resolveCanonicalAtsFieldName("Employer Address")).toBeNull();
   });
 
   it("returns null for an empty string", () => {

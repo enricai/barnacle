@@ -169,7 +169,7 @@ describe("recon-generate CLI — GraphQL filters-string facet splice with option
 
     // (c) the payload schema marks the optional facets `.optional()`.
     const schemaMatch = contract.match(
-      /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
+      /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(schemaMatch).not.toBeNull();
     const schema = schemaMatch?.[0] ?? "";
