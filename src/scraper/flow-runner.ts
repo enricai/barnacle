@@ -203,7 +203,7 @@ export function wireSignalCapture(
     counter: { n: number };
     signalCounter: { n: number };
     recentCaptures: string[];
-    recentCaptureMeta: { method: string; status: number; url: string }[];
+    recentCaptureMeta: CaptureMeta[];
     getCurrentPhase: () => string;
     getCurrentPageOrigin: () => string;
     onCapture?: (capture: Capture, filename: string) => void;
@@ -447,6 +447,8 @@ export function wireSignalCapture(
         method: capture.method,
         status: capture.status,
         url: capture.url,
+        hasBody: (req.requestPostData ?? "").length > 0,
+        multipart: /^multipart\//i.test(requestContentType(req.requestHeaders)),
       });
       if (recentCaptureMeta.length > RECENT_CAPTURES_WINDOW) {
         recentCaptureMeta.splice(0, recentCaptureMeta.length - RECENT_CAPTURES_WINDOW);
@@ -1564,7 +1566,7 @@ export async function resolveDumpPageIdentity(
  * AND a 5xx status. Returns the matched URL when found; null otherwise.
  */
 export function findRecentBackendError(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
   /**
    * Hostnames considered "the site's own backend." Replaces the prior
@@ -1624,7 +1626,7 @@ async function isLandedUrlPlausibleForStep(
  * clean skip.
  */
 export function findRecentPageTransition(params: {
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
   preMetaLength: number;
 }): string | null {
   const { recentCaptureMeta, preMetaLength } = params;
@@ -2468,7 +2470,7 @@ export async function countNgInvalidContainers(target: FrameTarget): Promise<num
 export function describeAttemptEffectSignals(
   pre: StepSnapshot,
   post: StepSnapshot,
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[],
+  recentCaptureMeta: readonly CaptureMeta[],
   preMetaLength: number
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
@@ -5333,7 +5335,21 @@ const UPLOAD_URL_PATTERNS = [
 ] as const;
 
 /** One entry of the recent-network-capture window shared across upload helpers. */
-type CaptureMeta = { method: string; status: number; url: string };
+type CaptureMeta = {
+  method: string;
+  status: number;
+  url: string;
+  /** Request carried a non-empty post body (CDP omits it for some binary bodies, hence `multipart`). Absent means unknown, not empty. */
+  hasBody?: boolean;
+  /** Request Content-Type was multipart/*, the shape of a browser file upload. */
+  multipart?: boolean;
+};
+
+/** Case-insensitive Content-Type lookup; CDP preserves the page's header casing. */
+function requestContentType(headers: Record<string, string>): string {
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+  return key ? (headers[key] ?? "") : "";
+}
 
 /** Fixture shape carried by the upload helpers (never null past the guard). */
 type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
@@ -5342,10 +5358,10 @@ type UploadFixture = { buffer: Buffer; name: string; mimeType: string };
  * Poll the recent-capture window for an upload-related POST after a file has
  * been attached. Extracted from `tryUploadPrimitive` so the raw-input path,
  * the click-to-surface path, and the CDP native-chooser path all verify the
- * same way. Returns true as soon as a non-GET capture whose URL matches
- * {@link UPLOAD_URL_PATTERNS} lands; false if the timeout elapses first.
+ * same way. Returns true as soon as a non-GET capture that is multipart, or is not
+ * known to be body-less and has a URL matching {@link UPLOAD_URL_PATTERNS}, lands; false if the timeout elapses first.
  */
-async function waitForUploadNetworkSignal(params: {
+export async function waitForUploadNetworkSignal(params: {
   page: Page;
   fixture: UploadFixture;
   logger: Logger;
@@ -5363,6 +5379,8 @@ async function waitForUploadNetworkSignal(params: {
       const newCaptures = recentCaptureMeta.slice(captureMetaCountBefore);
       const uploadCapture = newCaptures.find((cap) => {
         if (cap.method === "GET") return false;
+        if (cap.multipart) return true;
+        if (cap.hasBody === false) return false;
         const lowerUrl = cap.url.toLowerCase();
         return UPLOAD_URL_PATTERNS.some((p) => lowerUrl.includes(p));
       });
@@ -5448,7 +5466,7 @@ async function tryUploadPrimitive(params: {
    * in the ATS's framework state — false positive. K'1 catches this by
    * filtering the network signal by URL keyword.
    */
-  recentCaptureMeta: readonly { method: string; status: number; url: string }[];
+  recentCaptureMeta: readonly CaptureMeta[];
 }): Promise<boolean> {
   const { page, target, isUploadStep, fixture, logger, signalCounter, recentCaptureMeta } = params;
   if (!isUploadStep) {
@@ -5528,8 +5546,9 @@ async function tryUploadPrimitive(params: {
  * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
  * mounted after a click) and verify. Extracted verbatim from the original
  * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
- * path share one setInputFiles + framework-change-dispatch + network/DOM verify
- * + drag-drop-fallback implementation.
+ * path share one setInputFiles + framework-change-dispatch + network/DOM verify implementation.
+ * Returns true only on a verified signal
+ * (upload POST or populated `.files`).
  */
 export async function attachToSurfacedInput(params: {
   page: Page;
@@ -5611,22 +5630,12 @@ export async function attachToSurfacedInput(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
+    // A dispatched drop is unverified (no network signal, no .files), so it is
+    // not success here: return false and let surfaceAndUpload run the verified
+    // drop and the trusted-click/chooser routes.
     logger.warn(
-      "upload primitive: no network activity within timeout and no file attached in DOM; attempting drag-drop fallback"
+      "upload primitive: no network activity within timeout and no file attached in DOM; deferring to surface-and-upload"
     );
-    // K'4: fall back to simulated drag-drop on the most-likely drop zone.
-    // Some custom upload widgets (Material Dropzone, react-dropzone, custom
-    // <uapp-upload> wrappers) only register files when a `drop` event with
-    // a DataTransfer fires on the visible drop area — they don't observe
-    // the hidden input's `files[]` mutations even with synthetic `change`
-    // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
-    if (dragDropOk) {
-      logger.info(
-        `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
-      );
-      return true;
-    }
     return false;
   }
   logger.info(
@@ -10282,6 +10291,9 @@ export async function hasUnfilledRequiredControlForStep(
  * upload/dropzone/file-related class or tag names. Tries multiple
  * candidates in order. Returns true on first success.
  *
+ * Dispatch-only: a true return means the drop events fired, not that the
+ * widget accepted the file; callers must verify.
+ *
  * Site-agnostic — DataTransfer + DragEvent dispatch is universal HTML5
  * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom
  * <uapp-upload>/<app-upload>, and any other drop-zone-based upload UI.
@@ -11804,7 +11816,7 @@ export async function executeStepWithHealing(params: {
   phase: string;
   signalCounter: { n: number };
   recentCaptures: string[];
-  recentCaptureMeta: { method: string; status: number; url: string }[];
+  recentCaptureMeta: CaptureMeta[];
   anthropic: Anthropic | null;
   /**
    * Provider-agnostic ai-SDK model for attempt-5's `rephraseWithLLM`
@@ -16230,7 +16242,7 @@ export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHeali
   let activePage = page;
   const signalCounter = { n: 0 };
   const recentCaptures: string[] = [];
-  const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+  const recentCaptureMeta: CaptureMeta[] = [];
   const start = Date.now();
   let submitVerified = false;
   let submitStepSkipped = false;

@@ -68,7 +68,7 @@ const fixture = {
   mimeType: "application/pdf",
 };
 
-describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame scope", () => {
+describe("flow-runner/attachToSurfacedInput — unverified attach frame scope", () => {
   it("dispatches against the child target when the upload input lives in a cross-origin iframe", async () => {
     const pageEvaluate = vi.fn().mockResolvedValue(null);
     const page = makeFakePage(pageEvaluate);
@@ -77,9 +77,7 @@ describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame scope",
       // framework-wrapper change dispatch: no file registered
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0)
-      // simulateDragDropUpload's own evaluate — must land on the child target
-      .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
+      .mockResolvedValueOnce(0);
     const target = makeChildTarget(childEvaluate);
 
     const result = await attachToSurfacedInput({
@@ -91,20 +89,18 @@ describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame scope",
       recentCaptureMeta: [],
     });
 
-    expect(result).toBe(true);
-    expect(childEvaluate).toHaveBeenCalledTimes(3);
+    expect(result).toBe(false);
+    expect(childEvaluate).toHaveBeenCalledTimes(2);
     expect(pageEvaluate).not.toHaveBeenCalled();
   });
 
-  it("still dispatches via page.evaluate when the target is the main frame (unchanged top-frame behavior)", async () => {
+  it("still probes via page.evaluate when the target is the main frame (unchanged top-frame behavior)", async () => {
     const pageEvaluate = vi
       .fn()
       // framework-wrapper change dispatch: no file registered
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0)
-      // simulateDragDropUpload's own evaluate — must land on page.evaluate
-      .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
+      .mockResolvedValueOnce(0);
     const page = makeFakePage(pageEvaluate);
     const target = mainFrameTarget(page);
 
@@ -117,8 +113,8 @@ describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame scope",
       recentCaptureMeta: [],
     });
 
-    expect(result).toBe(true);
-    expect(pageEvaluate).toHaveBeenCalledTimes(3);
+    expect(result).toBe(false);
+    expect(pageEvaluate).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -134,13 +130,15 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
       .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
     const target = makeChildTarget(childEvaluate);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] =
+      [];
     (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       signalCounter.n = 1;
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
         url: "https://apply.example.com/attachment_upload",
+        hasBody: true,
       });
     });
 
@@ -168,13 +166,15 @@ describe("flow-runner/surfaceAndUpload — Strategy DZ frame scope", () => {
     const page = makeFakePage(pageEvaluate);
     const target = mainFrameTarget(page);
     const signalCounter = { n: 0 };
-    const recentCaptureMeta: { method: string; status: number; url: string }[] = [];
+    const recentCaptureMeta: { method: string; status: number; url: string; hasBody?: boolean }[] =
+      [];
     (page.waitForTimeout as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       signalCounter.n = 1;
       recentCaptureMeta.push({
         method: "POST",
         status: 200,
         url: "https://apply.example.com/attachment_upload",
+        hasBody: true,
       });
     });
 
