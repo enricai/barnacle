@@ -109,7 +109,7 @@ describe("segmented date resolution from context alone", () => {
   });
 
   it("prefers the standalone group over a nested slice of another widget when no section separates them", () => {
-    // Groups exactly as Workday's Parkland wizard enumerated them live (2026-10-16):
+    // Groups exactly as a multi-section form enumerated them live:
     // no section heading visible, the Work Experience From widget [12, 9999] also
     // surfaces its Year wrapper as a nested [9999] group labelled "From*".
     const live: SegmentedDateGroup[] = [

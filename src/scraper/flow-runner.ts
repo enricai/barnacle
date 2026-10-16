@@ -6510,7 +6510,7 @@ function pickSegmentedDateGroup(
   // A group under another heading is not the field the step names, however
   // well its label matches: the step's own words must find the section.
   // A section that only repeats the group's own label is no heading at all
-  // (Workday enumerates "From*" as both), so it cannot name another section.
+  // (a widget may enumerate "From*" as both), so it cannot name another section.
   const namesOtherSection = (group: SegmentedDateGroup): boolean => {
     const section = segmentedDateTokens(group.section ?? "");
     const label = segmentedDateTokens(group.label ?? "");
@@ -6561,7 +6561,7 @@ function pickSegmentedDateGroup(
   if (leaders.length > 1) {
     // A nested group is one wrapper's slice of a larger date widget (e.g. the
     // Year half of "From MM/YYYY"), so it only ties with a standalone group of
-    // the same label when no section text separates them — Workday renders
+    // the same label when no section text separates them — a form may render
     // "Work Experience 1 From" and "Education 1 From" with no heading the
     // enumerator can see. The standalone group is the field the step names.
     const standalone = leaders.filter((i) => !groups[i]?.nested);
