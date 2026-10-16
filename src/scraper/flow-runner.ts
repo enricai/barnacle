@@ -5528,8 +5528,9 @@ async function tryUploadPrimitive(params: {
  * Attach the fixture to an already-surfaced `<input type=file>` (raw or freshly
  * mounted after a click) and verify. Extracted verbatim from the original
  * `tryUploadPrimitive` body so the raw-input path and the click-to-surface
- * path share one setInputFiles + framework-change-dispatch + network/DOM verify
- * + drag-drop-fallback implementation.
+ * path share one setInputFiles + framework-change-dispatch + network/DOM verify implementation.
+ * Returns true only on a verified signal
+ * (upload POST or populated `.files`).
  */
 export async function attachToSurfacedInput(params: {
   page: Page;
@@ -5611,22 +5612,12 @@ export async function attachToSurfacedInput(params: {
     )
     .catch(() => 0);
   if (typeof attachedLength !== "number" || attachedLength === 0) {
+    // A dispatched drop is unverified (no network signal, no .files), so it is
+    // not success here: return false and let surfaceAndUpload run the verified
+    // drop and the trusted-click/chooser routes.
     logger.warn(
-      "upload primitive: no network activity within timeout and no file attached in DOM; attempting drag-drop fallback"
+      "upload primitive: no network activity within timeout and no file attached in DOM; deferring to surface-and-upload"
     );
-    // K'4: fall back to simulated drag-drop on the most-likely drop zone.
-    // Some custom upload widgets (Material Dropzone, react-dropzone, custom
-    // <uapp-upload> wrappers) only register files when a `drop` event with
-    // a DataTransfer fires on the visible drop area — they don't observe
-    // the hidden input's `files[]` mutations even with synthetic `change`
-    // dispatches. This is the documented Playwright community workaround.
-    const dragDropOk = await simulateDragDropUpload(target, fixture, logger);
-    if (dragDropOk) {
-      logger.info(
-        `upload primitive: drag-drop fallback succeeded (name=${fixture.name}, size=${fixture.buffer.length}b)`
-      );
-      return true;
-    }
     return false;
   }
   logger.info(
@@ -10281,6 +10272,9 @@ export async function hasUnfilledRequiredControlForStep(
  * Drop zone detection is keyword-based: searches for elements with
  * upload/dropzone/file-related class or tag names. Tries multiple
  * candidates in order. Returns true on first success.
+ *
+ * Dispatch-only: a true return means the drop events fired, not that the
+ * widget accepted the file; callers must verify.
  *
  * Site-agnostic — DataTransfer + DragEvent dispatch is universal HTML5
  * drag-and-drop API. Works on react-dropzone, Material Dropzone, custom

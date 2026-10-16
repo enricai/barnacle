@@ -24,7 +24,7 @@ const STEP =
   "Upload the resume file using the 'Select files' button in the Resume/CV upload section";
 const fixture = { name: "r.pdf", mimeType: "application/pdf", buffer: Buffer.from("x") };
 
-function setup(opts: { inputTakes: boolean }): {
+function setup(opts: { inputTakes: boolean; fileName?: string }): {
   run: () => Promise<string>;
   setInputFiles: ReturnType<typeof vi.fn>;
   click: ReturnType<typeof vi.fn>;
@@ -94,7 +94,7 @@ function setup(opts: { inputTakes: boolean }): {
         anthropic: null,
         rephraseModel: null,
         logger,
-        uploadFixture: fixture,
+        uploadFixture: opts.fileName ? { ...fixture, name: opts.fileName } : fixture,
         isFinalStep: false,
         submitEndpointPattern: null,
         submittedStateSelectors: [],
@@ -126,6 +126,17 @@ describe("tryUploadPrimitive resolved-but-unattached input retry", () => {
     expect(init.method).toBe("POST");
     expect(t.send).toHaveBeenCalledWith("DOM.setFileInputFiles", {
       files: ["/tmp/.uploads/r.pdf"],
+      backendNodeId: 7,
+    });
+  });
+
+  it("falls through to surfaceAndUpload with a different file name", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const t = setup({ inputTakes: false, fileName: "cv-other.pdf" });
+    expect(await t.run()).toBe("completed");
+    expect(t.send).toHaveBeenCalledWith("DOM.setFileInputFiles", {
+      files: ["/tmp/.uploads/cv-other.pdf"],
       backendNodeId: 7,
     });
   });

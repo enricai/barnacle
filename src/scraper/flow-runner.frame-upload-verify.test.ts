@@ -86,17 +86,15 @@ describe("flow-runner/simulateDragDropUpload — frame targeting", () => {
   });
 });
 
-describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame targeting", () => {
-  it("falls back to simulateDragDropUpload against the SAME child target it located the input through, not mainFrameTarget(page)", async () => {
+describe("flow-runner/attachToSurfacedInput — unverified-attach frame targeting", () => {
+  it("returns false without a synthetic drop, probing only through the child target it located the input through", async () => {
     const page = makeFakePage();
     const childEvaluate = vi
       .fn()
       // change-dispatch after setInputFiles: report no file attached
       .mockResolvedValueOnce(false)
       // DOM-attached fallback check: no file in DOM
-      .mockResolvedValueOnce(0)
-      // simulateDragDropUpload's own evaluate — must land on the child target
-      .mockResolvedValueOnce({ ok: true, dropZoneTag: "uapp-upload" });
+      .mockResolvedValueOnce(0);
     const target = makeChildTarget(childEvaluate);
 
     const result = await attachToSurfacedInput({
@@ -108,10 +106,10 @@ describe("flow-runner/attachToSurfacedInput — drag-drop fallback frame targeti
       recentCaptureMeta: [],
     });
 
-    expect(result).toBe(true);
-    // All three evaluate calls (change-dispatch, DOM-attach check, drag-drop)
-    // must have gone through the child target — page.evaluate must never fire.
-    expect(childEvaluate).toHaveBeenCalledTimes(3);
+    expect(result).toBe(false);
+    // Both evaluate calls (change-dispatch, DOM-attach check) must have gone
+    // through the child target and no unverified drop is dispatched.
+    expect(childEvaluate).toHaveBeenCalledTimes(2);
     expect(page.evaluate).not.toHaveBeenCalled();
   });
 });
