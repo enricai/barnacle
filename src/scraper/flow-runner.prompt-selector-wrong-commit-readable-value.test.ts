@@ -100,6 +100,20 @@ describe("prompt-selector read-back compares the widget's readable value to the 
     expect(trajectory).toEqual([{ stepIndex: 2, verifiedBy: "dom", targetId: "major-widget" }]);
   });
 
+  it("dismisses a popup left open after a wrong commit too", async () => {
+    const { harness, trajectory } = await run(
+      "In the 'Major' prompt selector, select the option 'Geology'",
+      {
+        options: OPTIONS,
+        commitsInstead: "Chemistry",
+        keepPopupMounted: true,
+        closesOnEscape: true,
+      }
+    );
+    expect(trajectory).toEqual([]);
+    expect(harness.window.document.querySelector("[data-test-popup-for]")).toBeNull();
+  });
+
   it("dismisses a popup left open after a verified commit", async () => {
     const { harness, trajectory } = await run(
       "In the 'Major' prompt selector, select the option 'Geology'",

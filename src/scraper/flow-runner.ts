@@ -9666,6 +9666,7 @@ async function commitPromptOption(params: {
       readback = await runReadback();
     }
     if (!readback?.ok && readback?.committed) {
+      await dismissLeftoverPromptPopups(page, target);
       logger.info(
         `prompt-selector primitive: committed "${readback.committed.slice(0, 40)}" instead of "${chosenOption.text.slice(0, 40)}" for ${optLabel}; falling through`
       );
@@ -11071,7 +11072,9 @@ export function primitiveOptionLabel(
   redactValue?: string,
   fromFill = false
 ): string {
-  const shown = fromFill ? `[${option.length}-char typed value]` : maskLoggedValue(option, redactValue).slice(0, 40);
+  const shown = fromFill
+    ? `[${option.length}-char typed value]`
+    : maskLoggedValue(option, redactValue).slice(0, 40);
   return `option "${shown}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
 }
 
