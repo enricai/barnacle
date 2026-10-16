@@ -39,27 +39,14 @@ export async function settleAfterClick(
   submitShaped: boolean,
   readText?: () => Promise<string>,
   preText?: string,
-  readQuiescence?: () => Promise<PageQuiescence | undefined>
+  readQuiescence?: () => Promise<PageQuiescence>
 ): Promise<void> {
-  const safeRead = async (): Promise<string | undefined> => {
-    if (!readText) return undefined;
-    try {
-      return await readText();
-    } catch {
-      return undefined;
-    }
-  };
-  const safeQuiescence = async (): Promise<PageQuiescence | undefined> => {
-    if (!readQuiescence) return undefined;
-    try {
-      return (await readQuiescence()) ?? undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const startQ = await safeQuiescence();
+  const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
+  const quiescence = async (): Promise<PageQuiescence | undefined> =>
+    readQuiescence ? readQuiescence() : undefined;
+  const startQ = await quiescence();
   let lastMutations = startQ?.mutations;
-  const startText = await safeRead();
+  const startText = await read();
   let lastText = preText ?? startText;
   let textMoved = preText !== undefined && startText !== undefined && startText !== preText;
   let seen = counter.n > preCount || textMoved;
@@ -69,7 +56,7 @@ export async function settleAfterClick(
   while (elapsed < MAX_MS) {
     await page.waitForTimeout(POLL_MS);
     elapsed += POLL_MS;
-    const text = await safeRead();
+    const text = await read();
     if (text !== undefined && lastText !== undefined && text !== lastText) {
       lastText = text;
       textMoved = true;
@@ -77,7 +64,7 @@ export async function settleAfterClick(
       quiet = 0;
       continue;
     }
-    const q = await safeQuiescence();
+    const q = await quiescence();
     const pageBusy =
       q !== undefined &&
       (q.pending > 0 || (lastMutations !== undefined && q.mutations !== lastMutations));
@@ -145,7 +132,7 @@ export interface SettleSnapshotTarget<
   submitShaped: boolean;
   /** Takes a snapshot; `withPage` marks the final post-settle read. */
   snapshot: (withPage: boolean) => Promise<S>;
-  readQuiescence?: () => Promise<PageQuiescence | undefined>;
+  readQuiescence?: () => Promise<PageQuiescence>;
 }
 
 /**

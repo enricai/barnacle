@@ -70,6 +70,7 @@ import {
 } from "@/scraper/captcha-callback-capture";
 import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
+  type PageQuiescence,
   QUIESCENCE_PROBE_EXPR,
   type SettlePage,
   settleAfterClick,
@@ -1413,6 +1414,23 @@ export function fieldValuesAtFailureExpr(): string {
 }
 
 /**
+ * Reads the in-page quiescence probe as a typed, non-null value. A detached
+ * frame or malformed probe result reads as idle so settle consumes the reader
+ * directly and needs no guard of its own.
+ */
+async function readPageQuiescence(target: FrameTarget): Promise<PageQuiescence> {
+  const idle: PageQuiescence = { pending: 0, mutations: 0 };
+  const result = await Promise.resolve(target.evaluate<unknown>(QUIESCENCE_PROBE_EXPR)).catch(
+    () => idle
+  );
+  if (result === null || typeof result !== "object") return idle;
+  const { pending, mutations } = result as Partial<PageQuiescence>;
+  return typeof pending === "number" && typeof mutations === "number"
+    ? { pending, mutations }
+    : idle;
+}
+
+/**
  * Settles after a click using the target's own text signature and in-page
  * quiescence reader, so every post-click site decides from the same settle
  * signal instead of hand-building the readers.
@@ -1432,7 +1450,7 @@ export async function settleWithPageQuiescence(
     submitShaped,
     async () => (await snapshotPage(target, signalCounter)).visibleTextSignature,
     preVisibleTextSignature,
-    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+    () => readPageQuiescence(target)
   );
 }
 
@@ -3576,7 +3594,7 @@ export async function judgeStepOutcome(params: {
       return `${text.length}:${text.slice(0, 200)}`;
     },
     params.preVisibleTextSignature,
-    async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+    () => readPageQuiescence(target)
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
   const beforeText = (
@@ -11636,7 +11654,7 @@ async function probeChildFrameSubmitFallback(params: {
         return snap.visibleTextSignature;
       },
       pre.visibleTextSignature,
-      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+      () => readPageQuiescence(target)
     );
     const post = await snapshotPage(target, signalCounter, page);
     const verdict = classifyPhantomClick({
@@ -11669,7 +11687,7 @@ async function probeChildFrameSubmitFallback(params: {
         return snap.visibleTextSignature;
       },
       post.visibleTextSignature,
-      async () => target.evaluate(QUIESCENCE_PROBE_EXPR)
+      () => readPageQuiescence(target)
     );
     const runnerUpPost = await snapshotPage(target, signalCounter, page);
     const runnerUpVerdict = classifyPhantomClick({
@@ -13579,7 +13597,7 @@ export async function executeStepWithHealing(params: {
                 submitShaped: true,
                 snapshot: (withPage) =>
                   snapshotPage(midTarget, signalCounter, withPage ? page : undefined),
-                readQuiescence: async () => midTarget.evaluate(QUIESCENCE_PROBE_EXPR),
+                readQuiescence: () => readPageQuiescence(midTarget),
               });
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
