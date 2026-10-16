@@ -4259,8 +4259,8 @@ export async function verifyFillReadback(
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
-    const siblings = el.parentElement ? el.parentElement.querySelectorAll("[role='spinbutton']").length : 0;
-    if (el.getAttribute && el.getAttribute("role") === "spinbutton" && siblings > 1) {
+    ${SEGMENT_OWNER_JS}
+    if (isDateSegment(el)) {
       return { outcome: "segment", postValue: el.value || el.getAttribute("aria-valuenow") || "", tag };
     }
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
@@ -6144,6 +6144,8 @@ export interface SegmentedDateGroup {
   section?: string;
   /** True for a per-wrapper subset of a larger container's segments; never picked on width alone. */
   nested?: boolean;
+  /** Each segment's own label text (aria-label, labelledby, placeholder), in DOM order. */
+  segmentLabels?: readonly string[];
 }
 
 /**
@@ -6252,6 +6254,58 @@ export function resolveSegmentedDateGroup(
 ): number | null {
   const value = parseSegmentedDateValue(instruction);
   if (!value) return null;
+  const compatible = (group: SegmentedDateGroup): boolean =>
+    group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
+    value.digits.length;
+  return pickSegmentedDateGroup(instruction, groups, value, compatible);
+}
+
+type SegmentedDatePart = "month" | "day" | "year";
+
+const SEGMENTED_DATE_PART_BY_LABEL: Record<string, SegmentedDatePart> = {
+  month: "month",
+  mm: "month",
+  day: "day",
+  dd: "day",
+  year: "year",
+  yyyy: "year",
+  yy: "year",
+};
+
+/**
+ * Parse a per-segment step such as "type '01' into Month". Requires a quoted
+ * 1-4 digit value AND exactly one part label (Month/MM, Day/DD, Year/YYYY), so
+ * a bare short numeric (ZIP fragment, age) is never claimed.
+ */
+export function parseSegmentedPartStep(
+  instruction: string
+): { digits: string; valueSpan: string; part: SegmentedDatePart } | null {
+  const raw = parseFillValueIntent(instruction)?.value;
+  if (!raw || !/^\d{1,4}$/.test(raw)) return null;
+  const parts = new Set(
+    segmentedDateTokens(instruction.replace(raw, " ")).flatMap((t) => {
+      const part = SEGMENTED_DATE_PART_BY_LABEL[t];
+      return part ? [part] : [];
+    })
+  );
+  const [part] = [...parts];
+  return parts.size === 1 && part ? { digits: raw, valueSpan: raw, part } : null;
+}
+
+/** Index of the single segment in `group` whose own label names `part`, or null when none/ambiguous. */
+function segmentIndexForPart(group: SegmentedDateGroup, part: SegmentedDatePart): number | null {
+  const hits = (group.segmentLabels ?? []).flatMap((label, si) =>
+    segmentedDateTokens(label).some((t) => SEGMENTED_DATE_PART_BY_LABEL[t] === part) ? [si] : []
+  );
+  return hits.length === 1 ? (hits[0] ?? null) : null;
+}
+
+function pickSegmentedDateGroup(
+  instruction: string,
+  groups: readonly SegmentedDateGroup[],
+  value: { digits: string; valueSpan: string },
+  compatible: (group: SegmentedDateGroup) => boolean
+): number | null {
   const valueTokens = segmentedDateTokens(value.valueSpan).join(" ");
   const quoted = findQuotedSpans(instruction)
     .map((s) => segmentedDateTokens(s.text.trim()))
@@ -6271,9 +6325,6 @@ export function resolveSegmentedDateGroup(
     }
     return false;
   };
-  const compatible = (group: SegmentedDateGroup): boolean =>
-    group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
-    value.digits.length;
   const stepSet = new Set(stepTokens);
   const sectionScore = (group: SegmentedDateGroup): number => {
     const own = new Set(segmentedDateTokens(group.label ?? ""));
@@ -6329,13 +6380,12 @@ export function resolveSegmentedDateGroup(
   return only.length === 1 ? (only[0] ?? null) : null;
 }
 
-const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
-
-/** Exported so tests can run the real DOM enumeration against markup. */
-export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
-  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
-  const stale = document.querySelectorAll("[" + attr + "]");
-  stale.forEach((el) => el.removeAttribute(attr));
+/**
+ * In-page helpers shared by the date-segment enumeration and the fill
+ * readback so "is this spinbutton one segment of a multi-segment widget" has a
+ * single definition; defines `spins`, `ownerOf` and `isDateSegment`.
+ */
+const SEGMENT_OWNER_JS = `
   const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
   const styleOf = (node) => {
     try { return typeof getComputedStyle === "function" ? getComputedStyle(node) : window.getComputedStyle(node); } catch { return null; }
@@ -6349,18 +6399,55 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     return false;
   };
   const spins = Array.from(document.querySelectorAll("input[role='spinbutton']")).filter((el) => !isHidden(el));
-  if (spins.length === 0) return { groups: [] };
   const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
-  const byContainer = new Map();
-  for (const el of spins) {
-    const box = el.closest("fieldset,[role='group']") || el.parentElement;
-    if (!byContainer.has(box)) byContainer.set(box, []);
-    byContainer.get(box).push(el);
-  }
   const idText = (ids) => (ids || "").split(/\\s+/).map((id) => {
     const ref = id ? document.getElementById(id) : null;
     return ref ? norm(ref.textContent) : "";
   }).join(" ");
+  const legendOf = (node) => {
+    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
+    return legend ? norm(legend.textContent) : "";
+  };
+  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
+  const tiedToSpin = (l) => l.querySelector("input,[role='spinbutton']") || (l.getAttribute("for") && spins.some((sp) => sp.id === l.getAttribute("for")));
+  const hasCaption = (node) => namedBy(node) !== "" || Array.from(node.querySelectorAll("label,legend")).some((l) => !tiedToSpin(l));
+  const captionOwnerOf = (el) => {
+    const explicit = el.closest("fieldset,[role='group']");
+    if (explicit) return explicit;
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (hasCaption(node)) return node;
+    }
+    return null;
+  };
+  const bareSpins = spins.filter((sp) => !captionOwnerOf(sp));
+  const hasOtherControl = (node) => Array.from(node.querySelectorAll("input,select,textarea")).some((c) => !spins.includes(c) && c.type !== "hidden");
+  // Segments that each sit in their own uncaptioned wrapper share no
+  // fieldset/caption, so the nearest ancestor holding several bare spinbuttons
+  // (and no other form control) is the widget they belong to.
+  const bareOwnerOf = (el) => {
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (hasOtherControl(node)) break;
+      if (bareSpins.filter((sp) => node.contains(sp)).length > 1) return node;
+    }
+    return el.parentElement;
+  };
+  const ownerOf = (el) => captionOwnerOf(el) || bareOwnerOf(el);
+  const isDateSegment = (el) => {
+    if (!el.getAttribute || el.getAttribute("role") !== "spinbutton" || !spins.includes(el)) return false;
+    const box = ownerOf(el);
+    return spins.filter((sp) => ownerOf(sp) === box).length > 1;
+  };
+`;
+
+const SEGMENTED_DATE_MARKER_ATTR = "data-barnacle-segdate";
+
+/** Exported so tests can run the real DOM enumeration against markup. */
+export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
+  const attr = ${JSON.stringify(SEGMENTED_DATE_MARKER_ATTR)};
+  const stale = document.querySelectorAll("[" + attr + "]");
+  stale.forEach((el) => el.removeAttribute(attr));
+  ${SEGMENT_OWNER_JS}
+  if (spins.length === 0) return { groups: [] };
   const headingSibling = (node) => {
     let prevSib = node.previousElementSibling;
     for (let hop = 0; hop < 3 && prevSib; hop++, prevSib = prevSib.previousElementSibling) {
@@ -6368,11 +6455,6 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     }
     return "";
   };
-  const legendOf = (node) => {
-    const legend = node.tagName === "FIELDSET" ? node.querySelector(":scope > legend") : null;
-    return legend ? norm(legend.textContent) : "";
-  };
-  const namedBy = (node) => [legendOf(node), norm(node.getAttribute("aria-label")), idText(node.getAttribute("aria-labelledby"))].filter(Boolean).join(" ");
   const sectionOf = (box, includeSelf) => {
     const parts = [includeSelf ? namedBy(box) : "", headingSibling(box)];
     let node = box.parentElement;
@@ -6387,11 +6469,12 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
     const prev = box.previousElementSibling;
     return prev && prev.matches("label,legend") && !prev.querySelector("input,[role='spinbutton']") ? norm(prev.textContent) : "";
   };
-  const formFieldOf = (box) => box.closest("[data-automation-id^='formField-']");
-  const formFieldLabel = (field) => {
-    const label = field.querySelector("label,legend");
-    return label ? norm(label.textContent) : "";
-  };
+  const byContainer = new Map();
+  for (const el of spins) {
+    const box = ownerOf(el);
+    if (!byContainer.has(box)) byContainer.set(box, []);
+    byContainer.get(box).push(el);
+  }
   const labelText = (seg) => {
     const parts = [idText(seg.getAttribute("aria-labelledby")), norm(seg.getAttribute("aria-label")), norm(seg.getAttribute("placeholder"))];
     if (seg.id) {
@@ -6420,16 +6503,20 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const addGroup = (segs, box, nested) => {
     const gi = groups.length;
     segs.forEach((seg, si) => mark(seg, gi + ":" + si));
-    const field = formFieldOf(box) || segs[0].closest("[data-automation-id^='formField-']");
-    const innerField = field && field !== box && box.contains(field) && segs.every((seg) => field.contains(seg)) ? formFieldLabel(field) : "";
-    const own = innerField || namedBy(box) || (field ? formFieldLabel(field) : "") || ownCaption(box) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
-    const section = sectionOf(box, Boolean(innerField));
+    let inner = null;
+    for (let node = segs[0].parentElement; node && node !== box && box.contains(node) && !inner; node = node.parentElement) {
+      if (segs.every((seg) => node.contains(seg)) && hasCaption(node)) inner = node;
+    }
+    const labelBox = inner || box;
+    const own = namedBy(labelBox) || ownCaption(labelBox) || segs.map((seg) => idText(seg.getAttribute("aria-labelledby"))).filter(Boolean).join(" ");
+    const section = sectionOf(labelBox, Boolean(inner));
     groups.push({
       segmentMaxes: segs.map((seg, si) => maxOf(seg, si, segs.length)),
       context: [section, own].filter(Boolean).join(" "),
       label: own,
       section,
       nested,
+      segmentLabels: segs.map((seg) => labelText(seg)),
     });
   };
   const nestedCandidates = [];
@@ -6470,8 +6557,9 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
   logger: Logger;
 }): Promise<string | null> {
   const { page, target, instruction, logger } = params;
-  const value = parseSegmentedDateValue(instruction);
-  if (!value) return null;
+  const whole = parseSegmentedDateValue(instruction);
+  const part = parseSegmentedPartStep(instruction);
+  if (!whole && !part) return null;
   const sendCDP = (method: string, args: object): Promise<unknown> =>
     target.frame?.session ? target.frame.session.send(method, args) : page.sendCDP(method, args);
   try {
@@ -6479,7 +6567,24 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
       groups: SegmentedDateGroup[];
     };
     if (!enumerated?.groups?.length) return null;
-    const gi = resolveSegmentedDateGroup(instruction, enumerated.groups);
+    const wholeGi = whole ? resolveSegmentedDateGroup(instruction, enumerated.groups) : null;
+    const partStep = wholeGi === null ? part : null;
+    const value = (wholeGi !== null ? whole : part) as { digits: string; valueSpan: string };
+    const partOf = (group: SegmentedDateGroup): number | null =>
+      partStep ? segmentIndexForPart(group, partStep.part) : null;
+    const partFits = (group: SegmentedDateGroup): boolean => {
+      const si = partOf(group);
+      return (
+        !group.nested &&
+        si !== null &&
+        value.digits.length <= String(group.segmentMaxes[si] ?? 0).length
+      );
+    };
+    const gi =
+      wholeGi ??
+      (partStep
+        ? pickSegmentedDateGroup(instruction, enumerated.groups, partStep, partFits)
+        : null);
     if (gi === null) {
       logger.info("segmented date primitive: no unambiguous group; falling through");
       await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
@@ -6487,10 +6592,16 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     }
     const maxes = enumerated.groups[gi]?.segmentMaxes ?? [];
     const widths = maxes.map((max) => String(max).length);
-    const expected = widths.map((w, i) => {
-      const start = widths.slice(0, i).reduce((a, b) => a + b, 0);
-      return Number(value.digits.slice(start, start + w));
-    });
+    const onlySegment = partStep ? partOf(enumerated.groups[gi] as SegmentedDateGroup) : null;
+    const active = widths.flatMap((_, si) =>
+      onlySegment === null || si === onlySegment ? [si] : []
+    );
+    const sliceFor = (si: number): string => {
+      if (onlySegment !== null) return value.digits;
+      const start = widths.slice(0, si).reduce((a, b) => a + b, 0);
+      return value.digits.slice(start, start + (widths[si] ?? 0));
+    };
+    const expected = active.map((si) => Number(sliceFor(si)));
     const segmentSelector = (si: number): string =>
       `[${SEGMENTED_DATE_MARKER_ATTR}~="${gi}:${si}"]`;
     const focusSegment = async (si: number): Promise<void> => {
@@ -6526,13 +6637,10 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         await sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...keyArgs });
       }
     };
-    const segmentDigits = widths.map((w, i) => {
-      const from = widths.slice(0, i).reduce((acc, n) => acc + n, 0);
-      return value.digits.slice(from, from + w);
-    });
+    const segmentDigits = active.map((si) => sliceFor(si));
     const readSegments = async (): Promise<number[]> =>
       (await target.evaluate(`(() => {
-      const sels = ${JSON.stringify(widths.map((_, si) => segmentSelector(si)))};
+      const sels = ${JSON.stringify(active.map((si) => segmentSelector(si)))};
       return sels.map((sel) => {
         const s = document.querySelector(sel);
         if (!s) return NaN;
@@ -6550,15 +6658,18 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     // locator.type (per-character key events, never Input.insertText) covers a
     // page whose CDP channel does not reach the widget.
     const typeViaLocator = async (): Promise<void> => {
-      for (const [si, digits] of segmentDigits.entries()) {
-        await target.locator(segmentSelector(si)).first().type(digits, {
-          delay: SEGMENTED_DATE_KEY_DELAY_MS,
-        });
+      for (const [k, digits] of segmentDigits.entries()) {
+        await target
+          .locator(segmentSelector(active[k] ?? 0))
+          .first()
+          .type(digits, {
+            delay: SEGMENTED_DATE_KEY_DELAY_MS,
+          });
       }
     };
     const typeViaKeyEvents = async (): Promise<void> => {
-      for (const [si, digits] of segmentDigits.entries()) {
-        await focusSegment(si);
+      for (const [k, digits] of segmentDigits.entries()) {
+        await focusSegment(active[k] ?? 0);
         await typeViaCdp(digits);
       }
     };
