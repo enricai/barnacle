@@ -15441,7 +15441,7 @@ function unreadDeclaredPayloadFields(
   return new Set(
     unreferencedDeclaredPayloadFields(
       contractCode,
-      contractCode.includes("httpClient(") ? "" : browserFlowCode,
+      /\b(httpClient|getGql)\(/.test(contractCode) ? "" : browserFlowCode,
       flowSteps
     )
   );
