@@ -107,6 +107,29 @@ describe("label-derived payload field canonicalisation", () => {
     expect(code).not.toContain("payload.AddressLine1");
   });
 
+  it("keeps canonical names in the unread-field fallback re-emit", () => {
+    const opts = {
+      siteId: "test-agency",
+      pascal: "TestAgency",
+      baseUrl: "https://example.com",
+      isSubmissionFlow: true,
+      browserFlowOnly: false,
+      inputBody: { Phone: "555", AddressLine: "1 Main" },
+      vocabulary: VOCAB,
+      flowSteps: STEPS,
+    };
+    const first = emitBrowserFlowTs(opts);
+    const fallback = emitBrowserFlowTs({
+      ...opts,
+      capturedFallbackFields: new Set([...first.payloadFieldNames]),
+    });
+
+    expect([...fallback.payloadFieldNames].sort()).toEqual([...first.payloadFieldNames].sort());
+    expect([...fallback.payloadFieldNames]).not.toContain("MobilePhone");
+    expect([...fallback.payloadFieldNames]).not.toContain("AddressLine1");
+    expect(fallback.code).not.toContain("payload.MobilePhone");
+  });
+
   it("agrees with the config manifest request template", () => {
     const [phone, address] = [...canonicalFields()] as [string, string];
     const manifest = JSON.parse(
