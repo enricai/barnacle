@@ -769,13 +769,20 @@ describe("guardedAct pre-centring", () => {
     });
   });
 
-  it("still acts when the click point stays occluded after centring", async () => {
+  it("rejects without acting when the click point stays occluded after centring", async () => {
     const action: Action = { selector: "#go", description: "go", method: "click" };
     const { sh } = fakeClickStagehand([action]);
     const frameTarget = fakeMainFrameTarget();
     vi.mocked(frameTarget.evaluate).mockResolvedValue({ state: "occluded", occluder: "div#bar" });
-    await guardedAct(sh, "click go", undefined, undefined, frameTarget);
-    expect(sh.act).toHaveBeenCalledWith("click go", undefined);
+    await expect(guardedAct(sh, "click go", undefined, undefined, frameTarget)).rejects.toThrow();
+    expect(sh.act).not.toHaveBeenCalled();
+  });
+
+  it("rejects without acting when observe errors for a click instruction", async () => {
+    const { sh } = fakeClickStagehand([]);
+    vi.mocked(sh.observe).mockRejectedValue(new Error("observe boom"));
+    await expect(guardedAct(sh, "click go")).rejects.toThrow();
+    expect(sh.act).not.toHaveBeenCalled();
   });
 
   it("acts without centring when the stagehand context exposes no active page", async () => {

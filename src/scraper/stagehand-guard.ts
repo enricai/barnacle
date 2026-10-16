@@ -50,8 +50,6 @@ import type {
 } from "@browserbasehq/stagehand";
 import pRetry from "p-retry";
 import { z } from "zod/v4";
-import { toErrorMessage } from "@/lib/errors";
-import { getLogger } from "@/lib/logging";
 import {
   detokenize,
   redactPii,
@@ -95,8 +93,6 @@ export type StagehandCaptureFn = (input: LlmCallInput) => Promise<void>;
  * `guardedObserve` from this module, so importing back would cycle.
  */
 const DEFAULT_GUARD_TIMEOUT_MS = 120_000;
-
-const logger = getLogger({ name: "scraper/stagehand-guard" });
 
 /** Instructions that name a click; only these are worth an observe to find a click point. */
 export const CLICK_INTENT_RE = /\bclick\b/i;
@@ -265,9 +261,9 @@ function frameScopedOptions<T extends { selector?: string }>(
  * Resolves a string act instruction to the Action Stagehand would click so it
  * can be centred first. Scoped to the step's frame the same way
  * `guardedObserve` is, so an in-frame control is not resolved against the top
- * document. Resolution is best-effort: when `observe` is unavailable, throws,
- * or finds nothing, Stagehand's own string `act` resolves internally exactly
- * as before.
+ * document. When `observe` is unavailable or finds nothing, Stagehand's own
+ * string `act` resolves internally exactly as before; an `observe` error
+ * propagates.
  */
 async function resolveClickAction(
   stagehand: Stagehand,
@@ -296,12 +292,11 @@ async function resolveClickAction(
  * instructions are resolved via `observe` for the pre-centring only and still
  * reach `act` as the original string, so downstream method/argument handling
  * is unchanged. Frame-hop (`>>`) selectors are centred in the child frame they
- * resolve to. Best-effort by design: a target that cannot be resolved or
- * centred is logged and left to Stagehand's own delivery, because a click that
- * lands on an overlay is caught as a phantom by the healing ladder and retried
- * through the centred trusted-click path, whereas failing here would turn an
- * act that would have run into a hard attempt failure. Non-click actions are
- * skipped since there is no click point to clear.
+ * resolve to. Strict by design: a click target that stays occluded or
+ * cannot be resolved throws and fails the attempt, so Stagehand never clicks an
+ * uncentred point that a sticky overlay may cover. Non-click actions and
+ * instructions that observe to no action are skipped since there is no click
+ * point to clear.
  */
 async function preCentreClickTarget(
   stagehand: Stagehand,
@@ -309,22 +304,18 @@ async function preCentreClickTarget(
   options: ActOptions | undefined,
   frameTarget: FrameTarget | undefined
 ): Promise<void> {
-  try {
-    const page =
-      typeof stagehand.context?.activePage === "function"
-        ? stagehand.context.activePage()
-        : undefined;
-    const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
-    if (!target) return;
-    const action =
-      typeof input === "string"
-        ? await resolveClickAction(stagehand, input, options, frameTarget)
-        : input;
-    if (action?.method !== "click") return;
-    await centreAction(page, target, action);
-  } catch (err) {
-    logger.warn(`pre-centring skipped: ${toErrorMessage(err)}`);
-  }
+  const page =
+    typeof stagehand.context?.activePage === "function"
+      ? stagehand.context.activePage()
+      : undefined;
+  const target = frameTarget ?? (page ? mainFrameTarget(page) : undefined);
+  if (!target) return;
+  const action =
+    typeof input === "string"
+      ? await resolveClickAction(stagehand, input, options, frameTarget)
+      : input;
+  if (action?.method !== "click") return;
+  await centreAction(page, target, action);
 }
 
 /**
