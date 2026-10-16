@@ -8,7 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 process.env.RECON_RUN_ID = "flow-runner-secret-step-values-test";
 process.env.RECON_OUT_DIR = mkdtempSync(join(tmpdir(), "recon-secret-step-values-"));
 
-import { redactPii, resetSensitiveValuesForTests } from "@/lib/pii-redaction";
+import {
+  redactPii,
+  registerSensitiveValues,
+  resetSensitiveValuesForTests,
+} from "@/lib/pii-redaction";
 import { StepVerificationError } from "@/scraper/errors";
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -103,5 +107,36 @@ describe("flow-runner/runHealingFlow — secrets", () => {
     for (const [instruction] of observe.mock.calls as [unknown][]) {
       expect(JSON.stringify(instruction)).not.toContain(SECRET);
     }
+  });
+
+  it("redacts request values in the failure message before truncating it", async () => {
+    registerSensitiveValues(
+      "run-trunc",
+      { Email: "nurse.long-address-1234@inbox.example.com" },
+      {
+        wordKeys: ["Email"],
+      }
+    );
+    const act = vi.fn().mockResolvedValue({ success: false, message: "", actions: [] });
+    const failure = await runHealingFlow({
+      stagehand: { act, observe: vi.fn().mockResolvedValue([]) } as unknown as Stagehand,
+      page: makeFakePage(),
+      steps: [
+        {
+          // The 60-char cut lands mid-address: a truncated value no longer matches
+          // the registered literal, so it must be redacted before the cut.
+          instruction: "Fill in the Email field with 'nurse.long-address-1234@inbox.example.com'",
+          optional: false,
+          upload: false,
+          submitStep: false,
+        },
+      ],
+      logger: testLogger,
+      anthropic: null,
+      rephraseModel: null,
+      uploadFixture: null,
+    }).catch((err: unknown) => err);
+    expect((failure as Error).message).not.toContain("nurse.long-address");
+    expect((failure as Error).message).toContain("<Email>");
   });
 });

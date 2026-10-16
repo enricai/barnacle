@@ -39,7 +39,7 @@ import { getLogger } from "@/lib/logging";
 import {
   detokenize,
   maskValueShape,
-  redactSecrets,
+  redactPii,
   registerSecretValue,
   tokenizeSensitiveValues,
   unresolvedTokens,
@@ -12361,7 +12361,7 @@ export async function executeStepWithHealing(params: {
         `${formatStepPrefix(stepIndex, totalSteps)} backend error detected (submit endpoint returned 5xx: ${backendErrorUrl}); aborting cascade`
       );
       throw new StepVerificationError(
-        `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
+        `${formatStepPrefix(stepIndex, totalSteps)} (${redactPii(step).slice(0, 60)}) backend 5xx at ${backendErrorUrl} — unrecoverable`,
         "backend-error-unrecoverable"
       );
     }
@@ -12461,7 +12461,7 @@ export async function executeStepWithHealing(params: {
         fieldValuesAtFailure,
       }) ?? null;
     throw new StepVerificationError(
-      `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
+      `${formatStepPrefix(stepIndex, totalSteps)} (${redactPii(step).slice(0, 60)}) probe found no candidates on page${dumpPath ? `; see ${dumpPath}` : ""}`,
       "probe-absent"
     );
   }
@@ -15625,7 +15625,7 @@ export async function executeStepWithHealing(params: {
     );
   }
   throw new StepVerificationError(
-    `${formatStepPrefix(stepIndex, totalSteps)} (${redactSecrets(step).slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
+    `${formatStepPrefix(stepIndex, totalSteps)} (${redactPii(step).slice(0, 60)}) failed verification after ${MAX_STEP_ATTEMPTS} attempts${dumpPath ? `; see ${dumpPath}` : ""}`,
     phantomClickAfterAttempt1 ? "phantom-click-exhausted" : "cascade-exhausted"
   );
 }
