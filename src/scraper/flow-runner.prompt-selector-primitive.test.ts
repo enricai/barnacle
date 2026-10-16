@@ -729,4 +729,29 @@ describe("flow-runner/tryPromptSelectorPrimitive (real DOM)", () => {
       expect.stringContaining("resolved by prompt-selector primitive")
     );
   });
+
+  it("logs a fill-phrased prompt-selector value only as its length", async () => {
+    const stagehandAct = vi.fn();
+    const { page, target } = buildPromptWidgetHarness({
+      html: WIDGET_KIT_HTML,
+      popupByWidgetId: { "src-widget": { options: ["Job Board", "Referral", "LinkedIn"] } },
+    });
+    const params = baseParams(page as unknown as Page, stagehandAct, "");
+    const merged = {
+      ...params,
+      frameTarget: target,
+      step: "fill the 'How Did You Hear About Us?' field with 'SENTINEL-Referral'",
+    };
+
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => undefined);
+
+    const logged = [testLogger.info, testLogger.warn, testLogger.debug, testLogger.error]
+      .flatMap((fn) => vi.mocked(fn).mock.calls)
+      .map((call) => String(call[0]))
+      .join("\n");
+    expect(logged).toContain("[17-char typed value]");
+    expect(logged).not.toContain("SENTINEL");
+  });
 });

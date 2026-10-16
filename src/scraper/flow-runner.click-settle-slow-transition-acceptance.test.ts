@@ -33,7 +33,8 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-const STEP = "click the 'Load Report' button";
+const STEP = "click the 'Load Report' button to continue to the next page";
+const NON_SUBMIT_STEP = "click the 'Load Report' button";
 const SLOW_DELAY_MS = 6000;
 const IDLE_GIVE_UP_MS = 14000;
 
@@ -195,25 +196,31 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
     expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0, verifiedBy: "network" })]);
   });
 
-  it("a click with no activity still falls through after about the idle give-up window", async () => {
-    const vp = makeVirtualPage(null);
-    guardedAct.mockImplementation(async () => {
-      vp.markActStarted();
-      return CLICK_RESULT;
-    });
-    guardedObserve.mockImplementation(async () =>
-      vp.actStarted()
-        ? []
-        : [{ selector: "css=button#load-report", description: "Load Report", method: "click" }]
-    );
+  it.each([
+    [STEP, IDLE_GIVE_UP_MS / 1000],
+    [NON_SUBMIT_STEP, 1],
+  ])(
+    "a click with no activity falls through after the idle window (step=%s)",
+    async (step, polls) => {
+      const vp = makeVirtualPage(null);
+      guardedAct.mockImplementation(async () => {
+        vp.markActStarted();
+        return CLICK_RESULT;
+      });
+      guardedObserve.mockImplementation(async () =>
+        vp.actStarted()
+          ? []
+          : [{ selector: "css=button#load-report", description: "Load Report", method: "click" }]
+      );
 
-    await expect(executeStepWithHealing(baseParams(vp) as never)).rejects.toThrow(
-      /verification|attempts/i
-    );
+      await expect(executeStepWithHealing(baseParams(vp, { step }) as never)).rejects.toThrow(
+        /verification|attempts/i
+      );
 
-    expect(guardedAct).toHaveBeenCalledTimes(1);
-    expect(vp.settlePolls()).toBe(IDLE_GIVE_UP_MS / 1000);
-  });
+      expect(guardedAct).toHaveBeenCalledTimes(1);
+      expect(vp.settlePolls()).toBe(polls);
+    }
+  );
 
   it("credits a mid-flow step whose header flips during the pause and body re-renders ~8s later with no network signal", async () => {
     const vp = makeHeaderThenBodyPage();

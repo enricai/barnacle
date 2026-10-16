@@ -132,6 +132,8 @@ import {
   clickAfterCentredHitTest,
   clickCentredTrusted,
   firstMatchClickable,
+  isClickPointUnobscured,
+  probeClickPoint,
 } from "@/scraper/trusted-click";
 import {
   FIND_DROP_ZONE_EXPR,
@@ -783,6 +785,42 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
+  return "";
+})`;
+/**
+ * Browser-side expression reading what a prompt-selector widget ANNOUNCES it
+ * committed, lowercased and whitespace-collapsed, or `""` when nothing is
+ * readable. The announcement is ground truth over any inferred state: first the
+ * "N items selected, X" `aria-describedby` node on the container or one of its
+ * descendants (the trigger union may resolve to the OUTER container, so the
+ * container's own attribute alone misses it), else the nearest
+ * `selectedItemList` — while a popup is open the description can read only
+ * "Expanded", hence the fallback. Shared by the pick read-back and the
+ * act-success guard so the two never disagree on what the widget committed.
+ */
+const PROMPT_ANNOUNCED_VALUE_EXPR = `((w) => {
+  const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
+  const announceRxs = [
+    /\\d+\\s+items?\\s+selected\\s*,?\\s*(.*)$/,
+    /^(?:currently\\s+)?selected(?:\\s+(?:item|option|value))?\\s*[:,-]\\s*(.+)$/,
+    /^(.+?)\\s+(?:is\\s+)?selected\\.?$/,
+  ];
+  for (const el of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) {
+    for (const ref of (el.getAttribute("aria-describedby") || "").split(/\\s+/)) {
+      const refEl = ref ? document.getElementById(ref) : null;
+      const said = refEl ? norm(refEl.textContent) : "";
+      for (const rx of announceRxs) {
+        const m = rx.exec(said);
+        if (m && m[1] && !/^\\d+\\s+items?$/.test(m[1])) return m[1];
+      }
+    }
+  }
+  let anode = w;
+  for (let d = 0; d < ${MAX_SELECTION_ANCESTOR_DEPTH} && anode; d++) {
+    const list = anode.querySelector ? anode.querySelector('[data-automation-id="selectedItemList"]') : null;
+    if (list && norm(list.textContent)) return norm(list.textContent);
+    anode = anode.parentElement;
+  }
   return "";
 })`;
 /**
@@ -1628,6 +1666,27 @@ const ADVANCE_STEP_PHRASES: readonly string[] = [
   "advance to the next",
 ];
 
+/** Advance-click step wording ("Next"/"Continue"/"Save and continue") for the n+16 error-summary veto. */
+export const ADVANCE_CLICK_RX = /\b(next|continue|proceed|advance)\b/i;
+
+/**
+ * Page-level error summary check, evaluated in the page after an advance
+ * click: an error-summary container, a visible `role=alert` that mentions an
+ * error, or a heading/button whose WHOLE text is "Errors Found" / "N errors
+ * found" (prose such as "no errors found" is not a summary). Network and text
+ * movement on a page showing its own validation summary is the form rejecting
+ * the advance, not progress.
+ */
+export const ERROR_SUMMARY_EXPR = `(() => {
+  const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const text = (e) => (e.textContent || "").trim();
+  const summarySel = '[class*="error-summary" i],[class*="errorsummary" i],[class*="validation-summary" i],[id*="error-summary" i]';
+  if (Array.from(document.querySelectorAll(summarySel)).some((e) => vis(e) && text(e))) return true;
+  if (Array.from(document.querySelectorAll('[role="alert"]')).some((e) => vis(e) && /\\berrors?\\b/i.test(text(e)))) return true;
+  const titles = 'h1,h2,h3,h4,h5,h6,[role="heading"],button,[role="button"]';
+  return Array.from(document.querySelectorAll(titles)).some((e) => vis(e) && /^(?:\\d+\\s+)?errors?\\s+found$/i.test(text(e)));
+})()`;
+
 /**
  * Is this flow step an advance/"Next" click (move to the next wizard page),
  * rather than a field-answer? Used to veto a DOM-only "success" (a field toggle)
@@ -1749,6 +1808,19 @@ export function isStepSubmitShaped(params: {
   if (submitStep) return true;
   if (isStepDeclaredNonSubmit({ step, submitStep })) return false;
   return (isFinalStep && flowSubmit) || classifyStepSubmitIntent(step) === "submit";
+}
+
+/**
+ * Whether a click may need the long idle settle wait: a submit-shaped step or
+ * one naming an advance word, since both can start their round-trip late.
+ */
+export function isStepSettleWaitShaped(params: {
+  step: string | null | undefined;
+  submitStep: boolean;
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  return isStepSubmitShaped(params) || isAdvanceStep(params.step);
 }
 
 /**
@@ -3382,6 +3454,14 @@ export async function probeLeafInvalidContainers(target: FrameTarget): Promise<L
  * simply reasons without it.
  */
 async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
+  return (await probeRawVisibleText(target)).slice(0, 3000);
+}
+
+/**
+ * Untruncated body text, so a settle signature built from it uses the same
+ * unit (raw `innerText.length`) as {@link DOM_SNAPSHOT_EXPR}'s pre-click one.
+ */
+async function probeRawVisibleText(target: FrameTarget): Promise<string> {
   try {
     const text = await withWatchdog(
       () => target.evaluate(`(() => (document.body ? document.body.innerText || "" : ""))()`),
@@ -3390,7 +3470,7 @@ async function probeVisibleTextForJudge(target: FrameTarget): Promise<string> {
         label: "flow-runner: submit-verification visible text probe",
       }
     );
-    return typeof text === "string" ? text.slice(0, 3000) : "";
+    return typeof text === "string" ? text : "";
   } catch {
     return "";
   }
@@ -3452,15 +3532,19 @@ export async function judgeStepOutcome(params: {
     params.page,
     params.signalCounter,
     params.preNetworkCount,
+    isStepSettleWaitShaped({ step, submitStep: false, isFinalStep, flowHasSubmitSemantics: false }),
     async () => {
-      const text = await probeVisibleTextForJudge(target);
+      const text = await probeRawVisibleText(target);
       return `${text.length}:${text.slice(0, 200)}`;
     },
     params.preVisibleTextSignature
   );
   const colon = params.preVisibleTextSignature.indexOf(":");
-  const beforeText =
-    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1);
+  const beforeText = (
+    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1)
+  )
+    .replace(/\s+/g, " ")
+    .trim();
   const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
     verifyStepAdvancedWithLLM({
       client,
@@ -4239,10 +4323,16 @@ export interface VerifyPromptSelectorCommittedResult {
  * `tryPromptSelectorPrimitive`'s widget-container walk). Returns
  * `isPromptWidget: false` for a resolved element that isn't part of this
  * widget family at all, so a non-prompt click/fill is untouched.
+ *
+ * When the step names the option it wants (`requestedOption`), "committed"
+ * means the widget's announced/readable value names THAT option: a widget that
+ * holds a different option is a wrong commit, not a landed one. Without a
+ * requested option any readable value counts, as before.
  */
 export async function verifyPromptSelectorCommitted(
   target: FrameTarget,
-  selector: string
+  selector: string,
+  requestedOption?: string | null
 ): Promise<VerifyPromptSelectorCommittedResult | null> {
   const xpath = xpathBodyForEvaluate(selector);
   if (xpath === null) return null;
@@ -4251,13 +4341,17 @@ export async function verifyPromptSelectorCommitted(
     const valueSel = ${JSON.stringify(PROMPT_VALUE_SELECTORS)};
     const emptyRx = new RegExp(${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)});
     const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+    const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
+    const squash = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const want = squash(${JSON.stringify(requestedOption ?? "")});
     const xpath = ${JSON.stringify(xpath)};
     const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const el = result.singleNodeValue;
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) return { isPromptWidget: false, committed: false };
-    return { isPromptWidget: true, committed: currentText(widget, valueSel, emptyRx) !== "" };
+    const value = announcedValue(widget) || currentText(widget, valueSel, emptyRx);
+    return { isPromptWidget: true, committed: value !== "" && (!want || squash(value).includes(want)) };
   })()`;
   try {
     const raw = await target.evaluate(expr);
@@ -6094,18 +6188,63 @@ export function parseSegmentedDateValue(
   return null;
 }
 
+/** Keeps a typed date's shape (segment count and widths) in logs without its digits. */
+function maskDateDigits(text: string): string {
+  return text.replace(/\d/g, "9");
+}
+
 function segmentedDateTokens(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+const SEGMENTED_DATE_PART_LABELS = new Set(["mm", "dd", "yyyy", "yy", "month", "day", "year"]);
+const SEGMENTED_DATE_FIELD_NOUNS = new Set([
+  "date",
+  "field",
+  "group",
+  "input",
+  "spinbutton",
+  "segment",
+  "value",
+  "part",
+]);
+const SEGMENTED_DATE_NAMING_DETERMINERS = new Set(["the", "its", "this", "that", "for", "of"]);
+
+/**
+ * Step tokens with the field words that are mere prose removed. "from"/"to"
+ * only name a date field when a determiner precedes them ("the To date"), a
+ * field noun follows ("From date"), or they are capitalised mid-sentence;
+ * "auto-advances from month to year" names nothing and must never select a
+ * group labelled "From".
+ */
+function segmentedDateStepTokens(text: string): string[] {
+  const words = text.match(/[A-Za-z0-9]+/g) ?? [];
+  return words.flatMap((word, i) => {
+    const token = word.toLowerCase();
+    if (!SEGMENTED_DATE_FIELD_WORDS.has(token)) return [token];
+    const prev = (words[i - 1] ?? "").toLowerCase();
+    const next = (words[i + 1] ?? "").toLowerCase();
+    const named =
+      SEGMENTED_DATE_NAMING_DETERMINERS.has(prev) ||
+      SEGMENTED_DATE_FIELD_NOUNS.has(next) ||
+      (i > 0 && /^[A-Z]/.test(word));
+    return named ? [token] : [];
+  });
 }
 
 /**
  * Pick which spinbutton group a segmented-date step targets. Groups whose
  * segment widths (digit count of `aria-valuemax`) don't sum to the value's
- * digit count are dropped. A group is only eligible when a quoted target field
- * from the step (e.g. 'From') matches its OWN label; the surrounding section
- * text only breaks ties between eligible groups. Returns the index into
- * `groups`, or `null` when nothing matches or the best match is tied — writing
- * a date into a group that merely fits the width would corrupt another field.
+ * digit count are dropped. A group is only eligible when a field the step names
+ * (quoted, e.g. 'From', or unquoted in field position, e.g. "the To date")
+ * matches its OWN label as whole words — a group with no `label` is judged by
+ * its whole `context`. The section the step names ("Work Experience 1") is
+ * then resolved: when a width-fitting group elsewhere matches the step's
+ * section words better than any eligible group does, the named section renders
+ * no such field and the step resolves to nothing rather than to another
+ * section's. Returns the index into `groups`, or `null` when nothing matches
+ * or the best match is tied — writing a date into a group that merely fits the
+ * width would corrupt another field.
  */
 export function resolveSegmentedDateGroup(
   instruction: string,
@@ -6116,10 +6255,15 @@ export function resolveSegmentedDateGroup(
   const valueTokens = segmentedDateTokens(value.valueSpan).join(" ");
   const quoted = findQuotedSpans(instruction)
     .map((s) => segmentedDateTokens(s.text.trim()))
-    .filter((t) => t.length > 0 && t.join(" ") !== valueTokens);
-  const stepTokens = segmentedDateTokens(
+    .filter(
+      (t) =>
+        t.length > 0 &&
+        t.join(" ") !== valueTokens &&
+        !(t.length === 1 && SEGMENTED_DATE_PART_LABELS.has(t[0] ?? ""))
+    );
+  const stepTokens = segmentedDateStepTokens(
     instruction.replace(value.valueSpan, " barnaclevalue ")
-  ).filter((t, i, all) => !(t === "to" && all[i + 1] === "barnaclevalue"));
+  );
   const targets = quoted.length > 0 ? quoted : [stepTokens];
   const contains = (hay: readonly string[], needle: readonly string[]): boolean => {
     for (let i = 0; i + needle.length <= hay.length; i++) {
@@ -6131,6 +6275,18 @@ export function resolveSegmentedDateGroup(
     group.segmentMaxes.map((max) => String(max).length).reduce((a, b) => a + b, 0) ===
     value.digits.length;
   const stepSet = new Set(stepTokens);
+  const sectionScore = (group: SegmentedDateGroup): number => {
+    const own = new Set(segmentedDateTokens(group.label ?? ""));
+    const sectionTokens = new Set(segmentedDateTokens(group.section ?? group.context));
+    return [...sectionTokens].filter(
+      (t) =>
+        stepSet.has(t) &&
+        !own.has(t) &&
+        !SEGMENTED_DATE_STOPWORDS.has(t) &&
+        !SEGMENTED_DATE_FIELD_WORDS.has(t)
+    ).length;
+  };
+  const bestSection = Math.max(0, ...groups.filter(compatible).map((group) => sectionScore(group)));
   let best = -1;
   let bestScore = -1;
   let tied = false;
@@ -6138,11 +6294,18 @@ export function resolveSegmentedDateGroup(
     if (!compatible(group)) return;
     const own = segmentedDateTokens(group.label ?? group.context);
     if (own.length === 0) return;
-    if (!targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))) return;
-    const sectionTokens = new Set(segmentedDateTokens(group.section ?? ""));
-    const score = [...sectionTokens].filter(
-      (t) => stepSet.has(t) && !SEGMENTED_DATE_STOPWORDS.has(t)
-    ).length;
+    const namesOwnField =
+      group.label === undefined &&
+      quoted.length === 0 &&
+      own.some((t) => SEGMENTED_DATE_FIELD_WORDS.has(t) && stepSet.has(t));
+    if (
+      !namesOwnField &&
+      !targets.some((t) => contains(t, own) || (quoted.length > 0 && contains(own, t)))
+    ) {
+      return;
+    }
+    const score = sectionScore(group);
+    if (score < bestSection) return;
     if (score > bestScore) {
       best = index;
       bestScore = score;
@@ -6167,11 +6330,14 @@ export const SEGMENTED_DATE_ENUMERATE_EXPR = `(() => {
   const stale = document.querySelectorAll("[" + attr + "]");
   stale.forEach((el) => el.removeAttribute(attr));
   const hiddenAttr = (node) => node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true";
+  const styleOf = (node) => {
+    try { return typeof getComputedStyle === "function" ? getComputedStyle(node) : window.getComputedStyle(node); } catch { return null; }
+  };
   const isHidden = (el) => {
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       if (hiddenAttr(node)) return true;
-      const style = window.getComputedStyle(node);
-      if (style.display === "none" || style.visibility === "hidden") return true;
+      const style = styleOf(node);
+      if (style && (style.display === "none" || style.visibility === "hidden")) return true;
     }
     return false;
   };
@@ -6332,9 +6498,11 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
         // scrolling is best-effort; the key events only need the segment focused
       }
       try {
-        await clickCentredTrusted(target, selector, { label: "date segment" });
+        if (await isClickPointUnobscured(target, selector)) {
+          await clickCentredTrusted(target, selector, { label: "date segment" });
+        }
       } catch {
-        // click unavailable or occluded; focus below is what the key events need
+        // click unavailable; focus below is what the key events need
       }
       await target.evaluate(
         `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (el && document.activeElement !== el) el.focus(); })()`
@@ -6402,12 +6570,12 @@ export async function trySegmentedDateSpinbuttonPrimitive(params: {
     await target.evaluate(SEGMENTED_DATE_CLEAR_EXPR);
     if (!matches(actual)) {
       logger.info(
-        `segmented date primitive: readback ${maskValueShape(JSON.stringify(actual))} != ${maskValueShape(JSON.stringify(expected))}; falling through`
+        `segmented date primitive: readback ${maskDateDigits(JSON.stringify(actual))} != ${maskDateDigits(JSON.stringify(expected))}; falling through`
       );
       return null;
     }
     logger.info(
-      `segmented date primitive: committed segments ${maskValueShape(JSON.stringify(actual))}`
+      `segmented date primitive: committed segments ${maskDateDigits(JSON.stringify(actual))}`
     );
     return `segmented-date-${gi}`;
   } catch (err) {
@@ -6522,10 +6690,38 @@ export function parseWidgetOptionClickStep(instruction: string): { option: strin
 export function parseCheckStep(instruction: string): { label: string } | null {
   const lower = instruction.toLowerCase();
   if (/\bany\s+remaining\b/.test(lower)) return null;
-  const found = matchQuotedAfter(instruction, /\b(?:check|click)\s+(?:the\s+)?(?=')/i);
+  const found = matchQuotedAfter(
+    instruction,
+    /\b(?:un)?check\s+(?:the\s+)?(?=')|\bclick\s+(?:the\s+)?(?=')/i
+  );
   const rest = found ? instruction.slice(found.phrase.end) : "";
   const label = /^.*?\bcheckbox\b/i.test(rest) ? found?.phrase.text.trim() : undefined;
   return label ? { label } : null;
+}
+
+/**
+ * Parse a single-checkbox STATE step ("Check the 'X' checkbox" / "Uncheck the
+ * 'X' checkbox") into its label, desired state and trailing section words.
+ *
+ * Why this exists: "Click the … checkbox" is a toggle and stays with the
+ * cascade; only the explicit check/uncheck verbs name a target state the
+ * primitive can compare against what the page committed.
+ */
+export function parseCheckStateStep(
+  instruction: string
+): { label: string; desired: boolean; sectionWords: string[] } | null {
+  const parsed = parseCheckStep(instruction);
+  const found = matchQuotedAfter(instruction, /\b(un)?check\s+(?:the\s+)?(?=')/i);
+  if (!parsed || !found) return null;
+  const outside =
+    instruction.slice(0, found.match.index) +
+    " " +
+    instruction.slice(found.phrase.end).replace(/^.*?\bcheckbox\b/i, "");
+  const stop = new Set(["the", "for", "and", "section", "under", "this", "that", "with", "from"]);
+  const sectionWords = (outside.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (w) => !stop.has(w) && (w.length >= 3 || /^\d+$/.test(w))
+  );
+  return { label: parsed.label, desired: !found.match[1], sectionWords };
 }
 
 /** Strips wrapping single quotes a parser's capture group may include (e.g. when a flow author quotes the field name itself), so a probe label compares plain text against plain text. */
@@ -7166,6 +7362,7 @@ export async function submitCaptchaGatedForm(
           verification.page,
           verification.signalCounter,
           pre.networkCount,
+          true,
           async () => (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
           pre.visibleTextSignature
         );
@@ -7197,6 +7394,7 @@ export async function submitCaptchaGatedForm(
               verification.page,
               verification.signalCounter,
               post.networkCount,
+              true,
               async () =>
                 (await snapshotPage(target, verification.signalCounter)).visibleTextSignature,
               post.visibleTextSignature
@@ -7344,7 +7542,7 @@ export async function trySelectPrimitive(params: {
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser, no mutation): find the target select — the one whose
   // nearby text matches the question label (or, when no label, any select).
   // Try a deterministic option match first; if it hits, apply immediately (no
@@ -7699,6 +7897,173 @@ export async function tryFillRequiredSelectsPrimitive(params: {
   }
 }
 
+/** Marker stamped on the matched checkbox / its label so trusted clicks can address them. */
+const CHECKBOX_STATE_MARKER_ATTR = "data-barnacle-cbstate";
+const CHECKBOX_STATE_POLL_MS = 200;
+const CHECKBOX_STATE_POLL_ATTEMPTS = 8;
+
+/**
+ * Commits a single "Check/Uncheck the 'X' checkbox" step by comparing the
+ * box's committed state to the requested one, so a pre-ticked box is never
+ * toggled off by a blind click. Returns the box's DOM id (possibly empty) on
+ * success, or null when ambiguous, absent, obscured or unflipped so the
+ * caller falls through to the cascade.
+ */
+export async function tryCheckboxStatePrimitive(params: {
+  page: Page;
+  target: FrameTarget;
+  instruction: string;
+  logger: Logger;
+}): Promise<string | null> {
+  const { page, target, instruction, logger } = params;
+  const parsed = parseCheckStateStep(instruction);
+  if (!parsed) return null;
+  const attr = CHECKBOX_STATE_MARKER_ATTR;
+  const stampExpr = `((label, words) => {
+    const norm = (s) => (s || "").replace(/\\s+/g, " ").replace(/\\s*[*:]+$/, "").trim().toLowerCase();
+    const want = norm(label);
+    document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"));
+    const visible = (e) => {
+      try { return !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden"; } catch { return !!e; }
+    };
+    const labelsOf = (cb) => {
+      const out = [];
+      if (cb.id) {
+        document.querySelectorAll("label").forEach((l) => { if (l.getAttribute("for") === cb.id) out.push(l); });
+      }
+      const w = cb.closest("label");
+      if (w && !out.includes(w)) out.push(w);
+      return out;
+    };
+    const isOn = (cb) => {
+      const a = cb.getAttribute("aria-checked");
+      return a === "true" ? true : a === "false" ? false : cb.checked === true;
+    };
+    const boxes = Array.from(document.querySelectorAll("input[type=checkbox],[role=checkbox]"));
+    let hits = [];
+    for (const cb of boxes) {
+      const ls = labelsOf(cb);
+      const names = ls.map((l) => norm(l.textContent));
+      const al = cb.getAttribute("aria-label");
+      if (al) names.push(norm(al));
+      const alb = cb.getAttribute("aria-labelledby");
+      if (alb) {
+        const refs = alb.split(/\\s+/).map((id) => document.getElementById(id)).filter(Boolean);
+        if (refs.length > 0) names.push(norm(refs.map((r) => r.textContent).join(" ")));
+      }
+      if (!names.includes(want)) continue;
+      if (!visible(cb) && !ls.some(visible)) continue;
+      hits.push({ cb, ls });
+    }
+    const sectionText = (cb) => {
+      const parts = [];
+      for (let n = cb.parentElement; n; n = n.parentElement) {
+        const lb = n.getAttribute("aria-labelledby");
+        if (lb) lb.split(/\\s+/).forEach((id) => { const el = document.getElementById(id); if (el) parts.push(el.textContent); });
+        const lg = n.querySelector(":scope > legend");
+        if (lg) parts.push(lg.textContent);
+        const hd = n.querySelector(":scope > h2, :scope > h3, :scope > h4");
+        if (hd) parts.push(hd.textContent);
+        let sib = n.previousElementSibling;
+        for (let hop = 0; hop < 3 && sib; hop++, sib = sib.previousElementSibling) {
+          if (!sib.matches("h1,h2,h3,h4,h5,h6,legend,[role='heading']")) continue;
+          parts.push(sib.textContent);
+          break;
+        }
+      }
+      return norm(parts.join(" "));
+    };
+    if (hits.length > 1 && words.length > 0) {
+      const scored = hits.map((h) => {
+        const tokens = new Set(sectionText(h.cb).match(/[a-z0-9]+/g) || []);
+        return { h, score: words.filter((w) => tokens.has(w)).length };
+      });
+      const top = Math.max(...scored.map((x) => x.score));
+      if (top > 0) hits = scored.filter((x) => x.score === top).map((x) => x.h);
+    }
+    if (hits.length === 0) return { status: "none" };
+    if (hits.length > 1) return { status: "ambiguous" };
+    const { cb, ls } = hits[0];
+    cb.setAttribute("${attr}", "box");
+    const lab = ls.find(visible);
+    if (lab) lab.setAttribute("${attr}", "label");
+    return { status: "ok", checked: isOn(cb), id: cb.id || "", hasLabel: !!lab };
+  })(${JSON.stringify(parsed.label.toLowerCase())}, ${JSON.stringify(parsed.sectionWords)})`;
+  const stateExpr = `(() => {
+    const cb = document.querySelector("[${attr}=box]");
+    if (!cb) return null;
+    const a = cb.getAttribute("aria-checked");
+    return a === "true" ? true : a === "false" ? false : cb.checked === true;
+  })()`;
+  const clearExpr = `document.querySelectorAll("[${attr}]").forEach((e) => e.removeAttribute("${attr}"))`;
+  try {
+    const stamped = (await target.evaluate(stampExpr)) as {
+      status: string;
+      checked?: boolean;
+      id?: string;
+      hasLabel?: boolean;
+    };
+    if (stamped?.status !== "ok") return null;
+    const id = stamped.id ?? "";
+    if (stamped.checked === parsed.desired) {
+      logger.info(
+        `checkbox state primitive: "${parsed.label.slice(0, 40)}" already ${parsed.desired ? "checked" : "unchecked"}, no click`
+      );
+      return id;
+    }
+    const clickSels = [...(stamped.hasLabel ? [`[${attr}="label"]`] : []), `[${attr}="box"]`];
+    const reachedDesired = async (): Promise<boolean> => {
+      for (let i = 0; i < CHECKBOX_STATE_POLL_ATTEMPTS; i++) {
+        await page.waitForTimeout(CHECKBOX_STATE_POLL_MS).catch(() => undefined);
+        if ((await target.evaluate(stateExpr)) === parsed.desired) return true;
+      }
+      return false;
+    };
+    const succeed = (): string => {
+      logger.info(
+        `checkbox state primitive: "${parsed.label.slice(0, 40)}" now ${parsed.desired ? "checked" : "unchecked"}`
+      );
+      return id;
+    };
+    let overlaid = false;
+    let trustedDelivered = false;
+    for (const sel of clickSels) {
+      const probe = await probeClickPoint(target, sel);
+      if (probe?.state === "occluded" && probe.occluder !== "none") {
+        overlaid = true;
+        continue;
+      }
+      if (probe?.state !== "hit") continue;
+      const delivered = await clickCentredTrusted(target, sel, { label: "checkbox" })
+        .then(() => true)
+        .catch(() => false);
+      trustedDelivered ||= delivered;
+      if (delivered && (await reachedDesired())) return succeed();
+    }
+    // A hit test that cannot resolve a point at all (no layout) says nothing
+    // about whether a programmatic click toggles the box, so it is tried once;
+    // a named overlay or an already-delivered trusted click that did not flip the
+    // box is left to the cascade, since a second click could toggle it back.
+    if (!overlaid && !trustedDelivered) {
+      for (const sel of clickSels) {
+        await target.evaluate(
+          `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (el) el.click(); })()`
+        );
+        if (await reachedDesired()) return succeed();
+      }
+    }
+    logger.warn(
+      `checkbox state primitive: "${parsed.label.slice(0, 40)}" did not reach desired state, falling through`
+    );
+    return null;
+  } catch (err) {
+    logger.warn(`checkbox state primitive failed: ${toErrorMessage(err)}`);
+    return null;
+  } finally {
+    await target.evaluate(clearExpr).catch(() => undefined);
+  }
+}
+
 /**
  * Site-agnostic checkbox primitive: answer a multi-select checkbox-group
  * question by directly checking the matching option in the DOM, bypassing
@@ -7741,7 +8106,7 @@ async function tryCheckboxPrimitive(params: {
   const parsed = parseSelectStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser, no mutation): find checkbox GROUPS and their options.
   // A group is a `c-MultiCheckboxInput` container or a `<fieldset>` containing
   // checkboxes. Question label = the group's legend / associated label; each
@@ -8111,7 +8476,7 @@ async function tryRadioPrimitive(params: {
   const parsed = parseRadioStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue);
   // Phase 1 (browser): find radio GROUPS and their options. A group is a
   // `<fieldset>` / `[role=radiogroup]` / `[role=group]` / `[class*='RadioGroup']`
   // container with radios. Question label = the group's legend / associated label; each option
@@ -8359,6 +8724,30 @@ export async function applyRadioSelection(
 }
 
 /**
+ * Extracts the option a step wants committed into a prompt-selector widget,
+ * with the question label that scopes which widget. Flow/replan generation
+ * words this as a SELECT, a FILL of the widget's search box, a radio-style
+ * answer click, or a cascading-multiselect category/leaf click, so all four
+ * shapes resolve to one `{ option, questionLabel }` — shared by the picking
+ * primitive and the act-success committed-value guard so both compare the page
+ * against the same requested value.
+ */
+function parsePromptSelectorStep(
+  instruction: string
+): { option: string; questionLabel: string | null; isFill: boolean } | null {
+  const select = parseSelectStep(instruction);
+  if (select) return { ...select, isFill: false };
+  const fill = parseFillStep(instruction);
+  if (fill) {
+    return { option: fill.value, questionLabel: stripQuotedLabel(fill.fieldLabel), isFill: true };
+  }
+  const answer = parseRadioStep(instruction);
+  if (answer) return { ...answer, isFill: false };
+  const optionClick = parseWidgetOptionClickStep(instruction);
+  return optionClick ? { option: optionClick.option, questionLabel: null, isFill: false } : null;
+}
+
+/**
  * Answer a native-control-less popup-dropdown widget (a combobox that opens a
  * listbox popup and renders NO `<select>`/`<input>` a focused `<select>`/
  * `<input>` probe can see). Detected by a cross-vendor UNION of shape signals
@@ -8438,23 +8827,10 @@ async function tryPromptSelectorPrimitive(params: {
   // shape), then parseWidgetOptionClickStep (option only, no question
   // label) so the widget-matching/open/readback phases below run unchanged
   // regardless of which verb the instruction used.
-  const parsedSelect = parseSelectStep(instruction);
-  const parsedFill = parsedSelect ? null : parseFillStep(instruction);
-  const parsedAnswer = parsedSelect || parsedFill ? null : parseRadioStep(instruction);
-  const parsedOptionClick =
-    parsedSelect || parsedFill || parsedAnswer ? null : parseWidgetOptionClickStep(instruction);
-  const parsed = parsedSelect
-    ? parsedSelect
-    : parsedFill
-      ? { option: parsedFill.value, questionLabel: stripQuotedLabel(parsedFill.fieldLabel) }
-      : parsedAnswer
-        ? parsedAnswer
-        : parsedOptionClick
-          ? { option: parsedOptionClick.option, questionLabel: null }
-          : null;
+  const parsed = parsePromptSelectorStep(instruction);
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
-  const optLabel = `option "${maskLoggedValue(option, redactValue).slice(0, 40)}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+  const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsed.isFill);
   const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
 
   // Phase 1 (browser, read-only except for the marker attribute stamped for
@@ -8798,6 +9174,19 @@ async function tryPromptSelectorPrimitive(params: {
         enumerateOptionsExpr,
         isOwnScopePopup
       );
+    // An as-you-type search may still be in flight; Enter now would re-query with
+    // an empty search and swap in the full list. Search-on-submit widgets never
+    // name the option unprompted, so the wait is bounded.
+    for (
+      let wait = 0;
+      wait < PROMPT_SELECTOR_MAX_SEARCH_WAITS &&
+      optionsFiltered?.optionsPresent &&
+      !promptOptionsNameOption(optionsFiltered, option);
+      wait++
+    ) {
+      await page.waitForTimeout(PROMPT_SELECTOR_SEARCH_WAIT_MS);
+      optionsFiltered = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
+    }
     // Search-on-submit widgets keep a placeholder (or unrelated chips) until an
     // Enter keydown; filter-as-you-type widgets already name the option here.
     // The list is settled BEFORE each submit decision, so a search-as-you-type
@@ -8914,6 +9303,10 @@ async function readStablePromptOptions<T extends { options?: PromptOptionRead[] 
 /** Cap on click-time re-resolves when the stamped node is re-bound mid-scroll. */
 const PROMPT_SELECTOR_MAX_CLICK_RESOLVES = 3;
 
+/** Bounded wait for an in-flight as-you-type search before concluding it is search-on-submit. */
+const PROMPT_SELECTOR_MAX_SEARCH_WAITS = 6;
+const PROMPT_SELECTOR_SEARCH_WAIT_MS = 500;
+
 /** Cap on trusted Enter submits for a search-on-submit prompt selector. */
 const PROMPT_SELECTOR_MAX_ENTER_SUBMITS = 2;
 
@@ -8955,6 +9348,73 @@ async function sendTrustedEnter(page: Page): Promise<void> {
   const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
   await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
   await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+}
+
+/** Dispatches a trusted Escape to the focused element via CDP, closing a popup left open. */
+async function sendTrustedEscape(page: Page): Promise<void> {
+  const key = {
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  };
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyDown", ...key });
+  await page.sendCDP("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+}
+
+/**
+ * Counts rendered listbox / activeListContainer popups other than the chip
+ * list; an emptied ("No Items.") popup still counts because it paints over
+ * neighbouring fields just the same.
+ */
+const VISIBLE_LEFTOVER_POPUP_COUNT_EXPR = `(() => {
+  const visible = (el) => {
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
+      let cs = null;
+      try { cs = getComputedStyle(n); } catch { cs = null; }
+      if (cs && (cs.display === "none" || cs.visibility === "hidden")) return false;
+    }
+    return true;
+  };
+  const sel = '[role="listbox"], [data-automation-id="activeListContainer"]';
+  return Array.from(document.querySelectorAll(sel)).filter(
+    (el) => !el.matches('[data-automation-id="selectedItemList"]') && !el.closest('[data-automation-id="selectedItemList"]') && visible(el)
+  ).length;
+})()`;
+
+/**
+ * Synthetic Escape for a page whose CDP channel is unavailable or whose popup
+ * ignored the trusted one: the popup's own keydown handler is what closes it.
+ */
+const IN_PAGE_ESCAPE_EXPR = `(() => {
+  const el = document.activeElement || document.body;
+  for (const type of ["keydown", "keyup"]) {
+    el.dispatchEvent(new KeyboardEvent(type, { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
+  }
+})()`;
+
+/**
+ * Closes any popup still painted after a verified commit so it cannot
+ * intercept the next field's click. Best-effort: a trusted Escape first, then
+ * a synthetic one when the trusted dispatch failed or left the popup painted.
+ */
+export async function dismissLeftoverPromptPopups(page: Page, target: FrameTarget): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const count = (await target
+      .evaluate(VISIBLE_LEFTOVER_POPUP_COUNT_EXPR)
+      .catch(() => 0)) as number;
+    if (!count) return;
+    logger.info(`prompt-selector primitive: dismissing ${count} leftover popup(s) via Escape`);
+    const trusted = await sendTrustedEscape(page)
+      .then(() => true)
+      .catch((err) => {
+        logger.info(`prompt-selector primitive: Escape dispatch failed: ${toErrorMessage(err)}`);
+        return false;
+      });
+    if (!trusted || attempt > 0) await target.evaluate(IN_PAGE_ESCAPE_EXPR).catch(() => undefined);
+    await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS).catch(() => undefined);
+  }
 }
 
 /**
@@ -9074,6 +9534,20 @@ async function commitPromptOption(params: {
         return null;
       }
       const optionSel = `[${PROMPT_OPTION_MARK_ATTR}="${freshOption.nodeId ?? freshOption.oIdx}"]`;
+      const markedLabel = (await target
+        .evaluate(
+          `((sel, labelOf) => {
+            const el = document.querySelector(sel);
+            return el ? labelOf(el) : null;
+          })(${JSON.stringify(optionSel)}, ${OPTION_ACCESSIBLE_LABEL_EXPR})`
+        )
+        .catch(() => null)) as string | null;
+      if (markedLabel === null || !norm(markedLabel).includes(wantChosenText)) {
+        logger.info(
+          `prompt-selector primitive: marked option node for ${optLabel} no longer shows the matched option; re-resolving`
+        );
+        continue;
+      }
       try {
         const expectedDomText = freshOption.domText ?? wantChosenText;
         await clickCentredTrusted(target, optionSel, {
@@ -9103,12 +9577,13 @@ async function commitPromptOption(params: {
     await page.waitForTimeout(PROMPT_SELECTOR_SETTLE_MS);
 
     const isRequestedOption = norm(chosenOption.text) === wantOpt;
-    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText) => {
+    const readbackExpr = `((wIdx, markAttr, valueSel, emptyRxSrc, emptyRxFlags, wantText, isRequestedLeaf) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       const isPairedHiddenSelect = ${OPENER_PAIRED_HIDDEN_SELECT_EL_EXPR};
       const norm = (s) => (s || "").replace(/\\s+/g, " ").trim().toLowerCase();
       const emptyRx = new RegExp(emptyRxSrc, emptyRxFlags);
       const currentText = ${PROMPT_CURRENT_TEXT_EXPR};
+      const announcedValue = ${PROMPT_ANNOUNCED_VALUE_EXPR};
       const w = document.querySelector("[" + markAttr + '="' + wIdx + '"]');
       if (!w) return { ok: false, id: "", stillInvalid: false };
       const text = currentText(w, valueSel, emptyRx);
@@ -9164,15 +9639,39 @@ async function commitPromptOption(params: {
           cnode = cnode.parentElement;
         }
       }
+      // The widget's own announcement of what it committed is ground truth when readable.
+      const committed = announcedValue(w);
+      if (committed) {
+        return { ok: !!wantText && committed.includes(wantText), id: w.id || "", stillInvalid, committed };
+      }
+      // A wrong option leaves the widget valid, so !stillInvalid proves nothing
+      // once the widget's own value is readable: a readable value naming another
+      // option is a wrong commit. The "Expanded"/"Collapsed" state words are
+      // announcements, not values. Only a requested-leaf click is refused here —
+      // a category click that swapped the popup must still reach the drill check.
+      const stateOnly = /^(?:expanded|collapsed)\\.?$/.test(text);
+      if (isRequestedLeaf && text !== "" && !stateOnly && !textMatches && !hiddenSelectMatches) {
+        return { ok: false, id: w.id || "", stillInvalid, committed: text };
+      }
       return { ok: textMatches || hiddenSelectMatches, id: w.id || "", stillInvalid };
-    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))})`;
-    const readback = (await target
-      .evaluate(readbackExpr)
-      .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as {
-      ok: boolean;
-      id: string;
-      stillInvalid: boolean;
-    };
+    })(${JSON.stringify(chosen.wIdx)}, ${JSON.stringify(PROMPT_WIDGET_MARK_ATTR)}, ${JSON.stringify(PROMPT_VALUE_SELECTORS)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_SRC)}, ${JSON.stringify(PROMPT_EMPTY_VALUE_RX_FLAGS)}, ${JSON.stringify(norm(chosenOption.text))}, ${JSON.stringify(isRequestedOption)})`;
+    type PromptReadback = { ok: boolean; id: string; stillInvalid: boolean; committed?: string };
+    const runReadback = async (): Promise<PromptReadback> =>
+      (await target
+        .evaluate(readbackExpr)
+        .catch(() => ({ ok: false, id: "", stillInvalid: true }))) as PromptReadback;
+    let readback = await runReadback();
+    if (readback?.ok) {
+      await dismissLeftoverPromptPopups(page, target);
+      readback = await runReadback();
+    }
+    if (!readback?.ok && readback?.committed) {
+      await dismissLeftoverPromptPopups(page, target);
+      logger.info(
+        `prompt-selector primitive: committed "${readback.committed.slice(0, 40)}" instead of "${chosenOption.text.slice(0, 40)}" for ${optLabel}; falling through`
+      );
+      return null;
+    }
     if (readback?.ok) {
       logger.info(
         `prompt-selector primitive: selected "${maskValueShape(chosenOption.text)}" for ${optLabel} (${matchReason})`
@@ -10562,6 +11061,24 @@ function maskLoggedValue(text: string, sensitiveValue?: string): string {
 }
 
 /**
+ * Builds the "option ..., question ..." log label shared by the select,
+ * checkbox, radio and prompt-selector primitives. A value parsed from a FILL
+ * step is typed user data (names, emails, passwords), so it is logged only as
+ * its length; other options are catalog text and stay readable.
+ */
+export function primitiveOptionLabel(
+  option: string,
+  questionLabel: string | null | undefined,
+  redactValue?: string,
+  fromFill = false
+): string {
+  const shown = fromFill
+    ? `[${option.length}-char typed value]`
+    : maskLoggedValue(option, redactValue).slice(0, 40);
+  return `option "${shown}"${questionLabel ? `, question "${questionLabel.slice(0, 40)}"` : ""}`;
+}
+
+/**
  * Last-resort escalation for the cascade-exhaustion path: when every
  * resolution technique has already failed against the resolved (declared-or-
  * main) frame and no `frameSelector` was declared for this step, probe every
@@ -10655,6 +11172,7 @@ async function probeChildFrameSubmitFallback(params: {
       page,
       signalCounter,
       pre.networkCount,
+      true,
       async () => {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
@@ -10686,6 +11204,7 @@ async function probeChildFrameSubmitFallback(params: {
       page,
       signalCounter,
       post.networkCount,
+      true,
       async () => {
         const snap = await snapshotPage(target, signalCounter);
         return snap.visibleTextSignature;
@@ -11307,6 +11826,18 @@ export async function executeStepWithHealing(params: {
     return "completed";
   }
 
+  const checkboxStateTargetId = await tryCheckboxStatePrimitive({
+    page,
+    target: selectFrameTarget,
+    instruction: step,
+    logger,
+  });
+  if (checkboxStateTargetId !== null) {
+    logger.info(`${formatStepPrefix(stepIndex, totalSteps)} resolved by checkbox state primitive`);
+    trajectory?.push({ stepIndex, verifiedBy: "dom", targetId: checkboxStateTargetId });
+    return "completed";
+  }
+
   // When the step is a single-choice RADIO answer ("Click the 'Yes' answer for
   // the question '…'"), commit it directly in the DOM. Runs AFTER select/
   // checkbox (which own their verbs) and BEFORE the cascade, so radios never
@@ -11406,6 +11937,7 @@ export async function executeStepWithHealing(params: {
     isFinalStep,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
   });
+  const isSettleWaitStep = isSubmitOrFinalStep || isAdvanceStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
     const sitekeyProbeExpr = `(() => {
@@ -12586,6 +13118,7 @@ export async function executeStepWithHealing(params: {
                 page,
                 signalCounter,
                 pre.networkCount,
+                true,
                 async () => {
                   const snap = await snapshotPage(
                     frameTarget ?? mainFrameTarget(page),
@@ -13491,6 +14024,7 @@ export async function executeStepWithHealing(params: {
         page,
         signalCounter,
         pre.networkCount,
+        isSettleWaitStep,
         async () => {
           const snap = await snapshotPage(settleTarget, signalCounter);
           return snap.visibleTextSignature;
@@ -13823,7 +14357,8 @@ export async function executeStepWithHealing(params: {
         const readbackTarget = frameTarget ?? mainFrameTarget(page);
         const promptReadback = await verifyPromptSelectorCommitted(
           readbackTarget,
-          readbackSelector
+          readbackSelector,
+          parsePromptSelectorStep(step)?.option
         );
         if (promptReadback?.isPromptWidget === true && promptReadback.committed === false) {
           promptSelectorRejected = true;
@@ -14264,6 +14799,7 @@ export async function executeStepWithHealing(params: {
             page,
             signalCounter,
             pre.networkCount,
+            isSettleWaitStep,
             async () => {
               const snap = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter);
               return snap.visibleTextSignature;
@@ -14542,8 +15078,14 @@ export async function executeStepWithHealing(params: {
           // An unfired probe with no trusted delivery clicked nothing, so DOM
           // movement is ambient settling, not this step's effect.
           const n16ClickDelivered = fired === true || n16TrustedDelivered;
+          const retryShowsErrorSummary = ADVANCE_CLICK_RX.test(step)
+            ? ((await (frameTarget ?? mainFrameTarget(page))
+                .evaluate(ERROR_SUMMARY_EXPR)
+                .catch(() => false)) as boolean)
+            : false;
           let retryVerified =
             !clickBlockedByDisabled &&
+            !retryShowsErrorSummary &&
             !clickBlockedByInvalid &&
             !fallbackDomOnlyAdvance &&
             !forcedCheckboxRejected &&

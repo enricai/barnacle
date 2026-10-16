@@ -10,7 +10,7 @@ const SPA_MIN_BODY_LENGTH = 5_000;
 
 /**
  * Block until a just-navigated SPA has actually hydrated, so the flow does not
- * begin stepping against a shell page. `page.goto(..., "networkidle")` on a
+ * begin stepping against a shell page. `page.goto(..., "domcontentloaded")` on a
  * bot-managed/CDN-fronted single-page app resolves during the challenge/redirect —
  * before the client framework renders the real DOM — so the first steps would
  * otherwise probe an empty page, find no candidates, and (being optional) skip

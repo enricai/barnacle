@@ -40,7 +40,7 @@ function makeClock(onTick: (nowMs: number, counter: { n: number }) => void): {
 describe("settleAfterClick virtual clock", () => {
   it("returns well before the max when no activity is ever observed", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0);
+    await settleAfterClick(c.page, c.counter, 0, true);
     expect(c.now()).toBeGreaterThan(0);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -49,7 +49,7 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((_, counter) => {
       counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0);
+    await settleAfterClick(c.page, c.counter, 0, true);
     expect(c.now()).toBe(MAX_MS);
   });
 
@@ -57,7 +57,7 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((now, counter) => {
       if (now === 6000) counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0);
+    await settleAfterClick(c.page, c.counter, 0, true);
     expect(c.now()).toBeGreaterThan(6000);
     expect(c.now()).toBeLessThan(MAX_MS);
   });

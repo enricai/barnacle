@@ -30,12 +30,12 @@ describe("navigateActivePage", () => {
     stagehand = makeStagehand(page);
   });
 
-  it("awaits the active page and calls goto with networkidle", async () => {
+  it("awaits the active page and calls goto with domcontentloaded", async () => {
     await navigateActivePage(stagehand, TEST_URL);
 
     expect(stagehand.context.awaitActivePage).toHaveBeenCalledOnce();
     expect(page.goto).toHaveBeenCalledOnce();
-    expect(page.goto).toHaveBeenCalledWith(TEST_URL, { waitUntil: "networkidle" });
+    expect(page.goto).toHaveBeenCalledWith(TEST_URL, { waitUntil: "domcontentloaded" });
   });
 
   it("returns the active page", async () => {
@@ -65,7 +65,7 @@ describe("navigateActivePage", () => {
     await navigateActivePage(stagehand, TEST_URL, undefined, 60_000);
 
     expect(page.goto).toHaveBeenCalledWith(TEST_URL, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
       timeoutMs: 60_000,
     });
   });

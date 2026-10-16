@@ -53,3 +53,58 @@ describe("flow-runner/segmented date group resolution", () => {
     expect(parseSegmentedDateValue("Fill the phone with '555-123-4567'")).toBeNull();
   });
 });
+
+describe("segmented date resolution from context alone", () => {
+  const g = (context: string, maxes: number[]): SegmentedDateGroup => ({
+    segmentMaxes: maxes,
+    context,
+  });
+  const PROSE_TO_STEP =
+    "Click the 'MM' month part of the 'To' date in Work Experience 1 and type '122024' — the field auto-advances from month to year";
+
+  it("leaves the only rendered From group untouched when the step targets To", () => {
+    expect(
+      resolveSegmentedDateGroup("'To' date in Work Experience 1, '122024'", [
+        g("Work Experience 1 From", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
+
+  it("does not let prose 'from' pick a From group of another section for a To step", () => {
+    expect(
+      resolveSegmentedDateGroup(PROSE_TO_STEP, [
+        g("Work Experience 1 From", [12, 9999]),
+        g("Education 1 From", [12, 9999]),
+        g("Education 1 To", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
+
+  it("does not write a To value into a group labelled only Start date", () => {
+    expect(
+      resolveSegmentedDateGroup("Enter '122024' as the Job 1 To date", [
+        g("Job 1 Start date", [12, 9999]),
+      ])
+    ).toBeNull();
+  });
+
+  it("types an unquoted To step into the To group among From and To", () => {
+    const groups = [g("Job 1 From", [12, 9999]), g("Job 1 To", [12, 9999])];
+    expect(resolveSegmentedDateGroup("Enter '122024' as the Job 1 To date", groups)).toBe(1);
+    expect(resolveSegmentedDateGroup(PROSE_TO_STEP, groups)).toBe(1);
+  });
+
+  it("leaves a lone To year group untouched when the step names the From year", () => {
+    expect(
+      resolveSegmentedDateGroup("Type '2015' into the From Year spinbutton of Education 1", [
+        g("Education 1 To", [9999]),
+      ])
+    ).toBeNull();
+  });
+
+  it("still targets a lone group when the step names no field", () => {
+    expect(resolveSegmentedDateGroup("type '012020'", [g("Employment period", [12, 9999])])).toBe(
+      0
+    );
+  });
+});

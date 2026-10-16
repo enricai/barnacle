@@ -112,6 +112,17 @@ export interface PopupSpec {
   /** Delay in ms before `linkAfterOpen` sets `aria-controls` (default 0). */
   linkDelayMs?: number;
   /**
+   * Commit this label instead of the clicked option's — models a virtualized
+   * list that recycled the node between the read and the click, so the widget
+   * saves a different row while staying valid.
+   */
+  commitsInstead?: string;
+  /**
+   * With `keepPopupMounted`, a trusted Escape keyDown removes the lingering
+   * popup — models a listbox that closes on Escape but not on its own commit.
+   */
+  closesOnEscape?: boolean;
+  /**
    * Text of a committed `selectedItemList` chip rendered inside the widget
    * when it opens, modeling a sibling widget that already carries a value.
    */
@@ -373,6 +384,7 @@ export function buildPromptWidgetHarness(params: {
             "";
           const state = owningId ? openState.get(owningId) : undefined;
           const matched = state?.spec.options.find((o) => optionLabel(o) === label);
+          const committedLabel = state?.spec.commitsInstead ?? label;
           const drillTo = matched ? optionDrillTo(matched) : undefined;
           if (owner && drillTo) {
             // Models the real widget's async GET .../values/sources/sources/<catId>
@@ -394,9 +406,9 @@ export function buildPromptWidgetHarness(params: {
               // a <span> (some libraries do), commit into that span — the
               // child-wrapped-label case BUTTON_VALUE_EXPR must still read.
               const span = owner.querySelector("span");
-              if (span) span.textContent = label;
-              else owner.textContent = label;
-              owner.setAttribute("aria-label", `${label} Required`);
+              if (span) span.textContent = committedLabel;
+              else owner.textContent = committedLabel;
+              owner.setAttribute("aria-label", `${committedLabel} Required`);
             } else {
               let valueNode = owner.querySelector("[data-automation-id='promptSelectionLabel']");
               if (!valueNode) {
@@ -404,7 +416,7 @@ export function buildPromptWidgetHarness(params: {
                 valueNode.setAttribute("data-automation-id", "promptSelectionLabel");
                 owner.insertBefore(valueNode, owner.firstChild);
               }
-              valueNode.textContent = label;
+              valueNode.textContent = committedLabel;
             }
             // Clear the aria-invalid marker the union reads as "unfilled" —
             // on the owner itself and on any descendant control.
@@ -429,7 +441,7 @@ export function buildPromptWidgetHarness(params: {
                 value: string;
                 textContent: string | null;
               }[];
-              const matchedOption = options.find((o) => o.textContent?.trim() === label);
+              const matchedOption = options.find((o) => o.textContent?.trim() === committedLabel);
               if (matchedOption) {
                 (hiddenSelect as unknown as { value: string }).value = matchedOption.value;
               }
@@ -498,6 +510,13 @@ export function buildPromptWidgetHarness(params: {
     sendCDP: async (method: string, cdpParams?: unknown): Promise<void> => {
       cdpEvents.push({ method, params: cdpParams });
       const p = cdpParams as { type?: string; key?: string } | undefined;
+      if (method === "Input.dispatchKeyEvent" && p?.type === "keyDown" && p.key === "Escape") {
+        for (const [id, state] of openState) {
+          if (!state.spec.closesOnEscape) continue;
+          document.querySelector(`[data-test-popup-for="${id}"]`)?.remove();
+        }
+        return;
+      }
       if (method !== "Input.dispatchKeyEvent" || p?.type !== "keyDown" || p.key !== "Enter") {
         return;
       }

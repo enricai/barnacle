@@ -27,7 +27,7 @@ describe("recon-generate — browser-flow entry URL", () => {
     expect(code).toMatch(
       /export async function runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*entryUrl: string,/
     );
-    expect(code).toContain('page.goto(entryUrl, { waitUntil: "networkidle" })');
+    expect(code).toContain('page.goto(entryUrl, { waitUntil: "domcontentloaded" })');
     expect(code).not.toMatch(
       /runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*baseUrl: string,/
     );
@@ -40,7 +40,7 @@ describe("recon-generate — browser-flow entry URL", () => {
     expect(code).toContain(
       "runReconSite9BrowserFlow(\n  stagehand: Stagehand,\n  baseUrl: string,"
     );
-    expect(code).toContain('page.goto(baseUrl, { waitUntil: "networkidle" })');
+    expect(code).toContain('page.goto(baseUrl, { waitUntil: "domcontentloaded" })');
     expect(code).not.toContain("entryUrl");
   });
 
@@ -82,7 +82,7 @@ describe("recon-generate — browser-flow entry URL", () => {
   describe("assertRequiredUrlFieldsReferenced", () => {
     it("throws when a required *Url payload field is declared but never referenced by the emitted browser flow", () => {
       const contractCode = "ClickUrl: z.string().min(1),";
-      const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "networkidle" });';
+      const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
         /ClickUrl/
@@ -92,21 +92,21 @@ describe("recon-generate — browser-flow entry URL", () => {
     it("does not throw once the flow references payload.ClickUrl somewhere", () => {
       const contractCode = "ClickUrl: z.string().min(1),";
       const browserFlowCode =
-        'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "networkidle" });';
+        'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "domcontentloaded" });';
 
       expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).not.toThrow();
     });
 
     it("ignores optional URL fields — only required ones must be referenced", () => {
       const contractCode = "RedirectUrl: z.string().optional(),";
-      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "networkidle" });';
+      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).not.toThrow();
     });
 
     it("generalizes past ClickUrl — any required *Url field name is checked", () => {
       const contractCode = "ApplyUrl: z.string().min(1),";
-      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "networkidle" });';
+      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
         /ApplyUrl/

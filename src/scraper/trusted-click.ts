@@ -175,6 +175,30 @@ export async function centreAndHitTest(
 }
 
 /**
+ * Centres `sel`'s element and hit-tests its content-box centre, returning the
+ * raw outcome (or `null` when the evaluation itself failed) so primitives that
+ * deliver their own trusted click can tell a real overlay (`occluded` by a named
+ * element) from an indeterminate read (no layout, nothing at the point).
+ */
+export async function probeClickPoint(
+  target: FrameTarget,
+  sel: string
+): Promise<CentredHitTestResult | null> {
+  const expression = buildSelectorExpression(sel);
+  return await target.evaluate<CentredHitTestResult>(expression).catch(() => null);
+}
+
+/**
+ * Hit test (centres the target first) for primitives that deliver their own trusted click:
+ * true only when `elementFromPoint` at the content-box centre is `sel`'s
+ * element or inside it, so a leftover popup over the field is detectable
+ * before the click is spent on it.
+ */
+export async function isClickPointUnobscured(target: FrameTarget, sel: string): Promise<boolean> {
+  return (await probeClickPoint(target, sel))?.state === "hit";
+}
+
+/**
  * Core loop shared by every entry point: centre + hit-test until the point
  * lands on the target, then click exactly once.
  *

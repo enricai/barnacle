@@ -101,6 +101,14 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
   };
 });
 
+const { bbUpdate } = vi.hoisted(() => ({ bbUpdate: vi.fn() }));
+
+vi.mock("@browserbasehq/sdk", () => ({
+  default: vi.fn(function (this: Record<string, unknown>) {
+    this.sessions = { update: bbUpdate };
+  }),
+}));
+
 vi.mock("steel-sdk", () => ({
   default: vi.fn(function (this: Record<string, unknown>) {
     this.sessions = {
@@ -478,6 +486,39 @@ describe("createBrowserbaseBrowserSession CDP heartbeat", () => {
     await session.close();
 
     expect(handle.stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe("createBrowserbaseBrowserSession close() release", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+    bbUpdate.mockResolvedValue({});
+  });
+
+  it("issues REQUEST_RELEASE exactly once, after stagehand.close()", async () => {
+    const session = await createBrowserbaseBrowserSession();
+    const instance = vi.mocked(Stagehand).mock.instances.at(-1) as unknown as {
+      close: ReturnType<typeof vi.fn>;
+    };
+    await session.close();
+    expect(bbUpdate).toHaveBeenCalledOnce();
+    expect(bbUpdate).toHaveBeenCalledWith("bb-session-id", {
+      projectId: "bb-project",
+      status: "REQUEST_RELEASE",
+    });
+    expect(instance.close.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
+      bbUpdate.mock.invocationCallOrder[0] ?? 0
+    );
+  });
+
+  it("does not throw when the release rejects", async () => {
+    bbUpdate.mockRejectedValue(new Error("boom"));
+    const session = await createBrowserbaseBrowserSession();
+    await expect(session.close()).resolves.toBeUndefined();
   });
 });
 
