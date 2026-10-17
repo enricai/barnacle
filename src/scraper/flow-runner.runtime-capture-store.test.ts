@@ -5,8 +5,8 @@ import { windowHasAdvanceTransition, wireSignalCapture } from "@/scraper/flow-ru
 import {
   defaultCapturesDir,
   listCaptureFiles,
-  readCaptureFile,
   type RuntimeCaptureStore,
+  readCaptureFile,
   recordRuntimeCapture,
   withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
@@ -42,10 +42,11 @@ function fakeCapturePage(): {
 async function fireRequest(
   store: RuntimeCaptureStore,
   params: {
-  method: string;
-  postData?: string;
-  requestId: string;
-}): Promise<void> {
+    method: string;
+    postData?: string;
+    requestId: string;
+  }
+): Promise<void> {
   const { page, emit } = fakeCapturePage();
   const teardown = wireSignalCapture(page, {
     counter: { n: 0 },
