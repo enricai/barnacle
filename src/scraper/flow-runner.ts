@@ -114,6 +114,7 @@ import {
   hasOriginOrPathChanged,
   hasPageAdvanced,
   hasPageBodySwapped,
+  hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -1203,6 +1204,11 @@ interface StepSnapshot {
    * movement. Optional so literal snapshots built elsewhere keep compiling.
    */
   visibleTextDigest?: string;
+  /**
+   * Set by the post-click re-settle when the visible text held still across a
+   * settle round, so a header-only flip can be judged as the final page.
+   */
+  settled?: boolean;
   /**
    * Joined `value`/`checked` fingerprint of every visible input/textarea/select
    * control (bounded to 2000 chars, same spirit as the 200-char text slice).
@@ -2377,7 +2383,7 @@ export function isNullVerdictAdvanceCredited(params: {
  *
  * **Mid-flow submit:** `midFlowSubmit` (see {@link isMidFlowSubmitShapedStep})
  * lets a submit-shaped, non-final step be credited when `pageAdvanced` (the
- * shared {@link hasPageBodySwapped} judgement of the visible text; defaults to
+ * shared {@link hasSettledPageAdvanced} judgement of the visible text; defaults to
  * `textChanged` when omitted) holds — byte delta is not required, since a
  * wizard swap can keep the HTML size — with the same invalid-marker and
  * destination vetoes. The clicked control being gone is NOT a veto here: a
@@ -7441,9 +7447,10 @@ const HEADER_ONLY_RESETTLE_ROUNDS = 2;
 /**
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
- * re-render that follows it, and a header-only advance is not yet a verdict:
- * the body decides. Bounded, and a page whose header never flipped (a no-op
- * click) or whose body already swapped returns at once.
+ * re-render that follows it, so the verdict waits for the body or for the text
+ * to hold still across a settle round, and only then reads the header flip as
+ * the page's final state (`settled`). Bounded, and a page whose header never
+ * flipped (a no-op click) or whose body already swapped returns at once.
  */
 async function resettleThroughHeaderOnlyFlip(
   page: Page,
@@ -7464,7 +7471,9 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextSignature,
       current.visibleTextDigest
     );
-    current = await snapshotPage(target, signalCounter, page);
+    const next = await snapshotPage(target, signalCounter, page);
+    if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
+    current = next;
   }
   return current;
 }
@@ -14802,7 +14811,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
-      pageAdvanced: hasPageBodySwapped(pre, post),
+      pageAdvanced: hasSettledPageAdvanced(pre, post),
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15146,7 +15155,7 @@ export async function executeStepWithHealing(params: {
           midFlowSubmit,
           judgeUnavailable: judgeVerdict === null,
           networkAdvanced: networkIsRealAdvance,
-          pageAdvanced: hasPageBodySwapped(pre, post),
+          pageAdvanced: hasSettledPageAdvanced(pre, post),
           invalidMarkerCount,
         });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
@@ -15530,7 +15539,7 @@ export async function executeStepWithHealing(params: {
           const retryMidFlowDestinationPlausible =
             retryDestinationPlausible ||
             (retryMidFlowSubmit &&
-              hasPageBodySwapped(pre, retryPost) &&
+              hasSettledPageAdvanced(pre, retryPost) &&
               isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
@@ -15827,12 +15836,12 @@ export async function executeStepWithHealing(params: {
             const retryMidFlowAdvanceCredited =
               (retryMidFlowSubmit &&
                 retryVerdict === "effective" &&
-                hasPageBodySwapped(pre, retryPost)) ||
+                hasSettledPageAdvanced(pre, retryPost)) ||
               isNullVerdictAdvanceCredited({
                 midFlowSubmit: retryMidFlowSubmit,
                 judgeUnavailable: judgeVerdict === null,
                 networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-                pageAdvanced: hasPageBodySwapped(pre, retryPost),
+                pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
                 invalidMarkerCount,
               });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {

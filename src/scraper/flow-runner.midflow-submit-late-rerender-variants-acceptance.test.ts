@@ -52,6 +52,8 @@ const SHRINK_PRE = "Email Address Password Verify New Password. ".repeat(21).sli
 const SHRINK_POST = "Welcome aboard, verify your inbox to continue. ".repeat(12).slice(0, 580);
 const GROW_PRE = "Email Address Password. ".repeat(5);
 const GROW_POST = "Pick a plan and enter billing details to start. ".repeat(30);
+const CHROME =
+  "Skip to main content Home Jobs Careers Benefits Teams Culture Blog Events FAQ Contact Privacy Terms Help Language English";
 const REPORT: Variant = {
   name: "report example",
   step: STEP,
@@ -89,6 +91,28 @@ const VARIANTS: Variant[] = [
     preText: GROW_PRE,
     postText: GROW_POST,
     delayMs: 15_000,
+  },
+  {
+    ...REPORT,
+    name: "short chrome-heavy page, header and body together",
+    preText: `${CHROME} Email Password Verify`,
+    postText: `${CHROME} Legal Name Country Phone`,
+    headerFirst: false,
+    delayMs: 0,
+  },
+  {
+    ...REPORT,
+    name: "short chrome-heavy page, late by 5s",
+    preText: `${CHROME} Email Password Verify`,
+    postText: `${CHROME} Legal Name Country Phone`,
+    delayMs: 5000,
+  },
+  {
+    ...REPORT,
+    name: "short chrome-heavy page, late by 12s",
+    preText: `${CHROME} Email Password Verify`,
+    postText: `${CHROME} Legal Name Country Phone`,
+    delayMs: 12_000,
   },
   {
     ...REPORT,

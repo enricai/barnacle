@@ -18,6 +18,12 @@ export interface PhantomClickSnapshot {
   visibleText?: string;
   /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
   visibleTextDigest?: string;
+  /**
+   * True when this snapshot was re-read after a settle round and the visible
+   * text held still across it, so a header flip that has not been followed by
+   * a body swap is the page's final state rather than a transition in flight.
+   */
+  settled?: boolean;
 }
 
 /** The visible-text slice of a snapshot, for callers that judge a page advance from text alone. */
@@ -56,7 +62,7 @@ export interface PhantomClickAttempt {
   /**
    * True when a submit-shaped step is NOT the flow's final submit (e.g. an
    * account-creation transition in a wizard). Such a step is credited when
-   * {@link hasPageBodySwapped} holds even with no network/URL/title signal.
+   * {@link hasSettledPageAdvanced} holds even with no network/URL/title signal.
    * Implies `isSubmitShapedStep`: a mid-flow submit is submit-shaped by
    * definition, so callers need not set both for it to be held to submit rules.
    */
@@ -440,6 +446,21 @@ export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClick
 }
 
 /**
+ * Decides whether a mid-flow submit's page advanced, judged on the settled
+ * page: a replaced body always counts, and a replaced header counts once the
+ * text has held still across a settle round, because by then nothing is left
+ * to re-render. Before that point a header-only flip stays unfinished, since
+ * the body usually re-renders after it. A page with no visible-text change
+ * never counts, so a no-op click keeps its give-up.
+ */
+export function hasSettledPageAdvanced(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot
+): boolean {
+  return hasPageBodySwapped(pre, post) || (post.settled === true && hasPageAdvanced(pre, post));
+}
+
+/**
  * Classifies one cascade attempt as `phantom` (Stagehand claimed success but
  * pre/post shows zero network, zero URL change, and only trivial DOM
  * growth), `unresolved` (Stagehand never resolved/executed the action), or
@@ -464,7 +485,7 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const bytesChangedSignificantly =
     !submitShaped && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
-  const midFlowAdvanced = midFlowSubmit && hasPageBodySwapped(attempt.pre, attempt.post);
+  const midFlowAdvanced = midFlowSubmit && hasSettledPageAdvanced(attempt.pre, attempt.post);
 
   const hasEffect =
     networkDelta !== 0 ||
