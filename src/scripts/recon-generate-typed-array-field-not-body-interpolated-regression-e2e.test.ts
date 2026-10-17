@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod/v4";
+import { JobTrackingSchema } from "@/lib/job-tracking";
 import { multipartJsonObject } from "@/lib/zod-multipart";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
@@ -119,7 +120,11 @@ function readPayloadSchema(dir: string): ReturnType<typeof z.object> {
   const contract = readFileSync(join(dir, "contract.ts"), "utf8");
   const match = /const \w+PayloadSchema = ([\s\S]*?);\n/.exec(contract);
   if (!match) throw new Error(`no PayloadSchema declaration found in ${contract}`);
-  return new Function("z", "multipartJsonObject", `return ${match[1]};`)(z, multipartJsonObject);
+  return new Function("z", "multipartJsonObject", "JobTrackingSchema", `return ${match[1]};`)(
+    z,
+    multipartJsonObject,
+    JobTrackingSchema
+  );
 }
 
 describe("recon-generate CLI — flow-declared typed array field threaded into every request body", () => {

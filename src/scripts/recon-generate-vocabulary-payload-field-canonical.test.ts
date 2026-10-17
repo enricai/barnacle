@@ -185,7 +185,10 @@ describe("emitContractTs — TrackingUrl composition", () => {
   it.each([
     ["empty object base", false, true],
     ["query base", false, false],
-  ])("leaves a non-job-application contract without JobTrackingSchema (%s)", (_n, sub, omit) => {
-    expect(emit(sub, omit)).not.toContain("JobTrackingSchema");
-  });
+  ])(
+    "composes JobTrackingSchema into a non-job-application contract so TrackingUrl survives parse (%s)",
+    (_n, sub, omit) => {
+      expect(emit(sub, omit)).toContain(".merge(JobTrackingSchema)");
+    }
+  );
 });

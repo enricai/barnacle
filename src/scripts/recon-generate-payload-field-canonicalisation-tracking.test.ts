@@ -4,6 +4,7 @@ import { ApplicantContactSchema } from "@/lib/applicant-payload";
 import { JobTrackingSchema } from "@/lib/job-tracking";
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import {
+  deriveBaseUrl,
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
@@ -107,6 +108,29 @@ describe("label-derived payload field canonicalisation", () => {
     expect(code).not.toContain("payload.AddressLine1");
   });
 
+  it("keeps canonical names in the unread-field fallback re-emit", () => {
+    const opts = {
+      siteId: "test-agency",
+      pascal: "TestAgency",
+      baseUrl: "https://example.com",
+      isSubmissionFlow: true,
+      browserFlowOnly: false,
+      inputBody: { Phone: "555", AddressLine: "1 Main" },
+      vocabulary: VOCAB,
+      flowSteps: STEPS,
+    };
+    const first = emitBrowserFlowTs(opts);
+    const fallback = emitBrowserFlowTs({
+      ...opts,
+      capturedFallbackFields: new Set([...first.payloadFieldNames]),
+    });
+
+    expect([...fallback.payloadFieldNames].sort()).toEqual([...first.payloadFieldNames].sort());
+    expect([...fallback.payloadFieldNames]).not.toContain("MobilePhone");
+    expect([...fallback.payloadFieldNames]).not.toContain("AddressLine1");
+    expect(fallback.code).not.toContain("payload.MobilePhone");
+  });
+
   it("agrees with the config manifest request template", () => {
     const [phone, address] = [...canonicalFields()] as [string, string];
     const manifest = JSON.parse(
@@ -166,5 +190,54 @@ describe("JobTrackingSchema composition", () => {
     expect(result.success && (result.data as Record<string, unknown>).TrackingUrl).toBe(
       "https://t.example/a"
     );
+  });
+
+  it("parses ApplicantContact fields, Email and ClickUrl alone, requiring no extra keys", () => {
+    const schema = evalSchema(emitContract(canonicalFields()));
+    const base = Object.fromEntries(
+      Object.entries(ApplicantContactSchema.shape).map(([k, v]) => [
+        k,
+        (v as z.ZodType).safeParse("x").success ? "x" : undefined,
+      ])
+    );
+    const result = schema.safeParse({
+      ...base,
+      Resume: Buffer.from("x"),
+      Answers: {},
+      Email: "a@b.co",
+      ClickUrl: "https://x.test/a",
+    });
+    expect(result.success ? [] : result.error.issues).toEqual([]);
+  });
+});
+
+describe("deriveBaseUrl with unmatched ownBackendHostnames", () => {
+  it("throws listing the captured hosts instead of falling back to a default origin", () => {
+    const captures = [
+      { url: "https://api.one.example.org/v1/a", method: "POST" },
+      { url: "https://api.two.example.org/v1/b", method: "POST" },
+    ] as Parameters<typeof deriveBaseUrl>[0];
+    let thrown: unknown;
+    try {
+      deriveBaseUrl(captures, ["missing.example.com"]);
+    } catch (e) {
+      thrown = e;
+    }
+    const message = (thrown as Error).message;
+    expect(message).toContain("ownBackendHostnames matched no capture");
+    expect(message).toContain("api.one.example.org, api.two.example.org");
+    expect(message).not.toContain("https://example.com");
+  });
+});
+
+describe("canonicalisation beyond the original vocabulary rows", () => {
+  it("collapses other phone/address label variants and an explicit alias onto base keys", () => {
+    const variants = ["CellPhoneNumber", "Telephone", "Address", "StreetAddress1"];
+    const source = emitContract(new Set(variants));
+    const extras = [...source.matchAll(/^ {2}(\w+): /gm)].map((m) => m[1]);
+    for (const variant of variants) expect(extras).not.toContain(variant);
+    expect(
+      resolveStepPayloadField("Fill in the field", "MobilePhone", false, VOCAB, undefined, true)
+    ).toBe("Phone");
   });
 });

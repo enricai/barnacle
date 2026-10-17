@@ -255,7 +255,7 @@ export function resolveStepPayloadField(
   canonicalise = false
 ): string | null {
   if (forceNone) return null;
-  if (explicit) return explicit;
+  if (explicit) return canonicalise ? canonicalPayloadField(explicit) : explicit;
   // A control's own name (a button/link/tab label) is never a fill/select VALUE,
   // even when it happens to contain a word a vocabulary row also matches.
   if (namesAControl(instruction)) return null;
@@ -14389,6 +14389,9 @@ export function emitContractTs(opts: {
   const extendFields = new Map<string, string>();
   const structuredFieldNames = new Set<string>();
   const addExtendField = (name: string, line: string): void => {
+    // JobTrackingSchema owns TrackingUrl (optional URL); a discovered or
+    // spliced string would shadow it as a required field callers cannot supply.
+    if (name === "TrackingUrl") return;
     if (structuredFieldNames.has(name)) return;
     extendFields.set(name, line);
   };
@@ -14448,7 +14451,10 @@ export function emitContractTs(opts: {
   if (discoveredFormFields) {
     for (const name of [...discoveredFormFields].sort()) {
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: z.string(),`);
+      addExtendField(
+        name,
+        `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: z.string(),`
+      );
     }
   }
 
@@ -14465,7 +14471,8 @@ export function emitContractTs(opts: {
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = name === "Email" ? "z.email()" : "z.string()";
       const suffix = optionalPayloadFieldNames.has(rawName) ? ".optional()" : "";
-      addExtendField(name, `  ${name}: ${zod}${suffix},`);
+      const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
+      addExtendField(name, `  ${key}: ${zod}${suffix},`);
     }
   }
 
@@ -14566,6 +14573,7 @@ export function emitContractTs(opts: {
     : [];
   for (const [name, schema] of sortedStructuredEntries) {
     if (isReservedByApplicantContactSchema(name)) continue;
+    if (name === "TrackingUrl") continue;
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
     const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
     extendFields.set(name, `  ${key}: ${value},`);
@@ -14693,11 +14701,10 @@ export function emitContractTs(opts: {
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
-  // zod strips unknown keys, so without composing it a job-application
+  // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
-  const composesJobTracking = usesApplicantContactSchema && !extendFields.has("TrackingUrl");
-  const trackingMerge = composesJobTracking ? ".merge(JobTrackingSchema)" : "";
+  const trackingMerge = ".merge(JobTrackingSchema)";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
@@ -14719,9 +14726,7 @@ export function emitContractTs(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
-  const jobTrackingImport = composesJobTracking
-    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
-    : "";
+  const jobTrackingImport = `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
@@ -15301,19 +15306,27 @@ const limiter = new Bottleneck({ minTime: ${minTime} });
 ${executeHttpBody}
   },
 `;
-  // Applicant contracts enter on payload.ClickUrl, so a browser-flow-only
-  // execute has nothing left to read from the context.
-  const executeOmitsContext = omitExecuteHttp && usesApplicantContactSchema;
-  const executeContextParam = executeOmitsContext ? "" : `,\n    context: SitePluginContext`;
-  const sitePluginImports = executeOmitsContext
-    ? "SitePlugin, SitePluginResult"
-    : "SitePlugin, SitePluginContext, SitePluginResult";
+  const executeEntryUrlExpr = usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl";
+  const executeUsesContext = executeEntryUrlExpr.includes("context.");
+  const executeContextParam = executeUsesContext
+    ? `,\n    context: SitePluginContext`
+    : omitExecuteHttp
+      ? ""
+      : `,\n    _context: SitePluginContext`;
+  const sitePluginImports =
+    executeUsesContext || !omitExecuteHttp
+      ? "SitePlugin, SitePluginContext, SitePluginResult"
+      : "SitePlugin, SitePluginResult";
   const executeDocComment = omitExecuteHttp
     ? ""
     : `  /** Browser fallback: Stagehand + Steel — invoked only when hot path fails. */\n`;
-  const maxAttemptsLiteral = createsAccount
-    ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
-    : "";
+  // Derived here as well as from the caller's flag: a caller that hands over
+  // flowSteps but not the browser-flow emitter's signal must not ship a
+  // retry-enabled account-creating flow.
+  const maxAttemptsLiteral =
+    createsAccount || contractFlowSteps.some(stepUsesReconPassword)
+      ? `\n    // A retry would re-register the same account the first attempt created.\n    maxAttempts: 1,`
+      : "";
   const pluginDocComment = omitExecuteHttp
     ? `/**
  * Plugin for ${siteId}. Browser-flow-only: the captured multi-step submission
@@ -15373,7 +15386,7 @@ ${executeDocComment}  async execute(
     payload: ${pascal}Payload,
     session: BrowserSession${executeContextParam}
   ): Promise<SitePluginResult<${pascal}Response>> {
-    const raw = await run${pascal}BrowserFlow(session.stagehand, ${usesApplicantContactSchema ? "payload.ClickUrl" : "context.baseUrl"}, payload, session.sessionProxy ?? null);
+    const raw = await run${pascal}BrowserFlow(session.stagehand, ${executeEntryUrlExpr}, payload, session.sessionProxy ?? null);
     return { data: raw as ${pascal}Response };
   },
 };
@@ -15502,8 +15515,13 @@ export function unreferencedDeclaredPayloadFields(
   for (const step of flowSteps) {
     if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
   }
+  // An applicant-contract flow splices the canonical name for an explicit
+  // vocabulary-row alias, so either spelling counts as a read.
   return [...declared].filter(
-    (name) => !new RegExp(`payload\\.${name}(?![\\w$])`).test(emittedCode)
+    (name) =>
+      ![name, canonicalPayloadField(name)].some((candidate) =>
+        new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode)
+      )
   );
 }
 
@@ -15605,6 +15623,15 @@ function buildCompositeStepInstructionExpr(
   const site = locateSpliceSite(instruction);
   if (site === null) return JSON.stringify(instruction);
   return `\`${escapeForTemplateLiteral(site.before)}\${payload.${fieldA}} \${payload.${fieldB}}${escapeForTemplateLiteral(site.after)}\``;
+}
+
+/**
+ * Whether a flow step splices the reserved password token — the single signal
+ * both emitters use to decide the flow creates an account and must not retry.
+ */
+function stepUsesReconPassword(step: FlowStepInput): boolean {
+  const instruction = typeof step === "string" ? step : step.step;
+  return instruction.includes(RECON_PASSWORD_TOKEN);
 }
 
 /**
@@ -15840,7 +15867,7 @@ export function emitConfigManifest(opts: {
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  if (usesApplicantContactSchema) requestProperties.TrackingUrl ??= { type: "string" };
+  requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -15861,6 +15888,7 @@ export function emitConfigManifest(opts: {
       defaultBaseUrl: baseUrl,
       ...(httpModulePath ? { httpModule: httpModulePath } : {}),
       ...(multipart ? { multipart: true } : {}),
+      ...(flowSteps.some(stepUsesReconPassword) ? { maxAttempts: 1 } : {}),
       request: { type: "object", properties: sortedRequestProperties },
       response: {
         type: "object",
@@ -16080,7 +16108,7 @@ export function emitBrowserFlowTs(opts: {
     // piece of the caller's applicant identity, so it never reaches
     // resolveStepPayloadField/vocabulary and never routes through
     // payload.<field>. It gets a generated throwaway credential instead.
-    if (instruction.includes(RECON_PASSWORD_TOKEN)) {
+    if (stepUsesReconPassword(step)) {
       usesThrowawayPassword = true;
       const instructionExpr = buildPasswordInstructionExpr(instruction);
       const optional = isObj ? step.optional === true : false;
@@ -17427,7 +17455,7 @@ async function main(): Promise<void> {
     // Emit the browser flow first so the SAME payloadFieldNames set that drives
     // its `payload.<field>` splices also extends the contract's payload schema —
     // the two artifacts can't drift because one accumulator feeds both.
-    const browserFlow = emitBrowserFlowTs({
+    const browserFlowOpts = {
       siteId,
       pascal,
       baseUrl,
@@ -17438,7 +17466,8 @@ async function main(): Promise<void> {
       inputBody,
       vocabulary,
       frameSelector,
-    });
+    };
+    const browserFlow = emitBrowserFlowTs(browserFlowOpts);
 
     const contractOpts = {
       siteId,
@@ -17507,15 +17536,7 @@ async function main(): Promise<void> {
         ? { browserFlow, contractOpts, contractCode: firstContractCode }
         : (() => {
             const fallbackBrowserFlow = emitBrowserFlowTs({
-              siteId,
-              pascal,
-              baseUrl,
-              flowSteps,
-              isSubmissionFlow,
-              hasMultipartStep,
-              browserFlowOnly,
-              vocabulary,
-              frameSelector,
+              ...browserFlowOpts,
               capturedFallbackFields: unread,
             });
             const optionalized = {

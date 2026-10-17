@@ -6,7 +6,7 @@ import { join } from "node:path";
 import Bottleneck from "bottleneck";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod/v4";
-
+import { JobTrackingSchema } from "@/lib/job-tracking";
 import { isZeroVarianceRepeatCapture } from "@/recon/capture-filters";
 import { HttpClientError } from "@/scraper/errors";
 import { createHttpClient } from "@/scraper/http-client";
@@ -457,7 +457,11 @@ describe("recon root-causes combined regression: noise admission, drill isolatio
       /const \w+PayloadSchema = ([\s\S]*?);\n\nexport type/
     );
     expect(payloadSchemaMatch, contract).not.toBeNull();
-    const PayloadSchema = new Function("z", `return ${payloadSchemaMatch![1]!};`)(z) as z.ZodType;
+    const PayloadSchema = new Function(
+      "z",
+      "JobTrackingSchema",
+      `return ${payloadSchemaMatch![1]!};`
+    )(z, JobTrackingSchema) as z.ZodType;
 
     const BASE_VALID_PAYLOAD = {
       BaseUrl: `https://${OWN_BACKEND_HOST}`,

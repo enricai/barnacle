@@ -163,7 +163,7 @@ describe("recon-generate CLI — typed array-of-objects facet field threaded int
     // The payload schema declares attendeeMix as a required (non-optional)
     // array field, not merely a string passthrough.
     const schemaMatch = contract.match(
-      /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?;/
+      /PayloadSchema = z\.object\(\{[\s\S]*?\n\}\)(?:\.extend\(\{[\s\S]*?\n\}\))?(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(schemaMatch, contract).not.toBeNull();
     const schema = schemaMatch?.[0] ?? "";
