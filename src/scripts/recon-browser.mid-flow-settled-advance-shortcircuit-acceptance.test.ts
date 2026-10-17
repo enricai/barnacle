@@ -200,7 +200,7 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
 
   it("short-circuits an explicit submitStep step on a settled header flip", async () => {
     settleStub.mockResolvedValue(FLIPPED);
-    process.argv = argv([{ instruction: "Fill in field 0", submitStep: true }, "Fill in field 1"]);
+    process.argv = argv([{ step: "Fill in field 0", submitStep: true }, "Fill in field 1"]);
 
     await main();
 
