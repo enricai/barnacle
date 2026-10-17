@@ -56,7 +56,7 @@ export interface PhantomClickAttempt {
   /**
    * True when a submit-shaped step is NOT the flow's final submit (e.g. an
    * account-creation transition in a wizard). Such a step is credited when
-   * {@link hasPageAdvanced} holds even with no network/URL/title signal.
+   * {@link hasPageBodySwapped} holds even with no network/URL/title signal.
    * Implies `isSubmitShapedStep`: a mid-flow submit is submit-shaped by
    * definition, so callers need not set both for it to be held to submit rules.
    */
