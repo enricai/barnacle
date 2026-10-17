@@ -112,6 +112,7 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
+  hasPageAdvanced,
   hasPageBodySwapped,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
@@ -7431,6 +7432,44 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
 }
 
 /**
+ * Re-settle rounds granted to a post-click page whose header flipped but whose
+ * body has not re-rendered yet. Each round waits the settle's own idle
+ * allowance, so a body landing well after the first settle ended is still read.
+ */
+const HEADER_ONLY_RESETTLE_ROUNDS = 2;
+
+/**
+ * Re-reads the post-click page while only its header has flipped. One
+ * settle-then-snapshot moment can land between a header flip and the body
+ * re-render that follows it, and a header-only advance is not yet a verdict:
+ * the body decides. Bounded, and a page whose header never flipped (a no-op
+ * click) or whose body already swapped returns at once.
+ */
+async function resettleThroughHeaderOnlyFlip(
+  page: Page,
+  target: FrameTarget,
+  signalCounter: { n: number },
+  pre: StepSnapshot,
+  post: StepSnapshot
+): Promise<StepSnapshot> {
+  let current = post;
+  for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
+    if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
+    await settleWithPageQuiescence(
+      page,
+      target,
+      signalCounter,
+      current.networkCount,
+      true,
+      current.visibleTextSignature,
+      current.visibleTextDigest
+    );
+    current = await snapshotPage(target, signalCounter, page);
+  }
+  return current;
+}
+
+/**
  * Settles after a click and returns the post-click snapshot, so the settle
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
@@ -7452,7 +7491,10 @@ async function settleAndSnapshotPostClick(
       pre.visibleTextSignature,
       pre.visibleTextDigest
     );
-  return snapshotPage(target, signalCounter, page);
+  const post = await snapshotPage(target, signalCounter, page);
+  return page && waitForMutations
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post)
+    : post;
 }
 
 /**
@@ -14586,7 +14628,21 @@ export async function executeStepWithHealing(params: {
         pre.visibleTextDigest
       );
     }
-    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
+    const settledPost = await snapshotPage(
+      frameTarget ?? mainFrameTarget(page),
+      signalCounter,
+      page
+    );
+    const post =
+      mayTriggerRoundTrip && stepIsMidFlowSubmit
+        ? await resettleThroughHeaderOnlyFlip(
+            page,
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
+            pre,
+            settledPost
+          )
+        : settledPost;
     record.post = post;
 
     if (resolvedAction) {
