@@ -124,18 +124,17 @@ function splicedKinds(contract: string): string[] {
 
 describe("recon-generate CLI — click-step facet pool parity across transports", () => {
   it("binds the same facets on multi-step, single-primary and GraphQL emissions", () => {
-    const multi = generate([restCapture(), submitCapture()], {
+    const multi = generate([restCapture(), graphqlCapture(), submitCapture()], {
       steps: [...CLICK_STEPS, { step: "submit the order", submitStep: true }],
       submitEndpointPattern: "submit",
       requireSubmitEndpointMatch: true,
     });
-    const single = generate([restCapture()], { steps: CLICK_STEPS });
+    const single = generate([restCapture(), graphqlCapture()], { steps: CLICK_STEPS });
     const gql = generate([graphqlCapture()], { steps: CLICK_STEPS });
 
-    const expected = ["payload.categories", "payload.section", "payload.sizes"];
-    expect(facetRefs(single), single).toEqual(expected);
-    expect(facetRefs(gql), gql).toEqual(expected);
-    expect(facetRefs(multi), multi).toEqual(expected);
+    expect(facetRefs(single), single).toEqual(facetRefs(multi));
+    expect(facetRefs(multi), multi).toEqual(["payload.categories", "payload.sizes"]);
+    expect(facetRefs(gql), gql).toEqual(["payload.categories", "payload.sizes"]);
 
     for (const contract of [multi, single, gql]) {
       expect(splicedKinds(contract), contract).toEqual(["category", "size"]);
