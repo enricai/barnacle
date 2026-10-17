@@ -190,6 +190,7 @@ function params(world: World, isFinalStep: boolean, trajectory: unknown[]): neve
     logger: testLogger,
     uploadFixture: null,
     isFinalStep,
+    flowHasSubmitSemantics: isFinalStep,
     submitEndpointPattern: null,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,

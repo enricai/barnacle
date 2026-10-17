@@ -126,6 +126,8 @@ function argv(steps: unknown[]): string[] {
   ];
 }
 
+let currentUrl = "https://apply.example.com/wizard";
+
 describe("recon-browser/main — settled header-flip pre-replan short-circuit", () => {
   const ORIGINAL_ARGV = process.argv;
   let runsRoot: string;
@@ -144,11 +146,12 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
     ])
       stub.mockReset();
     snapshotPageStub.mockResolvedValue(PRE);
+    currentUrl = "https://apply.example.com/wizard";
     vi.mocked(createBrowserSession).mockReset();
     const session = { on: (): void => {}, off: (): void => {} };
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
-      url: (): string => "https://apply.example.com/wizard",
+      url: (): string => currentUrl,
       title: vi.fn().mockResolvedValue("Apply"),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
@@ -200,6 +203,24 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
 
   it("short-circuits an explicit submitStep step on a settled header flip", async () => {
     settleStub.mockResolvedValue(FLIPPED);
+    process.argv = argv([{ step: "Fill in field 0", submitStep: true }, "Fill in field 1"]);
+
+    await main();
+
+    expect(guardedObserveStub).not.toHaveBeenCalled();
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
+  });
+
+  it("short-circuits an explicit mid-flow submitStep whose URL path advanced", async () => {
+    settleStub.mockResolvedValue({ ...PRE, settled: true });
+    let calls = 0;
+    executeStepWithHealingStub.mockImplementation(async () => {
+      calls += 1;
+      if (calls > 1) return "ok";
+      currentUrl = "https://apply.example.com/wizard/work-history";
+      throw new StepVerificationError("step 0 failed", "cascade-exhausted");
+    });
     process.argv = argv([{ step: "Fill in field 0", submitStep: true }, "Fill in field 1"]);
 
     await main();

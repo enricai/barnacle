@@ -3250,7 +3250,7 @@ async function main(): Promise<void> {
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
           const urlAdvanced =
-            !step.submitStep &&
+            (!step.submitStep || midFlowSubmitShaped) &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
           const settledText =
             !urlAdvanced && midFlowSubmitShaped && textAtStepStart !== undefined
@@ -3264,7 +3264,9 @@ async function main(): Promise<void> {
           const domAdvanced =
             !urlAdvanced &&
             midFlowSubmitShaped &&
-            hasSubmitStepDomAdvanced(i === plan.length - 1, textAtStepStart, settledText);
+            // midFlowSubmitShaped already excludes a genuine final submit, so a last
+            // slot without submit semantics is judged like any other mid-flow step.
+            hasSubmitStepDomAdvanced(false, textAtStepStart, settledText);
           if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
