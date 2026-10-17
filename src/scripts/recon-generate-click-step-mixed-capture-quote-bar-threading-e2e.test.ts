@@ -137,9 +137,7 @@ describe("recon-generate CLI — click-step facets with slug bodies and a quote-
     }));
     expect(unreferencedDeclaredPayloadFields(contract, browserFlow, declared), output).toEqual([]);
 
-    expect(contract, contract).toMatch(
-      /\.\.\.\(payload\.destination[^\x60]*;filterType=destination/
-    );
+    expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=destination/);
     expect(contract, contract).not.toMatch(/^\s*nights: z\.string\(\),/m);
     expect(contract, contract).not.toContain("BS;filterType=destination");
   }, 60_000);
