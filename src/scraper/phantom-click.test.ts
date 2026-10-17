@@ -602,6 +602,26 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     ).toBe("effective");
   });
 
+  it("keeps the final submit phantom for the same swaps without network or URL proof", () => {
+    const final = { isSubmitShapedStep: true, isMidFlowSubmitStep: false };
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(finished), ...final }))
+    ).toBe("phantom");
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(finished), post: snap(grown), ...final }))
+    ).toBe("phantom");
+  });
+
+  it("credits a header flip once the longer body has re-rendered", () => {
+    const flipped = snap(
+      "588:Skip to main content|Settings|Careers Home|Search|Help|Privacy|Terms"
+    );
+    expect(hasPageBodySwapped(snap(half), flipped)).toBe(true);
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(grown), ...midFlow }))
+    ).toBe("effective");
+  });
+
   it("does not credit a submit-shaped click with identical signatures", () => {
     expect(
       classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(half), ...midFlow }))
