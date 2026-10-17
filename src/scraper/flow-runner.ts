@@ -7438,6 +7438,17 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
   );
 }
 
+/** The settle and snapshot reads a post-click verdict is built from. */
+export interface PostClickSettleIo {
+  settle: typeof settleWithPageQuiescence;
+  snapshot: typeof snapshotPage;
+}
+
+const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
+  settle: settleWithPageQuiescence,
+  snapshot: snapshotPage,
+};
+
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
  * body has not re-rendered yet. Each round waits the settle's own idle
@@ -7458,12 +7469,13 @@ async function resettleThroughHeaderOnlyFlip(
   target: FrameTarget,
   signalCounter: { n: number },
   pre: StepSnapshot,
-  post: StepSnapshot
+  post: StepSnapshot,
+  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
-    await settleWithPageQuiescence(
+    await io.settle(
       page,
       target,
       signalCounter,
@@ -7472,7 +7484,7 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextSignature,
       current.visibleTextDigest
     );
-    const next = await snapshotPage(target, signalCounter, page);
+    const next = await io.snapshot(target, signalCounter, page);
     if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
     current = next;
   }
@@ -7483,16 +7495,21 @@ async function resettleThroughHeaderOnlyFlip(
  * Settles after a click and returns the post-click snapshot, so the settle
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
+ * `io` lets a caller that owns its own seam (recon-browser's pre-replan
+ * short-circuit) route the settle and the snapshot through the functions it
+ * already imports, so the settled read there is the same one every other site
+ * makes.
  */
 export async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
   pre: StepSnapshot,
-  waitForMutations = true
+  waitForMutations = true,
+  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   if (page)
-    await settleWithPageQuiescence(
+    await io.settle(
       page,
       target,
       signalCounter,
@@ -7501,9 +7518,9 @@ export async function settleAndSnapshotPostClick(
       pre.visibleTextSignature,
       pre.visibleTextDigest
     );
-  const post = await snapshotPage(target, signalCounter, page);
+  const post = await io.snapshot(target, signalCounter, page);
   return page && waitForMutations
-    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post)
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
     : post;
 }
 

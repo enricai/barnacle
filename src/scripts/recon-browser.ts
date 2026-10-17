@@ -113,6 +113,7 @@ import {
   STEP_WATCHDOG_MS,
   selectBodyExcerpt,
   settleAndSnapshotPostClick,
+  settleWithPageQuiescence,
   snapshotPage,
   stripNegatedSubmitClauses,
   TRAILING_GRACE_WINDOW,
@@ -3258,7 +3259,9 @@ async function main(): Promise<void> {
                   frameTarget,
                   signalCounter,
                   page,
-                  textAtStepStart
+                  textAtStepStart,
+                  true,
+                  { settle: settleWithPageQuiescence, snapshot: snapshotPage }
                 ).catch(() => undefined)
               : undefined;
           const domAdvanced =

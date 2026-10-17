@@ -76,13 +76,22 @@ const { executeStepWithHealingStub, snapshotPageStub, settleStub } = vi.hoisted(
   snapshotPageStub: vi.fn(),
   settleStub: vi.fn(),
 }));
+
+/** Step-start read first, then every settled read the short-circuit makes. */
+function snapshotsAfterStart(start: unknown, after: (n: number) => unknown): void {
+  let reads = 0;
+  snapshotPageStub.mockImplementation(async () => {
+    reads += 1;
+    return reads === 1 ? start : after(reads - 1);
+  });
+}
 vi.mock("@/scraper/flow-runner", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/scraper/flow-runner")>();
   return {
     ...actual,
     executeStepWithHealing: executeStepWithHealingStub,
     snapshotPage: snapshotPageStub,
-    settleAndSnapshotPostClick: settleStub,
+    settleWithPageQuiescence: settleStub,
   };
 });
 
@@ -111,7 +120,6 @@ const FLIPPED = {
   ...PRE,
   visibleTextSignature: `300:Work history ${CHROME}`,
   visibleTextDigest: "b",
-  settled: true,
 };
 const ADVANCE_LOG = "verification failed but the page already advanced past this step";
 
@@ -145,6 +153,7 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
       loggerStub.info,
     ])
       stub.mockReset();
+    settleStub.mockResolvedValue(undefined);
     snapshotPageStub.mockResolvedValue(PRE);
     currentUrl = "https://apply.example.com/wizard";
     vi.mocked(createBrowserSession).mockReset();
@@ -191,7 +200,7 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
   });
 
   it("short-circuits an element-inferred submit step (submitStep unset) on a settled header flip", async () => {
-    settleStub.mockResolvedValue(FLIPPED);
+    snapshotsAfterStart(PRE, () => FLIPPED);
     process.argv = argv(["Click the Submit button", "Fill in field 1"]);
 
     await main();
@@ -202,7 +211,7 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
   });
 
   it("short-circuits an explicit submitStep step on a settled header flip", async () => {
-    settleStub.mockResolvedValue(FLIPPED);
+    snapshotsAfterStart(PRE, () => FLIPPED);
     process.argv = argv([{ step: "Fill in field 0", submitStep: true }, "Fill in field 1"]);
 
     await main();
@@ -213,7 +222,6 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
   });
 
   it("short-circuits an explicit mid-flow submitStep whose URL path advanced", async () => {
-    settleStub.mockResolvedValue({ ...PRE, settled: true });
     let calls = 0;
     executeStepWithHealingStub.mockImplementation(async () => {
       calls += 1;
@@ -230,8 +238,43 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
     expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
   });
 
+  const sig = (len: number, text: string): string => `${len}:${text}`;
+  it.each([
+    {
+      name: "header flips, body shrinks ~41%",
+      step: "Click the 'Create Account' button to submit the account creation form",
+      pre: sig(996, `Sign In ${"Email Address Password Verify New Password. ".repeat(4)}`),
+      post: sig(588, `My Account ${"Welcome aboard, verify your inbox to continue. ".repeat(4)}`),
+    },
+    {
+      name: "body grows, different wording",
+      step: "Press the 'Register' button to submit the sign-up form",
+      pre: sig(120, "Join today Short blurb"),
+      post: sig(900, `Verify ${"Check your inbox for the code we sent. ".repeat(5)}`),
+    },
+    {
+      name: "same length, visible text swapped entirely",
+      step: "Click 'Sign Up' to submit the registration",
+      pre: sig(300, `Enter email ${"alpha beta gamma delta epsilon ".repeat(6)}`),
+      post: sig(304, `Welcome back ${"orange purple yellow silver bronze ".repeat(6)}`),
+    },
+  ])("credits a body swap without a settled flag: $name", async ({ step, pre, post }) => {
+    snapshotsAfterStart({ ...PRE, visibleTextSignature: pre, visibleTextDigest: "a" }, () => ({
+      ...PRE,
+      visibleTextSignature: post,
+      visibleTextDigest: "b",
+    }));
+    process.argv = argv([{ step, submitStep: true }, "Fill in field 1"]);
+
+    await main();
+
+    expect(guardedObserveStub).not.toHaveBeenCalled();
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
+  });
+
   it("does not short-circuit a header flip that has not settled", async () => {
-    settleStub.mockResolvedValue({ ...FLIPPED, settled: false });
+    snapshotsAfterStart(PRE, (n) => ({ ...FLIPPED, visibleTextDigest: `moving-${n}` }));
     guardedObserveStub.mockRejectedValue(new Error("replan entered"));
     process.argv = argv(["Click the Submit button", "Fill in field 1"]);
 
@@ -242,7 +285,7 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
   });
 
   it("still replans when the settled page shows no advance", async () => {
-    settleStub.mockResolvedValue({ ...PRE, settled: true });
+    snapshotsAfterStart(PRE, () => PRE);
     guardedObserveStub.mockRejectedValue(new Error("replan entered"));
     process.argv = argv(["Click the Submit button", "Fill in field 1"]);
 
