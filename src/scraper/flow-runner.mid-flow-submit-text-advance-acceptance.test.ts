@@ -209,6 +209,7 @@ function params(
     submitEndpointPattern,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,
+    flowHasSubmitSemantics: true,
     advanceTransitionBodyPattern: null,
     successUrlFragments: [],
     successPageTitleHints: [],
