@@ -37,6 +37,19 @@ describe("resolveCanonicalAtsFieldName", () => {
     expect(resolveCanonicalAtsFieldName("Employer Address")).toBeNull();
   });
 
+  it("resolves unlisted qualifier-only variants of phone and address", () => {
+    expect(resolveCanonicalAtsFieldName("Daytime Phone Number")).toBe("Phone");
+    expect(resolveCanonicalAtsFieldName("PreferredPhone")).toBe("Phone");
+    expect(resolveCanonicalAtsFieldName("Permanent Address Line 1")).toBe("AddressLine");
+    expect(resolveCanonicalAtsFieldName("PhysicalAddress")).toBe("AddressLine");
+  });
+
+  it("does not collapse labels naming a different attribute of the phone or address", () => {
+    expect(resolveCanonicalAtsFieldName("Phone Type")).toBeNull();
+    expect(resolveCanonicalAtsFieldName("Phone Country Code")).toBeNull();
+    expect(resolveCanonicalAtsFieldName("Street Number")).toBeNull();
+  });
+
   it("returns null for an empty string", () => {
     expect(resolveCanonicalAtsFieldName("")).toBeNull();
   });

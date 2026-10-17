@@ -14451,7 +14451,10 @@ export function emitContractTs(opts: {
   if (discoveredFormFields) {
     for (const name of [...discoveredFormFields].sort()) {
       if (isReservedByApplicantContactSchema(name)) continue;
-      addExtendField(name, `  ${name}: z.string(),`);
+      addExtendField(
+        name,
+        `  ${isValidJsIdentifier(name) ? name : JSON.stringify(name)}: z.string(),`
+      );
     }
   }
 
@@ -14468,7 +14471,8 @@ export function emitContractTs(opts: {
       if (isReservedByApplicantContactSchema(name)) continue;
       const zod = name === "Email" ? "z.email()" : "z.string()";
       const suffix = optionalPayloadFieldNames.has(rawName) ? ".optional()" : "";
-      addExtendField(name, `  ${name}: ${zod}${suffix},`);
+      const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
+      addExtendField(name, `  ${key}: ${zod}${suffix},`);
     }
   }
 
@@ -14569,6 +14573,7 @@ export function emitContractTs(opts: {
     : [];
   for (const [name, schema] of sortedStructuredEntries) {
     if (isReservedByApplicantContactSchema(name)) continue;
+    if (name === "TrackingUrl") continue;
     const key = isValidJsIdentifier(name) ? name : JSON.stringify(name);
     const value = payloadNeedsMultipart ? `multipartJsonObject(${schema})` : schema;
     extendFields.set(name, `  ${key}: ${value},`);
