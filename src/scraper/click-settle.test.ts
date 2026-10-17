@@ -237,4 +237,12 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, false, async () => text(), "example.com pre");
     expect(f.polls()).toBe(10);
   });
+
+  it("waits for a body re-render at 3s after a header flip at poll 1 with no network", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 3 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    expect(f.polls()).toBe(14);
+  });
 });
