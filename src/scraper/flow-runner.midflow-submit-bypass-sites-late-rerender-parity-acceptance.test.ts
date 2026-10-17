@@ -120,6 +120,70 @@ function captchaTarget(page: Page, surface: Surface): FrameTarget {
   } as unknown as FrameTarget;
 }
 
+async function runChildFrameFlow(
+  advances: boolean,
+  delay: number
+): Promise<{ result: unknown; childSurface: Surface }> {
+  const childSurface = buildSurface(advances, delay, (src) =>
+    src === "location.href" ? "https://example.org/embedded" : null
+  );
+  const childEvaluate = childSurface.evaluate as (e: unknown) => Promise<unknown>;
+  const frame = {
+    frameId: "child",
+    evaluate: (e: unknown) =>
+      e === "location.href" ? Promise.resolve("https://example.org/embedded") : childEvaluate(e),
+  };
+  const mainSurface = buildSurface(false, delay, () => null);
+  mainSurface.evaluate.mockImplementation(async (expr: unknown) => {
+    const src = String(expr);
+    if (src.includes("ranked.sort")) return [];
+    if (src.includes('__mouse("click"')) return { clicked: false };
+    if (src.includes("outerHTML")) {
+      const n = nextStepActs.n;
+      return { html: 4096 + n * 900, text: `${n}:next${n}`, full: `next${n}`, digest: `n${n}` };
+    }
+    return null;
+  });
+  const page = fakePage(mainSurface, [frame]);
+  (page as unknown as { waitForTimeout: unknown }).waitForTimeout = childSurface.waitForTimeout;
+  const nextStepActs = { n: 0 };
+  const act: ActResult = {
+    success: false,
+    message: "no candidates resolved",
+    actionDescription: "click",
+    actions: [{ selector: "button#x", description: "click", method: "click" }],
+  };
+  const stagehand = {
+    act: vi.fn().mockImplementation(async (instruction: unknown) => {
+      if (instruction !== NEXT_STEP) return act;
+      nextStepActs.n += 1;
+      return { ...act, success: true };
+    }),
+    observe: vi.fn().mockResolvedValue([{ selector: "button#x", description: "x" }]),
+  } as unknown as Stagehand;
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+
+  const result = await runHealingFlow({
+    stagehand,
+    page,
+    steps: [
+      { instruction: STEP, optional: false, upload: false, submitStep: true },
+      { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
+    ],
+    logger,
+    anthropic: null,
+    rephraseModel: null,
+    uploadFixture: null,
+  });
+
+  return { result, childSurface };
+}
+
 describe("flow-runner — mid-flow late re-render parity at the captcha-gated and child-frame sites", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -150,64 +214,7 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     });
 
     it("credits the probeChildFrameSubmitFallback click without a runner-up or exhaustion", async () => {
-      const childSurface = buildSurface(true, delay, (src) =>
-        src === "location.href" ? "https://example.org/embedded" : null
-      );
-      const childEvaluate = childSurface.evaluate as (e: unknown) => Promise<unknown>;
-      const frame = {
-        frameId: "child",
-        evaluate: (e: unknown) =>
-          e === "location.href"
-            ? Promise.resolve("https://example.org/embedded")
-            : childEvaluate(e),
-      };
-      const mainSurface = buildSurface(false, delay, () => null);
-      mainSurface.evaluate.mockImplementation(async (expr: unknown) => {
-        const src = String(expr);
-        if (src.includes("ranked.sort")) return [];
-        if (src.includes('__mouse("click"')) return { clicked: false };
-        if (src.includes("outerHTML")) {
-          const n = nextStepActs.n;
-          return { html: 4096 + n * 900, text: `${n}:next${n}`, full: `next${n}`, digest: `n${n}` };
-        }
-        return null;
-      });
-      const page = fakePage(mainSurface, [frame]);
-      (page as unknown as { waitForTimeout: unknown }).waitForTimeout = childSurface.waitForTimeout;
-      const nextStepActs = { n: 0 };
-      const act: ActResult = {
-        success: false,
-        message: "no candidates resolved",
-        actionDescription: "click",
-        actions: [{ selector: "button#x", description: "click", method: "click" }],
-      };
-      const stagehand = {
-        act: vi.fn().mockImplementation(async (instruction: unknown) => {
-          if (instruction !== NEXT_STEP) return act;
-          nextStepActs.n += 1;
-          return { ...act, success: true };
-        }),
-        observe: vi.fn().mockResolvedValue([{ selector: "button#x", description: "x" }]),
-      } as unknown as Stagehand;
-      const logger = {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-      } as unknown as Logger;
-
-      const result = await runHealingFlow({
-        stagehand,
-        page,
-        steps: [
-          { instruction: STEP, optional: false, upload: false, submitStep: true },
-          { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
-        ],
-        logger,
-        anthropic: null,
-        rephraseModel: null,
-        uploadFixture: null,
-      });
+      const { result, childSurface } = await runChildFrameFlow(true, delay);
 
       expect(result).toMatchObject({ lastStepIndex: 1 });
       expect(childSurface.rendered()).toBe(true);
@@ -232,5 +239,9 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
 
     expect(surface.rendered()).toBe(false);
     expect(submitExprRan).toHaveBeenCalled();
+  });
+
+  it("keeps a no-op probeChildFrameSubmitFallback click phantom (never credited)", async () => {
+    await expect(runChildFrameFlow(false, 8000)).rejects.toThrow(/failed verification/);
   });
 });
