@@ -269,11 +269,16 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function params(world: World, isFinalStep: boolean, trajectory: unknown[]): never {
+function params(
+  world: World,
+  isFinalStep: boolean,
+  trajectory: unknown[],
+  step: string = STEP
+): never {
   return {
     stagehand: world.stagehand,
     page: world.page,
-    step: STEP,
+    step,
     optional: false,
     upload: false,
     submitStep: true,
@@ -355,6 +360,66 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
       false
     );
   });
+
+  it.each([2000, 3000, 8000, 11000])(
+    "credits a header flip followed by a body re-render %ims later with no network",
+    async (delay) => {
+      const world = buildWorld({ ...REPORT, rerenderDelayMs: delay });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(world.rendered()).toBe(true);
+      expect(outcome).toBe("completed");
+      expect(world.counter.n).toBe(0);
+      expect(world.act).toHaveBeenCalledTimes(1);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      expect(
+        logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))
+      ).toBe(false);
+    }
+  );
+
+  it.each([2000, 11000])(
+    "credits a re-render to longer text %ims after the flip",
+    async (delay) => {
+      const world = buildWorld({
+        ...GROWTH,
+        title: "Sign In",
+        rerenderDelayMs: delay,
+      });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(world.rendered()).toBe(true);
+      expect(outcome).toBe("completed");
+      expect(world.act).toHaveBeenCalledTimes(1);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    }
+  );
+
+  it("credits a differently worded submit step on a different advancing page", async () => {
+    const world = buildWorld({ ...GROWTH, hdrBefore: "Subscribe", hdrAfter: "Confirm" });
+
+    const outcome = await executeStepWithHealing(
+      params(world, false, [], "Press the 'Create Account' control to send the subscription form")
+    );
+
+    expect(world.rendered()).toBe(true);
+    expect(outcome).toBe("completed");
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+  });
+
+  it.each(["Sign In", "Welcome"])(
+    "credits the late re-render with document title %s",
+    async (title) => {
+      const world = buildWorld({ ...REPORT, title, rerenderDelayMs: 11000 });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(outcome).toBe("completed");
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    }
+  );
 
   it("does not credit the late re-render on the final step", async () => {
     const world = buildWorld(LATE);

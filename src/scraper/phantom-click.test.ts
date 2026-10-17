@@ -5,6 +5,7 @@ import {
   classifyPhantomClick,
   hasPageAdvanced,
   hasPageBodySwapped,
+  hasSettledPageAdvanced,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
 } from "@/scraper/phantom-click";
@@ -575,6 +576,43 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     expect(hasPageBodySwapped(pre, post)).toBe(false);
   });
 
+  it("does not credit a mid-flow submit whose header flipped before the body landed", () => {
+    const pre = snap(half.replace("996:", "300:"));
+    const post = snap("300:Skip to main content|My Account|Careers Home|Search|Help|Privacy|Terms");
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post, isSubmitShapedStep: true, isMidFlowSubmitStep: true })
+      )
+    ).toBe("phantom");
+  });
+
+  it("credits a header-only flip on a mid-flow submit once the page is settled", () => {
+    const pre = snap(`300:Sign In|Create Account|${chrome}`);
+    const post = { ...snap(`300:My Account|Create Account|${chrome}`), settled: true };
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+    expect(classifyPhantomClick(makeAttempt({ pre, post, ...midFlow }))).toBe("effective");
+  });
+
+  it("keeps an unsettled header-only flip unfinished and a settled no-op phantom", () => {
+    const pre = snap(`300:Sign In|Create Account|${chrome}`);
+    expect(hasSettledPageAdvanced(pre, snap(`300:My Account|Create Account|${chrome}`))).toBe(
+      false
+    );
+    expect(
+      classifyPhantomClick(makeAttempt({ pre, post: { ...pre, settled: true }, ...midFlow }))
+    ).toBe("phantom");
+  });
+
+  it("keeps the final submit phantom for a settled header-only flip", () => {
+    const pre = snap(`300:Sign In|Create Account|${chrome}`);
+    const post = { ...snap(`300:My Account|Create Account|${chrome}`), settled: true };
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post, isSubmitShapedStep: true, isMidFlowSubmitStep: false })
+      )
+    ).toBe("phantom");
+  });
+
   it("treats a shrinking body swap as a finished swap", () => {
     expect(hasPageBodySwapped(snap(half), snap(finished))).toBe(true);
   });
@@ -589,6 +627,26 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     ).toBe("effective");
     expect(
       classifyPhantomClick(makeAttempt({ pre: snap(finished), post: snap(grown), ...midFlow }))
+    ).toBe("effective");
+  });
+
+  it("keeps the final submit phantom for the same swaps without network or URL proof", () => {
+    const final = { isSubmitShapedStep: true, isMidFlowSubmitStep: false };
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(finished), ...final }))
+    ).toBe("phantom");
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(finished), post: snap(grown), ...final }))
+    ).toBe("phantom");
+  });
+
+  it("credits a header flip once the longer body has re-rendered", () => {
+    const flipped = snap(
+      "588:Skip to main content|Settings|Careers Home|Search|Help|Privacy|Terms"
+    );
+    expect(hasPageBodySwapped(snap(half), flipped)).toBe(true);
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(grown), ...midFlow }))
     ).toBe("effective");
   });
 

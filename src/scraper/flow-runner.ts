@@ -113,6 +113,8 @@ import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
   hasPageAdvanced,
+  hasPageBodySwapped,
+  hasSettledPageAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -1202,6 +1204,11 @@ interface StepSnapshot {
    * movement. Optional so literal snapshots built elsewhere keep compiling.
    */
   visibleTextDigest?: string;
+  /**
+   * Set by the post-click re-settle when the visible text held still across a
+   * settle round, so a header-only flip can be judged as the final page.
+   */
+  settled?: boolean;
   /**
    * Joined `value`/`checked` fingerprint of every visible input/textarea/select
    * control (bounded to 2000 chars, same spirit as the 200-char text slice).
@@ -2376,7 +2383,7 @@ export function isNullVerdictAdvanceCredited(params: {
  *
  * **Mid-flow submit:** `midFlowSubmit` (see {@link isMidFlowSubmitShapedStep})
  * lets a submit-shaped, non-final step be credited when `pageAdvanced` (the
- * shared {@link hasPageAdvanced} judgement of the visible text; defaults to
+ * shared {@link hasSettledPageAdvanced} judgement of the visible text; defaults to
  * `textChanged` when omitted) holds — byte delta is not required, since a
  * wizard swap can keep the HTML size — with the same invalid-marker and
  * destination vetoes. The clicked control being gone is NOT a veto here: a
@@ -7431,6 +7438,47 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
 }
 
 /**
+ * Re-settle rounds granted to a post-click page whose header flipped but whose
+ * body has not re-rendered yet. Each round waits the settle's own idle
+ * allowance, so a body landing well after the first settle ended is still read.
+ */
+const HEADER_ONLY_RESETTLE_ROUNDS = 2;
+
+/**
+ * Re-reads the post-click page while only its header has flipped. One
+ * settle-then-snapshot moment can land between a header flip and the body
+ * re-render that follows it, so the verdict waits for the body or for the text
+ * to hold still across a settle round, and only then reads the header flip as
+ * the page's final state (`settled`). Bounded, and a page whose header never
+ * flipped (a no-op click) or whose body already swapped returns at once.
+ */
+async function resettleThroughHeaderOnlyFlip(
+  page: Page,
+  target: FrameTarget,
+  signalCounter: { n: number },
+  pre: StepSnapshot,
+  post: StepSnapshot
+): Promise<StepSnapshot> {
+  let current = post;
+  for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
+    if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
+    await settleWithPageQuiescence(
+      page,
+      target,
+      signalCounter,
+      current.networkCount,
+      true,
+      current.visibleTextSignature,
+      current.visibleTextDigest
+    );
+    const next = await snapshotPage(target, signalCounter, page);
+    if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
+    current = next;
+  }
+  return current;
+}
+
+/**
  * Settles after a click and returns the post-click snapshot, so the settle
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
@@ -7452,7 +7500,10 @@ async function settleAndSnapshotPostClick(
       pre.visibleTextSignature,
       pre.visibleTextDigest
     );
-  return snapshotPage(target, signalCounter, page);
+  const post = await snapshotPage(target, signalCounter, page);
+  return page && waitForMutations
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post)
+    : post;
 }
 
 /**
@@ -14586,7 +14637,21 @@ export async function executeStepWithHealing(params: {
         pre.visibleTextDigest
       );
     }
-    const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
+    const settledPost = await snapshotPage(
+      frameTarget ?? mainFrameTarget(page),
+      signalCounter,
+      page
+    );
+    const post =
+      mayTriggerRoundTrip && stepIsMidFlowSubmit
+        ? await resettleThroughHeaderOnlyFlip(
+            page,
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
+            pre,
+            settledPost
+          )
+        : settledPost;
     record.post = post;
 
     if (resolvedAction) {
@@ -14746,7 +14811,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
-      pageAdvanced: hasPageAdvanced(pre, post),
+      pageAdvanced: hasSettledPageAdvanced(pre, post),
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15090,7 +15155,7 @@ export async function executeStepWithHealing(params: {
           midFlowSubmit,
           judgeUnavailable: judgeVerdict === null,
           networkAdvanced: networkIsRealAdvance,
-          pageAdvanced: hasPageAdvanced(pre, post),
+          pageAdvanced: hasSettledPageAdvanced(pre, post),
           invalidMarkerCount,
         });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
@@ -15474,7 +15539,7 @@ export async function executeStepWithHealing(params: {
           const retryMidFlowDestinationPlausible =
             retryDestinationPlausible ||
             (retryMidFlowSubmit &&
-              hasPageAdvanced(pre, retryPost) &&
+              hasSettledPageAdvanced(pre, retryPost) &&
               isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
@@ -15771,12 +15836,12 @@ export async function executeStepWithHealing(params: {
             const retryMidFlowAdvanceCredited =
               (retryMidFlowSubmit &&
                 retryVerdict === "effective" &&
-                hasPageAdvanced(pre, retryPost)) ||
+                hasSettledPageAdvanced(pre, retryPost)) ||
               isNullVerdictAdvanceCredited({
                 midFlowSubmit: retryMidFlowSubmit,
                 judgeUnavailable: judgeVerdict === null,
                 networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-                pageAdvanced: hasPageAdvanced(pre, retryPost),
+                pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
                 invalidMarkerCount,
               });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {

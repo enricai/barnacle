@@ -32,6 +32,7 @@ const RETRY_STEP = "Click the Continue tile to proceed to the next section";
 const REPHRASED = "Press the Create Account control at the bottom of the registration form";
 const URL = "https://example.org/signup";
 const RERENDER_DELAY_MS = 12000;
+const DELAYS_MS = [3000, 8000, 11000];
 const PRE_TEXT_LEN = 996;
 const POST_TEXT_LEN = 588;
 const PRE_BYTES = 31284;
@@ -99,7 +100,7 @@ interface World {
  * test issues a click that reaches the real control; when `advances` is false
  * that click is a no-op too.
  */
-function buildWorld(site: Site, advances: boolean): World {
+function buildWorld(site: Site, advances: boolean, delayMs = RERENDER_DELAY_MS): World {
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `<div><h1 id="hdr">Sign In</h1><div id="out"></div><button id="theControl" type="button">Create Account</button><span id="decoy">x</span></div>`;
@@ -195,7 +196,7 @@ function buildWorld(site: Site, advances: boolean): World {
         requestStarted = true;
         void (window as unknown as { fetch: () => Promise<void> }).fetch();
       }
-      if (clickedAt !== null && !rendered && now - clickedAt >= RERENDER_DELAY_MS) {
+      if (clickedAt !== null && !rendered && now - clickedAt >= delayMs) {
         rendered = true;
         shapeBody(document as unknown as Doc, POST_TEXT_LEN, POST_BYTES);
         (resolveRequest as (() => void) | null)?.();
@@ -334,6 +335,25 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit at bypass sites
     expect(world.rendered()).toBe(true);
     expect(logLines().some((l) => l.includes("trusted-click-retry"))).toBe(true);
     expect(logLines().some((l) => GIVE_UP.test(l))).toBe(false);
+  });
+
+  describe.each(DELAYS_MS)("with a body re-render %ims after the header flip", (delay) => {
+    it.each<Site>(["deep-locator", "runner-up", "rephrase", "retry"])(
+      "credits the %s click",
+      async (site) => {
+        const world = buildWorld(site, true, delay);
+
+        const outcome = await executeStepWithHealing(
+          params(world, site === "rephrase", site !== "retry")
+        );
+
+        expect(outcome).toBe("completed");
+        expect(world.rendered()).toBe(true);
+        expect(world.counter.n).toBe(0);
+        expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+        expect(logLines().some((l) => GIVE_UP.test(l))).toBe(false);
+      }
+    );
   });
 
   it.each<Site>(["deep-locator", "runner-up", "rephrase", "retry"])(

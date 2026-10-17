@@ -170,4 +170,10 @@ describe("verifySubmitWithLLM", () => {
     expect(ctx).toContain("isFinalStep: i === plan.length - 1");
     expect(ctx).not.toContain("isFinalStep: true");
   });
+
+  it("flow-runner derives finality from the full flow's steps, never a slice", () => {
+    const runner = readFileSync("src/scraper/flow-runner.ts", "utf8");
+    expect(runner).toContain("isFinalStep: i === steps.length - 1,");
+    expect(runner).toContain("totalSteps: () => steps.length,");
+  });
 });
