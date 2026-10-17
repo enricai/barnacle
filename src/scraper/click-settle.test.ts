@@ -245,4 +245,31 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
     expect(f.polls()).toBe(14);
   });
+
+  for (const at of [5, 8, 12]) {
+    it(`credits a body re-render at ${at}s after a header flip without a probe`, async () => {
+      const f = makeFake(() => {});
+      const text = (): string =>
+        f.polls() >= at ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+      await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+      expect(f.polls()).toBe(at + 9);
+    });
+
+    it(`credits a body re-render at ${at}s after a header flip with a quiescence probe`, async () => {
+      const f = makeFake(() => {});
+      const text = (): string =>
+        f.polls() >= at ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+      await settleAfterClick(
+        f.page,
+        f.counter,
+        0,
+        true,
+        async () => text(),
+        "example.com pre",
+        async () => ({ pending: 0, mutations: f.polls() >= at ? 1 : 0 })
+      );
+      expect(f.polls()).toBeGreaterThanOrEqual(at + 9);
+      expect(f.polls()).toBeLessThan(60);
+    });
+  }
 });

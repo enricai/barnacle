@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMidFlowSubmitShapedStep } from "@/scraper/flow-runner";
+import { flowHasSubmitSemantics, isMidFlowSubmitShapedStep } from "@/scraper/flow-runner";
 import { classifyPhantomClick } from "@/scraper/phantom-click";
 
 const base = {
@@ -19,11 +19,22 @@ describe("isMidFlowSubmitShapedStep", () => {
   it("is false for a plain non-final step", () => {
     expect(isMidFlowSubmitShapedStep(base)).toBe(false);
   });
-  it("is always false on the final step", () => {
+  it("is credited in a last slot without final-submit semantics", () => {
+    expect(
+      isMidFlowSubmitShapedStep({
+        ...base,
+        step: "Click Create Account",
+        isFinalStep: true,
+        submitStep: true,
+      })
+    ).toBe(true);
+  });
+  it("is false on a genuine final submit", () => {
     expect(
       isMidFlowSubmitShapedStep({
         ...base,
         isFinalStep: true,
+        flowHasSubmitSemantics: true,
         submitStep: true,
         elementSubmitShaped: true,
       })
@@ -61,5 +72,28 @@ describe("classifyPhantomClick genuine no-op", () => {
         isSubmitShapedStep: true,
       })
     ).toBe("phantom");
+  });
+});
+
+describe("isMidFlowSubmitShapedStep with derived flowHasSubmitSemantics", () => {
+  it("credits a truncated plan whose last slot is a non-submit step", () => {
+    const steps = [
+      { submitStep: true, instruction: "Click Create Account" },
+      { submitStep: false, instruction: "fill the email field" },
+    ];
+    const derived = flowHasSubmitSemantics({
+      steps,
+      submitEndpointPattern: null,
+      requireSubmitEndpointMatch: false,
+    });
+    expect(derived).toBe(false);
+    expect(
+      isMidFlowSubmitShapedStep({
+        step: "Click Create Account",
+        submitStep: true,
+        isFinalStep: true,
+        flowHasSubmitSemantics: derived,
+      })
+    ).toBe(true);
   });
 });

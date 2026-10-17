@@ -101,6 +101,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
+  isMidFlowSubmitShapedStep,
   isStepDeclaredNonSubmit,
   latestCaptureIndex,
   logBillingErrorIfPresent,
@@ -111,6 +112,7 @@ import {
   renderUnfocusedObserve,
   STEP_WATCHDOG_MS,
   selectBodyExcerpt,
+  settleAndSnapshotPostClick,
   settleWithPageQuiescence,
   snapshotPage,
   stripNegatedSubmitClauses,
@@ -124,7 +126,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
-  hasPageBodySwapped,
+  hasSettledPageAdvanced,
   isPlausibleStepDestination,
   type PhantomClickSnapshot,
   SIGN_IN_PATTERNS,
@@ -1478,26 +1480,28 @@ export function hasPageAlreadyAdvancedPastStep(
   return isPlausibleStepDestination(stepInstruction, currentUrl);
 }
 
+type SettledTextState = VisibleTextState & { settled?: boolean };
+
 /**
  * DOM-advance counterpart of {@link hasPageAlreadyAdvancedPastStep} for
  * non-final submit-shaped steps, whose SPA wizards swap content without a URL
- * change. Reuses the shared {@link hasPageBodySwapped} judgement over the
- * step-start and live visible-text signatures; a final step is never credited
+ * change. Reuses the shared {@link hasSettledPageAdvanced} judgement over the
+ * step-start and settled visible-text snapshots; a final step is never credited
  * here because its completion is owned by the submit-destination judge.
  */
 export function hasSubmitStepDomAdvanced(
   isFinalStep: boolean,
-  pre: string | VisibleTextState | undefined,
-  live: string | VisibleTextState | undefined
+  pre: string | SettledTextState | undefined,
+  live: string | SettledTextState | undefined
 ): boolean {
   if (isFinalStep) return false;
-  const asSnapshot = (text: string | VisibleTextState | undefined): PhantomClickSnapshot => ({
+  const asSnapshot = (text: string | SettledTextState | undefined): PhantomClickSnapshot => ({
     networkCount: 0,
     url: "",
     bodyHtmlLength: 0,
     ...(typeof text === "string" ? { visibleTextSignature: text } : text),
   });
-  return hasPageBodySwapped(asSnapshot(pre), asSnapshot(live));
+  return hasSettledPageAdvanced(asSnapshot(pre), asSnapshot(live));
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
@@ -3052,8 +3056,20 @@ async function main(): Promise<void> {
         // in-frame navigation would otherwise be invisible to the top-level
         // page.url() this used to read.
         const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
-        const networkAtStepStart = signalCounter.n;
-        const textAtStepStart = step.submitStep
+        const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
+          step: step.instruction,
+          submitStep: step.submitStep === true,
+          isFinalStep: i === plan.length - 1,
+          flowHasSubmitSemantics: flowHasSubmitSemantics({
+            steps: plan.map((s) => ({
+              submitStep: s.submitStep === true,
+              instruction: s.instruction,
+            })),
+            submitEndpointPattern,
+            requireSubmitEndpointMatch,
+          }),
+        });
+        const textAtStepStart = midFlowSubmitShaped
           ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
           : undefined;
         // A child frame CDP has just attached to may still be sitting on
@@ -3235,26 +3251,25 @@ async function main(): Promise<void> {
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
           const urlAdvanced =
-            !step.submitStep &&
+            (!step.submitStep || midFlowSubmitShaped) &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
           const settledText =
-            !urlAdvanced && step.submitStep === true && textAtStepStart !== undefined
-              ? await settleWithPageQuiescence(
-                  page,
+            !urlAdvanced && midFlowSubmitShaped && textAtStepStart !== undefined
+              ? await settleAndSnapshotPostClick(
                   frameTarget,
                   signalCounter,
-                  networkAtStepStart,
+                  page,
+                  textAtStepStart,
                   true,
-                  textAtStepStart.visibleTextSignature,
-                  textAtStepStart.visibleTextDigest
-                )
-                  .then(() => snapshotPage(frameTarget, signalCounter))
-                  .catch(() => undefined)
+                  { settle: settleWithPageQuiescence, snapshot: snapshotPage }
+                ).catch(() => undefined)
               : undefined;
           const domAdvanced =
             !urlAdvanced &&
-            step.submitStep === true &&
-            hasSubmitStepDomAdvanced(i === plan.length - 1, textAtStepStart, settledText);
+            midFlowSubmitShaped &&
+            // midFlowSubmitShaped already excludes a genuine final submit, so a last
+            // slot without submit semantics is judged like any other mid-flow step.
+            hasSubmitStepDomAdvanced(false, textAtStepStart, settledText);
           if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`

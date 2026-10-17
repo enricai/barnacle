@@ -29,4 +29,11 @@ describe("hasSubmitStepDomAdvanced", () => {
     const withError = `${PRE.replace(/^40:/, "52:")}`;
     expect(hasSubmitStepDomAdvanced(false, PRE, withError)).toBe(false);
   });
+  it("credits a header-only flip once the snapshot is marked settled", () => {
+    const chrome = "Site header nav footer links ".repeat(10);
+    const pre = { visibleTextSignature: `300:Personal info ${chrome}`, visibleTextDigest: "a" };
+    const post = { visibleTextSignature: `300:Work history ${chrome}`, visibleTextDigest: "b" };
+    expect(hasSubmitStepDomAdvanced(false, pre, { ...post, settled: true })).toBe(true);
+    expect(hasSubmitStepDomAdvanced(true, pre, { ...post, settled: true })).toBe(false);
+  });
 });

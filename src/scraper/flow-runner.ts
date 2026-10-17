@@ -1948,7 +1948,8 @@ export function isStepSettleWaitShaped(params: {
 }
 
 /**
- * Submit-shaped but NOT the flow's final step: a mid-flow advancing submit
+ * Submit-shaped but NOT the flow's genuine final submit (a final slot without
+ * submit semantics, e.g. after a replan trims the tail, is still mid-flow): a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
  * instead of needing the final submit's network/URL proof.
  */
@@ -1959,7 +1960,7 @@ export function isMidFlowSubmitShapedStep(params: {
   flowHasSubmitSemantics: boolean;
   elementSubmitShaped?: boolean;
 }): boolean {
-  if (params.isFinalStep) return false;
+  if (params.isFinalStep && params.flowHasSubmitSemantics) return false;
   return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
@@ -7437,6 +7438,17 @@ function isNavigatingEvaluateRejection(error: unknown): boolean {
   );
 }
 
+/** The settle and snapshot reads a post-click verdict is built from. */
+export interface PostClickSettleIo {
+  settle: typeof settleWithPageQuiescence;
+  snapshot: typeof snapshotPage;
+}
+
+const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
+  settle: settleWithPageQuiescence,
+  snapshot: snapshotPage,
+};
+
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
  * body has not re-rendered yet. Each round waits the settle's own idle
@@ -7457,12 +7469,13 @@ async function resettleThroughHeaderOnlyFlip(
   target: FrameTarget,
   signalCounter: { n: number },
   pre: StepSnapshot,
-  post: StepSnapshot
+  post: StepSnapshot,
+  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
-    await settleWithPageQuiescence(
+    await io.settle(
       page,
       target,
       signalCounter,
@@ -7471,7 +7484,7 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextSignature,
       current.visibleTextDigest
     );
-    const next = await snapshotPage(target, signalCounter, page);
+    const next = await io.snapshot(target, signalCounter, page);
     if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
     current = next;
   }
@@ -7482,16 +7495,21 @@ async function resettleThroughHeaderOnlyFlip(
  * Settles after a click and returns the post-click snapshot, so the settle
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
+ * `io` lets a caller that owns its own seam (recon-browser's pre-replan
+ * short-circuit) route the settle and the snapshot through the functions it
+ * already imports, so the settled read there is the same one every other site
+ * makes.
  */
-async function settleAndSnapshotPostClick(
+export async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
   pre: StepSnapshot,
-  waitForMutations = true
+  waitForMutations = true,
+  io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   if (page)
-    await settleWithPageQuiescence(
+    await io.settle(
       page,
       target,
       signalCounter,
@@ -7500,9 +7518,9 @@ async function settleAndSnapshotPostClick(
       pre.visibleTextSignature,
       pre.visibleTextDigest
     );
-  const post = await snapshotPage(target, signalCounter, page);
+  const post = await io.snapshot(target, signalCounter, page);
   return page && waitForMutations
-    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post)
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
     : post;
 }
 
@@ -7754,6 +7772,55 @@ export async function injectCaptchaTokenAndSubmit(
 }
 
 /**
+ * Single assembly point for the mid-flow half of a phantom-click verdict, so
+ * the primary attempt and every bypass/retry site extend the same
+ * pre-URL destination exemption for a mid-flow submit, granted only on a
+ * settled page advance, identically instead of each re-deriving it.
+ */
+function midFlowDestinationPlausible(params: {
+  step: string;
+  pre: StepSnapshot;
+  post: StepSnapshot;
+  midFlowSubmit: boolean;
+  destinationPlausible?: boolean;
+}): boolean {
+  const { step, pre, post, midFlowSubmit } = params;
+  return (
+    (params.destinationPlausible ?? isPlausibleStepDestination(step, post.url)) ||
+    (midFlowSubmit &&
+      hasSettledPageAdvanced(pre, post) &&
+      isPlausibleStepDestination(step, post.url, pre.url))
+  );
+}
+
+/**
+ * Classifies a submit-shaped click through the shared mid-flow verdict
+ * assembly used by the primary path and the n+16 / deep-submit / captcha /
+ * child-frame bypass sites.
+ */
+function classifySubmitShapedClick(params: {
+  step: string;
+  pre: StepSnapshot;
+  post: StepSnapshot;
+  midFlowSubmit: boolean;
+  actResultSuccess?: boolean | null;
+  elementStateChanged?: boolean;
+  isSubmitShapedStep?: boolean;
+  destinationPlausible?: boolean;
+}): PhantomClickVerdict {
+  const { pre, post, midFlowSubmit } = params;
+  return classifyPhantomClick({
+    actResultSuccess: params.actResultSuccess ?? true,
+    pre,
+    post,
+    elementStateChanged: params.elementStateChanged,
+    isSubmitShapedStep: midFlowSubmit || (params.isSubmitShapedStep ?? true),
+    isMidFlowSubmitStep: midFlowSubmit,
+    destinationPlausible: midFlowDestinationPlausible(params),
+  });
+}
+
+/**
  * Explicit submit fallback for {@link injectCaptchaTokenAndSubmit} callers:
  * used only when the caller's own transition poll observed no advance after
  * the inject, so the widget's callback (if any) evidently didn't submit for
@@ -7848,17 +7915,11 @@ export async function submitCaptchaGatedForm(
         verification.page,
         pre
       );
-      const verdict = classifyPhantomClick({
-        actResultSuccess: true,
+      const verdict = classifySubmitShapedClick({
+        step: verification.step,
         pre,
         post,
-        isSubmitShapedStep: true,
-        isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
-        destinationPlausible: isPlausibleStepDestination(
-          verification.step,
-          post.url,
-          verification.isMidFlowSubmitStep ? pre.url : undefined
-        ),
+        midFlowSubmit: verification.isMidFlowSubmitStep === true,
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -7876,17 +7937,11 @@ export async function submitCaptchaGatedForm(
             verification.page,
             post
           );
-          const runnerUpVerdict = classifyPhantomClick({
-            actResultSuccess: true,
+          const runnerUpVerdict = classifySubmitShapedClick({
+            step: verification.step,
             pre: post,
             post: runnerUpPost,
-            isSubmitShapedStep: true,
-            isMidFlowSubmitStep: verification.isMidFlowSubmitStep,
-            destinationPlausible: isPlausibleStepDestination(
-              verification.step,
-              runnerUpPost.url,
-              verification.isMidFlowSubmitStep ? post.url : undefined
-            ),
+            midFlowSubmit: verification.isMidFlowSubmitStep === true,
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
@@ -11783,17 +11838,11 @@ async function probeChildFrameSubmitFallback(params: {
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
     const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
-    const verdict = classifyPhantomClick({
-      actResultSuccess: true,
+    const verdict = classifySubmitShapedClick({
+      step,
       pre,
       post,
-      isSubmitShapedStep: true,
-      isMidFlowSubmitStep,
-      destinationPlausible: isPlausibleStepDestination(
-        step,
-        post.url,
-        isMidFlowSubmitStep ? pre.url : undefined
-      ),
+      midFlowSubmit: isMidFlowSubmitStep === true,
     });
     if (verdict !== "phantom") return target;
 
@@ -11804,17 +11853,11 @@ async function probeChildFrameSubmitFallback(params: {
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
     const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
-    const runnerUpVerdict = classifyPhantomClick({
-      actResultSuccess: true,
-      pre,
+    const runnerUpVerdict = classifySubmitShapedClick({
+      step,
+      pre: post,
       post: runnerUpPost,
-      isSubmitShapedStep: true,
-      isMidFlowSubmitStep,
-      destinationPlausible: isPlausibleStepDestination(
-        step,
-        runnerUpPost.url,
-        isMidFlowSubmitStep ? post.url : undefined
-      ),
+      midFlowSubmit: isMidFlowSubmitStep === true,
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -13719,20 +13762,14 @@ export async function executeStepWithHealing(params: {
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
               const midPost = await settleAndSnapshotPostClick(midTarget, signalCounter, page, pre);
-              const topVerdict = classifyPhantomClick({
-                actResultSuccess: true,
+              // The deep-submit-locator runs only on submit escalation, so a
+              // stray selection flip must not mask a top-pick phantom and skip
+              // the runner-up retry.
+              const topVerdict = classifySubmitShapedClick({
+                step,
                 pre,
                 post: midPost,
-                // The deep-submit-locator runs only on submit escalation, so a
-                // stray selection flip must not mask a top-pick phantom and skip
-                // the runner-up retry.
-                isSubmitShapedStep: true,
-                isMidFlowSubmitStep: deepMidFlowSubmit,
-                destinationPlausible: isPlausibleStepDestination(
-                  step,
-                  midPost.url,
-                  deepMidFlowSubmit ? pre.url : undefined
-                ),
+                midFlowSubmit: deepMidFlowSubmit,
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -14796,9 +14833,13 @@ export async function executeStepWithHealing(params: {
     });
     // An element-inferred mid-flow submit joins the exemption the step-derived
     // one already got: a click that never left its URL did not bounce to a gate.
-    const midFlowDestinationPlausible =
-      destinationPlausible ||
-      (midFlowSubmit && isPlausibleStepDestination(step, post.url, pre.url));
+    const midFlowDestinationPlausibleForPost = midFlowDestinationPlausible({
+      step,
+      pre,
+      post,
+      midFlowSubmit,
+      destinationPlausible,
+    });
     const clickViewSwapVerified = isClickViewSwapVerified({
       resolvedAction,
       submitStep,
@@ -14809,7 +14850,7 @@ export async function executeStepWithHealing(params: {
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
-      destinationPlausible: midFlowDestinationPlausible,
+      destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
       pageAdvanced: hasSettledPageAdvanced(pre, post),
       actSucceeded: record.actResultSuccess === true,
@@ -14992,7 +15033,7 @@ export async function executeStepWithHealing(params: {
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         }),
       isMidFlowSubmitStep: midFlowSubmit,
-      destinationPlausible: midFlowDestinationPlausible,
+      destinationPlausible: midFlowDestinationPlausibleForPost,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
     // floor (`TRIVIAL_DOM_DELTA_BYTES`, 500B) is intentionally NOT trusted
@@ -15536,11 +15577,13 @@ export async function executeStepWithHealing(params: {
           const retryDestinationPlausible = isPlausibleStepDestination(step, retryPost.url);
           // Only the verdict sees the pre.url exemption, and only for a demonstrable
           // page advance: bare network/DOM signals stay gated on the landed URL.
-          const retryMidFlowDestinationPlausible =
-            retryDestinationPlausible ||
-            (retryMidFlowSubmit &&
-              hasSettledPageAdvanced(pre, retryPost) &&
-              isPlausibleStepDestination(step, retryPost.url, pre.url));
+          const retryMidFlowDestinationPlausible = midFlowDestinationPlausible({
+            step,
+            pre,
+            post: retryPost,
+            midFlowSubmit: retryMidFlowSubmit,
+            destinationPlausible: retryDestinationPlausible,
+          });
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
             retryDestinationPlausible &&

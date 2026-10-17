@@ -301,7 +301,7 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
     expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0 })]);
   });
 
-  it.each([8000, 10000])(
+  it.each([5000, 8000, 10000, 12000])(
     "credits a non-final submit-shaped click whose header flips at once and whose body re-renders %ims later with no network",
     async (lateMs) => {
       const vp = makeTimelinePage([
@@ -322,6 +322,22 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
       expect(trajectory).toHaveLength(1);
     }
   );
+
+  it("credits a non-final submit-shaped click whose header and body change together with no network", async () => {
+    const vp = makeTimelinePage([
+      { fromMs: 0, html: 31284, text: "996:Skip to main content|Sign In|Careers Home" },
+      { fromMs: 500, html: 29300, text: SETTLED_SIGNATURE },
+    ]);
+    armClick(vp);
+
+    const outcome = await executeStepWithHealing(
+      baseParams(vp, { step: CREATE_ACCOUNT_STEP, submitStep: true }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(vp.signalCounter.n).toBe(0);
+  });
 
   it("credits the same advance when the settled body grows instead of shrinking", async () => {
     const vp = makeTimelinePage([

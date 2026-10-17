@@ -291,6 +291,7 @@ function params(
     logger: testLogger,
     uploadFixture: null,
     isFinalStep,
+    flowHasSubmitSemantics: isFinalStep,
     submitEndpointPattern: null,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,

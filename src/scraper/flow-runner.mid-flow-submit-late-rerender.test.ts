@@ -140,6 +140,7 @@ function baseParams(vp: VirtualPage, overrides: Record<string, unknown>): Record
     submitEndpointPattern: null,
     submittedStateSelectors: [],
     requireSubmitEndpointMatch: false,
+    flowHasSubmitSemantics: true,
     advanceTransitionBodyPattern: null,
     successUrlFragments: [],
     successPageTitleHints: [],
