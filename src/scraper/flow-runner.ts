@@ -7791,7 +7791,7 @@ function classifySubmitShapedClick(params: {
   isSubmitShapedStep?: boolean;
   destinationPlausible?: boolean;
 }): PhantomClickVerdict {
-  const { midFlowSubmit } = params;
+  const { pre, post, midFlowSubmit } = params;
   return classifyPhantomClick({
     actResultSuccess: params.actResultSuccess ?? true,
     pre,
