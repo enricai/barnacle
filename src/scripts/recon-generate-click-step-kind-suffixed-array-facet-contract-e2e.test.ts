@@ -20,14 +20,14 @@ const FIVE_ELEMENTS = [
   "ALPHA;filterType=destination",
   "BRAVO;filterType=theme",
   "CHARLIE;filterType=ship",
-  "DELTA;filterType=privateIsland",
+  "DELTA;filterType=privateLodge",
 ];
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
 const DESTINATION_STEP =
   "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the stay length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 
 const NAVIGATE_STEPS = [
   {
@@ -38,7 +38,7 @@ const NAVIGATE_STEPS = [
   {
     step: "navigate to the sailing month",
     navigateTo: `https://${OWN_BACKEND_HOST}/#/ship/charlie/dec-2026`,
-    payloadField: "sailMonth",
+    payloadField: "tripMonth",
   },
   {
     step: "navigate to the theme page",
@@ -48,7 +48,7 @@ const NAVIGATE_STEPS = [
   {
     step: "navigate to the island page",
     navigateTo: `https://${OWN_BACKEND_HOST}/#/island/delta`,
-    payloadField: "privateIsland",
+    payloadField: "privateLodge",
   },
 ];
 const CLICK_STEPS = [
@@ -64,7 +64,7 @@ const DECLARED_STEPS = [...NAVIGATE_STEPS, ...CLICK_STEPS].map((entry) => ({
  * Repro surface for click-step facets in a kind-suffixed array when the
  * quoted literal differs from the captured element only by case, the field
  * name ("nights") differs from the kind ("night"), and the date-like field
- * ("sailMonth") differs from its kind ("date").
+ * ("tripMonth") differs from its kind ("date").
  */
 function buildCaptures(filters: string[]): Capture[] {
   return [
@@ -158,10 +158,10 @@ function facetElement(field: string, kind: string): RegExp {
 const FACETS: Array<[string, string]> = [
   ["destination", "destination"],
   ["nights", "night"],
-  ["sailMonth", "date"],
+  ["tripMonth", "date"],
   ["theme", "theme"],
   ["ship", "ship"],
-  ["privateIsland", "privateIsland"],
+  ["privateLodge", "privateLodge"],
 ];
 
 describe("recon-generate CLI — case-only click facets in a kind-suffixed array", () => {

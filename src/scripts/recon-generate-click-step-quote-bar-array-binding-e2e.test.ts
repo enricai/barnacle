@@ -18,7 +18,7 @@ const OWN_BACKEND_HOST = "www.click-quote-bar-array-fixture.example.com";
 const DESTINATION_STEP =
   "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the trip length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the stay length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 const ROOM_STEP =
   "Open the room type filter dropdown in the quote bar and select the 'Suite' room option, keeping the other filters that are already applied";
 const UNMATCHED_STEP =
