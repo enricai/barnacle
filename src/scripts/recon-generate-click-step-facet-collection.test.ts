@@ -23,6 +23,7 @@ describe("click-step facet collection", () => {
         optional: false,
         literals: ["category-gadgets"],
         kind: "kind",
+        kindHints: ["jobs"],
       },
       {
         value: "Widgets",
@@ -31,6 +32,7 @@ describe("click-step facet collection", () => {
         origin: "step",
         literals: ["Widgets"],
         kind: "category",
+        kindHints: ["category"],
       },
     ]);
   });
