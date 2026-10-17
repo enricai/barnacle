@@ -9814,10 +9814,7 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
     .filter((word) => !KIND_NOISE_WORDS.has(word))
     .map(normalizeKind);
   const facetWords = new Set(
-    [
-      ...named,
-      ...(facet.kindHints ?? []).flatMap((hint) => deriveFacetKind(hint).split(" ")),
-    ]
+    [...named, ...(facet.kindHints ?? []).flatMap((hint) => deriveFacetKind(hint).split(" "))]
       .filter((word) => !KIND_NOISE_WORDS.has(word))
       .map(normalizeKind)
   );
