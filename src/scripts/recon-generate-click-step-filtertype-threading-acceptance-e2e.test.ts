@@ -123,7 +123,6 @@ describe("recon-generate CLI — click-step facets in a kind-suffixed array", ()
 
     expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=category/);
     expect(contract, contract).not.toMatch(/^\s*nights: z\.string\(\),/m);
-    expect(output).toMatch(/nights/);
-    expect(output).toMatch(/warn/i);
+    expect(output).toMatch(/declared payloadField nights is read by no emitted request/);
   }, 60_000);
 });
