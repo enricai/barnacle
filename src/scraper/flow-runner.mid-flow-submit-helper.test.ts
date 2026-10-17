@@ -19,11 +19,22 @@ describe("isMidFlowSubmitShapedStep", () => {
   it("is false for a plain non-final step", () => {
     expect(isMidFlowSubmitShapedStep(base)).toBe(false);
   });
-  it("is always false on the final step", () => {
+  it("is credited in a last slot without final-submit semantics", () => {
+    expect(
+      isMidFlowSubmitShapedStep({
+        ...base,
+        step: "Click Create Account",
+        isFinalStep: true,
+        submitStep: true,
+      })
+    ).toBe(true);
+  });
+  it("is false on a genuine final submit", () => {
     expect(
       isMidFlowSubmitShapedStep({
         ...base,
         isFinalStep: true,
+        flowHasSubmitSemantics: true,
         submitStep: true,
         elementSubmitShaped: true,
       })

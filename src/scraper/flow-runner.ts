@@ -1948,7 +1948,8 @@ export function isStepSettleWaitShaped(params: {
 }
 
 /**
- * Submit-shaped but NOT the flow's final step: a mid-flow advancing submit
+ * Submit-shaped but NOT the flow's genuine final submit (a final slot without
+ * submit semantics, e.g. after a replan trims the tail, is still mid-flow): a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
  * instead of needing the final submit's network/URL proof.
  */
@@ -1959,7 +1960,7 @@ export function isMidFlowSubmitShapedStep(params: {
   flowHasSubmitSemantics: boolean;
   elementSubmitShaped?: boolean;
 }): boolean {
-  if (params.isFinalStep) return false;
+  if (params.isFinalStep && params.flowHasSubmitSemantics) return false;
   return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
