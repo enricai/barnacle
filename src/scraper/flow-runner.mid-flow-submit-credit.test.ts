@@ -132,3 +132,35 @@ describe("isMidFlowSubmitShapedStep", () => {
     expect(verdicts).toEqual([true, true, false]);
   });
 });
+
+describe("final submit keeps strict proof", () => {
+  it("does not credit a final submit on a text swap with no network or URL proof", () => {
+    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: false, textChanged: true })).toBe(
+      false
+    );
+    expect(
+      isClickViewSwapVerified({
+        ...BASE,
+        midFlowSubmit: false,
+        bytesDelta: 0,
+        pageAdvanced: true,
+        resolvedElementIsSubmitShaped: true,
+        submitStep: false,
+      })
+    ).toBe(false);
+  });
+
+  it("derives a plan slice's last step as mid-flow when finality comes from the full flow", () => {
+    const full = ["Click Continue", "Click Next", "Click Submit"];
+    const slice = full.slice(0, 2);
+    const verdicts = slice.map((s, i) =>
+      isMidFlowSubmitShapedStep({
+        step: s,
+        submitStep: true,
+        isFinalStep: i === full.length - 1,
+        flowHasSubmitSemantics: true,
+      })
+    );
+    expect(verdicts).toEqual([true, true]);
+  });
+});

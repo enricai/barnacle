@@ -63,6 +63,21 @@ describe("settleAfterClick virtual clock", () => {
   });
 });
 
+describe("settleAfterClick no-op click give-up bound", () => {
+  it("gives up after one quiet poll for a silent non-submit click", async () => {
+    const c = makeClock(() => {});
+    await settleAfterClick(c.page, c.counter, 0, false);
+    expect(c.now()).toBe(1000);
+  });
+
+  it("gives up a silent submit-shaped click at the idle allowance, far below the max", async () => {
+    const c = makeClock(() => {});
+    await settleAfterClick(c.page, c.counter, 0, true);
+    expect(c.now()).toBe(14000);
+    expect(c.now()).toBeLessThan(MAX_MS);
+  });
+});
+
 const BASE_URL = "https://apply.example.com/step/1";
 const RERENDER_DELAY_MS = 8000;
 const RERENDERED_TEXT = "Thanks, your application was received";
