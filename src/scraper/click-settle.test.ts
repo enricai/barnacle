@@ -105,7 +105,7 @@ describe("settleAfterClick", () => {
       async () => "example.com after",
       "example.com pre"
     );
-    expect(f.polls()).toBe(10);
+    expect(f.polls()).toBe(14);
   });
 
   it("returns only after a body re-render ~8s after a header flip plus the quiet window", async () => {
@@ -221,5 +221,20 @@ describe("settleAfterClick", () => {
     await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
     expect(f.polls()).toBeGreaterThan(12);
     expect(f.polls()).toBeLessThan(60);
+  });
+
+  it("waits for a body re-render at 11s after a header flip at poll 1 with no network", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 11 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre");
+    expect(f.polls()).toBe(20);
+  });
+
+  it("returns after the quiet window for a non-submit click once text moved", async () => {
+    const f = makeFake(() => {});
+    const text = (): string => (f.polls() >= 1 ? "header" : "example.com pre");
+    await settleAfterClick(f.page, f.counter, 0, false, async () => text(), "example.com pre");
+    expect(f.polls()).toBe(10);
   });
 });
