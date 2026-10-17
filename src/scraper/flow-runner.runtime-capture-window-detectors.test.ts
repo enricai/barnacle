@@ -101,7 +101,7 @@ const graphqlBody = (type: string): string =>
 
 describe("flow-runner window detectors over runtime captures (no disk)", () => {
   it("uses the in-memory store marker as the default captures dir inside a scope", async () => {
-    await withRuntimeCaptureStore(async (store) => {
+    await withRuntimeCaptureStore(async () => {
       expect(defaultCapturesDir().startsWith("memory:")).toBe(true);
     });
   });
@@ -200,7 +200,7 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
       teardown();
       return windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN });
     });
-    const second = withRuntimeCaptureStore(async (store) => {
+    const second = withRuntimeCaptureStore(async () => {
       await new Promise((r) => setTimeout(r, 5));
       return {
         advance: windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN }),

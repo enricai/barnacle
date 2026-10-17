@@ -116,7 +116,7 @@ describe("flow-runner/runtime capture store — wireSignalCapture feeds window d
         await fireRequest(store, { method: "POST", postData: mutation("next"), requestId: "r4" });
         return advanced();
       }),
-      withRuntimeCaptureStore(async (store) => {
+      withRuntimeCaptureStore(async () => {
         await Promise.resolve();
         return { advanced: advanced(), files: listCaptureFiles(defaultCapturesDir()) };
       }),

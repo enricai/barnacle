@@ -45,7 +45,7 @@ describe("runtime capture store", () => {
 
   it("resolves the default dir to the recon dir outside a scope and the store inside", () => {
     expect(defaultCapturesDir()).toBe(resolveReconRunDir().graphqlDir);
-    withRuntimeCaptureStore((store) => {
+    withRuntimeCaptureStore(() => {
       const dir = defaultCapturesDir();
       expect(dir).not.toBe(resolveReconRunDir().graphqlDir);
       expect(dir.startsWith("memory:")).toBe(true);

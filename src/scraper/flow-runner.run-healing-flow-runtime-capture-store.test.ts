@@ -46,6 +46,14 @@ function transitionBody(type: string): string {
   return JSON.stringify({ operationName: "TransitionWorklet", variables: { input: { type } } });
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 type Handler = (params: Record<string, unknown>) => void;
 
 function makeFakePage(): {
@@ -126,8 +134,8 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
   async function runWithOutsideEmits(emits: Emit[]): Promise<Seen[]> {
     const fakes = emits.map(() => makeFakePage());
     const seen: Seen[] = [];
-    const ready = fakes.map(() => Promise.withResolvers<void>());
-    const emitted = fakes.map(() => Promise.withResolvers<void>());
+    const ready = fakes.map(() => deferred());
+    const emitted = fakes.map(() => deferred());
     fakes.forEach((_, i) => {
       guardedObserve.mockImplementationOnce(async () => {
         ready[i]?.resolve();

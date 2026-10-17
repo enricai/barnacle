@@ -120,8 +120,8 @@ import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quote
 import {
   defaultCapturesDir,
   listCaptureFiles,
-  readCaptureFile,
   type RuntimeCaptureStore,
+  readCaptureFile,
   recordRuntimeCapture,
   withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
