@@ -32,11 +32,7 @@ function fixtureCaptures(): Capture[] {
       url: `https://${OWN_BACKEND_HOST}/catalog/filter-results/`,
       requestPostData: JSON.stringify({
         sort: "relevance",
-        filters: [
-          "GARDEN;filterType=destination",
-          "4;filterType=night",
-          "summer;filterType=theme",
-        ],
+        filters: ["GARDEN;filterType=destination", "4;filterType=night", "summer;filterType=theme"],
       }),
       responseBody: { ok: true },
       timestamp: "2026-04-01T00:00:01.000Z",
