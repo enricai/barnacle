@@ -85,7 +85,7 @@ const HIDDEN_DECOY_INDEX = 35;
 /** Comfortably above the 30-candidate floor: at the measured per-round-trip cost, the legacy `fill()` + `inputValue()` fallback would cost `2 * 41 * 4.6s ≈ 377.2s` — well past `STEP_WATCHDOG_MS` — so this index only survives if the fix's batched path is actually taken. */
 const RENDERED_TARGET_INDEX = 40;
 
-/** The exact evaluate expression `fillDeepLocatorCandidate`'s batched fast path issues once the field-label branch resolves `matched.index` — both the index and value are known ahead of time here, so this is matched by equality rather than a pattern. */
+/** The batched fill expression `fillDeepLocatorCandidate`'s fast path issues once the field-label branch resolves `matched.index` — matched by containment because the date-segment guard wraps it before dispatch. */
 const FILL_EXPR = buildFillFrameCandidateExpr(
   INTERACTIVE_CANDIDATE_SELECTOR,
   RENDERED_TARGET_INDEX,
@@ -171,8 +171,8 @@ function buildDenseCandidateElements(
  * Minimal fake `Frame`: `location.href` backs onto its own mutable ref, the
  * batched-scan expression (`SCAN_EXPR`) routes to `makeFakeFrameScan`
  * (spied so the test can assert it ran exactly once), and the batched-fill
- * expression for the resolved target (`FILL_EXPR`, matched by equality since
- * both its index and value are known ahead of time) routes to
+ * expression for the resolved target (`FILL_EXPR`, matched by containment
+ * since the date-segment guard wraps it) routes to
  * `makeFakeFrameFillByIndex` (spied so the test can assert it ran exactly
  * once, at the target's index, with the step's value). Any other expression
  * returns `null`, matching every other OOPIF fixture in this suite.
@@ -190,7 +190,9 @@ function makeFakeChildFrame(
       evaluate: async (expr: unknown) => {
         if (expr === "location.href") return childUrls.current;
         if (expr === SCAN_EXPR) return scanSpy();
-        if (expr === FILL_EXPR) return fillByIndexSpy(RENDERED_TARGET_INDEX, FILL_VALUE);
+        if (String(expr).includes(FILL_EXPR)) {
+          return fillByIndexSpy(RENDERED_TARGET_INDEX, FILL_VALUE);
+        }
         if (expr === READ_BACK_EXPR) return { value: FILL_VALUE };
         return null;
       },
