@@ -7484,7 +7484,7 @@ async function resettleThroughHeaderOnlyFlip(
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
  */
-async function settleAndSnapshotPostClick(
+export async function settleAndSnapshotPostClick(
   target: FrameTarget,
   signalCounter: { n: number },
   page: Page | undefined,
