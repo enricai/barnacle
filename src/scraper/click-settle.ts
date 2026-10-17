@@ -11,6 +11,14 @@ export interface PageQuiescence {
   mutations: number;
 }
 
+/**
+ * Folds the whole-page text digest into the signature settle compares, so a
+ * re-render that keeps the length and the 200-char head still counts as movement.
+ */
+export function settleTextKey(visibleTextSignature: string, visibleTextDigest?: string): string {
+  return visibleTextDigest ? `${visibleTextSignature}#${visibleTextDigest}` : visibleTextSignature;
+}
+
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
 const IDLE_GIVE_UP_MS = 14000;

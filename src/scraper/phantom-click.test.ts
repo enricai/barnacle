@@ -611,3 +611,46 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     ).toBe("effective");
   });
 });
+
+describe("scraper/phantom-click full-text page advance", () => {
+  const chrome =
+    "Home Jobs Careers Benefits Locations Teams Students Veterans Events Blog Press. ".repeat(4);
+  const sig = `600:${chrome.slice(0, 200)}`;
+  const base = { networkCount: 0, url: URL, bodyHtmlLength: 1000, visibleTextSignature: sig };
+
+  it("credits a body swapped past the signature head when length and head are unchanged", () => {
+    const pre = {
+      ...base,
+      visibleText: `${chrome}Email Password Verify Password Terms Create Account`,
+      visibleTextDigest: "a:1",
+    };
+    const post = {
+      ...base,
+      visibleText: `${chrome}Welcome aboard check inbox confirm address Continue`,
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(true);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
+  it("does not credit a digest move whose words are identical", () => {
+    const text = `${chrome}Email Password`;
+    const pre = { ...base, visibleText: text, visibleTextDigest: "a:1" };
+    const post = {
+      ...base,
+      visibleText: text.split(" ").reverse().join(" "),
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(false);
+  });
+
+  it("does not credit a single validation line appearing past the head", () => {
+    const pre = { ...base, visibleText: `${chrome}Email Password`, visibleTextDigest: "a:1" };
+    const post = {
+      ...base,
+      visibleText: `${chrome}Email Password Required field`,
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(false);
+  });
+});

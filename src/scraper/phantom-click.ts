@@ -14,7 +14,17 @@ export interface PhantomClickSnapshot {
   bodyHtmlLength: number;
   /** `<len>:<first-200-chars>` of visible text, as in flow-runner's StepSnapshot. */
   visibleTextSignature?: string;
+  /** Bounded whitespace-normalised excerpt of the visible text (see flow-runner's StepSnapshot). */
+  visibleText?: string;
+  /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
+  visibleTextDigest?: string;
 }
+
+/** The visible-text slice of a snapshot, for callers that judge a page advance from text alone. */
+export type VisibleTextState = Pick<
+  PhantomClickSnapshot,
+  "visibleTextSignature" | "visibleText" | "visibleTextDigest"
+>;
 
 export interface PhantomClickAttempt {
   /** Stagehand's own verdict for the attempt — did it believe it acted? */
@@ -280,17 +290,77 @@ function isHeadSwapped(pre: string, post: string): boolean {
 
 type PageAdvanceKind = "none" | "header" | "body";
 
+const KIND_RANK: Record<PageAdvanceKind, number> = { none: 0, header: 1, body: 2 };
+
+/** Head length the signature keeps; the excerpt tail starts past it. */
+const SIGNATURE_HEAD_CHARS = 200;
+
+function wordsOf(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w !== "")
+  );
+}
+
+function wordSetSimilarity(preWords: Set<string>, postWords: Set<string>): number {
+  const union = new Set([...preWords, ...postWords]);
+  if (union.size === 0) return 1;
+  return [...preWords].filter((w) => postWords.has(w)).length / union.size;
+}
+
+function swappedWordCounts(
+  preWords: Set<string>,
+  postWords: Set<string>
+): { dropped: number; added: number } {
+  return {
+    dropped: [...preWords].filter((w) => !postWords.has(w)).length,
+    added: [...postWords].filter((w) => !preWords.has(w)).length,
+  };
+}
+
 /**
- * Reads how far the visible text moved: `body` when the copy itself was
- * replaced (a large or relative length change, or a head whose words were
- * mostly swapped), `header` when only a header-sized slice moved over shared
- * chrome, `none` otherwise. The split lets a settle tell a finished transition
- * from a header that flipped before its body re-rendered.
+ * Reads the movement of the page's whole visible text rather than its 200-char
+ * head: a wizard body that re-renders under unchanged chrome (long nav, same
+ * header, same length) leaves the signature untouched, so the excerpt's words
+ * decide whether the copy itself was replaced. `body` only when the replaced
+ * words sit in the text past the head, so a head-only flip stays `header`.
  */
-function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): PageAdvanceKind {
-  const preSig = pre.visibleTextSignature;
-  const postSig = post.visibleTextSignature;
-  if (preSig === undefined || postSig === undefined || preSig === postSig) return "none";
+function fullTextAdvanceKind(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot
+): PageAdvanceKind {
+  const preText = pre.visibleText;
+  const postText = post.visibleText;
+  if (!preText || !postText || preText === postText) return "none";
+  const preWords = wordsOf(preText);
+  const postWords = wordsOf(postText);
+  const similarity = wordSetSimilarity(preWords, postWords);
+  if (similarity === 1) return "none";
+  if (similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY) return "body";
+  const { dropped, added } = swappedWordCounts(
+    wordsOf(preText.slice(SIGNATURE_HEAD_CHARS)),
+    wordsOf(postText.slice(SIGNATURE_HEAD_CHARS))
+  );
+  if (
+    dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS &&
+    added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS
+  ) {
+    return "body";
+  }
+  const headSwap = swappedWordCounts(
+    wordsOf(preText.slice(0, SIGNATURE_HEAD_CHARS)),
+    wordsOf(postText.slice(0, SIGNATURE_HEAD_CHARS))
+  );
+  return headSwap.dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS &&
+    headSwap.added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS
+    ? "header"
+    : "none";
+}
+
+function signatureAdvanceKind(preSig: string, postSig: string): PageAdvanceKind {
+  if (preSig === postSig) return "none";
   const preLen = textLengthOf(preSig);
   const postLen = textLengthOf(postSig);
   if (preLen === null || postLen === null) return "none";
@@ -309,6 +379,41 @@ function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot):
   // Shared chrome (nav, footer) inflates similarity when a wizard swaps only
   // its header and body copy within the 200-char head.
   return isHeadSwapped(preSig, postSig) ? "header" : "none";
+}
+
+/**
+ * Reports whether the visible text differs at all between two snapshots, using
+ * the whole-text digest when both carry one so a change beyond the 200-char
+ * signature head is not missed. Falls back to the signature alone.
+ */
+export function hasVisibleTextChanged(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot
+): boolean {
+  if (pre.visibleTextSignature !== post.visibleTextSignature) return true;
+  return (
+    !!pre.visibleTextDigest &&
+    !!post.visibleTextDigest &&
+    pre.visibleTextDigest !== post.visibleTextDigest
+  );
+}
+
+/**
+ * Reads how far the visible text moved: `body` when the copy itself was
+ * replaced (a large or relative length change, or a head whose words were
+ * mostly swapped, or replaced words past the head), `header` when only a
+ * header-sized slice moved over shared chrome, `none` otherwise. The split lets
+ * a settle tell a finished transition from a header that flipped before its
+ * body re-rendered.
+ */
+function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): PageAdvanceKind {
+  const preSig = pre.visibleTextSignature;
+  const postSig = post.visibleTextSignature;
+  if (preSig === undefined || postSig === undefined) return "none";
+  if (!hasVisibleTextChanged(pre, post)) return "none";
+  const fromSignature = signatureAdvanceKind(preSig, postSig);
+  const fromFullText = fullTextAdvanceKind(pre, post);
+  return KIND_RANK[fromFullText] > KIND_RANK[fromSignature] ? fromFullText : fromSignature;
 }
 
 /**

@@ -126,8 +126,10 @@ import {
 import {
   hasPageAdvanced,
   isPlausibleStepDestination,
+  type PhantomClickSnapshot,
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
+  type VisibleTextState,
 } from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
@@ -1485,14 +1487,17 @@ export function hasPageAlreadyAdvancedPastStep(
  */
 export function hasSubmitStepDomAdvanced(
   isFinalStep: boolean,
-  preVisibleTextSignature: string | undefined,
-  liveVisibleTextSignature: string | undefined
+  pre: string | VisibleTextState | undefined,
+  live: string | VisibleTextState | undefined
 ): boolean {
   if (isFinalStep) return false;
-  return hasPageAdvanced(
-    { networkCount: 0, url: "", bodyHtmlLength: 0, visibleTextSignature: preVisibleTextSignature },
-    { networkCount: 0, url: "", bodyHtmlLength: 0, visibleTextSignature: liveVisibleTextSignature }
-  );
+  const asSnapshot = (text: string | VisibleTextState | undefined): PhantomClickSnapshot => ({
+    networkCount: 0,
+    url: "",
+    bodyHtmlLength: 0,
+    ...(typeof text === "string" ? { visibleTextSignature: text } : text),
+  });
+  return hasPageAdvanced(asSnapshot(pre), asSnapshot(live));
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
@@ -3049,8 +3054,7 @@ async function main(): Promise<void> {
         const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
         const networkAtStepStart = signalCounter.n;
         const textAtStepStart = step.submitStep
-          ? (await snapshotPage(frameTarget, signalCounter).catch(() => undefined))
-              ?.visibleTextSignature
+          ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
           : undefined;
         // A child frame CDP has just attached to may still be sitting on
         // about:blank (the moment right after Target.setAutoAttach fires and
@@ -3241,7 +3245,8 @@ async function main(): Promise<void> {
                   signalCounter,
                   networkAtStepStart,
                   true,
-                  textAtStepStart
+                  textAtStepStart.visibleTextSignature,
+                  textAtStepStart.visibleTextDigest
                 )
                   .then(() => snapshotPage(frameTarget, signalCounter))
                   .catch(() => undefined)
@@ -3249,11 +3254,7 @@ async function main(): Promise<void> {
           const domAdvanced =
             !urlAdvanced &&
             step.submitStep === true &&
-            hasSubmitStepDomAdvanced(
-              i === plan.length - 1,
-              textAtStepStart,
-              settledText?.visibleTextSignature
-            );
+            hasSubmitStepDomAdvanced(i === plan.length - 1, textAtStepStart, settledText);
           if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`

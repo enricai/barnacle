@@ -387,6 +387,7 @@ describe("recon-browser/main — replan already-advanced short-circuit (bugfix-0
         goto: vi.fn().mockResolvedValue(undefined),
         url: (): string => SPA_URL,
         title: vi.fn().mockResolvedValue("Apply"),
+        waitForTimeout: vi.fn().mockResolvedValue(undefined),
         evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
           if (typeof expr === "string" && expr.includes("innerText")) {
             return { html: 1000, text: getText(), values: "", state: "" };
