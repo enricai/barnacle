@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 // hit "partymix").
 const FORBIDDEN = [
   "disney",
+  "bahamas",
   "cruise",
   "royalcaribbean",
   "piedmont",

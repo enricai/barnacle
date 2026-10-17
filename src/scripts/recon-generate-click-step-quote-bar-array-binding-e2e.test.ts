@@ -16,7 +16,7 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const OWN_BACKEND_HOST = "www.click-quote-bar-array-fixture.example.com";
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the quote bar and select the 'Garden' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
   "Open the stay length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 const ROOM_STEP =

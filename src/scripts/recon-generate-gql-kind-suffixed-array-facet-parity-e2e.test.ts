@@ -18,7 +18,7 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.gql-kind-suffixed-array-facet-parity-fixture.example.com";
 
-const FILTERS = ["BAHAMAS;filterType=destination", "2026-12;filterType=date", "4;filterType=night"];
+const FILTERS = ["GARDEN;filterType=destination", "2026-12;filterType=date", "4;filterType=night"];
 
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
@@ -72,7 +72,7 @@ function generate(): string {
           navigateTo: `https://${OWN_BACKEND_HOST}/#/trips/december-2026`,
           payloadField: "month",
         },
-        { step: "click the 'Bahamas' option", payloadField: "destination", optional: true },
+        { step: "click the 'Garden' option", payloadField: "destination", optional: true },
         { step: "click the '4' option", payloadField: "nights", optional: true },
         { step: "browse trips" },
       ],
@@ -96,7 +96,7 @@ describe("recon-generate CLI — GraphQL kind-suffixed array facet parity with R
     expect(contract, contract).toMatch(/payload\.destination[^`]*;filterType=destination/);
     expect(contract, contract).toMatch(/payload\.month[^`]*;filterType=date/);
     expect(contract, contract).toMatch(/payload\.nights[^`]*;filterType=night/);
-    expect(contract).not.toContain('"BAHAMAS;filterType=destination"');
+    expect(contract).not.toContain('"GARDEN;filterType=destination"');
     expect(contract).not.toContain("2026-12;filterType=date");
     expect(contract).not.toContain('"4;filterType=night"');
   }, 30_000);
