@@ -575,6 +575,16 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
     expect(hasPageBodySwapped(pre, post)).toBe(false);
   });
 
+  it("does not credit a mid-flow submit whose header flipped before the body landed", () => {
+    const pre = snap(half.replace("996:", "300:"));
+    const post = snap("300:Skip to main content|My Account|Careers Home|Search|Help|Privacy|Terms");
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post, isSubmitShapedStep: true, isMidFlowSubmitStep: true })
+      )
+    ).toBe("phantom");
+  });
+
   it("treats a shrinking body swap as a finished swap", () => {
     expect(hasPageBodySwapped(snap(half), snap(finished))).toBe(true);
   });

@@ -112,7 +112,7 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
-  hasPageAdvanced,
+  hasPageBodySwapped,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -2376,7 +2376,7 @@ export function isNullVerdictAdvanceCredited(params: {
  *
  * **Mid-flow submit:** `midFlowSubmit` (see {@link isMidFlowSubmitShapedStep})
  * lets a submit-shaped, non-final step be credited when `pageAdvanced` (the
- * shared {@link hasPageAdvanced} judgement of the visible text; defaults to
+ * shared {@link hasPageBodySwapped} judgement of the visible text; defaults to
  * `textChanged` when omitted) holds — byte delta is not required, since a
  * wizard swap can keep the HTML size — with the same invalid-marker and
  * destination vetoes. The clicked control being gone is NOT a veto here: a
@@ -14746,7 +14746,7 @@ export async function executeStepWithHealing(params: {
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausible,
       midFlowSubmit,
-      pageAdvanced: hasPageAdvanced(pre, post),
+      pageAdvanced: hasPageBodySwapped(pre, post),
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15090,7 +15090,7 @@ export async function executeStepWithHealing(params: {
           midFlowSubmit,
           judgeUnavailable: judgeVerdict === null,
           networkAdvanced: networkIsRealAdvance,
-          pageAdvanced: hasPageAdvanced(pre, post),
+          pageAdvanced: hasPageBodySwapped(pre, post),
           invalidMarkerCount,
         });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
@@ -15474,7 +15474,7 @@ export async function executeStepWithHealing(params: {
           const retryMidFlowDestinationPlausible =
             retryDestinationPlausible ||
             (retryMidFlowSubmit &&
-              hasPageAdvanced(pre, retryPost) &&
+              hasPageBodySwapped(pre, retryPost) &&
               isPlausibleStepDestination(step, retryPost.url, pre.url));
           const retryNetworkIsRealAdvance =
             retryNetworkFired &&
@@ -15771,12 +15771,12 @@ export async function executeStepWithHealing(params: {
             const retryMidFlowAdvanceCredited =
               (retryMidFlowSubmit &&
                 retryVerdict === "effective" &&
-                hasPageAdvanced(pre, retryPost)) ||
+                hasPageBodySwapped(pre, retryPost)) ||
               isNullVerdictAdvanceCredited({
                 midFlowSubmit: retryMidFlowSubmit,
                 judgeUnavailable: judgeVerdict === null,
                 networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-                pageAdvanced: hasPageAdvanced(pre, retryPost),
+                pageAdvanced: hasPageBodySwapped(pre, retryPost),
                 invalidMarkerCount,
               });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {

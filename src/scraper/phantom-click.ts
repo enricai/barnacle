@@ -464,7 +464,7 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const bytesChangedSignificantly =
     !submitShaped && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
-  const midFlowAdvanced = midFlowSubmit && hasPageAdvanced(attempt.pre, attempt.post);
+  const midFlowAdvanced = midFlowSubmit && hasPageBodySwapped(attempt.pre, attempt.post);
 
   const hasEffect =
     networkDelta !== 0 ||

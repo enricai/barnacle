@@ -124,7 +124,7 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
-  hasPageAdvanced,
+  hasPageBodySwapped,
   isPlausibleStepDestination,
   type PhantomClickSnapshot,
   SIGN_IN_PATTERNS,
@@ -1481,7 +1481,7 @@ export function hasPageAlreadyAdvancedPastStep(
 /**
  * DOM-advance counterpart of {@link hasPageAlreadyAdvancedPastStep} for
  * non-final submit-shaped steps, whose SPA wizards swap content without a URL
- * change. Reuses the shared {@link hasPageAdvanced} judgement over the
+ * change. Reuses the shared {@link hasPageBodySwapped} judgement over the
  * step-start and live visible-text signatures; a final step is never credited
  * here because its completion is owned by the submit-destination judge.
  */
@@ -1497,7 +1497,7 @@ export function hasSubmitStepDomAdvanced(
     bodyHtmlLength: 0,
     ...(typeof text === "string" ? { visibleTextSignature: text } : text),
   });
-  return hasPageAdvanced(asSnapshot(pre), asSnapshot(live));
+  return hasPageBodySwapped(asSnapshot(pre), asSnapshot(live));
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
