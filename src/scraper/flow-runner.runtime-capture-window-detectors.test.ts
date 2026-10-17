@@ -16,6 +16,7 @@ import {
   defaultCapturesDir,
   listCaptureFiles,
   readCaptureFile,
+  type RuntimeCaptureStore,
   recordRuntimeCapture,
   withRuntimeCaptureStore,
 } from "@/scraper/runtime-capture-store";
@@ -47,7 +48,7 @@ function fakeCapturePage(): {
   return { page, emit: (event, params) => handlers.get(event)?.(params) };
 }
 
-function wireRuntime(): {
+function wireRuntime(store: RuntimeCaptureStore): {
   emitRequest: (opts: {
     method: string;
     url: string;
@@ -66,7 +67,7 @@ function wireRuntime(): {
     recentCaptureMeta: [],
     getCurrentPhase: () => "flow",
     getCurrentPageOrigin: () => ORIGIN,
-    onCapture: (capture, filename) => recordRuntimeCapture(filename, capture),
+    onCapture: (capture, filename) => recordRuntimeCapture(store, filename, capture),
   });
   let n = 0;
   const emitRequest = async (opts: {
@@ -100,14 +101,14 @@ const graphqlBody = (type: string): string =>
 
 describe("flow-runner window detectors over runtime captures (no disk)", () => {
   it("uses the in-memory store marker as the default captures dir inside a scope", async () => {
-    await withRuntimeCaptureStore(async () => {
+    await withRuntimeCaptureStore(async (store) => {
       expect(defaultCapturesDir().startsWith("memory:")).toBe(true);
     });
   });
 
   it("detects a next transition and ignores back through the default source", async () => {
-    await withRuntimeCaptureStore(async () => {
-      const { emitRequest, teardown } = wireRuntime();
+    await withRuntimeCaptureStore(async (store) => {
+      const { emitRequest, teardown } = wireRuntime(store);
       await emitRequest({
         method: "POST",
         url: `${ORIGIN}/api/graphql`,
@@ -139,8 +140,8 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
   });
 
   it("surfaces a 4xx submit failure in any-4xx mode with the default dir", async () => {
-    await withRuntimeCaptureStore(async () => {
-      const { emitRequest, teardown } = wireRuntime();
+    await withRuntimeCaptureStore(async (store) => {
+      const { emitRequest, teardown } = wireRuntime(store);
       await emitRequest({
         method: "POST",
         url: `${ORIGIN}/api/submit`,
@@ -157,8 +158,8 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
   });
 
   it("surfaces GA collect events from runtime captures", async () => {
-    await withRuntimeCaptureStore(async () => {
-      const { emitRequest, teardown } = wireRuntime();
+    await withRuntimeCaptureStore(async (store) => {
+      const { emitRequest, teardown } = wireRuntime(store);
       await emitRequest({
         method: "POST",
         url: "https://www.google-analytics.com/g/collect?en=view_secondPage&dl=https%3A%2F%2Fapp.example.com%2Fstep2&epn.errors=0",
@@ -171,8 +172,8 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
   });
 
   it("stores a GET with a body but nulls its responseBody", async () => {
-    await withRuntimeCaptureStore(async () => {
-      const { emitRequest, teardown } = wireRuntime();
+    await withRuntimeCaptureStore(async (store) => {
+      const { emitRequest, teardown } = wireRuntime(store);
       await emitRequest({
         method: "GET",
         url: `${ORIGIN}/api/graphql`,
@@ -188,8 +189,8 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
   });
 
   it("isolates concurrent scopes from each other", async () => {
-    const first = withRuntimeCaptureStore(async () => {
-      const { emitRequest, teardown } = wireRuntime();
+    const first = withRuntimeCaptureStore(async (store) => {
+      const { emitRequest, teardown } = wireRuntime(store);
       await emitRequest({
         method: "POST",
         url: `${ORIGIN}/api/graphql`,
@@ -199,7 +200,7 @@ describe("flow-runner window detectors over runtime captures (no disk)", () => {
       teardown();
       return windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN });
     });
-    const second = withRuntimeCaptureStore(async () => {
+    const second = withRuntimeCaptureStore(async (store) => {
       await new Promise((r) => setTimeout(r, 5));
       return {
         advance: windowHasAdvanceTransition({ preIdx: -1, advanceTransitionBodyPattern: PATTERN }),

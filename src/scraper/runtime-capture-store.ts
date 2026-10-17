@@ -10,34 +10,54 @@ export const RUNTIME_CAPTURE_LIMIT = 200;
 
 const MEMORY_DIR_PREFIX = "memory:";
 
-interface RuntimeCaptureStore {
+/** Handle to a run's in-memory captures, passed explicitly so writes never depend on the async context. */
+export interface RuntimeCaptureStore {
   dir: string;
   captures: Map<string, Capture>;
 }
 
 const storage = new AsyncLocalStorage<RuntimeCaptureStore>();
+const registry = new Map<string, RuntimeCaptureStore>();
 
 /**
  * Runs `fn` with a private in-memory capture store so runtime flows can feed
- * the same window detectors recon uses without touching disk. The store is
- * bound to the async context, so concurrent runs never see each other's captures.
+ * the same window detectors recon uses without touching disk. The store handle
+ * is passed to `fn` and registered by its dir marker until the run settles, so
+ * captures delivered from any async context land in the right run's store.
  */
-export function withRuntimeCaptureStore<T>(fn: () => T): T {
+export function withRuntimeCaptureStore<T>(fn: (store: RuntimeCaptureStore) => T): T {
   const store: RuntimeCaptureStore = {
     dir: `${MEMORY_DIR_PREFIX}${randomUUID()}`,
     captures: new Map(),
   };
-  return storage.run(store, fn);
+  registry.set(store.dir, store);
+  const release = (): void => {
+    registry.delete(store.dir);
+  };
+  try {
+    const result = storage.run(store, () => fn(store));
+    if (result instanceof Promise) {
+      result.then(release, release);
+      return result;
+    }
+    release();
+    return result;
+  } catch (err) {
+    release();
+    throw err;
+  }
 }
 
 /**
- * Records a capture into the in-scope store (no-op outside one). GET response
- * bodies are dropped — they are static assets and prefetches, not action
- * signals — and the oldest entries are evicted past {@link RUNTIME_CAPTURE_LIMIT}.
+ * Records a capture into `store`. GET response bodies are dropped — they are
+ * static assets and prefetches, not action signals — and the oldest entries
+ * are evicted past {@link RUNTIME_CAPTURE_LIMIT}.
  */
-export function recordRuntimeCapture(filename: string, capture: Capture): void {
-  const store = storage.getStore();
-  if (!store) return;
+export function recordRuntimeCapture(
+  store: RuntimeCaptureStore,
+  filename: string,
+  capture: Capture
+): void {
   store.captures.set(
     filename,
     capture.method === "GET" ? { ...capture, responseBody: null } : capture
@@ -58,13 +78,12 @@ export function defaultCapturesDir(): string {
 }
 
 function storeFor(dir: string): RuntimeCaptureStore | null {
-  const store = storage.getStore();
-  return store && store.dir === dir ? store : null;
+  return registry.get(dir) ?? null;
 }
 
 /**
  * Lists raw capture filenames in `dir` (excluding `.decoded.json` sidecars),
- * from memory when `dir` is the in-scope store, else from disk. Returns []
+ * from memory when `dir` is a live runtime store, else from disk. Returns []
  * when the dir is unreadable.
  */
 export function listCaptureFiles(dir: string): string[] {

@@ -45,7 +45,7 @@ describe("runtime capture store", () => {
 
   it("resolves the default dir to the recon dir outside a scope and the store inside", () => {
     expect(defaultCapturesDir()).toBe(resolveReconRunDir().graphqlDir);
-    withRuntimeCaptureStore(() => {
+    withRuntimeCaptureStore((store) => {
       const dir = defaultCapturesDir();
       expect(dir).not.toBe(resolveReconRunDir().graphqlDir);
       expect(dir.startsWith("memory:")).toBe(true);
@@ -53,10 +53,10 @@ describe("runtime capture store", () => {
   });
 
   it("returns recorded captures through the reader", () => {
-    withRuntimeCaptureStore(() => {
+    withRuntimeCaptureStore((store) => {
       const dir = defaultCapturesDir();
       const capture = makeCapture("POST", "https://shop.example.com/api");
-      recordRuntimeCapture("a.json", capture);
+      recordRuntimeCapture(store, "a.json", capture);
       expect(listCaptureFiles(dir)).toEqual(["a.json"]);
       expect(readCaptureFile(dir, "a.json")).toEqual(capture);
       expect(readCaptureFile(dir, "missing.json")).toBeNull();
@@ -64,17 +64,17 @@ describe("runtime capture store", () => {
   });
 
   it("is a no-op outside a scope", () => {
-    recordRuntimeCapture("x.json", makeCapture("POST", "https://shop.example.com/api"));
+    recordRuntimeCapture(store, "x.json", makeCapture("POST", "https://shop.example.com/api"));
     expect(listCaptureFiles(defaultCapturesDir())).toEqual([]);
   });
 
   it("isolates overlapping scopes", async () => {
     const run = async (name: string, other: string): Promise<string[]> =>
-      withRuntimeCaptureStore(async () => {
+      withRuntimeCaptureStore(async (store) => {
         const dir = defaultCapturesDir();
-        recordRuntimeCapture(`${name}-1.json`, makeCapture("POST", "https://shop.example.com/1"));
+        recordRuntimeCapture(store, `${name}-1.json`, makeCapture("POST", "https://shop.example.com/1"));
         await tick();
-        recordRuntimeCapture(`${name}-2.json`, makeCapture("POST", "https://shop.example.com/2"));
+        recordRuntimeCapture(store, `${name}-2.json`, makeCapture("POST", "https://shop.example.com/2"));
         await tick();
         expect(readCaptureFile(dir, `${other}-1.json`)).toBeNull();
         return listCaptureFiles(dir);
@@ -85,30 +85,30 @@ describe("runtime capture store", () => {
   });
 
   it("does not let a scope read another scope's dir", () => {
-    const outerDir = withRuntimeCaptureStore(() => {
-      recordRuntimeCapture("a.json", makeCapture("POST", "https://shop.example.com/api"));
+    const outerDir = withRuntimeCaptureStore((store) => {
+      recordRuntimeCapture(store, "a.json", makeCapture("POST", "https://shop.example.com/api"));
       return defaultCapturesDir();
     });
-    withRuntimeCaptureStore(() => {
+    withRuntimeCaptureStore((store) => {
       expect(listCaptureFiles(outerDir)).toEqual([]);
     });
   });
 
   it("drops GET response bodies but keeps POST bodies", () => {
-    withRuntimeCaptureStore(() => {
+    withRuntimeCaptureStore((store) => {
       const dir = defaultCapturesDir();
-      recordRuntimeCapture("get.json", makeCapture("GET", "https://shop.example.com/asset"));
-      recordRuntimeCapture("post.json", makeCapture("POST", "https://shop.example.com/api"));
+      recordRuntimeCapture(store, "get.json", makeCapture("GET", "https://shop.example.com/asset"));
+      recordRuntimeCapture(store, "post.json", makeCapture("POST", "https://shop.example.com/api"));
       expect(readCaptureFile(dir, "get.json")?.responseBody).toBeNull();
       expect(readCaptureFile(dir, "post.json")?.responseBody).toEqual({ ok: true });
     });
   });
 
   it("evicts the oldest captures past the limit", () => {
-    withRuntimeCaptureStore(() => {
+    withRuntimeCaptureStore((store) => {
       const dir = defaultCapturesDir();
       for (let i = 0; i < RUNTIME_CAPTURE_LIMIT + 5; i++) {
-        recordRuntimeCapture(`c${i}.json`, makeCapture("POST", "https://shop.example.com/api"));
+        recordRuntimeCapture(store, `c${i}.json`, makeCapture("POST", "https://shop.example.com/api"));
       }
       const files = listCaptureFiles(dir);
       expect(files).toHaveLength(RUNTIME_CAPTURE_LIMIT);
@@ -131,8 +131,8 @@ describe("runtime capture store", () => {
   });
 
   it("writes nothing to disk", () => {
-    withRuntimeCaptureStore(() => {
-      recordRuntimeCapture("a.json", makeCapture("POST", "https://shop.example.com/api"));
+    withRuntimeCaptureStore((store) => {
+      recordRuntimeCapture(store, "a.json", makeCapture("POST", "https://shop.example.com/api"));
     });
     const files = readdirSync(RECON_TMP, { recursive: true, withFileTypes: true }).filter((e) =>
       e.isFile()
