@@ -74,6 +74,7 @@ import {
   QUIESCENCE_PROBE_EXPR,
   type SettlePage,
   settleAfterClick,
+  settleTextKey,
 } from "@/scraper/click-settle";
 import {
   fillDeepLocatorCandidate,
@@ -112,7 +113,7 @@ import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
   hasPageAdvanced,
-  hasPageBodySwapped,
+  hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
 } from "@/scraper/phantom-click";
@@ -1190,6 +1191,18 @@ interface StepSnapshot {
    */
   visibleTextSignature: string;
   /**
+   * First ~3000 whitespace-normalised chars of `document.body.innerText`, so
+   * later decisions can read the page's real content rather than the lossy
+   * signature. Optional so literal snapshots built elsewhere keep compiling.
+   */
+  visibleText?: string;
+  /**
+   * Digest of the WHOLE whitespace-normalised visible text (not just the
+   * excerpt), so a re-render that keeps the length and the head still reads as
+   * movement. Optional so literal snapshots built elsewhere keep compiling.
+   */
+  visibleTextDigest?: string;
+  /**
    * Joined `value`/`checked` fingerprint of every visible input/textarea/select
    * control (bounded to 2000 chars, same spirit as the 200-char text slice).
    * `innerText` never reflects a plain `<input>`'s `value` property, so a
@@ -1363,7 +1376,10 @@ function ariaCheckedReadExpr(elVar: string): string {
   return `${elVar}.getAttribute("aria-checked")`;
 }
 
-const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state }; })()`;
+/** Bound on {@link StepSnapshot.visibleText}, keeping a pathological page from bloating snapshots. */
+const VISIBLE_TEXT_EXCERPT_CHARS = 3000;
+
+const DOM_SNAPSHOT_EXPR = `(() => { const b = document.body; if (!b) return { html: 0, text: "", values: "", state: "", full: "", digest: "" }; const t = b.innerText || ""; const controls = Array.from(b.querySelectorAll("input, textarea, select")).filter((el) => el.offsetParent !== null); const values = controls.map((el) => { if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0"; return el.value || ""; }).join("|").slice(0, 2000); const ariaSel = "[aria-pressed],[aria-checked],[aria-selected],[data-state],[data-selected],[data-checked],[role=option],[role=switch],[role=checkbox],[role=menuitemcheckbox]"; const classSel = ${JSON.stringify(SELECTION_MARKER_CLASS_SELECTOR_SRC)}; const classRx = ${SELECTION_MARKER_CLASS_TOKEN_REGEX_SRC}; const skip = (el) => el.closest("[role=dialog],[role=tooltip],[aria-live]") !== null; const seen = new Set(); for (const el of b.querySelectorAll(ariaSel + "," + classSel)) { if (el.offsetParent !== null && !skip(el)) seen.add(el); } let idx = 0; const parts = []; for (const el of seen) { const ap = el.getAttribute("aria-pressed") || ""; const ac = el.getAttribute("aria-checked") || ""; const as = el.getAttribute("aria-selected") || ""; const dsRaw = el.getAttribute("data-state") || ""; const ds = (dsRaw === "open" || dsRaw === "closed") ? "" : dsRaw; const dsel = el.hasAttribute("data-selected") ? "1" : ""; const dchk = el.hasAttribute("data-checked") ? "1" : ""; const clsHit = classRx.test(el.getAttribute("class") || "") ? "1" : "0"; const i = idx++; if (!ap && !ac && !as && !ds && !dsel && !dchk && clsHit === "0") continue; parts.push(i + ":" + ap + "," + ac + "," + as + "," + ds + "," + dsel + "," + dchk + "," + clsHit); } const joined = parts.join("|"); let h = 2166136261; for (let k = 0; k < joined.length; k++) { h ^= joined.charCodeAt(k); h = Math.imul(h, 16777619); } const state = (h >>> 0).toString(36) + ":" + parts.length; const norm = t.replace(/\\s+/g, " ").trim(); let th = 2166136261; for (let tk = 0; tk < norm.length; tk++) { th ^= norm.charCodeAt(tk); th = Math.imul(th, 16777619); } return { html: (b.outerHTML || "").length, text: t.length + ":" + t.slice(0, 200), values, state, full: norm.slice(0, ${VISIBLE_TEXT_EXCERPT_CHARS}), digest: (th >>> 0).toString(36) + ":" + norm.length }; })()`;
 
 /** One form control's live accessible-name/value pair at step-failure time. */
 export interface FieldValueAtFailure {
@@ -1440,7 +1456,16 @@ async function readPageQuiescence(target: FrameTarget): Promise<PageQuiescence> 
 }
 
 /**
- * Reads only the visible-text signature settle polls on. Going through
+ * Installs the quiescence probe before a click, because it only starts counting
+ * requests and mutations from its first read and a post-click install would miss
+ * everything the click triggers immediately.
+ */
+async function armPageQuiescence(target: FrameTarget): Promise<void> {
+  await readPageQuiescence(target);
+}
+
+/**
+ * Reads only the visible-text key settle polls on. Going through
  * {@link snapshotPage} also read the frame URL, which rejects once a submit
  * detaches the OOPIF and would abort the settle mid-poll; a failed read here
  * degrades to the empty signature like the snapshot's own text read does.
@@ -1450,8 +1475,11 @@ async function readSettleTextSignature(target: FrameTarget): Promise<string> {
     () => null
   );
   if (result === null || typeof result !== "object") return "";
-  const { text } = result as { text?: unknown };
-  return typeof text === "string" ? text : "";
+  const { text, digest } = result as { text?: unknown; digest?: unknown };
+  return settleTextKey(
+    typeof text === "string" ? text : "",
+    typeof digest === "string" ? digest : undefined
+  );
 }
 
 /**
@@ -1466,7 +1494,7 @@ export async function settleWithPageQuiescence(
   preNetworkCount: number,
   submitShaped: boolean,
   preVisibleTextSignature: string,
-  advanced?: (visibleTextSignature: string) => boolean
+  preVisibleTextDigest?: string
 ): Promise<void> {
   await settleAfterClick(
     page,
@@ -1474,32 +1502,9 @@ export async function settleWithPageQuiescence(
     preNetworkCount,
     submitShaped,
     () => readSettleTextSignature(target),
-    preVisibleTextSignature,
-    () => readPageQuiescence(target),
-    advanced
+    settleTextKey(preVisibleTextSignature, preVisibleTextDigest),
+    () => readPageQuiescence(target)
   );
-}
-
-/**
- * Builds the "has the page finished advancing" test a mid-flow submit settles
- * against. It is the body-swap half of the {@link hasPageAdvanced} the phantom
- * classifier credits with, so a header that flipped before its body re-rendered
- * keeps settle polling while the classifier still credits whatever is left once
- * the wait is spent.
- * Undefined for any other step, which keeps the plain quiet-window settle.
- */
-function pageAdvancedSince(
-  preVisibleTextSignature: string,
-  midFlowSubmit: boolean
-): ((visibleTextSignature: string) => boolean) | undefined {
-  if (!midFlowSubmit) return undefined;
-  const pre = {
-    networkCount: 0,
-    url: "",
-    bodyHtmlLength: 0,
-    visibleTextSignature: preVisibleTextSignature,
-  };
-  return (visibleTextSignature) => hasPageBodySwapped(pre, { ...pre, visibleTextSignature });
 }
 
 /**
@@ -1524,6 +1529,8 @@ export async function snapshotPage(
 ): Promise<StepSnapshot> {
   let bodyHtmlLength = 0;
   let visibleTextSignature = "";
+  let visibleText = "";
+  let visibleTextDigest = "";
   let formValueSignature = "";
   let selectionStateSignature = "";
   try {
@@ -1538,6 +1545,10 @@ export async function snapshotPage(
     ) {
       bodyHtmlLength = (result as { html: number }).html;
       visibleTextSignature = (result as { text: string }).text;
+      const rawFull = (result as Record<string, unknown>).full;
+      visibleText = typeof rawFull === "string" ? rawFull : "";
+      const rawDigest = (result as Record<string, unknown>).digest;
+      visibleTextDigest = typeof rawDigest === "string" ? rawDigest : "";
       const rawValues = (result as Record<string, unknown>).values;
       formValueSignature = typeof rawValues === "string" ? rawValues : "";
       const rawState = (result as Record<string, unknown>).state;
@@ -1578,6 +1589,8 @@ export async function snapshotPage(
     url,
     bodyHtmlLength,
     visibleTextSignature,
+    visibleText,
+    visibleTextDigest: visibleTextDigest === "" ? undefined : visibleTextDigest,
     formValueSignature,
     selectionStateSignature,
     selectionStateByXpath,
@@ -2538,7 +2551,7 @@ export function describeAttemptEffectSignals(
 ): string {
   const bytesDelta = post.bodyHtmlLength - pre.bodyHtmlLength;
   const networkDelta = post.networkCount - pre.networkCount;
-  const textChanged = post.visibleTextSignature !== pre.visibleTextSignature;
+  const textChanged = hasVisibleTextChanged(pre, post);
   const valueChanged = post.formValueSignature !== pre.formValueSignature;
   const selectionStateChanged = post.selectionStateSignature !== pre.selectionStateSignature;
   const windowCaptures = recentCaptureMeta.slice(preMetaLength);
@@ -3619,6 +3632,8 @@ export async function judgeStepOutcome(params: {
   signalCounter: { n: number };
   preNetworkCount: number;
   preVisibleTextSignature: string;
+  preVisibleText?: string;
+  preVisibleTextDigest?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3644,23 +3659,17 @@ export async function judgeStepOutcome(params: {
       flowHasSubmitSemantics: params.flowHasSubmitSemantics,
     }) || params.elementSubmitShaped === true,
     params.preVisibleTextSignature,
-    pageAdvancedSince(
-      params.preVisibleTextSignature,
-      isMidFlowSubmitShapedStep({
-        step,
-        submitStep: params.submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-        elementSubmitShaped: params.elementSubmitShaped,
-      })
-    )
+    params.preVisibleTextDigest
   );
-  const colon = params.preVisibleTextSignature.indexOf(":");
-  const beforeText = (
-    colon === -1 ? params.preVisibleTextSignature : params.preVisibleTextSignature.slice(colon + 1)
+  const signatureColon = params.preVisibleTextSignature.indexOf(":");
+  const signatureHead = (
+    signatureColon === -1
+      ? params.preVisibleTextSignature
+      : params.preVisibleTextSignature.slice(signatureColon + 1)
   )
     .replace(/\s+/g, " ")
     .trim();
+  const beforeText = params.preVisibleText ? params.preVisibleText : signatureHead;
   const judgeText = (afterText: string): ReturnType<typeof verifyStepAdvancedWithLLM> =>
     verifyStepAdvancedWithLLM({
       client,
@@ -7431,7 +7440,7 @@ async function settleAndSnapshotPostClick(
   signalCounter: { n: number },
   page: Page | undefined,
   pre: StepSnapshot,
-  midFlowSubmit = false
+  waitForMutations = true
 ): Promise<StepSnapshot> {
   if (page)
     await settleWithPageQuiescence(
@@ -7439,9 +7448,9 @@ async function settleAndSnapshotPostClick(
       target,
       signalCounter,
       pre.networkCount,
-      true,
+      waitForMutations,
       pre.visibleTextSignature,
-      pageAdvancedSince(pre.visibleTextSignature, midFlowSubmit)
+      pre.visibleTextDigest
     );
   return snapshotPage(target, signalCounter, page);
 }
@@ -7773,6 +7782,7 @@ export async function submitCaptchaGatedForm(
     const pre = verification
       ? await snapshotPage(target, verification.signalCounter, verification.page)
       : null;
+    if (pre) await armPageQuiescence(target);
     const clickResult = await target
       .evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
       .catch((err: unknown) => {
@@ -7785,8 +7795,7 @@ export async function submitCaptchaGatedForm(
         target,
         verification.signalCounter,
         verification.page,
-        pre,
-        verification.isMidFlowSubmitStep
+        pre
       );
       const verdict = classifyPhantomClick({
         actResultSuccess: true,
@@ -7814,8 +7823,7 @@ export async function submitCaptchaGatedForm(
             target,
             verification.signalCounter,
             verification.page,
-            post,
-            verification.isMidFlowSubmitStep
+            post
           );
           const runnerUpVerdict = classifyPhantomClick({
             actResultSuccess: true,
@@ -11718,17 +11726,12 @@ async function probeChildFrameSubmitFallback(params: {
     // biome-ignore lint/style/noNonNullAssertion: guarded by the length check above
     const top = ranked[0]!;
     const pre = await snapshotPage(target, signalCounter, page);
+    await armPageQuiescence(target);
     const clickResult = (await Promise.resolve(
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const post = await settleAndSnapshotPostClick(
-      target,
-      signalCounter,
-      page,
-      pre,
-      isMidFlowSubmitStep
-    );
+    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
     const verdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -11749,13 +11752,7 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(
-      target,
-      signalCounter,
-      page,
-      post,
-      isMidFlowSubmitStep
-    );
+    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
     const runnerUpVerdict = classifyPhantomClick({
       actResultSuccess: true,
       pre,
@@ -13409,6 +13406,7 @@ export async function executeStepWithHealing(params: {
       page,
       captureSelectionState
     );
+    await armPageQuiescence(frameTarget ?? mainFrameTarget(page));
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
     // tail from earlier steps).
@@ -13669,13 +13667,7 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
-              const midPost = await settleAndSnapshotPostClick(
-                midTarget,
-                signalCounter,
-                page,
-                pre,
-                deepMidFlowSubmit
-              );
+              const midPost = await settleAndSnapshotPostClick(midTarget, signalCounter, page, pre);
               const topVerdict = classifyPhantomClick({
                 actResultSuccess: true,
                 pre,
@@ -14591,7 +14583,7 @@ export async function executeStepWithHealing(params: {
         pre.networkCount,
         isSettleWaitStep || resolvedElementIsSubmitShaped,
         pre.visibleTextSignature,
-        pageAdvancedSince(pre.visibleTextSignature, stepIsMidFlowSubmit)
+        pre.visibleTextDigest
       );
     }
     const post = await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page);
@@ -14748,7 +14740,7 @@ export async function executeStepWithHealing(params: {
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
-      textChanged: post.visibleTextSignature !== pre.visibleTextSignature,
+      textChanged: hasVisibleTextChanged(pre, post),
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
@@ -15071,6 +15063,8 @@ export async function executeStepWithHealing(params: {
         signalCounter,
         preNetworkCount: pre.networkCount,
         preVisibleTextSignature: pre.visibleTextSignature,
+        preVisibleText: pre.visibleText,
+        preVisibleTextDigest: pre.visibleTextDigest,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -15341,28 +15335,12 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          await settleWithPageQuiescence(
+          const retryPost = await settleAndSnapshotPostClick(
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
             page,
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            pre.networkCount,
-            isSettleWaitStep || retryResolvedElementIsSubmitShaped,
-            pre.visibleTextSignature,
-            pageAdvancedSince(
-              pre.visibleTextSignature,
-              isMidFlowSubmitShapedStep({
-                step,
-                submitStep,
-                isFinalStep,
-                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-              })
-            )
-          );
-          const retryPost = await snapshotPage(
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            page
+            pre,
+            isSettleWaitStep || retryResolvedElementIsSubmitShaped
           );
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -15380,7 +15358,7 @@ export async function executeStepWithHealing(params: {
               retryMidFlowSubmit ? pre.url : undefined
             );
           const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
-          const retryTextChanged = retryPost.visibleTextSignature !== pre.visibleTextSignature;
+          const retryTextChanged = hasVisibleTextChanged(pre, retryPost);
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
           // Element-scoped selection read-back for the n+16 fallback — the same
           // authoritative signal the primary verifier uses via `verifyDomEffect`,
@@ -15772,6 +15750,8 @@ export async function executeStepWithHealing(params: {
               signalCounter,
               preNetworkCount: pre.networkCount,
               preVisibleTextSignature: pre.visibleTextSignature,
+              preVisibleText: pre.visibleText,
+              preVisibleTextDigest: pre.visibleTextDigest,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,

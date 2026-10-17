@@ -93,4 +93,31 @@ describe("judgeStepOutcome re-judge", () => {
     const v = await run(["a", "b"], []);
     expect(v).toEqual({ verified: false, reason: "no" });
   });
+
+  it("passes the full pre-click text and live post-click text to the judge, never the title", async () => {
+    stepJudge.mockResolvedValue(YES);
+    const preVisibleText = `current step 2 of 7 ${"My Information ".repeat(40)}`;
+    const afterText = "current step 3 of 7 My Experience";
+    const v = await judgeStepOutcome({
+      client: {} as never,
+      step: "click continue",
+      isFinalStep: false,
+      submitStep: false,
+      flowHasSubmitSemantics: false,
+      page: { waitForTimeout: async () => undefined },
+      target: judgeTarget(() => afterText) as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `${preVisibleText.length}:${preVisibleText.slice(0, 200)}`,
+      preVisibleText,
+      submitInput: { ...SUBMIT_INPUT, pageTitle: "Sign In" },
+    });
+    const input = stepJudge.mock.calls[0]?.[0].input;
+    expect(preVisibleText.length).toBeGreaterThan(200);
+    expect(input.beforeText).toBe(preVisibleText);
+    expect(input.afterText).toBe(afterText);
+    expect(input.stepInstruction).toBe("click continue");
+    expect(Object.keys(input)).not.toContain("pageTitle");
+    expect(v).toMatchObject({ verified: true });
+  });
 });

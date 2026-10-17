@@ -168,3 +168,16 @@ describe("judgeStepOutcome non-final settle baseline", () => {
     expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
   });
 });
+
+describe("judgeStepOutcome full before text", () => {
+  it("feeds the full pre-click excerpt, not the 200-char signature head", async () => {
+    stepJudge.mockClear();
+    stepJudge.mockResolvedValue({ advanced: true, reason: "moved on" });
+    const full = `Shipping address ${"x".repeat(400)} Card number`;
+    await judgeStepOutcome({
+      ...params(false, ["Shipping", "Payment", "Payment"]),
+      preVisibleText: full,
+    });
+    expect(stepJudge.mock.calls[0]?.[0].input.beforeText).toBe(full);
+  });
+});

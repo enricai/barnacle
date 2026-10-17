@@ -551,3 +551,106 @@ describe("hasPageBodySwapped", () => {
     expect(hasPageBodySwapped(snap(`300:${chrome}`), snap(`300:${chrome}`))).toBe(false);
   });
 });
+
+describe("scraper/phantom-click advance predicate on literal signatures", () => {
+  const chrome = "Skip to main content|Careers Home|Search|Help|Privacy|Terms";
+  const half = `996:Skip to main content|Sign In|Careers Home|Search|Help|Privacy|Terms`;
+  const finished = `588:Skip to main content|Settings|user@example.com|Careers Home|Search|Help|Privacy|Terms`;
+  const grown = `1500:Skip to main content|Settings|user@example.com|Careers Home|Search|Help|Privacy|Terms`;
+  const snap = (
+    sig: string,
+    bodyHtmlLength = 1000
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+  } => ({ networkCount: 0, url: URL, bodyHtmlLength, visibleTextSignature: sig });
+  const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
+
+  it("treats a header-only flip as advanced but not a finished swap", () => {
+    const pre = snap(`300:Sign In|Create Account|${chrome}`);
+    const post = snap(`300:My Account|Create Account|${chrome}`);
+    expect(hasPageAdvanced(pre, post)).toBe(true);
+    expect(hasPageBodySwapped(pre, post)).toBe(false);
+  });
+
+  it("treats a shrinking body swap as a finished swap", () => {
+    expect(hasPageBodySwapped(snap(half), snap(finished))).toBe(true);
+  });
+
+  it("treats a growing body swap as a finished swap", () => {
+    expect(hasPageBodySwapped(snap(`588:Sign In|${chrome}`), snap(grown))).toBe(true);
+  });
+
+  it("credits a finished swap and a growth swap on a mid-flow submit step", () => {
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(finished), ...midFlow }))
+    ).toBe("effective");
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(finished), post: snap(grown), ...midFlow }))
+    ).toBe("effective");
+  });
+
+  it("does not credit a submit-shaped click with identical signatures", () => {
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half), post: snap(half), ...midFlow }))
+    ).toBe("phantom");
+    expect(hasPageAdvanced(snap(half), snap(half))).toBe(false);
+  });
+
+  it("does not credit a tooltip-sized text change", () => {
+    const pre = snap(`300:Create your account|${chrome}`);
+    const post = snap(`320:Create your account|${chrome}`);
+    expect(hasPageAdvanced(pre, post)).toBe(false);
+  });
+
+  it("still credits a non-submit click with a large DOM reveal and no text change", () => {
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: snap(half, 1000), post: snap(half, 9000) }))
+    ).toBe("effective");
+  });
+});
+
+describe("scraper/phantom-click full-text page advance", () => {
+  const chrome =
+    "Home Jobs Careers Benefits Locations Teams Students Veterans Events Blog Press. ".repeat(4);
+  const sig = `600:${chrome.slice(0, 200)}`;
+  const base = { networkCount: 0, url: URL, bodyHtmlLength: 1000, visibleTextSignature: sig };
+
+  it("credits a body swapped past the signature head when length and head are unchanged", () => {
+    const pre = {
+      ...base,
+      visibleText: `${chrome}Email Password Verify Password Terms Create Account`,
+      visibleTextDigest: "a:1",
+    };
+    const post = {
+      ...base,
+      visibleText: `${chrome}Welcome aboard check inbox confirm address Continue`,
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(true);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
+  it("does not credit a digest move whose words are identical", () => {
+    const text = `${chrome}Email Password`;
+    const pre = { ...base, visibleText: text, visibleTextDigest: "a:1" };
+    const post = {
+      ...base,
+      visibleText: text.split(" ").reverse().join(" "),
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(false);
+  });
+
+  it("does not credit a single validation line appearing past the head", () => {
+    const pre = { ...base, visibleText: `${chrome}Email Password`, visibleTextDigest: "a:1" };
+    const post = {
+      ...base,
+      visibleText: `${chrome}Email Password Required field`,
+      visibleTextDigest: "b:1",
+    };
+    expect(hasPageAdvanced(pre, post)).toBe(false);
+  });
+});

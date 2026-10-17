@@ -127,6 +127,57 @@ function makeHeaderThenBodyPage(): VirtualPage {
   return vp;
 }
 
+const EMPTY_STAGE = { fromMs: 0, html: 0, text: "" };
+
+interface Stage {
+  fromMs: number;
+  html: number;
+  text: string;
+}
+
+/** Page whose snapshot follows a post-click timeline of stages; the network counter never moves. */
+function makeTimelinePage(stages: Stage[]): VirtualPage {
+  const vp = makeVirtualPage(null);
+  const clock = vp.clock;
+  let clickedAt: number | null = null;
+  (vp.page.evaluate as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (expr: unknown) => {
+      const centred = answerCentreHitTest(expr);
+      if (centred) return centred;
+      const src = String(expr);
+      if (src.includes("outerHTML")) {
+        const elapsed = clickedAt === null ? 0 : clock.now - clickedAt;
+        const stage =
+          [...stages].reverse().find((s) => elapsed >= s.fromMs) ?? stages[0] ?? EMPTY_STAGE;
+        return { html: stage.html, text: stage.text };
+      }
+      if (src.includes("isInvalid")) return 0;
+      return null;
+    }
+  );
+  vp.markActStarted = (): void => {
+    clickedAt = clock.now;
+  };
+  return vp;
+}
+
+function armClick(vp: VirtualPage): void {
+  guardedAct.mockImplementation(async () => {
+    vp.markActStarted();
+    return CLICK_RESULT;
+  });
+  guardedObserve.mockImplementation(async () =>
+    vp.actStarted()
+      ? []
+      : [{ selector: "css=button#load-report", description: "Load Report", method: "click" }]
+  );
+}
+
+const CREATE_ACCOUNT_STEP = "click the Create Account button to submit the account creation form";
+const HALF_SIGNATURE = "996:Skip to main content|Sign In|Careers Home|Back to Job Posting|Search";
+const SETTLED_SIGNATURE =
+  "588:Skip to main content|Settings|member@example.com|Careers Home|Candidate Home";
+
 function baseParams(
   vp: VirtualPage,
   overrides: Record<string, unknown> = {}
@@ -248,5 +299,60 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
     expect(guardedAct).toHaveBeenCalledTimes(1);
     expect(vp.signalCounter.n).toBe(0);
     expect(trajectory).toEqual([expect.objectContaining({ stepIndex: 0 })]);
+  });
+
+  it.each([8000, 10000])(
+    "credits a non-final submit-shaped click whose header flips at once and whose body re-renders %ims later with no network",
+    async (lateMs) => {
+      const vp = makeTimelinePage([
+        { fromMs: 0, html: 31284, text: "996:Skip to main content|Sign In|Careers Home" },
+        { fromMs: 500, html: 31000, text: HALF_SIGNATURE },
+        { fromMs: lateMs, html: 29300, text: SETTLED_SIGNATURE },
+      ]);
+      armClick(vp);
+      const trajectory: { stepIndex: number; verifiedBy: string | null }[] = [];
+
+      const outcome = await executeStepWithHealing(
+        baseParams(vp, { trajectory, step: CREATE_ACCOUNT_STEP, submitStep: true }) as never
+      );
+
+      expect(outcome).toBe("completed");
+      expect(guardedAct).toHaveBeenCalledTimes(1);
+      expect(vp.signalCounter.n).toBe(0);
+      expect(trajectory).toHaveLength(1);
+    }
+  );
+
+  it("credits the same advance when the settled body grows instead of shrinking", async () => {
+    const vp = makeTimelinePage([
+      { fromMs: 0, html: 4000, text: "120:Sign In|Email|Password" },
+      { fromMs: 500, html: 4200, text: "130:Settings|Email|Password" },
+      { fromMs: 9000, html: 22000, text: "900:Settings|Pick a plan|Enter billing details" },
+    ]);
+    armClick(vp);
+
+    const outcome = await executeStepWithHealing(
+      baseParams(vp, { step: CREATE_ACCOUNT_STEP, submitStep: true }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(vp.signalCounter.n).toBe(0);
+  });
+
+  it("still credits a non-submit click with a large DOM reveal by view swap", async () => {
+    const vp = makeTimelinePage([
+      { fromMs: 0, html: 1200, text: "1:report not loaded" },
+      { fromMs: 1500, html: 60000, text: "40:report loaded with rows and filters" },
+    ]);
+    armClick(vp);
+
+    const outcome = await executeStepWithHealing(
+      baseParams(vp, { step: NON_SUBMIT_STEP }) as never
+    );
+
+    expect(outcome).toBe("completed");
+    expect(guardedAct).toHaveBeenCalledTimes(1);
+    expect(vp.signalCounter.n).toBe(0);
   });
 });

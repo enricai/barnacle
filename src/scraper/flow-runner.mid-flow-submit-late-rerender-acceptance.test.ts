@@ -115,6 +115,24 @@ const GROWTH: Scenario = {
   rerenderDelayMs: 4000,
 };
 
+const LONG_NAV = `<nav>${"Home Jobs Careers Benefits Locations Teams Students Veterans Events Blog Press Contact Help FAQ Privacy Terms. ".repeat(3)}</nav>`;
+
+/** Body swaps entirely beyond the 200-char signature head, under long unchanged chrome. */
+const BELOW_HEAD: Scenario = {
+  title: "Sign In",
+  hdrBefore: "Sign In",
+  hdrAfter: null,
+  initialBody: (d) => {
+    (d.getElementById("out") as unknown as HappyDomElement).innerHTML =
+      `${LONG_NAV}<p>${"Email Password Verify Password Terms. ".repeat(10)}</p>`;
+  },
+  rerender: (d) => {
+    (d.getElementById("out") as unknown as HappyDomElement).innerHTML =
+      `${LONG_NAV}<p>${"Welcome aboard check inbox confirm address. ".repeat(9)}</p>`;
+  },
+  rerenderDelayMs: 3000,
+};
+
 const NOOP: Scenario = {
   title: "Sign In",
   hdrBefore: "Sign In",
@@ -364,6 +382,25 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     expect(outcome).toBe("completed");
     expect(world.act).toHaveBeenCalledTimes(1);
     expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+  });
+
+  it("credits a body that re-renders past the signature head with the header and length unchanged", async () => {
+    const world = buildWorld(BELOW_HEAD);
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(world.rendered()).toBe(true);
+    expect(outcome).toBe("completed");
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+  });
+
+  it("does not credit the same below-head re-render on the final step", async () => {
+    const world = buildWorld(BELOW_HEAD);
+
+    const outcome = await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
+
+    expect(outcome).not.toBe("completed");
   });
 
   it("credits the advance when Stagehand reports success with no resolved action", async () => {
