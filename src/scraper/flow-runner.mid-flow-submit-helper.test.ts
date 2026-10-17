@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMidFlowSubmitShapedStep } from "@/scraper/flow-runner";
+import { flowHasSubmitSemantics, isMidFlowSubmitShapedStep } from "@/scraper/flow-runner";
 import { classifyPhantomClick } from "@/scraper/phantom-click";
 
 const base = {
@@ -72,5 +72,28 @@ describe("classifyPhantomClick genuine no-op", () => {
         isSubmitShapedStep: true,
       })
     ).toBe("phantom");
+  });
+});
+
+describe("isMidFlowSubmitShapedStep with derived flowHasSubmitSemantics", () => {
+  it("credits a truncated plan whose last slot is a non-submit step", () => {
+    const steps = [
+      { submitStep: true, instruction: "Click Create Account" },
+      { submitStep: false, instruction: "fill the email field" },
+    ];
+    const derived = flowHasSubmitSemantics({
+      steps,
+      submitEndpointPattern: null,
+      requireSubmitEndpointMatch: false,
+    });
+    expect(derived).toBe(false);
+    expect(
+      isMidFlowSubmitShapedStep({
+        step: "Click Create Account",
+        submitStep: true,
+        isFinalStep: true,
+        flowHasSubmitSemantics: derived,
+      })
+    ).toBe(true);
   });
 });
