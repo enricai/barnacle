@@ -7757,20 +7757,22 @@ export async function injectCaptchaTokenAndSubmit(
 /**
  * Single assembly point for the mid-flow half of a phantom-click verdict, so
  * the primary attempt and every bypass/retry site extend the same
- * pre-URL destination exemption for a mid-flow submit and credit a settled
- * page advance identically instead of each re-deriving it.
+ * pre-URL destination exemption for a mid-flow submit, granted only on a
+ * settled page advance, identically instead of each re-deriving it.
  */
 function midFlowDestinationPlausible(params: {
   step: string;
-  pre: PageSnapshot;
-  post: PageSnapshot;
+  pre: StepSnapshot;
+  post: StepSnapshot;
   midFlowSubmit: boolean;
   destinationPlausible?: boolean;
 }): boolean {
   const { step, pre, post, midFlowSubmit } = params;
   return (
     (params.destinationPlausible ?? isPlausibleStepDestination(step, post.url)) ||
-    (midFlowSubmit && isPlausibleStepDestination(step, post.url, pre.url))
+    (midFlowSubmit &&
+      hasSettledPageAdvanced(pre, post) &&
+      isPlausibleStepDestination(step, post.url, pre.url))
   );
 }
 
@@ -7781,15 +7783,15 @@ function midFlowDestinationPlausible(params: {
  */
 function classifySubmitShapedClick(params: {
   step: string;
-  pre: PageSnapshot;
-  post: PageSnapshot;
+  pre: StepSnapshot;
+  post: StepSnapshot;
   midFlowSubmit: boolean;
   actResultSuccess?: boolean | null;
   elementStateChanged?: boolean;
   isSubmitShapedStep?: boolean;
   destinationPlausible?: boolean;
 }): PhantomClickVerdict {
-  const { step, pre, post, midFlowSubmit } = params;
+  const { midFlowSubmit } = params;
   return classifyPhantomClick({
     actResultSuccess: params.actResultSuccess ?? true,
     pre,
