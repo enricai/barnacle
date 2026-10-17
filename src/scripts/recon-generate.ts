@@ -640,14 +640,6 @@ function collectHashFacetLiterals(url: string, previousHash: string | undefined)
 }
 
 /**
- * Further element kinds a facet's own hash names (`ship` in `#/ship/<slug>` or
- * `ship=<slug>`, `ports` in `ports_<slug>`), for a field name that does not
- * itself name the element kind. Kept beside the binding rather than on it so
- * the binding's declared shape stays the contract callers build and compare.
- */
-const FACET_KIND_HINTS = new WeakMap<NavigateToFacetBinding, readonly string[]>();
-
-/**
  * Element kinds a hash facet's own tokens name: the key of a `key=value` pair,
  * the path segment ahead of the value, and the `<kind>_` prefix of a slug.
  */
@@ -773,6 +765,10 @@ export interface NavigateToFacetBinding {
    * for it, so a renderer can translate the caller's value instead of
    * emitting it raw into a code-vocabulary element. */
   readonly valueMap?: ReadonlyMap<string, string>;
+  /** Further element kinds a facet's own hash names (`ship` in `#/ship/<slug>`,
+   * `ports` in `ports_<slug>`) for a field name that does not itself name the
+   * element kind. Carried on the binding so every spread copy keeps them. */
+  readonly kindHints?: readonly string[];
 }
 
 /** Where a facet's literal was read from. See {@link NavigateToFacetBinding}. */
@@ -807,8 +803,8 @@ export function extractNavigateToFacetOrder(
         literals: facet.literals,
         kind: facet.kind,
         ...(facet.origin === "step" ? { origin: facet.origin } : {}),
+        ...(facet.kindHints.length > 0 ? { kindHints: facet.kindHints } : {}),
       };
-      if (facet.kindHints.length > 0) FACET_KIND_HINTS.set(binding, facet.kindHints);
       return binding;
     });
 }
@@ -9807,7 +9803,7 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
   const meaningful = words.filter((word) => !KIND_NOISE_WORDS.has(word));
   const named = meaningful.length > 0 ? meaningful : words;
   if (normalizeKind(facet.kind) === element || normalizeKind(named.join(" ")) === element) return 1;
-  if ((FACET_KIND_HINTS.get(facet) ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
+  if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
   if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
   if (named.some((word) => normalizeKind(word) === element)) return 3;
   // An element kind spelled as a compound (`departurePort`, `numberOfNights`)
@@ -9820,7 +9816,7 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
   const facetWords = new Set(
     [
       ...named,
-      ...(FACET_KIND_HINTS.get(facet) ?? []).flatMap((hint) => deriveFacetKind(hint).split(" ")),
+      ...(facet.kindHints ?? []).flatMap((hint) => deriveFacetKind(hint).split(" ")),
     ]
       .filter((word) => !KIND_NOISE_WORDS.has(word))
       .map(normalizeKind)
