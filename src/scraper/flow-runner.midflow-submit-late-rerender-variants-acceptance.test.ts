@@ -64,6 +64,16 @@ const REPORT: Variant = {
 };
 const VARIANTS: Variant[] = [
   REPORT,
+  { ...REPORT, name: "late by 2s", delayMs: 2000 },
+  { ...REPORT, name: "late by 3s", delayMs: 3000 },
+  { ...REPORT, name: "late by 11s", delayMs: 11_000 },
+  {
+    ...REPORT,
+    name: "body grows, late by 3s",
+    preText: GROW_PRE,
+    postText: GROW_POST,
+    delayMs: 3000,
+  },
   { ...REPORT, name: "late by 13s", delayMs: 13_000 },
   { ...REPORT, name: "late by 25s", delayMs: 25_000 },
   {
