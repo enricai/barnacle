@@ -85,13 +85,13 @@ describe("facet literal set and kind", () => {
   it("exposes literals and kind for click-step facets", () => {
     const bindings = extractNavigateToFacetOrder(
       [
-        { step: "click the 'Bahamas' destination option", payloadField: "destination" },
+        { step: "click the 'Garden' destination option", payloadField: "destination" },
         { step: "click the '4' nights option", payloadField: "tripLength" },
       ],
       {}
     );
     expect(bindings.map((b) => [b.value, b.literals, b.kind])).toEqual([
-      ["Bahamas", ["Bahamas"], "destination"],
+      ["Garden", ["Garden"], "destination"],
       ["4", ["4"], "trip length"],
     ]);
   });

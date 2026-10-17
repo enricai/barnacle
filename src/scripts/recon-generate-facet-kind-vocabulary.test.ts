@@ -37,20 +37,20 @@ const actionWith = (filters: string[]): Actions[number] =>
 
 const CODE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "GARDEN;filterType=destination",
   "MERRY;filterType=theme",
   "4;filterType=night",
 ];
 
 describe("facet matching by literal set and element kind", () => {
   const facets = [
-    stepFacet("destination", "Bahamas", "destination"),
+    stepFacet("destination", "Garden", "destination"),
     stepFacet("nights", "4", "nights"),
   ];
 
   it("binds a keyed facet only to elements of its own kind, case-insensitively", () => {
     expect(
-      matchFacetRecurrence("BAHAMAS;filterType=destination", facets, { allowDelimiterSuffix: true })
+      matchFacetRecurrence("GARDEN;filterType=destination", facets, { allowDelimiterSuffix: true })
         ?.field
     ).toBe("destination");
     expect(
@@ -60,16 +60,16 @@ describe("facet matching by literal set and element kind", () => {
 
   it("does not let a short keyed literal over-match another kind's element", () => {
     expect(
-      matchFacetRecurrence("bahamas-trips;filterId=urlFriendlyId", facets, {
+      matchFacetRecurrence("garden-tools;filterId=urlFriendlyId", facets, {
         allowDelimiterSuffix: true,
       })
     ).toBeUndefined();
   });
 
   it("still binds an unkeyed hash facet's literal element of any suffix kind", () => {
-    const hash = [hashFacet("destination", "bahamas-trips", "destination")];
+    const hash = [hashFacet("destination", "garden-tools", "destination")];
     expect(
-      matchFacetRecurrence("bahamas-trips;filterId=urlFriendlyId", hash, {
+      matchFacetRecurrence("garden-tools;filterId=urlFriendlyId", hash, {
         allowDelimiterSuffix: true,
       })?.field
     ).toBe("destination");
@@ -112,7 +112,7 @@ describe("resolveRecurringNavigateToFacets alias for every declared facet", () =
 
   it("threads a click-step facet whose quoted literal never recurs by its kind suffix", () => {
     const resolved = resolveRecurringNavigateToFacets(
-      [stepFacet("destination", "Bahamas", "destination"), stepFacet("nights", "4", "nights")],
+      [stepFacet("destination", "Garden", "destination"), stepFacet("nights", "4", "nights")],
       [actionWith(["BS;filterType=destination", "4;filterType=night"])]
     );
     expect(resolved.map(({ field, value }) => [field, value])).toEqual([
@@ -192,7 +192,7 @@ describe("resolveRecurringNavigateToFacets kind naming beyond the bare field", (
       },
     } as unknown as Actions[number];
     const resolved = resolveRecurringNavigateToFacets(
-      [stepFacet("destination", "Bahamas", "destination")],
+      [stepFacet("destination", "Garden", "destination")],
       [action]
     );
     expect(resolved.map(({ value }) => value)).toEqual(["BS"]);

@@ -1138,7 +1138,7 @@ describe("isZeroVarianceRepeatCapture", () => {
     const searchCapture = {
       method: "POST",
       url: "https://apply.acme.example/api/search",
-      requestPostData: '{"destination":"Bahamas","month":"2026-10"}',
+      requestPostData: '{"destination":"Garden","month":"2026-10"}',
       responseHeaders: { "content-type": "application/json" },
       responseBody: { results: [{ id: "voyage-1" }, { id: "voyage-2" }] },
     };

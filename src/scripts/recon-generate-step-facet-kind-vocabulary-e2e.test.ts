@@ -32,11 +32,7 @@ function fixtureCaptures(): Capture[] {
       url: `https://${OWN_BACKEND_HOST}/catalog/filter-results/`,
       requestPostData: JSON.stringify({
         sort: "relevance",
-        filters: [
-          "BAHAMAS;filterType=destination",
-          "4;filterType=night",
-          "summer;filterType=theme",
-        ],
+        filters: ["GARDEN;filterType=destination", "4;filterType=night", "summer;filterType=theme"],
       }),
       responseBody: { ok: true },
       timestamp: "2026-04-01T00:00:01.000Z",
@@ -82,7 +78,7 @@ describe("recon-generate CLI — step facets in a kind-suffixed array vocabulary
         steps: [
           { step: "browse catalog" },
           {
-            step: "click the 'Bahamas' option",
+            step: "click the 'Garden' option",
             payloadField: "destination",
             optional: true,
           },
@@ -111,7 +107,7 @@ describe("recon-generate CLI — step facets in a kind-suffixed array vocabulary
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source
       "...(payload.nights ? [`${payload.nights};filterType=night`] : [])"
     );
-    expect(contract).not.toContain('"BAHAMAS;filterType=destination"');
+    expect(contract).not.toContain('"GARDEN;filterType=destination"');
     expect(contract).not.toContain('"4;filterType=night"');
   });
 
