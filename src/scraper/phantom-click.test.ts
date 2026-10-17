@@ -712,3 +712,42 @@ describe("scraper/phantom-click full-text page advance", () => {
     expect(hasPageAdvanced(pre, post)).toBe(false);
   });
 });
+
+describe("scraper/phantom-click settled judgement on the report pair", () => {
+  const pre = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 31284,
+    visibleTextSignature: "996:Skip to main content|Sign In|Careers Home|Back to Job Posting",
+  };
+  const post = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 29300,
+    visibleTextSignature:
+      "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home",
+  };
+  const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
+
+  it("credits the settled pair as an advance, settled or not", () => {
+    expect(hasSettledPageAdvanced(pre, { ...post, settled: true })).toBe(true);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+    expect(
+      classifyPhantomClick(makeAttempt({ pre, post: { ...post, settled: true }, ...midFlow }))
+    ).toBe("effective");
+  });
+
+  it("keeps an identical pair phantom even when settled", () => {
+    const same = { ...pre, settled: true };
+    expect(hasSettledPageAdvanced(pre, same)).toBe(false);
+    expect(classifyPhantomClick(makeAttempt({ pre, post: same, ...midFlow }))).toBe("phantom");
+  });
+
+  it("keeps a submit-shaped step phantom without the mid-flow flag", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post: { ...post, settled: true }, isSubmitShapedStep: true })
+      )
+    ).toBe("phantom");
+  });
+});
