@@ -20,7 +20,7 @@ const THEME_SLUG = "family-fun";
 const DESTINATION_STEP =
   "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the trip length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 
 const QUOTE_BAR_ELEMENTS = [
   "2026-12;filterType=date",
