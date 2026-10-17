@@ -33,7 +33,7 @@ const testLogger = {
 } as unknown as Logger;
 
 const ACTION = { selector: "input#f", description: "field", method: "fill" };
-const PATTERN = "TransitionWorklet";
+const PATTERN = "AdvanceStep";
 
 const STEP: HealingFlowStep = {
   instruction: "Fill in field 0",
@@ -43,7 +43,7 @@ const STEP: HealingFlowStep = {
 };
 
 function transitionBody(type: string): string {
-  return JSON.stringify({ operationName: "TransitionWorklet", variables: { input: { type } } });
+  return JSON.stringify({ operationName: "AdvanceStep", variables: { input: { type } } });
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
