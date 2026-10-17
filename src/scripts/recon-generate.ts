@@ -7872,6 +7872,19 @@ function occursAtTokenBoundary(rawText: string, rawValue: string, ignoreCase = f
 }
 
 /**
+ * The one action pool both transports resolve declared facets from: the
+ * compiled action steps when the flow has any, else the raw captures (a
+ * single-primary flow compiles none), so REST and GraphQL cannot resolve
+ * different facet sets for one flow.
+ */
+export function facetResolutionPool(
+  actionSteps: readonly Pick<ActionStep, "capture">[],
+  allCaptures: readonly Capture[] = []
+): readonly Pick<ActionStep, "capture">[] {
+  return actionSteps.length > 0 ? actionSteps : allCaptures.map((capture) => ({ capture }));
+}
+
+/**
  * Every literal the flow's declared navigateTo facets take in the captured
  * traffic: the hash-derived literal plus, for a facet whose hash literal never
  * recurs, the body/query value {@link correlateUnreachableNavigateToFacets}
@@ -8130,7 +8143,10 @@ export function emitMultiStepExecuteHttp(
   } = computeFlowPayloadFieldNames(flowSteps, vocabulary, process.env);
   const payloadAccessorByValue = new Map<string, string>();
   const declaredNavigateToFacets = extractNavigateToFacetOrder(flowSteps, process.env);
-  const navigateToFacetOrder = resolveRecurringNavigateToFacets(declaredNavigateToFacets, actions);
+  const navigateToFacetOrder = resolveRecurringNavigateToFacets(
+    declaredNavigateToFacets,
+    facetResolutionPool(actions)
+  );
   const facetArrayPathKeys = collectFacetArrayPathKeys(
     actions.map((action) => parseJsonBodyOrNull(action.capture.requestPostData)),
     navigateToFacetOrder
@@ -14826,7 +14842,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
   // is the only place a declared facet's kind-suffixed element can be found.
   const navigateToFacets = resolveRecurringNavigateToFacets(
     extractNavigateToFacetOrder(contractFlowSteps, process.env),
-    actionSteps.length > 0 ? actionSteps : allCaptures.map((capture) => ({ capture }))
+    facetResolutionPool(actionSteps, allCaptures)
   );
   const gqlVariablesExpr = gqlOperationName
     ? renderGqlVariablesExpr(
