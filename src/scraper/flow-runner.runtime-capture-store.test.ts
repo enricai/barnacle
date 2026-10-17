@@ -5,6 +5,7 @@ import { windowHasAdvanceTransition, wireSignalCapture } from "@/scraper/flow-ru
 import {
   defaultCapturesDir,
   listCaptureFiles,
+  type RuntimeCaptureStore,
   readCaptureFile,
   recordRuntimeCapture,
   withRuntimeCaptureStore,
@@ -38,11 +39,14 @@ function fakeCapturePage(): {
   return { page, emit };
 }
 
-async function fireRequest(params: {
-  method: string;
-  postData?: string;
-  requestId: string;
-}): Promise<void> {
+async function fireRequest(
+  store: RuntimeCaptureStore,
+  params: {
+    method: string;
+    postData?: string;
+    requestId: string;
+  }
+): Promise<void> {
   const { page, emit } = fakeCapturePage();
   const teardown = wireSignalCapture(page, {
     counter: { n: 0 },
@@ -51,7 +55,7 @@ async function fireRequest(params: {
     recentCaptureMeta: [],
     getCurrentPhase: () => "action",
     getCurrentPageOrigin: () => ORIGIN,
-    onCapture: (capture, filename) => recordRuntimeCapture(filename, capture),
+    onCapture: (capture, filename) => recordRuntimeCapture(store, filename, capture),
   });
   emit("Network.requestWillBeSent", {
     requestId: params.requestId,
@@ -82,24 +86,24 @@ const advanced = (): boolean =>
 
 describe("flow-runner/runtime capture store — wireSignalCapture feeds window detectors", () => {
   it("counts a POST mutation with input.type 'next' as an advance", async () => {
-    const result = await withRuntimeCaptureStore(async () => {
-      await fireRequest({ method: "POST", postData: mutation("next"), requestId: "r1" });
+    const result = await withRuntimeCaptureStore(async (store) => {
+      await fireRequest(store, { method: "POST", postData: mutation("next"), requestId: "r1" });
       return advanced();
     });
     expect(result).toBe(true);
   });
 
   it("does not count a 'back' mutation as an advance", async () => {
-    const result = await withRuntimeCaptureStore(async () => {
-      await fireRequest({ method: "POST", postData: mutation("back"), requestId: "r2" });
+    const result = await withRuntimeCaptureStore(async (store) => {
+      await fireRequest(store, { method: "POST", postData: mutation("back"), requestId: "r2" });
       return advanced();
     });
     expect(result).toBe(false);
   });
 
   it("drops GET response bodies", async () => {
-    const body = await withRuntimeCaptureStore(async () => {
-      await fireRequest({ method: "GET", requestId: "r3" });
+    const body = await withRuntimeCaptureStore(async (store) => {
+      await fireRequest(store, { method: "GET", requestId: "r3" });
       const [file] = listCaptureFiles(defaultCapturesDir());
       return file ? readCaptureFile(defaultCapturesDir(), file)?.responseBody : undefined;
     });
@@ -108,8 +112,8 @@ describe("flow-runner/runtime capture store — wireSignalCapture feeds window d
 
   it("isolates concurrent scopes from each other", async () => {
     const [withAdvance, withoutCaptures] = await Promise.all([
-      withRuntimeCaptureStore(async () => {
-        await fireRequest({ method: "POST", postData: mutation("next"), requestId: "r4" });
+      withRuntimeCaptureStore(async (store) => {
+        await fireRequest(store, { method: "POST", postData: mutation("next"), requestId: "r4" });
         return advanced();
       }),
       withRuntimeCaptureStore(async () => {

@@ -120,6 +120,7 @@ import { findQuotedSpans, matchAnchored, type QuotedSpan } from "@/scraper/quote
 import {
   defaultCapturesDir,
   listCaptureFiles,
+  type RuntimeCaptureStore,
   readCaptureFile,
   recordRuntimeCapture,
   withRuntimeCaptureStore,
@@ -16351,10 +16352,13 @@ export interface RunHealingFlowDeps {
  * than let the flow report phantom success.
  */
 export async function runHealingFlow(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
-  return withRuntimeCaptureStore(() => runHealingFlowScoped(deps));
+  return withRuntimeCaptureStore((store) => runHealingFlowScoped(deps, store));
 }
 
-async function runHealingFlowScoped(deps: RunHealingFlowDeps): Promise<RunHealingFlowResult> {
+async function runHealingFlowScoped(
+  deps: RunHealingFlowDeps,
+  store: RuntimeCaptureStore
+): Promise<RunHealingFlowResult> {
   const { stagehand, page, steps, logger, anthropic, rephraseModel, uploadFixture, maxFlowMs } =
     deps;
   for (const secret of deps.secrets ?? []) registerSecretValue(secret);
@@ -16385,7 +16389,7 @@ async function runHealingFlowScoped(deps: RunHealingFlowDeps): Promise<RunHealin
       recentCaptures,
       recentCaptureMeta,
       getCurrentPhase: () => "flow",
-      onCapture: (capture, filename) => recordRuntimeCapture(filename, capture),
+      onCapture: (capture, filename) => recordRuntimeCapture(store, filename, capture),
       getCurrentPageOrigin: () => {
         try {
           return new URL(activePage.url()).origin;
