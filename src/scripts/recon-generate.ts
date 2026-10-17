@@ -9845,14 +9845,17 @@ const MONTH_NAMES = [
 
 /**
  * Normalizes a month written as a slug or label (`december-2026`, `Dec 2026`,
- * `2026-12`) to `YYYY-MM`, so the same month matches across vocabularies.
+ * `2026-12`, or a compact `Dec26`) to `YYYY-MM`, so the same month matches across vocabularies.
  */
 function monthCodeOf(literal: string): string | undefined {
   const text = literal.trim();
   const iso = /^(\d{4})[-/](0[1-9]|1[0-2])$/.exec(text);
   if (iso) return `${iso[1]}-${iso[2]}`;
+  const compact = /^([A-Za-z]{3})(\d{2})$/.exec(text);
   const named =
-    /^([A-Za-z]{3,9})[\s_/-]+(\d{4})$/.exec(text) ?? /^(\d{4})[\s_/-]+([A-Za-z]{3,9})$/.exec(text);
+    /^([A-Za-z]{3,9})[\s_/-]+(\d{4})$/.exec(text) ??
+    /^(\d{4})[\s_/-]+([A-Za-z]{3,9})$/.exec(text) ??
+    (compact ? [compact[0], compact[1]!, `20${compact[2]}`] : null);
   if (!named) return undefined;
   const yearFirst = /^\d{4}$/.test(named[1]!);
   const name = (yearFirst ? named[2]! : named[1]!).toLowerCase();
