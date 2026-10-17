@@ -42,11 +42,15 @@ const STEP: HealingFlowStep = {
   submitStep: false,
 };
 
+function transitionBody(type: string): string {
+  return JSON.stringify({ operationName: "TransitionWorklet", variables: { input: { type } } });
+}
+
 type Handler = (params: Record<string, unknown>) => void;
 
 function makeFakePage(): {
   page: Page;
-  emitMutation: (requestId: string) => Promise<void>;
+  emitMutation: (requestId: string, body?: string) => Promise<void>;
 } {
   const handlers = new Map<string, Set<Handler>>();
   const session = {
@@ -57,10 +61,7 @@ function makeFakePage(): {
       handlers.get(event)?.delete(h);
     },
   };
-  const body = JSON.stringify({
-    operationName: "TransitionWorklet",
-    variables: { input: { type: "next" } },
-  });
+  const defaultBody = transitionBody("next");
   const page = {
     url: () => "https://example.org/a",
     title: vi.fn().mockResolvedValue("Apply"),
@@ -83,7 +84,7 @@ function makeFakePage(): {
   };
   return {
     page,
-    emitMutation: async (requestId) => {
+    emitMutation: async (requestId, body = defaultBody) => {
       fire("Network.requestWillBeSent", {
         requestId,
         request: {
@@ -117,13 +118,20 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
     });
   });
 
-  it("feeds window detectors with in-run captures, isolated per concurrent run", async () => {
-    const fakes = [makeFakePage(), makeFakePage()];
-    const seen: Array<{ files: number; advance: boolean; dir: string }> = [];
-    const runs = fakes.map((fake, i) => {
+  type Emit = (fake: ReturnType<typeof makeFakePage>, i: number) => Promise<void>;
+  type Seen = { files: number; advance: boolean; dir: string };
+
+  // Mutations are emitted from the test body, outside withRuntimeCaptureStore's async scope,
+  // so a sink that resolves its store ambiently would drop them.
+  async function runWithOutsideEmits(emits: Emit[]): Promise<Seen[]> {
+    const fakes = emits.map(() => makeFakePage());
+    const seen: Seen[] = [];
+    const ready = fakes.map(() => Promise.withResolvers<void>());
+    const emitted = fakes.map(() => Promise.withResolvers<void>());
+    fakes.forEach((_, i) => {
       guardedObserve.mockImplementationOnce(async () => {
-        // i-th run emits i captures so counts reveal any cross-run leakage
-        for (let n = 0; n <= i; n += 1) await fake.emitMutation(`req-${i}-${n}`);
+        ready[i]?.resolve();
+        await emitted[i]?.promise;
         const dir = defaultCapturesDir();
         seen[i] = {
           files: listCaptureFiles(dir).length,
@@ -135,11 +143,8 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
         };
         return [ACTION];
       });
-      return null;
     });
-    expect(runs).toHaveLength(2);
-
-    await Promise.all(
+    const runs = Promise.all(
       fakes.map((fake) =>
         runHealingFlow({
           stagehand: makeStagehand(fake.page),
@@ -152,6 +157,23 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
         }).catch(() => undefined)
       )
     );
+    await Promise.all(ready.map((r) => r.promise));
+    for (const [i, fake] of fakes.entries()) {
+      await emits[i]?.(fake, i);
+      emitted[i]?.resolve();
+    }
+    await runs;
+    return seen;
+  }
+
+  it("feeds window detectors with out-of-scope captures, isolated per concurrent run", async () => {
+    const seen = await runWithOutsideEmits([
+      async (fake) => fake.emitMutation("req-0-0"),
+      async (fake) => {
+        await fake.emitMutation("req-1-0");
+        await fake.emitMutation("req-1-1");
+      },
+    ]);
 
     expect(seen[0]?.advance).toBe(true);
     expect(seen[1]?.advance).toBe(true);
@@ -159,5 +181,31 @@ describe("flow-runner/runHealingFlow — runtime capture store", () => {
     expect(seen[1]?.files).toBe(2);
     expect(seen[0]?.dir).not.toBe(seen[1]?.dir);
     expect(seen[0]?.dir.startsWith("memory:")).toBe(true);
+  });
+
+  it("detects next as an advance but not back", async () => {
+    const seen = await runWithOutsideEmits([
+      async (fake) => fake.emitMutation("req-next", transitionBody("next")),
+      async (fake) => fake.emitMutation("req-back", transitionBody("back")),
+    ]);
+
+    expect(seen[0]?.advance).toBe(true);
+    expect(seen[1]?.advance).toBe(false);
+    expect(seen[1]?.files).toBe(1);
+  });
+
+  it("detects an advance that follows an autosave POST", async () => {
+    const seen = await runWithOutsideEmits([
+      async (fake) => {
+        await fake.emitMutation(
+          "req-save",
+          JSON.stringify({ operationName: "AutosaveDraft", variables: { input: { draft: 1 } } })
+        );
+        await fake.emitMutation("req-next", transitionBody("next"));
+      },
+    ]);
+
+    expect(seen[0]?.files).toBe(2);
+    expect(seen[0]?.advance).toBe(true);
   });
 });
