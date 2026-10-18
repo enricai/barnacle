@@ -19,9 +19,9 @@ const PORT_SLUG = "harbor-point";
 const MARKET_SLUG = "north-region";
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the quote bar and select the 'Lakeside' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the stay length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 const MONTH_STEP =
   "Open the departure month filter dropdown in the quote bar and select the '2026-12' month option, keeping the other filters that are already applied";
 
