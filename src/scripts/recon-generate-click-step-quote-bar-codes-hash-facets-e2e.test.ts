@@ -64,11 +64,13 @@ const FLOW_STEPS = [
  * vocabulary) and a quote-bar body (filterType vocabulary) in one run. A
  * payloadField declared on a click step must govern every element carrying
  * its value, and a declared field that governs nothing must not be required.
+ * Sibling paths share a compound token (`catalog-`) because a compound-segment
+ * path sharing nothing with its siblings is dropped as structural noise.
  */
 function buildCaptures(): Capture[] {
   const bodies: Array<[string, unknown]> = [
     [
-      "/catalog/search/",
+      "/catalog-search/",
       {
         filters: [
           `${LINE_SLUG};filterId=slug`,
@@ -77,7 +79,7 @@ function buildCaptures(): Capture[] {
         ],
       },
     ],
-    ["/quote-bar/", { filters: QUOTE_BAR_ELEMENTS }],
+    ["/catalog-quote-bar/", { filters: QUOTE_BAR_ELEMENTS }],
     ["/submit/", { confirm: true }],
   ];
   return bodies.map(([path, body], index) =>
