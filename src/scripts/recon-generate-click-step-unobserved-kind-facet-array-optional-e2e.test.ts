@@ -21,20 +21,20 @@ function step(label: string, option: string): string {
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "ALPHA;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
-  "GOC;filterType=privateIsland",
+  "OMEGA;filterType=premiumTier",
 ];
 
 const OBSERVED_STEPS = [
   { step: step("departure date", "2026-12"), payloadField: "date" },
-  { step: step("destination", "Bahamas"), payloadField: "destination" },
+  { step: step("destination", "Alpha"), payloadField: "destination" },
   { step: step("theme", "Merry"), payloadField: "theme" },
   { step: step("ship", "WW"), payloadField: "ship" },
 ];
 const NIGHTS_STEP = {
-  step: step("cruise length (number of nights)", "4"),
+  step: step("trip length (number of nights)", "4"),
   payloadField: "nights",
 };
 const CLICK_STEPS = [...OBSERVED_STEPS, NIGHTS_STEP];
@@ -122,7 +122,7 @@ describe("recon-generate CLI — click facet of a kind absent from the captured 
     for (const kind of ["destination", "theme", "ship", "date"]) {
       expect(contract, output).toMatch(new RegExp(`payload\\.${kind}[^\\x60]*;filterType=${kind}`));
     }
-    expect(contract).not.toContain("BAHAMAS;filterType=destination");
+    expect(contract).not.toContain("ALPHA;filterType=destination");
     expect(contract).not.toMatch(/payload\.nights[^\x60]*;filterType=(?!night)/);
   }, 60_000);
 });

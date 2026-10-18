@@ -16,16 +16,16 @@ const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 const OWN_BACKEND_HOST = "www.click-field-differs-from-kind-fixture.example.com";
 
 const DESTINATION_STEP =
-  "Open the destination filter dropdown in the quote bar and select the 'Bahamas' destination option, keeping the other filters that are already applied";
+  "Open the destination filter dropdown in the quote bar and select the 'Alpha' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the trip length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 
 const FIVE_ELEMENTS = [
   "2026-12;filterType=date",
-  "BAHAMAS;filterType=destination",
+  "ALPHA;filterType=destination",
   "MERRY;filterType=theme",
   "WW;filterType=ship",
-  "GOC;filterType=privateIsland",
+  "OMEGA;filterType=premiumTier",
 ];
 const SIX_ELEMENTS = [...FIVE_ELEMENTS, "4;filterType=night"];
 
@@ -42,7 +42,7 @@ function buildCaptures(elements: string[]): Capture[] {
   const bodies: Array<[string, unknown]> = [
     [
       "/listing/search/",
-      { filters: ["bahamas;filterId=slug", "family-fun;filterId=slug", "4-nights;filterId=slug"] },
+      { filters: ["alpha;filterId=slug", "family-fun;filterId=slug", "4-nights;filterId=slug"] },
     ],
     ["/quote/", { filters: elements }],
     ["/submit/", { confirm: true }],
@@ -112,7 +112,7 @@ describe("recon-generate CLI — click-step facets whose field name differs from
   it("threads destination in the five-element array and leaves no frozen element literal", () => {
     const { contract, browserFlow, output } = generate(FIVE_ELEMENTS);
     expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=destination/);
-    expect(contract, contract).not.toContain("BAHAMAS;filterType=destination");
+    expect(contract, contract).not.toContain("ALPHA;filterType=destination");
     expect(
       unreferencedDeclaredPayloadFields(contract, browserFlow, CLICK_STEPS.slice(0, 1)),
       output
@@ -123,7 +123,7 @@ describe("recon-generate CLI — click-step facets whose field name differs from
     const { contract, browserFlow, output } = generate(SIX_ELEMENTS);
     expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=destination/);
     expect(contract, contract).toMatch(/payload\.nights[^\x60]*;filterType=night/);
-    expect(contract, contract).not.toContain("BAHAMAS;filterType=destination");
+    expect(contract, contract).not.toContain("ALPHA;filterType=destination");
     expect(contract, contract).not.toContain("4;filterType=night");
     expect(unreferencedDeclaredPayloadFields(contract, browserFlow, CLICK_STEPS), output).toEqual(
       []
