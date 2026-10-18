@@ -9788,6 +9788,10 @@ function normalizeKind(kind: string): string {
 
 const KIND_NOISE_WORDS = new Set(["facet", "filter", "field", "value", "option", "selection"]);
 
+// Calendar-granularity words (`month`, `year`) all name a slice of a date, so a
+// facet worded with one owns the element kind spelled with the umbrella `date`.
+const DATE_PART_WORDS = new Set(["month", "year", "day", "week", "date"]);
+
 /**
  * How closely a facet names an element's kind, 0 when it does not: 1 for the
  * declared field (qualifier words such as `facet` dropped) or a hash-named
@@ -9806,6 +9810,13 @@ function kindMatchTier(facet: NavigateToFacetBinding, elementKind: string): 0 | 
   if ((facet.kindHints ?? []).some((hint) => normalizeKind(hint) === element)) return 1;
   if (normalizeKind(named[named.length - 1] ?? "") === element) return 2;
   if (named.some((word) => normalizeKind(word) === element)) return 3;
+  const namesDatePart = [
+    ...named,
+    ...(facet.kindHints ?? []).flatMap((h) => deriveFacetKind(h).split(" ")),
+  ]
+    .map(normalizeKind)
+    .some((word) => DATE_PART_WORDS.has(word));
+  if (element === "date" && namesDatePart) return 3;
   // An element kind spelled as a compound (`departurePort`, `numberOfNights`)
   // still names the facet when one of its words is a word the facet itself
   // (or its step's prose) uses for its kind.
