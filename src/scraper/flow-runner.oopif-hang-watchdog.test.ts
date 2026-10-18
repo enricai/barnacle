@@ -114,6 +114,8 @@ async function advancePastDeepLocatorHangs(resultPromise: Promise<unknown>): Pro
   await advanceUntilSettled(resultPromise, {
     advanceTimersByTimeAsync: vi.advanceTimersByTimeAsync,
     getTimerCount: vi.getTimerCount,
+    // header-only resettle now spans MAX_MS per attempt, past the 300-tick default
+    maxIterations: 1_200,
   });
 }
 
