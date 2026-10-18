@@ -231,6 +231,14 @@ const VARIANTS: { name: string; timing: Timing; step?: string }[] = [
   { name: "body re-renders 5s after header flip", timing: { headerMs: 0, bodyMs: 5000 } },
   { name: "body re-renders 8s after header flip", timing: { headerMs: 0, bodyMs: 8000 } },
   { name: "body re-renders 12s after header flip", timing: { headerMs: 0, bodyMs: 12_000 } },
+  {
+    name: "body re-renders 20s after header flip (beyond the old two-round budget)",
+    timing: { headerMs: 0, bodyMs: 20_000 },
+  },
+  {
+    name: "body re-renders 30s after header flip",
+    timing: { headerMs: 0, bodyMs: 30_000 },
+  },
   { name: "header and body land together", timing: { headerMs: 3000, bodyMs: 3000 } },
   { name: "header and body land immediately", timing: { headerMs: 0, bodyMs: 0 } },
   { name: "body lands first, header flips 6s later", timing: { headerMs: 6000, bodyMs: 0 } },

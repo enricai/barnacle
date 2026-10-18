@@ -7477,7 +7477,9 @@ async function resettleThroughHeaderOnlyFlip(
 ): Promise<StepSnapshot> {
   let current = post;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
-    if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
+    if (!hasVisibleTextChanged(pre, current)) return current;
+    if (hasPageBodySwapped(pre, current))
+      return round > 0 ? { ...current, settled: true } : current;
     await io.settle(
       page,
       target,
