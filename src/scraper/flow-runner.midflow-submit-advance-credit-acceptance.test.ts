@@ -265,9 +265,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit advance credit"
   });
 
   it("verifies a non-final step with a stale title, while the final step stays strict", async () => {
-    const nonFinal = await executeStepWithHealing(
-      params(buildWorld("Sign In"), false, [])
-    );
+    const nonFinal = await executeStepWithHealing(params(buildWorld("Sign In"), false, []));
     expect(nonFinal).toBe("completed");
 
     vi.mocked(verifySubmitWithLLM).mockResolvedValue({
