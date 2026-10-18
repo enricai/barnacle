@@ -31,6 +31,7 @@ function fakeClient(parsedOutput: unknown): Anthropic {
 }
 
 const INPUT: VerifySubmitInput = {
+  isFinalStep: true,
   pageUrl: "https://example.com/applied",
   pageTitle: "Application submitted",
   unfocusedObserve: [],
@@ -143,9 +144,10 @@ describe("verifySubmitWithLLM", () => {
     expect(result).not.toBeNull();
     expect(result).toEqual(parsedOutput);
   });
-  it("defaults to strict final-step judging when isFinalStep is omitted", async () => {
+  it("keeps strict final-step judging when isFinalStep is true", async () => {
     const { system, user } = await captured({
       stepInstruction: "Place order",
+      isFinalStep: true,
       pageTitle: "Sign In",
       visibleText: "Shipping address",
     });
