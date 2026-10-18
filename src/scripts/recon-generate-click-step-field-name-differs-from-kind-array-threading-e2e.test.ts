@@ -114,7 +114,7 @@ describe("recon-generate CLI — click-step facets whose field name differs from
     expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=destination/);
     expect(contract, contract).not.toContain("BAHAMAS;filterType=destination");
     expect(
-      unreferencedDeclaredPayloadFields(contract, browserFlow, [CLICK_STEPS[0]]),
+      unreferencedDeclaredPayloadFields(contract, browserFlow, CLICK_STEPS.slice(0, 1)),
       output
     ).toEqual([]);
   }, 60_000);
