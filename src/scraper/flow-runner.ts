@@ -71,9 +71,9 @@ import {
 import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   type PageQuiescence,
+  QUIESCENCE_PROBE_EXPR,
   IDLE_GIVE_UP_MS as SETTLE_IDLE_GIVE_UP_MS,
   MAX_MS as SETTLE_MAX_MS,
-  QUIESCENCE_PROBE_EXPR,
   type SettlePage,
   settleAfterClick,
   settleTextKey,
