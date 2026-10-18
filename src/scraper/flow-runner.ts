@@ -71,6 +71,8 @@ import {
 import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   type PageQuiescence,
+  IDLE_GIVE_UP_MS as SETTLE_IDLE_GIVE_UP_MS,
+  MAX_MS as SETTLE_MAX_MS,
   QUIESCENCE_PROBE_EXPR,
   type SettlePage,
   settleAfterClick,
@@ -7452,9 +7454,10 @@ const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
  * body has not re-rendered yet. Each round waits the settle's own idle
- * allowance, so a body landing well after the first settle ended is still read.
+ * allowance, so the rounds together span the settle's MAX_MS ceiling rather
+ * than a fixed guess; a held-still text ends the loop sooner.
  */
-const HEADER_ONLY_RESETTLE_ROUNDS = 2;
+const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_UP_MS);
 
 /**
  * Re-reads the post-click page while only its header has flipped. One
