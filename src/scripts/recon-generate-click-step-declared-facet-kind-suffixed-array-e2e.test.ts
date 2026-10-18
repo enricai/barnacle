@@ -141,7 +141,9 @@ describe("recon-generate CLI — declared click facets threaded into a kind-suff
     const unread = unreferencedDeclaredPayloadFields(contract, browserFlow, declared);
 
     for (const field of unread) {
-      expect(output, output).toContain(`declared payloadField ${field} is read by no emitted request`);
+      expect(output, output).toContain(
+        `declared payloadField ${field} is read by no emitted request`
+      );
       expect(contract, contract).toMatch(new RegExp(`${field}: z\\.string\\(\\)\\.optional\\(\\)`));
     }
     expect(unread).not.toContain("shade");
