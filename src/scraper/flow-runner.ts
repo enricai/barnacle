@@ -12802,6 +12802,7 @@ export async function executeStepWithHealing(params: {
                 submitStep,
                 isFinalStep,
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                elementSubmitShaped: !stepDeclaredNonSubmit,
               }),
             });
           } catch (err) {
@@ -13081,6 +13082,7 @@ export async function executeStepWithHealing(params: {
           submitStep,
           isFinalStep,
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          elementSubmitShaped: !stepDeclaredNonSubmit,
         }),
       });
       if (fallbackTarget) {
@@ -16225,6 +16227,7 @@ export async function executeStepWithHealing(params: {
         submitStep,
         isFinalStep,
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        elementSubmitShaped: !stepDeclaredNonSubmit,
       }),
     });
     if (fallbackTarget) {
