@@ -32,8 +32,6 @@ const STEP =
   "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
 const URL = "https://example.org/signup";
 const RERENDER_DELAY_MS = 8000;
-const IDLE_GIVE_UP_MS = 14_000;
-const STEP_PAUSE_MS = 2_000;
 const PRE_TEXT = `Sign In ${"Email Address Password Verify New Password. ".repeat(21)}`.slice(
   0,
   996
