@@ -231,12 +231,30 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(20);
   });
 
-  it("returns after the quiet window for a non-submit click once text moved", async () => {
+  it("holds a non-submit click whose text moved to the idle allowance before giving up", async () => {
     const f = makeFake(() => {});
     const text = (): string => (f.polls() >= 1 ? "header" : "example.com pre");
     await settleAfterClick(f.page, f.counter, 0, false, async () => text(), "example.com pre");
-    expect(f.polls()).toBe(10);
+    expect(f.polls()).toBe(14);
   });
+
+  it.each([true, false])(
+    "snapshots after a body re-render 13s after a header flip (submitShaped=%s)",
+    async (submitShaped) => {
+      const f = makeFake(() => {});
+      const text = (): string =>
+        f.polls() >= 13 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+      await settleAfterClick(
+        f.page,
+        f.counter,
+        0,
+        submitShaped,
+        async () => text(),
+        "example.com pre"
+      );
+      expect(f.polls()).toBeGreaterThanOrEqual(22);
+    }
+  );
 
   it("waits for a body re-render at 3s after a header flip at poll 1 with no network", async () => {
     const f = makeFake(() => {});

@@ -273,7 +273,8 @@ function params(
   world: World,
   isFinalStep: boolean,
   trajectory: unknown[],
-  step: string = STEP
+  step: string = STEP,
+  overrides: Record<string, unknown> = {}
 ): never {
   return {
     stagehand: world.stagehand,
@@ -304,6 +305,7 @@ function params(
     ownBackendHostnames: [],
     knownErrorClassPrefixes: [],
     wizardExitButtonLabels: [],
+    ...overrides,
   } as never;
 }
 
@@ -487,5 +489,100 @@ describe("flow-runner/executeStepWithHealing — mid-flow credit contract accept
     const outcome = await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
 
     expect(outcome).not.toBe("completed");
+  });
+
+  describe("primary-path variants beyond the original lags and flags", () => {
+    const SIGNUP_STEP =
+      "On the sign-up form (Name and Email already filled), click the 'Join Now' button to register the new member";
+    const ANTHROPIC_STUB = { messages: { create: vi.fn() } };
+
+    it.each([13000, 14000])(
+      "credits a header flip then a body re-render %ims later with no network",
+      async (delay) => {
+        const world = buildWorld({ ...REPORT, rerenderDelayMs: delay });
+
+        const outcome = await executeStepWithHealing(params(world, false, []));
+
+        expect(world.rendered()).toBe(true);
+        expect(world.postMetrics()).toEqual({ text: POST_TEXT_LEN, bytes: POST_BYTES });
+        expect(outcome).toBe("completed");
+        expect(world.counter.n).toBe(0);
+        expect(world.act).toHaveBeenCalledTimes(1);
+        expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+        expect(
+          logLines().some((l) => /phantom|deep-submit-locator|llm-rephrase|replan/.test(l))
+        ).toBe(false);
+      }
+    );
+
+    it("credits a differently worded sign-up step whose body lands 14s after the flip", async () => {
+      const world = buildWorld({ ...REPORT, hdrBefore: "Join", rerenderDelayMs: 14000 });
+
+      const outcome = await executeStepWithHealing(params(world, false, [], SIGNUP_STEP));
+
+      expect(world.rendered()).toBe(true);
+      expect(outcome).toBe("completed");
+      expect(world.act).toHaveBeenCalledTimes(1);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    });
+
+    it("credits the late re-render when the step is not flagged submitStep", async () => {
+      const world = buildWorld({ ...REPORT, rerenderDelayMs: 13000 });
+
+      const outcome = await executeStepWithHealing(
+        params(world, false, [], STEP, { submitStep: false })
+      );
+
+      expect(world.rendered()).toBe(true);
+      expect(outcome).toBe("completed");
+      expect(world.act).toHaveBeenCalledTimes(1);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    });
+
+    it("credits a 13s late re-render when act lists no actions", async () => {
+      const world = buildWorld({ ...REPORT, rerenderDelayMs: 13000 }, "none");
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(world.rendered()).toBe(true);
+      expect(outcome).toBe("completed");
+      expect(world.act).toHaveBeenCalledTimes(1);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    });
+
+    it.each([13000, 14000])(
+      "credits a %ims late re-render with an LLM client present and a stale title",
+      async (delay) => {
+        const world = buildWorld({ ...REPORT, title: "Sign In", rerenderDelayMs: delay });
+
+        const outcome = await executeStepWithHealing(
+          params(world, false, [], STEP, { anthropic: ANTHROPIC_STUB })
+        );
+
+        expect(world.rendered()).toBe(true);
+        expect(outcome).toBe("completed");
+        expect(world.act).toHaveBeenCalledTimes(1);
+        expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+      }
+    );
+
+    it("keeps the give-up for a no-op click with an LLM client present", async () => {
+      const world = buildWorld(NOOP);
+
+      const outcome = await executeStepWithHealing(
+        params(world, false, [], STEP, { anthropic: ANTHROPIC_STUB })
+      ).catch(() => "threw");
+
+      expect(outcome).not.toBe("completed");
+      expect(world.rendered()).toBe(false);
+    });
+
+    it("does not credit a 14s late DOM-only advance on the final step", async () => {
+      const world = buildWorld({ ...REPORT, rerenderDelayMs: 14000 });
+
+      const outcome = await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
+
+      expect(outcome).not.toBe("completed");
+    });
   });
 });

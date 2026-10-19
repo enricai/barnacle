@@ -14813,16 +14813,18 @@ export async function executeStepWithHealing(params: {
       signalCounter,
       page
     );
-    const post =
-      mayTriggerRoundTrip && stepIsMidFlowSubmit
-        ? await resettleThroughHeaderOnlyFlip(
-            page,
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            pre,
-            settledPost
-          )
-        : settledPost;
+    // Re-settle is not gated on submit shape: an unflagged step or a no-action
+    // act can still advance a page whose body re-renders late. Credit stays
+    // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
+    const post = mayTriggerRoundTrip
+      ? await resettleThroughHeaderOnlyFlip(
+          page,
+          frameTarget ?? mainFrameTarget(page),
+          signalCounter,
+          pre,
+          settledPost
+        )
+      : settledPost;
     record.post = post;
 
     if (resolvedAction) {
