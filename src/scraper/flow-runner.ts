@@ -1949,6 +1949,17 @@ export function isStepSettleWaitShaped(params: {
 }
 
 /**
+ * The single definition of a genuine final submit: the last slot of a flow
+ * that has submit semantics. A final slot without them is mid-flow.
+ */
+export function isGenuineFinalSubmit(params: {
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  return params.isFinalStep && params.flowHasSubmitSemantics;
+}
+
+/**
  * Submit-shaped but NOT the flow's genuine final submit (a final slot without
  * submit semantics, e.g. after a replan trims the tail, is still mid-flow): a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
@@ -1961,7 +1972,7 @@ export function isMidFlowSubmitShapedStep(params: {
   flowHasSubmitSemantics: boolean;
   elementSubmitShaped?: boolean;
 }): boolean {
-  if (params.isFinalStep && params.flowHasSubmitSemantics) return false;
+  if (isGenuineFinalSubmit(params)) return false;
   return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
@@ -3646,11 +3657,15 @@ export async function judgeStepOutcome(params: {
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
-  if (isFinalStep) {
+  const genuineFinal = isGenuineFinalSubmit({
+    isFinalStep,
+    flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+  });
+  if (genuineFinal) {
     return verifySubmitWithLLM({
       client,
       input: {
-        ...(await buildSubmitJudgeStepContext({ step, isFinalStep, target })),
+        ...(await buildSubmitJudgeStepContext({ step, isFinalStep: genuineFinal, target })),
         ...params.submitInput,
       },
       captureFn,
