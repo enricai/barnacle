@@ -245,5 +245,6 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
     );
 
     expect(outcome).not.toBe("completed");
+    expect(vi.mocked(verifySubmitWithLLM)).toHaveBeenCalled();
   });
 });
