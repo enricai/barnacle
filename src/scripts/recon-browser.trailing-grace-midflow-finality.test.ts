@@ -130,7 +130,8 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
 
   async function runWithFlow(
     steps: Array<Record<string, unknown>>,
-    bodyText?: () => string
+    bodyText?: () => string,
+    pageTitle = "Order Confirmation"
   ): Promise<void> {
     const session = { on: (): void => {}, off: (): void => {} };
     const pageUrl = vi
@@ -140,7 +141,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       url: pageUrl,
-      title: vi.fn().mockResolvedValue("Order Confirmation"),
+      title: vi.fn().mockResolvedValue(pageTitle),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (bodyText && typeof expr === "string" && expr.includes('innerText || ""')) {
           return bodyText();
@@ -229,6 +230,22 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
     const judgedTexts = verifyStepAdvancedStub.mock.calls.map((c) => c[0].input.afterText);
     expect(judgedTexts.at(-1)).toContain("Payment details");
+    expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
+    );
+  });
+
+  it("judges a non-final trailing step on live text, not the stale page title, and never hits final-submit strictness", async () => {
+    await runWithFlow(
+      [{ step: "Click the Continue button", optional: true, upload: false }],
+      () => "Step 3 of 3 Payment details card number",
+      "Sign In"
+    );
+
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const advancedInput = verifyStepAdvancedStub.mock.calls.at(-1)?.[0]?.input;
+    expect(advancedInput.afterText).toContain("Payment details");
+    expect(JSON.stringify(advancedInput)).not.toContain("Sign In");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
