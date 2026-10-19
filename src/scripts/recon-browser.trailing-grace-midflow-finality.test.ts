@@ -74,6 +74,17 @@ vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
   };
 });
 
+const { verifyStepAdvancedStub } = vi.hoisted(() => ({
+  verifyStepAdvancedStub: vi.fn(),
+}));
+vi.mock("@/lib/llm/judges/verify-step-advanced", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-step-advanced")>();
+  return {
+    ...actual,
+    verifyStepAdvancedWithLLM: verifyStepAdvancedStub,
+  };
+});
+
 const { executeStepWithHealingStub } = vi.hoisted(() => ({
   executeStepWithHealingStub: vi.fn(),
 }));
@@ -101,6 +112,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     process.env.RECON_OUT_DIR = runsRoot;
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
     loggerStub.info.mockReset();
     vi.mocked(createBrowserSession).mockReset();
   });
@@ -113,6 +125,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     vi.restoreAllMocks();
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
   });
 
   async function runWithFlow(steps: Array<Record<string, unknown>>): Promise<void> {
@@ -135,6 +148,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
@@ -150,6 +164,10 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
 
     executeStepWithHealingStub.mockImplementation(async () => {
       throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifyStepAdvancedStub.mockResolvedValue({
+      advanced: true,
+      reason: "wizard moved to the next step",
     });
     verifySubmitWithLLMStub.mockResolvedValue({
       verified: true,
@@ -171,10 +189,10 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
   it("passes isFinalStep=false for a last optional slot when the flow has no submit semantics", async () => {
     await runWithFlow([{ step: "Click the Continue button", optional: true, upload: false }]);
 
-    expect(verifySubmitWithLLMStub).toHaveBeenCalled();
-    const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
-    expect(judgeInput.stepInstruction).toBe("Click the Continue button");
-    expect(judgeInput.isFinalStep).toBe(false);
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const advancedInput = verifyStepAdvancedStub.mock.calls[0]?.[0]?.input;
+    expect(advancedInput.stepInstruction).toBe("Click the Continue button");
+    expect(advancedInput).toHaveProperty("afterText");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
