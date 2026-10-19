@@ -101,6 +101,7 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
+  isGenuineFinalSubmit,
   isMidFlowSubmitShapedStep,
   isStepDeclaredNonSubmit,
   latestCaptureIndex,
@@ -3325,7 +3326,17 @@ async function main(): Promise<void> {
               input: {
                 ...(await buildSubmitJudgeStepContext({
                   step: step.instruction,
-                  isFinalStep: i === plan.length - 1,
+                  isFinalStep: isGenuineFinalSubmit({
+                    isFinalStep: i === plan.length - 1,
+                    flowHasSubmitSemantics: flowHasSubmitSemantics({
+                      steps: plan.map((s) => ({
+                        submitStep: s.submitStep === true,
+                        instruction: s.instruction,
+                      })),
+                      submitEndpointPattern,
+                      requireSubmitEndpointMatch,
+                    }),
+                  }),
                   target: mainFrameTarget(page),
                 })),
                 // A dead session throws synchronously here too — fall back to ""

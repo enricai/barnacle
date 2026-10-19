@@ -61,7 +61,7 @@ function params(isFinalStep: boolean, reads: string[]): Parameters<typeof judgeS
     step: "click continue",
     isFinalStep,
     submitStep: false,
-    flowHasSubmitSemantics: false,
+    flowHasSubmitSemantics: isFinalStep,
     page: { waitForTimeout: async () => {} },
     target: fakeTarget(reads) as never,
     signalCounter: { n: 0 },
@@ -179,5 +179,15 @@ describe("judgeStepOutcome full before text", () => {
       preVisibleText: full,
     });
     expect(stepJudge.mock.calls[0]?.[0].input.beforeText).toBe(full);
+  });
+});
+
+describe("judgeStepOutcome final-slot without submit semantics", () => {
+  it("judges a last slot lacking submit semantics as mid-flow", async () => {
+    submitJudge.mockClear();
+    stepJudge.mockResolvedValue({ advanced: true, reason: "moved" });
+    await judgeStepOutcome({ ...params(true, ["body", "body"]), flowHasSubmitSemantics: false });
+    expect(submitJudge).not.toHaveBeenCalled();
+    expect(stepJudge).toHaveBeenCalled();
   });
 });

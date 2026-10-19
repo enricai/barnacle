@@ -279,7 +279,7 @@ describe("flow-runner non-final step judge routing acceptance", () => {
       step: STEP,
       isFinalStep: true,
       submitStep: false,
-      flowHasSubmitSemantics: false,
+      flowHasSubmitSemantics: true,
       page: { waitForTimeout: async () => {} },
       target: { evaluate: async () => "Review and submit" } as never,
       signalCounter: { n: 0 },

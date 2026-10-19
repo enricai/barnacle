@@ -1949,6 +1949,17 @@ export function isStepSettleWaitShaped(params: {
 }
 
 /**
+ * The single definition of a genuine final submit: the last slot of a flow
+ * that has submit semantics. A final slot without them is mid-flow.
+ */
+export function isGenuineFinalSubmit(params: {
+  isFinalStep: boolean;
+  flowHasSubmitSemantics: boolean;
+}): boolean {
+  return params.isFinalStep && params.flowHasSubmitSemantics;
+}
+
+/**
  * Submit-shaped but NOT the flow's genuine final submit (a final slot without
  * submit semantics, e.g. after a replan trims the tail, is still mid-flow): a mid-flow advancing submit
  * (e.g. account creation) that can be credited on a demonstrable page advance
@@ -1961,7 +1972,7 @@ export function isMidFlowSubmitShapedStep(params: {
   flowHasSubmitSemantics: boolean;
   elementSubmitShaped?: boolean;
 }): boolean {
-  if (params.isFinalStep && params.flowHasSubmitSemantics) return false;
+  if (isGenuineFinalSubmit(params)) return false;
   return isStepSubmitShaped(params) || params.elementSubmitShaped === true;
 }
 
@@ -2292,6 +2303,26 @@ export function isNullVerdictAdvanceCredited(params: {
     return false;
   }
   return params.networkAdvanced || params.pageAdvanced;
+}
+
+/**
+ * Single decision both post-click judge sites use to credit a mid-flow submit
+ * on the page's own demonstrable advance, so a stale title or missing network
+ * the judge reads with final-submit eyes cannot undo it. `signalAdvanced` is the
+ * site's own settled-advance signal (the primary click's view-swap credit, the
+ * fallback click's effective verdict); the null-verdict path covers an
+ * unavailable judge.
+ */
+export function isMidFlowAdvanceCredited(params: {
+  midFlowSubmit: boolean;
+  signalAdvanced: boolean;
+  judgeUnavailable: boolean;
+  networkAdvanced: boolean;
+  pageAdvanced: boolean;
+  invalidMarkerCount: number;
+}): boolean {
+  if (params.midFlowSubmit && params.signalAdvanced) return true;
+  return isNullVerdictAdvanceCredited(params);
 }
 
 /**
@@ -3646,11 +3677,15 @@ export async function judgeStepOutcome(params: {
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
-  if (isFinalStep) {
+  const genuineFinal = isGenuineFinalSubmit({
+    isFinalStep,
+    flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+  });
+  if (genuineFinal) {
     return verifySubmitWithLLM({
       client,
       input: {
-        ...(await buildSubmitJudgeStepContext({ step, isFinalStep, target })),
+        ...(await buildSubmitJudgeStepContext({ step, isFinalStep: genuineFinal, target })),
         ...params.submitInput,
       },
       captureFn,
@@ -12189,10 +12224,14 @@ export async function executeStepWithHealing(params: {
     onStepHeal,
   } = params;
   // An explicitly flagged final step is the flow's submit by definition (see
-  // flowHasSubmitSemantics), and an omitted flow-level flag leaves the final step
-  // strict, so neither is demoted to a mid-flow step credited on a DOM-only advance.
+  // flowHasSubmitSemantics). An omitted flow-level flag is derived from the same
+  // evidence flowHasSubmitSemantics reads (a submit flag, an endpoint pattern or
+  // requirement), so a last slot with none of them is mid-flow rather than a
+  // final submit held to network/URL proof.
+  const flowSubmitEvidence =
+    submitStep || submitEndpointPattern !== null || requireSubmitEndpointMatch;
   const flowHasSubmitSemanticsFlag =
-    (flowHasSubmitSemanticsParam ?? isFinalStep) || (isFinalStep && submitStep === true);
+    (flowHasSubmitSemanticsParam ?? flowSubmitEvidence) || (isFinalStep && submitStep);
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
   // pre-existing fill cascade downstream picks it up as the value to type
@@ -12383,7 +12422,12 @@ export async function executeStepWithHealing(params: {
   const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({ step, submitStep });
   // Single final-step inference every submit-strictness gate below reads, so a
   // declared non-submit veto cannot be honoured at one site and missed at another.
-  const inferredFinalSubmitStep = isFinalStep && !stepDeclaredNonSubmit;
+  // Finality goes through isGenuineFinalSubmit like the judge routing and
+  // isMidFlowSubmitShapedStep: a last slot without submit semantics is mid-flow
+  // and must not be held to final-submit proof here.
+  const inferredFinalSubmitStep =
+    isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) &&
+    !stepDeclaredNonSubmit;
   const requireSubmitEndpoint =
     (inferredFinalSubmitStep || submitStep) && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
@@ -15199,15 +15243,14 @@ export async function executeStepWithHealing(params: {
       // A mid-flow transition is credited on the page's own demonstrable
       // advance (visible text swapped); the judge's final-submit-flavoured
       // view of a stale title or missing network must not undo it.
-      const midFlowAdvanceCredited =
-        (midFlowSubmit && clickViewSwapVerified) ||
-        isNullVerdictAdvanceCredited({
-          midFlowSubmit,
-          judgeUnavailable: judgeVerdict === null,
-          networkAdvanced: networkIsRealAdvance,
-          pageAdvanced: hasSettledPageAdvanced(pre, post),
-          invalidMarkerCount,
-        });
+      const midFlowAdvanceCredited = isMidFlowAdvanceCredited({
+        midFlowSubmit,
+        signalAdvanced: clickViewSwapVerified,
+        judgeUnavailable: judgeVerdict === null,
+        networkAdvanced: networkIsRealAdvance,
+        pageAdvanced: hasSettledPageAdvanced(pre, post),
+        invalidMarkerCount,
+      });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
           `mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
@@ -15885,17 +15928,15 @@ export async function executeStepWithHealing(params: {
               },
             });
 
-            const retryMidFlowAdvanceCredited =
-              (retryMidFlowSubmit &&
-                retryVerdict === "effective" &&
-                hasSettledPageAdvanced(pre, retryPost)) ||
-              isNullVerdictAdvanceCredited({
-                midFlowSubmit: retryMidFlowSubmit,
-                judgeUnavailable: judgeVerdict === null,
-                networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-                pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
-                invalidMarkerCount,
-              });
+            const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
+              midFlowSubmit: retryMidFlowSubmit,
+              signalAdvanced:
+                retryVerdict === "effective" && hasSettledPageAdvanced(pre, retryPost),
+              judgeUnavailable: judgeVerdict === null,
+              networkAdvanced: retryNetworkFired && retryDestinationPlausible,
+              pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
+              invalidMarkerCount,
+            });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
               logger.info(
                 `n+16 fallback mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
