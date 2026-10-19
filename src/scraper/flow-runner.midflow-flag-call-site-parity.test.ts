@@ -22,6 +22,14 @@ describe("isMidFlowSubmitShapedStep call-site parity", () => {
     }
   });
 
+  it("judges the n+16 fallback click with the retry-resolved element's flag", () => {
+    const argLists = calls.map((call) => call.slice(0, call.indexOf("})")));
+    const retryArgs = argLists.filter((args) =>
+      args.includes("elementSubmitShaped: retryResolvedElementIsSubmitShaped"),
+    );
+    expect(retryArgs.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("treats an element-inferred submit as mid-flow, never as genuine final", () => {
     const base = {
       step: "Continue",
