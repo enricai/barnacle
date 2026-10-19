@@ -149,7 +149,8 @@ function runVariant(elements: string[], label: string): void {
     expect(contract, contract).toMatch(/payload\.nights[^\x60]*;filterType=nights/);
     expect(contract, contract).not.toContain("4;filterType=nights");
   } else {
-    expect(unreferenced, output).toContain("nights");
+    expect(output).toContain("declared payloadField nights is read by no emitted request");
+    expect(contract, contract).toMatch(/^\s*nights: z\.string\(\)\.optional\(\),/m);
     expect(contract, contract).not.toMatch(/^\s*nights: z\.string\(\),/m);
   }
   const order = elements
