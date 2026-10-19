@@ -142,7 +142,8 @@ async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown
   const page = fakePage(surface);
   const stagehand = {
     act: vi.fn().mockImplementation(async (instruction: unknown) => {
-      if (instruction === STEP) await surface.evaluate('__mouse("click"');
+      if (instruction === STEP)
+        await (surface.evaluate as (e: unknown) => Promise<unknown>)('__mouse("click"');
       else nextStepActs.n += 1;
       return {
         success: true,
