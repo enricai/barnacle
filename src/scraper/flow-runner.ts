@@ -7497,8 +7497,9 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
  * re-render that follows it, so the verdict waits for the body or for the text
- * to hold still across a settle round, and only then reads the header flip as
- * the page's final state (`settled`). Bounded, and a page whose header never
+ * to hold still through the whole re-settle budget, and only then reads the
+ * header flip as the page's final state (`settled`): a single quiet round
+ * cannot distinguish a finished page from a body that re-renders later. Bounded, and a page whose header never
  * flipped (a no-op click) or whose body already swapped returns at once.
  */
 async function resettleThroughHeaderOnlyFlip(
@@ -7510,6 +7511,7 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
+  let heldStill = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     if (!hasVisibleTextChanged(pre, current)) return current;
     if (hasPageBodySwapped(pre, current))
@@ -7524,10 +7526,10 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
-    if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
+    heldStill = !hasVisibleTextChanged(current, next);
     current = next;
   }
-  return current;
+  return heldStill ? { ...current, settled: true } : current;
 }
 
 /**
