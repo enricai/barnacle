@@ -15909,7 +15909,7 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               submitStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-              elementSubmitShaped: resolvedElementIsSubmitShaped,
+              elementSubmitShaped: retryResolvedElementIsSubmitShaped,
               page,
               target: frameTarget ?? mainFrameTarget(page),
               signalCounter,
