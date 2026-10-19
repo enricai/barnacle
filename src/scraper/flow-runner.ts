@@ -13596,6 +13596,12 @@ export async function executeStepWithHealing(params: {
     // from DOM re-read. Captured here so both branches of the cascade write to it.
     let resolvedAction: Action | null = null;
 
+    // Submit shape of the control observe resolved BEFORE the act clicked it.
+    // The act performs the click itself, so a page that swaps at once has
+    // already removed the control by the time the post-act read runs; this is
+    // the only read that cannot be blinded by the transition it caused.
+    const submitShapeObservedBeforeClick = new Map<string, boolean>();
+
     // Stagehand resolves a natural-language act target internally, so for a
     // click-intent instruction resolve it with observe first and centre it;
     // a sticky bar otherwise swallows Stagehand's own click. Throws when the
@@ -13612,6 +13618,14 @@ export async function executeStepWithHealing(params: {
       );
       const first = observed[0];
       if (!isTrustedClickMethod(first?.method) || !first?.selector) return true;
+      submitShapeObservedBeforeClick.set(
+        first.selector,
+        !stepDeclaredNonSubmit &&
+          (await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            first.selector
+          ))
+      );
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector
@@ -14698,10 +14712,11 @@ export async function executeStepWithHealing(params: {
     // See resolvedClickTargetIsSubmitShaped's doc comment.
     const resolvedElementIsSubmitShaped =
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
-        ? await resolvedClickTargetIsSubmitShaped(
+        ? submitShapeObservedBeforeClick.get(resolvedAction.selector) === true ||
+          (await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
-          )
+          ))
         : false;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
