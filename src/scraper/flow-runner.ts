@@ -14960,9 +14960,7 @@ export async function executeStepWithHealing(params: {
     // control) may not ride this signal alone — only when the submit-judge
     // gate (requireSubmitEndpoint) will re-litigate the credit below.
     const formValueWeakSignalAllowed =
-      !(
-primarySubmitShaped || resolvedElementIsSubmitShaped
-      ) || requireSubmitEndpoint;
+      !(primarySubmitShaped || resolvedElementIsSubmitShaped) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
       formValueWeakSignalAllowed &&
@@ -15118,8 +15116,7 @@ primarySubmitShaped || resolvedElementIsSubmitShaped
     // respects the SAME DOM-only-advance veto as the block above: a wizard
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
-    const domEffectiveVerdict =
-      !primarySubmitShaped && domVerifiedForStep;
+    const domEffectiveVerdict = !primarySubmitShaped && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
