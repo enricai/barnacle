@@ -130,10 +130,20 @@ function captchaTarget(page: Page, surface: Surface): FrameTarget {
 
 async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown> {
   const surface = buildSurface(advances, delay, () => null);
+  const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
+  const nextStepActs = { n: 0 };
+  surface.evaluate.mockImplementation(async (expr: unknown) => {
+    const n = nextStepActs.n;
+    if (n > 0 && String(expr).includes("outerHTML")) {
+      return { html: 4096 + n * 900, text: `${n}:next${n}`, full: `next${n}`, digest: `n${n}` };
+    }
+    return baseEvaluate(expr);
+  });
   const page = fakePage(surface);
   const stagehand = {
     act: vi.fn().mockImplementation(async (instruction: unknown) => {
       if (instruction === STEP) await surface.evaluate('__mouse("click"');
+      else nextStepActs.n += 1;
       return {
         success: true,
         message: "ok",
