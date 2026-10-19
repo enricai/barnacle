@@ -7624,15 +7624,7 @@ export async function settleAndSnapshotPostClick(
   waitForMutations = true,
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
-  return settleSnapshotAndResettle(
-    target,
-    signalCounter,
-    page,
-    pre,
-    true,
-    waitForMutations,
-    io
-  );
+  return settleSnapshotAndResettle(target, signalCounter, page, pre, true, waitForMutations, io);
 }
 
 /**
