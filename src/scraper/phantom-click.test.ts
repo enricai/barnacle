@@ -751,3 +751,48 @@ describe("scraper/phantom-click settled judgement on the report pair", () => {
     ).toBe("phantom");
   });
 });
+
+describe("scraper/phantom-click mid-flow submit advance vs final submit", () => {
+  const preSnap = {
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 5000,
+    visibleTextSignature: "996:Create your account Email Password Continue to checkout",
+  };
+  const swapped = {
+    ...preSnap,
+    visibleTextSignature: "588:Verify your email We sent a code to your inbox enter it below",
+  };
+
+  it("credits a mid-flow submit whose header and body text both changed", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({
+          pre: preSnap,
+          post: swapped,
+          isSubmitShapedStep: true,
+          isMidFlowSubmitStep: true,
+        })
+      )
+    ).toBe("effective");
+  });
+
+  it("keeps a mid-flow no-op phantom", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({
+          pre: preSnap,
+          post: { ...preSnap },
+          isSubmitShapedStep: true,
+          isMidFlowSubmitStep: true,
+        })
+      )
+    ).toBe("phantom");
+  });
+
+  it("keeps the final submit vetoed on the same text change", () => {
+    expect(
+      classifyPhantomClick(makeAttempt({ pre: preSnap, post: swapped, isSubmitShapedStep: true }))
+    ).toBe("phantom");
+  });
+});
