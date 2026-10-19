@@ -76,6 +76,17 @@ vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
   };
 });
 
+const { verifyStepAdvancedStub } = vi.hoisted(() => ({
+  verifyStepAdvancedStub: vi.fn(),
+}));
+vi.mock("@/lib/llm/judges/verify-step-advanced", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-step-advanced")>();
+  return {
+    ...actual,
+    verifyStepAdvancedWithLLM: verifyStepAdvancedStub,
+  };
+});
+
 const { executeStepWithHealingStub } = vi.hoisted(() => ({
   executeStepWithHealingStub: vi.fn(),
 }));
@@ -103,6 +114,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
     process.env.RECON_OUT_DIR = runsRoot;
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
     loggerStub.info.mockReset();
     vi.mocked(createBrowserSession).mockReset();
   });
@@ -115,6 +127,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
     vi.restoreAllMocks();
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
   });
 
   it("still exits via the trailing-grace path when a genuine trailing submit is judge-verified, unaffected by the submit-step short-circuit gate", async () => {
@@ -149,6 +162,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
@@ -164,6 +178,10 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
 
     executeStepWithHealingStub.mockImplementation(async () => {
       throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifyStepAdvancedStub.mockResolvedValue({
+      advanced: true,
+      reason: "wizard moved to the next step",
     });
     verifySubmitWithLLMStub.mockResolvedValue({
       verified: true,
@@ -231,6 +249,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
@@ -246,6 +265,10 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
 
     executeStepWithHealingStub.mockImplementation(async () => {
       throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifyStepAdvancedStub.mockResolvedValue({
+      advanced: true,
+      reason: "wizard moved to the next step",
     });
     verifySubmitWithLLMStub.mockResolvedValue({
       verified: true,
@@ -276,11 +299,11 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
 
     await expect(main()).resolves.not.toThrow();
 
-    expect(verifySubmitWithLLMStub).toHaveBeenCalled();
-    const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
-    expect(judgeInput.stepInstruction).toBe("Place the order");
-    expect(judgeInput.isFinalStep).toBe(false);
-    expect(judgeInput).toHaveProperty("visibleText");
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const advancedInput = verifyStepAdvancedStub.mock.calls[0]?.[0]?.input;
+    expect(advancedInput.stepInstruction).toBe("Place the order");
+    expect(advancedInput).toHaveProperty("beforeText");
+    expect(advancedInput).toHaveProperty("afterText");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
@@ -318,6 +341,7 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
@@ -333,6 +357,10 @@ describe("recon-browser/main — trailing-grace submit-shaped regression", () =>
 
     executeStepWithHealingStub.mockImplementation(async () => {
       throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifyStepAdvancedStub.mockResolvedValue({
+      advanced: true,
+      reason: "wizard moved to the next step",
     });
     verifySubmitWithLLMStub.mockResolvedValue({
       verified: true,

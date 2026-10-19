@@ -7576,6 +7576,39 @@ async function resettleThroughHeaderOnlyFlip(
 }
 
 /**
+ * Single owner of the settle -> snapshot -> header-only resettle sequence, so
+ * every post-click site applies the same settled-ness rule. A click that cannot
+ * trigger a round-trip is snapshotted as-is. `resettleWithoutWait` keeps the
+ * resettle on for callers whose settle does not wait for mutations, since an
+ * unflagged step can still advance a page whose body re-renders late.
+ */
+async function settleSnapshotAndResettle(
+  target: FrameTarget,
+  signalCounter: { n: number },
+  page: Page | undefined,
+  pre: StepSnapshot,
+  mayTriggerRoundTrip: boolean,
+  waitForMutations: boolean,
+  resettleWithoutWait: boolean,
+  io: PostClickSettleIo
+): Promise<StepSnapshot> {
+  if (page && mayTriggerRoundTrip)
+    await io.settle(
+      page,
+      target,
+      signalCounter,
+      pre.networkCount,
+      waitForMutations,
+      pre.visibleTextSignature,
+      pre.visibleTextDigest
+    );
+  const post = await io.snapshot(target, signalCounter, page);
+  return page && mayTriggerRoundTrip && (waitForMutations || resettleWithoutWait)
+    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
+    : post;
+}
+
+/**
  * Settles after a click and returns the post-click snapshot, so the settle
  * wait and the phantom classifier decide from the same reader and baseline.
  * Without a page there is nothing to wait on and the snapshot is taken as-is.
@@ -7592,20 +7625,16 @@ export async function settleAndSnapshotPostClick(
   waitForMutations = true,
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
-  if (page)
-    await io.settle(
-      page,
-      target,
-      signalCounter,
-      pre.networkCount,
-      waitForMutations,
-      pre.visibleTextSignature,
-      pre.visibleTextDigest
-    );
-  const post = await io.snapshot(target, signalCounter, page);
-  return page && waitForMutations
-    ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
-    : post;
+  return settleSnapshotAndResettle(
+    target,
+    signalCounter,
+    page,
+    pre,
+    true,
+    waitForMutations,
+    false,
+    io
+  );
 }
 
 /**
@@ -14796,35 +14825,19 @@ export async function executeStepWithHealing(params: {
       resolvedAction === null
         ? record.actResultSuccess === true
         : !STATE_CLASS_METHODS.has(resolvedAction.method ?? "");
-    if (mayTriggerRoundTrip) {
-      const settleTarget = frameTarget ?? mainFrameTarget(page);
-      await settleWithPageQuiescence(
-        page,
-        settleTarget,
-        signalCounter,
-        pre.networkCount,
-        isSettleWaitStep || resolvedElementIsSubmitShaped,
-        pre.visibleTextSignature,
-        pre.visibleTextDigest
-      );
-    }
-    const settledPost = await snapshotPage(
-      frameTarget ?? mainFrameTarget(page),
-      signalCounter,
-      page
-    );
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
-    const post = mayTriggerRoundTrip
-      ? await resettleThroughHeaderOnlyFlip(
-          page,
-          frameTarget ?? mainFrameTarget(page),
-          signalCounter,
-          pre,
-          settledPost
-        )
-      : settledPost;
+    const post = await settleSnapshotAndResettle(
+      frameTarget ?? mainFrameTarget(page),
+      signalCounter,
+      page,
+      pre,
+      mayTriggerRoundTrip,
+      isSettleWaitStep || resolvedElementIsSubmitShaped,
+      true,
+      DEFAULT_POST_CLICK_SETTLE_IO
+    );
     record.post = post;
 
     if (resolvedAction) {

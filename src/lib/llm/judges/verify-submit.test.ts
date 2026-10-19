@@ -164,11 +164,13 @@ describe("verifySubmitWithLLM", () => {
     expect(nonFinal.user).not.toContain("PAGE TITLE");
   });
 
-  it("recon-browser submit-judge call derives finality via the shared context builder like judgeStepOutcome", () => {
+  it("recon-browser trailing-grace judges through judgeStepOutcome with positional finality, not a direct final-strict call", () => {
     const recon = readFileSync("src/scripts/recon-browser.ts", "utf8");
-    const call = recon.slice(recon.indexOf("await verifySubmitWithLLM({"));
-    const ctx = call.slice(0, call.indexOf("pageUrl:"));
-    expect(ctx).toContain("buildSubmitJudgeStepContext({");
+    expect(recon).not.toContain("await verifySubmitWithLLM(");
+    const call = recon.slice(
+      recon.indexOf("const trailingGraceVerdict = await judgeStepOutcome({")
+    );
+    const ctx = call.slice(0, call.indexOf("submitInput:"));
     expect(ctx).toContain("isFinalStep: i === plan.length - 1");
     expect(ctx).not.toContain("isFinalStep: true");
   });

@@ -74,6 +74,17 @@ vi.mock("@/lib/llm/judges/verify-submit", async (importOriginal) => {
   };
 });
 
+const { verifyStepAdvancedStub } = vi.hoisted(() => ({
+  verifyStepAdvancedStub: vi.fn(),
+}));
+vi.mock("@/lib/llm/judges/verify-step-advanced", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/llm/judges/verify-step-advanced")>();
+  return {
+    ...actual,
+    verifyStepAdvancedWithLLM: verifyStepAdvancedStub,
+  };
+});
+
 const { executeStepWithHealingStub } = vi.hoisted(() => ({
   executeStepWithHealingStub: vi.fn(),
 }));
@@ -101,6 +112,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     process.env.RECON_OUT_DIR = runsRoot;
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
     loggerStub.info.mockReset();
     vi.mocked(createBrowserSession).mockReset();
   });
@@ -113,9 +125,14 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     vi.restoreAllMocks();
     executeStepWithHealingStub.mockReset();
     verifySubmitWithLLMStub.mockReset();
+    verifyStepAdvancedStub.mockReset();
   });
 
-  async function runWithFlow(steps: Array<Record<string, unknown>>): Promise<void> {
+  async function runWithFlow(
+    steps: Array<Record<string, unknown>>,
+    bodyText?: () => string,
+    pageTitle = "Order Confirmation"
+  ): Promise<void> {
     const session = { on: (): void => {}, off: (): void => {} };
     const pageUrl = vi
       .fn()
@@ -124,8 +141,11 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     const page = {
       goto: vi.fn().mockResolvedValue(undefined),
       url: pageUrl,
-      title: vi.fn().mockResolvedValue("Order Confirmation"),
+      title: vi.fn().mockResolvedValue(pageTitle),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (bodyText && typeof expr === "string" && expr.includes('innerText || ""')) {
+          return bodyText();
+        }
         if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
         if (typeof expr === "string" && expr.includes("querySelector"))
           return { matched: false, src: null };
@@ -135,6 +155,7 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
       getSessionForFrame: () => session,
       mainFrameId: () => "main",
       sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
     const stagehand = {
       context: { awaitActivePage: async (): Promise<Page> => page },
@@ -150,6 +171,10 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
 
     executeStepWithHealingStub.mockImplementation(async () => {
       throw new StepVerificationError("no observable effect", "cascade-exhausted");
+    });
+    verifyStepAdvancedStub.mockResolvedValue({
+      advanced: true,
+      reason: "wizard moved to the next step",
     });
     verifySubmitWithLLMStub.mockResolvedValue({
       verified: true,
@@ -171,10 +196,10 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
   it("passes isFinalStep=false for a last optional slot when the flow has no submit semantics", async () => {
     await runWithFlow([{ step: "Click the Continue button", optional: true, upload: false }]);
 
-    expect(verifySubmitWithLLMStub).toHaveBeenCalled();
-    const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
-    expect(judgeInput.stepInstruction).toBe("Click the Continue button");
-    expect(judgeInput.isFinalStep).toBe(false);
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const advancedInput = verifyStepAdvancedStub.mock.calls[0]?.[0]?.input;
+    expect(advancedInput.stepInstruction).toBe("Click the Continue button");
+    expect(advancedInput).toHaveProperty("afterText");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
@@ -189,6 +214,38 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
     expect(judgeInput.stepInstruction).toBe("Click the Continue button");
     expect(judgeInput.isFinalStep).toBe(true);
+    expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
+    );
+  });
+
+  it("re-judges a non-final trailing step on the late-re-rendered body after an instant header flip", async () => {
+    const texts = ["Step 2 of 3 Shipping address", "Step 3 of 3 Payment details card number"];
+    let call = 0;
+    await runWithFlow(
+      [{ step: "Click the Continue button", optional: true, upload: false }],
+      () => texts[Math.min(call++, texts.length - 1)] ?? ""
+    );
+
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const judgedTexts = verifyStepAdvancedStub.mock.calls.map((c) => c[0].input.afterText);
+    expect(judgedTexts.at(-1)).toContain("Payment details");
+    expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
+    );
+  });
+
+  it("judges a non-final trailing step on live text, not the stale page title, and never hits final-submit strictness", async () => {
+    await runWithFlow(
+      [{ step: "Click the Continue button", optional: true, upload: false }],
+      () => "Step 3 of 3 Payment details card number",
+      "Sign In"
+    );
+
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const advancedInput = verifyStepAdvancedStub.mock.calls.at(-1)?.[0]?.input;
+    expect(advancedInput.afterText).toContain("Payment details");
+    expect(JSON.stringify(advancedInput)).not.toContain("Sign In");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );

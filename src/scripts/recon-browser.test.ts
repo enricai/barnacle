@@ -7518,6 +7518,7 @@ describe("recon-browser/main — trailing-grace page title bounded against a nev
       goto: vi.fn().mockResolvedValue(undefined),
       url: (): string => "https://example.com/apply",
       title: titleFn,
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
         if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
         if (typeof expr === "string" && expr.includes("querySelector"))

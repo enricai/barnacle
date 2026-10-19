@@ -128,6 +128,52 @@ function captchaTarget(page: Page, surface: Surface): FrameTarget {
   } as unknown as FrameTarget;
 }
 
+async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown> {
+  const surface = buildSurface(advances, delay, () => null);
+  const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
+  const nextStepActs = { n: 0 };
+  surface.evaluate.mockImplementation(async (expr: unknown) => {
+    const n = nextStepActs.n;
+    if (n > 0 && String(expr).includes("outerHTML")) {
+      return { html: 4096 + n * 900, text: `${n}:next${n}`, full: `next${n}`, digest: `n${n}` };
+    }
+    return baseEvaluate(expr);
+  });
+  const page = fakePage(surface);
+  const stagehand = {
+    act: vi.fn().mockImplementation(async (instruction: unknown) => {
+      if (instruction === STEP)
+        await (surface.evaluate as (e: unknown) => Promise<unknown>)('__mouse("click"');
+      else nextStepActs.n += 1;
+      return {
+        success: true,
+        message: "ok",
+        actionDescription: "click",
+        actions: [{ selector: "button#x", description: "click", method: "click" }],
+      } as ActResult;
+    }),
+    observe: vi.fn().mockResolvedValue([{ selector: "button#x", description: "x" }]),
+  } as unknown as Stagehand;
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  return runHealingFlow({
+    stagehand,
+    page,
+    steps: [
+      { instruction: STEP, optional: false, upload: false, submitStep: true },
+      { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
+    ],
+    logger,
+    anthropic: null,
+    rephraseModel: null,
+    uploadFixture: null,
+  });
+}
+
 async function runChildFrameFlow(
   advances: boolean,
   delay: number
@@ -301,6 +347,16 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
 
     expect(surface.rendered()).toBe(false);
     expect(submitExprRan).toHaveBeenCalled();
+  });
+
+  describe.each(DELAYS_MS)("primary path with a body re-render %ims after the flip", (delay) => {
+    it("credits the primary click, matching the bypass sites", async () => {
+      await expect(runPrimaryFlow(true, delay)).resolves.toMatchObject({ lastStepIndex: 1 });
+    });
+  });
+
+  it("keeps a no-op primary click phantom, matching the bypass sites", async () => {
+    await expect(runPrimaryFlow(false, 8000)).rejects.toThrow(/failed verification/);
   });
 
   it("keeps a no-op probeChildFrameSubmitFallback click phantom (never credited)", async () => {
