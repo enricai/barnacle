@@ -14818,13 +14818,13 @@ export async function executeStepWithHealing(params: {
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
     const post = mayTriggerRoundTrip
       ? await resettleThroughHeaderOnlyFlip(
-            page,
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            pre,
-            settledPost
-          )
-        : settledPost;
+          page,
+          frameTarget ?? mainFrameTarget(page),
+          signalCounter,
+          pre,
+          settledPost
+        )
+      : settledPost;
     record.post = post;
 
     if (resolvedAction) {
