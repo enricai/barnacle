@@ -39,6 +39,7 @@ interface Surface {
   waitForTimeout: (ms: number) => Promise<void>;
   clicks: () => number;
   rendered: () => boolean;
+  elapsed: () => number;
 }
 
 /**
@@ -83,6 +84,7 @@ function buildSurface(
     evaluate,
     clicks: () => clicks,
     rendered: () => rendered,
+    elapsed: () => now,
     waitForTimeout: async (ms: number): Promise<void> => {
       now += ms;
       if (clickedAt !== null && !rendered && now - clickedAt >= delayMs) rendered = true;
@@ -243,5 +245,24 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
 
   it("keeps a no-op probeChildFrameSubmitFallback click phantom (never credited)", async () => {
     await expect(runChildFrameFlow(false, 8000)).rejects.toThrow(/failed verification/);
+  });
+
+  it("gives up a no-op submitCaptchaGatedForm click at the same settle bound regardless of the late-render delay", async () => {
+    const elapsed = await Promise.all(
+      [3000, 11000].map(async (delay) => {
+        const surface = buildSurface(false, delay, () => true);
+        const page = fakePage(surface);
+        await submitCaptchaGatedForm(captchaTarget(page, surface), "h-captcha-response", {
+          signalCounter: { n: 0 },
+          page,
+          step: STEP,
+          isMidFlowSubmitStep: true,
+        });
+        return surface.elapsed();
+      })
+    );
+
+    expect(elapsed[0]).toBe(elapsed[1]);
+    expect(elapsed[0]).toBeLessThan(30000);
   });
 });
