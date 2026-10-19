@@ -5,12 +5,16 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { unreferencedDeclaredPayloadFields } from "@/scripts/recon-generate";
-import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
+const TSC_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const OWN_BACKEND_HOST = "www.rental-listings-quote-bar-fixture.example.com";
@@ -84,18 +88,21 @@ function writeRunDir(root: string, captures: Capture[]): void {
 
 let workDir: string | null = null;
 let siteOutDir: string | null = null;
+let tsconfigPath: string | null = null;
 
 afterEach(() => {
   if (workDir) rmSync(workDir, { recursive: true, force: true });
   if (siteOutDir) rmSync(siteOutDir, { recursive: true, force: true });
+  if (tsconfigPath) rmSync(tsconfigPath, { force: true });
   workDir = null;
   siteOutDir = null;
+  tsconfigPath = null;
 });
 
 function generate(
   label: string,
   filterId: string
-): { contract: string; browserFlow: string; output: string } {
+): { contract: string; browserFlow: string; output: string; siteId: string } {
   workDir = mkdtempSync(join(tmpdir(), `barnacle-quote-bar-array-${label}-`));
   const runRoot = join(workDir, "run");
   writeRunDir(runRoot, buildCaptures(filterId));
@@ -149,13 +156,41 @@ function generate(
     contract: readFileSync(join(siteOutDir, "contract.ts"), "utf8"),
     browserFlow: readFileSync(join(siteOutDir, "flows", "browser-flow.ts"), "utf8"),
     output,
+    siteId,
   };
+}
+
+function expectEmittedTypechecks(siteId: string): void {
+  tsconfigPath = join(REPO_ROOT, `tsconfig.quote-bar-array.${process.pid}.json`);
+  writeFileSync(
+    tsconfigPath,
+    JSON.stringify({
+      extends: "./tsconfig.json",
+      compilerOptions: {
+        noEmit: true,
+        incremental: false,
+        tsBuildInfoFile: null,
+        paths: {
+          "@/sites/*": [`./${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/*`],
+          "@/*": ["./src/*"],
+          "@test/*": ["./test/*"],
+          "@enricai/barnacle/*": ["./src/*"],
+        },
+      },
+      include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
+    })
+  );
+  const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  expect(check.status, `${check.stdout}\n${check.stderr}`).toBe(0);
 }
 
 describe("recon-generate CLI — quote-bar click-step facets spliced into a kind-suffixed array", () => {
   for (const { label, filterId } of VOCABULARIES) {
     it(`splices destination and nights in captured order and keeps no literal (${label} vocabulary)`, () => {
-      const { contract, browserFlow } = generate(label, filterId);
+      const { contract, browserFlow, siteId } = generate(label, filterId);
 
       expect(contract, contract).toMatch(/payload\.destination[^\x60]*;filterType=destination/);
       expect(contract, contract).toMatch(/payload\.nights[^\x60]*;filterType=night/);
@@ -171,6 +206,7 @@ describe("recon-generate CLI — quote-bar click-step facets spliced into a kind
       expect(order).toEqual([...order].sort((a, b) => a - b));
 
       expect(unreferencedDeclaredPayloadFields(contract, browserFlow, DECLARED_STEPS)).toEqual([]);
-    }, 60_000);
+      expectEmittedTypechecks(siteId);
+    }, 120_000);
   }
 });
