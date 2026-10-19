@@ -3,6 +3,7 @@ import {
   extractNavigateToFacetOrder,
   matchFacetRecurrence,
   resolveRecurringNavigateToFacets,
+  unreferencedDeclaredPayloadFields,
 } from "@/scripts/recon-generate";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
@@ -62,5 +63,14 @@ describe("resolveRecurringNavigateToFacets chokepoint", () => {
     expect(facets.map((f) => f.field)).toContain("nights");
     expect(resolved.map((f) => f.field)).toContain("destination");
     expect(resolved.filter((f) => f.field === "nights")).toEqual([]);
+  });
+
+  it("still reports the nights facet as unthreaded when no night capture exists", () => {
+    const code = "const body = { filters: [`${payload.destination};filterType=destination`] };";
+    const flow = [
+      { step: "select the 'Lakeside' destination option", payloadField: "destination" },
+      { step: "select the '4' nights option", payloadField: "nights" },
+    ];
+    expect(unreferencedDeclaredPayloadFields(code, "", flow)).toEqual(["nights"]);
   });
 });
