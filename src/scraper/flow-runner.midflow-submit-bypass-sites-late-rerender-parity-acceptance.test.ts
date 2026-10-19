@@ -461,8 +461,8 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
   it("gives up a no-op n+16 retry click at the same settle bound regardless of the late-render delay", async () => {
     const runs = await Promise.all([3000, 11000].map(async (delay) => runRetryFlow(false, delay)));
 
-    expect(runs[0].result).toBeInstanceOf(Error);
-    expect(runs[0].surface.elapsed()).toBe(runs[1].surface.elapsed());
+    expect(runs[0]?.result).toBeInstanceOf(Error);
+    expect(runs[0]?.surface.elapsed()).toBe(runs[1]?.surface.elapsed());
   });
 
   it("keeps the genuine final submit strict on the retry (no-op is not credited)", async () => {
