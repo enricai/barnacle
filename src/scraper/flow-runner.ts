@@ -5150,6 +5150,49 @@ async function resolvedClickTargetIsSubmitShaped(
 }
 
 /**
+ * Canonical key for an absolute xpath so Stagehand's `/html/body/div/button`
+ * (index omitted when sole of its tag) and this module's `/html[1]/body[1]/
+ * div[1]/button[1]` compare equal: a node's first-of-tag and sole-of-tag
+ * forms can never coexist under one parent, so dropping `[1]` is injective.
+ */
+function canonicalAbsoluteXpath(selector: string): string | null {
+  const body = xpathBodyForEvaluate(selector);
+  return body?.startsWith("/") ? body.replace(/\[1\]/g, "").toLowerCase() : null;
+}
+
+/**
+ * Canonical xpaths of every control on the page that is submit-shaped right
+ * now, read before an act clicks anything. The act performs the click itself,
+ * and a view swap removes the control with the page, so the only read that
+ * cannot be blinded by the transition is one taken beforehand — and one that
+ * does not depend on observe having resolved the same control the act later
+ * clicks. Empty on any read failure: absence never manufactures a shape.
+ */
+async function readSubmitShapedControlXpaths(target: FrameTarget): Promise<Set<string>> {
+  const expr = `(() => {
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
+    const out = [];
+    for (const el of document.querySelectorAll("button, input, a, [role='button'], [type='submit'], [onclick], [tabindex]")) {
+      if (isSubmitShaped(el)) out.push(xpathOf(el));
+    }
+    return out;
+  })()`;
+  try {
+    const result = await target.evaluate<unknown>(expr);
+    if (!Array.isArray(result)) return new Set();
+    return new Set(
+      result
+        .filter((x): x is string => typeof x === "string")
+        .map(canonicalAbsoluteXpath)
+        .filter((x): x is string => x !== null)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * True when the primary (Stagehand-recorded) xpath is unresolvable and only
  * `xpathTailForRetarget`'s loose tag+same-tag-sibling-position re-anchor
  * finds a live node — i.e. the n+16 fallback's `clickExpr` is about to click
@@ -13601,6 +13644,10 @@ export async function executeStepWithHealing(params: {
     // already removed the control by the time the post-act read runs; this is
     // the only read that cannot be blinded by the transition it caused.
     const submitShapeObservedBeforeClick = new Map<string, boolean>();
+    // Every submit-shaped control on the page before the act, so the shape of
+    // the control the act clicked is known even when observe resolved nothing
+    // or a different node than the act did.
+    const submitShapedControlsBeforeClick = new Set<string>();
 
     // Stagehand resolves a natural-language act target internally, so for a
     // click-intent instruction resolve it with observe first and centre it;
@@ -13609,6 +13656,13 @@ export async function executeStepWithHealing(params: {
     // Resolves true once the observe ran, so guardedAct skips its own pass.
     const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
       if (!hasClickIntent(instruction)) return false;
+      if (!stepDeclaredNonSubmit) {
+        for (const xpath of await readSubmitShapedControlXpaths(
+          frameTarget ?? mainFrameTarget(page)
+        )) {
+          submitShapedControlsBeforeClick.add(xpath);
+        }
+      }
       const observed = await guardedObserve(
         stagehand,
         instruction,
@@ -14710,14 +14764,22 @@ export async function executeStepWithHealing(params: {
     // settle: a view swap removes the clicked control, so a post-swap read
     // would blind the mid-flow exemption on exactly the case it exists for.
     // See resolvedClickTargetIsSubmitShaped's doc comment.
+    // A successful act that listed no actions still clicked what observe
+    // resolved first, so that control's pre-click shape stands in for it.
     const resolvedElementIsSubmitShaped =
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? submitShapeObservedBeforeClick.get(resolvedAction.selector) === true ||
+          submitShapedControlsBeforeClick.has(
+            canonicalAbsoluteXpath(resolvedAction.selector) ?? ""
+          ) ||
           (await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
           ))
-        : false;
+        : resolvedAction === null &&
+          record.actResultSuccess === true &&
+          !stepDeclaredNonSubmit &&
+          submitShapeObservedBeforeClick.values().next().value === true;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({

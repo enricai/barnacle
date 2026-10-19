@@ -25,7 +25,7 @@ describe("isMidFlowSubmitShapedStep call-site parity", () => {
   it("judges the n+16 fallback click with the retry-resolved element's flag", () => {
     const judgeCalls = source.split("judgeStepOutcome({").slice(1);
     const retryJudge = judgeCalls.filter((call) =>
-      call.slice(0, 400).includes("elementSubmitShaped: retryResolvedElementIsSubmitShaped"),
+      call.slice(0, 400).includes("elementSubmitShaped: retryResolvedElementIsSubmitShaped")
     );
     expect(retryJudge.length).toBeGreaterThan(0);
   });
@@ -39,7 +39,7 @@ describe("isMidFlowSubmitShapedStep call-site parity", () => {
     };
     expect(isMidFlowSubmitShapedStep({ ...base, elementSubmitShaped: true })).toBe(true);
     expect(
-      isMidFlowSubmitShapedStep({ ...base, isFinalStep: true, elementSubmitShaped: true }),
+      isMidFlowSubmitShapedStep({ ...base, isFinalStep: true, elementSubmitShaped: true })
     ).toBe(false);
   });
 });

@@ -9,17 +9,20 @@ const NIGHTS = [{ step: "pick the nights", payloadField: "nights" }];
 
 describe("unreferencedDeclaredPayloadFields — verdict parity with kind ownership", () => {
   it("treats a plural field spliced into a singular-kind element as threaded", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const contract = "const a = { filters: [`${payload.nights};filterType=night`] };";
     expect(unreferencedDeclaredPayloadFields(contract, "", NIGHTS)).toEqual([]);
   });
 
   it("treats a singular field spliced into a plural-kind element as threaded", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const contract = "const a = { filters: [`${payload.destination};filterType=destinations`] };";
     expect(unreferencedDeclaredPayloadFields(contract, "", DESTINATION)).toEqual([]);
   });
 
   it("reports a field whose plural/singular-kind element stays a literal despite a read elsewhere", () => {
     const contract = [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       "const a = { filters: [`${payload.nights};filterType=night`] };",
       'const b = { filters: ["4;filterType=nights"] };',
     ].join("\n");
@@ -39,6 +42,7 @@ describe("unreferencedDeclaredPayloadFields — verdict parity with kind ownersh
 
   it("reports only the unthreaded field when two are declared", () => {
     const contract = [
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
       'const a = { filters: [`${payload.destination};filterType=destination`, "4;filterType=night"] };',
     ].join("\n");
     expect(unreferencedDeclaredPayloadFields(contract, "", [...DESTINATION, ...NIGHTS])).toEqual([
@@ -47,6 +51,7 @@ describe("unreferencedDeclaredPayloadFields — verdict parity with kind ownersh
   });
 
   it("counts a read that only the browser flow performs as threaded", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const flow = "await act(`pick ${payload.destination}`);";
     expect(unreferencedDeclaredPayloadFields("const a = 1;", flow, DESTINATION)).toEqual([]);
   });
