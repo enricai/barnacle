@@ -15544,8 +15544,36 @@ export function unreferencedDeclaredPayloadFields(
     (name) =>
       ![name, canonicalPayloadField(name)].some((candidate) =>
         new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode)
-      )
+      ) || carriesUnthreadedFacetElement(contractCode, name)
   );
+}
+
+function compactFacetKind(kind: string): string {
+  return kind
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/s$/, "");
+}
+
+/**
+ * True when an emitted request still carries a literal element of the
+ * declared facet's kind (`<value>;<key>=<kind>`) without splicing the payload
+ * field, so a read in some other request does not make the facet look
+ * threaded everywhere.
+ */
+function carriesUnthreadedFacetElement(contractCode: string, field: string): boolean {
+  const wanted = compactFacetKind(field);
+  const elementPattern = /(["'`])((?:(?!\1)[^\n\\])*?;\w+=([\w-]+))\1/g;
+  return contractCode
+    .split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .some((line) =>
+      [...line.matchAll(elementPattern)].some(
+        (match) =>
+          compactFacetKind(match[3] ?? "") === wanted &&
+          !new RegExp(`payload\\.${field}(?![\\w$])`).test(match[2] ?? "")
+      )
+    );
 }
 
 /**
