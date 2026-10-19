@@ -184,7 +184,8 @@ function params(
   world: World,
   isFinalStep: boolean,
   trajectory: unknown[],
-  step: string = VERBATIM_STEP
+  step: string = VERBATIM_STEP,
+  overrides: Record<string, unknown> = {}
 ): never {
   return {
     stagehand: world.stagehand,
@@ -215,6 +216,7 @@ function params(
     ownBackendHostnames: [],
     knownErrorClassPrefixes: [],
     wizardExitButtonLabels: [],
+    ...overrides,
   } as never;
 }
 
@@ -296,4 +298,20 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit credit timing m
 
     expect(outcome).not.toBe("completed");
   });
+
+  it.each([
+    ["omitted", undefined],
+    ["unset by a caller that never derived it", null],
+  ])(
+    "keeps the flagged final submit strict when the flow-level flag is %s",
+    async (_label, flag) => {
+      const world = buildWorld("Sign In", { headerMs: 0, bodyMs: 8000 });
+
+      const outcome = await executeStepWithHealing(
+        params(world, true, [], VERBATIM_STEP, { flowHasSubmitSemantics: flag })
+      ).catch(() => "threw");
+
+      expect(outcome).not.toBe("completed");
+    }
+  );
 });

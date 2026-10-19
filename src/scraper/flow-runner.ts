@@ -114,7 +114,6 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
-  hasPageAdvanced,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
@@ -12162,7 +12161,7 @@ export async function executeStepWithHealing(params: {
     emailStepConfig,
     allocatedInbox = null,
     sessionProxy = null,
-    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsParam,
     stepIndex,
     totalSteps,
     phase,
@@ -12189,6 +12188,11 @@ export async function executeStepWithHealing(params: {
     onStepFailure,
     onStepHeal,
   } = params;
+  // An explicitly flagged final step is the flow's submit by definition (see
+  // flowHasSubmitSemantics), and an omitted flow-level flag leaves the final step
+  // strict, so neither is demoted to a mid-flow step credited on a DOM-only advance.
+  const flowHasSubmitSemanticsFlag =
+    (flowHasSubmitSemanticsParam ?? isFinalStep) || (isFinalStep && submitStep === true);
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
   // pre-existing fill cascade downstream picks it up as the value to type
