@@ -14886,6 +14886,20 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
+    // A submit-worded last slot without submit semantics is mid-flow
+    // (isGenuineFinalSubmit), so the sibling predicates below must not hold it
+    // to genuine-final strictness while the verdict gates already credit it on
+    // a settled advance.
+    const primarySubmitShaped =
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }) &&
+      (submitStep ||
+        isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) ||
+        !isFinalStep);
     // An element-inferred mid-flow submit joins the exemption the step-derived
     // one already got: a click that never left its URL did not bounce to a gate.
     const midFlowDestinationPlausibleForPost = midFlowDestinationPlausible({
@@ -14947,12 +14961,7 @@ export async function executeStepWithHealing(params: {
     // gate (requireSubmitEndpoint) will re-litigate the credit below.
     const formValueWeakSignalAllowed =
       !(
-        isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        }) || resolvedElementIsSubmitShaped
+primarySubmitShaped || resolvedElementIsSubmitShaped
       ) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
@@ -15110,12 +15119,7 @@ export async function executeStepWithHealing(params: {
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
     const domEffectiveVerdict =
-      !isStepSubmitShaped({
-        step,
-        submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-      }) && domVerifiedForStep;
+      !primarySubmitShaped && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
@@ -16137,12 +16141,7 @@ export async function executeStepWithHealing(params: {
         // (triedSelectors), which is empty on an "unresolved" verdict, so a
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
-        const escalationTarget = isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        })
+        const escalationTarget = primarySubmitShaped
           ? "escalating attempt 2 to deep-submit-locator"
           : phantomClickAfterAttempt1
             ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
@@ -16158,12 +16157,7 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep: isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        }),
+        isFinalStep: primarySubmitShaped,
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
