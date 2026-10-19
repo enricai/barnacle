@@ -21,14 +21,14 @@ const MONTH_SLUG = "december-2026";
 const DESTINATION_STEP =
   "Open the destination filter dropdown in the quote bar and select the 'Orchard' destination option, keeping the other filters that are already applied";
 const NIGHTS_STEP =
-  "Open the cruise length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
+  "Open the trip length (number of nights) filter dropdown in the quote bar and select the '4' nights option, keeping the other filters that are already applied";
 
 const BASE_ELEMENTS = [
   "2026-12;filterType=date",
   "OR;filterType=destination",
   "SP;filterType=theme",
   "HB;filterType=ship",
-  "PI;filterType=privateIsland",
+  "PI;filterType=premiumTier",
 ];
 const ELEMENTS_WITH_NIGHTS = [
   "2026-12;filterType=date",
@@ -36,7 +36,7 @@ const ELEMENTS_WITH_NIGHTS = [
   "SP;filterType=theme",
   "4;filterType=night",
   "HB;filterType=ship",
-  "PI;filterType=privateIsland",
+  "PI;filterType=premiumTier",
 ];
 
 const HASH_BASE = `https://${OWN_BACKEND_HOST}/#/catalog`;
