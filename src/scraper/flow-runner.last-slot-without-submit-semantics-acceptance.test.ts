@@ -258,6 +258,40 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
     }
   );
 
+  it("derives mid-flow finality for a last slot when the flow-level flag is omitted and nothing declares submit", async () => {
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: true,
+      reason: "account view",
+    } as never);
+    const { flowHasSubmitSemantics: _omitted, ...rest } = lastSlot(
+      buildWorld("Sign In", 0),
+      false,
+      null
+    ) as unknown as Record<string, unknown>;
+
+    const outcome = await executeStepWithHealing(rest as never);
+
+    expect(outcome).toBe("completed");
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).toHaveBeenCalled();
+  });
+
+  it("keeps an omitted flow-level flag strict when the last slot is flagged as the submit", async () => {
+    const { flowHasSubmitSemantics: _omitted, ...rest } = params(
+      buildWorld("Sign In", 0),
+      true,
+      [],
+      SUBMIT_STEP,
+      true
+    ) as unknown as Record<string, unknown>;
+
+    const outcome = await executeStepWithHealing(rest as never).catch(() => "threw");
+
+    expect(outcome).toBe("threw");
+    expect(verifySubmitWithLLM).toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
+  });
+
   it("keeps a genuine final submit on the strict submit judge", async () => {
     const outcome = await executeStepWithHealing(
       params(buildWorld("Sign In", 0), true, [], SUBMIT_STEP, true)

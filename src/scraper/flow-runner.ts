@@ -12224,10 +12224,14 @@ export async function executeStepWithHealing(params: {
     onStepHeal,
   } = params;
   // An explicitly flagged final step is the flow's submit by definition (see
-  // flowHasSubmitSemantics), and an omitted flow-level flag leaves the final step
-  // strict, so neither is demoted to a mid-flow step credited on a DOM-only advance.
+  // flowHasSubmitSemantics). An omitted flow-level flag is derived from the same
+  // evidence flowHasSubmitSemantics reads (a submit flag, an endpoint pattern or
+  // requirement), so a last slot with none of them is mid-flow rather than a
+  // final submit held to network/URL proof.
+  const flowSubmitEvidence =
+    submitStep || submitEndpointPattern !== null || requireSubmitEndpointMatch;
   const flowHasSubmitSemanticsFlag =
-    (flowHasSubmitSemanticsParam ?? isFinalStep) || (isFinalStep && submitStep === true);
+    (flowHasSubmitSemanticsParam ?? flowSubmitEvidence) || (isFinalStep && submitStep);
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
   // pre-existing fill cascade downstream picks it up as the value to type
