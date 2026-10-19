@@ -2306,6 +2306,26 @@ export function isNullVerdictAdvanceCredited(params: {
 }
 
 /**
+ * Single decision both post-click judge sites use to credit a mid-flow submit
+ * on the page's own demonstrable advance, so a stale title or missing network
+ * the judge reads with final-submit eyes cannot undo it. `signalAdvanced` is the
+ * site's own settled-advance signal (the primary click's view-swap credit, the
+ * fallback click's effective verdict); the null-verdict path covers an
+ * unavailable judge.
+ */
+export function isMidFlowAdvanceCredited(params: {
+  midFlowSubmit: boolean;
+  signalAdvanced: boolean;
+  judgeUnavailable: boolean;
+  networkAdvanced: boolean;
+  pageAdvanced: boolean;
+  invalidMarkerCount: number;
+}): boolean {
+  if (params.midFlowSubmit && params.signalAdvanced) return true;
+  return isNullVerdictAdvanceCredited(params);
+}
+
+/**
  * Client-side view-swap verification gate. Credits a click that produces
  * substantial DOM growth with zero network as a verified step outcome when
  * the step is a plain client-side reveal (not a submit/final step, not an
@@ -12398,7 +12418,12 @@ export async function executeStepWithHealing(params: {
   const stepDeclaredNonSubmit = isStepDeclaredNonSubmit({ step, submitStep });
   // Single final-step inference every submit-strictness gate below reads, so a
   // declared non-submit veto cannot be honoured at one site and missed at another.
-  const inferredFinalSubmitStep = isFinalStep && !stepDeclaredNonSubmit;
+  // Finality goes through isGenuineFinalSubmit like the judge routing and
+  // isMidFlowSubmitShapedStep: a last slot without submit semantics is mid-flow
+  // and must not be held to final-submit proof here.
+  const inferredFinalSubmitStep =
+    isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) &&
+    !stepDeclaredNonSubmit;
   const requireSubmitEndpoint =
     (inferredFinalSubmitStep || submitStep) && submitEndpointPattern !== null;
   // Capture the per-element selection baseline (for verifyDomEffect's element-
@@ -15214,15 +15239,14 @@ export async function executeStepWithHealing(params: {
       // A mid-flow transition is credited on the page's own demonstrable
       // advance (visible text swapped); the judge's final-submit-flavoured
       // view of a stale title or missing network must not undo it.
-      const midFlowAdvanceCredited =
-        (midFlowSubmit && clickViewSwapVerified) ||
-        isNullVerdictAdvanceCredited({
-          midFlowSubmit,
-          judgeUnavailable: judgeVerdict === null,
-          networkAdvanced: networkIsRealAdvance,
-          pageAdvanced: hasSettledPageAdvanced(pre, post),
-          invalidMarkerCount,
-        });
+      const midFlowAdvanceCredited = isMidFlowAdvanceCredited({
+        midFlowSubmit,
+        signalAdvanced: clickViewSwapVerified,
+        judgeUnavailable: judgeVerdict === null,
+        networkAdvanced: networkIsRealAdvance,
+        pageAdvanced: hasSettledPageAdvanced(pre, post),
+        invalidMarkerCount,
+      });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
         logger.info(
           `mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
@@ -15900,17 +15924,15 @@ export async function executeStepWithHealing(params: {
               },
             });
 
-            const retryMidFlowAdvanceCredited =
-              (retryMidFlowSubmit &&
-                retryVerdict === "effective" &&
-                hasSettledPageAdvanced(pre, retryPost)) ||
-              isNullVerdictAdvanceCredited({
-                midFlowSubmit: retryMidFlowSubmit,
-                judgeUnavailable: judgeVerdict === null,
-                networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-                pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
-                invalidMarkerCount,
-              });
+            const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
+              midFlowSubmit: retryMidFlowSubmit,
+              signalAdvanced:
+                retryVerdict === "effective" && hasSettledPageAdvanced(pre, retryPost),
+              judgeUnavailable: judgeVerdict === null,
+              networkAdvanced: retryNetworkFired && retryDestinationPlausible,
+              pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
+              invalidMarkerCount,
+            });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
               logger.info(
                 `n+16 fallback mid-flow submit credited on demonstrable page advance (judge ${judgeVerdict === null ? "unavailable" : `rejected: ${judgeVerdict.reason}`})`
