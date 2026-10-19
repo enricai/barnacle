@@ -62,7 +62,6 @@ import { configureHttpDispatcher } from "@/lib/http";
 import { buildAnthropicClient, buildRephraseModel } from "@/lib/llm/anthropic-client";
 import { judgeErrorMessagesWithLLM } from "@/lib/llm/judges/error-messages";
 import { judgeInvalidFieldsWithLLM } from "@/lib/llm/judges/invalid-fields";
-import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import {
   RECON_FLOW_STEP_SCHEMA,
   REPLAN_MAX_STEPS,
@@ -88,7 +87,6 @@ import {
 import {
   type AttemptRecord,
   anthropicModelName,
-  buildSubmitJudgeStepContext,
   type CaptureFn,
   capturesAfterIndex,
   classifyStepSubmitIntent,
@@ -101,9 +99,9 @@ import {
   flowHasSubmitSemantics,
   formatStepPrefix,
   GOTO_TIMEOUT_MS,
-  isGenuineFinalSubmit,
   isMidFlowSubmitShapedStep,
   isStepDeclaredNonSubmit,
+  judgeStepOutcome,
   latestCaptureIndex,
   logBillingErrorIfPresent,
   parseFillStep,
@@ -3070,9 +3068,10 @@ async function main(): Promise<void> {
             requireSubmitEndpointMatch,
           }),
         });
-        const textAtStepStart = midFlowSubmitShaped
-          ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
-          : undefined;
+        const textAtStepStart =
+          midFlowSubmitShaped || (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW)
+            ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
+            : undefined;
         // A child frame CDP has just attached to may still be sitting on
         // about:blank (the moment right after Target.setAutoAttach fires and
         // before the OOPIF's own navigation lands). waitForSpaReady above only
@@ -3321,33 +3320,43 @@ async function main(): Promise<void> {
               timeoutMs: config.scraper.frameEvaluateTimeoutMs,
               label: "trailing-grace: page title",
             }).catch(() => "");
-            const trailingGraceVerdict = await verifySubmitWithLLM({
+            const trailingGraceFlowHasSubmitSemantics = flowHasSubmitSemantics({
+              steps: plan.map((s) => ({
+                submitStep: s.submitStep === true,
+                instruction: s.instruction,
+              })),
+              submitEndpointPattern,
+              requireSubmitEndpointMatch,
+            });
+            // A dead session throws synchronously here too — fall back to ""
+            // rather than let the trailing-grace check itself crash the run.
+            const trailingGracePageUrl = ((): string => {
+              try {
+                return page.url();
+              } catch {
+                return "";
+              }
+            })();
+            // A non-final trailing step is judged through judgeStepOutcome so the
+            // page is settled first; an unsettled read can land between a header
+            // flip and the late body re-render and be held to final-submit proof.
+            const trailingGraceVerdict = await judgeStepOutcome({
               client: anthropic,
-              input: {
-                ...(await buildSubmitJudgeStepContext({
-                  step: step.instruction,
-                  isFinalStep: isGenuineFinalSubmit({
-                    isFinalStep: i === plan.length - 1,
-                    flowHasSubmitSemantics: flowHasSubmitSemantics({
-                      steps: plan.map((s) => ({
-                        submitStep: s.submitStep === true,
-                        instruction: s.instruction,
-                      })),
-                      submitEndpointPattern,
-                      requireSubmitEndpointMatch,
-                    }),
-                  }),
-                  target: mainFrameTarget(page),
-                })),
-                // A dead session throws synchronously here too — fall back to ""
-                // rather than let the trailing-grace check itself crash the run.
-                pageUrl: ((): string => {
-                  try {
-                    return page.url();
-                  } catch {
-                    return "";
-                  }
-                })(),
+              captureFn,
+              step: step.instruction,
+              isFinalStep: i === plan.length - 1,
+              submitStep: step.submitStep === true,
+              flowHasSubmitSemantics: trailingGraceFlowHasSubmitSemantics,
+              elementSubmitShaped: midFlowSubmitShaped,
+              page,
+              target: mainFrameTarget(page),
+              signalCounter,
+              preNetworkCount: textAtStepStart?.networkCount ?? signalCounter.n,
+              preVisibleTextSignature: textAtStepStart?.visibleTextSignature ?? "",
+              preVisibleText: textAtStepStart?.visibleText,
+              preVisibleTextDigest: textAtStepStart?.visibleTextDigest,
+              submitInput: {
+                pageUrl: trailingGracePageUrl,
                 pageTitle,
                 unfocusedObserve: [],
                 networkCaptures: recentCaptureMeta,
@@ -3357,7 +3366,6 @@ async function main(): Promise<void> {
                 successPageTitleHints,
                 submittedStateSelectors,
               },
-              captureFn,
             });
             if (trailingGraceVerdict?.verified) {
               logger.info(
