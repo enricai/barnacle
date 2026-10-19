@@ -221,6 +221,12 @@ describe("recon-browser mid-flow DOM-advance credit (pre-replan short-circuit, s
     expect(hasSubmitStepDomAdvanced(false, BEFORE, AFTER)).toBe(true);
   });
 
+  it("credits the settled late body re-render the same as the header-flip-only snapshot", () => {
+    const headerFlipOnly = "996:Signed in as jane@example.com Email Password Create Account";
+    expect(hasSubmitStepDomAdvanced(false, BEFORE, headerFlipOnly)).toBe(true);
+    expect(hasSubmitStepDomAdvanced(false, BEFORE, AFTER)).toBe(true);
+  });
+
   it("does not credit a no-op: settled text identical to the step-start text", () => {
     expect(hasSubmitStepDomAdvanced(false, BEFORE, BEFORE)).toBe(false);
   });
