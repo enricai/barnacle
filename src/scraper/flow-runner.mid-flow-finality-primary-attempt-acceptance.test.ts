@@ -244,7 +244,7 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
       (e: unknown) => `threw: ${String(e)}`
     );
 
+    expect(String(outcome)).toMatch(/^threw: StepVerificationError.*failed verification/);
     expect(outcome).not.toBe("completed");
-    expect(vi.mocked(verifySubmitWithLLM)).toHaveBeenCalled();
   });
 });
