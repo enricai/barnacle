@@ -214,8 +214,8 @@ describe("submit-step short-circuit gate (bugfix-001, decision boundary)", () =>
 });
 
 describe("recon-browser mid-flow DOM-advance credit (pre-replan short-circuit, same URL)", () => {
-  const BEFORE = "Sign In Email Password Create Account";
-  const AFTER = "Signed in as jane@example.com Welcome Choose your preferences Continue";
+  const BEFORE = "996:Sign In Email Password Create Account";
+  const AFTER = "588:Signed in as jane@example.com Welcome Choose your preferences Continue";
 
   it("credits a non-final step whose settled text differs from the step-start text", () => {
     expect(hasSubmitStepDomAdvanced(false, BEFORE, AFTER)).toBe(true);

@@ -230,32 +230,35 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     });
   });
 
-  describe.each(DELAYS_MS)("deep-submit runner-up with a body re-render %ims after the flip", (delay) => {
-    it("credits the runner-up click when only it advances, without the form-level submit", async () => {
-      const submitExprRan = vi.fn();
-      const surface = buildSurface(
-        true,
-        delay,
-        (src) => {
-          if (src.includes("requestSubmit")) submitExprRan();
-          return true;
-        },
-        { advancingClick: 2, candidates: 2 }
-      );
-      const page = fakePage(surface);
+  describe.each(DELAYS_MS)(
+    "deep-submit runner-up with a body re-render %ims after the flip",
+    (delay) => {
+      it("credits the runner-up click when only it advances, without the form-level submit", async () => {
+        const submitExprRan = vi.fn();
+        const surface = buildSurface(
+          true,
+          delay,
+          (src) => {
+            if (src.includes("requestSubmit")) submitExprRan();
+            return true;
+          },
+          { advancingClick: 2, candidates: 2 }
+        );
+        const page = fakePage(surface);
 
-      const result = await submitCaptchaGatedForm(
-        captchaTarget(page, surface),
-        "h-captcha-response",
-        { signalCounter: { n: 0 }, page, step: STEP, isMidFlowSubmitStep: true }
-      );
+        const result = await submitCaptchaGatedForm(
+          captchaTarget(page, surface),
+          "h-captcha-response",
+          { signalCounter: { n: 0 }, page, step: STEP, isMidFlowSubmitStep: true }
+        );
 
-      expect(result).toBe(true);
-      expect(surface.rendered()).toBe(true);
-      expect(surface.clicks()).toBe(2);
-      expect(submitExprRan).not.toHaveBeenCalled();
-    });
-  });
+        expect(result).toBe(true);
+        expect(surface.rendered()).toBe(true);
+        expect(surface.clicks()).toBe(2);
+        expect(submitExprRan).not.toHaveBeenCalled();
+      });
+    }
+  );
 
   it("keeps a runner-up click that changes nothing phantom (falls to the form-level submit)", async () => {
     const submitExprRan = vi.fn();
