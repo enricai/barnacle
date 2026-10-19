@@ -15538,39 +15538,54 @@ export function unreferencedDeclaredPayloadFields(
   for (const step of flowSteps) {
     if (typeof step !== "string" && step.payloadField) declared.add(step.payloadField);
   }
+  const facets = walkNavigateToFacets([...flowSteps], process.env).map(
+    (facet): NavigateToFacetBinding => ({
+      value: facet.value ?? "",
+      field: facet.field,
+      optional: facet.optional,
+      kind: facet.kind,
+      kindHints: facet.kindHints,
+    })
+  );
   // An applicant-contract flow splices the canonical name for an explicit
   // vocabulary-row alias, so either spelling counts as a read.
   return [...declared].filter(
     (name) =>
       ![name, canonicalPayloadField(name)].some((candidate) =>
         new RegExp(`payload\\.${candidate}(?![\\w$])`).test(emittedCode)
-      ) || carriesUnthreadedFacetElement(contractCode, name)
+      ) || carriesUnthreadedFacetElement(contractCode, name, facets)
   );
 }
 
-function compactFacetKind(kind: string): string {
-  return kind
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .replace(/s$/, "");
-}
-
 /**
- * True when an emitted request still carries a literal element of the
- * declared facet's kind (`<value>;<key>=<kind>`) without splicing the payload
+ * True when an emitted request still carries a literal element of a kind the
+ * declared facet owns (`<value>;<key>=<kind>`) without splicing the payload
  * field, so a read in some other request does not make the facet look
- * threaded everywhere.
+ * threaded everywhere. Ownership is the splice's own {@link kindMatchTier}
+ * rule, and a kind another declared facet names more closely is not this
+ * facet's to thread.
  */
-function carriesUnthreadedFacetElement(contractCode: string, field: string): boolean {
-  const wanted = compactFacetKind(field);
+function carriesUnthreadedFacetElement(
+  contractCode: string,
+  field: string,
+  facets: readonly NavigateToFacetBinding[]
+): boolean {
+  const own = facets.filter((facet) => facet.field === field);
   const elementPattern = /(["'`])((?:(?!\1)[^\n\\])*?;\w+=([\w-]+))\1/g;
+  const ownsKind = (kind: string): boolean => {
+    const ownTier = Math.max(0, ...own.map((facet) => kindMatchTier(facet, kind)));
+    return (
+      ownTier > 0 &&
+      facets.every((facet) => facet.field === field || kindMatchTier(facet, kind) <= ownTier)
+    );
+  };
   return contractCode
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .some((line) =>
       [...line.matchAll(elementPattern)].some(
         (match) =>
-          compactFacetKind(match[3] ?? "") === wanted &&
+          ownsKind(match[3] ?? "") &&
           !new RegExp(`payload\\.${field}(?![\\w$])`).test(match[2] ?? "")
       )
     );
