@@ -7,7 +7,10 @@ import { classifyPhantomClick } from "@/scraper/phantom-click";
 const URL = "https://apply.acme.example/jobs/1/apply";
 const TEXT = "Apply for this job";
 
-function makeIdlePage(): { page: { waitForTimeout: (ms: number) => Promise<void> }; waited: () => number } {
+function makeIdlePage(): {
+  page: { waitForTimeout: (ms: number) => Promise<void> };
+  waited: () => number;
+} {
   let waited = 0;
   return {
     page: {
