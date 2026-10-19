@@ -72,8 +72,7 @@ function generate(): { contract: string; output: string } {
       responseHeaders: { "content-type": "application/json" },
       responseBody: { products: [{ id: "p-1001" }] },
       operationName: "quoteSearch",
-      query:
-        "query quoteSearch($filters: [String!]) { products(filters: $filters) { id } }",
+      query: "query quoteSearch($filters: [String!]) { products(filters: $filters) { id } }",
       variables,
       decodedParams: null,
     })
