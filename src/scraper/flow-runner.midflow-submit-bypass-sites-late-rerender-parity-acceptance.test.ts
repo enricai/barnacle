@@ -50,8 +50,14 @@ interface Surface {
 function buildSurface(
   advances: boolean,
   delayMs: number,
-  fallback: (src: string) => unknown
+  fallback: (src: string) => unknown,
+  options: { advancingClick?: number; candidates?: number } = {}
 ): Surface {
+  const advancingClick = options.advancingClick ?? 1;
+  const ranked = Array.from({ length: options.candidates ?? 1 }, (_, n) => ({
+    ...CANDIDATE,
+    deepIndex: CANDIDATE.deepIndex + n,
+  }));
   let now = 0;
   let clickedAt: number | null = null;
   let clicks = 0;
@@ -71,10 +77,10 @@ function buildSurface(
   };
   const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
     const src = String(expr);
-    if (src.includes("ranked.sort")) return [CANDIDATE];
+    if (src.includes("ranked.sort")) return ranked;
     if (src.includes('__mouse("click"')) {
       clicks += 1;
-      if (advances && clickedAt === null) clickedAt = now;
+      if (advances && clickedAt === null && clicks >= advancingClick) clickedAt = now;
       return { clicked: true };
     }
     if (src.includes("outerHTML")) return snapshot();
@@ -222,6 +228,57 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
       expect(childSurface.rendered()).toBe(true);
       expect(childSurface.clicks()).toBe(1);
     });
+  });
+
+  describe.each(DELAYS_MS)("deep-submit runner-up with a body re-render %ims after the flip", (delay) => {
+    it("credits the runner-up click when only it advances, without the form-level submit", async () => {
+      const submitExprRan = vi.fn();
+      const surface = buildSurface(
+        true,
+        delay,
+        (src) => {
+          if (src.includes("requestSubmit")) submitExprRan();
+          return true;
+        },
+        { advancingClick: 2, candidates: 2 }
+      );
+      const page = fakePage(surface);
+
+      const result = await submitCaptchaGatedForm(
+        captchaTarget(page, surface),
+        "h-captcha-response",
+        { signalCounter: { n: 0 }, page, step: STEP, isMidFlowSubmitStep: true }
+      );
+
+      expect(result).toBe(true);
+      expect(surface.rendered()).toBe(true);
+      expect(surface.clicks()).toBe(2);
+      expect(submitExprRan).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps a runner-up click that changes nothing phantom (falls to the form-level submit)", async () => {
+    const submitExprRan = vi.fn();
+    const surface = buildSurface(
+      false,
+      8000,
+      (src) => {
+        if (src.includes("requestSubmit")) submitExprRan();
+        return true;
+      },
+      { candidates: 2 }
+    );
+    const page = fakePage(surface);
+
+    await submitCaptchaGatedForm(captchaTarget(page, surface), "h-captcha-response", {
+      signalCounter: { n: 0 },
+      page,
+      step: STEP,
+      isMidFlowSubmitStep: true,
+    });
+
+    expect(surface.clicks()).toBe(2);
+    expect(submitExprRan).toHaveBeenCalled();
   });
 
   it("keeps a no-op submitCaptchaGatedForm click phantom (falls to the form-level submit)", async () => {
