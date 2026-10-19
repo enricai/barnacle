@@ -3,7 +3,6 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
@@ -32,10 +31,16 @@ const STEP =
   "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
 const URL = "https://example.org/signup";
 const RERENDER_DELAY_MS = 8000;
-const IDLE_GIVE_UP_MS = 14_000;
-const STEP_PAUSE_MS = 2_000;
+const _IDLE_GIVE_UP_MS = 14_000;
+const _STEP_PAUSE_MS = 2_000;
 const PRE_HEADER = ["Skip to main content", "Sign In", "Careers Home", "Back to Job Posting"];
-const POST_HEADER = ["Skip to main content", "Settings", "member@example.com", "Careers Home", "Candidate Home"];
+const POST_HEADER = [
+  "Skip to main content",
+  "Settings",
+  "member@example.com",
+  "Careers Home",
+  "Candidate Home",
+];
 const PRE_TEXT = `${"Email Address Password Verify New Password. ".repeat(24)}`.slice(0, 700);
 const POST_TEXT = `${"Welcome aboard, verify your inbox to continue. ".repeat(12)}`.slice(0, 400);
 const PRE_HTML_PAD = "x".repeat(31284 - 1500);
