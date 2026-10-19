@@ -72,6 +72,8 @@ import { solveCaptcha } from "@/scraper/captcha-solver";
 import {
   type PageQuiescence,
   QUIESCENCE_PROBE_EXPR,
+  IDLE_GIVE_UP_MS as SETTLE_IDLE_GIVE_UP_MS,
+  MAX_MS as SETTLE_MAX_MS,
   type SettlePage,
   settleAfterClick,
   settleTextKey,
@@ -112,7 +114,6 @@ import {
 import {
   classifyPhantomClick,
   hasOriginOrPathChanged,
-  hasPageAdvanced,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
   hasVisibleTextChanged,
@@ -7452,9 +7453,10 @@ const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
 /**
  * Re-settle rounds granted to a post-click page whose header flipped but whose
  * body has not re-rendered yet. Each round waits the settle's own idle
- * allowance, so a body landing well after the first settle ended is still read.
+ * allowance, so the rounds together span the settle's MAX_MS ceiling rather
+ * than a fixed guess; a held-still text ends the loop sooner.
  */
-const HEADER_ONLY_RESETTLE_ROUNDS = 2;
+const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_UP_MS);
 
 /**
  * Re-reads the post-click page while only its header has flipped. One
@@ -7474,7 +7476,9 @@ async function resettleThroughHeaderOnlyFlip(
 ): Promise<StepSnapshot> {
   let current = post;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
-    if (!hasPageAdvanced(pre, current) || hasPageBodySwapped(pre, current)) return current;
+    if (!hasVisibleTextChanged(pre, current)) return current;
+    if (hasPageBodySwapped(pre, current))
+      return round > 0 ? { ...current, settled: true } : current;
     await io.settle(
       page,
       target,
@@ -12157,7 +12161,7 @@ export async function executeStepWithHealing(params: {
     emailStepConfig,
     allocatedInbox = null,
     sessionProxy = null,
-    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsParam,
     stepIndex,
     totalSteps,
     phase,
@@ -12184,6 +12188,11 @@ export async function executeStepWithHealing(params: {
     onStepFailure,
     onStepHeal,
   } = params;
+  // An explicitly flagged final step is the flow's submit by definition (see
+  // flowHasSubmitSemantics), and an omitted flow-level flag leaves the final step
+  // strict, so neither is demoted to a mid-flow step credited on a DOM-only advance.
+  const flowHasSubmitSemanticsFlag =
+    (flowHasSubmitSemanticsParam ?? isFinalStep) || (isFinalStep && submitStep === true);
   // Mutable: the `emailStep` code-extract path splices the extracted code
   // into this instruction (see the emailStep hook block below) so the
   // pre-existing fill cascade downstream picks it up as the value to type

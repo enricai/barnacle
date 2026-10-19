@@ -184,7 +184,8 @@ function params(
   world: World,
   isFinalStep: boolean,
   trajectory: unknown[],
-  step: string = VERBATIM_STEP
+  step: string = VERBATIM_STEP,
+  overrides: Record<string, unknown> = {}
 ): never {
   return {
     stagehand: world.stagehand,
@@ -215,6 +216,7 @@ function params(
     ownBackendHostnames: [],
     knownErrorClassPrefixes: [],
     wizardExitButtonLabels: [],
+    ...overrides,
   } as never;
 }
 
@@ -231,6 +233,14 @@ const VARIANTS: { name: string; timing: Timing; step?: string }[] = [
   { name: "body re-renders 5s after header flip", timing: { headerMs: 0, bodyMs: 5000 } },
   { name: "body re-renders 8s after header flip", timing: { headerMs: 0, bodyMs: 8000 } },
   { name: "body re-renders 12s after header flip", timing: { headerMs: 0, bodyMs: 12_000 } },
+  {
+    name: "body re-renders 20s after header flip (beyond the old two-round budget)",
+    timing: { headerMs: 0, bodyMs: 20_000 },
+  },
+  {
+    name: "body re-renders 30s after header flip",
+    timing: { headerMs: 0, bodyMs: 30_000 },
+  },
   { name: "header and body land together", timing: { headerMs: 3000, bodyMs: 3000 } },
   { name: "header and body land immediately", timing: { headerMs: 0, bodyMs: 0 } },
   { name: "body lands first, header flips 6s later", timing: { headerMs: 6000, bodyMs: 0 } },
@@ -288,4 +298,20 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit credit timing m
 
     expect(outcome).not.toBe("completed");
   });
+
+  it.each([
+    ["omitted", undefined],
+    ["unset by a caller that never derived it", null],
+  ])(
+    "keeps the flagged final submit strict when the flow-level flag is %s",
+    async (_label, flag) => {
+      const world = buildWorld("Sign In", { headerMs: 0, bodyMs: 8000 });
+
+      const outcome = await executeStepWithHealing(
+        params(world, true, [], VERBATIM_STEP, { flowHasSubmitSemantics: flag })
+      ).catch(() => "threw");
+
+      expect(outcome).not.toBe("completed");
+    }
+  );
 });

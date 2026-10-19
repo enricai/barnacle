@@ -3262,7 +3262,12 @@ async function main(): Promise<void> {
                   textAtStepStart,
                   true,
                   { settle: settleWithPageQuiescence, snapshot: snapshotPage }
-                ).catch(() => undefined)
+                ).catch(async (err: unknown) => {
+                  logger.warn(
+                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; judging advance from an unsettled read`
+                  );
+                  return snapshotPage(frameTarget, signalCounter).catch(() => undefined);
+                })
               : undefined;
           const domAdvanced =
             !urlAdvanced &&

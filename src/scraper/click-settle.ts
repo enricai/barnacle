@@ -21,9 +21,9 @@ export function settleTextKey(visibleTextSignature: string, visibleTextDigest?: 
 
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
-const IDLE_GIVE_UP_MS = 14000;
+export const IDLE_GIVE_UP_MS = 14000;
 const TEXT_QUIET_POLLS = 9;
-const MAX_MS = 60000;
+export const MAX_MS = 60000;
 
 /**
  * Waits for a click's network activity to settle so the verification snapshot

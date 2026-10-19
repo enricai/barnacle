@@ -55,8 +55,8 @@ const MAX_VISIBLE_TEXT_CHARS = 3000;
 export interface VerifySubmitInput {
   /** The step's instruction, so the judge knows what this click was meant to do. */
   stepInstruction?: string;
-  /** Defaults to true (strict final-submit judging) when omitted. */
-  isFinalStep?: boolean;
+  /** Required so a non-final step can never fall into strict final-submit judging by omission. */
+  isFinalStep: boolean;
   /** Bounded slice of live visible page text; fresher evidence than the title. */
   visibleText?: string;
   pageUrl: string;
