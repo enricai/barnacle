@@ -5150,6 +5150,49 @@ async function resolvedClickTargetIsSubmitShaped(
 }
 
 /**
+ * Canonical key for an absolute xpath so Stagehand's `/html/body/div/button`
+ * (index omitted when sole of its tag) and this module's `/html[1]/body[1]/
+ * div[1]/button[1]` compare equal: a node's first-of-tag and sole-of-tag
+ * forms can never coexist under one parent, so dropping `[1]` is injective.
+ */
+function canonicalAbsoluteXpath(selector: string): string | null {
+  const body = xpathBodyForEvaluate(selector);
+  return body?.startsWith("/") ? body.replace(/\[1\]/g, "").toLowerCase() : null;
+}
+
+/**
+ * Canonical xpaths of every control on the page that is submit-shaped right
+ * now, read before an act clicks anything. The act performs the click itself,
+ * and a view swap removes the control with the page, so the only read that
+ * cannot be blinded by the transition is one taken beforehand — and one that
+ * does not depend on observe having resolved the same control the act later
+ * clicks. Empty on any read failure: absence never manufactures a shape.
+ */
+async function readSubmitShapedControlXpaths(target: FrameTarget): Promise<Set<string>> {
+  const expr = `(() => {
+    const xpathOf = ${XPATH_OF_FN_SRC};
+    const isSubmitShaped = ${SUBMIT_SHAPE_EXPR};
+    const out = [];
+    for (const el of document.querySelectorAll("button, input, a, [role='button'], [type='submit'], [onclick], [tabindex]")) {
+      if (isSubmitShaped(el)) out.push(xpathOf(el));
+    }
+    return out;
+  })()`;
+  try {
+    const result = await target.evaluate<unknown>(expr);
+    if (!Array.isArray(result)) return new Set();
+    return new Set(
+      result
+        .filter((x): x is string => typeof x === "string")
+        .map(canonicalAbsoluteXpath)
+        .filter((x): x is string => x !== null)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * True when the primary (Stagehand-recorded) xpath is unresolvable and only
  * `xpathTailForRetarget`'s loose tag+same-tag-sibling-position re-anchor
  * finds a live node — i.e. the n+16 fallback's `clickExpr` is about to click
@@ -7497,8 +7540,9 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
  * re-render that follows it, so the verdict waits for the body or for the text
- * to hold still across a settle round, and only then reads the header flip as
- * the page's final state (`settled`). Bounded, and a page whose header never
+ * to hold still through the whole re-settle budget, and only then reads the
+ * header flip as the page's final state (`settled`): a single quiet round
+ * cannot distinguish a finished page from a body that re-renders later. Bounded, and a page whose header never
  * flipped (a no-op click) or whose body already swapped returns at once.
  */
 async function resettleThroughHeaderOnlyFlip(
@@ -7510,6 +7554,7 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
+  let heldStill = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     if (!hasVisibleTextChanged(pre, current)) return current;
     if (hasPageBodySwapped(pre, current))
@@ -7524,10 +7569,10 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
-    if (!hasVisibleTextChanged(current, next)) return { ...next, settled: true };
+    heldStill = !hasVisibleTextChanged(current, next);
     current = next;
   }
-  return current;
+  return heldStill ? { ...current, settled: true } : current;
 }
 
 /**
@@ -12800,6 +12845,7 @@ export async function executeStepWithHealing(params: {
                 submitStep,
                 isFinalStep,
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+                elementSubmitShaped: !stepDeclaredNonSubmit,
               }),
             });
           } catch (err) {
@@ -13079,6 +13125,7 @@ export async function executeStepWithHealing(params: {
           submitStep,
           isFinalStep,
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          elementSubmitShaped: !stepDeclaredNonSubmit,
         }),
       });
       if (fallbackTarget) {
@@ -13592,6 +13639,16 @@ export async function executeStepWithHealing(params: {
     // from DOM re-read. Captured here so both branches of the cascade write to it.
     let resolvedAction: Action | null = null;
 
+    // Submit shape of the control observe resolved BEFORE the act clicked it.
+    // The act performs the click itself, so a page that swaps at once has
+    // already removed the control by the time the post-act read runs; this is
+    // the only read that cannot be blinded by the transition it caused.
+    const submitShapeObservedBeforeClick = new Map<string, boolean>();
+    // Every submit-shaped control on the page before the act, so the shape of
+    // the control the act clicked is known even when observe resolved nothing
+    // or a different node than the act did.
+    const submitShapedControlsBeforeClick = new Set<string>();
+
     // Stagehand resolves a natural-language act target internally, so for a
     // click-intent instruction resolve it with observe first and centre it;
     // a sticky bar otherwise swallows Stagehand's own click. Throws when the
@@ -13599,6 +13656,13 @@ export async function executeStepWithHealing(params: {
     // Resolves true once the observe ran, so guardedAct skips its own pass.
     const preCentreNaturalLanguageClick = async (instruction: string): Promise<boolean> => {
       if (!hasClickIntent(instruction)) return false;
+      if (!stepDeclaredNonSubmit) {
+        for (const xpath of await readSubmitShapedControlXpaths(
+          frameTarget ?? mainFrameTarget(page)
+        )) {
+          submitShapedControlsBeforeClick.add(xpath);
+        }
+      }
       const observed = await guardedObserve(
         stagehand,
         instruction,
@@ -13608,6 +13672,14 @@ export async function executeStepWithHealing(params: {
       );
       const first = observed[0];
       if (!isTrustedClickMethod(first?.method) || !first?.selector) return true;
+      submitShapeObservedBeforeClick.set(
+        first.selector,
+        !stepDeclaredNonSubmit &&
+          (await resolvedClickTargetIsSubmitShaped(
+            frameTarget ?? mainFrameTarget(page),
+            first.selector
+          ))
+      );
       const failure = await centreObservedClickTarget(
         frameTarget ?? mainFrameTarget(page),
         first.selector
@@ -14692,13 +14764,22 @@ export async function executeStepWithHealing(params: {
     // settle: a view swap removes the clicked control, so a post-swap read
     // would blind the mid-flow exemption on exactly the case it exists for.
     // See resolvedClickTargetIsSubmitShaped's doc comment.
+    // A successful act that listed no actions still clicked what observe
+    // resolved first, so that control's pre-click shape stands in for it.
     const resolvedElementIsSubmitShaped =
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
-        ? await resolvedClickTargetIsSubmitShaped(
+        ? submitShapeObservedBeforeClick.get(resolvedAction.selector) === true ||
+          submitShapedControlsBeforeClick.has(
+            canonicalAbsoluteXpath(resolvedAction.selector) ?? ""
+          ) ||
+          (await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
             resolvedAction.selector
-          )
-        : false;
+          ))
+        : resolvedAction === null &&
+          record.actResultSuccess === true &&
+          !stepDeclaredNonSubmit &&
+          submitShapeObservedBeforeClick.values().next().value === true;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -14884,6 +14965,20 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
+    // A submit-worded last slot without submit semantics is mid-flow
+    // (isGenuineFinalSubmit), so the sibling predicates below must not hold it
+    // to genuine-final strictness while the verdict gates already credit it on
+    // a settled advance.
+    const primarySubmitShaped =
+      isStepSubmitShaped({
+        step,
+        submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      }) &&
+      (submitStep ||
+        isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) ||
+        !isFinalStep);
     // An element-inferred mid-flow submit joins the exemption the step-derived
     // one already got: a click that never left its URL did not bounce to a gate.
     const midFlowDestinationPlausibleForPost = midFlowDestinationPlausible({
@@ -14944,14 +15039,7 @@ export async function executeStepWithHealing(params: {
     // control) may not ride this signal alone — only when the submit-judge
     // gate (requireSubmitEndpoint) will re-litigate the credit below.
     const formValueWeakSignalAllowed =
-      !(
-        isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        }) || resolvedElementIsSubmitShaped
-      ) || requireSubmitEndpoint;
+      !(primarySubmitShaped || resolvedElementIsSubmitShaped) || requireSubmitEndpoint;
     const formValueVerified =
       isStateClass &&
       formValueWeakSignalAllowed &&
@@ -15107,13 +15195,7 @@ export async function executeStepWithHealing(params: {
     // respects the SAME DOM-only-advance veto as the block above: a wizard
     // "Next" step on a pattern-configured site whose only signal is a field
     // toggle must stay unverified, not get waved through by the verdict.
-    const domEffectiveVerdict =
-      !isStepSubmitShaped({
-        step,
-        submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-      }) && domVerifiedForStep;
+    const domEffectiveVerdict = !primarySubmitShaped && domVerifiedForStep;
     let verified =
       networkIsRealAdvance ||
       urlChanged ||
@@ -15904,7 +15986,7 @@ export async function executeStepWithHealing(params: {
               isFinalStep,
               submitStep,
               flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-              elementSubmitShaped: resolvedElementIsSubmitShaped,
+              elementSubmitShaped: retryResolvedElementIsSubmitShaped,
               page,
               target: frameTarget ?? mainFrameTarget(page),
               signalCounter,
@@ -16135,12 +16217,7 @@ export async function executeStepWithHealing(params: {
         // (triedSelectors), which is empty on an "unresolved" verdict, so a
         // non-submit step with that verdict falls through to the normal
         // ladder instead of escalating.
-        const escalationTarget = isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        })
+        const escalationTarget = primarySubmitShaped
           ? "escalating attempt 2 to deep-submit-locator"
           : phantomClickAfterAttempt1
             ? "non-submit step — escalating attempt 2 to trusted-click-retry (trusted CDP click on the resolved target)"
@@ -16156,12 +16233,7 @@ export async function executeStepWithHealing(params: {
         // Treat the canonical submit click as "final" for this predicate
         // even when it lives mid-flow. See requireSubmitEndpoint derivation
         // above for the same gate-widening rationale.
-        isFinalStep: isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        }),
+        isFinalStep: primarySubmitShaped,
         requireSubmitEndpoint,
         resolvedMethod: record.resolvedMethod,
         effectSignals,
@@ -16232,6 +16304,7 @@ export async function executeStepWithHealing(params: {
         submitStep,
         isFinalStep,
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+        elementSubmitShaped: !stepDeclaredNonSubmit,
       }),
     });
     if (fallbackTarget) {

@@ -315,6 +315,26 @@ describe("flow-runner non-final step judge routing acceptance", () => {
     expect(world.act).toHaveBeenCalledTimes(1);
   });
 
+  it("verifies a non-final step whose stale title contradicts the advanced visible text", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "moved on" });
+    const { outcome, world } = await run(
+      { ...ADVANCED, title: "Step 1 - Your details" },
+      false,
+      true
+    );
+    expect(outcome).toBe("completed");
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(submitJudge).not.toHaveBeenCalled();
+  });
+
+  it("keeps strict submit judging on the final step despite a stale title", async () => {
+    submitJudge.mockResolvedValue({ verified: false, reason: "stale title" });
+    stepJudge.mockResolvedValue({ advanced: true, reason: "moved on" });
+    const { outcome } = await run({ ...ADVANCED, title: "Step 1 - Your details" }, true, true);
+    expect(outcome).not.toBe("completed");
+    expect(stepJudge).not.toHaveBeenCalled();
+  });
+
   it("does not credit a null step verdict when the page did not advance", async () => {
     stepJudge.mockResolvedValue(null);
     const { outcome } = await run(NOISE, false, true);

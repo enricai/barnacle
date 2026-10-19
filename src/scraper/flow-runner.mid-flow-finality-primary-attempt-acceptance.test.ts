@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -81,7 +82,18 @@ interface World {
   clock: () => number;
 }
 
-function buildWorld(title: string): World {
+interface WorldOptions {
+  advances?: boolean;
+  viaFallback?: boolean;
+  flipHeader?: boolean;
+  urlChanges?: boolean;
+}
+
+function buildWorld(title: string, opts: WorldOptions = {}): World {
+  const advances = opts.advances ?? true;
+  const viaFallback = opts.viaFallback ?? false;
+  const flipHeader = opts.flipHeader ?? true;
+  const urlChanges = opts.urlChanges ?? false;
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `
@@ -98,8 +110,9 @@ function buildWorld(title: string): World {
   const state = { rendered: false };
   const counter = { n: 0 };
   const click = (): void => {
+    if (!advances) return;
     clickedAt = now;
-    hdr.textContent = "My Account";
+    if (flipHeader) hdr.textContent = "My Account";
   };
   (
     control as unknown as { addEventListener: (t: string, cb: () => void) => void }
@@ -121,11 +134,13 @@ function buildWorld(title: string): World {
           x: unknown
         ) => unknown
       )(document, win.XPathResult),
-    url: () => URL,
+    url: () => (urlChanges && clickedAt !== null ? `${URL}/welcome` : URL),
     title: async () => title,
     locator: () => ({
       first: () => ({
-        click: async () => (control as unknown as { click: () => void }).click(),
+        click: async () => {
+          if (!viaFallback) (control as unknown as { click: () => void }).click();
+        },
         isChecked: async () => false,
         inputValue: async () => "",
       }),
@@ -143,7 +158,7 @@ function buildWorld(title: string): World {
   } as unknown as Page;
 
   const act = vi.fn().mockImplementation(async () => {
-    (control as unknown as { click: () => void }).click();
+    if (!viaFallback) (control as unknown as { click: () => void }).click();
     return {
       success: true,
       message: "clicked",
@@ -169,7 +184,12 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function params(world: World, flowHasSubmitSemantics: boolean, trajectory: unknown[]): never {
+function params(
+  world: World,
+  flowHasSubmitSemantics: boolean,
+  trajectory: unknown[],
+  isFinalStep = true
+): never {
   return {
     stagehand: world.stagehand,
     page: world.page,
@@ -188,7 +208,7 @@ function params(world: World, flowHasSubmitSemantics: boolean, trajectory: unkno
     rephraseModel: null,
     logger: testLogger,
     uploadFixture: null,
-    isFinalStep: true,
+    isFinalStep,
     flowHasSubmitSemantics,
     submitEndpointPattern: null,
     submittedStateSelectors: [],
@@ -246,5 +266,68 @@ describe("flow-runner/executeStepWithHealing — last slot without submit semant
 
     expect(String(outcome)).toMatch(/^threw: StepVerificationError.*failed verification/);
     expect(outcome).not.toBe("completed");
+  });
+
+  describe("step judge routing", () => {
+    const stepJudge = vi.mocked(verifyStepAdvancedWithLLM);
+
+    it("credits a submit-worded last slot with no submit semantics when the step judge says advanced", async () => {
+      vi.mocked(verifySubmitWithLLM).mockResolvedValue(STALE_VERDICT);
+      stepJudge.mockResolvedValue({ advanced: true, reason: "new page" });
+      const world = buildWorld("Sign In", { flipHeader: false, urlChanges: true });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(outcome).toBe("completed");
+      expect(stepJudge).toHaveBeenCalled();
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    });
+
+    it("credits that slot on a null step verdict with a demonstrable advance and a stale title", async () => {
+      vi.mocked(verifySubmitWithLLM).mockResolvedValue(STALE_VERDICT);
+      stepJudge.mockResolvedValue(null as never);
+      const world = buildWorld("Sign In", { flipHeader: false, urlChanges: true });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(outcome).toBe("completed");
+      expect(world.state.rendered).toBe(true);
+      expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    });
+
+    it("credits that slot in the el.click() fallback path", async () => {
+      vi.mocked(verifySubmitWithLLM).mockResolvedValue(STALE_VERDICT);
+      stepJudge.mockResolvedValue({ advanced: true, reason: "new page" });
+      const world = buildWorld("Sign In", { viaFallback: true });
+
+      const outcome = await executeStepWithHealing(params(world, false, []));
+
+      expect(outcome).toBe("completed");
+      expect(world.state.rendered).toBe(true);
+      expect(logs().some((l) => l.includes("n+16"))).toBe(true);
+    });
+
+    it("a genuine final submit still goes to the strict submit judge and never the step judge", async () => {
+      vi.mocked(verifySubmitWithLLM).mockResolvedValue(STALE_VERDICT);
+      stepJudge.mockResolvedValue({ advanced: true, reason: "new page" });
+      const world = buildWorld("Sign In", { flipHeader: false, urlChanges: true });
+
+      await executeStepWithHealing(params(world, true, [])).catch(() => "threw");
+
+      expect(verifySubmitWithLLM).toHaveBeenCalled();
+      expect(stepJudge).not.toHaveBeenCalled();
+    });
+
+    it("a non-final step whose page did not advance is not credited", async () => {
+      stepJudge.mockResolvedValue({ advanced: false, reason: "no change" });
+      const world = buildWorld("Sign In", { advances: false });
+
+      const outcome = await executeStepWithHealing(params(world, false, [], false)).catch(
+        () => "threw"
+      );
+
+      expect(outcome).not.toBe("completed");
+      expect(world.state.rendered).toBe(false);
+    });
   });
 });

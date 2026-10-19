@@ -5,6 +5,7 @@ import {
   filterCompletedFromReplan,
   filterReplanDuplicatingNextAuthored,
   hasPageAlreadyAdvancedPastStep,
+  hasSubmitStepDomAdvanced,
   isReplanRegressingAcrossAuthBoundary,
   isReplanReproposingFailedStep,
   type NormalizedStep,
@@ -209,5 +210,27 @@ describe("submit-step short-circuit gate (bugfix-001, decision boundary)", () =>
 
   it("still short-circuits a non-submit-shaped step's plain origin/path delta, preserving bugfix-005's original behavior", () => {
     expect(shortCircuitFires(nonSubmitStep, STEP_START_URL, POST_FAILURE_URL)).toBe(true);
+  });
+});
+
+describe("recon-browser mid-flow DOM-advance credit (pre-replan short-circuit, same URL)", () => {
+  const BEFORE = "996:Sign In Email Password Create Account";
+  const AFTER = "588:Signed in as jane@example.com Welcome Choose your preferences Continue";
+
+  it("credits a non-final step whose settled text differs from the step-start text", () => {
+    expect(hasSubmitStepDomAdvanced(false, BEFORE, AFTER)).toBe(true);
+  });
+
+  it("does not credit a no-op: settled text identical to the step-start text", () => {
+    expect(hasSubmitStepDomAdvanced(false, BEFORE, BEFORE)).toBe(false);
+  });
+
+  it("does not credit when either snapshot is missing", () => {
+    expect(hasSubmitStepDomAdvanced(false, undefined, AFTER)).toBe(false);
+    expect(hasSubmitStepDomAdvanced(false, BEFORE, undefined)).toBe(false);
+  });
+
+  it("never credits a final step, whose completion belongs to the submit-destination judge", () => {
+    expect(hasSubmitStepDomAdvanced(true, BEFORE, AFTER)).toBe(false);
   });
 });
