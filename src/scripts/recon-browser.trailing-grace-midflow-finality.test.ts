@@ -128,7 +128,10 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     verifyStepAdvancedStub.mockReset();
   });
 
-  async function runWithFlow(steps: Array<Record<string, unknown>>): Promise<void> {
+  async function runWithFlow(
+    steps: Array<Record<string, unknown>>,
+    bodyText?: () => string
+  ): Promise<void> {
     const session = { on: (): void => {}, off: (): void => {} };
     const pageUrl = vi
       .fn()
@@ -139,6 +142,9 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
       url: pageUrl,
       title: vi.fn().mockResolvedValue("Order Confirmation"),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (bodyText && typeof expr === "string" && expr.includes('innerText || ""')) {
+          return bodyText();
+        }
         if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
         if (typeof expr === "string" && expr.includes("querySelector"))
           return { matched: false, src: null };
@@ -207,6 +213,22 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     const judgeInput = verifySubmitWithLLMStub.mock.calls[0]?.[0]?.input;
     expect(judgeInput.stepInstruction).toBe("Click the Continue button");
     expect(judgeInput.isFinalStep).toBe(true);
+    expect(loggerStub.info).toHaveBeenCalledWith(
+      expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
+    );
+  });
+
+  it("re-judges a non-final trailing step on the late-re-rendered body after an instant header flip", async () => {
+    const texts = ["Step 2 of 3 Shipping address", "Step 3 of 3 Payment details card number"];
+    let call = 0;
+    await runWithFlow(
+      [{ step: "Click the Continue button", optional: true, upload: false }],
+      () => texts[Math.min(call++, texts.length - 1)] ?? ""
+    );
+
+    expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+    const judgedTexts = verifyStepAdvancedStub.mock.calls.map((c) => c[0].input.afterText);
+    expect(judgedTexts.at(-1)).toContain("Payment details");
     expect(loggerStub.info).toHaveBeenCalledWith(
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
