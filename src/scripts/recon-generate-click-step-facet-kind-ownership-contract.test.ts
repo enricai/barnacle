@@ -70,3 +70,20 @@ describe("facet-to-kind ownership by element kind suffix", () => {
     expect(out.map((f) => f.field)).toContain("amounts");
   });
 });
+
+describe("date-part facet ownership of the umbrella date kind", () => {
+  it("binds every element of kind `date` to a month-worded facet, case-insensitively", () => {
+    const facets = extractNavigateToFacetOrder(
+      [{ step: "select the '2026-12' month option", payloadField: "departureMonth" }],
+      {}
+    );
+    const resolved = resolveRecurringNavigateToFacets(
+      facets,
+      poolOf(["2026-12;filterType=date", "2027-01;filterType=Date"])
+    );
+    const owner = (element: string): string | undefined =>
+      matchFacetRecurrence(element, resolved, { allowDelimiterSuffix: true })?.field;
+    expect(owner("2027-01;filterType=Date")).toBe("departureMonth");
+    expect(owner("2027-01;filterType=date")).toBe("departureMonth");
+  });
+});
