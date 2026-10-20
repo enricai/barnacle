@@ -13646,7 +13646,8 @@ export async function executeStepWithHealing(params: {
     await adoptOpenedPage(0);
     // A prior attempt's click may have advanced the page after its own verdict;
     // judge against the step-start baseline before `pre` absorbs the advance.
-    if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`))) return "completed";
+    if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`)))
+      return "completed";
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
