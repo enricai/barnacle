@@ -12741,6 +12741,9 @@ export async function executeStepWithHealing(params: {
   const isSettleWaitStep = isSubmitOrFinalStep || isAdvanceStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
+    // The step-level baseline is declared after this block, so capture the
+    // step-start page here for the fallback submit to judge against.
+    const captchaStepStartSnapshot = await snapshotPage(captchaTarget, signalCounter, page);
     const sitekeyProbeExpr = `(() => {
       const el = document.querySelector("[data-sitekey]");
       if (!el) return { siteKey: null, isInvisible: false };
@@ -12902,6 +12905,7 @@ export async function executeStepWithHealing(params: {
               signalCounter,
               page,
               step,
+              stepStartSnapshot: captchaStepStartSnapshot ?? undefined,
               isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
                 step,
                 submitStep,
