@@ -70,7 +70,7 @@ function buildParams(
     locator: vi.fn() as unknown as FrameTarget["locator"],
     url: vi.fn().mockImplementation(async () => {
       urlCallCount += 1;
-      return urlCallCount === 1 ? BASELINE_URL : postSubmitUrl;
+      return urlCallCount <= 2 ? BASELINE_URL : postSubmitUrl;
     }),
     title: vi.fn().mockResolvedValue(""),
   };
