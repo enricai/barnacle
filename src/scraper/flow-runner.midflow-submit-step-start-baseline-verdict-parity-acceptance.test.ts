@@ -274,10 +274,11 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
 
   it("seeds the primary judge call from the step-start page, not the attempt-local pre", async () => {
     const world = buildWorld("Sign In");
-    world.act.mockImplementation(async () => {
-      (world.control as unknown as { click: () => void }).click();
-      throw new Error("act errored after the click landed");
+    let clicked = false;
+    world.control.addEventListener("click", () => {
+      clicked = true;
     });
+    (world.page as unknown as { url: () => string }).url = () => (clicked ? `${URL}/verify` : URL);
 
     const outcome = await executeStepWithHealing(params(world, false, []));
 
@@ -286,7 +287,7 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
     const inputs = vi
       .mocked(verifyStepAdvancedWithLLM)
       .mock.calls.map((c) => c[0].input.beforeText);
-    // the step-start credit often lands before the judge runs; any judge call must still be step-start seeded
+    expect(inputs.length).toBeGreaterThan(0);
     for (const before of inputs) {
       expect(before).toContain("Sign In");
       expect(before).not.toContain("My Account");
@@ -312,6 +313,7 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
     const inputs = vi
       .mocked(verifyStepAdvancedWithLLM)
       .mock.calls.map((c) => c[0].input.beforeText);
+    expect(inputs.length).toBeGreaterThan(0);
     expect(inputs.length).toBeGreaterThan(0);
     for (const before of inputs) {
       expect(before).toContain("Sign In");
