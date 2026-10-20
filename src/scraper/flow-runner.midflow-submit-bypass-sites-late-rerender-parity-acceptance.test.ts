@@ -137,7 +137,7 @@ function elementShapeProbe(src: string): unknown {
 async function runPrimaryFlow(
   advances: boolean,
   delay: number,
-  options: { step?: string; submitStep?: boolean } = {}
+  options: { step?: string; submitStep?: boolean; errorAfterClick?: boolean } = {}
 ): Promise<unknown> {
   const step = options.step ?? STEP;
   const surface = buildSurface(advances, delay, options.step ? elementShapeProbe : () => null);
@@ -153,9 +153,10 @@ async function runPrimaryFlow(
   const page = fakePage(surface);
   const stagehand = {
     act: vi.fn().mockImplementation(async (instruction: unknown) => {
-      if (instruction === step)
+      if (instruction === step) {
         await (surface.evaluate as (e: unknown) => Promise<unknown>)('__mouse("click"');
-      else nextStepActs.n += 1;
+        if (options.errorAfterClick) throw new Error("act errored after the click landed");
+      } else nextStepActs.n += 1;
       return {
         success: true,
         message: "ok",
@@ -508,6 +509,16 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
       it("credits the unflagged non-submit-worded primary click on a submit-shaped control", async () => {
         await expect(
           runPrimaryFlow(true, delay, { step: NEUTRAL_STEP, submitStep: false })
+        ).resolves.toMatchObject({ lastStepIndex: 1 });
+      });
+
+      it("credits a neutral-step click whose act errors after it landed, from the step-start baseline", async () => {
+        await expect(
+          runPrimaryFlow(true, delay, {
+            step: NEUTRAL_STEP,
+            submitStep: false,
+            errorAfterClick: true,
+          })
         ).resolves.toMatchObject({ lastStepIndex: 1 });
       });
 
