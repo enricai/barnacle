@@ -3236,11 +3236,11 @@ async function main(): Promise<void> {
                   textAtStepStart,
                   true,
                   { settle: settleWithPageQuiescence, snapshot: snapshotPage }
-                ).catch(async (err: unknown) => {
+                ).catch((err: unknown) => {
                   logger.warn(
-                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; judging advance from an unsettled read`
+                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`
                   );
-                  return snapshotPage(frameTarget, signalCounter).catch(() => undefined);
+                  return undefined;
                 })
               : undefined;
           const domAdvanced =
