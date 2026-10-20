@@ -7572,9 +7572,17 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     heldStill = !hasVisibleTextChanged(current, next);
     current = next;
-    if (heldStill) break;
   }
   return heldStill ? { ...current, settled: true } : current;
+}
+
+/**
+ * Text baseline of the step-start page with the attempt's own network count, so
+ * a late re-render an earlier attempt already absorbed into `pre` still reads as
+ * movement to the settle while only this click's requests count as its own.
+ */
+function withNetworkBaseline(baseline: StepSnapshot, pre: StepSnapshot): StepSnapshot {
+  return { ...baseline, networkCount: pre.networkCount };
 }
 
 /**
@@ -13062,6 +13070,14 @@ export async function executeStepWithHealing(params: {
   // re-render), which would read as a step-start advance — so the last
   // resolved click's disabled veto must also gate the baseline credit.
   let lastClickBlockedByDisabled = false;
+  // A step whose submit shape is only known from a resolved element got no
+  // step-level baseline; the first attempt's pre-click snapshot is the
+  // step-start page, so every later verdict site judges against it.
+  const adoptElementStepStartBaseline = (): void => {
+    if (stepStartSnapshot || !firstAttemptPre) return;
+    stepStartSnapshot = firstAttemptPre;
+    onElementStepStartBaseline?.(firstAttemptPre);
+  };
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
     const genuineFinal = isGenuineFinalSubmit({
       isFinalStep,
@@ -13671,6 +13687,9 @@ export async function executeStepWithHealing(params: {
       page,
       captureSelectionState
     );
+    // Recorded before any fast-skip `continue`, so an attempt-1 act that threw
+    // after its click landed still leaves the step-start page behind.
+    firstAttemptPre ??= pre;
     await armPageQuiescence(frameTarget ?? mainFrameTarget(page));
     // Snapshot the meta-tail length so the final-step pattern gate can scope
     // its URL scan to captures added DURING this attempt (not historical
@@ -13957,6 +13976,7 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
+              adoptElementStepStartBaseline();
               const deepAdvanceBaseline = stepStartSnapshot ?? pre;
               const midPost = await settleAndSnapshotPostClick(
                 midTarget,
@@ -14858,13 +14878,7 @@ export async function executeStepWithHealing(params: {
           record.actResultSuccess === true &&
           !stepDeclaredNonSubmit &&
           submitShapeObservedBeforeClick.values().next().value === true;
-    // A step whose submit shape is only known from the resolved element got no
-    // step-level baseline; attempt 1's pre-click snapshot is the step-start page.
-    if (attempt === 1) firstAttemptPre = pre;
-    if (resolvedElementIsSubmitShaped && !stepStartSnapshot && firstAttemptPre) {
-      stepStartSnapshot = firstAttemptPre;
-      onElementStepStartBaseline?.(firstAttemptPre);
-    }
+    if (resolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
     const advanceBaseline = stepStartSnapshot ?? pre;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
@@ -14889,7 +14903,7 @@ export async function executeStepWithHealing(params: {
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
-      pre,
+      stepIsMidFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : pre,
       mayTriggerRoundTrip,
       isSettleWaitStep || resolvedElementIsSubmitShaped,
       DEFAULT_POST_CLICK_SETTLE_IO
@@ -15648,14 +15662,6 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryPost = await settleAndSnapshotPostClick(
-            frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            page,
-            pre,
-            isSettleWaitStep || retryResolvedElementIsSubmitShaped
-          );
-          const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
             step,
             submitStep,
@@ -15663,6 +15669,16 @@ export async function executeStepWithHealing(params: {
             flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
             elementSubmitShaped: retryResolvedElementIsSubmitShaped,
           });
+          if (retryResolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
+          const retryAdvanceBaseline = stepStartSnapshot ?? pre;
+          const retryPost = await settleAndSnapshotPostClick(
+            frameTarget ?? mainFrameTarget(page),
+            signalCounter,
+            page,
+            retryMidFlowSubmit ? withNetworkBaseline(retryAdvanceBaseline, pre) : pre,
+            isSettleWaitStep || retryResolvedElementIsSubmitShaped
+          );
+          const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&
             isPlausibleStepDestination(
@@ -15790,7 +15806,7 @@ export async function executeStepWithHealing(params: {
             pre,
             post: retryPost,
             midFlowSubmit: retryMidFlowSubmit,
-            advanceBaseline,
+            advanceBaseline: retryAdvanceBaseline,
             destinationPlausible: retryDestinationPlausible,
           });
           const retryNetworkIsRealAdvance =
@@ -15907,7 +15923,7 @@ export async function executeStepWithHealing(params: {
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retryMidFlowSubmit || retrySubmitShaped,
             isMidFlowSubmitStep: retryMidFlowSubmit,
-            advanceBaseline,
+            advanceBaseline: retryAdvanceBaseline,
             destinationPlausible: retryMidFlowDestinationPlausible,
           });
           // Destination-plausibility audit of every remaining disjunct in
@@ -16086,7 +16102,7 @@ export async function executeStepWithHealing(params: {
               },
             });
 
-            const retryPageAdvanced = hasSettledPageAdvanced(advanceBaseline, retryPost);
+            const retryPageAdvanced = hasSettledPageAdvanced(retryAdvanceBaseline, retryPost);
             const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
               midFlowSubmit: retryMidFlowSubmit,
               signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,

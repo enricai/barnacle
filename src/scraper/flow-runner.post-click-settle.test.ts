@@ -297,6 +297,22 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
+  it("does not read one quiet round as settled: a body landing after held rounds is still picked up", async () => {
+    const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(t.settles()).toBeGreaterThanOrEqual(3);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
+  it("spends the whole re-settle budget before reading a header-only flip as settled", async () => {
+    const t = makeIo([FLIPPED_SIG]);
+    const post = await run(snap(PRE_SIG), t.io);
+    expect(t.settles()).toBeGreaterThan(1);
+    expect(post.settled).toBe(true);
+  });
+
   it("never credits a no-op click", async () => {
     const t = makeIo([PRE_SIG]);
     const pre = snap(PRE_SIG);

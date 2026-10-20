@@ -92,6 +92,8 @@ function buildWorld(title: string, noop = false): World {
   const hdr = document.getElementById("hdr") as unknown as HappyDomElement;
   const out = document.getElementById("out") as unknown as HappyDomElement;
   const controlXPath = xpathFor(control);
+  (control as unknown as { scrollIntoView: () => void }).scrollIntoView = () => {};
+  (document as unknown as { elementFromPoint: () => unknown }).elementFromPoint = () => control;
 
   let now = 0;
   let clickedAt: number | null = null;
@@ -170,7 +172,12 @@ const testLogger = {
   debug: vi.fn(),
 } as unknown as Logger;
 
-function params(world: World, isFinalStep: boolean, trajectory: unknown[]): never {
+function params(
+  world: World,
+  isFinalStep: boolean,
+  trajectory: unknown[],
+  overrides: Record<string, unknown> = {}
+): never {
   return {
     stagehand: world.stagehand,
     page: world.page,
@@ -200,6 +207,7 @@ function params(world: World, isFinalStep: boolean, trajectory: unknown[]): neve
     ownBackendHostnames: [],
     knownErrorClassPrefixes: [],
     wizardExitButtonLabels: [],
+    ...overrides,
   } as never;
 }
 
@@ -270,5 +278,51 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
       /failed verification|phantom-click-exhausted/
     );
     expect(world.state.rendered).toBe(false);
+  });
+
+  it("keeps the step-start page as the baseline when attempt 1's act threw before resolving anything", async () => {
+    const world = buildWorld("Sign In");
+    const baselines: Array<{ visibleTextSignature?: string }> = [];
+    (world.stagehand.observe as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      async (i?: unknown) =>
+        typeof i === "string"
+          ? [
+              {
+                selector: `xpath=${xpathFor(world.control)}`,
+                description: "highlighted control",
+                method: "click",
+                arguments: [],
+              },
+            ]
+          : [{ selector: "xpath=//probe-presence", description: "p" }]
+    );
+    let acts = 0;
+    world.act.mockImplementation(async () => {
+      acts += 1;
+      (world.control as unknown as { click: () => void }).click();
+      if (acts === 1) throw new Error("act errored after the click landed");
+      return {
+        success: true,
+        message: "clicked",
+        actionDescription: "clicked",
+        actions: [
+          { selector: `xpath=${xpathFor(world.control)}`, description: "control", method: "click" },
+        ],
+      };
+    });
+    const outcome = await executeStepWithHealing(
+      params(world, false, [], {
+        step: "On the registration form, press the highlighted control",
+        submitStep: false,
+        onElementStepStartBaseline: (snapshot: { visibleTextSignature?: string }) =>
+          baselines.push(snapshot),
+      })
+    );
+
+    expect(outcome).toBe("completed");
+    expect(baselines).toHaveLength(1);
+    expect(baselines[0]?.visibleTextSignature).toContain("Sign In");
+    expect(baselines[0]?.visibleTextSignature).not.toContain("My Account");
+    expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
   });
 });
