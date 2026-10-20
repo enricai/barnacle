@@ -13957,7 +13957,13 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
-              const midPost = await settleAndSnapshotPostClick(midTarget, signalCounter, page, pre);
+              const deepAdvanceBaseline = stepStartSnapshot ?? pre;
+              const midPost = await settleAndSnapshotPostClick(
+                midTarget,
+                signalCounter,
+                page,
+                deepAdvanceBaseline
+              );
               // The deep-submit-locator runs only on submit escalation, so a
               // stray selection flip must not mask a top-pick phantom and skip
               // the runner-up retry.
@@ -13966,6 +13972,7 @@ export async function executeStepWithHealing(params: {
                 pre,
                 post: midPost,
                 midFlowSubmit: deepMidFlowSubmit,
+                advanceBaseline: deepAdvanceBaseline,
               });
               if (topVerdict === "phantom") {
                 logger.info(
@@ -15783,6 +15790,7 @@ export async function executeStepWithHealing(params: {
             pre,
             post: retryPost,
             midFlowSubmit: retryMidFlowSubmit,
+            advanceBaseline,
             destinationPlausible: retryDestinationPlausible,
           });
           const retryNetworkIsRealAdvance =
@@ -15899,6 +15907,7 @@ export async function executeStepWithHealing(params: {
             elementStateChanged: retrySelectionStateChanged,
             isSubmitShapedStep: retryMidFlowSubmit || retrySubmitShaped,
             isMidFlowSubmitStep: retryMidFlowSubmit,
+            advanceBaseline,
             destinationPlausible: retryMidFlowDestinationPlausible,
           });
           // Destination-plausibility audit of every remaining disjunct in
@@ -16077,10 +16086,7 @@ export async function executeStepWithHealing(params: {
               },
             });
 
-            // A late re-render an earlier attempt already absorbed into this
-            // attempt's `pre` must still count: judge against the step-start baseline.
-            const retryAdvanceBaseline = stepStartSnapshot ?? pre;
-            const retryPageAdvanced = hasSettledPageAdvanced(retryAdvanceBaseline, retryPost);
+            const retryPageAdvanced = hasSettledPageAdvanced(advanceBaseline, retryPost);
             const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
               midFlowSubmit: retryMidFlowSubmit,
               signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,
