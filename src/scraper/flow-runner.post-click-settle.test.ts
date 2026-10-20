@@ -5,7 +5,12 @@ import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { settleAfterClick } from "@/scraper/click-settle";
-import { runHealingFlow } from "@/scraper/flow-runner";
+import {
+  type PostClickSettleIo,
+  runHealingFlow,
+  settleAndSnapshotPostClick,
+} from "@/scraper/flow-runner";
+import { hasPageBodySwapped, hasSettledPageAdvanced } from "@/scraper/phantom-click";
 import type { Logger } from "@/types/logging";
 
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
@@ -18,6 +23,8 @@ vi.mock("@/lib/llm/judges/verify-step-advanced", () => ({
     reason: "confirmation visible",
   })),
 }));
+
+type StepSnapshot = Parameters<typeof settleAndSnapshotPostClick>[3];
 
 const MAX_MS = 60000;
 
@@ -228,5 +235,72 @@ describe("flow-runner post-click settle end-to-end (8s delayed re-render)", () =
       expect(arg.input.afterText).toContain(RERENDERED_TEXT);
       expect(arg.input.stepInstruction).toBe("Click the button to continue");
     }
+  });
+});
+
+describe("settleAndSnapshotPostClick header-only flip settledness", () => {
+  const CHROME = "Skip to main content|Careers Home|Search|Help|Privacy|Terms";
+  const PRE_SIG = `300:Sign In|Create Account|${CHROME}`;
+  const FLIPPED_SIG = `300:My Account|Create Account|${CHROME}`;
+  const BODY_SIG = "588:Thanks your application was received|Settings|Careers Home|Privacy";
+
+  const snap = (sig: string, networkCount = 0): StepSnapshot =>
+    ({
+      networkCount,
+      url: BASE_URL,
+      bodyHtmlLength: 1000,
+      visibleTextSignature: sig,
+    }) as unknown as StepSnapshot;
+
+  function makeIo(timeline: string[]): { io: PostClickSettleIo; settles: () => number } {
+    let reads = 0;
+    let settles = 0;
+    const io: PostClickSettleIo = {
+      settle: (async () => {
+        settles += 1;
+      }) as unknown as PostClickSettleIo["settle"],
+      snapshot: (async () => {
+        const sig = timeline[Math.min(reads, timeline.length - 1)] as string;
+        reads += 1;
+        return snap(sig);
+      }) as unknown as PostClickSettleIo["snapshot"],
+    };
+    return { io, settles: () => settles };
+  }
+
+  const run = (pre: StepSnapshot, io: PostClickSettleIo): Promise<StepSnapshot> =>
+    settleAndSnapshotPostClick({} as never, { n: 0 }, {} as Page, pre, true, io);
+
+  it("keeps re-settling while the text still changes and picks up the late body", async () => {
+    const t = makeIo([FLIPPED_SIG, `300:My Account|Loading|${CHROME}`, BODY_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(t.settles()).toBeGreaterThanOrEqual(3);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
+  it("hands the verdict the re-rendered body when it lands within the resettle bound", async () => {
+    const t = makeIo([FLIPPED_SIG, BODY_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+  });
+
+  it("credits a header flip once the text holds still", async () => {
+    const t = makeIo([FLIPPED_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(FLIPPED_SIG);
+    expect(post.settled).toBe(true);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+  });
+
+  it("never credits a no-op click", async () => {
+    const t = makeIo([PRE_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(false);
   });
 });
