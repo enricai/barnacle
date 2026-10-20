@@ -13613,6 +13613,22 @@ export async function executeStepWithHealing(params: {
   };
   let phantomClickAfterAttempt1 = false;
   let attempt1UnreachableViaLightDom = false;
+  // Attempt 1 resolved no candidate at all and was skipped before any verdict,
+  // so it never reached the "unresolved" escalation a judged attempt 1 takes.
+  let attempt1FastSkipped = false;
+  // The deep submit-control locator takes attempt 2 when attempt 1 judged its
+  // target unreachable, and attempt 3 when attempt 1 was fast-skipped and the
+  // observe-act retry in attempt 2 did not verify, so a submit-shaped step with
+  // no resolvable light-DOM target is never left without it.
+  const deepSubmitLocatorSlot = (attemptNumber: number): boolean =>
+    isStepSubmitShaped({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    }) &&
+    ((attemptNumber === 2 && attempt1UnreachableViaLightDom) ||
+      (attemptNumber === 3 && attempt1FastSkipped));
   // Last candidate list the deep-submit-locator itself ranked this step, if
   // any — reused by the cascade-exhausted diagnostic snapshot below so it
   // doesn't re-run buildRankSubmitCandidatesExpr (and inflate the rank-call
@@ -13627,19 +13643,12 @@ export async function executeStepWithHealing(params: {
     // Skip to the next iteration so the cascade reaches its higher-value
     // techniques faster.
     if (attempt > 1) {
-      const wouldBeTechnique: AttemptRecord["technique"] =
-        attempt === 2
-          ? attempt1UnreachableViaLightDom &&
-            isStepSubmitShaped({
-              step,
-              submitStep,
-              isFinalStep,
-              flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            })
-            ? "deep-submit-locator"
-            : phantomClickAfterAttempt1
-              ? "trusted-click-retry"
-              : "observe-act"
+      const wouldBeTechnique: AttemptRecord["technique"] = deepSubmitLocatorSlot(attempt)
+        ? "deep-submit-locator"
+        : attempt === 2
+          ? phantomClickAfterAttempt1
+            ? "trusted-click-retry"
+            : "observe-act"
           : attempt === 3
             ? "structured-click"
             : attempt === 4
@@ -13879,16 +13888,7 @@ export async function executeStepWithHealing(params: {
             if (!resolvedAction) resolvedAction = action;
           }
         }
-      } else if (
-        attempt === 2 &&
-        attempt1UnreachableViaLightDom &&
-        isStepSubmitShaped({
-          step,
-          submitStep,
-          isFinalStep,
-          flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-        })
-      ) {
+      } else if (deepSubmitLocatorSlot(attempt)) {
         // Deep submit-control locator: attempt 1 either phantom-clicked
         // (Stagehand reported success but pre/post showed zero effect) or
         // came back "unresolved" (act() found zero candidates at all), so the
@@ -13982,7 +13982,9 @@ export async function executeStepWithHealing(params: {
                 midTarget,
                 signalCounter,
                 page,
-                deepAdvanceBaseline
+                deepMidFlowSubmit
+                  ? withNetworkBaseline(deepAdvanceBaseline, pre)
+                  : deepAdvanceBaseline
               );
               // The deep-submit-locator runs only on submit escalation, so a
               // stray selection flip must not mask a top-pick phantom and skip
@@ -14849,6 +14851,7 @@ export async function executeStepWithHealing(params: {
         ? `attempt 1 fast-skipped (no resolved action): ${record.errorMessage}`
         : "attempt 1 fast-skipped (no resolved action; Stagehand returned no candidates)";
       failureReasons.push(reason);
+      attempt1FastSkipped = true;
       continue;
     }
 
