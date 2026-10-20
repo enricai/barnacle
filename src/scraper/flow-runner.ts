@@ -7572,6 +7572,7 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     heldStill = !hasVisibleTextChanged(current, next);
     current = next;
+    if (heldStill) break;
   }
   return heldStill ? { ...current, settled: true } : current;
 }

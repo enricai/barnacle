@@ -290,4 +290,17 @@ describe("settleAfterClick", () => {
       expect(f.polls()).toBeLessThan(60);
     });
   }
+
+  it("reads a body that lands after a long quiet gap once the page reports its pending render", async () => {
+    const f = makeFake(() => {});
+    const text = (): string =>
+      f.polls() >= 30 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
+    const q = async (): Promise<{ pending: number; mutations: number }> => ({
+      pending: f.polls() >= 20 && f.polls() < 30 ? 1 : 0,
+      mutations: 0,
+    });
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre", q);
+    expect(f.polls()).toBeGreaterThanOrEqual(30);
+    expect(f.polls()).toBeLessThan(60);
+  });
 });
