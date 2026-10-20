@@ -7578,9 +7578,9 @@ async function resettleThroughHeaderOnlyFlip(
 /**
  * Single owner of the settle -> snapshot -> header-only resettle sequence, so
  * every post-click site applies the same settled-ness rule. A click that cannot
- * trigger a round-trip is snapshotted as-is. `resettleWithoutWait` keeps the
- * resettle on for callers whose settle does not wait for mutations, since an
- * unflagged step can still advance a page whose body re-renders late.
+ * trigger a round-trip is snapshotted as-is. The resettle does not depend on
+ * `waitForMutations`, since an unflagged step can still advance a page whose
+ * body re-renders late.
  */
 async function settleSnapshotAndResettle(
   target: FrameTarget,
@@ -7589,7 +7589,6 @@ async function settleSnapshotAndResettle(
   pre: StepSnapshot,
   mayTriggerRoundTrip: boolean,
   waitForMutations: boolean,
-  resettleWithoutWait: boolean,
   io: PostClickSettleIo
 ): Promise<StepSnapshot> {
   if (page && mayTriggerRoundTrip)
@@ -7603,7 +7602,7 @@ async function settleSnapshotAndResettle(
       pre.visibleTextDigest
     );
   const post = await io.snapshot(target, signalCounter, page);
-  return page && mayTriggerRoundTrip && (waitForMutations || resettleWithoutWait)
+  return page && mayTriggerRoundTrip
     ? resettleThroughHeaderOnlyFlip(page, target, signalCounter, pre, post, io)
     : post;
 }
@@ -7625,16 +7624,7 @@ export async function settleAndSnapshotPostClick(
   waitForMutations = true,
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
-  return settleSnapshotAndResettle(
-    target,
-    signalCounter,
-    page,
-    pre,
-    true,
-    waitForMutations,
-    false,
-    io
-  );
+  return settleSnapshotAndResettle(target, signalCounter, page, pre, true, waitForMutations, io);
 }
 
 /**
@@ -14835,7 +14825,6 @@ export async function executeStepWithHealing(params: {
       pre,
       mayTriggerRoundTrip,
       isSettleWaitStep || resolvedElementIsSubmitShaped,
-      true,
       DEFAULT_POST_CLICK_SETTLE_IO
     );
     record.post = post;

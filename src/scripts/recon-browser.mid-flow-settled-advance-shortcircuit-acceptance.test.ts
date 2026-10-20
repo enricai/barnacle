@@ -273,6 +273,18 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
     expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
   });
 
+  it("credits a header flip whose body re-renders late, without replanning", async () => {
+    const lateBody = { ...FLIPPED, bodyHtmlLength: 600, visibleTextDigest: "late" };
+    snapshotsAfterStart(PRE, (n) => (n <= 2 ? FLIPPED : lateBody));
+    process.argv = argv(["Click the Submit button", "Fill in field 1"]);
+
+    await main();
+
+    expect(guardedObserveStub).not.toHaveBeenCalled();
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
+  });
+
   it("does not short-circuit a header flip that has not settled", async () => {
     snapshotsAfterStart(PRE, (n) => ({ ...FLIPPED, visibleTextDigest: `moving-${n}` }));
     guardedObserveStub.mockRejectedValue(new Error("replan entered"));

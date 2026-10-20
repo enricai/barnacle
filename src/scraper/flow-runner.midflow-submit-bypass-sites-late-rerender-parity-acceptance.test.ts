@@ -174,6 +174,72 @@ async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown
   });
 }
 
+/**
+ * Drives the n+16 `el.click()` retry for an UNFLAGGED step: Stagehand's own
+ * click lands as a phantom (no page effect), so only the retry's click
+ * expression can advance the scripted page.
+ */
+async function runRetryFlow(
+  advances: boolean,
+  delay: number,
+  options: { submitStep?: boolean; isFinal?: boolean } = {}
+): Promise<{ result: unknown; surface: Surface }> {
+  const surface = buildSurface(advances, delay, () => null);
+  const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
+  const nextStepActs = { n: 0 };
+  surface.evaluate.mockImplementation(async (expr: unknown) => {
+    const src = String(expr);
+    if (nextStepActs.n > 0 && src.includes("outerHTML")) {
+      const n = nextStepActs.n;
+      return { html: 4096 + n * 900, text: `${n}:next${n}`, full: `next${n}`, digest: `n${n}` };
+    }
+    if (src.includes("FIRST_ORDERED_NODE_TYPE") && src.includes("el.click")) {
+      return baseEvaluate('__mouse("click"').then(() => ({ fired: true, kind: "click" }));
+    }
+    return baseEvaluate(expr);
+  });
+  const page = fakePage(surface);
+  const stagehand = {
+    act: vi.fn().mockImplementation(async (instruction: unknown) => {
+      if (instruction === NEXT_STEP) nextStepActs.n += 1;
+      return {
+        success: true,
+        message: "ok",
+        actionDescription: "click",
+        actions: [{ selector: "xpath=/html/body/button", description: "click", method: "click" }],
+      } as ActResult;
+    }),
+    observe: vi.fn().mockResolvedValue([{ selector: "xpath=/html/body/button", description: "x" }]),
+  } as unknown as Stagehand;
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  const steps = [
+    {
+      instruction: STEP,
+      optional: false,
+      upload: false,
+      submitStep: options.submitStep ?? false,
+    },
+    ...(options.isFinal
+      ? []
+      : [{ instruction: NEXT_STEP, optional: true, upload: false, submitStep: false }]),
+  ];
+  const result = await runHealingFlow({
+    stagehand,
+    page,
+    steps,
+    logger,
+    anthropic: null,
+    rephraseModel: null,
+    uploadFixture: null,
+  }).catch((err: unknown) => err);
+  return { result, surface };
+}
+
 async function runChildFrameFlow(
   advances: boolean,
   delay: number
@@ -380,5 +446,28 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
 
     expect(elapsed[0]).toBe(elapsed[1]);
     expect(elapsed[0]).toBeLessThan(30000);
+  });
+
+  describe.each(DELAYS_MS)("n+16 retry with a body re-render %ims after the flip", (delay) => {
+    it("credits the unflagged retry click without a replan", async () => {
+      const { result, surface } = await runRetryFlow(true, delay);
+
+      expect(result).toMatchObject({ lastStepIndex: 1 });
+      expect(surface.rendered()).toBe(true);
+      expect(surface.clicks()).toBe(1);
+    });
+  });
+
+  it("gives up a no-op n+16 retry click at the same settle bound regardless of the late-render delay", async () => {
+    const runs = await Promise.all([3000, 11000].map(async (delay) => runRetryFlow(false, delay)));
+
+    expect(runs[0]?.result).toBeInstanceOf(Error);
+    expect(runs[0]?.surface.elapsed()).toBe(runs[1]?.surface.elapsed());
+  });
+
+  it("keeps the genuine final submit strict on the retry (no-op is not credited)", async () => {
+    const { result } = await runRetryFlow(false, 8000, { submitStep: true, isFinal: true });
+
+    expect(result).toBeInstanceOf(Error);
   });
 });
