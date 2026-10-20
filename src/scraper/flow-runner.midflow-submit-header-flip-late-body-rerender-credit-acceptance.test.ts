@@ -301,4 +301,12 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
     );
     expect(world.state.rendered).toBe(false);
   });
+
+  it("keeps network/URL proof for a genuine final submit: DOM text alone is not credited", async () => {
+    const world = buildWorld("Sign In");
+
+    await expect(executeStepWithHealing(params(world, true, []))).rejects.toThrow(
+      /failed verification/
+    );
+  });
 });

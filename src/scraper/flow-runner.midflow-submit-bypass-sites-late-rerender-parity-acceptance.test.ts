@@ -52,7 +52,7 @@ function buildSurface(
   advances: boolean,
   delayMs: number,
   fallback: (src: string) => unknown,
-  options: { advancingClick?: number; candidates?: number } = {}
+  options: { advancingClick?: number; candidates?: number; renderAtSnapshot?: number } = {}
 ): Surface {
   const advancingClick = options.advancingClick ?? 1;
   const ranked = Array.from({ length: options.candidates ?? 1 }, (_, n) => ({
@@ -63,7 +63,10 @@ function buildSurface(
   let clickedAt: number | null = null;
   let clicks = 0;
   let rendered = false;
+  let snapshots = 0;
   const snapshot = (): unknown => {
+    snapshots += 1;
+    if (snapshots === options.renderAtSnapshot) rendered = true;
     const flipped = clickedAt !== null;
     const text = rendered ? POST_TEXT_LEN : PRE_TEXT_LEN;
     const full = `${flipped ? "Signed in as jane@example.com" : "Sign In"} ${"t".repeat(text)}`;
@@ -194,10 +197,17 @@ async function runPrimaryFlow(
 async function runRetryFlow(
   advances: boolean,
   delay: number,
-  options: { submitStep?: boolean; isFinal?: boolean; step?: string } = {}
+  options: {
+    submitStep?: boolean;
+    isFinal?: boolean;
+    step?: string;
+    renderAtSnapshot?: number;
+  } = {}
 ): Promise<{ result: unknown; surface: Surface }> {
   const step = options.step ?? STEP;
-  const surface = buildSurface(advances, delay, options.step ? elementShapeProbe : () => null);
+  const surface = buildSurface(advances, delay, options.step ? elementShapeProbe : () => null, {
+    renderAtSnapshot: options.renderAtSnapshot,
+  });
   const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
   const nextStepActs = { n: 0 };
   surface.evaluate.mockImplementation(async (expr: unknown) => {
@@ -611,6 +621,20 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
 
     expect(runs[0]?.result).toBeInstanceOf(Error);
     expect(runs[0]?.surface.elapsed()).toBe(runs[1]?.surface.elapsed());
+  });
+
+  // The 18th snapshot is the first one after the attempt's `pre` was captured,
+  // so the late re-render is absorbed into `pre` and the fallback click sees
+  // no further change: only the step-start baseline still shows the advance.
+  it("credits the n+16 fallback click when a late re-render was absorbed into the attempt's pre", async () => {
+    const { result, surface } = await runRetryFlow(false, 8000, {
+      step: NEUTRAL_STEP,
+      renderAtSnapshot: 18,
+    });
+
+    expect(result).toMatchObject({ lastStepIndex: 1 });
+    expect(surface.rendered()).toBe(true);
+    expect(surface.clicks()).toBe(1);
   });
 
   it("keeps the genuine final submit strict on the retry (no-op is not credited)", async () => {

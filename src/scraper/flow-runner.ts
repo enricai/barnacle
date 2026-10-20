@@ -7572,6 +7572,7 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     heldStill = !hasVisibleTextChanged(current, next);
     current = next;
+    if (heldStill) break;
   }
   return heldStill ? { ...current, settled: true } : current;
 }
@@ -13057,14 +13058,18 @@ export async function executeStepWithHealing(params: {
   // resolved click's disabled veto must also gate the baseline credit.
   let lastClickBlockedByDisabled = false;
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
-    if (!stepStartSnapshot || isFinalStep || lastClickBlockedByDisabled) return false;
+    const genuineFinal = isGenuineFinalSubmit({
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    });
+    if (!stepStartSnapshot || genuineFinal || lastClickBlockedByDisabled) return false;
     const settled = await settleAndSnapshotPostClick(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
       stepStartSnapshot
     );
-    if (!hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) return false;
+    if (!hasSubmitStepDomAdvanced(genuineFinal, stepStartSnapshot, settled)) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
@@ -16063,13 +16068,16 @@ export async function executeStepWithHealing(params: {
               },
             });
 
+            // A late re-render an earlier attempt already absorbed into this
+            // attempt's `pre` must still count: judge against the step-start baseline.
+            const retryAdvanceBaseline = stepStartSnapshot ?? pre;
+            const retryPageAdvanced = hasSettledPageAdvanced(retryAdvanceBaseline, retryPost);
             const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
               midFlowSubmit: retryMidFlowSubmit,
-              signalAdvanced:
-                retryVerdict === "effective" && hasSettledPageAdvanced(pre, retryPost),
+              signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,
               judgeUnavailable: judgeVerdict === null,
               networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-              pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
+              pageAdvanced: retryPageAdvanced,
               invalidMarkerCount,
             });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
