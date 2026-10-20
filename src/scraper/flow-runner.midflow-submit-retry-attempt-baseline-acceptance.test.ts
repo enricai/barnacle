@@ -240,8 +240,12 @@ describe("flow-runner/executeStepWithHealing — retry attempt whose baseline is
       (world.control as unknown as { click: () => void }).click();
       throw new Error("act errored after the click landed");
     });
-    const p = params(world, true, []) as unknown as { flowHasSubmitSemantics: boolean };
+    const p = params(world, true, []) as unknown as {
+      flowHasSubmitSemantics: boolean;
+      submitStep: boolean;
+    };
     p.flowHasSubmitSemantics = false;
+    p.submitStep = false;
 
     const outcome = await executeStepWithHealing(p as never);
 
