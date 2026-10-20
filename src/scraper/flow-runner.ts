@@ -16068,13 +16068,16 @@ export async function executeStepWithHealing(params: {
               },
             });
 
+            // A late re-render an earlier attempt already absorbed into this
+            // attempt's `pre` must still count: judge against the step-start baseline.
+            const retryAdvanceBaseline = stepStartSnapshot ?? pre;
+            const retryPageAdvanced = hasSettledPageAdvanced(retryAdvanceBaseline, retryPost);
             const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
               midFlowSubmit: retryMidFlowSubmit,
-              signalAdvanced:
-                retryVerdict === "effective" && hasSettledPageAdvanced(pre, retryPost),
+              signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,
               judgeUnavailable: judgeVerdict === null,
               networkAdvanced: retryNetworkFired && retryDestinationPlausible,
-              pageAdvanced: hasSettledPageAdvanced(pre, retryPost),
+              pageAdvanced: retryPageAdvanced,
               invalidMarkerCount,
             });
             if (retryMidFlowAdvanceCredited && judgeVerdict?.verified !== true) {
