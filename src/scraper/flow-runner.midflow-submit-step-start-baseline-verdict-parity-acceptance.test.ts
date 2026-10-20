@@ -3,6 +3,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
 import { executeStepWithHealing } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -269,6 +270,53 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
     expect(trajectory).toHaveLength(1);
     expect(logs().some((l) => /n\+16/.test(l))).toBe(true);
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
+  });
+
+  it("seeds the primary judge call from the step-start page, not the attempt-local pre", async () => {
+    const world = buildWorld("Sign In");
+    world.act.mockImplementation(async () => {
+      (world.control as unknown as { click: () => void }).click();
+      throw new Error("act errored after the click landed");
+    });
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(outcome).toBe("completed");
+    expect(world.counter.n).toBe(0);
+    const inputs = vi
+      .mocked(verifyStepAdvancedWithLLM)
+      .mock.calls.map((c) => c[0].input.beforeText);
+    // the step-start credit often lands before the judge runs; any judge call must still be step-start seeded
+    for (const before of inputs) {
+      expect(before).toContain("Sign In");
+      expect(before).not.toContain("My Account");
+    }
+  });
+
+  it("seeds the n+16 retry judge call from the step-start page, not the attempt-local pre", async () => {
+    const world = buildWorld("Sign In");
+    world.act.mockImplementation(async () => ({
+      success: true,
+      message: "clicked",
+      actionDescription: "clicked",
+      actions: [
+        { selector: `xpath=${xpathFor(world.control)}`, description: "control", method: "click" },
+      ],
+    }));
+
+    const outcome = await executeStepWithHealing(params(world, false, []));
+
+    expect(outcome).toBe("completed");
+    expect(world.counter.n).toBe(0);
+    expect(logs().some((l) => /n\+16/.test(l))).toBe(true);
+    const inputs = vi
+      .mocked(verifyStepAdvancedWithLLM)
+      .mock.calls.map((c) => c[0].input.beforeText);
+    expect(inputs.length).toBeGreaterThan(0);
+    for (const before of inputs) {
+      expect(before).toContain("Sign In");
+      expect(before).not.toContain("My Account");
+    }
   });
 
   it("still treats a genuine no-op click as phantom at the same verdict sites", async () => {
