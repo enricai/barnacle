@@ -66,6 +66,7 @@ describe("resolveRecurringNavigateToFacets chokepoint", () => {
   });
 
   it("still reports the nights facet as unthreaded when no night capture exists", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     const code = "const body = { filters: [`${payload.destination};filterType=destination`] };";
     const flow = [
       { step: "select the 'Lakeside' destination option", payloadField: "destination" },
