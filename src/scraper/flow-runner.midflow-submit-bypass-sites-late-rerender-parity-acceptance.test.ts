@@ -551,11 +551,15 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     });
 
     it("still throws when the page is identical to step start", async () => {
-      await expect(runExitFlow({ advances: false, cascade, isFinal: false })).rejects.toThrow();
+      await expect(runExitFlow({ advances: false, cascade, isFinal: false })).rejects.toThrow(
+        /step 1\/\d+ \(On the account registration/
+      );
     });
 
     it("does not credit the same advance on a final step", async () => {
-      await expect(runExitFlow({ advances: true, cascade, isFinal: true })).rejects.toThrow();
+      await expect(runExitFlow({ advances: true, cascade, isFinal: true })).rejects.toThrow(
+        /step 1\/\d+ \(On the account registration/
+      );
     });
   });
 });
