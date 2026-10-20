@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import type { Page } from "playwright";
+import { describe, expect, it, vi } from "vitest";
 
 import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+import { settleAndSnapshotPostClick } from "@/scraper/flow-runner";
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
-import { classifyPhantomClick } from "@/scraper/phantom-click";
+import { classifyPhantomClick, hasSubmitStepDomAdvanced } from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/1/apply";
 const TEXT = "Apply for this job";
@@ -46,6 +48,53 @@ describe("settleAfterClick: a genuine no-op click gives up at the unchanged boun
       pre: { networkCount: 0, url: URL, bodyHtmlLength: 5000 },
       post: { networkCount: 0, url: URL, bodyHtmlLength: 5000 },
       destinationPlausible: true,
+    };
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
+  });
+});
+
+type PostClickArgs = Parameters<typeof settleAndSnapshotPostClick>;
+
+describe("settleAndSnapshotPostClick: a no-op click is not re-settled", () => {
+  it("settles once, snapshots once and returns the unsettled snapshot", async () => {
+    const pre = {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 5000,
+      visibleTextSignature: TEXT,
+      formValueSignature: "",
+    } as PostClickArgs[3];
+    const settle = vi.fn(async () => undefined);
+    const snapshot = vi.fn(async () => ({ ...pre }));
+    const result = await settleAndSnapshotPostClick(
+      {} as PostClickArgs[0],
+      { n: 0 },
+      {} as Page,
+      pre,
+      true,
+      { settle, snapshot } as unknown as PostClickArgs[5]
+    );
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(result.settled).toBeUndefined();
+  });
+});
+
+describe("a final submit is not credited on DOM text alone", () => {
+  const pre = { visibleTextSignature: "10:Review and submit your application" };
+  const post = { visibleTextSignature: "4:Done", settled: true };
+
+  it("hasSubmitStepDomAdvanced never credits the final step", () => {
+    expect(hasSubmitStepDomAdvanced(true, pre, post)).toBe(false);
+  });
+
+  it("classifyPhantomClick keeps a submit-shaped DOM-only change phantom", () => {
+    const attempt: PhantomClickAttempt = {
+      actResultSuccess: true,
+      pre: { networkCount: 0, url: URL, bodyHtmlLength: 5000, ...pre },
+      post: { networkCount: 0, url: URL, bodyHtmlLength: 9000, ...post },
+      destinationPlausible: true,
+      isSubmitShapedStep: true,
     };
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
