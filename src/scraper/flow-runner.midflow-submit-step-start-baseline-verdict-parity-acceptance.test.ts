@@ -314,7 +314,6 @@ describe("flow-runner/executeStepWithHealing — step-start baseline verdict par
       .mocked(verifyStepAdvancedWithLLM)
       .mock.calls.map((c) => c[0].input.beforeText);
     expect(inputs.length).toBeGreaterThan(0);
-    expect(inputs.length).toBeGreaterThan(0);
     for (const before of inputs) {
       expect(before).toContain("Sign In");
       expect(before).not.toContain("My Account");
