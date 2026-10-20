@@ -7895,11 +7895,11 @@ function midFlowDestinationPlausible(params: {
   pre: StepSnapshot;
   post: StepSnapshot;
   midFlowSubmit: boolean;
-  advanceBaseline?: StepSnapshot;
+  advanceBaseline: StepSnapshot;
   destinationPlausible?: boolean;
 }): boolean {
   const { step, post, midFlowSubmit } = params;
-  const baseline = params.advanceBaseline ?? params.pre;
+  const baseline = params.advanceBaseline;
   return (
     (params.destinationPlausible ?? isPlausibleStepDestination(step, post.url)) ||
     (midFlowSubmit &&
@@ -7921,7 +7921,7 @@ function classifySubmitShapedClick(params: {
   actResultSuccess?: boolean | null;
   elementStateChanged?: boolean;
   isSubmitShapedStep?: boolean;
-  advanceBaseline?: StepSnapshot;
+  advanceBaseline: StepSnapshot;
   destinationPlausible?: boolean;
 }): PhantomClickVerdict {
   const { pre, post, midFlowSubmit } = params;
