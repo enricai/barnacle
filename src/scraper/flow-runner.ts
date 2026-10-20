@@ -11904,9 +11904,8 @@ async function probeChildFrameSubmitFallback(params: {
   signalCounter: { n: number };
   step: string;
   isMidFlowSubmitStep?: boolean;
-  stepStartSnapshot?: StepSnapshot;
 }): Promise<FrameTarget | null> {
-  const { page, signalCounter, step, isMidFlowSubmitStep, stepStartSnapshot } = params;
+  const { page, signalCounter, step, isMidFlowSubmitStep } = params;
   const midFlowSubmit = isMidFlowSubmitStep === true;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
@@ -11961,7 +11960,10 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const advanceBaseline = stepStartSnapshot ?? pre;
+    // The step-start snapshot describes the resolved frame, not this child
+    // frame, so the first click's own pre-click page is the baseline both
+    // the top pick and the runner-up are judged against.
+    const advanceBaseline = pre;
     const post = await settleAndSnapshotPostClick(
       target,
       signalCounter,
@@ -12907,7 +12909,6 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               }),
-              stepStartSnapshot,
             });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
@@ -13230,7 +13231,6 @@ export async function executeStepWithHealing(params: {
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
           elementSubmitShaped: !stepDeclaredNonSubmit,
         }),
-        stepStartSnapshot,
       });
       if (fallbackTarget) {
         logger.info(
@@ -16423,7 +16423,6 @@ export async function executeStepWithHealing(params: {
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         elementSubmitShaped: !stepDeclaredNonSubmit,
       }),
-      stepStartSnapshot,
     });
     if (fallbackTarget) {
       logger.info(
