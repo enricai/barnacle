@@ -7993,6 +7993,7 @@ export async function submitCaptchaGatedForm(
     page?: Page;
     step: string;
     isMidFlowSubmitStep?: boolean;
+    stepStartSnapshot?: StepSnapshot;
   }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
@@ -8026,17 +8027,20 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
+      const midFlowSubmit = verification.isMidFlowSubmitStep === true;
+      const advanceBaseline = verification.stepStartSnapshot ?? pre;
       const post = await settleAndSnapshotPostClick(
         target,
         verification.signalCounter,
         verification.page,
-        pre
+        midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
       );
       const verdict = classifySubmitShapedClick({
         step: verification.step,
         pre,
         post,
-        midFlowSubmit: verification.isMidFlowSubmitStep === true,
+        midFlowSubmit,
+        advanceBaseline,
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -8052,13 +8056,14 @@ export async function submitCaptchaGatedForm(
             target,
             verification.signalCounter,
             verification.page,
-            post
+            midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
           );
           const runnerUpVerdict = classifySubmitShapedClick({
             step: verification.step,
             pre: post,
             post: runnerUpPost,
-            midFlowSubmit: verification.isMidFlowSubmitStep === true,
+            midFlowSubmit,
+            advanceBaseline,
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
@@ -11899,8 +11904,10 @@ async function probeChildFrameSubmitFallback(params: {
   signalCounter: { n: number };
   step: string;
   isMidFlowSubmitStep?: boolean;
+  stepStartSnapshot?: StepSnapshot;
 }): Promise<FrameTarget | null> {
-  const { page, signalCounter, step, isMidFlowSubmitStep } = params;
+  const { page, signalCounter, step, isMidFlowSubmitStep, stepStartSnapshot } = params;
+  const midFlowSubmit = isMidFlowSubmitStep === true;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
   // all and doesn't implement this pair, which is indistinguishable here from
@@ -11954,12 +11961,19 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
+    const advanceBaseline = stepStartSnapshot ?? pre;
+    const post = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
+    );
     const verdict = classifySubmitShapedClick({
       step,
       pre,
       post,
-      midFlowSubmit: isMidFlowSubmitStep === true,
+      midFlowSubmit,
+      advanceBaseline,
     });
     if (verdict !== "phantom") return target;
 
@@ -11969,12 +11983,18 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
+    const runnerUpPost = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
+    );
     const runnerUpVerdict = classifySubmitShapedClick({
       step,
       pre: post,
       post: runnerUpPost,
-      midFlowSubmit: isMidFlowSubmitStep === true,
+      midFlowSubmit,
+      advanceBaseline,
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -12887,6 +12907,7 @@ export async function executeStepWithHealing(params: {
                 flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               }),
+              stepStartSnapshot,
             });
           } catch (err) {
             // A genuine in-page exception from the click/submit dispatch
@@ -13209,6 +13230,7 @@ export async function executeStepWithHealing(params: {
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
           elementSubmitShaped: !stepDeclaredNonSubmit,
         }),
+        stepStartSnapshot,
       });
       if (fallbackTarget) {
         logger.info(
@@ -16401,6 +16423,7 @@ export async function executeStepWithHealing(params: {
         flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         elementSubmitShaped: !stepDeclaredNonSubmit,
       }),
+      stepStartSnapshot,
     });
     if (fallbackTarget) {
       logger.info(
