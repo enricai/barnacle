@@ -59,4 +59,26 @@ describe("hasSubmitStepDomAdvanced", () => {
       false
     );
   });
+  it("credits a late advance against the element-shaped step-start baseline when textAtStepStart is absent", () => {
+    const chrome = "Site header nav footer links ".repeat(10);
+    const textAtStepStart = undefined;
+    const elementBaseline = {
+      visibleTextSignature: `300:Personal info ${chrome}`,
+      visibleTextDigest: "a",
+    };
+    const baselineText = textAtStepStart ?? elementBaseline;
+    const settled = {
+      visibleTextSignature: `300:Work history ${chrome}`,
+      visibleTextDigest: "b",
+      settled: true,
+    };
+    expect(hasSubmitStepDomAdvanced(false, baselineText, settled)).toBe(true);
+    expect(hasSubmitStepDomAdvanced(false, textAtStepStart, settled)).toBe(false);
+    expect(hasSubmitStepDomAdvanced(true, baselineText, settled)).toBe(false);
+  });
+  it("does not credit the element-shaped baseline when the page never advanced", () => {
+    const elementBaseline = { visibleTextSignature: PRE, visibleTextDigest: "a" };
+    const settled = { ...elementBaseline, settled: true };
+    expect(hasSubmitStepDomAdvanced(false, elementBaseline, settled)).toBe(false);
+  });
 });
