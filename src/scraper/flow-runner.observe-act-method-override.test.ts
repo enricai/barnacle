@@ -54,8 +54,20 @@ function makeStagehand(): Stagehand {
 
 const FRAME_SELECTOR = "iframe#apply_frame";
 
-function makeChildFrameTarget(urls: { current: string }): FrameTarget {
+type Snapshot = { html: number; text: string };
+
+function makeCountingSnapshot(): () => Snapshot {
   let snapshotCount = 0;
+  return () => {
+    snapshotCount++;
+    return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
+  };
+}
+
+function makeChildFrameTarget(
+  urls: { current: string },
+  snapshot: () => Snapshot = makeCountingSnapshot()
+): FrameTarget {
   return {
     frame: {} as FrameTarget["frame"],
     frameSelector: FRAME_SELECTOR,
@@ -63,8 +75,7 @@ function makeChildFrameTarget(urls: { current: string }): FrameTarget {
       const centred = answerCentreHitTest(expr);
       if (centred) return centred;
       // Return different values pre/post to trigger verification success
-      snapshotCount++;
-      return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
+      return snapshot();
     }),
     locator: vi.fn().mockReturnValue({
       first: () => ({
@@ -77,14 +88,15 @@ function makeChildFrameTarget(urls: { current: string }): FrameTarget {
   };
 }
 
-function makeFakePage(urls: { current: string }): Page {
-  let snapshotCount = 0;
+function makeFakePage(
+  urls: { current: string },
+  snapshot: () => Snapshot = makeCountingSnapshot()
+): Page {
   return {
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
       const centred = answerCentreHitTest(expr);
       if (centred) return centred;
-      snapshotCount++;
-      return { html: snapshotCount, text: `${snapshotCount}:value-${snapshotCount}` };
+      return snapshot();
     }),
     deepLocator: vi.fn(),
     url: () => urls.current,
@@ -266,8 +278,12 @@ describe("flow-runner/executeStepWithHealing — observe-act overrides method fo
 
   it("control case: does not override method for a click step (non-fill, non-select)", async () => {
     const urls = { current: "https://apply.acme.example/jobs/1/apply" };
-    const page = makeFakePage(urls);
-    const childFrameTarget = makeChildFrameTarget(urls);
+    // A click step is judged against the step-start baseline at attempt-2
+    // entry, so the page must hold still until the observe-act click lands —
+    // an ever-changing snapshot would credit the step before observe-act runs.
+    const snapshot = (): Snapshot => ({ html: urls.current.length, text: urls.current });
+    const page = makeFakePage(urls, snapshot);
+    const childFrameTarget = makeChildFrameTarget(urls, snapshot);
     resolveFrameTarget.mockResolvedValue(childFrameTarget);
 
     guardedObserve.mockResolvedValue([

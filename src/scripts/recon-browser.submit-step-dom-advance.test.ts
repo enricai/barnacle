@@ -264,6 +264,7 @@ describe("recon-browser/main — resolved-element step-start baseline", () => {
     executeStepWithHealingStub.mockImplementation(async (args: unknown) => {
       calls += 1;
       if (calls === 1) {
+        await Promise.resolve();
         (
           args as { onElementStepStartBaseline?: (s: unknown) => void }
         ).onElementStepStartBaseline?.(PRE);

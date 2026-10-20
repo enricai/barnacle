@@ -285,6 +285,32 @@ describe("recon-browser/main — settled header-flip pre-replan short-circuit", 
     expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
   });
 
+  it("credits an advance without replanning when the step-start read failed and the baseline arrives via callback", async () => {
+    let reads = 0;
+    snapshotPageStub.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) throw new Error("step-start snapshot failed");
+      return FLIPPED;
+    });
+    let calls = 0;
+    executeStepWithHealingStub.mockImplementation(async (args: unknown) => {
+      calls += 1;
+      if (calls > 1) return "ok";
+      (args as { onElementStepStartBaseline?: (s: unknown) => void }).onElementStepStartBaseline?.(
+        PRE
+      );
+      throw new StepVerificationError("step 0 failed", "cascade-exhausted");
+    });
+    process.argv = argv(["Click the Submit button", "Fill in field 1"]);
+
+    await main();
+
+    expect(guardedObserveStub).not.toHaveBeenCalled();
+    expect(generateObjectStub).not.toHaveBeenCalled();
+    expect(executeStepWithHealingStub).toHaveBeenCalledTimes(2);
+    expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCE_LOG));
+  });
+
   it("does not short-circuit a header flip that has not settled", async () => {
     snapshotsAfterStart(PRE, (n) => ({ ...FLIPPED, visibleTextDigest: `moving-${n}` }));
     guardedObserveStub.mockRejectedValue(new Error("replan entered"));
