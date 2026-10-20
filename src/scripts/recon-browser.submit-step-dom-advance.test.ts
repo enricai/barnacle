@@ -36,4 +36,27 @@ describe("hasSubmitStepDomAdvanced", () => {
     expect(hasSubmitStepDomAdvanced(false, pre, { ...post, settled: true })).toBe(true);
     expect(hasSubmitStepDomAdvanced(true, pre, { ...post, settled: true })).toBe(false);
   });
+  it("does not credit a header-only flip while the snapshot is unsettled", () => {
+    const chrome = "Site header nav footer links ".repeat(10);
+    const pre = { visibleTextSignature: `300:Personal info ${chrome}`, visibleTextDigest: "a" };
+    const post = { visibleTextSignature: `300:Work history ${chrome}`, visibleTextDigest: "b" };
+    expect(hasSubmitStepDomAdvanced(false, pre, post)).toBe(false);
+    expect(hasSubmitStepDomAdvanced(false, pre, { ...post, settled: false })).toBe(false);
+  });
+  it("credits the step-start versus settled report pair, never on a final step", () => {
+    const pre = "996:Skip to main content|Sign In|Careers Home|Back to Job Posting";
+    const post = "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home";
+    expect(
+      hasSubmitStepDomAdvanced(false, pre, { visibleTextSignature: post, settled: true })
+    ).toBe(true);
+    expect(hasSubmitStepDomAdvanced(false, pre, post)).toBe(true);
+    expect(hasSubmitStepDomAdvanced(true, pre, { visibleTextSignature: post, settled: true })).toBe(
+      false
+    );
+  });
+  it("does not credit an identical settled pair", () => {
+    expect(hasSubmitStepDomAdvanced(false, PRE, { visibleTextSignature: PRE, settled: true })).toBe(
+      false
+    );
+  });
 });
