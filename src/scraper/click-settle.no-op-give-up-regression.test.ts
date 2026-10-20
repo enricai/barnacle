@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
