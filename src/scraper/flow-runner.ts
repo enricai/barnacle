@@ -116,6 +116,7 @@ import {
   hasOriginOrPathChanged,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
+  hasSubmitStepDomAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -13036,6 +13037,33 @@ export async function executeStepWithHealing(params: {
   // legitimate-transition check (below) scans captures landed during THIS
   // step's processing — earlier-step transitions don't count.
   const stepStartMetaLength = recentCaptureMeta.length;
+  const stepStartSnapshot = isStepSubmitShaped({
+    step,
+    submitStep,
+    isFinalStep,
+    flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+  })
+    ? await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page)
+    : null;
+  // A click on a disabled control can still grow the DOM (a validation
+  // re-render), which would read as a step-start advance — so the last
+  // resolved click's disabled veto must also gate the baseline credit.
+  let lastClickBlockedByDisabled = false;
+  const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
+    if (!stepStartSnapshot || isFinalStep || lastClickBlockedByDisabled) return false;
+    const settled = await settleAndSnapshotPostClick(
+      frameTarget ?? mainFrameTarget(page),
+      signalCounter,
+      page,
+      stepStartSnapshot
+    );
+    if (!hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) return false;
+    logger.info(
+      `${formatStepPrefix(stepIndex, totalSteps)} ${exit}: settled page advanced from the step-start baseline; crediting the step`
+    );
+    trajectory?.push({ stepIndex, verifiedBy: "dom" });
+    return true;
+  };
 
   // Page-state probe BEFORE the cascade. When the page doesn't have any
   // candidate matching the step's instruction we either skip cleanly
@@ -13155,6 +13183,7 @@ export async function executeStepWithHealing(params: {
         return "completed";
       }
     }
+    if (await creditStepStartAdvance("probe-absent")) return "completed";
     // Capture diagnostics + write a failure dump BEFORE throwing so the
     // global replan path's `readFailureDumpEvidence` can populate the
     // prompt's CURRENTLY VISIBLE / UNFOCUSED OBSERVE / PAGE BODY HTML
@@ -15688,6 +15717,7 @@ export async function executeStepWithHealing(params: {
                 .evaluate<boolean>(disabledExpr)
                 .catch(() => false);
             })());
+          if (probeResult.kind === "click") lastClickBlockedByDisabled = clickBlockedByDisabled;
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
@@ -16319,6 +16349,8 @@ export async function executeStepWithHealing(params: {
       return "completed";
     }
   }
+
+  if (await creditStepStartAdvance("cascade-exhausted")) return "completed";
 
   const cascadeExhaustObservedFinal = await guardedObserve(
     stagehand,

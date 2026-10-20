@@ -125,12 +125,10 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
-  hasSettledPageAdvanced,
+  hasSubmitStepDomAdvanced,
   isPlausibleStepDestination,
-  type PhantomClickSnapshot,
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
-  type VisibleTextState,
 } from "@/scraper/phantom-click";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
@@ -1477,30 +1475,6 @@ export function hasPageAlreadyAdvancedPastStep(
   if (start === null || current === null) return false;
   if (start === current) return false;
   return isPlausibleStepDestination(stepInstruction, currentUrl);
-}
-
-type SettledTextState = VisibleTextState & { settled?: boolean };
-
-/**
- * DOM-advance counterpart of {@link hasPageAlreadyAdvancedPastStep} for
- * non-final submit-shaped steps, whose SPA wizards swap content without a URL
- * change. Reuses the shared {@link hasSettledPageAdvanced} judgement over the
- * step-start and settled visible-text snapshots; a final step is never credited
- * here because its completion is owned by the submit-destination judge.
- */
-export function hasSubmitStepDomAdvanced(
-  isFinalStep: boolean,
-  pre: string | SettledTextState | undefined,
-  live: string | SettledTextState | undefined
-): boolean {
-  if (isFinalStep) return false;
-  const asSnapshot = (text: string | SettledTextState | undefined): PhantomClickSnapshot => ({
-    networkCount: 0,
-    url: "",
-    bodyHtmlLength: 0,
-    ...(typeof text === "string" ? { visibleTextSignature: text } : text),
-  });
-  return hasSettledPageAdvanced(asSnapshot(pre), asSnapshot(live));
 }
 
 /** Word-boundary phrase patterns identifying an account-creation/registration step. */
@@ -3262,11 +3236,11 @@ async function main(): Promise<void> {
                   textAtStepStart,
                   true,
                   { settle: settleWithPageQuiescence, snapshot: snapshotPage }
-                ).catch(async (err: unknown) => {
+                ).catch((err: unknown) => {
                   logger.warn(
-                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; judging advance from an unsettled read`
+                    `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`
                   );
-                  return snapshotPage(frameTarget, signalCounter).catch(() => undefined);
+                  return undefined;
                 })
               : undefined;
           const domAdvanced =

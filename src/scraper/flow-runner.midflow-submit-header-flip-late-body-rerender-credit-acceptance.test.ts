@@ -81,7 +81,7 @@ interface World {
   clock: () => number;
 }
 
-function buildWorld(title: string): World {
+function buildWorld(title: string, noop = false): World {
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `
@@ -98,6 +98,7 @@ function buildWorld(title: string): World {
   const state = { rendered: false };
   const counter = { n: 0 };
   const click = (): void => {
+    if (noop) return;
     clickedAt = now;
     hdr.textContent = "My Account";
   };
@@ -250,5 +251,14 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
     expect(trajectory).toHaveLength(1);
     expect(logs().some((l) => /n\+16/.test(l))).toBe(true);
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
+  });
+
+  it("keeps a genuine no-op click phantom: nothing changes, so the step still throws", async () => {
+    const world = buildWorld("Sign In", true);
+
+    await expect(executeStepWithHealing(params(world, false, []))).rejects.toThrow(
+      /failed verification|phantom-click-exhausted/
+    );
+    expect(world.state.rendered).toBe(false);
   });
 });

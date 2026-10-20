@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { StepVerificationError } from "@/scraper/errors";
+import { hasSubmitStepDomAdvanced } from "@/scraper/phantom-click";
 import {
   filterCompletedFromReplan,
   filterReplanDuplicatingNextAuthored,
   hasPageAlreadyAdvancedPastStep,
-  hasSubmitStepDomAdvanced,
   isReplanRegressingAcrossAuthBoundary,
   isReplanReproposingFailedStep,
   type NormalizedStep,
