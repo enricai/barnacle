@@ -20,6 +20,7 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
 
 const STEP =
   "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
+const NEUTRAL_STEP = "On the registration form, press the highlighted control";
 const NEXT_STEP = "Wait for the next section";
 const URL = "https://example.org/signup";
 const DELAYS_MS = [3000, 8000, 11000];
@@ -128,8 +129,18 @@ function captchaTarget(page: Page, surface: Surface): FrameTarget {
   } as unknown as FrameTarget;
 }
 
-async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown> {
-  const surface = buildSurface(advances, delay, () => null);
+function elementShapeProbe(src: string): unknown {
+  const isShapeProbe = src.includes("isSubmitShaped(el)") && !src.includes("isDisabled");
+  return isShapeProbe ? true : null;
+}
+
+async function runPrimaryFlow(
+  advances: boolean,
+  delay: number,
+  options: { step?: string; submitStep?: boolean } = {}
+): Promise<unknown> {
+  const step = options.step ?? STEP;
+  const surface = buildSurface(advances, delay, options.step ? elementShapeProbe : () => null);
   const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
   const nextStepActs = { n: 0 };
   surface.evaluate.mockImplementation(async (expr: unknown) => {
@@ -142,7 +153,7 @@ async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown
   const page = fakePage(surface);
   const stagehand = {
     act: vi.fn().mockImplementation(async (instruction: unknown) => {
-      if (instruction === STEP)
+      if (instruction === step)
         await (surface.evaluate as (e: unknown) => Promise<unknown>)('__mouse("click"');
       else nextStepActs.n += 1;
       return {
@@ -164,7 +175,7 @@ async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown
     stagehand,
     page,
     steps: [
-      { instruction: STEP, optional: false, upload: false, submitStep: true },
+      { instruction: step, optional: false, upload: false, submitStep: options.submitStep ?? true },
       { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
     ],
     logger,
@@ -182,9 +193,10 @@ async function runPrimaryFlow(advances: boolean, delay: number): Promise<unknown
 async function runRetryFlow(
   advances: boolean,
   delay: number,
-  options: { submitStep?: boolean; isFinal?: boolean } = {}
+  options: { submitStep?: boolean; isFinal?: boolean; step?: string } = {}
 ): Promise<{ result: unknown; surface: Surface }> {
-  const surface = buildSurface(advances, delay, () => null);
+  const step = options.step ?? STEP;
+  const surface = buildSurface(advances, delay, options.step ? elementShapeProbe : () => null);
   const baseEvaluate = surface.evaluate.getMockImplementation() as (e: unknown) => Promise<unknown>;
   const nextStepActs = { n: 0 };
   surface.evaluate.mockImplementation(async (expr: unknown) => {
@@ -219,7 +231,7 @@ async function runRetryFlow(
   } as unknown as Logger;
   const steps = [
     {
-      instruction: STEP,
+      instruction: step,
       optional: false,
       upload: false,
       submitStep: options.submitStep ?? false,
@@ -488,6 +500,62 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     it("credits the primary click, matching the bypass sites", async () => {
       await expect(runPrimaryFlow(true, delay)).resolves.toMatchObject({ lastStepIndex: 1 });
     });
+  });
+
+  describe.each(DELAYS_MS)(
+    "resolved-element-only submit shape with a body re-render %ims after the flip",
+    (delay) => {
+      it("credits the unflagged non-submit-worded primary click on a submit-shaped control", async () => {
+        await expect(
+          runPrimaryFlow(true, delay, { step: NEUTRAL_STEP, submitStep: false })
+        ).resolves.toMatchObject({ lastStepIndex: 1 });
+      });
+
+      it("credits the unflagged n+16 retry click on a submit-shaped control", async () => {
+        const { result, surface } = await runRetryFlow(true, delay, { step: NEUTRAL_STEP });
+
+        expect(result).toMatchObject({ lastStepIndex: 1 });
+        expect(surface.rendered()).toBe(true);
+      });
+
+      it("credits the deep-submit runner-up and captcha-gated clicks for the neutral step", async () => {
+        const submitExprRan = vi.fn();
+        const probe = (src: string): unknown => {
+          if (src.includes("requestSubmit")) submitExprRan();
+          return true;
+        };
+        const gated = buildSurface(true, delay, probe);
+        const gatedPage = fakePage(gated);
+        const deep = buildSurface(true, delay, probe, { advancingClick: 2, candidates: 2 });
+        const deepPage = fakePage(deep);
+
+        const results = [
+          await submitCaptchaGatedForm(captchaTarget(gatedPage, gated), "h-captcha-response", {
+            signalCounter: { n: 0 },
+            page: gatedPage,
+            step: NEUTRAL_STEP,
+            isMidFlowSubmitStep: true,
+          }),
+          await submitCaptchaGatedForm(captchaTarget(deepPage, deep), "h-captcha-response", {
+            signalCounter: { n: 0 },
+            page: deepPage,
+            step: NEUTRAL_STEP,
+            isMidFlowSubmitStep: true,
+          }),
+        ];
+
+        expect(results).toEqual([true, true]);
+        expect(gated.rendered() && deep.rendered()).toBe(true);
+        expect(deep.clicks()).toBe(2);
+        expect(submitExprRan).not.toHaveBeenCalled();
+      });
+    }
+  );
+
+  it("keeps a no-op resolved-element-shaped primary click phantom", async () => {
+    await expect(runPrimaryFlow(false, 8000, { step: NEUTRAL_STEP })).rejects.toThrow(
+      /failed verification/
+    );
   });
 
   it("keeps a no-op primary click phantom, matching the bypass sites", async () => {
