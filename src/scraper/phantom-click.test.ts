@@ -320,6 +320,26 @@ describe("scraper/phantom-click mid-flow submit-shaped advance", () => {
     );
   });
 
+  it("judges the advance against advanceBaseline while pre stays the delta baseline", () => {
+    const settled = { ...advanced.post };
+    const attempt = { ...advanced, pre: settled, isMidFlowSubmitStep: true };
+    expect(classifyPhantomClick(makeAttempt(attempt))).toBe("phantom");
+    expect(
+      classifyPhantomClick(makeAttempt({ ...attempt, advanceBaseline: advanced.pre }))
+    ).toBe("effective");
+    expect(
+      classifyPhantomClick(makeAttempt({ ...attempt, advanceBaseline: advanced.post }))
+    ).toBe("phantom");
+  });
+
+  it("ignores advanceBaseline on a non-mid-flow step", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ ...advanced, pre: advanced.post, advanceBaseline: advanced.pre })
+      )
+    ).toBe("phantom");
+  });
+
   it("stays phantom for the final submit with the same pre/post", () => {
     expect(classifyPhantomClick(makeAttempt(advanced))).toBe("phantom");
   });

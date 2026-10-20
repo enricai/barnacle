@@ -68,6 +68,12 @@ export interface PhantomClickAttempt {
    */
   isMidFlowSubmitStep?: boolean;
   /**
+   * Step-start snapshot used ONLY for the mid-flow advance judgement, so a late
+   * re-render an earlier attempt already absorbed into `pre` is still credited.
+   * Network/byte deltas keep coming from `pre`. Defaults to `pre`.
+   */
+  advanceBaseline?: PhantomClickSnapshot;
+  /**
    * Mirrors flow-runner's own `isPlausibleStepDestination` gate on its
    * `urlChanged`/`retryUrlChanged` signals: false when the post-URL landed
    * on a destination (e.g. a sign-in gate) that doesn't plausibly
@@ -508,7 +514,7 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const bytesChangedSignificantly =
     !submitShaped && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
-  const midFlowAdvanced = midFlowSubmit && hasSettledPageAdvanced(attempt.pre, attempt.post);
+  const midFlowAdvanced = midFlowSubmit && hasSettledPageAdvanced(attempt.advanceBaseline ?? attempt.pre, attempt.post);
 
   const hasEffect =
     networkDelta !== 0 ||
