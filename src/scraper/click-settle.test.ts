@@ -296,7 +296,7 @@ describe("settleAfterClick", () => {
     const text = (): string =>
       f.polls() >= 30 ? "body" : f.polls() >= 1 ? "header" : "example.com pre";
     const q = async (): Promise<{ pending: number; mutations: number }> => ({
-      pending: f.polls() >= 20 && f.polls() < 30 ? 1 : 0,
+      pending: f.polls() >= 5 && f.polls() < 30 ? 1 : 0,
       mutations: 0,
     });
     await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "example.com pre", q);
