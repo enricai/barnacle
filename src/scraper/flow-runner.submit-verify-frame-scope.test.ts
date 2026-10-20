@@ -353,8 +353,9 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
         { selector: "xpath=//button[@id='submit']", description: "Submit button", method: "click" },
       ],
     });
-    // The attempt-1 `pre` snapshot (DOM_SNAPSHOT_EXPR) is the first
-    // snapshot-shaped evaluate call; every snapshot after it (the
+    // The step-start baseline snapshot (taken for submit-shaped steps) and
+    // the attempt-1 `pre` snapshot (DOM_SNAPSHOT_EXPR) are the first two
+    // snapshot-shaped evaluate calls; every snapshot after them (the
     // post-attempt-1 snapshot, then the n+16 retry snapshot) reports a
     // bigger body, so the retry snapshot's `retryHtmlDelta` (computed
     // against `pre`, not the intervening post) is nonzero.
@@ -365,7 +366,7 @@ describe("flow-runner/executeStepWithHealing — submit-verify frame scoping", (
       if (centred) return centred;
       if (expr.includes("outerHTML") && expr.includes("innerText")) {
         snapshotCallCount += 1;
-        return snapshotCallCount <= 1 ? { html: 0, text: "0:" } : { html: 500, text: "1:x" };
+        return snapshotCallCount <= 2 ? { html: 0, text: "0:" } : { html: 500, text: "1:x" };
       }
       return originalEvaluate(expr);
     }) as FrameTarget["evaluate"];

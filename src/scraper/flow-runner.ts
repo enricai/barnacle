@@ -13043,21 +13043,21 @@ export async function executeStepWithHealing(params: {
     isFinalStep,
     flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
   })
-    ? await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page).catch(
-        () => null
-      )
+    ? await snapshotPage(frameTarget ?? mainFrameTarget(page), signalCounter, page)
     : null;
+  // A click on a disabled control can still grow the DOM (a validation
+  // re-render), which would read as a step-start advance — so the last
+  // resolved click's disabled veto must also gate the baseline credit.
+  let lastClickBlockedByDisabled = false;
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
-    if (!stepStartSnapshot || isFinalStep) return false;
+    if (!stepStartSnapshot || isFinalStep || lastClickBlockedByDisabled) return false;
     const settled = await settleAndSnapshotPostClick(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
       stepStartSnapshot
-    ).catch(() => null);
-    if (!settled || !hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) {
-      return false;
-    }
+    );
+    if (!hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) return false;
     logger.info(
       `${formatStepPrefix(stepIndex, totalSteps)} ${exit}: settled page advanced from the step-start baseline; crediting the step`
     );
@@ -15717,6 +15717,7 @@ export async function executeStepWithHealing(params: {
                 .evaluate<boolean>(disabledExpr)
                 .catch(() => false);
             })());
+          if (probeResult.kind === "click") lastClickBlockedByDisabled = clickBlockedByDisabled;
           const clickWasDomOnly =
             probeResult.kind === "click" && !retryNetworkFired && !retryUrlChanged;
           const clickBlockedByInvalid =
