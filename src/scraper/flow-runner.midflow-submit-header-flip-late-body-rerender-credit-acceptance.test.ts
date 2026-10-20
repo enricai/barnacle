@@ -253,6 +253,46 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
   });
 
+  it("credits a retry attempt whose page already advanced with exactly one click", async () => {
+    const world = buildWorld("Sign In");
+    let clicks = 0;
+    (
+      world.control as unknown as { addEventListener: (t: string, cb: () => void) => void }
+    ).addEventListener("click", () => {
+      clicks += 1;
+    });
+    world.act.mockImplementation(async () => {
+      (world.control as unknown as { click: () => void }).click();
+      throw new Error("act errored after the click landed");
+    });
+    const trajectory: unknown[] = [];
+
+    const outcome = await executeStepWithHealing(params(world, false, trajectory));
+
+    expect(outcome).toBe("completed");
+    expect(world.state.rendered).toBe(true);
+    expect(clicks).toBe(1);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
+  });
+
+  it("credits a step whose submit shape is only known from the resolved element", async () => {
+    const world = buildWorld("Sign In");
+    const onBaseline = vi.fn();
+    const p = params(world, false, []) as unknown as Record<string, unknown>;
+    p.step = "On the registration form, click the 'Create Account' button";
+    p.submitStep = false;
+    p.onElementStepStartBaseline = onBaseline;
+
+    const outcome = await executeStepWithHealing(p as never);
+
+    expect(outcome).toBe("completed");
+    expect(world.state.rendered).toBe(true);
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(onBaseline).toHaveBeenCalledTimes(1);
+    expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
+  });
+
   it("keeps a genuine no-op click phantom: nothing changes, so the step still throws", async () => {
     const world = buildWorld("Sign In", true);
 
