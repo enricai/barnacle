@@ -12235,6 +12235,12 @@ export async function executeStepWithHealing(params: {
     fieldValuesAtFailure: FieldValueAtFailure[] | null;
   }) => string | null;
   /**
+   * Receives the attempt-1 pre snapshot when the step's submit shape was only
+   * discovered from the resolved element, so a caller crediting a late advance
+   * outside this function judges against the same baseline.
+   */
+  onElementStepStartBaseline?: (snapshot: Awaited<ReturnType<typeof snapshotPage>>) => void;
+  /**
    * Persistence seam for a healed step, symmetric to {@link onStepFailure}.
    * Invoked whenever a step only verifies on attempt > 1, carrying the
    * selector the fallback actually resolved and clicked — the same
@@ -12287,6 +12293,7 @@ export async function executeStepWithHealing(params: {
     trajectory,
     onStepFailure,
     onStepHeal,
+    onElementStepStartBaseline,
   } = params;
   // An explicitly flagged final step is the flow's submit by definition (see
   // flowHasSubmitSemantics). An omitted flow-level flag is derived from the same
@@ -13037,7 +13044,7 @@ export async function executeStepWithHealing(params: {
   // legitimate-transition check (below) scans captures landed during THIS
   // step's processing — earlier-step transitions don't count.
   const stepStartMetaLength = recentCaptureMeta.length;
-  const stepStartSnapshot = isStepSubmitShaped({
+  let stepStartSnapshot = isStepSubmitShaped({
     step,
     submitStep,
     isFinalStep,
@@ -13644,6 +13651,10 @@ export async function executeStepWithHealing(params: {
     // A click from an earlier attempt that errored after opening a tab leaves the
     // run on the stale page; pick the tab up before measuring anything.
     await adoptOpenedPage(0);
+    // A prior attempt's click may have advanced the page after its own verdict;
+    // judge against the step-start baseline before `pre` absorbs the advance.
+    if (attempt > 1 && (await creditStepStartAdvance(`attempt-${attempt}-entry`)))
+      return "completed";
     const pre = await snapshotPage(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
@@ -14830,6 +14841,12 @@ export async function executeStepWithHealing(params: {
           record.actResultSuccess === true &&
           !stepDeclaredNonSubmit &&
           submitShapeObservedBeforeClick.values().next().value === true;
+    // A step whose submit shape is only known from the resolved element got no
+    // step-level baseline; attempt 1's pre-click snapshot is the step-start page.
+    if (attempt === 1 && resolvedElementIsSubmitShaped && !stepStartSnapshot) {
+      stepStartSnapshot = pre;
+      onElementStepStartBaseline?.(pre);
+    }
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({

@@ -117,7 +117,7 @@ interface RunOptions {
 async function run(options: RunOptions = {}): Promise<{
   attempts: AttemptRecord[];
   threw: boolean;
-  clock: { fallbackClicks: number; escalatedClicks: number; deepRankProbes: number };
+  clock: { now: number; fallbackClicks: number; escalatedClicks: number; deepRankProbes: number };
 }> {
   const midFlowAdvance = options.midFlowAdvance === true;
   const urls = { current: options.startUrl ?? "https://example.com/checkout/shipping" };
@@ -197,8 +197,9 @@ describe("flow-runner n+16 fallback — slow click settles before the retry snap
 
   it("control: with no signal ever arriving the fallback is not credited", async () => {
     lateSignalMs = Number.POSITIVE_INFINITY;
-    const { threw } = await run();
+    const { threw, clock } = await run();
     expect(threw).toBe(true);
+    expect(clock.now).toBeLessThanOrEqual(43_000);
   });
 
   it("credits a mid-flow submit whose page advanced with no network, with a single click", async () => {
