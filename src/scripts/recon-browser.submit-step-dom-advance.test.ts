@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasSubmitStepDomAdvanced } from "@/scripts/recon-browser";
+import { hasSubmitStepDomAdvanced } from "@/scraper/phantom-click";
 
 const PRE = `40:${"Personal info first name last name ".slice(0, 36)}`;
 const POST = `900:Work history employer title start date end date`;

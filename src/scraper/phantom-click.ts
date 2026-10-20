@@ -460,6 +460,29 @@ export function hasSettledPageAdvanced(
   return hasPageBodySwapped(pre, post) || (post.settled === true && hasPageAdvanced(pre, post));
 }
 
+type SettledTextState = VisibleTextState & { settled?: boolean };
+
+/**
+ * Shared step-start vs settled-read rule for non-final submit-shaped steps,
+ * whose SPA wizards swap content without a URL change. Built only on
+ * {@link hasSettledPageAdvanced}; a final step is never credited here because
+ * its completion is owned by the submit-destination judge.
+ */
+export function hasSubmitStepDomAdvanced(
+  isFinalStep: boolean,
+  pre: string | SettledTextState | undefined,
+  live: string | SettledTextState | undefined
+): boolean {
+  if (isFinalStep) return false;
+  const asSnapshot = (text: string | SettledTextState | undefined): PhantomClickSnapshot => ({
+    networkCount: 0,
+    url: "",
+    bodyHtmlLength: 0,
+    ...(typeof text === "string" ? { visibleTextSignature: text } : text),
+  });
+  return hasSettledPageAdvanced(asSnapshot(pre), asSnapshot(live));
+}
+
 /**
  * Classifies one cascade attempt as `phantom` (Stagehand claimed success but
  * pre/post shows zero network, zero URL change, and only trivial DOM
