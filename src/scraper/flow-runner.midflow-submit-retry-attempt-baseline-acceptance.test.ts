@@ -233,4 +233,20 @@ describe("flow-runner/executeStepWithHealing — retry attempt whose baseline is
     expect(verifySubmitWithLLM).not.toHaveBeenCalled();
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
   });
+
+  it("credits a last-slot step with no submit semantics from the step-start baseline", async () => {
+    const world = buildWorld("Sign In");
+    world.act.mockImplementation(async () => {
+      (world.control as unknown as { click: () => void }).click();
+      throw new Error("act errored after the click landed");
+    });
+    const p = params(world, true, []) as unknown as { flowHasSubmitSemantics: boolean };
+    p.flowHasSubmitSemantics = false;
+
+    const outcome = await executeStepWithHealing(p as never);
+
+    expect(outcome).toBe("completed");
+    expect(world.act).toHaveBeenCalledTimes(1);
+    expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
+  });
 });
