@@ -11,7 +11,9 @@ on:
       - main
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are disposable, but every main commit needs its own verdict:
+  # keying pushes by sha stops a newer push from cancelling an older commit's run.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
