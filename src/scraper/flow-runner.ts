@@ -13058,6 +13058,8 @@ export async function executeStepWithHealing(params: {
       stepStartSnapshot
     );
     if (!hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) return false;
+    // A DOM change that came from bouncing to an auth gate is not an advance.
+    if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
       `${formatStepPrefix(stepIndex, totalSteps)} ${exit}: settled page advanced from the step-start baseline; crediting the step`
     );
