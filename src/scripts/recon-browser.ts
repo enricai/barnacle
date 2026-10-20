@@ -3042,6 +3042,7 @@ async function main(): Promise<void> {
             requireSubmitEndpointMatch,
           }),
         });
+        let elementBaseline: Awaited<ReturnType<typeof snapshotPage>> | undefined;
         const textAtStepStart =
           midFlowSubmitShaped || (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW)
             ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
@@ -3121,6 +3122,9 @@ async function main(): Promise<void> {
                   captureFn,
                   onStepFailure: dumpStepFailure,
                   onStepHeal: dumpStepHeal,
+                  onElementStepStartBaseline: (snapshot) => {
+                    elementBaseline = snapshot;
+                  },
                 });
           // Races the step's own promise against the session's teardown death
           // signal (bugfix-003's raceAgainstTeardown): when Stagehand's CDP
@@ -3224,16 +3228,18 @@ async function main(): Promise<void> {
           // matches, so skip the replan dispatcher entirely and resume with
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
+          const baselineText = textAtStepStart ?? elementBaseline;
+          const baselineEligible = midFlowSubmitShaped || elementBaseline !== undefined;
           const urlAdvanced =
             (!step.submitStep || midFlowSubmitShaped) &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
           const settledText =
-            !urlAdvanced && midFlowSubmitShaped && textAtStepStart !== undefined
+            !urlAdvanced && baselineEligible && baselineText !== undefined
               ? await settleAndSnapshotPostClick(
                   frameTarget,
                   signalCounter,
                   page,
-                  textAtStepStart,
+                  baselineText,
                   true,
                   { settle: settleWithPageQuiescence, snapshot: snapshotPage }
                 ).catch((err: unknown) => {
@@ -3245,10 +3251,10 @@ async function main(): Promise<void> {
               : undefined;
           const domAdvanced =
             !urlAdvanced &&
-            midFlowSubmitShaped &&
+            baselineEligible &&
             // midFlowSubmitShaped already excludes a genuine final submit, so a last
             // slot without submit semantics is judged like any other mid-flow step.
-            hasSubmitStepDomAdvanced(false, textAtStepStart, settledText);
+            hasSubmitStepDomAdvanced(false, baselineText, settledText);
           if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
