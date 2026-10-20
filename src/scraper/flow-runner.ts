@@ -13049,6 +13049,7 @@ export async function executeStepWithHealing(params: {
   // legitimate-transition check (below) scans captures landed during THIS
   // step's processing — earlier-step transitions don't count.
   const stepStartMetaLength = recentCaptureMeta.length;
+  let firstAttemptPre: StepSnapshot | null = null;
   let stepStartSnapshot = isStepSubmitShaped({
     step,
     submitStep,
@@ -14852,10 +14853,12 @@ export async function executeStepWithHealing(params: {
           submitShapeObservedBeforeClick.values().next().value === true;
     // A step whose submit shape is only known from the resolved element got no
     // step-level baseline; attempt 1's pre-click snapshot is the step-start page.
-    if (attempt === 1 && resolvedElementIsSubmitShaped && !stepStartSnapshot) {
-      stepStartSnapshot = pre;
-      onElementStepStartBaseline?.(pre);
+    if (attempt === 1) firstAttemptPre = pre;
+    if (resolvedElementIsSubmitShaped && !stepStartSnapshot && firstAttemptPre) {
+      stepStartSnapshot = firstAttemptPre;
+      onElementStepStartBaseline?.(firstAttemptPre);
     }
+    const advanceBaseline = stepStartSnapshot ?? pre;
     // Computed once: gates every credit signal that takes no post-click URL
     // (network, DOM read-back) and classifyPhantomClick's destinationPlausible.
     const stepIsMidFlowSubmit = isMidFlowSubmitShapedStep({
@@ -15047,6 +15050,7 @@ export async function executeStepWithHealing(params: {
       pre,
       post,
       midFlowSubmit,
+      advanceBaseline,
       destinationPlausible,
     });
     const clickViewSwapVerified = isClickViewSwapVerified({
@@ -15055,13 +15059,13 @@ export async function executeStepWithHealing(params: {
       isAdvanceWithPattern: isAdvanceStep(step) && advanceTransitionBodyPattern !== null,
       networkDelta: post.networkCount - pre.networkCount,
       bytesDelta: post.bodyHtmlLength - pre.bodyHtmlLength,
-      textChanged: hasVisibleTextChanged(pre, post),
+      textChanged: hasVisibleTextChanged(advanceBaseline, post),
       invalidMarkerDelta: postInvalidMarkerCount - preInvalidMarkerCount,
       clickedElementStillPresent,
       resolvedElementIsSubmitShaped,
       destinationPlausible: midFlowDestinationPlausibleForPost,
       midFlowSubmit,
-      pageAdvanced: hasSettledPageAdvanced(pre, post),
+      pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
       actSucceeded: record.actResultSuccess === true,
     });
     if (
@@ -15235,6 +15239,7 @@ export async function executeStepWithHealing(params: {
           flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
         }),
       isMidFlowSubmitStep: midFlowSubmit,
+      advanceBaseline,
       destinationPlausible: midFlowDestinationPlausibleForPost,
     });
     // An `"effective"` verdict driven purely by the page-wide byte-delta
@@ -15391,7 +15396,7 @@ export async function executeStepWithHealing(params: {
         signalAdvanced: clickViewSwapVerified,
         judgeUnavailable: judgeVerdict === null,
         networkAdvanced: networkIsRealAdvance,
-        pageAdvanced: hasSettledPageAdvanced(pre, post),
+        pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post),
         invalidMarkerCount,
       });
       if (midFlowAdvanceCredited && judgeVerdict?.verified !== true) {
