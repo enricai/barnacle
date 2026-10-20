@@ -13058,14 +13058,18 @@ export async function executeStepWithHealing(params: {
   // resolved click's disabled veto must also gate the baseline credit.
   let lastClickBlockedByDisabled = false;
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
-    if (!stepStartSnapshot || isFinalStep || lastClickBlockedByDisabled) return false;
+    const genuineFinal = isGenuineFinalSubmit({
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+    });
+    if (!stepStartSnapshot || genuineFinal || lastClickBlockedByDisabled) return false;
     const settled = await settleAndSnapshotPostClick(
       frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
       stepStartSnapshot
     );
-    if (!hasSubmitStepDomAdvanced(isFinalStep, stepStartSnapshot, settled)) return false;
+    if (!hasSubmitStepDomAdvanced(genuineFinal, stepStartSnapshot, settled)) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
