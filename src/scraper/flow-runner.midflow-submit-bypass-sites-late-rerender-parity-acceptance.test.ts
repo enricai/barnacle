@@ -304,6 +304,75 @@ async function runChildFrameFlow(
   return { result, childSurface };
 }
 
+/**
+ * Drives the runner's own exits: observe never resolves a candidate and the
+ * page's DOM advances (or not) at the first observe, i.e. after the step-start
+ * snapshot, with the same URL and no counted network. `cascade` makes observe
+ * resolve a candidate whose act reports no change, reaching cascade-exhausted.
+ */
+async function runExitFlow(options: {
+  advances: boolean;
+  cascade: boolean;
+  isFinal: boolean;
+}): Promise<unknown> {
+  let advanced = false;
+  const snapshot = (): unknown => {
+    const text = advanced ? POST_TEXT_LEN : PRE_TEXT_LEN;
+    const full = `Sign In ${"t".repeat(text)}`;
+    return {
+      html: advanced ? POST_BYTES : PRE_BYTES,
+      text: `${text}:${full.slice(0, 200)}`,
+      values: "",
+      state: "",
+      full,
+      digest: `a${advanced ? "2" : "1"}:${text}`,
+    };
+  };
+  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
+    const src = String(expr);
+    if (src.includes("ranked.sort")) return [];
+    if (src.includes("outerHTML")) return snapshot();
+    return null;
+  });
+  const page = {
+    ...(fakePage({ evaluate, waitForTimeout: async () => {} } as unknown as Surface) as object),
+  } as unknown as Page;
+  const candidate = [{ selector: "button#x", description: "x" }];
+  const stagehand = {
+    act: vi.fn().mockResolvedValue({
+      success: false,
+      message: "no change",
+      actionDescription: "click",
+      actions: [{ selector: "button#x", description: "click", method: "click" }],
+    } as ActResult),
+    observe: vi.fn().mockImplementation(async (instruction?: unknown) => {
+      if (instruction === STEP && !advanced && options.advances) advanced = true;
+      return instruction === STEP && options.cascade ? candidate : [];
+    }),
+  } as unknown as Stagehand;
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  } as unknown as Logger;
+  const steps = [
+    { instruction: STEP, optional: false, upload: false, submitStep: true },
+    ...(options.isFinal
+      ? []
+      : [{ instruction: NEXT_STEP, optional: true, upload: false, submitStep: false }]),
+  ];
+  return runHealingFlow({
+    stagehand,
+    page,
+    steps,
+    logger,
+    anthropic: null,
+    rephraseModel: null,
+    uploadFixture: null,
+  });
+}
+
 describe("flow-runner — mid-flow late re-render parity at the captcha-gated and child-frame sites", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -469,5 +538,24 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     const { result } = await runRetryFlow(false, 8000, { submitStep: true, isFinal: true });
 
     expect(result).toBeInstanceOf(Error);
+  });
+
+  describe.each([
+    ["probe-absent", false],
+    ["cascade-exhausted", true],
+  ])("%s exit against the step-start baseline", (_name, cascade) => {
+    it("credits a DOM-only advance (same URL, no network) without throwing", async () => {
+      await expect(runExitFlow({ advances: true, cascade, isFinal: false })).resolves.toMatchObject(
+        { lastStepIndex: 1 }
+      );
+    });
+
+    it("still throws when the page is identical to step start", async () => {
+      await expect(runExitFlow({ advances: false, cascade, isFinal: false })).rejects.toThrow();
+    });
+
+    it("does not credit the same advance on a final step", async () => {
+      await expect(runExitFlow({ advances: true, cascade, isFinal: true })).rejects.toThrow();
+    });
   });
 });
