@@ -7895,11 +7895,11 @@ function midFlowDestinationPlausible(params: {
   pre: StepSnapshot;
   post: StepSnapshot;
   midFlowSubmit: boolean;
-  advanceBaseline?: StepSnapshot;
+  advanceBaseline: StepSnapshot;
   destinationPlausible?: boolean;
 }): boolean {
   const { step, post, midFlowSubmit } = params;
-  const baseline = params.advanceBaseline ?? params.pre;
+  const baseline = params.advanceBaseline;
   return (
     (params.destinationPlausible ?? isPlausibleStepDestination(step, post.url)) ||
     (midFlowSubmit &&
@@ -7921,7 +7921,7 @@ function classifySubmitShapedClick(params: {
   actResultSuccess?: boolean | null;
   elementStateChanged?: boolean;
   isSubmitShapedStep?: boolean;
-  advanceBaseline?: StepSnapshot;
+  advanceBaseline: StepSnapshot;
   destinationPlausible?: boolean;
 }): PhantomClickVerdict {
   const { pre, post, midFlowSubmit } = params;
@@ -7993,6 +7993,7 @@ export async function submitCaptchaGatedForm(
     page?: Page;
     step: string;
     isMidFlowSubmitStep?: boolean;
+    stepStartSnapshot?: StepSnapshot;
   }
 ): Promise<boolean> {
   const findFormExpr = `(() => {
@@ -8026,17 +8027,20 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
+      const midFlowSubmit = verification.isMidFlowSubmitStep === true;
+      const advanceBaseline = verification.stepStartSnapshot ?? pre;
       const post = await settleAndSnapshotPostClick(
         target,
         verification.signalCounter,
         verification.page,
-        pre
+        midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
       );
       const verdict = classifySubmitShapedClick({
         step: verification.step,
         pre,
         post,
-        midFlowSubmit: verification.isMidFlowSubmitStep === true,
+        midFlowSubmit,
+        advanceBaseline,
       });
       if (verdict !== "phantom") return true;
       const runnerUp = ranked[1];
@@ -8052,13 +8056,14 @@ export async function submitCaptchaGatedForm(
             target,
             verification.signalCounter,
             verification.page,
-            post
+            midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
           );
           const runnerUpVerdict = classifySubmitShapedClick({
             step: verification.step,
             pre: post,
             post: runnerUpPost,
-            midFlowSubmit: verification.isMidFlowSubmitStep === true,
+            midFlowSubmit,
+            advanceBaseline,
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
@@ -11901,6 +11906,7 @@ async function probeChildFrameSubmitFallback(params: {
   isMidFlowSubmitStep?: boolean;
 }): Promise<FrameTarget | null> {
   const { page, signalCounter, step, isMidFlowSubmitStep } = params;
+  const midFlowSubmit = isMidFlowSubmitStep === true;
   // `page.mainFrameId`/`page.frames` are read defensively: some call sites
   // (and their test fakes) model a `Page` that never attaches child frames at
   // all and doesn't implement this pair, which is indistinguishable here from
@@ -11954,12 +11960,22 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(top.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!clickResult.clicked) continue;
-    const post = await settleAndSnapshotPostClick(target, signalCounter, page, pre);
+    // The step-start snapshot describes the resolved frame, not this child
+    // frame, so the first click's own pre-click page is the baseline both
+    // the top pick and the runner-up are judged against.
+    const advanceBaseline = pre;
+    const post = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
+    );
     const verdict = classifySubmitShapedClick({
       step,
       pre,
       post,
-      midFlowSubmit: isMidFlowSubmitStep === true,
+      midFlowSubmit,
+      advanceBaseline,
     });
     if (verdict !== "phantom") return target;
 
@@ -11969,12 +11985,18 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(target, signalCounter, page, post);
+    const runnerUpPost = await settleAndSnapshotPostClick(
+      target,
+      signalCounter,
+      page,
+      midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
+    );
     const runnerUpVerdict = classifySubmitShapedClick({
       step,
       pre: post,
       post: runnerUpPost,
-      midFlowSubmit: isMidFlowSubmitStep === true,
+      midFlowSubmit,
+      advanceBaseline,
     });
     if (runnerUpVerdict !== "phantom") return target;
   }
@@ -12719,6 +12741,9 @@ export async function executeStepWithHealing(params: {
   const isSettleWaitStep = isSubmitOrFinalStep || isAdvanceStep(step);
   if (captchaGated && isSubmitOrFinalStep) {
     let captchaTarget = frameTarget ?? mainFrameTarget(page);
+    // The step-level baseline is declared after this block, so capture the
+    // step-start page here for the fallback submit to judge against.
+    const captchaStepStartSnapshot = await snapshotPage(captchaTarget, signalCounter, page);
     const sitekeyProbeExpr = `(() => {
       const el = document.querySelector("[data-sitekey]");
       if (!el) return { siteKey: null, isInvisible: false };
@@ -12880,6 +12905,7 @@ export async function executeStepWithHealing(params: {
               signalCounter,
               page,
               step,
+              stepStartSnapshot: captchaStepStartSnapshot ?? undefined,
               isMidFlowSubmitStep: isMidFlowSubmitShapedStep({
                 step,
                 submitStep,
@@ -15393,9 +15419,9 @@ export async function executeStepWithHealing(params: {
         target: frameTarget ?? mainFrameTarget(page),
         signalCounter,
         preNetworkCount: pre.networkCount,
-        preVisibleTextSignature: pre.visibleTextSignature,
-        preVisibleText: pre.visibleText,
-        preVisibleTextDigest: pre.visibleTextDigest,
+        preVisibleTextSignature: advanceBaseline.visibleTextSignature,
+        preVisibleText: advanceBaseline.visibleText,
+        preVisibleTextDigest: advanceBaseline.visibleTextDigest,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -16086,9 +16112,9 @@ export async function executeStepWithHealing(params: {
               target: frameTarget ?? mainFrameTarget(page),
               signalCounter,
               preNetworkCount: pre.networkCount,
-              preVisibleTextSignature: pre.visibleTextSignature,
-              preVisibleText: pre.visibleText,
-              preVisibleTextDigest: pre.visibleTextDigest,
+              preVisibleTextSignature: retryAdvanceBaseline.visibleTextSignature,
+              preVisibleText: retryAdvanceBaseline.visibleText,
+              preVisibleTextDigest: retryAdvanceBaseline.visibleTextDigest,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,

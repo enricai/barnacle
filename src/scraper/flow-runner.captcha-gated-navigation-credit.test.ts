@@ -162,7 +162,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated navigation credit 
     } as unknown as Page;
     const stagehand = {} as Stagehand;
 
-    // `captchaTarget.url()` succeeds exactly once (the baseline read before
+    // `captchaTarget.url()` succeeds twice (the step-start snapshot and the baseline read before
     // solve/submit), then rejects on every later call — modeling the frame
     // handle going stale as a direct result of the in-frame navigation the
     // submit triggered, not an unrelated read failure.
@@ -186,7 +186,7 @@ describe("flow-runner/executeStepWithHealing — captchaGated navigation credit 
       locator: vi.fn() as unknown as FrameTarget["locator"],
       url: vi.fn().mockImplementation(() => {
         urlCallCount += 1;
-        return urlCallCount === 1
+        return urlCallCount <= 2
           ? Promise.resolve(baselineFrameUrl)
           : Promise.reject(new Error("frame detached: in-frame navigation tore down the context"));
       }),
