@@ -109,7 +109,15 @@ describe("a final submit is not credited on DOM text alone", () => {
 describe("settleAfterClick: an unchanged signature gives up at the unchanged bound", () => {
   it("does not wait past IDLE_GIVE_UP_MS when the signature never moves from the pre value", async () => {
     const f = makeIdlePage();
-    await settleAfterClick(f.page, { n: 0 }, 0, true, async () => NOOP_SIGNATURE, NOOP_SIGNATURE, idleQuiescence);
+    await settleAfterClick(
+      f.page,
+      { n: 0 },
+      0,
+      true,
+      async () => NOOP_SIGNATURE,
+      NOOP_SIGNATURE,
+      idleQuiescence
+    );
     expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
     expect(ADVANCED_SIGNATURE).not.toBe(NOOP_SIGNATURE);
   });
