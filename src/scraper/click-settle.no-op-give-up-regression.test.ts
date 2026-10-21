@@ -99,3 +99,24 @@ describe("a final submit is not credited on DOM text alone", () => {
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 });
+
+describe("settleAfterClick: elapsed give-up time is pinned numerically", () => {
+  it("returns after the activity poll plus the quiet window for a non-submit click with one late request", async () => {
+    const counter = { n: 0 };
+    let waited = 0;
+    const page = {
+      waitForTimeout: async (ms: number): Promise<void> => {
+        waited += ms;
+        if (waited === 1000) counter.n = 1;
+      },
+    };
+    await settleAfterClick(page, counter, 0, false, async () => TEXT, TEXT, idleQuiescence);
+    expect(waited).toBe(4000);
+  });
+
+  it("does not extend a silent submit-shaped click beyond IDLE_GIVE_UP_MS", async () => {
+    const f = makeIdlePage();
+    await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
+    expect(f.waited()).toBe(IDLE_GIVE_UP_MS);
+  });
+});
