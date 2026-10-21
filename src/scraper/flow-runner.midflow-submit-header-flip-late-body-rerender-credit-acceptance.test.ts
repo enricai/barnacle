@@ -28,16 +28,19 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
   })),
 }));
 
-const STEP =
-  "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
+const STEP = "click the 'Create Account' button to submit the account creation form";
 const URL = "https://acme.example/signup";
 const RERENDER_DELAY_MS = 8000;
-const PRE_TEXT = `Sign In ${"Email Address Password Verify New Password. ".repeat(21)}`.slice(
+const PRE_HEADER = "Skip to main content Sign In Careers Home";
+const POST_HEADER = "Skip to main content Settings Careers Home Candidate Home";
+const PRE_TEXT = `${"Email Address Password Verify New Password. ".repeat(23)}`.slice(
   0,
-  996
+  996 - PRE_HEADER.length
 );
-const POST_TEXT =
-  `My Account ${"Welcome aboard, verify your inbox to continue. ".repeat(12)}`.slice(0, 588);
+const POST_TEXT = `${"Welcome aboard, verify your inbox to continue. ".repeat(12)}`.slice(
+  0,
+  588 - POST_HEADER.length
+);
 
 function xpathFor(el: HappyDomElement): string {
   const parts: string[] = [];
@@ -85,7 +88,7 @@ function buildWorld(title: string, noop = false): World {
   const window = new Window({ url: URL });
   const document = window.document;
   document.body.innerHTML = `
-    <div><h1 id="hdr">Sign In</h1>
+    <div><h1 id="hdr">${PRE_HEADER}</h1>
     <form id="theForm"><button id="theControl" type="submit">Create Account</button></form>
     <div id="out"><p>${PRE_TEXT}</p></div></div>`;
   const control = document.getElementById("theControl") as unknown as HappyDomElement;
@@ -100,7 +103,7 @@ function buildWorld(title: string, noop = false): World {
   const click = (): void => {
     if (noop) return;
     clickedAt = now;
-    hdr.textContent = "My Account";
+    hdr.textContent = POST_HEADER;
   };
   (
     control as unknown as { addEventListener: (t: string, cb: () => void) => void }
