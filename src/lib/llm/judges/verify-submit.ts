@@ -41,24 +41,6 @@ Strictness rule for verified=true:
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
 When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
-/**
- * Non-final steps are judged on whether the page advanced, not on a
- * final-submit confirmation, so this prompt is standalone rather than the
- * strict prompt plus an override that would contradict it.
- */
-const NON_FINAL_SYSTEM_PROMPT = `You are a step-verifier for browser-automated job applications. Given evidence about what happened after a click, decide whether this step succeeded and the page advanced. This is NOT the final step of the flow, so no confirmation page is expected.
-
-Rules for verified=true:
-- Visible text decides. If the visible text shows the page advanced to a new stage (relative to the step instruction), set verified=true even when the URL did not change.
-- A stale document title is not evidence: a single-page app's title often stays the same across steps. Neither count it for nor against the step.
-- A new DOM component or URL transition matching the supplied criteria also supports verified=true.
-- A 2xx POST/PUT/DELETE to the site's own backend (matching one of the supplied ownBackendHostnames) strengthens the case but is not required on its own.
-- If only error indicators are present (4xx, 5xx, error containers, the form is still visible with invalid markers), set verified=false with a reason.
-- When ambiguous, set verified=false with a reason.
-
-When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
-When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
-
 const MAX_VISIBLE_TEXT_CHARS = 3000;
 
 /**
@@ -69,7 +51,7 @@ const MAX_VISIBLE_TEXT_CHARS = 3000;
 export interface VerifySubmitInput {
   /** The step's instruction, so the judge knows what this click was meant to do. */
   stepInstruction?: string;
-  /** Required so a non-final step can never fall into strict final-submit judging by omission. */
+  /** Always true here: non-final steps are judged by `verifyStepAdvancedWithLLM`, never this judge. */
   isFinalStep: boolean;
   /** Bounded slice of live visible page text; fresher evidence than the title. */
   visibleText?: string;
@@ -97,7 +79,7 @@ function buildVerifySubmitPrompt(input: VerifySubmitInput): string {
     input.stepInstruction === undefined
       ? ""
       : `STEP INSTRUCTION: ${input.stepInstruction}
-FINAL STEP OF FLOW: ${input.isFinalStep === false ? "no" : "yes"}
+FINAL STEP OF FLOW: yes
 
 `;
   const visibleText =
@@ -107,15 +89,11 @@ FINAL STEP OF FLOW: ${input.isFinalStep === false ? "no" : "yes"}
 VISIBLE TEXT (live, truncated):
 ${input.visibleText.slice(0, MAX_VISIBLE_TEXT_CHARS)}
 `;
-  const isNonFinal = input.isFinalStep === false;
-  const titleLine = isNonFinal ? "" : `PAGE TITLE: ${input.pageTitle}\n`;
-  const titleHintsLine = isNonFinal
-    ? ""
-    : `- Success page title hints: ${JSON.stringify(input.successPageTitleHints)}\n`;
   return `Did the submit succeed?
 
 ${stepContext}PAGE URL: ${input.pageUrl}
-${titleLine}
+PAGE TITLE: ${input.pageTitle}
+
 NETWORK REQUESTS IN ATTEMPT WINDOW (method, status, url):
 ${
   input.networkCaptures.length > 0
@@ -131,7 +109,8 @@ DOM INVALID-MARKER COUNT: ${input.invalidMarkerCount} (form fields still showing
 SITE CRITERIA:
 - Own-backend hostnames: ${JSON.stringify(input.ownBackendHostnames)}
 - Success URL fragments: ${JSON.stringify(input.successUrlFragments)}
-${titleHintsLine}- Submitted-state selectors (DOM components that indicate post-submit state): ${JSON.stringify(input.submittedStateSelectors)}`;
+- Success page title hints: ${JSON.stringify(input.successPageTitleHints)}
+- Submitted-state selectors (DOM components that indicate post-submit state): ${JSON.stringify(input.submittedStateSelectors)}`;
 }
 
 /**
@@ -149,8 +128,7 @@ export async function verifySubmitWithLLM(params: {
   if (client === null) return null;
   const result = await callHaikuJudge({
     client,
-    systemPrompt:
-      input.isFinalStep === false ? NON_FINAL_SYSTEM_PROMPT : SUBMIT_VERIFY_SYSTEM_PROMPT,
+    systemPrompt: SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
     callType: CALL_TYPE_JUDGE_SUBMIT_VERIFY,

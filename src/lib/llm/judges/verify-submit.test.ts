@@ -68,63 +68,6 @@ describe("verifySubmitWithLLM", () => {
     return { system: args.system, user: args.messages[0]?.content ?? "" };
   };
 
-  it("non-final step: stale title contradicting visible text still yields verified=true", async () => {
-    const parsedOutput = { verified: true, reason: "visible text shows next stage" };
-    const client = fakeClient(parsedOutput);
-    const result = await verifySubmitWithLLM({
-      client,
-      input: {
-        ...INPUT,
-        pageTitle: "Sign In",
-        stepInstruction: "Click Create account",
-        isFinalStep: false,
-        visibleText: "Shipping address",
-      },
-    });
-    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
-      system: string;
-      messages: { content: string }[];
-    };
-    expect(result).toEqual(parsedOutput);
-    expect(args.messages[0]?.content).not.toContain("PAGE TITLE");
-    expect(args.messages[0]?.content).not.toContain("Sign In");
-    expect(args.messages[0]?.content).not.toContain("Success page title hints");
-    expect(args.messages[0]?.content).toContain("Shipping address");
-  });
-
-  it("gives the judge the live visible text rather than only the stale document title", async () => {
-    const parsedOutput = { verified: true, reason: "visible text shows the next stage" };
-    const client = fakeClient(parsedOutput);
-    const result = await verifySubmitWithLLM({
-      client,
-      input: {
-        ...INPUT,
-        pageTitle: "Sign In",
-        stepInstruction: "Click Sign in",
-        isFinalStep: false,
-        visibleText: "Settings Candidate Home",
-      },
-    });
-    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
-      system: string;
-      messages: { content: string }[];
-    };
-    const user = args.messages[0]?.content ?? "";
-    expect(result).toEqual(parsedOutput);
-    expect(user).toContain("Settings Candidate Home");
-    expect(user).toContain("Click Sign in");
-    expect(user).not.toContain("Sign In");
-    expect(args.system).toContain("title is not evidence");
-  });
-
-  it("non-final step: system prompt is self-consistent with no final-submit requirement", async () => {
-    const { system } = await captured({ isFinalStep: false, stepInstruction: "Click Next" });
-    expect(system).not.toContain("strong DOM/URL/title signal");
-    expect(system).not.toContain("confirmation phrase");
-    expect(system).not.toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
-    expect(system).toContain("Visible text decides");
-  });
-
   it("final step: prompt still presents title and title hints as evidence", async () => {
     const { user } = await captured({ isFinalStep: true, pageTitle: "Sign In" });
     expect(user).toContain("PAGE TITLE: Sign In");
@@ -163,13 +106,6 @@ describe("verifySubmitWithLLM", () => {
     expect(user).toContain("FINAL STEP OF FLOW: yes");
     expect(user).toContain("PAGE TITLE: Sign In");
     expect(user).toContain("Success page title hints");
-  });
-
-  it("tells the judge a stale title is not evidence only for non-final steps", async () => {
-    const nonFinal = await captured({ stepInstruction: "Next", isFinalStep: false });
-    expect(nonFinal.system).toContain("title is not evidence");
-    expect(nonFinal.system.startsWith(SUBMIT_VERIFY_SYSTEM_PROMPT)).toBe(false);
-    expect(nonFinal.user).not.toContain("PAGE TITLE");
   });
 
   it("recon-browser trailing-grace judges through judgeStepOutcome with positional finality, not a direct final-strict call", () => {

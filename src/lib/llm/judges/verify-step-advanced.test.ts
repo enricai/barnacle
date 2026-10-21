@@ -65,6 +65,20 @@ describe("verifyStepAdvancedWithLLM", () => {
     expect(args.messages[0]?.content).not.toMatch(/title|url/i);
   });
 
+  it("tells the model the document title is not evidence and decides on visible text", async () => {
+    const parsedOutput = { advanced: true, reason: "visible text shows next stage" };
+    const client = fakeClient(parsedOutput);
+    const result = await verifyStepAdvancedWithLLM({ client, input: INPUT });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    expect(result).toEqual(parsedOutput);
+    expect(args.system).toContain("never on a document title");
+    expect(args.system).toContain("document title");
+    expect(args.messages[0]?.content).not.toContain("Sign In");
+  });
+
   it("prompt carries before and after text", async () => {
     const client = fakeClient({ advanced: false, reason: "same form" });
     await verifyStepAdvancedWithLLM({ client, input: INPUT });
