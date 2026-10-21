@@ -319,4 +319,18 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     const post = await run(pre, t.io);
     expect(hasSettledPageAdvanced(pre, post)).toBe(false);
   });
+
+  it("credits a re-render that lands one round after an unchanged first snapshot", async () => {
+    const t = makeIo([PRE_SIG, BODY_SIG]);
+    const pre = snap(PRE_SIG);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+  });
+
+  it("adds no settle wait for a genuine no-op click", async () => {
+    const t = makeIo([PRE_SIG]);
+    await run(snap(PRE_SIG), t.io);
+    expect(t.settles()).toBe(1);
+  });
 });

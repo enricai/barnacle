@@ -56,7 +56,7 @@ describe("settleAfterClick: a genuine no-op click gives up at the unchanged boun
 type PostClickArgs = Parameters<typeof settleAndSnapshotPostClick>;
 
 describe("settleAndSnapshotPostClick: a no-op click is not re-settled", () => {
-  it("settles once, snapshots once and returns the unsettled snapshot", async () => {
+  it("settles once, re-reads once without settling and returns the unsettled snapshot", async () => {
     const pre = {
       networkCount: 0,
       url: URL,
@@ -75,7 +75,7 @@ describe("settleAndSnapshotPostClick: a no-op click is not re-settled", () => {
       { settle, snapshot } as unknown as PostClickArgs[5]
     );
     expect(settle).toHaveBeenCalledTimes(1);
-    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot).toHaveBeenCalledTimes(2);
     expect(result.settled).toBeUndefined();
   });
 });

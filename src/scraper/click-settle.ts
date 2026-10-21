@@ -37,7 +37,7 @@ export const MAX_MS = 60000;
  * and DOM mutations are read from the page itself: either one is activity, and
  * the wait only ends once the page reports idle, so the fixed text quiet window
  * is no longer a guess about how late a re-render can land.
- * Any click whose text moved keeps waiting until the same idle allowance a silent
+ * Any click whose text moved, or any submit-shaped click that saw network activity, keeps waiting until the same idle allowance a silent
  * submit-shaped one gets, since a header flip can precede the body re-render by many seconds.
  * Only submit-shaped steps keep the long idle wait for a slow round-trip to start;
  * any other click that shows no activity after one quiet poll gives up.
@@ -94,7 +94,7 @@ export async function settleAfterClick(
     }
     if (seen) {
       quiet += 1;
-      if (!textMoved) {
+      if (!textMoved && !submitShaped) {
         if (quiet >= QUIET_POLLS) return;
         continue;
       }
