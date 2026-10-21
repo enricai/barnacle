@@ -12010,13 +12010,14 @@ async function probeChildFrameSubmitFallback(params: {
     // The step-start snapshot describes the resolved frame, not this child
     // frame, so the first click's own pre-click page is the baseline both
     // the top pick and the runner-up are judged against.
-    const advanceBaseline = pre;
-    const post = await settleAndSnapshotPostClick(
+    const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
       target,
       signalCounter,
       page,
-      midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
-    );
+      pre,
+      stepStartSnapshot: pre,
+      midFlowSubmit,
+    });
     const verdict = classifySubmitShapedClick({
       step,
       pre,
@@ -12032,12 +12033,14 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(
+    const { post: runnerUpPost } = await readMidFlowPostClickAdvance({
       target,
       signalCounter,
       page,
-      midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
-    );
+      pre: midFlowSubmit ? post : advanceBaseline,
+      stepStartSnapshot: advanceBaseline,
+      midFlowSubmit,
+    });
     const runnerUpVerdict = classifySubmitShapedClick({
       step,
       pre: post,
