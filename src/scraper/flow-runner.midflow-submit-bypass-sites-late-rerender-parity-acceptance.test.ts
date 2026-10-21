@@ -26,6 +26,9 @@ const URL = "https://example.org/signup";
 const DELAYS_MS = [3000, 8000, 11000];
 const PRE_TEXT_LEN = 996;
 const POST_TEXT_LEN = 588;
+const PRE_SIGNATURE = "996:Skip to main content|Sign In|Careers Home|";
+const POST_SIGNATURE =
+  "588:Skip to main content|Settings|<email>|Careers Home|Candidate Home|";
 const PRE_BYTES = 31284;
 const POST_BYTES = 29300;
 const CANDIDATE: SubmitCandidate = {
@@ -72,7 +75,7 @@ function buildSurface(
     const full = `${flipped ? "Signed in as jane@example.com" : "Sign In"} ${"t".repeat(text)}`;
     return {
       html: rendered ? POST_BYTES : PRE_BYTES,
-      text: `${text}:${full.slice(0, 200)}`,
+      text: rendered ? POST_SIGNATURE : PRE_SIGNATURE,
       values: "",
       state: "",
       full,
