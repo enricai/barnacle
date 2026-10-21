@@ -3028,18 +3028,19 @@ async function main(): Promise<void> {
         // in-frame navigation would otherwise be invisible to the top-level
         // page.url() this used to read.
         const urlAtStepStart = await readCurrentFrameUrl(page, frameTarget);
+        const stepFlowHasSubmitSemantics = flowHasSubmitSemantics({
+          steps: plan.map((s) => ({
+            submitStep: s.submitStep === true,
+            instruction: s.instruction,
+          })),
+          submitEndpointPattern,
+          requireSubmitEndpointMatch,
+        });
         const midFlowSubmitShaped = isMidFlowSubmitShapedStep({
           step: step.instruction,
           submitStep: step.submitStep === true,
           isFinalStep: i === plan.length - 1,
-          flowHasSubmitSemantics: flowHasSubmitSemantics({
-            steps: plan.map((s) => ({
-              submitStep: s.submitStep === true,
-              instruction: s.instruction,
-            })),
-            submitEndpointPattern,
-            requireSubmitEndpointMatch,
-          }),
+          flowHasSubmitSemantics: stepFlowHasSubmitSemantics,
         });
         let elementBaseline: Awaited<ReturnType<typeof snapshotPage>> | undefined;
         const textAtStepStart =
@@ -3228,9 +3229,18 @@ async function main(): Promise<void> {
           // the remaining tail.
           const urlAfterFailure = await readCurrentFrameUrl(page, frameTarget);
           const baselineText = textAtStepStart ?? elementBaseline;
-          const baselineEligible = midFlowSubmitShaped || elementBaseline !== undefined;
+          // An element-level submit-shaped click (adopted baseline) is mid-flow
+          // under the same class the in-cascade sites used, unless genuine final.
+          const midFlowSubmit = isMidFlowSubmitShapedStep({
+            step: step.instruction,
+            submitStep: step.submitStep === true,
+            isFinalStep: i === plan.length - 1,
+            flowHasSubmitSemantics: stepFlowHasSubmitSemantics,
+            elementSubmitShaped: elementBaseline !== undefined,
+          });
+          const baselineEligible = midFlowSubmit;
           const urlAdvanced =
-            (!step.submitStep || midFlowSubmitShaped) &&
+            (!step.submitStep || midFlowSubmit) &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
           const settledAdvance =
             !urlAdvanced && baselineEligible && baselineText !== undefined
@@ -3243,7 +3253,7 @@ async function main(): Promise<void> {
                     networkCount: baselineText.networkCount ?? signalCounter.n,
                   },
                   stepStartSnapshot: baselineText,
-                  midFlowSubmit: midFlowSubmitShaped,
+                  midFlowSubmit,
                   io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
                 }).catch((err: unknown) => {
                   logger.warn(

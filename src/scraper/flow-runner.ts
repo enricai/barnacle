@@ -8080,7 +8080,17 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
-      const midFlowSubmit = verification.isMidFlowSubmitStep === true;
+      // An omitted flag means the caller could not tell final from mid-flow;
+      // derive from the step like the in-cascade sites rather than going strict.
+      const midFlowSubmit =
+        verification.isMidFlowSubmitStep ??
+        isMidFlowSubmitShapedStep({
+          step: verification.step,
+          submitStep: false,
+          isFinalStep: false,
+          flowHasSubmitSemantics: false,
+          elementSubmitShaped: true,
+        });
       const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
         target,
         signalCounter: verification.signalCounter,
