@@ -116,7 +116,6 @@ import {
   hasOriginOrPathChanged,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
-  hasSubmitStepDomAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -13160,13 +13159,15 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     });
     if (!stepStartSnapshot || genuineFinal || lastClickBlockedByDisabled) return false;
-    const settled = await settleAndSnapshotPostClick(
-      frameTarget ?? mainFrameTarget(page),
+    const { post: settled, pageAdvanced } = await readMidFlowPostClickAdvance({
+      target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
-      stepStartSnapshot
-    );
-    if (!hasSubmitStepDomAdvanced(genuineFinal, stepStartSnapshot, settled)) return false;
+      pre: stepStartSnapshot,
+      stepStartSnapshot,
+      midFlowSubmit: true,
+    });
+    if (!pageAdvanced) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
