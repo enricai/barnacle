@@ -116,7 +116,6 @@ import {
   hasOriginOrPathChanged,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
-  hasSubmitStepDomAdvanced,
   hasVisibleTextChanged,
   isPlausibleStepDestination,
   type PhantomClickVerdict,
@@ -7648,6 +7647,39 @@ export async function settleAndSnapshotPostClick(
 }
 
 /**
+ * Single mid-flow post-click advance read: picks the advance baseline (the
+ * step-start snapshot for a mid-flow submit, `pre` otherwise), gives it the
+ * attempt's network count, settles, re-settles through a header-only flip and
+ * judges advance against that same baseline, so every site credits a page that
+ * advanced from step start once it is quiescent.
+ */
+export async function readMidFlowPostClickAdvance(args: {
+  target: FrameTarget;
+  signalCounter: { n: number };
+  page: Page | undefined;
+  pre: StepSnapshot;
+  stepStartSnapshot: StepSnapshot;
+  midFlowSubmit: boolean;
+  mayTriggerRoundTrip?: boolean;
+  waitForMutations?: boolean;
+  io?: PostClickSettleIo;
+}): Promise<{ post: StepSnapshot; advanceBaseline: StepSnapshot; pageAdvanced: boolean }> {
+  const advanceBaseline = args.midFlowSubmit
+    ? withNetworkBaseline(args.stepStartSnapshot, args.pre)
+    : args.pre;
+  const post = await settleSnapshotAndResettle(
+    args.target,
+    args.signalCounter,
+    args.page,
+    advanceBaseline,
+    args.mayTriggerRoundTrip ?? true,
+    args.waitForMutations ?? true,
+    args.io ?? DEFAULT_POST_CLICK_SETTLE_IO
+  );
+  return { post, advanceBaseline, pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post) };
+}
+
+/**
  * Shared in-page discovery of the widget's callback, used identically by
  * `injectCaptchaTokenAndSubmit`'s precheck (to decide the branch) and its
  * invoke step (to re-resolve and call it) without ever marshalling a
@@ -8038,13 +8070,14 @@ export async function submitCaptchaGatedForm(
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
       const midFlowSubmit = verification.isMidFlowSubmitStep === true;
-      const advanceBaseline = verification.stepStartSnapshot ?? pre;
-      const post = await settleAndSnapshotPostClick(
+      const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
         target,
-        verification.signalCounter,
-        verification.page,
-        midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
-      );
+        signalCounter: verification.signalCounter,
+        page: verification.page,
+        pre,
+        stepStartSnapshot: verification.stepStartSnapshot ?? pre,
+        midFlowSubmit,
+      });
       const verdict = classifySubmitShapedClick({
         step: verification.step,
         pre,
@@ -8062,18 +8095,21 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
-          const runnerUpPost = await settleAndSnapshotPostClick(
-            target,
-            verification.signalCounter,
-            verification.page,
-            midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
-          );
+          const { post: runnerUpPost, advanceBaseline: runnerUpBaseline } =
+            await readMidFlowPostClickAdvance({
+              target,
+              signalCounter: verification.signalCounter,
+              page: verification.page,
+              pre: post,
+              stepStartSnapshot: verification.stepStartSnapshot ?? pre,
+              midFlowSubmit,
+            });
           const runnerUpVerdict = classifySubmitShapedClick({
             step: verification.step,
             pre: post,
             post: runnerUpPost,
             midFlowSubmit,
-            advanceBaseline,
+            advanceBaseline: runnerUpBaseline,
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
@@ -11973,13 +12009,14 @@ async function probeChildFrameSubmitFallback(params: {
     // The step-start snapshot describes the resolved frame, not this child
     // frame, so the first click's own pre-click page is the baseline both
     // the top pick and the runner-up are judged against.
-    const advanceBaseline = pre;
-    const post = await settleAndSnapshotPostClick(
+    const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
       target,
       signalCounter,
       page,
-      midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
-    );
+      pre,
+      stepStartSnapshot: pre,
+      midFlowSubmit,
+    });
     const verdict = classifySubmitShapedClick({
       step,
       pre,
@@ -11995,12 +12032,14 @@ async function probeChildFrameSubmitFallback(params: {
       target.evaluate<{ clicked: boolean }>(buildClickByDeepIndexExpr(runnerUp.deepIndex))
     ).catch(() => ({ clicked: false }))) as { clicked: boolean };
     if (!runnerUpClickResult.clicked) continue;
-    const runnerUpPost = await settleAndSnapshotPostClick(
+    const { post: runnerUpPost } = await readMidFlowPostClickAdvance({
       target,
       signalCounter,
       page,
-      midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
-    );
+      pre: midFlowSubmit ? post : advanceBaseline,
+      stepStartSnapshot: advanceBaseline,
+      midFlowSubmit,
+    });
     const runnerUpVerdict = classifySubmitShapedClick({
       step,
       pre: post,
@@ -13120,13 +13159,15 @@ export async function executeStepWithHealing(params: {
       flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
     });
     if (!stepStartSnapshot || genuineFinal || lastClickBlockedByDisabled) return false;
-    const settled = await settleAndSnapshotPostClick(
-      frameTarget ?? mainFrameTarget(page),
+    const { post: settled, pageAdvanced } = await readMidFlowPostClickAdvance({
+      target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
-      stepStartSnapshot
-    );
-    if (!hasSubmitStepDomAdvanced(genuineFinal, stepStartSnapshot, settled)) return false;
+      pre: stepStartSnapshot,
+      stepStartSnapshot,
+      midFlowSubmit: true,
+    });
+    if (!pageAdvanced) return false;
     // A DOM change that came from bouncing to an auth gate is not an advance.
     if (!isPlausibleStepDestination(step, settled.url, stepStartSnapshot.url)) return false;
     logger.info(
@@ -14013,15 +14054,15 @@ export async function executeStepWithHealing(params: {
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
               adoptElementStepStartBaseline();
-              const deepAdvanceBaseline = stepStartSnapshot ?? pre;
-              const midPost = await settleAndSnapshotPostClick(
-                midTarget,
-                signalCounter,
-                page,
-                deepMidFlowSubmit
-                  ? withNetworkBaseline(deepAdvanceBaseline, pre)
-                  : deepAdvanceBaseline
-              );
+              const { post: midPost, advanceBaseline: deepAdvanceBaseline } =
+                await readMidFlowPostClickAdvance({
+                  target: midTarget,
+                  signalCounter,
+                  page,
+                  pre,
+                  stepStartSnapshot: stepStartSnapshot ?? pre,
+                  midFlowSubmit: deepMidFlowSubmit,
+                });
               // The deep-submit-locator runs only on submit escalation, so a
               // stray selection flip must not mask a top-pick phantom and skip
               // the runner-up retry.
@@ -14938,15 +14979,16 @@ export async function executeStepWithHealing(params: {
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
-    const post = await settleSnapshotAndResettle(
-      frameTarget ?? mainFrameTarget(page),
+    const { post } = await readMidFlowPostClickAdvance({
+      target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
-      stepIsMidFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : pre,
+      pre,
+      stepStartSnapshot: advanceBaseline,
+      midFlowSubmit: stepIsMidFlowSubmit,
       mayTriggerRoundTrip,
-      isSettleWaitStep || resolvedElementIsSubmitShaped,
-      DEFAULT_POST_CLICK_SETTLE_IO
-    );
+      waitForMutations: isSettleWaitStep || resolvedElementIsSubmitShaped,
+    });
     record.post = post;
 
     if (resolvedAction) {
@@ -15710,13 +15752,15 @@ export async function executeStepWithHealing(params: {
           });
           if (retryResolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
           const retryAdvanceBaseline = stepStartSnapshot ?? pre;
-          const retryPost = await settleAndSnapshotPostClick(
-            frameTarget ?? mainFrameTarget(page),
+          const { post: retryPost } = await readMidFlowPostClickAdvance({
+            target: frameTarget ?? mainFrameTarget(page),
             signalCounter,
             page,
-            retryMidFlowSubmit ? withNetworkBaseline(retryAdvanceBaseline, pre) : pre,
-            isSettleWaitStep || retryResolvedElementIsSubmitShaped
-          );
+            pre,
+            stepStartSnapshot: retryAdvanceBaseline,
+            midFlowSubmit: retryMidFlowSubmit,
+            waitForMutations: isSettleWaitStep || retryResolvedElementIsSubmitShaped,
+          });
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&

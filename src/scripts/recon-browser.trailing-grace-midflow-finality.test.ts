@@ -250,4 +250,88 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
       expect.stringContaining(TRAILING_GRACE_LOG_FRAGMENT)
     );
   });
+
+  describe("pre-replan short-circuit from the step-start baseline", () => {
+    const ADVANCED_LOG_FRAGMENT = "the page already advanced past this step";
+
+    async function runTwoStepFlow(bodyText: () => string): Promise<void> {
+      const session = { on: (): void => {}, off: (): void => {} };
+      const page = {
+        goto: vi.fn().mockResolvedValue(undefined),
+        url: vi.fn().mockReturnValue("https://orders.example.com/apply/step"),
+        title: vi.fn().mockResolvedValue("Apply"),
+        evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+          if (typeof expr === "string" && expr.includes('innerText || ""')) {
+            const t = bodyText();
+            return {
+              html: 5_000,
+              text: `${t.length}:${t}`,
+              values: "",
+              state: "",
+              full: t,
+              digest: `${t.length}:${t}`,
+            };
+          }
+          if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+          if (typeof expr === "string" && expr.includes("querySelector"))
+            return { matched: false, src: null };
+          return null;
+        }),
+        frames: vi.fn().mockReturnValue([]),
+        getSessionForFrame: () => session,
+        mainFrameId: () => "main",
+        sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+        waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      } as unknown as Page;
+      const stagehand = {
+        context: { awaitActivePage: async (): Promise<Page> => page },
+      } as unknown as Stagehand;
+      vi.mocked(createBrowserSession).mockResolvedValue({
+        stagehand,
+        limiter: {} as never,
+        sessionId: "test-session",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+      } as never);
+      executeStepWithHealingStub.mockImplementation(async (args: { step?: string }) => {
+        if (args.step === "Continue to address") {
+          throw new StepVerificationError("no observable effect", "cascade-exhausted");
+        }
+        return "completed";
+      });
+      process.argv = [
+        "node",
+        "recon-browser.ts",
+        "--url",
+        "https://orders.example.com/apply/step",
+        "--flow",
+        JSON.stringify({
+          steps: [
+            { step: "Continue to address", submitStep: true },
+            { step: "Place the order", submitStep: true },
+          ],
+        }),
+      ];
+      await main().catch(() => undefined);
+    }
+
+    it("resumes without replan when the settled body swapped late from the step-start baseline", async () => {
+      let call = 0;
+      await runTwoStepFlow(() =>
+        call++ === 0
+          ? "Step 1 of 3 Personal details first name last name email phone"
+          : "Step 2 of 3 Shipping address street city postal code country region"
+      );
+
+      expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining(ADVANCED_LOG_FRAGMENT));
+    });
+
+    it("does not short-circuit when the settled page is unchanged from the baseline", async () => {
+      await runTwoStepFlow(() => "Step 1 of 3 Personal details first name last name email phone");
+
+      expect(loggerStub.info).not.toHaveBeenCalledWith(
+        expect.stringContaining(ADVANCED_LOG_FRAGMENT)
+      );
+    });
+  });
 });

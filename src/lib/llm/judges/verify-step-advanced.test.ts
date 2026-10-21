@@ -65,6 +65,20 @@ describe("verifyStepAdvancedWithLLM", () => {
     expect(args.messages[0]?.content).not.toMatch(/title|url/i);
   });
 
+  it("tells the model the document title is not evidence and decides on visible text", async () => {
+    const parsedOutput = { advanced: true, reason: "visible text shows next stage" };
+    const client = fakeClient(parsedOutput);
+    const result = await verifyStepAdvancedWithLLM({ client, input: INPUT });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    expect(result).toEqual(parsedOutput);
+    expect(args.system).toContain("never on a document title");
+    expect(args.system).toContain("document title");
+    expect(args.messages[0]?.content).not.toContain("Sign In");
+  });
+
   it("prompt carries before and after text", async () => {
     const client = fakeClient({ advanced: false, reason: "same form" });
     await verifyStepAdvancedWithLLM({ client, input: INPUT });
@@ -97,5 +111,24 @@ describe("verifyStepAdvancedWithLLM", () => {
     };
     expect(args.messages[0]?.content).toContain(beforeText);
     expect(args.messages[0]?.content).toContain(afterText);
+  });
+
+  it("stale 'Sign In' title with signed-in live text: prompt carries instruction, live and before text and the typed verdict passes through", async () => {
+    const client = fakeClient({ advanced: true, reason: "signed-in content visible" });
+    const beforeText = "Sign In email password";
+    const afterText = "Welcome back, Sam. Your account dashboard";
+    const result = await verifyStepAdvancedWithLLM({
+      client,
+      input: { ...INPUT, stepInstruction: "Click Sign In", beforeText, afterText },
+    });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      messages: { content: string }[];
+    };
+    const prompt = args.messages[0]?.content ?? "";
+    expect(result).toEqual({ advanced: true, reason: "signed-in content visible" });
+    expect(prompt).toContain("STEP INSTRUCTION: Click Sign In");
+    expect(prompt).toContain(`BEFORE TEXT (truncated):\n${beforeText}`);
+    expect(prompt).toContain(`AFTER TEXT (truncated):\n${afterText}`);
+    expect(prompt).not.toMatch(/PAGE TITLE/);
   });
 });

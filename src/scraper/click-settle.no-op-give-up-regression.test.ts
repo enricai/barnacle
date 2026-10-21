@@ -2,12 +2,18 @@ import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
-import { settleAndSnapshotPostClick } from "@/scraper/flow-runner";
+import {
+  type PostClickSettleIo,
+  readMidFlowPostClickAdvance,
+  settleAndSnapshotPostClick,
+} from "@/scraper/flow-runner";
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import { classifyPhantomClick, hasSubmitStepDomAdvanced } from "@/scraper/phantom-click";
 
 const URL = "https://apply.acme.example/jobs/1/apply";
 const TEXT = "Apply for this job";
+const NOOP_SIGNATURE = "996:Skip to main content|Sign In|Careers Home|";
+const ADVANCED_SIGNATURE = "588:Skip to main content|Settings|<email>|Careers Home|Candidate Home|";
 
 function makeIdlePage(): {
   page: { waitForTimeout: (ms: number) => Promise<void> };
@@ -100,6 +106,23 @@ describe("a final submit is not credited on DOM text alone", () => {
   });
 });
 
+describe("settleAfterClick: an unchanged signature gives up at the unchanged bound", () => {
+  it("does not wait past IDLE_GIVE_UP_MS when the signature never moves from the pre value", async () => {
+    const f = makeIdlePage();
+    await settleAfterClick(
+      f.page,
+      { n: 0 },
+      0,
+      true,
+      async () => NOOP_SIGNATURE,
+      NOOP_SIGNATURE,
+      idleQuiescence
+    );
+    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
+    expect(ADVANCED_SIGNATURE).not.toBe(NOOP_SIGNATURE);
+  });
+});
+
 describe("settleAfterClick: elapsed give-up time is pinned numerically", () => {
   it("returns after the activity poll plus the quiet window for a non-submit click with one late request", async () => {
     const counter = { n: 0 };
@@ -118,5 +141,43 @@ describe("settleAfterClick: elapsed give-up time is pinned numerically", () => {
     const f = makeIdlePage();
     await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
     expect(f.waited()).toBe(IDLE_GIVE_UP_MS);
+  });
+});
+
+describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within the give-up bound", () => {
+  it("elapses no more than IDLE_GIVE_UP_MS on the fake clock and classifies phantom", async () => {
+    const snap = {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 5000,
+      visibleTextSignature: TEXT,
+      formValueSignature: "",
+    } as PostClickArgs[3];
+    const f = makeIdlePage();
+    const io = {
+      settle: async (): Promise<void> => {
+        await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
+      },
+      snapshot: async () => ({ ...snap }),
+    } as unknown as PostClickSettleIo;
+    const r = await readMidFlowPostClickAdvance({
+      target: {} as never,
+      signalCounter: { n: 0 },
+      page: {} as Page,
+      pre: snap,
+      stepStartSnapshot: snap,
+      midFlowSubmit: true,
+      io,
+    });
+    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
+    expect(r.pageAdvanced).toBe(false);
+    const attempt: PhantomClickAttempt = {
+      actResultSuccess: true,
+      pre: snap,
+      post: r.post,
+      destinationPlausible: true,
+      isSubmitShapedStep: true,
+    };
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 });

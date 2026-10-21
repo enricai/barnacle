@@ -26,6 +26,8 @@ const URL = "https://example.org/signup";
 const DELAYS_MS = [3000, 8000, 11000];
 const PRE_TEXT_LEN = 996;
 const POST_TEXT_LEN = 588;
+const PRE_SIGNATURE = "996:Skip to main content|Sign In|Careers Home|";
+const POST_SIGNATURE = "588:Skip to main content|Settings|<email>|Careers Home|Candidate Home|";
 const PRE_BYTES = 31284;
 const POST_BYTES = 29300;
 const CANDIDATE: SubmitCandidate = {
@@ -72,7 +74,7 @@ function buildSurface(
     const full = `${flipped ? "Signed in as jane@example.com" : "Sign In"} ${"t".repeat(text)}`;
     return {
       html: rendered ? POST_BYTES : PRE_BYTES,
-      text: `${text}:${full.slice(0, 200)}`,
+      text: rendered ? POST_SIGNATURE : PRE_SIGNATURE,
       values: "",
       state: "",
       full,
@@ -266,7 +268,8 @@ async function runRetryFlow(
 async function runChildFrameFlow(
   advances: boolean,
   delay: number,
-  step: string = STEP
+  step: string = STEP,
+  isFinal = false
 ): Promise<{ result: unknown; childSurface: Surface }> {
   const childSurface = buildSurface(advances, delay, (src) =>
     src === "location.href" ? "https://example.org/embedded" : null
@@ -317,7 +320,9 @@ async function runChildFrameFlow(
     page,
     steps: [
       { instruction: step, optional: false, upload: false, submitStep: true },
-      { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
+      ...(isFinal
+        ? []
+        : [{ instruction: NEXT_STEP, optional: true, upload: false, submitStep: false }]),
     ],
     logger,
     anthropic: null,
@@ -643,6 +648,10 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     expect(result).toMatchObject({ lastStepIndex: 1 });
     expect(surface.rendered()).toBe(true);
     expect(surface.clicks()).toBe(1);
+  });
+
+  it("keeps the genuine final submit strict at the child-frame fallback (late advance is not credited)", async () => {
+    await expect(runChildFrameFlow(true, 8000, STEP, true)).rejects.toThrow(/failed verification/);
   });
 
   it("keeps the genuine final submit strict on the retry (no-op is not credited)", async () => {

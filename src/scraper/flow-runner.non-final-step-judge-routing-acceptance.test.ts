@@ -30,6 +30,9 @@ import type { Logger } from "@/types/logging";
 
 const STEP = "Click 'Continue' to proceed to the next page of the form";
 const URL = "https://example.org/application";
+const CREATE_STEP = "click the Create Account button to submit the account creation form";
+const PRE_SIGNATURE = "996:Skip to main content|Sign In|Careers Home|";
+const POST_SIGNATURE = "588:Skip to main content|Settings|<email>|Careers Home|Candidate Home|";
 
 function xpathFor(el: HappyDomElement): string {
   const parts: string[] = [];
@@ -270,6 +273,36 @@ describe("flow-runner non-final step judge routing acceptance", () => {
     stepJudge.mockResolvedValue({ advanced: false, reason: "same form" });
     const { outcome } = await run(NOISE, false, true);
     expect(outcome).not.toBe("completed");
+  });
+
+  it("hands the step judge the pre and post signatures for a non-final submit-worded step", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "header changed" });
+    const result = await judgeStepOutcome({
+      client: {} as never,
+      step: CREATE_STEP,
+      isFinalStep: false,
+      submitStep: false,
+      flowHasSubmitSemantics: true,
+      page: { waitForTimeout: async () => {} },
+      target: { evaluate: async () => POST_SIGNATURE } as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: PRE_SIGNATURE,
+      submitInput: {
+        pageUrl: URL,
+        pageTitle: "Sign In",
+        unfocusedObserve: [],
+        networkCaptures: [],
+        invalidMarkerCount: 0,
+        ownBackendHostnames: [],
+        successUrlFragments: [],
+        successPageTitleHints: [],
+        submittedStateSelectors: [],
+      },
+    });
+    expect(submitJudge).not.toHaveBeenCalled();
+    expect(stepJudge).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).toContain("true");
   });
 
   it("routes the final step to the submit judge and never the step judge", async () => {
