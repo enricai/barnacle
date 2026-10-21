@@ -3324,32 +3324,32 @@ async function main(): Promise<void> {
               baselineText === undefined
                 ? undefined
                 : await judgeStepOutcome({
-              client: anthropic,
-              captureFn,
-              step: step.instruction,
-              isFinalStep: i === plan.length - 1,
-              submitStep: step.submitStep === true,
-              flowHasSubmitSemantics: trailingGraceFlowHasSubmitSemantics,
-              elementSubmitShaped: midFlowSubmitShaped,
-              page,
-              target: mainFrameTarget(page),
-              signalCounter,
-              preNetworkCount: baselineText.networkCount ?? signalCounter.n,
-              preVisibleTextSignature: baselineText.visibleTextSignature,
-              preVisibleText: baselineText.visibleText,
-              preVisibleTextDigest: baselineText.visibleTextDigest,
-              submitInput: {
-                pageUrl: trailingGracePageUrl,
-                pageTitle,
-                unfocusedObserve: [],
-                networkCaptures: recentCaptureMeta,
-                invalidMarkerCount: 0,
-                ownBackendHostnames,
-                successUrlFragments,
-                successPageTitleHints,
-                submittedStateSelectors,
-              },
-            });
+                    client: anthropic,
+                    captureFn,
+                    step: step.instruction,
+                    isFinalStep: i === plan.length - 1,
+                    submitStep: step.submitStep === true,
+                    flowHasSubmitSemantics: trailingGraceFlowHasSubmitSemantics,
+                    elementSubmitShaped: midFlowSubmitShaped,
+                    page,
+                    target: mainFrameTarget(page),
+                    signalCounter,
+                    preNetworkCount: baselineText.networkCount ?? signalCounter.n,
+                    preVisibleTextSignature: baselineText.visibleTextSignature,
+                    preVisibleText: baselineText.visibleText,
+                    preVisibleTextDigest: baselineText.visibleTextDigest,
+                    submitInput: {
+                      pageUrl: trailingGracePageUrl,
+                      pageTitle,
+                      unfocusedObserve: [],
+                      networkCaptures: recentCaptureMeta,
+                      invalidMarkerCount: 0,
+                      ownBackendHostnames,
+                      successUrlFragments,
+                      successPageTitleHints,
+                      submittedStateSelectors,
+                    },
+                  });
             if (trailingGraceVerdict?.verified) {
               logger.info(
                 `${formatStepPrefix(i, () => plan.length)} optional + trailing position; judge verified recent submit (${trailingGraceVerdict.rationale}) — treating verification failure as benign no-op; recon complete`
