@@ -94,7 +94,7 @@ export async function settleAfterClick(
     }
     if (seen) {
       quiet += 1;
-      if (!textMoved) {
+      if (!textMoved && !submitShaped) {
         if (quiet >= QUIET_POLLS) return;
         continue;
       }

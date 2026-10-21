@@ -23,7 +23,7 @@ describe("settleAfterClick", () => {
       if (p === 6) c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0, true);
-    expect(f.polls()).toBe(9);
+    expect(f.polls()).toBe(15);
   });
 
   it("returns after activity at ~11s plus quiet polls", async () => {
@@ -31,7 +31,7 @@ describe("settleAfterClick", () => {
       if (p === 11) c.n += 1;
     });
     await settleAfterClick(f.page, f.counter, 0, true);
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(20);
   });
 
   it("gives up when no activity ever appears", async () => {
@@ -52,7 +52,23 @@ describe("settleAfterClick", () => {
     const f = makeFake(() => {});
     f.counter.n = 5;
     await settleAfterClick(f.page, f.counter, 2, true);
+    expect(f.polls()).toBe(14);
+  });
+
+  it("keeps the short quiet exit for a non-submit click that saw network", async () => {
+    const f = makeFake(() => {});
+    f.counter.n = 5;
+    await settleAfterClick(f.page, f.counter, 2, false);
     expect(f.polls()).toBe(3);
+  });
+
+  it("does not return a network-seen submit-shaped click before a late re-render", async () => {
+    const f = makeFake((p, c) => {
+      if (p === 1) c.n += 1;
+    });
+    const text = (): string => (f.polls() >= 10 ? "step 2" : "step 1");
+    await settleAfterClick(f.page, f.counter, 0, true, async () => text(), "step 1");
+    expect(f.polls()).toBeGreaterThanOrEqual(19);
   });
 
   it("waits for a text-only re-render in a checkout wizard that moves no counter", async () => {
