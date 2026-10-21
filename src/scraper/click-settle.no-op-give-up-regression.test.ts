@@ -186,22 +186,22 @@ describe("settleAfterClick: bounded give-up is counted in polls", () => {
   it.each([
     { submitShaped: false, polls: 1 },
     { submitShaped: true, polls: IDLE_GIVE_UP_MS / 1000 },
-  ])("polls $polls times on a silent page when submitShaped=$submitShaped", async ({
-    submitShaped,
-    polls,
-  }) => {
-    const waitForTimeout = vi.fn(async (): Promise<void> => undefined);
-    await settleAfterClick(
-      { waitForTimeout },
-      { n: 0 },
-      0,
-      submitShaped,
-      async () => TEXT,
-      TEXT,
-      idleQuiescence
-    );
-    expect(waitForTimeout).toHaveBeenCalledTimes(polls);
-  });
+  ])(
+    "polls $polls times on a silent page when submitShaped=$submitShaped",
+    async ({ submitShaped, polls }) => {
+      const waitForTimeout = vi.fn(async (): Promise<void> => undefined);
+      await settleAfterClick(
+        { waitForTimeout },
+        { n: 0 },
+        0,
+        submitShaped,
+        async () => TEXT,
+        TEXT,
+        idleQuiescence
+      );
+      expect(waitForTimeout).toHaveBeenCalledTimes(polls);
+    }
+  );
 
   it("gives the same bound without a text or quiescence reader", async () => {
     const quick = makeIdlePage();
