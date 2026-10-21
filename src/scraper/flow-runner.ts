@@ -13164,6 +13164,22 @@ export async function executeStepWithHealing(params: {
     stepStartSnapshot = firstAttemptPre;
     onElementStepStartBaseline?.(firstAttemptPre);
   };
+  // One derivation for every in-cascade verdict site, so the same click is
+  // judged under the same strictness class and baseline whichever site sees it.
+  const deriveMidFlowJudgement = (
+    elementSubmitShaped: boolean,
+    pre: StepSnapshot
+  ): { midFlowSubmit: boolean; advanceBaseline: StepSnapshot } => {
+    const midFlowSubmit = isMidFlowSubmitShapedStep({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      elementSubmitShaped,
+    });
+    if (elementSubmitShaped) adoptElementStepStartBaseline();
+    return { midFlowSubmit, advanceBaseline: stepStartSnapshot ?? pre };
+  };
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
     const genuineFinal = isGenuineFinalSubmit({
       isFinalStep,
@@ -14057,21 +14073,17 @@ export async function executeStepWithHealing(params: {
             const runnerUp = ranked[1];
             if (runnerUp) {
               const midTarget = frameTarget ?? mainFrameTarget(page);
-              const deepMidFlowSubmit = isMidFlowSubmitShapedStep({
-                step,
-                submitStep,
-                isFinalStep,
-                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                elementSubmitShaped: !stepDeclaredNonSubmit,
-              });
-              adoptElementStepStartBaseline();
+              // Ranked candidates are submit-shaped by construction, so the
+              // resolved element's shape is the step's declared-non-submit gate.
+              const { midFlowSubmit: deepMidFlowSubmit, advanceBaseline: deepStepBaseline } =
+                deriveMidFlowJudgement(!stepDeclaredNonSubmit, pre);
               const { post: midPost, advanceBaseline: deepAdvanceBaseline } =
                 await readMidFlowPostClickAdvance({
                   target: midTarget,
                   signalCounter,
                   page,
                   pre,
-                  stepStartSnapshot: stepStartSnapshot ?? pre,
+                  stepStartSnapshot: deepStepBaseline,
                   midFlowSubmit: deepMidFlowSubmit,
                 });
               // The deep-submit-locator runs only on submit escalation, so a
@@ -15755,15 +15767,8 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
-            step,
-            submitStep,
-            isFinalStep,
-            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-          });
-          if (retryResolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
-          const retryAdvanceBaseline = stepStartSnapshot ?? pre;
+          const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
+            deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost } = await readMidFlowPostClickAdvance({
             target: frameTarget ?? mainFrameTarget(page),
             signalCounter,
