@@ -15751,13 +15751,15 @@ export async function executeStepWithHealing(params: {
           });
           if (retryResolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
           const retryAdvanceBaseline = stepStartSnapshot ?? pre;
-          const retryPost = await settleAndSnapshotPostClick(
-            frameTarget ?? mainFrameTarget(page),
+          const { post: retryPost } = await readMidFlowPostClickAdvance({
+            target: frameTarget ?? mainFrameTarget(page),
             signalCounter,
             page,
-            retryMidFlowSubmit ? withNetworkBaseline(retryAdvanceBaseline, pre) : pre,
-            isSettleWaitStep || retryResolvedElementIsSubmitShaped
-          );
+            pre,
+            stepStartSnapshot: retryAdvanceBaseline,
+            midFlowSubmit: retryMidFlowSubmit,
+            waitForMutations: isSettleWaitStep || retryResolvedElementIsSubmitShaped,
+          });
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&
