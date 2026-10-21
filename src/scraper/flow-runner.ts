@@ -8071,13 +8071,14 @@ export async function submitCaptchaGatedForm(
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
       const midFlowSubmit = verification.isMidFlowSubmitStep === true;
-      const advanceBaseline = verification.stepStartSnapshot ?? pre;
-      const post = await settleAndSnapshotPostClick(
+      const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
         target,
-        verification.signalCounter,
-        verification.page,
-        midFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : advanceBaseline
-      );
+        signalCounter: verification.signalCounter,
+        page: verification.page,
+        pre,
+        stepStartSnapshot: verification.stepStartSnapshot ?? pre,
+        midFlowSubmit,
+      });
       const verdict = classifySubmitShapedClick({
         step: verification.step,
         pre,
@@ -8095,18 +8096,21 @@ export async function submitCaptchaGatedForm(
             throw err;
           });
         if (runnerUpClickResult.clicked) {
-          const runnerUpPost = await settleAndSnapshotPostClick(
-            target,
-            verification.signalCounter,
-            verification.page,
-            midFlowSubmit ? withNetworkBaseline(advanceBaseline, post) : advanceBaseline
-          );
+          const { post: runnerUpPost, advanceBaseline: runnerUpBaseline } =
+            await readMidFlowPostClickAdvance({
+              target,
+              signalCounter: verification.signalCounter,
+              page: verification.page,
+              pre: post,
+              stepStartSnapshot: verification.stepStartSnapshot ?? pre,
+              midFlowSubmit,
+            });
           const runnerUpVerdict = classifySubmitShapedClick({
             step: verification.step,
             pre: post,
             post: runnerUpPost,
             midFlowSubmit,
-            advanceBaseline,
+            advanceBaseline: runnerUpBaseline,
           });
           if (runnerUpVerdict !== "phantom") return true;
         }
