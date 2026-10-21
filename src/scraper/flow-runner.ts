@@ -15725,8 +15725,9 @@ export async function executeStepWithHealing(params: {
               retryPost.url,
               retryMidFlowSubmit ? pre.url : undefined
             );
-          const retryHtmlDelta = retryPost.bodyHtmlLength - pre.bodyHtmlLength;
-          const retryTextChanged = hasVisibleTextChanged(pre, retryPost);
+          const retryDomBaseline = retryMidFlowSubmit ? retryAdvanceBaseline : pre;
+          const retryHtmlDelta = retryPost.bodyHtmlLength - retryDomBaseline.bodyHtmlLength;
+          const retryTextChanged = hasVisibleTextChanged(retryDomBaseline, retryPost);
           const retryFormValueChanged = retryPost.formValueSignature !== pre.formValueSignature;
           // Element-scoped selection read-back for the n+16 fallback — the same
           // authoritative signal the primary verifier uses via `verifyDomEffect`,
