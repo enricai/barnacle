@@ -631,13 +631,13 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     expect(runs[0]?.surface.elapsed()).toBe(runs[1]?.surface.elapsed());
   });
 
-  // The 18th snapshot is the first one after the attempt's `pre` was captured,
+  // The 19th snapshot is the first one after the attempt's `pre` was captured,
   // so the late re-render is absorbed into `pre` and the fallback click sees
   // no further change: only the step-start baseline still shows the advance.
   it("credits the n+16 fallback click when a late re-render was absorbed into the attempt's pre", async () => {
     const { result, surface } = await runRetryFlow(false, 8000, {
       step: NEUTRAL_STEP,
-      renderAtSnapshot: 18,
+      renderAtSnapshot: 19,
     });
 
     expect(result).toMatchObject({ lastStepIndex: 1 });
