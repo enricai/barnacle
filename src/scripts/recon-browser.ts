@@ -111,7 +111,7 @@ import {
   renderUnfocusedObserve,
   STEP_WATCHDOG_MS,
   selectBodyExcerpt,
-  settleAndSnapshotPostClick,
+  readMidFlowPostClickAdvance,
   settleWithPageQuiescence,
   snapshotPage,
   stripNegatedSubmitClauses,
@@ -125,7 +125,6 @@ import {
   waitForChildFrameReady,
 } from "@/scraper/frame-target";
 import {
-  hasSubmitStepDomAdvanced,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
@@ -3233,28 +3232,24 @@ async function main(): Promise<void> {
           const urlAdvanced =
             (!step.submitStep || midFlowSubmitShaped) &&
             hasPageAlreadyAdvancedPastStep(urlAtStepStart, urlAfterFailure, step.instruction);
-          const settledText =
+          const settledAdvance =
             !urlAdvanced && baselineEligible && baselineText !== undefined
-              ? await settleAndSnapshotPostClick(
-                  frameTarget,
+              ? await readMidFlowPostClickAdvance({
+                  target: frameTarget,
                   signalCounter,
                   page,
-                  baselineText,
-                  true,
-                  { settle: settleWithPageQuiescence, snapshot: snapshotPage }
-                ).catch((err: unknown) => {
+                  pre: { ...baselineText, networkCount: baselineText.networkCount ?? signalCounter.n },
+                  stepStartSnapshot: baselineText,
+                  midFlowSubmit: midFlowSubmitShaped,
+                  io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
+                }).catch((err: unknown) => {
                   logger.warn(
                     `${formatStepPrefix(i, () => plan.length)} post-failure settle failed: ${err instanceof Error ? err.message : String(err)}; not crediting an unsettled read`
                   );
                   return undefined;
                 })
               : undefined;
-          const domAdvanced =
-            !urlAdvanced &&
-            baselineEligible &&
-            // midFlowSubmitShaped already excludes a genuine final submit, so a last
-            // slot without submit semantics is judged like any other mid-flow step.
-            hasSubmitStepDomAdvanced(false, baselineText, settledText);
+          const domAdvanced = settledAdvance?.pageAdvanced === true;
           if (urlAdvanced || domAdvanced) {
             logger.info(
               `${formatStepPrefix(i, () => plan.length)} verification failed but the page already advanced past this step (${urlAtStepStart} → ${urlAfterFailure}); treating as completed and resuming remaining tail`
