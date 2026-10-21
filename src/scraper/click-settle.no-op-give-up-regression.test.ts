@@ -2,7 +2,11 @@ import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
-import { settleAndSnapshotPostClick } from "@/scraper/flow-runner";
+import {
+  type PostClickSettleIo,
+  readMidFlowPostClickAdvance,
+  settleAndSnapshotPostClick,
+} from "@/scraper/flow-runner";
 import type { PhantomClickAttempt } from "@/scraper/phantom-click";
 import { classifyPhantomClick, hasSubmitStepDomAdvanced } from "@/scraper/phantom-click";
 
@@ -118,5 +122,43 @@ describe("settleAfterClick: elapsed give-up time is pinned numerically", () => {
     const f = makeIdlePage();
     await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
     expect(f.waited()).toBe(IDLE_GIVE_UP_MS);
+  });
+});
+
+describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within the give-up bound", () => {
+  it("elapses no more than IDLE_GIVE_UP_MS on the fake clock and classifies phantom", async () => {
+    const snap = {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 5000,
+      visibleTextSignature: TEXT,
+      formValueSignature: "",
+    } as PostClickArgs[3];
+    const f = makeIdlePage();
+    const io = {
+      settle: async (): Promise<void> => {
+        await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
+      },
+      snapshot: async () => ({ ...snap }),
+    } as unknown as PostClickSettleIo;
+    const r = await readMidFlowPostClickAdvance({
+      target: {} as never,
+      signalCounter: { n: 0 },
+      page: {} as Page,
+      pre: snap,
+      stepStartSnapshot: snap,
+      midFlowSubmit: true,
+      io,
+    });
+    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
+    expect(r.pageAdvanced).toBe(false);
+    const attempt: PhantomClickAttempt = {
+      actResultSuccess: true,
+      pre: snap,
+      post: r.post,
+      destinationPlausible: true,
+      isSubmitShapedStep: true,
+    };
+    expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 });
