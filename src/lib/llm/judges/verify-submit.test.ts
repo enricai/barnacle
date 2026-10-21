@@ -176,7 +176,7 @@ describe("verifySubmitWithLLM", () => {
     const recon = readFileSync("src/scripts/recon-browser.ts", "utf8");
     expect(recon).not.toContain("await verifySubmitWithLLM(");
     const call = recon.slice(
-      recon.indexOf("const trailingGraceVerdict = await judgeStepOutcome({")
+      recon.indexOf("await judgeStepOutcome({", recon.indexOf("const trailingGraceVerdict ="))
     );
     const ctx = call.slice(0, call.indexOf("submitInput:"));
     expect(ctx).toContain("isFinalStep: i === plan.length - 1");
