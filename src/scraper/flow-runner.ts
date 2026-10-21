@@ -3674,6 +3674,12 @@ export async function judgeStepOutcome(params: {
   preVisibleTextSignature: string;
   preVisibleText?: string;
   preVisibleTextDigest?: string;
+  /**
+   * Visible text of the settled post-click snapshot from the shared advance
+   * read. When present the non-final path judges it as-is instead of settling
+   * and re-probing a second time.
+   */
+  settledPostVisibleText?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3691,20 +3697,23 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  await settleWithPageQuiescence(
-    params.page,
-    target,
-    params.signalCounter,
-    params.preNetworkCount,
-    isStepSettleWaitShaped({
-      step,
-      submitStep: params.submitStep,
-      isFinalStep,
-      flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-    }) || params.elementSubmitShaped === true,
-    params.preVisibleTextSignature,
-    params.preVisibleTextDigest
-  );
+  const hasSettledRead = params.settledPostVisibleText !== undefined;
+  if (!hasSettledRead) {
+    await settleWithPageQuiescence(
+      params.page,
+      target,
+      params.signalCounter,
+      params.preNetworkCount,
+      isStepSettleWaitShaped({
+        step,
+        submitStep: params.submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+      }) || params.elementSubmitShaped === true,
+      params.preVisibleTextSignature,
+      params.preVisibleTextDigest
+    );
+  }
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
     signatureColon === -1
@@ -3729,7 +3738,7 @@ export async function judgeStepOutcome(params: {
     first: Awaited<ReturnType<typeof judgeText>>,
     judgedText: string
   ): Promise<Awaited<ReturnType<typeof judgeText>>> => {
-    if (first === null || first.advanced) return first;
+    if (first === null || first.advanced || hasSettledRead) return first;
     await params.page.waitForTimeout(STEP_REJUDGE_DELAY_MS);
     const laterText = await probeVisibleTextForJudge(target);
     if (
@@ -3740,7 +3749,9 @@ export async function judgeStepOutcome(params: {
     }
     return (await judgeText(laterText)) ?? first;
   };
-  const afterText = await probeVisibleTextForJudge(target);
+  const afterText = hasSettledRead
+    ? (params.settledPostVisibleText ?? "")
+    : await probeVisibleTextForJudge(target);
   const firstVerdict = await judgeText(afterText);
   const verdict = await rejudgeIfTextMoved(firstVerdict, afterText);
   if (verdict === null) return null;
@@ -15474,6 +15485,7 @@ export async function executeStepWithHealing(params: {
         preVisibleTextSignature: advanceBaseline.visibleTextSignature,
         preVisibleText: advanceBaseline.visibleText,
         preVisibleTextDigest: advanceBaseline.visibleTextDigest,
+        settledPostVisibleText: post.visibleText,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -16170,6 +16182,7 @@ export async function executeStepWithHealing(params: {
               preVisibleTextSignature: retryAdvanceBaseline.visibleTextSignature,
               preVisibleText: retryAdvanceBaseline.visibleText,
               preVisibleTextDigest: retryAdvanceBaseline.visibleTextDigest,
+              settledPostVisibleText: retryPost.visibleText,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,
