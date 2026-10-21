@@ -3320,7 +3320,10 @@ async function main(): Promise<void> {
             // A non-final trailing step is judged through judgeStepOutcome so the
             // page is settled first; an unsettled read can land between a header
             // flip and the late body re-render and be held to final-submit proof.
-            const trailingGraceVerdict = await judgeStepOutcome({
+            const trailingGraceVerdict =
+              baselineText === undefined
+                ? undefined
+                : await judgeStepOutcome({
               client: anthropic,
               captureFn,
               step: step.instruction,
@@ -3331,10 +3334,10 @@ async function main(): Promise<void> {
               page,
               target: mainFrameTarget(page),
               signalCounter,
-              preNetworkCount: textAtStepStart?.networkCount ?? signalCounter.n,
-              preVisibleTextSignature: textAtStepStart?.visibleTextSignature ?? "",
-              preVisibleText: textAtStepStart?.visibleText,
-              preVisibleTextDigest: textAtStepStart?.visibleTextDigest,
+              preNetworkCount: baselineText.networkCount ?? signalCounter.n,
+              preVisibleTextSignature: baselineText.visibleTextSignature,
+              preVisibleText: baselineText.visibleText,
+              preVisibleTextDigest: baselineText.visibleTextDigest,
               submitInput: {
                 pageUrl: trailingGracePageUrl,
                 pageTitle,
