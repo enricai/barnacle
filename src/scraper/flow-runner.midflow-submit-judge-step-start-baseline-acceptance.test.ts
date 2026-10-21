@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
 import { verifySubmitWithLLM } from "@/lib/llm/judges/verify-submit";
-import { executeStepWithHealing } from "@/scraper/flow-runner";
+import { executeStepWithHealing, judgeStepOutcome } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
 
 /**
@@ -264,5 +264,79 @@ describe("flow-runner/executeStepWithHealing — judge step-start baseline", () 
       () => "threw"
     );
     expect(final).not.toBe("completed");
+  });
+});
+
+describe("judgeStepOutcome — stale title routing", () => {
+  const STALE_TITLE_REJECTION = "the page title remains 'Sign In'";
+  const SUBMIT_INPUT = {
+    pageUrl: URL,
+    pageTitle: "Sign In",
+    unfocusedObserve: [],
+    networkCaptures: [],
+    invalidMarkerCount: 0,
+    ownBackendHostnames: [],
+    successUrlFragments: [],
+    successPageTitleHints: [],
+    submittedStateSelectors: [],
+  };
+  const LIVE_TEXT = "Welcome back, Sam. Your account dashboard";
+  const BEFORE_TEXT = "Sign In email password";
+
+  function judge(isFinalStep: boolean): ReturnType<typeof judgeStepOutcome> {
+    return judgeStepOutcome({
+      client: {} as never,
+      step: "Click Sign In",
+      isFinalStep,
+      submitStep: true,
+      flowHasSubmitSemantics: isFinalStep,
+      page: { waitForTimeout: async () => undefined },
+      target: {
+        url: async () => URL,
+        evaluate: async (expr: string) => {
+          if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
+          if (expr.includes("outerHTML"))
+            return { html: 1, text: `1:${LIVE_TEXT}`, values: "", state: "" };
+          return LIVE_TEXT;
+        },
+      } as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      preVisibleText: BEFORE_TEXT,
+      submitInput: SUBMIT_INPUT,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(verifySubmitWithLLM).mockResolvedValue({
+      verified: false,
+      reason: STALE_TITLE_REJECTION,
+    } as never);
+  });
+
+  it("non-final step is verified from live text and never reaches the final-submit judge", async () => {
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: true,
+      reason: "signed-in content visible",
+    });
+    const verdict = await judge(false);
+    expect(verdict).toMatchObject({ verified: true });
+    expect(verifySubmitWithLLM).not.toHaveBeenCalled();
+    const input = vi.mocked(verifyStepAdvancedWithLLM).mock.calls[0]?.[0].input;
+    expect(input?.stepInstruction).toBe("Click Sign In");
+    expect(input?.afterText).toBe(LIVE_TEXT);
+    expect(input?.beforeText).toBe(BEFORE_TEXT);
+    expect(Object.keys(input ?? {})).not.toContain("pageTitle");
+  });
+
+  it("genuine final step still goes to the strict judge and keeps its rejection", async () => {
+    const verdict = await judge(true);
+    expect(verdict).toEqual({ verified: false, reason: STALE_TITLE_REJECTION });
+    expect(verifyStepAdvancedWithLLM).not.toHaveBeenCalled();
+    const input = vi.mocked(verifySubmitWithLLM).mock.calls[0]?.[0].input;
+    expect(input?.pageTitle).toBe("Sign In");
+    expect(input?.isFinalStep).toBe(true);
   });
 });
