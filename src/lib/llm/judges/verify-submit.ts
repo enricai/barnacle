@@ -150,9 +150,7 @@ export async function verifySubmitWithLLM(params: {
   const result = await callHaikuJudge({
     client,
     systemPrompt:
-      input.isFinalStep === false
-        ? NON_FINAL_SYSTEM_PROMPT
-        : SUBMIT_VERIFY_SYSTEM_PROMPT,
+      input.isFinalStep === false ? NON_FINAL_SYSTEM_PROMPT : SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
     callType: CALL_TYPE_JUDGE_SUBMIT_VERIFY,
