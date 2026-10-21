@@ -7543,8 +7543,9 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * re-render that follows it, so the verdict waits for the body or for the text
  * to hold still through the whole re-settle budget, and only then reads the
  * header flip as the page's final state (`settled`): a single quiet round
- * cannot distinguish a finished page from a body that re-renders later. Bounded, and a page whose header never
- * flipped (a no-op click) or whose body already swapped returns at once.
+ * cannot distinguish a finished page from a body that re-renders later. Bounded; a page whose body already swapped
+ * returns at once, and one showing no change gets a single probe round so a
+ * re-render that lands after the first snapshot is still seen.
  */
 async function resettleThroughHeaderOnlyFlip(
   page: Page,
@@ -7557,9 +7558,11 @@ async function resettleThroughHeaderOnlyFlip(
   let current = post;
   let heldStill = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
-    if (!hasVisibleTextChanged(pre, current)) return current;
-    if (hasPageBodySwapped(pre, current))
+    const moved = hasVisibleTextChanged(pre, current);
+    if (moved && hasPageBodySwapped(pre, current))
       return round > 0 ? { ...current, settled: true } : current;
+    // A click unseen to move anything gets one probe round, not the whole budget.
+    if (!moved && round > 0) return current;
     await io.settle(
       page,
       target,
