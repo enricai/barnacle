@@ -14053,15 +14053,15 @@ export async function executeStepWithHealing(params: {
                 elementSubmitShaped: !stepDeclaredNonSubmit,
               });
               adoptElementStepStartBaseline();
-              const deepAdvanceBaseline = stepStartSnapshot ?? pre;
-              const midPost = await settleAndSnapshotPostClick(
-                midTarget,
-                signalCounter,
-                page,
-                deepMidFlowSubmit
-                  ? withNetworkBaseline(deepAdvanceBaseline, pre)
-                  : deepAdvanceBaseline
-              );
+              const { post: midPost, advanceBaseline: deepAdvanceBaseline } =
+                await readMidFlowPostClickAdvance({
+                  target: midTarget,
+                  signalCounter,
+                  page,
+                  pre,
+                  stepStartSnapshot: stepStartSnapshot ?? pre,
+                  midFlowSubmit: deepMidFlowSubmit,
+                });
               // The deep-submit-locator runs only on submit escalation, so a
               // stray selection flip must not mask a top-pick phantom and skip
               // the runner-up retry.
