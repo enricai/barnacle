@@ -7,6 +7,7 @@ import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced
 import { settleAfterClick } from "@/scraper/click-settle";
 import {
   type PostClickSettleIo,
+  readMidFlowPostClickAdvance,
   runHealingFlow,
   settleAndSnapshotPostClick,
 } from "@/scraper/flow-runner";
@@ -332,5 +333,76 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     const t = makeIo([PRE_SIG]);
     await run(snap(PRE_SIG), t.io);
     expect(t.settles()).toBe(1);
+  });
+});
+
+describe("readMidFlowPostClickAdvance", () => {
+  const CHROME = "Skip to main content|Careers Home|Search|Help|Privacy|Terms";
+  const START_SIG = `300:Sign In|Create Account|${CHROME}`;
+  const FLIPPED_SIG = `300:My Account|Create Account|${CHROME}`;
+  const BODY_SIG = "588:Thanks your application was received|Settings|Careers Home|Privacy";
+  const snap = (sig: string, networkCount = 0): StepSnapshot =>
+    ({
+      networkCount,
+      url: BASE_URL,
+      bodyHtmlLength: 1000,
+      visibleTextSignature: sig,
+    }) as unknown as StepSnapshot;
+  const makeIo = (timeline: string[]): { io: PostClickSettleIo; settles: () => number } => {
+    let reads = 0;
+    let settles = 0;
+    const io: PostClickSettleIo = {
+      settle: (async () => {
+        settles += 1;
+      }) as unknown as PostClickSettleIo["settle"],
+      snapshot: (async () => {
+        const sig = timeline[Math.min(reads, timeline.length - 1)] as string;
+        reads += 1;
+        return snap(sig);
+      }) as unknown as PostClickSettleIo["snapshot"],
+    };
+    return { io, settles: () => settles };
+  };
+  const read = (
+    pre: StepSnapshot,
+    start: StepSnapshot,
+    midFlowSubmit: boolean,
+    io: PostClickSettleIo
+  ): ReturnType<typeof readMidFlowPostClickAdvance> =>
+    readMidFlowPostClickAdvance({
+      target: {} as never,
+      signalCounter: { n: 0 },
+      page: {} as Page,
+      pre,
+      stepStartSnapshot: start,
+      midFlowSubmit,
+      io,
+    });
+
+  it("credits a header flip plus late body re-render from the step-start baseline", async () => {
+    const t = makeIo([FLIPPED_SIG, BODY_SIG]);
+    const start = snap(START_SIG);
+    const pre = snap(FLIPPED_SIG, 3);
+    const r = await read(pre, start, true, t.io);
+    expect(r.pageAdvanced).toBe(true);
+    expect(r.advanceBaseline.visibleTextSignature).toBe(START_SIG);
+    expect(r.advanceBaseline.networkCount).toBe(3);
+    expect(r.post.visibleTextSignature).toBe(BODY_SIG);
+  });
+
+  it("does not credit a no-op click and adds no extra settle wait", async () => {
+    const t = makeIo([START_SIG]);
+    const start = snap(START_SIG);
+    const r = await read(start, start, true, t.io);
+    expect(r.pageAdvanced).toBe(false);
+    expect(t.settles()).toBe(1);
+  });
+
+  it("uses pre as the baseline when not a mid-flow submit", async () => {
+    const t = makeIo([FLIPPED_SIG]);
+    const pre = snap(FLIPPED_SIG);
+    const r = await read(pre, snap(START_SIG), false, t.io);
+    expect(r.advanceBaseline).toBe(pre);
+    expect(r.pageAdvanced).toBe(false);
   });
 });

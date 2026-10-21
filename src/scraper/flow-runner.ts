@@ -7648,6 +7648,39 @@ export async function settleAndSnapshotPostClick(
 }
 
 /**
+ * Single mid-flow post-click advance read: picks the advance baseline (the
+ * step-start snapshot for a mid-flow submit, `pre` otherwise), gives it the
+ * attempt's network count, settles, re-settles through a header-only flip and
+ * judges advance against that same baseline, so every site credits a page that
+ * advanced from step start once it is quiescent.
+ */
+export async function readMidFlowPostClickAdvance(args: {
+  target: FrameTarget;
+  signalCounter: { n: number };
+  page: Page | undefined;
+  pre: StepSnapshot;
+  stepStartSnapshot: StepSnapshot;
+  midFlowSubmit: boolean;
+  mayTriggerRoundTrip?: boolean;
+  waitForMutations?: boolean;
+  io?: PostClickSettleIo;
+}): Promise<{ post: StepSnapshot; advanceBaseline: StepSnapshot; pageAdvanced: boolean }> {
+  const advanceBaseline = args.midFlowSubmit
+    ? withNetworkBaseline(args.stepStartSnapshot, args.pre)
+    : args.pre;
+  const post = await settleSnapshotAndResettle(
+    args.target,
+    args.signalCounter,
+    args.page,
+    advanceBaseline,
+    args.mayTriggerRoundTrip ?? true,
+    args.waitForMutations ?? true,
+    args.io ?? DEFAULT_POST_CLICK_SETTLE_IO
+  );
+  return { post, advanceBaseline, pageAdvanced: hasSettledPageAdvanced(advanceBaseline, post) };
+}
+
+/**
  * Shared in-page discovery of the widget's callback, used identically by
  * `injectCaptchaTokenAndSubmit`'s precheck (to decide the branch) and its
  * invoke step (to re-resolve and call it) without ever marshalling a
