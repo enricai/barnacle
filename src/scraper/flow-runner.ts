@@ -14978,15 +14978,16 @@ export async function executeStepWithHealing(params: {
     // Re-settle is not gated on submit shape: an unflagged step or a no-action
     // act can still advance a page whose body re-renders late. Credit stays
     // gated on stepIsMidFlowSubmit, so the final step keeps its strictness.
-    const post = await settleSnapshotAndResettle(
-      frameTarget ?? mainFrameTarget(page),
+    const { post } = await readMidFlowPostClickAdvance({
+      target: frameTarget ?? mainFrameTarget(page),
       signalCounter,
       page,
-      stepIsMidFlowSubmit ? withNetworkBaseline(advanceBaseline, pre) : pre,
+      pre,
+      stepStartSnapshot: advanceBaseline,
+      midFlowSubmit: stepIsMidFlowSubmit,
       mayTriggerRoundTrip,
-      isSettleWaitStep || resolvedElementIsSubmitShaped,
-      DEFAULT_POST_CLICK_SETTLE_IO
-    );
+      waitForMutations: isSettleWaitStep || resolvedElementIsSubmitShaped,
+    });
     record.post = post;
 
     if (resolvedAction) {
