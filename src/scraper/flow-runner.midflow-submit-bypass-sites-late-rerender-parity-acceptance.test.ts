@@ -265,7 +265,8 @@ async function runRetryFlow(
 
 async function runChildFrameFlow(
   advances: boolean,
-  delay: number
+  delay: number,
+  step: string = STEP
 ): Promise<{ result: unknown; childSurface: Surface }> {
   const childSurface = buildSurface(advances, delay, (src) =>
     src === "location.href" ? "https://example.org/embedded" : null
@@ -315,7 +316,7 @@ async function runChildFrameFlow(
     stagehand,
     page,
     steps: [
-      { instruction: STEP, optional: false, upload: false, submitStep: true },
+      { instruction: step, optional: false, upload: false, submitStep: true },
       { instruction: NEXT_STEP, optional: true, upload: false, submitStep: false },
     ],
     logger,
@@ -431,6 +432,13 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
       expect(result).toMatchObject({ lastStepIndex: 1 });
       expect(childSurface.rendered()).toBe(true);
       expect(childSurface.clicks()).toBe(1);
+    });
+
+    it("credits the probeChildFrameSubmitFallback click for the neutral step", async () => {
+      const { result, childSurface } = await runChildFrameFlow(true, delay, NEUTRAL_STEP);
+
+      expect(result).toMatchObject({ lastStepIndex: 1 });
+      expect(childSurface.rendered()).toBe(true);
     });
   });
 

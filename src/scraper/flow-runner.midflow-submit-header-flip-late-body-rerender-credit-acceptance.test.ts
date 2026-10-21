@@ -30,7 +30,7 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
 
 const STEP =
   "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
-const URL = "https://example.org/signup";
+const URL = "https://acme.example/signup";
 const RERENDER_DELAY_MS = 8000;
 const PRE_TEXT = `Sign In ${"Email Address Password Verify New Password. ".repeat(21)}`.slice(
   0,
@@ -223,6 +223,7 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
 
     expect(outcome).toBe("completed");
     expect(world.state.rendered).toBe(true);
+    expect(world.clock()).toBeGreaterThanOrEqual(RERENDER_DELAY_MS);
     expect(world.counter.n).toBe(0);
     expect(world.act).toHaveBeenCalledTimes(1);
     expect(verifySubmitWithLLM).not.toHaveBeenCalled();
