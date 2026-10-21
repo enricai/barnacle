@@ -7561,8 +7561,15 @@ async function resettleThroughHeaderOnlyFlip(
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
       return round > 0 ? { ...current, settled: true } : current;
-    // A click unseen to move anything gets one probe round, not the whole budget.
-    if (!moved && round > 0) return current;
+    if (!moved) {
+      // A click unseen to move anything gets one settle-free re-read, so a genuine
+      // no-op adds no wait to its give-up bound.
+      if (round > 0) return current;
+      const probe = await io.snapshot(target, signalCounter, page);
+      if (!hasVisibleTextChanged(pre, probe)) return current;
+      current = probe;
+      continue;
+    }
     await io.settle(
       page,
       target,

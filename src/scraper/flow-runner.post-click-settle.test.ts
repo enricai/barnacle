@@ -328,9 +328,9 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
-  it("gives a no-op click a single probe round, not the whole budget", async () => {
+  it("adds no settle wait for a genuine no-op click", async () => {
     const t = makeIo([PRE_SIG]);
     await run(snap(PRE_SIG), t.io);
-    expect(t.settles()).toBe(2);
+    expect(t.settles()).toBe(1);
   });
 });
