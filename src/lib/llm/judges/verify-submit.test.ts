@@ -117,6 +117,14 @@ describe("verifySubmitWithLLM", () => {
     expect(args.system).toContain("title is not evidence");
   });
 
+  it("non-final step: system prompt is self-consistent with no final-submit requirement", async () => {
+    const { system } = await captured({ isFinalStep: false, stepInstruction: "Click Next" });
+    expect(system).not.toContain("strong DOM/URL/title signal");
+    expect(system).not.toContain("confirmation phrase");
+    expect(system).not.toBe(SUBMIT_VERIFY_SYSTEM_PROMPT);
+    expect(system).toContain("Visible text decides");
+  });
+
   it("final step: prompt still presents title and title hints as evidence", async () => {
     const { user } = await captured({ isFinalStep: true, pageTitle: "Sign In" });
     expect(user).toContain("PAGE TITLE: Sign In");

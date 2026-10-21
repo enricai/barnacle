@@ -41,9 +41,23 @@ Strictness rule for verified=true:
 When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
 When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
-const NON_FINAL_STEP_RULE = `
+/**
+ * Non-final steps are judged on whether the page advanced, not on a
+ * final-submit confirmation, so this prompt is standalone rather than the
+ * strict prompt plus an override that would contradict it.
+ */
+const NON_FINAL_SYSTEM_PROMPT = `You are a step-verifier for browser-automated job applications. Given evidence about what happened after a click, decide whether this step succeeded and the page advanced. This is NOT the final step of the flow, so no confirmation page is expected.
 
-This is NOT the final step of the flow. For a non-final step a stale document title is not evidence (a single-page app's title often stays the same across steps). Visible text decides; if the visible text shows the page advanced, verified=true even when the title or URL did not change.`;
+Rules for verified=true:
+- Visible text decides. If the visible text shows the page advanced to a new stage (relative to the step instruction), set verified=true even when the URL did not change.
+- A stale document title is not evidence: a single-page app's title often stays the same across steps. Neither count it for nor against the step.
+- A new DOM component or URL transition matching the supplied criteria also supports verified=true.
+- A 2xx POST/PUT/DELETE to the site's own backend (matching one of the supplied ownBackendHostnames) strengthens the case but is not required on its own.
+- If only error indicators are present (4xx, 5xx, error containers, the form is still visible with invalid markers), set verified=false with a reason.
+- When ambiguous, set verified=false with a reason.
+
+When verified=true, populate the three signal fields with what you found (any can be null if absent), and write a one-sentence rationale citing the strongest signal.
+When verified=false, write a one short sentence reason (keep it brief) citing what you'd need to see to be convinced.`;
 
 const MAX_VISIBLE_TEXT_CHARS = 3000;
 
@@ -137,7 +151,7 @@ export async function verifySubmitWithLLM(params: {
     client,
     systemPrompt:
       input.isFinalStep === false
-        ? `${SUBMIT_VERIFY_SYSTEM_PROMPT}${NON_FINAL_STEP_RULE}`
+        ? NON_FINAL_SYSTEM_PROMPT
         : SUBMIT_VERIFY_SYSTEM_PROMPT,
     userPrompt: buildVerifySubmitPrompt(input),
     schema: SUBMIT_VERDICT_SCHEMA,
