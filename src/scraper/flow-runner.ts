@@ -7555,7 +7555,6 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
-  let heldStill = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
@@ -7579,10 +7578,11 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
-    heldStill = !hasVisibleTextChanged(current, next);
+    const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
+    if (heldStill && !hasPageBodySwapped(pre, current)) return { ...current, settled: true };
   }
-  return heldStill ? { ...current, settled: true } : current;
+  return current;
 }
 
 /**
