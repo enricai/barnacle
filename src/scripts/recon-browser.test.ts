@@ -7639,3 +7639,19 @@ describe("recon-browser/decideReplanNoProgress", () => {
     expect(counts.size).toBe(0);
   });
 });
+
+describe("recon-browser/isSubmitRevealedInvalid mid-flow advance", () => {
+  it("does not fire when a mid-flow submit settled onto a new page", () => {
+    expect(
+      isSubmitRevealedInvalid({
+        isFinalStep: true,
+        requireSubmitEndpoint: true,
+        resolvedMethod: "click",
+        effectSignals: "dom-grew-without-network: body +1024B",
+        preSubmitInvalidCount: 0,
+        postAttemptInvalidCount: 3,
+        midFlowAdvanced: true,
+      })
+    ).toBe(false);
+  });
+});

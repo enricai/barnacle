@@ -2818,6 +2818,8 @@ export function isSubmitRevealedInvalid(params: {
   effectSignals: string;
   preSubmitInvalidCount: number;
   postAttemptInvalidCount: number;
+  /** A mid-flow submit that settled onto a new page already advanced; replanning would re-fill the passed page. */
+  midFlowAdvanced?: boolean;
 }): boolean {
   const {
     isFinalStep,
@@ -2826,8 +2828,10 @@ export function isSubmitRevealedInvalid(params: {
     effectSignals,
     preSubmitInvalidCount,
     postAttemptInvalidCount,
+    midFlowAdvanced = false,
   } = params;
   if (!isFinalStep) return false;
+  if (midFlowAdvanced) return false;
   if (!requireSubmitEndpoint) return false;
   if (resolvedMethod !== "click") return false;
   if (!effectSignals.includes("dom-grew-without-network")) return false;
@@ -16449,6 +16453,9 @@ export async function executeStepWithHealing(params: {
         effectSignals,
         preSubmitInvalidCount,
         postAttemptInvalidCount,
+        midFlowAdvanced:
+          !isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) &&
+          hasSettledPageAdvanced(advanceBaseline, post),
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
