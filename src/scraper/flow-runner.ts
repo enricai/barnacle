@@ -2290,7 +2290,9 @@ export function isDomOnlyAdvanceVerified(params: {
  * rejection, so strong structural click signals (a real network advance or a
  * demonstrable page advance) credit the step instead of failing it and
  * re-clicking at the same position. Final steps and weak-signal cases return
- * false and keep the DOM-state fallback / failure path.
+ * false and keep the DOM-state fallback / failure path. Invalid markers
+ * describe the page the click landed on, so they only veto a network-only
+ * credit, never a settled page advance.
  */
 export function isNullVerdictAdvanceCredited(params: {
   midFlowSubmit: boolean;
@@ -2299,10 +2301,9 @@ export function isNullVerdictAdvanceCredited(params: {
   pageAdvanced: boolean;
   invalidMarkerCount: number;
 }): boolean {
-  if (!params.midFlowSubmit || !params.judgeUnavailable || params.invalidMarkerCount > 0) {
-    return false;
-  }
-  return params.networkAdvanced || params.pageAdvanced;
+  if (!params.midFlowSubmit || !params.judgeUnavailable) return false;
+  if (params.pageAdvanced) return true;
+  return params.networkAdvanced && params.invalidMarkerCount <= 0;
 }
 
 /**
@@ -2469,7 +2470,6 @@ export function isClickViewSwapVerified(params: {
     midFlowActRan &&
     destinationPlausible !== false &&
     !isAdvanceWithPattern &&
-    invalidMarkerDelta <= 0 &&
     textChanged &&
     pageAdvanced
   ) {
