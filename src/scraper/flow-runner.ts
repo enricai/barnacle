@@ -15779,15 +15779,16 @@ export async function executeStepWithHealing(params: {
           await page.waitForTimeout(STEP_PAUSE_MS);
           const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
             deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
-          const { post: retryPost } = await readMidFlowPostClickAdvance({
-            target: frameTarget ?? mainFrameTarget(page),
-            signalCounter,
-            page,
-            pre,
-            stepStartSnapshot: retryAdvanceBaseline,
-            midFlowSubmit: retryMidFlowSubmit,
-            waitForMutations: isSettleWaitStep || retryResolvedElementIsSubmitShaped,
-          });
+          const { post: retryPost, pageAdvanced: retryPageAdvanced } =
+            await readMidFlowPostClickAdvance({
+              target: frameTarget ?? mainFrameTarget(page),
+              signalCounter,
+              page,
+              pre,
+              stepStartSnapshot: retryAdvanceBaseline,
+              midFlowSubmit: retryMidFlowSubmit,
+              waitForMutations: isSettleWaitStep || retryResolvedElementIsSubmitShaped,
+            });
           const retryNetworkFired = retryPost.networkCount > pre.networkCount;
           const retryUrlChanged =
             hasOriginOrPathChanged(pre.url, retryPost.url) &&
@@ -16073,6 +16074,10 @@ export async function executeStepWithHealing(params: {
                 (!retrySubmitShaped || retryMidFlowSubmit) &&
                 retryVerdict === "effective") ||
               (n16ClickDelivered &&
+                retryMidFlowSubmit &&
+                retryPageAdvanced &&
+                retryMidFlowDestinationPlausible) ||
+              (n16ClickDelivered &&
                 weakDomSignalsAllowed &&
                 retryDestinationPlausible &&
                 (retryHtmlDelta !== 0 || retryTextChanged || retryFormValueChanged)));
@@ -16214,7 +16219,6 @@ export async function executeStepWithHealing(params: {
               },
             });
 
-            const retryPageAdvanced = hasSettledPageAdvanced(retryAdvanceBaseline, retryPost);
             const retryMidFlowAdvanceCredited = isMidFlowAdvanceCredited({
               midFlowSubmit: retryMidFlowSubmit,
               signalAdvanced: retryVerdict === "effective" && retryPageAdvanced,

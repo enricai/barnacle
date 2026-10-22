@@ -629,6 +629,32 @@ describe("flow-runner — mid-flow late re-render parity at the captcha-gated an
     });
   });
 
+  describe.each(DELAYS_MS)("n+16 retry with submitStep set and %ims late body", (delay) => {
+    it("credits the late-body advance without a replan or second click", async () => {
+      const { result, surface } = await runRetryFlow(true, delay, { submitStep: true });
+
+      expect(result).toMatchObject({ lastStepIndex: 1 });
+      expect(surface.rendered()).toBe(true);
+      expect(surface.clicks()).toBe(1);
+    });
+
+    it("credits the neutral-step late-body advance with submitStep set", async () => {
+      const { result, surface } = await runRetryFlow(true, delay, {
+        step: NEUTRAL_STEP,
+        submitStep: true,
+      });
+
+      expect(result).toMatchObject({ lastStepIndex: 1 });
+      expect(surface.clicks()).toBe(1);
+    });
+  });
+
+  it("keeps a no-op n+16 retry click phantom when submitStep is set", async () => {
+    const { result } = await runRetryFlow(false, 8000, { submitStep: true });
+
+    expect(result).toBeInstanceOf(Error);
+  });
+
   it("gives up a no-op n+16 retry click at the same settle bound regardless of the late-render delay", async () => {
     const runs = await Promise.all([3000, 11000].map(async (delay) => runRetryFlow(false, delay)));
 
