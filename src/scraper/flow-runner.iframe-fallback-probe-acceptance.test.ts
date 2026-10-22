@@ -273,6 +273,8 @@ describe("flow-runner/runHealingFlow — same-origin child-iframe submit fallbac
         clicked.value = true;
         return { clicked: true };
       }
+      if (src.includes("__settleQ"))
+        return { pending: clicked.value && waited.ms < 6000 ? 1 : 0, mutations: 0 };
       if (src.includes("outerHTML")) return { html: 4096, text: "0:" };
       return null;
     });

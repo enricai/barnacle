@@ -141,6 +141,7 @@ describe("flow-runner post-click settle end-to-end (8s delayed re-render)", () =
       control as unknown as { addEventListener: (t: string, cb: () => void) => void }
     ).addEventListener("click", () => {
       clickedAt = now;
+      out.innerHTML = "<p>Submitting</p>";
     });
 
     const root = document.documentElement as unknown as HappyDomElement;

@@ -1,7 +1,11 @@
 import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
-import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+import {
+  IDLE_GIVE_UP_MS,
+  QUIESCENT_NO_OP_GIVE_UP_MS,
+  settleAfterClick,
+} from "@/scraper/click-settle";
 import {
   type PostClickSettleIo,
   readMidFlowPostClickAdvance,
@@ -42,10 +46,10 @@ describe("settleAfterClick: a genuine no-op click gives up at the unchanged boun
     expect(f.waited()).toBe(1000);
   });
 
-  it("gives up at IDLE_GIVE_UP_MS for a submit-shaped click", async () => {
+  it("gives up at QUIESCENT_NO_OP_GIVE_UP_MS for a submit-shaped click on a quiescent page", async () => {
     const f = makeIdlePage();
     await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
-    expect(f.waited()).toBe(IDLE_GIVE_UP_MS);
+    expect(f.waited()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
   });
 
   it("classifies a click that changes no text, network or URL as phantom", () => {
@@ -118,7 +122,7 @@ describe("settleAfterClick: an unchanged signature gives up at the unchanged bou
       NOOP_SIGNATURE,
       idleQuiescence
     );
-    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
+    expect(f.waited()).toBeLessThanOrEqual(QUIESCENT_NO_OP_GIVE_UP_MS);
     expect(ADVANCED_SIGNATURE).not.toBe(NOOP_SIGNATURE);
   });
 });
@@ -137,15 +141,15 @@ describe("settleAfterClick: elapsed give-up time is pinned numerically", () => {
     expect(waited).toBe(4000);
   });
 
-  it("does not extend a silent submit-shaped click beyond IDLE_GIVE_UP_MS", async () => {
+  it("does not extend a silent submit-shaped click beyond QUIESCENT_NO_OP_GIVE_UP_MS", async () => {
     const f = makeIdlePage();
     await settleAfterClick(f.page, { n: 0 }, 0, true, async () => TEXT, TEXT, idleQuiescence);
-    expect(f.waited()).toBe(IDLE_GIVE_UP_MS);
+    expect(f.waited()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
   });
 });
 
 describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within the give-up bound", () => {
-  it("elapses no more than IDLE_GIVE_UP_MS on the fake clock and classifies phantom", async () => {
+  it("elapses no more than QUIESCENT_NO_OP_GIVE_UP_MS on the fake clock and classifies phantom", async () => {
     const snap = {
       networkCount: 0,
       url: URL,
@@ -169,7 +173,7 @@ describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within th
       midFlowSubmit: true,
       io,
     });
-    expect(f.waited()).toBeLessThanOrEqual(IDLE_GIVE_UP_MS);
+    expect(f.waited()).toBeLessThanOrEqual(QUIESCENT_NO_OP_GIVE_UP_MS);
     expect(r.pageAdvanced).toBe(false);
     const attempt: PhantomClickAttempt = {
       actResultSuccess: true,
@@ -185,7 +189,7 @@ describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within th
 describe("settleAfterClick: bounded give-up is counted in polls", () => {
   it.each([
     { submitShaped: false, polls: 1 },
-    { submitShaped: true, polls: IDLE_GIVE_UP_MS / 1000 },
+    { submitShaped: true, polls: QUIESCENT_NO_OP_GIVE_UP_MS / 1000 },
   ])(
     "polls $polls times on a silent page when submitShaped=$submitShaped",
     async ({ submitShaped, polls }) => {
@@ -219,7 +223,8 @@ describe("settleAfterClick: bounded give-up is counted in polls", () => {
         waited += ms;
       },
     };
-    const readText = async (): Promise<string> => (waited >= 8000 ? "Next view" : TEXT);
+    const readText = async (): Promise<string> =>
+      waited >= 8000 ? "Next view" : waited >= 1000 ? "Header flipped" : TEXT;
     await settleAfterClick(page, { n: 0 }, 0, true, readText, TEXT, idleQuiescence);
     expect(waited).toBeGreaterThan(IDLE_GIVE_UP_MS);
     expect(waited).toBe(17000);

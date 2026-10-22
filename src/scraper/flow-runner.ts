@@ -2290,7 +2290,9 @@ export function isDomOnlyAdvanceVerified(params: {
  * rejection, so strong structural click signals (a real network advance or a
  * demonstrable page advance) credit the step instead of failing it and
  * re-clicking at the same position. Final steps and weak-signal cases return
- * false and keep the DOM-state fallback / failure path.
+ * false and keep the DOM-state fallback / failure path. Invalid markers
+ * describe the page the click landed on, so they only veto a network-only
+ * credit, never a settled page advance.
  */
 export function isNullVerdictAdvanceCredited(params: {
   midFlowSubmit: boolean;
@@ -2299,10 +2301,9 @@ export function isNullVerdictAdvanceCredited(params: {
   pageAdvanced: boolean;
   invalidMarkerCount: number;
 }): boolean {
-  if (!params.midFlowSubmit || !params.judgeUnavailable || params.invalidMarkerCount > 0) {
-    return false;
-  }
-  return params.networkAdvanced || params.pageAdvanced;
+  if (!params.midFlowSubmit || !params.judgeUnavailable) return false;
+  if (params.pageAdvanced) return true;
+  return params.networkAdvanced && params.invalidMarkerCount <= 0;
 }
 
 /**
@@ -2469,7 +2470,6 @@ export function isClickViewSwapVerified(params: {
     midFlowActRan &&
     destinationPlausible !== false &&
     !isAdvanceWithPattern &&
-    invalidMarkerDelta <= 0 &&
     textChanged &&
     pageAdvanced
   ) {
@@ -2818,6 +2818,8 @@ export function isSubmitRevealedInvalid(params: {
   effectSignals: string;
   preSubmitInvalidCount: number;
   postAttemptInvalidCount: number;
+  /** A mid-flow submit that settled onto a new page already advanced; replanning would re-fill the passed page. */
+  midFlowAdvanced?: boolean;
 }): boolean {
   const {
     isFinalStep,
@@ -2826,8 +2828,10 @@ export function isSubmitRevealedInvalid(params: {
     effectSignals,
     preSubmitInvalidCount,
     postAttemptInvalidCount,
+    midFlowAdvanced = false,
   } = params;
   if (!isFinalStep) return false;
+  if (midFlowAdvanced) return false;
   if (!requireSubmitEndpoint) return false;
   if (resolvedMethod !== "click") return false;
   if (!effectSignals.includes("dom-grew-without-network")) return false;
@@ -7553,7 +7557,9 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * re-render that follows it, so the verdict waits for the body or for the text
  * to hold still through the whole re-settle budget, and only then reads the
  * header flip as the page's final state (`settled`): a single quiet round
- * cannot distinguish a finished page from a body that re-renders later. Bounded; a page whose body already swapped
+ * cannot distinguish a finished page from a body that re-renders later. Each round settles against the
+ * pre-click text, so the header flip stays movement and the quiet window, not the silent no-op
+ * give-up, decides how long a body re-render is waited for. Bounded; a page whose body already swapped
  * returns at once, and one showing no change gets a single probe round so a
  * re-render that lands after the first snapshot is still seen.
  */
@@ -7585,8 +7591,8 @@ async function resettleThroughHeaderOnlyFlip(
       signalCounter,
       current.networkCount,
       true,
-      current.visibleTextSignature,
-      current.visibleTextDigest
+      pre.visibleTextSignature,
+      pre.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
@@ -16447,6 +16453,11 @@ export async function executeStepWithHealing(params: {
         effectSignals,
         preSubmitInvalidCount,
         postAttemptInvalidCount,
+        midFlowAdvanced:
+          !isGenuineFinalSubmit({
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          }) && hasSettledPageAdvanced(advanceBaseline, post),
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;

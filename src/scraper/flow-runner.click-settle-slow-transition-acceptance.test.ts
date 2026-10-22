@@ -37,7 +37,7 @@ const testLogger = {
 const STEP = "click the 'Load Report' button to continue to the next page";
 const NON_SUBMIT_STEP = "click the 'Load Report' button";
 const SLOW_DELAY_MS = 6000;
-const IDLE_GIVE_UP_MS = 14000;
+const QUIESCENT_NO_OP_GIVE_UP_MS = 4000;
 
 interface VirtualPage {
   page: Page;
@@ -253,7 +253,7 @@ describe("flow-runner/executeStepWithHealing — post-click settle (slow-transit
   });
 
   it.each([
-    [STEP, IDLE_GIVE_UP_MS / 1000],
+    [STEP, QUIESCENT_NO_OP_GIVE_UP_MS / 1000],
     [NON_SUBMIT_STEP, 1],
   ])(
     "a click with no activity falls through after the idle window (step=%s)",

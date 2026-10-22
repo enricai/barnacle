@@ -22,6 +22,7 @@ export function settleTextKey(visibleTextSignature: string, visibleTextDigest?: 
 const POLL_MS = 1000;
 const QUIET_POLLS = 3;
 export const IDLE_GIVE_UP_MS = 14000;
+export const QUIESCENT_NO_OP_GIVE_UP_MS = 4000;
 const TEXT_QUIET_POLLS = 9;
 export const MAX_MS = 60000;
 
@@ -39,6 +40,9 @@ export const MAX_MS = 60000;
  * is no longer a guess about how late a re-render can land.
  * Any click whose text moved, or any submit-shaped click that saw network activity, keeps waiting until the same idle allowance a silent
  * submit-shaped one gets, since a header flip can precede the body re-render by many seconds.
+ * A silent submit-shaped click whose armed page probe reports no pending request and no mutation
+ * gives up at QUIESCENT_NO_OP_GIVE_UP_MS, since a late re-render would itself register as
+ * movement; without a probe the long IDLE_GIVE_UP_MS guess remains.
  * Only submit-shaped steps keep the long idle wait for a slow round-trip to start;
  * any other click that shows no activity after one quiet poll gives up.
  * The probe is read once before the click (see snapshotPage) so early requests and
@@ -101,7 +105,9 @@ export async function settleAfterClick(
       if (quiet >= TEXT_QUIET_POLLS && elapsed >= IDLE_GIVE_UP_MS) return;
       continue;
     }
-    if (!submitShaped || elapsed >= IDLE_GIVE_UP_MS) return;
+    if (!submitShaped) return;
+    const giveUpMs = readQuiescence ? QUIESCENT_NO_OP_GIVE_UP_MS : IDLE_GIVE_UP_MS;
+    if (elapsed >= giveUpMs) return;
   }
 }
 
