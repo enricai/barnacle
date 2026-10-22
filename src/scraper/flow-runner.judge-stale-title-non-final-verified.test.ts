@@ -117,4 +117,26 @@ describe("judgeStepOutcome stale title", () => {
     expect(input.visibleText).toBe(AFTER_TEXT);
     expect(v).toEqual({ verified: false, reason: "title still Sign In" });
   });
+
+  it("verifies a non-final step on the reported pre/post signatures with no counted network and a stale title", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "account area shown" });
+    const pre = "Skip to main content|Sign In|Careers Home|";
+    const post = "Skip to main content|Settings|Careers Home|";
+    const v = await judgeStepOutcome({
+      client: {} as never,
+      step: STEP,
+      isFinalStep: false,
+      submitStep: true,
+      flowHasSubmitSemantics: true,
+      page: { waitForTimeout: async () => {} },
+      target: judgeTarget(() => post) as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `996:${pre}`,
+      preVisibleText: pre,
+      submitInput: SUBMIT_INPUT,
+    });
+    expect(submitJudge).not.toHaveBeenCalled();
+    expect(v).toMatchObject({ verified: true });
+  });
 });
