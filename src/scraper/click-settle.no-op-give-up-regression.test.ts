@@ -230,3 +230,76 @@ describe("settleAfterClick: bounded give-up is counted in polls", () => {
     expect(waited).toBe(17000);
   });
 });
+
+describe("readMidFlowPostClickAdvance: header flips at once, body re-renders late", () => {
+  const PRE = "Skip to main content|Sign In|Careers Home|";
+  const FLIPPED = "Skip to main content|Settings|Careers Home|";
+  const RERENDERED = "Skip to main content|Settings|Order summary|Careers Home|";
+
+  function drive(visibleAt: (waited: number) => string): {
+    io: PostClickSettleIo;
+    waited: () => number;
+  } {
+    let waited = 0;
+    const page = {
+      waitForTimeout: async (ms: number): Promise<void> => {
+        waited += ms;
+      },
+    };
+    const sig = (): string => `${visibleAt(waited).length}:${visibleAt(waited)}`;
+    const snapshot = async (): Promise<PostClickArgs[3]> =>
+      ({
+        networkCount: 0,
+        url: URL,
+        bodyHtmlLength: visibleAt(waited).length,
+        visibleTextSignature: sig(),
+        formValueSignature: "",
+      }) as PostClickArgs[3];
+    const io = {
+      settle: async (): Promise<void> => {
+        const pre = await snapshot();
+        await settleAfterClick(
+          page,
+          { n: 0 },
+          0,
+          true,
+          async () => sig(),
+          pre.visibleTextSignature,
+          idleQuiescence
+        );
+      },
+      snapshot,
+    } as unknown as PostClickSettleIo;
+    return { io, waited: () => waited };
+  }
+
+  async function read(
+    io: PostClickSettleIo
+  ): Promise<Awaited<ReturnType<typeof readMidFlowPostClickAdvance>>> {
+    const pre = await io.snapshot({} as never, { n: 0 }, {} as Page);
+    return readMidFlowPostClickAdvance({
+      target: {} as never,
+      signalCounter: { n: 0 },
+      page: {} as Page,
+      pre,
+      stepStartSnapshot: pre,
+      midFlowSubmit: true,
+      io,
+    });
+  }
+
+  it("settles on the post-re-render read and reports advanced with no counted network", async () => {
+    const f = drive((w) => (w >= 8000 ? RERENDERED : w >= 1000 ? FLIPPED : PRE));
+    const r = await read(f.io);
+    expect(f.waited()).toBeGreaterThanOrEqual(8000);
+    expect(r.pageAdvanced).toBe(true);
+    expect(r.post.networkCount).toBe(0);
+  });
+
+  it("still gives up a silent no-op at QUIESCENT_NO_OP_GIVE_UP_MS", async () => {
+    const f = drive(() => PRE);
+    const r = await read(f.io);
+    expect(f.waited()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
+    expect(r.pageAdvanced).toBe(false);
+  });
+});

@@ -28,7 +28,8 @@ vi.mock("@/lib/llm/judges/verify-submit", () => ({
   })),
 }));
 
-const STEP = "click the 'Create Account' button to submit the account creation form";
+const STEP =
+  "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
 const URL = "https://acme.example/signup";
 const RERENDER_DELAY_MS = 8000;
 const PRE_HEADER = "Skip to main content Sign In Careers Home";
@@ -80,6 +81,7 @@ interface World {
   stagehand: Stagehand;
   state: { rendered: boolean };
   counter: { n: number };
+  clicks: { n: number };
   act: ReturnType<typeof vi.fn>;
   clock: () => number;
 }
@@ -100,7 +102,9 @@ function buildWorld(title: string, noop = false): World {
   let clickedAt: number | null = null;
   const state = { rendered: false };
   const counter = { n: 0 };
+  const clicks = { n: 0 };
   const click = (): void => {
+    clicks.n += 1;
     if (noop) return;
     clickedAt = now;
     hdr.textContent = POST_HEADER;
@@ -163,7 +167,7 @@ function buildWorld(title: string, noop = false): World {
         typeof i === "string" ? [] : [{ selector: "xpath=//probe-presence", description: "p" }]
       ),
   } as unknown as Stagehand;
-  return { page, stagehand, state, counter, act, control, clock: () => now };
+  return { page, stagehand, state, counter, clicks, act, control, clock: () => now };
 }
 
 const testLogger = {
@@ -229,6 +233,7 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
     expect(world.clock()).toBeGreaterThanOrEqual(RERENDER_DELAY_MS);
     expect(world.counter.n).toBe(0);
     expect(world.act).toHaveBeenCalledTimes(1);
+    expect(world.clicks.n).toBe(1);
     expect(verifySubmitWithLLM).not.toHaveBeenCalled();
     expect(trajectory).toHaveLength(1);
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
@@ -252,6 +257,7 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
     expect(world.state.rendered).toBe(true);
     expect(world.counter.n).toBe(0);
     expect(world.act).toHaveBeenCalledTimes(1);
+    expect(world.clicks.n).toBe(1);
     expect(trajectory).toHaveLength(1);
     expect(logs().some((l) => /n\+16/.test(l))).toBe(true);
     expect(logs().some((l) => /phantom|replan|deep-submit|rephras/i.test(l))).toBe(false);
@@ -304,6 +310,7 @@ describe("flow-runner/executeStepWithHealing — header flip with late body re-r
       /failed verification|phantom-click-exhausted/
     );
     expect(world.state.rendered).toBe(false);
+    expect(logs().some((l) => /phantom/i.test(l))).toBe(true);
   });
 
   it("keeps network/URL proof for a genuine final submit: DOM text alone is not credited", async () => {
