@@ -132,3 +132,11 @@ describe("verifyStepAdvancedWithLLM", () => {
     expect(prompt).not.toMatch(/PAGE TITLE/);
   });
 });
+
+describe("STEP_ADVANCED_SYSTEM_PROMPT marker consistency", () => {
+  it("does not reject on a bare invalid-marker count", () => {
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).not.toMatch(/marker count is above zero/);
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("not evidence in either direction");
+    expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("never set advanced=false from the count alone");
+  });
+});
