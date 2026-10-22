@@ -140,3 +140,22 @@ describe("STEP_ADVANCED_SYSTEM_PROMPT marker consistency", () => {
     expect(STEP_ADVANCED_SYSTEM_PROMPT).toContain("never set advanced=false from the count alone");
   });
 });
+
+describe("step-advanced prompt with a new page's invalid markers", () => {
+  it("passes a genuine advance through when the new page has required-field markers", async () => {
+    const client = fakeClient({ advanced: true, reason: "step 3 current" });
+    const result = await verifyStepAdvancedWithLLM({
+      client,
+      input: { ...INPUT, afterText: "current step 3 of 7 Job Title *", invalidMarkerCount: 4 },
+    });
+    const args = vi.mocked(client.messages.parse).mock.calls[0]?.[0] as unknown as {
+      system: string;
+      messages: { content: string }[];
+    };
+    expect(result).toEqual({ advanced: true, reason: "step 3 current" });
+    expect(args.messages[0]?.content).toContain("STEP INSTRUCTION: Click Create account");
+    expect(args.messages[0]?.content).toContain("current step 3 of 7 Job Title *");
+    expect(args.system).not.toMatch(/marker count is above zero/);
+    expect(args.system).toContain("never set advanced=false from the count alone");
+  });
+});
