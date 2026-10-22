@@ -709,7 +709,8 @@ describe("scraper/phantom-click settled header flip plus late body", () => {
     ...(settled === undefined ? {} : { settled }),
   });
   const pre = snap("996:Skip to main content|Sign In|Careers Home|");
-  const lateBody = "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home|";
+  const lateBody =
+    "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home|";
   const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
 
   it("credits the report pair on a mid-flow step with no network", () => {
