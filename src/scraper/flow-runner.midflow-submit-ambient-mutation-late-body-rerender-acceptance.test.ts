@@ -1,5 +1,5 @@
 import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 import { runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -24,7 +24,7 @@ const URL = "https://example.org/signup";
 const DELAYS_MS = [20000, 40000, 75000];
 
 interface Surface {
-  evaluate: ReturnType<typeof vi.fn>;
+  evaluate: Mock<(expr: unknown) => Promise<unknown>>;
   waitForTimeout: (ms: number) => Promise<void>;
   clicks: () => number;
   rendered: () => boolean;
@@ -51,22 +51,24 @@ function buildSurface(advances: boolean, delayMs: number, ambient: boolean): Sur
       digest: `${flipped ? "b" : "a"}${rendered ? "2" : "1"}:${text}`,
     };
   };
-  const evaluate = vi.fn().mockImplementation(async (expr: unknown) => {
-    const src = String(expr);
-    if (src.includes("ranked.sort"))
-      return [{ deepIndex: 2, tier: 3, tag: "button", accessibleName: "create account" }];
-    if (src.includes('__mouse("click"')) {
-      clicks += 1;
-      if (advances && clickedAt === null) clickedAt = now;
-      return { clicked: true };
-    }
-    if (src.includes("outerHTML")) return snapshot();
-    if (src.includes("__settleQ")) {
-      if (ambient) mutations += 1;
-      return { pending: 0, mutations };
-    }
-    return null;
-  });
+  const evaluate = vi
+    .fn<(expr: unknown) => Promise<unknown>>()
+    .mockImplementation(async (expr: unknown) => {
+      const src = String(expr);
+      if (src.includes("ranked.sort"))
+        return [{ deepIndex: 2, tier: 3, tag: "button", accessibleName: "create account" }];
+      if (src.includes('__mouse("click"')) {
+        clicks += 1;
+        if (advances && clickedAt === null) clickedAt = now;
+        return { clicked: true };
+      }
+      if (src.includes("outerHTML")) return snapshot();
+      if (src.includes("__settleQ")) {
+        if (ambient) mutations += 1;
+        return { pending: 0, mutations };
+      }
+      return null;
+    });
   return {
     evaluate,
     clicks: () => clicks,
