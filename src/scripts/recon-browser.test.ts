@@ -7655,3 +7655,17 @@ describe("recon-browser/isSubmitRevealedInvalid mid-flow advance", () => {
     ).toBe(false);
   });
 });
+
+describe("recon-browser/step-start baseline wiring", () => {
+  const source = readFileSync(join(__dirname, "recon-browser.ts"), "utf8");
+
+  it("captures the step-start snapshot for every submitStep", () => {
+    expect(source).toMatch(
+      /const textAtStepStart =\s*midFlowSubmitShaped \|\|\s*step\.submitStep === true \|\|/
+    );
+  });
+
+  it("passes the settled read into the trailing-grace judge", () => {
+    expect(source).toContain("settledPostVisibleText: settledAdvance?.post.visibleText,");
+  });
+});
