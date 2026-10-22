@@ -16454,8 +16454,10 @@ export async function executeStepWithHealing(params: {
         preSubmitInvalidCount,
         postAttemptInvalidCount,
         midFlowAdvanced:
-          !isGenuineFinalSubmit({ isFinalStep, flowHasSubmitSemantics: flowHasSubmitSemanticsFlag }) &&
-          hasSettledPageAdvanced(advanceBaseline, post),
+          !isGenuineFinalSubmit({
+            isFinalStep,
+            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+          }) && hasSettledPageAdvanced(advanceBaseline, post),
       });
       if (earlyExit) {
         const exitReason = `submit-revealed-invalid: click surfaced ${postAttemptInvalidCount - preSubmitInvalidCount} new ng-invalid container(s) (was ${preSubmitInvalidCount}, now ${postAttemptInvalidCount}); attempts 2-${MAX_STEP_ATTEMPTS} cannot heal a form that needs answers — routing to replan`;
