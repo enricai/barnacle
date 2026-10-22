@@ -691,6 +691,56 @@ describe("scraper/phantom-click advance predicate on literal signatures", () => 
   });
 });
 
+describe("scraper/phantom-click settled header flip plus late body", () => {
+  const snap = (
+    sig: string,
+    settled?: boolean
+  ): {
+    networkCount: number;
+    url: string;
+    bodyHtmlLength: number;
+    visibleTextSignature: string;
+    settled?: boolean;
+  } => ({
+    networkCount: 0,
+    url: URL,
+    bodyHtmlLength: 31284,
+    visibleTextSignature: sig,
+    ...(settled === undefined ? {} : { settled }),
+  });
+  const pre = snap("996:Skip to main content|Sign In|Careers Home|");
+  const lateBody = "588:Skip to main content|Settings|user@example.com|Careers Home|Candidate Home|";
+  const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
+
+  it("credits the report pair on a mid-flow step with no network", () => {
+    const post = snap(lateBody, true);
+    expect(hasSettledPageAdvanced(pre, post)).toBe(true);
+    expect(classifyPhantomClick(makeAttempt({ pre, post, ...midFlow }))).toBe("effective");
+  });
+
+  it("is phantom for an identical pre/post even when settled", () => {
+    expect(hasSettledPageAdvanced(pre, snap(pre.visibleTextSignature, true))).toBe(false);
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre, post: snap(pre.visibleTextSignature, true), ...midFlow })
+      )
+    ).toBe("phantom");
+  });
+
+  it("keeps the final submit phantom for the same settled DOM-only pair", () => {
+    expect(
+      classifyPhantomClick(
+        makeAttempt({
+          pre,
+          post: snap(lateBody, true),
+          isSubmitShapedStep: true,
+          isMidFlowSubmitStep: false,
+        })
+      )
+    ).toBe("phantom");
+  });
+});
+
 describe("scraper/phantom-click full-text page advance", () => {
   const chrome =
     "Home Jobs Careers Benefits Locations Teams Students Veterans Events Blog Press. ".repeat(4);

@@ -169,3 +169,11 @@ describe("final submit keeps strict proof", () => {
     expect(verdicts).toEqual([true, true]);
   });
 });
+
+describe("isClickViewSwapVerified settled advance judgement", () => {
+  it("credits a mid-flow submit judged advanced but not the final submit", () => {
+    const advanced = { ...BASE, bytesDelta: 0, pageAdvanced: true };
+    expect(isClickViewSwapVerified({ ...advanced, midFlowSubmit: true })).toBe(true);
+    expect(isClickViewSwapVerified({ ...advanced, midFlowSubmit: false })).toBe(false);
+  });
+});
