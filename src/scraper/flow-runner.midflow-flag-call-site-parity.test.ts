@@ -42,4 +42,11 @@ describe("isMidFlowSubmitShapedStep call-site parity", () => {
       isMidFlowSubmitShapedStep({ ...base, isFinalStep: true, elementSubmitShaped: true })
     ).toBe(false);
   });
+
+  it("derives mid-flow flag and baseline through one helper at deep-submit, primary-shared and n+16 sites", () => {
+    const sites = source.split("deriveMidFlowJudgement(").slice(1);
+    const args = sites.map((call) => call.slice(0, call.indexOf(");")));
+    expect(args.some((a) => a.includes("!stepDeclaredNonSubmit"))).toBe(true);
+    expect(args.some((a) => a.includes("retryResolvedElementIsSubmitShaped"))).toBe(true);
+  });
 });

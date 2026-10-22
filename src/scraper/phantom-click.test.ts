@@ -6,6 +6,7 @@ import {
   hasPageAdvanced,
   hasPageBodySwapped,
   hasSettledPageAdvanced,
+  hasSubmitStepDomAdvanced,
   isPlausibleStepDestination,
   SIGN_IN_PATTERNS,
 } from "@/scraper/phantom-click";
@@ -814,5 +815,57 @@ describe("scraper/phantom-click mid-flow submit advance vs final submit", () => 
     expect(
       classifyPhantomClick(makeAttempt({ pre: preSnap, post: swapped, isSubmitShapedStep: true }))
     ).toBe("phantom");
+  });
+});
+
+describe("scraper/phantom-click header-only resettle shares one baseline across verdict sites", () => {
+  const header = (title: string, settled?: boolean): PhantomClickAttempt["post"] => {
+    return {
+      networkCount: 0,
+      url: URL,
+      bodyHtmlLength: 31284,
+      visibleTextSignature: `300:${title}|Create Account|Skip to main content|Careers Home|Candidate Home|`,
+      ...(settled === undefined ? {} : { settled }),
+    };
+  };
+  const midFlow = { isSubmitShapedStep: true, isMidFlowSubmitStep: true };
+
+  it("credits a settled header-only advance against an advanceBaseline when pre absorbed the flip", () => {
+    const stepStart = header("Sign In");
+    const absorbed = header("My Account");
+    const post = header("My Account", true);
+
+    expect(hasSettledPageAdvanced(stepStart, post)).toBe(true);
+    expect(classifyPhantomClick(makeAttempt({ pre: absorbed, post, ...midFlow }))).toBe("phantom");
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre: absorbed, post, advanceBaseline: stepStart, ...midFlow })
+      )
+    ).toBe("effective");
+  });
+
+  it("keeps a no-op phantom against the same advanceBaseline once settled", () => {
+    const stepStart = header("Sign In");
+    const post = header("Sign In", true);
+
+    expect(
+      classifyPhantomClick(
+        makeAttempt({ pre: stepStart, post, advanceBaseline: stepStart, ...midFlow })
+      )
+    ).toBe("phantom");
+  });
+
+  it("agrees with hasSubmitStepDomAdvanced on the same settled header-only read", () => {
+    const stepStart = header("Sign In");
+    const settled = header("My Account", true);
+    const unsettled = header("My Account");
+
+    expect(hasSubmitStepDomAdvanced(false, stepStart, settled)).toBe(
+      hasSettledPageAdvanced(stepStart, settled)
+    );
+    expect(hasSubmitStepDomAdvanced(false, stepStart, settled)).toBe(true);
+    expect(hasSubmitStepDomAdvanced(false, stepStart, unsettled)).toBe(false);
+    expect(hasSubmitStepDomAdvanced(false, stepStart, header("Sign In", true))).toBe(false);
+    expect(hasSubmitStepDomAdvanced(true, stepStart, settled)).toBe(false);
   });
 });

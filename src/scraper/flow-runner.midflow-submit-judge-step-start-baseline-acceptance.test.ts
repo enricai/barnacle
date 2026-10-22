@@ -339,4 +339,33 @@ describe("judgeStepOutcome — stale title routing", () => {
     expect(input?.pageTitle).toBe("Sign In");
     expect(input?.isFinalStep).toBe(true);
   });
+
+  it("judges a handed settled post text once, with no second probe, settle, or fixed-delay rejudge", async () => {
+    vi.mocked(verifyStepAdvancedWithLLM).mockResolvedValue({
+      advanced: false,
+      reason: "no change",
+    });
+    const evaluate = vi.fn(async () => "LATER TEXT");
+    const waitForTimeout = vi.fn(async () => undefined);
+    const verdict = await judgeStepOutcome({
+      client: {} as never,
+      step: "Click Sign In",
+      isFinalStep: false,
+      submitStep: true,
+      flowHasSubmitSemantics: false,
+      page: { waitForTimeout },
+      target: { url: async () => URL, evaluate } as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      preVisibleText: BEFORE_TEXT,
+      settledPostVisibleText: LIVE_TEXT,
+      submitInput: SUBMIT_INPUT,
+    });
+    expect(verdict).toMatchObject({ verified: false });
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(waitForTimeout).not.toHaveBeenCalled();
+    expect(verifyStepAdvancedWithLLM).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(verifyStepAdvancedWithLLM).mock.calls[0]?.[0].input.afterText).toBe(LIVE_TEXT);
+  });
 });

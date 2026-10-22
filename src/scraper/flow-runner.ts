@@ -3674,6 +3674,12 @@ export async function judgeStepOutcome(params: {
   preVisibleTextSignature: string;
   preVisibleText?: string;
   preVisibleTextDigest?: string;
+  /**
+   * Visible text of the settled post-click snapshot from the shared advance
+   * read. When present the non-final path judges it as-is instead of settling
+   * and re-probing a second time.
+   */
+  settledPostVisibleText?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3691,20 +3697,23 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  await settleWithPageQuiescence(
-    params.page,
-    target,
-    params.signalCounter,
-    params.preNetworkCount,
-    isStepSettleWaitShaped({
-      step,
-      submitStep: params.submitStep,
-      isFinalStep,
-      flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-    }) || params.elementSubmitShaped === true,
-    params.preVisibleTextSignature,
-    params.preVisibleTextDigest
-  );
+  const hasSettledRead = params.settledPostVisibleText !== undefined;
+  if (!hasSettledRead) {
+    await settleWithPageQuiescence(
+      params.page,
+      target,
+      params.signalCounter,
+      params.preNetworkCount,
+      isStepSettleWaitShaped({
+        step,
+        submitStep: params.submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+      }) || params.elementSubmitShaped === true,
+      params.preVisibleTextSignature,
+      params.preVisibleTextDigest
+    );
+  }
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
     signatureColon === -1
@@ -3729,7 +3738,7 @@ export async function judgeStepOutcome(params: {
     first: Awaited<ReturnType<typeof judgeText>>,
     judgedText: string
   ): Promise<Awaited<ReturnType<typeof judgeText>>> => {
-    if (first === null || first.advanced) return first;
+    if (first === null || first.advanced || hasSettledRead) return first;
     await params.page.waitForTimeout(STEP_REJUDGE_DELAY_MS);
     const laterText = await probeVisibleTextForJudge(target);
     if (
@@ -3740,7 +3749,9 @@ export async function judgeStepOutcome(params: {
     }
     return (await judgeText(laterText)) ?? first;
   };
-  const afterText = await probeVisibleTextForJudge(target);
+  const afterText = hasSettledRead
+    ? (params.settledPostVisibleText ?? "")
+    : await probeVisibleTextForJudge(target);
   const firstVerdict = await judgeText(afterText);
   const verdict = await rejudgeIfTextMoved(firstVerdict, afterText);
   if (verdict === null) return null;
@@ -7555,7 +7566,6 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
-  let heldStill = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
@@ -7579,10 +7589,11 @@ async function resettleThroughHeaderOnlyFlip(
       current.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
-    heldStill = !hasVisibleTextChanged(current, next);
+    const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
+    if (heldStill && !hasPageBodySwapped(pre, current)) return { ...current, settled: true };
   }
-  return heldStill ? { ...current, settled: true } : current;
+  return current;
 }
 
 /**
@@ -8069,7 +8080,17 @@ export async function submitCaptchaGatedForm(
       });
     if (clickResult.clicked) {
       if (!pre || !verification) return true;
-      const midFlowSubmit = verification.isMidFlowSubmitStep === true;
+      // An omitted flag means the caller could not tell final from mid-flow;
+      // derive from the step like the in-cascade sites rather than going strict.
+      const midFlowSubmit =
+        verification.isMidFlowSubmitStep ??
+        isMidFlowSubmitShapedStep({
+          step: verification.step,
+          submitStep: false,
+          isFinalStep: false,
+          flowHasSubmitSemantics: false,
+          elementSubmitShaped: true,
+        });
       const { post, advanceBaseline } = await readMidFlowPostClickAdvance({
         target,
         signalCounter: verification.signalCounter,
@@ -13153,6 +13174,22 @@ export async function executeStepWithHealing(params: {
     stepStartSnapshot = firstAttemptPre;
     onElementStepStartBaseline?.(firstAttemptPre);
   };
+  // One derivation for every in-cascade verdict site, so the same click is
+  // judged under the same strictness class and baseline whichever site sees it.
+  const deriveMidFlowJudgement = (
+    elementSubmitShaped: boolean,
+    pre: StepSnapshot
+  ): { midFlowSubmit: boolean; advanceBaseline: StepSnapshot } => {
+    const midFlowSubmit = isMidFlowSubmitShapedStep({
+      step,
+      submitStep,
+      isFinalStep,
+      flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
+      elementSubmitShaped,
+    });
+    if (elementSubmitShaped) adoptElementStepStartBaseline();
+    return { midFlowSubmit, advanceBaseline: stepStartSnapshot ?? pre };
+  };
   const creditStepStartAdvance = async (exit: string): Promise<boolean> => {
     const genuineFinal = isGenuineFinalSubmit({
       isFinalStep,
@@ -14046,21 +14083,17 @@ export async function executeStepWithHealing(params: {
             const runnerUp = ranked[1];
             if (runnerUp) {
               const midTarget = frameTarget ?? mainFrameTarget(page);
-              const deepMidFlowSubmit = isMidFlowSubmitShapedStep({
-                step,
-                submitStep,
-                isFinalStep,
-                flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-                elementSubmitShaped: !stepDeclaredNonSubmit,
-              });
-              adoptElementStepStartBaseline();
+              // Ranked candidates are submit-shaped by construction, so the
+              // resolved element's shape is the step's declared-non-submit gate.
+              const { midFlowSubmit: deepMidFlowSubmit, advanceBaseline: deepStepBaseline } =
+                deriveMidFlowJudgement(!stepDeclaredNonSubmit, pre);
               const { post: midPost, advanceBaseline: deepAdvanceBaseline } =
                 await readMidFlowPostClickAdvance({
                   target: midTarget,
                   signalCounter,
                   page,
                   pre,
-                  stepStartSnapshot: stepStartSnapshot ?? pre,
+                  stepStartSnapshot: deepStepBaseline,
                   midFlowSubmit: deepMidFlowSubmit,
                 });
               // The deep-submit-locator runs only on submit escalation, so a
@@ -15474,6 +15507,7 @@ export async function executeStepWithHealing(params: {
         preVisibleTextSignature: advanceBaseline.visibleTextSignature,
         preVisibleText: advanceBaseline.visibleText,
         preVisibleTextDigest: advanceBaseline.visibleTextDigest,
+        settledPostVisibleText: post.visibleText,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -15743,15 +15777,8 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
-          const retryMidFlowSubmit = isMidFlowSubmitShapedStep({
-            step,
-            submitStep,
-            isFinalStep,
-            flowHasSubmitSemantics: flowHasSubmitSemanticsFlag,
-            elementSubmitShaped: retryResolvedElementIsSubmitShaped,
-          });
-          if (retryResolvedElementIsSubmitShaped) adoptElementStepStartBaseline();
-          const retryAdvanceBaseline = stepStartSnapshot ?? pre;
+          const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
+            deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost } = await readMidFlowPostClickAdvance({
             target: frameTarget ?? mainFrameTarget(page),
             signalCounter,
@@ -16170,6 +16197,7 @@ export async function executeStepWithHealing(params: {
               preVisibleTextSignature: retryAdvanceBaseline.visibleTextSignature,
               preVisibleText: retryAdvanceBaseline.visibleText,
               preVisibleTextDigest: retryAdvanceBaseline.visibleTextDigest,
+              settledPostVisibleText: retryPost.visibleText,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,

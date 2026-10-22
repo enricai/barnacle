@@ -181,3 +181,47 @@ describe("readMidFlowPostClickAdvance: a no-op submit click is phantom within th
     expect(classifyPhantomClick(attempt)).toBe("phantom");
   });
 });
+
+describe("settleAfterClick: bounded give-up is counted in polls", () => {
+  it.each([
+    { submitShaped: false, polls: 1 },
+    { submitShaped: true, polls: IDLE_GIVE_UP_MS / 1000 },
+  ])(
+    "polls $polls times on a silent page when submitShaped=$submitShaped",
+    async ({ submitShaped, polls }) => {
+      const waitForTimeout = vi.fn(async (): Promise<void> => undefined);
+      await settleAfterClick(
+        { waitForTimeout },
+        { n: 0 },
+        0,
+        submitShaped,
+        async () => TEXT,
+        TEXT,
+        idleQuiescence
+      );
+      expect(waitForTimeout).toHaveBeenCalledTimes(polls);
+    }
+  );
+
+  it("gives the same bound without a text or quiescence reader", async () => {
+    const quick = makeIdlePage();
+    await settleAfterClick(quick.page, { n: 0 }, 0, false);
+    expect(quick.waited()).toBe(1000);
+    const slow = makeIdlePage();
+    await settleAfterClick(slow.page, { n: 0 }, 0, true);
+    expect(slow.waited()).toBe(IDLE_GIVE_UP_MS);
+  });
+
+  it("still waits past the silent bound when text moves late on a submit-shaped click", async () => {
+    let waited = 0;
+    const page = {
+      waitForTimeout: async (ms: number): Promise<void> => {
+        waited += ms;
+      },
+    };
+    const readText = async (): Promise<string> => (waited >= 8000 ? "Next view" : TEXT);
+    await settleAfterClick(page, { n: 0 }, 0, true, readText, TEXT, idleQuiescence);
+    expect(waited).toBeGreaterThan(IDLE_GIVE_UP_MS);
+    expect(waited).toBe(17000);
+  });
+});
