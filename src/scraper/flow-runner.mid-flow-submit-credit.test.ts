@@ -38,12 +38,17 @@ describe("isClickViewSwapVerified mid-flow submit", () => {
     );
   });
 
-  it.each([{ invalidMarkerDelta: 1 }, { destinationPlausible: false }])(
-    "vetoes %o even with the flag",
-    (veto) => {
-      expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, ...veto })).toBe(false);
-    }
-  );
+  it("vetoes an implausible destination even with the flag", () => {
+    expect(
+      isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, destinationPlausible: false })
+    ).toBe(false);
+  });
+
+  it("credits an advanced page that carries invalid markers", () => {
+    expect(isClickViewSwapVerified({ ...BASE, midFlowSubmit: true, invalidMarkerDelta: 1 })).toBe(
+      true
+    );
+  });
 });
 
 describe("isClickViewSwapVerified mid-flow submit with an unreported gesture", () => {

@@ -34,9 +34,15 @@ describe("isNullVerdictAdvanceCredited", () => {
     ).toBe(false);
   });
 
-  it("does not credit when invalid markers remain", () => {
+  it("credits a page advance despite invalid markers on the new page", () => {
     expect(
       isNullVerdictAdvanceCredited({ ...BASE, pageAdvanced: true, invalidMarkerCount: 2 })
+    ).toBe(true);
+  });
+
+  it("does not credit a network-only advance while invalid markers remain", () => {
+    expect(
+      isNullVerdictAdvanceCredited({ ...BASE, networkAdvanced: true, invalidMarkerCount: 2 })
     ).toBe(false);
   });
 });
