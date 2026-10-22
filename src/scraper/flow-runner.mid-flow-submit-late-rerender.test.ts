@@ -36,7 +36,7 @@ const testLogger = {
 
 const STEP =
   "On the registration form (Email Address and Password already filled), click the Create Account button to submit the form";
-const IDLE_GIVE_UP_MS = 14000;
+const QUIESCENT_NO_OP_GIVE_UP_MS = 4000;
 const LATE_BODY_DELAY_MS = 12000;
 const CANDIDATE = {
   selector: "css=button#create-account",
@@ -193,7 +193,7 @@ describe("flow-runner/executeStepWithHealing — mid-flow submit with a late re-
     ).rejects.toThrow(/verification|attempts/i);
 
     expect(guardedAct).toHaveBeenCalledTimes(1);
-    expect(vp.settlePolls()).toBe(IDLE_GIVE_UP_MS / 1000);
+    expect(vp.settlePolls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("does not credit a late DOM-only re-render on the final slice position", async () => {

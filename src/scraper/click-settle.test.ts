@@ -174,7 +174,7 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(22);
   });
 
-  it("still gives up at 14 polls on a no-op click when the page reports idle", async () => {
+  it("gives up at 4 polls on a no-op submit-shaped click when the page reports idle", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(
       f.page,
@@ -188,7 +188,7 @@ describe("settleAfterClick", () => {
         mutations: 0,
       })
     );
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(4);
   });
 
   it("stops at the max when the page never goes idle", async () => {

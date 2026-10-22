@@ -244,7 +244,7 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
     expect(logs.some((l) => /deep-submit-locator|llm-rephrase/.test(l))).toBe(false);
   });
 
-  it("keeps the 14-poll give-up, the phantom verdict and escalation for a genuine no-op click", async () => {
+  it("keeps the 4-poll give-up, the phantom verdict and escalation for a genuine no-op click", async () => {
     vi.mocked(verifySubmitWithLLM).mockResolvedValue({
       verified: false,
       reason: "nothing changed",
@@ -263,7 +263,7 @@ describe("flow-runner mid-flow submit acceptance (store checkout)", () => {
       1,
       world.waits.findIndex((ms, i) => i > 0 && ms !== 1000)
     );
-    expect(firstSettle).toHaveLength(14);
+    expect(firstSettle).toHaveLength(4);
     const logs = logsOf();
     expect(logs.some((l) => /phantom/.test(l))).toBe(true);
     expect(logs.some((l) => /deep-submit-locator|llm-rephrase/.test(l))).toBe(true);

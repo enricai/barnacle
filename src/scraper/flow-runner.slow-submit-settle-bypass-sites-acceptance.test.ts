@@ -63,6 +63,8 @@ function makeSlowPage(): {
         return { clicked: true };
       }
     }
+    if (src.includes("__settleQ"))
+      return { pending: state.topClicked && state.waitedMs < LATE_MS ? 1 : 0, mutations: 0 };
     if (src.includes("outerHTML")) return { html: 4096, text: "0:" };
     if (src.includes("isInvalid(el)")) return 0;
     return null;

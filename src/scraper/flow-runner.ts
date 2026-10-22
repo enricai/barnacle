@@ -7553,7 +7553,9 @@ const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_
  * re-render that follows it, so the verdict waits for the body or for the text
  * to hold still through the whole re-settle budget, and only then reads the
  * header flip as the page's final state (`settled`): a single quiet round
- * cannot distinguish a finished page from a body that re-renders later. Bounded; a page whose body already swapped
+ * cannot distinguish a finished page from a body that re-renders later. Each round settles against the
+ * pre-click text, so the header flip stays movement and the quiet window, not the silent no-op
+ * give-up, decides how long a body re-render is waited for. Bounded; a page whose body already swapped
  * returns at once, and one showing no change gets a single probe round so a
  * re-render that lands after the first snapshot is still seen.
  */
@@ -7585,8 +7587,8 @@ async function resettleThroughHeaderOnlyFlip(
       signalCounter,
       current.networkCount,
       true,
-      current.visibleTextSignature,
-      current.visibleTextDigest
+      pre.visibleTextSignature,
+      pre.visibleTextDigest
     );
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
