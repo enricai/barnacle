@@ -3044,7 +3044,9 @@ async function main(): Promise<void> {
         });
         let elementBaseline: Awaited<ReturnType<typeof snapshotPage>> | undefined;
         const textAtStepStart =
-          midFlowSubmitShaped || (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW)
+          midFlowSubmitShaped ||
+          step.submitStep === true ||
+          (step.optional && i >= plan.length - TRAILING_GRACE_WINDOW)
             ? await snapshotPage(frameTarget, signalCounter).catch(() => undefined)
             : undefined;
         // A child frame CDP has just attached to may still be sitting on
@@ -3346,6 +3348,7 @@ async function main(): Promise<void> {
                     preVisibleTextSignature: baselineText.visibleTextSignature,
                     preVisibleText: baselineText.visibleText,
                     preVisibleTextDigest: baselineText.visibleTextDigest,
+                    settledPostVisibleText: settledAdvance?.post.visibleText,
                     submitInput: {
                       pageUrl: trailingGracePageUrl,
                       pageTitle,
