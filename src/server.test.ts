@@ -168,3 +168,23 @@ describe("buildServer onClose plugin drain", () => {
     expect(shutdownWarnings).toHaveLength(0);
   });
 });
+
+describe("buildServer Fastify options", () => {
+  it("does not trigger any Fastify deprecation warning", async () => {
+    const deprecations: string[] = [];
+    const onWarning = (warning: Error & { code?: string }): void => {
+      if (warning.code?.startsWith("FSTDEP")) {
+        deprecations.push(`${warning.code}: ${warning.message}`);
+      }
+    };
+    process.on("warning", onWarning);
+
+    const { buildServer } = await import("@/server.js");
+    const app = await buildServer();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    process.off("warning", onWarning);
+    await app.close();
+
+    expect(deprecations).toEqual([]);
+  });
+});

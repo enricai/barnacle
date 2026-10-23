@@ -65,7 +65,6 @@ export async function buildServer(): Promise<
 
   const app = Fastify({
     loggerInstance: logger,
-    disableRequestLogging: false,
     // TRUST_PROXY=true is correct when behind a reverse proxy (ALB,
     // nginx, Cloudflare) — Fastify reads the real client IP from
     // X-Forwarded-For. Set TRUST_PROXY=false for bare-metal deployments
