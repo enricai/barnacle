@@ -2,7 +2,7 @@ import { Writable } from "node:stream";
 
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { buildLoggerOptions, extendLogger } from "@/lib/logging";
 import type { Logger } from "@/types/logging";
@@ -91,8 +91,14 @@ describe("logger on Fastify request children", () => {
 });
 
 describe("logger service field", () => {
+  const preserved = process.env.DD_SERVICE;
+
+  afterEach(() => {
+    if (preserved === undefined) delete process.env.DD_SERVICE;
+    else process.env.DD_SERVICE = preserved;
+  });
+
   it("writes the DD_SERVICE service on every emitted line for Datadog", () => {
-    const preserved = process.env.DD_SERVICE;
     process.env.DD_SERVICE = "cruiselines";
     const lines: LogLine[] = [];
     const sink = new Writable({
@@ -107,8 +113,6 @@ describe("logger service field", () => {
     );
 
     logger.info("starting");
-    if (preserved === undefined) delete process.env.DD_SERVICE;
-    else process.env.DD_SERVICE = preserved;
 
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ service: "cruiselines", msg: "starting" });
