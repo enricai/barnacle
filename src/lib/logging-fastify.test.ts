@@ -89,3 +89,28 @@ describe("logger on Fastify request children", () => {
     expect(failed?.reqId).toBeDefined();
   });
 });
+
+describe("logger service field", () => {
+  it("writes the DD_SERVICE service on every emitted line for Datadog", () => {
+    const preserved = process.env.DD_SERVICE;
+    process.env.DD_SERVICE = "cruiselines";
+    const lines: LogLine[] = [];
+    const sink = new Writable({
+      write(chunk, _enc, cb): void {
+        lines.push(JSON.parse(String(chunk)));
+        cb();
+      },
+    });
+    const logger = pino(
+      { ...buildLoggerOptions({ name: "test" }), level: "info", transport: undefined },
+      sink
+    );
+
+    logger.info("starting");
+    if (preserved === undefined) delete process.env.DD_SERVICE;
+    else process.env.DD_SERVICE = preserved;
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ service: "cruiselines", msg: "starting" });
+  });
+});

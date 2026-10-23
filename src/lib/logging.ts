@@ -234,15 +234,17 @@ export function buildLoggerOptions({
   name: string;
   level?: string;
 }): pino.LoggerOptions {
+  const service = getEnv("DD_SERVICE", "barnacle");
   return {
     name: getLogName(name, defaultAppName),
     level: isTest ? "silent" : level || defaultLoggingLevel,
     base: {
       appName: defaultAppName,
+      service,
       env: nodeEnv,
       ...(ddEnabled && {
         dd: {
-          service: getEnv("DD_SERVICE", "barnacle"),
+          service,
           version: getEnv("DD_VERSION", "0.1.0"),
           env: getEnv("DD_ENV", nodeEnv),
         },

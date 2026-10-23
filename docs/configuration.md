@@ -119,7 +119,7 @@ pnpm add hot-shots && DD_METRICS_ENABLED=true node dist/server.js
 | `DD_METRICS_ENABLED` | `false` | Enable DogStatsD metrics. Requires the `hot-shots` peer dependency. Independent of `DD_TRACE_ENABLED`. |
 | `DD_AGENT_HOST` | `localhost` | Datadog agent hostname (the sidecar, in ECS Fargate). |
 | `DD_DOGSTATSD_PORT` | `8125` | DogStatsD UDP port on the agent host. |
-| `DD_SERVICE` | `barnacle` | Service name tagged on spans and metrics. |
+| `DD_SERVICE` | `barnacle` | Service name tagged on spans and metrics, and written as the `service` field of every log line (Datadog uses it as the log's service). |
 | `DD_ENV` | `NODE_ENV` | Deployment environment tag. |
 | `DD_VERSION` | `0.1.0` | Application version tag — git SHA or package version. |
 
