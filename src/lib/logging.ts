@@ -161,6 +161,19 @@ function getLogName(name: string, appName: string): string {
 }
 
 /**
+ * Wraps a level method so it splits oversized messages, running against the
+ * logger it is called on. Child loggers inherit these wrappers, so binding to
+ * the logger they were created for would route every child's output through
+ * its parent, dropping the child's bindings and serializers (Fastify's
+ * `request.log` then dumps the raw request, `rawHeaders` included).
+ */
+function withSplitting(logger: pino.Logger, original: LogFunction): LogFunction {
+  return function (this: pino.Logger | undefined, obj: unknown, ...args: unknown[]): void {
+    logWithSplitting(original.bind(this ?? logger), obj, ...args);
+  };
+}
+
+/**
  * Wraps a pino logger with the project's extended Logger interface: CloudWatch
  * message splitting on every level method, and `errorWithStack` for one-line
  * error logs that include the stack inline. Used internally by `getLogger` and
@@ -170,33 +183,21 @@ function getLogName(name: string, appName: string): string {
 export function extendLogger(logger: pino.Logger): Logger {
   const extendedLogger = logger as Logger;
 
-  const originalInfo = extendedLogger.info.bind(extendedLogger) as LogFunction;
-  const originalError = extendedLogger.error.bind(extendedLogger) as LogFunction;
-  const originalWarn = extendedLogger.warn.bind(extendedLogger) as LogFunction;
-  const originalDebug = extendedLogger.debug.bind(extendedLogger) as LogFunction;
+  extendedLogger.info = withSplitting(logger, extendedLogger.info as LogFunction);
+  extendedLogger.error = withSplitting(logger, extendedLogger.error as LogFunction);
+  extendedLogger.warn = withSplitting(logger, extendedLogger.warn as LogFunction);
+  extendedLogger.debug = withSplitting(logger, extendedLogger.debug as LogFunction);
 
-  extendedLogger.info = (obj: unknown, ...args: unknown[]): void => {
-    logWithSplitting(originalInfo, obj, ...args);
-  };
-
-  extendedLogger.error = (obj: unknown, ...args: unknown[]): void => {
-    logWithSplitting(originalError, obj, ...args);
-  };
-
-  extendedLogger.warn = (obj: unknown, ...args: unknown[]): void => {
-    logWithSplitting(originalWarn, obj, ...args);
-  };
-
-  extendedLogger.debug = (obj: unknown, ...args: unknown[]): void => {
-    logWithSplitting(originalDebug, obj, ...args);
-  };
-
-  extendedLogger.errorWithStack = (error: unknown, msg?: string): void => {
+  extendedLogger.errorWithStack = function (
+    this: Logger | undefined,
+    error: unknown,
+    msg?: string
+  ): void {
     const message =
       error instanceof Error
         ? `${msg || error.message}: ${error.stack}`
         : `${msg || JSON.stringify(error)}`;
-    logWithSplitting(originalError, message);
+    (this ?? extendedLogger).error(message);
   };
 
   return extendedLogger;
@@ -221,13 +222,19 @@ export function getScriptLogger(name: string): Logger {
 }
 
 /**
- * Creates a named pino logger with the project's standard wiring:
- * pino-pretty transport in dev, JSON in prod, silent in test, secrets
- * redacted, and every string message auto-chunked under CloudWatch's
- * 256KB event cap. `name` appears as `{appName}://{name}` on every line.
+ * Pino options for the project's standard logger: pino-pretty transport in
+ * dev, JSON in prod, silent in test, secrets redacted, request values scrubbed
+ * by hook. Split from `getLogger` so tests can build a non-silent logger with
+ * the real redaction wiring.
  */
-export function getLogger({ name, level }: { name: string; level?: string }): Logger {
-  const options: pino.LoggerOptions = {
+export function buildLoggerOptions({
+  name,
+  level,
+}: {
+  name: string;
+  level?: string;
+}): pino.LoggerOptions {
+  return {
     name: getLogName(name, defaultAppName),
     level: isTest ? "silent" : level || defaultLoggingLevel,
     base: {
@@ -251,8 +258,16 @@ export function getLogger({ name, level }: { name: string; level?: string }): Lo
     },
     transport,
   };
+}
 
-  return extendLogger(pino(options));
+/**
+ * Creates a named pino logger with the project's standard wiring (see
+ * {@link buildLoggerOptions}), with every string message auto-chunked under
+ * CloudWatch's 256KB event cap. `name` appears as `{appName}://{name}` on every
+ * line.
+ */
+export function getLogger({ name, level }: { name: string; level?: string }): Logger {
+  return extendLogger(pino(buildLoggerOptions({ name, level })));
 }
 
 function ddMixin(): object {
