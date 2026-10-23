@@ -224,8 +224,9 @@ export function getScriptLogger(name: string): Logger {
 /**
  * Pino options for the project's standard logger: pino-pretty transport in
  * dev, JSON in prod, silent in test, secrets redacted, request values scrubbed
- * by hook. Split from `getLogger` so tests can build a non-silent logger with
- * the real redaction wiring.
+ * by hook, and every line tagged with the `DD_SERVICE` service so Datadog does
+ * not fall back to its forwarder's account-wide default. Split from `getLogger`
+ * so tests can build a non-silent logger with the real redaction wiring.
  */
 export function buildLoggerOptions({
   name,
