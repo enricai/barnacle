@@ -1,7 +1,7 @@
 import type pino from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getLogger, splitLargeMessage } from "@/lib/logging";
+import { buildLoggerOptions, getLogger, splitLargeMessage } from "@/lib/logging";
 
 const pinoOptionsCalls: pino.LoggerOptions[] = [];
 
@@ -161,6 +161,27 @@ describe("lib/logging getLogger", () => {
     expect(() => logger.warn("simple warn")).not.toThrow();
     expect(() => logger.error("simple error")).not.toThrow();
     expect(() => logger.debug("simple debug")).not.toThrow();
+  });
+});
+
+describe("lib/logging buildLoggerOptions service field", () => {
+  const preserved = process.env.DD_SERVICE;
+
+  afterEach(() => {
+    if (preserved === undefined) delete process.env.DD_SERVICE;
+    else process.env.DD_SERVICE = preserved;
+  });
+
+  it("tags every line with the barnacle service by default", () => {
+    delete process.env.DD_SERVICE;
+    expect(buildLoggerOptions({ name: "test-scope" }).base).toMatchObject({ service: "barnacle" });
+  });
+
+  it("uses DD_SERVICE as the service when set", () => {
+    process.env.DD_SERVICE = "cruiselines";
+    expect(buildLoggerOptions({ name: "test-scope" }).base).toMatchObject({
+      service: "cruiselines",
+    });
   });
 });
 
