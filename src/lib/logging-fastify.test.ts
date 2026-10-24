@@ -117,4 +117,23 @@ describe("logger service field", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ service: "cruiselines", msg: "starting" });
   });
+
+  it("writes the level uppercase so the shared Datadog @level:ERROR monitor matches", () => {
+    const lines: LogLine[] = [];
+    const sink = new Writable({
+      write(chunk, _enc, cb): void {
+        lines.push(JSON.parse(String(chunk)));
+        cb();
+      },
+    });
+    const logger = pino(
+      { ...buildLoggerOptions({ name: "test" }), level: "info", transport: undefined },
+      sink
+    );
+
+    logger.info("starting");
+    logger.error("failed");
+
+    expect(lines.map((line) => line.level)).toEqual(["INFO", "ERROR"]);
+  });
 });

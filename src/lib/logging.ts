@@ -54,11 +54,13 @@ const redactPaths = [
   "req.headers.cookie",
 ];
 
-// Emit `level` as its string label rather than pino's numeric default;
-// log aggregators (Datadog, CloudWatch Insights) filter on strings.
+// Emit `level` as its uppercase string label rather than pino's numeric default;
+// log aggregators (Datadog, CloudWatch Insights) filter on strings, and Datadog's
+// `@level:ERROR` attribute match is case-sensitive, so the casing must match the
+// other Enric services (the api logs `ERROR`) for one monitor to cover them all.
 const formatters = {
   level: (label: string): { level: string } => {
-    return { level: label };
+    return { level: label.toUpperCase() };
   },
 };
 
