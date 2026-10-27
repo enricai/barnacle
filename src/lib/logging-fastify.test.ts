@@ -99,7 +99,7 @@ describe("logger service field", () => {
   });
 
   it("writes the DD_SERVICE service on every emitted line for Datadog", () => {
-    process.env.DD_SERVICE = "cruiselines";
+    process.env.DD_SERVICE = "example-service";
     const lines: LogLine[] = [];
     const sink = new Writable({
       write(chunk, _enc, cb): void {
@@ -115,7 +115,7 @@ describe("logger service field", () => {
     logger.info("starting");
 
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ service: "cruiselines", msg: "starting" });
+    expect(lines[0]).toMatchObject({ service: "example-service", msg: "starting" });
   });
 
   it("writes the level uppercase so the shared Datadog @level:ERROR monitor matches", () => {
