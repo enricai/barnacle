@@ -310,20 +310,23 @@ async function emitEnvelopeSafely(
 }
 
 /**
- * A verified submit, not a `needsUserInfo` hand-off: the same bar `dispatch()`
- * applies before recording `submitted`, read off an extra route's raw result.
+ * A finished run, not a `needsUserInfo` hand-off: the same bar `dispatch()`
+ * applies before recording `/run` as `submitted`, verified or not, read off an
+ * extra route's raw result.
  */
-function isSubmittedResult(result: unknown): boolean {
+function isCompletedRun(result: unknown): boolean {
   if (!result || typeof result !== "object") return false;
-  const data = result as { needsUserInfo?: unknown; verified?: unknown; submitted?: unknown };
-  return data.needsUserInfo !== true && (data.verified === true || data.submitted === true);
+  return (result as { needsUserInfo?: unknown }).needsUserInfo !== true;
 }
 
 /**
  * Records an extra route's outcome in the submission telemetry, shaped as
- * `dispatch()` does. Never throws: it runs after the route may already have
- * submitted, and turning that into an error reply invites a caller retry that
- * applies twice — so even the join-key extraction is inside the guard.
+ * `dispatch()` does: the submit row, plus a `skipped` beacon row for a
+ * `submitted` one, so the run never folds to `not_fired`. A click the route
+ * fires itself writes its own `fired`/`failed` row, which outranks `skipped`.
+ * Never throws: it runs after the route may already have submitted, and
+ * turning that into an error reply invites a caller retry that applies twice —
+ * so even the join-key extraction is inside the guard.
  */
 async function emitExtraRouteEnvelope(
   plugin: SitePlugin<unknown, unknown>,
@@ -337,15 +340,27 @@ async function emitExtraRouteEnvelope(
 ): Promise<void> {
   try {
     const snapshot = context.telemetry.snapshot();
+    const joinKeys = mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys);
     await emitEnvelopeSafely({
       siteId: plugin.meta.siteId,
       requestId: context.requestId,
-      joinKeys: mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys),
+      joinKeys,
       session: toEnvelopeSession(snapshot.session),
       inboundPayload: body,
       hotPathError: snapshot.hotPathError,
       durationMs: Date.now() - startedAt,
       ...outcome,
+    });
+    if (outcome.status !== "submitted") return;
+    const rawTrackingUrl = (body as Record<string, unknown> | null)?.TrackingUrl;
+    await emitBeaconSafely({
+      requestId: context.requestId,
+      siteId: plugin.meta.siteId,
+      joinKeys,
+      beaconStatus: "skipped",
+      trackingUrl:
+        typeof rawTrackingUrl === "string" && rawTrackingUrl.length > 0 ? rawTrackingUrl : null,
+      durationMs: 0,
     });
   } catch (err) {
     logger.warn(`extra-route submission envelope failed: ${toErrorMessage(err)}`);
@@ -734,7 +749,7 @@ function registerExtraRoutes(
             },
             context
           );
-          if (route.submits && isSubmittedResult(result)) {
+          if (route.submits && isCompletedRun(result)) {
             await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
               status: "submitted",
               auditPayload: result,

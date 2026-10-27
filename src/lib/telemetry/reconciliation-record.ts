@@ -86,7 +86,8 @@ export type SubmitRecord = z.infer<typeof submitRecordSchema>;
  * beacon did not fire" as a distinct dimension from submit outcome.
  * `beaconStatus: "skipped"` means no beacon was ever applicable for this run
  * (no usable TrackingUrl, or the plugin manages its own beacon nav — see
- * `dispatch()` in `src/plugins/loader.ts`) — distinct from `"not_fired"`
+ * `dispatch()` and `emitExtraRouteEnvelope()` in `src/plugins/loader.ts`) —
+ * distinct from `"not_fired"`
  * (the reader's fold default for a submit row with no matching beacon line
  * at all), so "submitted but the beacon did not fire" excludes runs that
  * never had a beacon to fire. `"skipped"` is not necessarily terminal for a

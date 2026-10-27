@@ -18,6 +18,13 @@ vi.mock("@/lib/telemetry/submission-capture", async (importOriginal) => ({
   captureSubmissionEnvelope: mockCaptureSubmissionEnvelope,
 }));
 
+const mockCaptureBeaconEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("@/lib/telemetry/beacon-capture", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/telemetry/beacon-capture")>()),
+  captureBeaconEvent: mockCaptureBeaconEvent,
+}));
+
 /**
  * An extra route that can submit (a plugin's `/resume`) bypasses dispatch(), so
  * without `submits: true` its submits never reach the submissions sink — the
@@ -72,8 +79,10 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
     return app;
   }
 
-  const post = (app: Parameters<typeof registerRoutes>[0]) =>
-    app.inject({ method: "POST", url: "/v1/resume-site/resume", payload: { Email: "n@x.com" } });
+  const post = (
+    app: Parameters<typeof registerRoutes>[0],
+    payload: Record<string, unknown> = { Email: "n@x.com" }
+  ) => app.inject({ method: "POST", url: "/v1/resume-site/resume", payload });
 
   it("records a verified result as submitted, with the request body as the inbound payload", async () => {
     const app = await appWith(async () => ({ verified: true, confirmation: "SUB1" }), true);
@@ -95,6 +104,81 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
     await app.close();
   });
 
+  it("records an unverified result as submitted too, as dispatch() records /run", async () => {
+    const app = await appWith(async () => ({ verified: false, reason: "not qualified" }), true);
+
+    const response = await post(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledTimes(1);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        auditPayload: { verified: false, reason: "not qualified" },
+      })
+    );
+    await app.close();
+  });
+
+  it("records nothing for a needsUserInfo hand-off, which is not a finished run", async () => {
+    const app = await appWith(
+      async () => ({ verified: false, needsUserInfo: true, missingFields: [] }),
+      true
+    );
+
+    const response = await post(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("writes the skipped beacon row dispatch() writes, keeping the body's TrackingUrl", async () => {
+    const app = await appWith(async () => ({ verified: true }), true);
+
+    await post(app, { Email: "n@x.com", TrackingUrl: "https://trk.example.com/c?id=1" });
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledTimes(1);
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        siteId: "resume-site",
+        requestId: "req-resume-fixed",
+        beaconStatus: "skipped",
+        trackingUrl: "https://trk.example.com/c?id=1",
+        durationMs: 0,
+      })
+    );
+    await app.close();
+  });
+
+  it("writes a skipped beacon with a null trackingUrl when the body has none", async () => {
+    const app = await appWith(async () => ({ verified: false }), true);
+
+    await post(app);
+
+    expect(mockCaptureBeaconEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ beaconStatus: "skipped", trackingUrl: null })
+    );
+    await app.close();
+  });
+
+  it.each([
+    ["a needsUserInfo hand-off", async () => ({ verified: false, needsUserInfo: true })],
+    [
+      "a throwing handler",
+      async () => {
+        throw new Error("resume failed");
+      },
+    ],
+  ])("writes no beacon row for %s", async (_case, handler) => {
+    const app = await appWith(handler, true);
+
+    await post(app, { Email: "n@x.com", TrackingUrl: "https://trk.example.com/c?id=1" });
+
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("records a throwing handler as error and still returns the error", async () => {
     const app = await appWith(async () => {
       throw new Error("resume failed");
@@ -113,24 +197,13 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
     await app.close();
   });
 
-  it.each([
-    ["a needsUserInfo hand-off", { verified: false, needsUserInfo: true, missingFields: [] }],
-    ["an unverified result", { verified: false }],
-  ])("records nothing for %s", async (_case, result) => {
-    const app = await appWith(async () => result, true);
-
-    await post(app);
-
-    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
-    await app.close();
-  });
-
   it("records nothing for a route that doesn't declare submits", async () => {
     const app = await appWith(async () => ({ verified: true }), undefined);
 
     await post(app);
 
     expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
+    expect(mockCaptureBeaconEvent).not.toHaveBeenCalled();
     await app.close();
   });
 

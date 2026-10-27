@@ -2,9 +2,9 @@
  * Append-only NDJSON writer for beacon-fire outcomes. A `"fired"`/`"failed"`
  * beacon resolves strictly after dispatch already returned and wrote its
  * submit line (see `tracking-click.ts`'s fire-and-forget click); a
- * `"skipped"` beacon is instead written synchronously by `dispatch()` itself,
- * before it returns, when there is no `TrackingUrl` to fire-and-forget at
- * all. Either way it is recorded as its own `kind:"beacon"` line rather than
+ * `"skipped"` beacon is instead written synchronously by `dispatch()` itself
+ * (or by core for an extra route that declares `submits`), before it returns,
+ * when there is no `TrackingUrl` to fire-and-forget at all. Either way it is recorded as its own `kind:"beacon"` line rather than
  * a mutation of the submit line — a reader folds the two kinds together by
  * `requestId` (see `reconciliation-record.ts`, `submission-reader.ts`).
  *
@@ -88,7 +88,8 @@ export interface BeaconOutcomeRecorderBinding {
  * Plugin-facing input to a bound beacon-outcome recorder — `requestId` and
  * `siteId` are omitted (bound by the factory) and `beaconStatus` excludes
  * `"skipped"`, which stays an engine-owned outcome written by `dispatch()`
- * itself (see `loader.ts`'s `emitBeaconSafely` call). `trackingUrl` and
+ * itself, or by core for an extra route that declares `submits` (see
+ * `loader.ts`'s `emitBeaconSafely` calls). `trackingUrl` and
  * `durationMs` are optional here (unlike `BeaconEventInput`) since a plugin
  * managing its own nav may not have a URL or duration to report.
  */
