@@ -233,7 +233,8 @@ durable, queryable answer to "what did we submit for jobId X on date Y, did
 it succeed, and did the conversion beacon fire?" Two record kinds share the
 sink, discriminated by `kind`
 (`reconciliationRecordSchema`, `src/lib/telemetry/reconciliation-record.ts`):
-a `"submit"` record per dispatch outcome, and a `"beacon"` record for the
+a `"submit"` record per dispatch outcome (and per outcome of an extra route
+that declares `submits`, such as `/resume`), and a `"beacon"` record for the
 conversion/beacon-fire dimension, which is distinct from the submit
 record's `status`.
 

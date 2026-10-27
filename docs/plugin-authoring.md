@@ -360,7 +360,11 @@ shapes — see `examples/plugins/acme-jobs.plugin.json` for a runnable example:
 
 - `POST /v1/<siteId>/resume` — body = original payload + `collectedData`
   (and `otpCode` where applicable); re-runs the hot path with answers merged
-  in; returns `{ verified }` like `/run`, or `2007 RESUME_INVALID_OTP`
+  in; returns `{ verified }` like `/run`, or `2007 RESUME_INVALID_OTP`.
+  Declare it with `submits: true` so core records its outcome in the
+  submissions sink exactly as for `/run` (a `submitted` row plus a `skipped`
+  beacon row for any result that isn't a `needsUserInfo` hand-off, `error`
+  when it throws); without it a resumed submit is never recorded
 - `POST /v1/<siteId>/trigger-otp` — body `{ offerId, email }`; returns
   `{ success: true }` or `2006 VERIFICATION_TRIGGER_FAILED`
 

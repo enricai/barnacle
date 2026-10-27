@@ -97,8 +97,9 @@ export function parseReconciliationLines(ndjsonContent: string): ReconciliationR
 
 /**
  * Rank of a beacon outcome for fold precedence: a real `fired`/`failed`
- * outcome always outranks `skipped`, because `dispatch()` writes `skipped`
- * synchronously for any self-managing plugin (`loader.ts`) before that
+ * outcome always outranks `skipped`, because `dispatch()` (and core, for an
+ * extra route that declares `submits`) writes `skipped` synchronously for any
+ * self-managing plugin (`loader.ts`) before that
  * plugin's own later-recorded real outcome can arrive — write order alone
  * is not a safe proxy for which line reflects reality. Equal-rank lines
  * (e.g. a retried `fired`) fall through to array order, i.e. last one wins.
