@@ -178,9 +178,9 @@ describe("lib/logging buildLoggerOptions service field", () => {
   });
 
   it("uses DD_SERVICE as the service when set", () => {
-    process.env.DD_SERVICE = "cruiselines";
+    process.env.DD_SERVICE = "example-service";
     expect(buildLoggerOptions({ name: "test-scope" }).base).toMatchObject({
-      service: "cruiselines",
+      service: "example-service",
     });
   });
 });
