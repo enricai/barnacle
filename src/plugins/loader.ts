@@ -319,7 +319,12 @@ function isSubmittedResult(result: unknown): boolean {
   return data.needsUserInfo !== true && (data.verified === true || data.submitted === true);
 }
 
-/** Records an extra route's outcome in the submission telemetry, shaped as `dispatch()` does. */
+/**
+ * Records an extra route's outcome in the submission telemetry, shaped as
+ * `dispatch()` does. Never throws: it runs after the route may already have
+ * submitted, and turning that into an error reply invites a caller retry that
+ * applies twice — so even the join-key extraction is inside the guard.
+ */
 async function emitExtraRouteEnvelope(
   plugin: SitePlugin<unknown, unknown>,
   context: SitePluginContext,
@@ -330,17 +335,21 @@ async function emitExtraRouteEnvelope(
     "status" | "auditPayload" | "errorMessage"
   >
 ): Promise<void> {
-  const snapshot = context.telemetry.snapshot();
-  await emitEnvelopeSafely({
-    siteId: plugin.meta.siteId,
-    requestId: context.requestId,
-    joinKeys: mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys),
-    session: toEnvelopeSession(snapshot.session),
-    inboundPayload: body,
-    hotPathError: snapshot.hotPathError,
-    durationMs: Date.now() - startedAt,
-    ...outcome,
-  });
+  try {
+    const snapshot = context.telemetry.snapshot();
+    await emitEnvelopeSafely({
+      siteId: plugin.meta.siteId,
+      requestId: context.requestId,
+      joinKeys: mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys),
+      session: toEnvelopeSession(snapshot.session),
+      inboundPayload: body,
+      hotPathError: snapshot.hotPathError,
+      durationMs: Date.now() - startedAt,
+      ...outcome,
+    });
+  } catch (err) {
+    logger.warn(`extra-route submission envelope failed: ${toErrorMessage(err)}`);
+  }
 }
 
 /**

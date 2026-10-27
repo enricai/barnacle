@@ -45,9 +45,11 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
 
   async function appWith(
     handler: SitePluginExtraRoute["handler"],
-    submits: boolean | undefined
+    submits: boolean | undefined,
+    extractJoinKeys?: SitePlugin<unknown, unknown>["extractJoinKeys"]
   ): Promise<Parameters<typeof registerRoutes>[0]> {
     const plugin: SitePlugin<unknown, unknown> = {
+      ...(extractJoinKeys ? { extractJoinKeys } : {}),
       meta: {
         siteId: "resume-site",
         displayName: "resume-site",
@@ -128,6 +130,22 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
 
     await post(app);
 
+    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("keeps a submitted reply when the plugin's join-key extraction throws", async () => {
+    const app = await appWith(
+      async () => ({ verified: true }),
+      true,
+      () => {
+        throw new Error("bad body shape");
+      }
+    );
+
+    const response = await post(app);
+
+    expect(response.statusCode).toBe(200);
     expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
     await app.close();
   });
