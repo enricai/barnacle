@@ -71,6 +71,15 @@ export interface SitePluginExtraRoute {
    * envelope. Defaults to true.
    */
   envelope?: boolean;
+  /**
+   * When true, the route can submit an application (e.g. a `/resume` that
+   * re-runs the hot path with a candidate's replies), so core records its
+   * outcome in the submission telemetry exactly as `dispatch()` does for
+   * `/run`: `submitted` for a verified result that isn't a `needsUserInfo`
+   * hand-off, `error` when the handler throws. Without it a submit made from an
+   * extra route never reaches the submissions sink.
+   */
+  submits?: boolean;
   /** Handles the request and returns the (pre-envelope) response body. */
   handler(request: SitePluginExtraRouteRequest, context: SitePluginContext): Promise<unknown>;
 }
