@@ -95,6 +95,35 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
     await app.close();
   });
 
+  it("records an unverified result as submitted too, as dispatch() records /run", async () => {
+    const app = await appWith(async () => ({ verified: false, reason: "not qualified" }), true);
+
+    const response = await post(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledTimes(1);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "submitted",
+        auditPayload: { verified: false, reason: "not qualified" },
+      })
+    );
+    await app.close();
+  });
+
+  it("records nothing for a needsUserInfo hand-off, which is not a finished run", async () => {
+    const app = await appWith(
+      async () => ({ verified: false, needsUserInfo: true, missingFields: [] }),
+      true
+    );
+
+    const response = await post(app);
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("records a throwing handler as error and still returns the error", async () => {
     const app = await appWith(async () => {
       throw new Error("resume failed");
@@ -110,18 +139,6 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
         auditPayload: null,
       })
     );
-    await app.close();
-  });
-
-  it.each([
-    ["a needsUserInfo hand-off", { verified: false, needsUserInfo: true, missingFields: [] }],
-    ["an unverified result", { verified: false }],
-  ])("records nothing for %s", async (_case, result) => {
-    const app = await appWith(async () => result, true);
-
-    await post(app);
-
-    expect(mockCaptureSubmissionEnvelope).not.toHaveBeenCalled();
     await app.close();
   });
 

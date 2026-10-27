@@ -75,8 +75,8 @@ export interface SitePluginExtraRoute {
    * When true, the route can submit an application (e.g. a `/resume` that
    * re-runs the hot path with a candidate's replies), so core records its
    * outcome in the submission telemetry exactly as `dispatch()` does for
-   * `/run`: `submitted` for a verified result that isn't a `needsUserInfo`
-   * hand-off, `error` when the handler throws. Without it a submit made from an
+   * `/run`: `submitted` for any result that isn't a `needsUserInfo` hand-off
+   * (verified or not), `error` when the handler throws. Without it a submit made from an
    * extra route never reaches the submissions sink.
    */
   submits?: boolean;

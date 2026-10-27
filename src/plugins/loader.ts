@@ -310,13 +310,13 @@ async function emitEnvelopeSafely(
 }
 
 /**
- * A verified submit, not a `needsUserInfo` hand-off: the same bar `dispatch()`
- * applies before recording `submitted`, read off an extra route's raw result.
+ * A finished run, not a `needsUserInfo` hand-off: the same bar `dispatch()`
+ * applies before recording `/run` as `submitted`, verified or not, read off an
+ * extra route's raw result.
  */
-function isSubmittedResult(result: unknown): boolean {
+function isCompletedRun(result: unknown): boolean {
   if (!result || typeof result !== "object") return false;
-  const data = result as { needsUserInfo?: unknown; verified?: unknown; submitted?: unknown };
-  return data.needsUserInfo !== true && (data.verified === true || data.submitted === true);
+  return (result as { needsUserInfo?: unknown }).needsUserInfo !== true;
 }
 
 /**
@@ -734,7 +734,7 @@ function registerExtraRoutes(
             },
             context
           );
-          if (route.submits && isSubmittedResult(result)) {
+          if (route.submits && isCompletedRun(result)) {
             await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
               status: "submitted",
               auditPayload: result,
