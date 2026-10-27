@@ -310,6 +310,40 @@ async function emitEnvelopeSafely(
 }
 
 /**
+ * A verified submit, not a `needsUserInfo` hand-off: the same bar `dispatch()`
+ * applies before recording `submitted`, read off an extra route's raw result.
+ */
+function isSubmittedResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const data = result as { needsUserInfo?: unknown; verified?: unknown; submitted?: unknown };
+  return data.needsUserInfo !== true && (data.verified === true || data.submitted === true);
+}
+
+/** Records an extra route's outcome in the submission telemetry, shaped as `dispatch()` does. */
+async function emitExtraRouteEnvelope(
+  plugin: SitePlugin<unknown, unknown>,
+  context: SitePluginContext,
+  body: unknown,
+  startedAt: number,
+  outcome: Pick<
+    Parameters<typeof captureSubmissionEnvelope>[0],
+    "status" | "auditPayload" | "errorMessage"
+  >
+): Promise<void> {
+  const snapshot = context.telemetry.snapshot();
+  await emitEnvelopeSafely({
+    siteId: plugin.meta.siteId,
+    requestId: context.requestId,
+    joinKeys: mergeJoinKeys(plugin.extractJoinKeys?.(body) ?? null, snapshot.joinKeys),
+    session: toEnvelopeSession(snapshot.session),
+    inboundPayload: body,
+    hotPathError: snapshot.hotPathError,
+    durationMs: Date.now() - startedAt,
+    ...outcome,
+  });
+}
+
+/**
  * Best-effort wrapper around `captureBeaconEvent`, matching `emitEnvelopeSafely`'s
  * defense: `captureBeaconEvent` already swallows its own write errors, but a
  * test double or unexpected synchronous throw must still never propagate into
@@ -681,6 +715,7 @@ function registerExtraRoutes(
         });
         // Extra routes bypass dispatch(), so they register their body here.
         registerSensitiveValues(request.id, body, plugin.meta.redaction);
+        const startedAt = Date.now();
         try {
           const result = await route.handler(
             {
@@ -690,7 +725,23 @@ function registerExtraRoutes(
             },
             context
           );
+          if (route.submits && isSubmittedResult(result)) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "submitted",
+              auditPayload: result,
+              errorMessage: null,
+            });
+          }
           return route.envelope === false ? result : successEnvelope(result as object);
+        } catch (err) {
+          if (route.submits) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "error",
+              auditPayload: null,
+              errorMessage: toErrorMessage(err),
+            });
+          }
+          throw err;
         } finally {
           releaseSensitiveValues(request.id);
         }
