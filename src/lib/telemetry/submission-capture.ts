@@ -1,6 +1,7 @@
 /**
- * Append-only NDJSON sink for dispatch submission envelopes. One line per
- * plugin invocation captures the outcome — siteId, requestId, an allowlisted
+ * Append-only NDJSON sink for submission envelopes, from `dispatch()` and from
+ * extra routes that declare `submits`. One line per plugin invocation captures
+ * the outcome — siteId, requestId, an allowlisted
  * summary of the request body (only the keys the plugin declares persistable),
  * status, audit payload, error message, duration, plus the opaque `joinKeys`
  * bag and the `kind:"submit"` dimension — so downstream tooling (ETL, jq,

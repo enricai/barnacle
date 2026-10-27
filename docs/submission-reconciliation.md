@@ -38,7 +38,9 @@ collision. `null` only when the plugin has neither hook.
   declares `extractJoinKeys`) calling `context.recordBeaconOutcome()` from
   its own tracking nav.
 - `"skipped"` — `dispatch()`'s synchronous default for a self-managing
-  plugin; terminal only until that plugin calls `recordBeaconOutcome`. A
+  plugin, and core's default after any submitted result from an extra route
+  that declares `submits` (a click the route fires itself outranks it);
+  terminal only until that plugin calls `recordBeaconOutcome`. A
   non-null `trackingUrl` confirms core saw one, but no longer proves the
   plugin fired it. A later real `fired`/`failed` for the same `requestId`
   always outranks `skipped` when folded (Recipe 2).

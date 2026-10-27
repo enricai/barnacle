@@ -48,6 +48,7 @@ plugin's optional `extractJoinKeys` hook output with whatever the plugin
 attached to `context.telemetry` during `execute()`/`executeHttp()`, then
 stamps the combined, still-opaque result onto the submit envelope and (when
 the plugin declares no `extractJoinKeys`) the tracking-click beacon. Core
+applies the same merge to an extra route that declares `submits`. Core
 never inspects what's inside `joinKeys` on either side of that merge — a
 plugin owns its shape entirely. See
 [telemetry-and-judging.md § Submission envelope sink](./telemetry-and-judging.md#submission-envelope-sink)
