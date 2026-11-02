@@ -44,7 +44,10 @@ describe("recon-generate main() guard (in-process)", () => {
     const siteId = `zz-guard-ip-${process.pid}`;
     const siteDir = join(root, "src", "sites", siteId);
     const origArgv = process.argv;
+    let exited = false;
     const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      if (exited) return undefined; // the .catch handler's own exit(1) after our throw
+      exited = true;
       throw new Error(`exit:${code}`);
     }) as never);
     const out: string[] = [];
