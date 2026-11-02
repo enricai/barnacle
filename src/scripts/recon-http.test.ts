@@ -116,11 +116,13 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
     // caller to add site-specific telemetry hosts, so this test uses it
     // rather than editing the shared noise list, which is out of this
     // subtask's scope.
-    process.env.RECON_TELEMETRY_URL_PATTERNS = "bat.bing.com,tr.snapchat.com,sw88.go.com";
+    process.env.RECON_TELEMETRY_URL_PATTERNS =
+      "bat.bing.com,tr.snapchat.com,sw88.go.com";
   });
 
   afterEach(() => {
-    if (originalPatterns === undefined) delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    if (originalPatterns === undefined)
+      delete process.env.RECON_TELEMETRY_URL_PATTERNS;
     else process.env.RECON_TELEMETRY_URL_PATTERNS = originalPatterns;
   });
 
@@ -146,7 +148,9 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
+    expect(Array.from(targets.keys())).toEqual([
+      "https://api.example.com/real/endpoint",
+    ]);
   });
 
   it("still drops static fixture endpoints (path-suffix check) alongside noise", () => {
@@ -158,7 +162,9 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
+    expect(Array.from(targets.keys())).toEqual([
+      "https://api.example.com/real/endpoint",
+    ]);
   });
 
   it("excludes failed replays regardless of noise status", () => {
@@ -185,9 +191,15 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://api.example.com/config/markets.json",
+    ]);
   });
 
   it("excludes a locale-dictionary-shaped path on a declared subdomain, but keeps a real reference-data path", () => {
@@ -201,10 +213,12 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     const candidates = selectAuxFixtureCandidates(
       replays,
       ["api.example.com", "www.example.com"],
-      null
+      null,
     );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://www.example.com/labels/en.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://www.example.com/labels/en.json",
+    ]);
   });
 
   it("excludes a feature-flag-resolver-shaped path even though it ends in .json", () => {
@@ -214,7 +228,11 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -225,9 +243,15 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, [], "api.example.com");
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      [],
+      "api.example.com",
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://static.example.com/currencies.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://static.example.com/currencies.json",
+    ]);
   });
 
   it("harvests nothing when ownBackendHostnames is unset and there is no fallback host", () => {
@@ -245,7 +269,11 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://cdn.cookielaw.org/consent/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["cdn.cookielaw.org"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["cdn.cookielaw.org"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -262,9 +290,15 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://api.example.com/config/markets.json",
+    ]);
   });
 
   it("excludes non-fixture-shaped paths and failed/GraphQL replays", () => {
@@ -280,7 +314,11 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -312,9 +350,16 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
       replay({ url: "https://www.example.com/labels/en.json" }),
     ];
 
-    await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com", "www.example.com"], null);
+    await probeAuxiliaryEndpoints(
+      replays,
+      auxDir,
+      ["api.example.com", "www.example.com"],
+      null,
+    );
 
-    const manifest = JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"));
+    const manifest = JSON.parse(
+      readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"),
+    );
 
     expect(manifest).toHaveLength(2);
     expect(manifest).toEqual(
@@ -329,14 +374,16 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
           url: "https://www.example.com/labels/en.json",
           hostname: "www.example.com",
         }),
-      ])
+      ]),
     );
   });
 
   it("writes no manifest when there are no candidates to write", async () => {
     global.fetch = vi.fn() as unknown as typeof fetch;
 
-    const replays: ReplayResult[] = [replay({ url: "https://api.example.com/order/checkout" })];
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/order/checkout" }),
+    ];
 
     await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com"], null);
 
@@ -505,7 +552,9 @@ describe("replayCapture — marker and methods filter", () => {
   it("skips marker captures without fetching, sends real bodies unchanged", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
-    expect(await replayCapture("a.json", mk("POST", "<unavailable>"))).toBeNull();
+    expect(
+      await replayCapture("a.json", mk("POST", "<unavailable>")),
+    ).toBeNull();
     expect(f).not.toHaveBeenCalled();
     const r = await replayCapture("b.json", mk("POST", "x=1"));
     expect(r?.requestBody).toBe("x=1");
@@ -516,9 +565,85 @@ describe("replayCapture — marker and methods filter", () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
     const methods = parseMethodsFilter("get, head");
-    expect(await replayCapture("a.json", mk("PUT", "x"), { methods })).toBeNull();
-    expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
+    expect(
+      await replayCapture("a.json", mk("PUT", "x"), { methods }),
+    ).toBeNull();
+    expect(
+      await replayCapture("b.json", mk("POST", null), { methods }),
+    ).toBeNull();
     expect(f).not.toHaveBeenCalled();
-    expect(await replayCapture("c.json", mk("GET", null), { methods })).not.toBeNull();
+    expect(
+      await replayCapture("c.json", mk("GET", null), { methods }),
+    ).not.toBeNull();
+  });
+});
+
+describe("recon-http main() --methods and unavailable-body skipping", () => {
+  it("runs end to end, skipping marker captures and method-filtered captures without fetching", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { REQUEST_BODY_UNAVAILABLE } =
+      await import("@/scraper/request-body-marker");
+    vi.resetModules();
+    const root = mkdtempSync(join(tmpdir(), "recon-http-main-"));
+    const caps = join(root, "caps");
+    mkdirSync(caps);
+    const base = {
+      query: null,
+      operationName: null,
+      variables: null,
+      decodedParams: null,
+    };
+    writeFileSync(
+      join(caps, "001.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/a",
+        method: "POST",
+        requestPostData: REQUEST_BODY_UNAVAILABLE,
+      }),
+    );
+    writeFileSync(
+      join(caps, "002.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/b",
+        method: "GET",
+        requestPostData: null,
+      }),
+    );
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const savedArgv = process.argv;
+    const savedOut = process.env.RECON_OUT_DIR;
+    process.env.RECON_OUT_DIR = root;
+    process.argv = [
+      "node",
+      "recon-http.ts",
+      "--captures-dir",
+      caps,
+      "--methods",
+      "PUT",
+    ];
+    try {
+      await import("@/scripts/recon-http");
+      await vi.waitFor(() =>
+        expect(loggerStub.info).toHaveBeenCalledWith(
+          expect.stringContaining("recon-http complete"),
+        ),
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(loggerStub.warn).toHaveBeenCalledWith(
+        expect.stringContaining("request body unavailable"),
+      );
+      expect(loggerStub.info).toHaveBeenCalledWith(
+        expect.stringContaining("not in --methods filter"),
+      );
+    } finally {
+      process.argv = savedArgv;
+      if (savedOut === undefined) delete process.env.RECON_OUT_DIR;
+      else process.env.RECON_OUT_DIR = savedOut;
+      vi.unstubAllGlobals();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

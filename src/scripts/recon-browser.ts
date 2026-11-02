@@ -229,7 +229,12 @@ export function formatBodyUnavailableWarning(count: number): string | null {
   return `${count} capture(s) have an unavailable request body (${REQUEST_BODY_UNAVAILABLE}) — recon-http will skip them on replay`;
 }
 
-function wireNetworkCapture(
+/** Test seam: current count of unavailable-body captures. */
+export function getBodyUnavailableCount(): number {
+  return bodyUnavailableCounter.n;
+}
+
+export function wireNetworkCapture(
   page: Page,
   counter: { n: number },
   signalCounter: { n: number },
