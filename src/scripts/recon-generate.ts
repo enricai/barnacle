@@ -219,7 +219,7 @@ function toPascalCase(siteId: string): string {
     .split(/[-_]/)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
     .join("");
-  // The siteId grammar permits a leading digit (e.g. `7eleven-style`), which is
+  // The siteId grammar permits a leading digit (e.g. `7-example-shop`), which is
   // not a valid identifier start; prefix a letter so derived names stay valid.
   return /^[0-9]/.test(pascal) ? `Site${pascal}` : pascal;
 }
