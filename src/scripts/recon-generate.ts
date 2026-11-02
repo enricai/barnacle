@@ -17663,7 +17663,7 @@ async function main(): Promise<void> {
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
       responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
-      singleEntityEvidence,
+      singleEntityEvidence: singleEntityEvidence && !isSubmissionFlow,
       gql,
       gqlQuery,
       endpointPath,
