@@ -50,7 +50,7 @@ import {
   type LlmCallInput,
 } from "@/lib/telemetry/call-capture";
 import { CALL_TYPE_RECON_REPHRASE } from "@/lib/telemetry/call-types";
-import { isAllowedFixtureHost, registrableDomain } from "@/recon/capture-filters";
+import { isAllowedFixtureHost, isHttpUrl, registrableDomain } from "@/recon/capture-filters";
 import { ACTIONABLE_VISIBILITY_EXPR } from "@/scraper/actionable-visibility-expr";
 import { followNewPage } from "@/scraper/active-page";
 import {
@@ -334,6 +334,10 @@ export function wireSignalCapture(
     );
     extraRequestHeaders.delete(params.requestId);
 
+    // Non-http(s) URLs (data:, blob:, ...) are never replayable site-flow
+    // captures: skip before any counter/recent/onCapture side effect.
+    if (!isHttpUrl(req.url)) return;
+
     const phase = getCurrentPhase();
     let responseBody: unknown = null;
     try {
@@ -397,7 +401,7 @@ export function wireSignalCapture(
     try {
       sameOrigin = new URL(req.url).origin === getCurrentPageOrigin();
     } catch {
-      // Opaque CDP URLs (data:, blob:, malformed) — treat as not same-origin.
+      // Malformed URL — treat as not same-origin.
     }
     if (req.method !== "GET" && sameOrigin) {
       signalCounter.n++;
