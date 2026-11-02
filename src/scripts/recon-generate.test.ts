@@ -5438,7 +5438,7 @@ describe("deriveGetInputModel", () => {
   const cap = (url: string, method = "GET", status = 200) =>
     ({ method, url, status }) as unknown as import("./recon-shared").Capture;
   it("derives dynamic, fixed, path vars and safe identifiers", async () => {
-    const { deriveGetInputModel } = await import("./recon-generate");
+    const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
     const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
     const m = deriveGetInputModel(a, [a, b])!;
