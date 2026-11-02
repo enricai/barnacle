@@ -3911,5 +3911,6 @@ export {
   readFailureDumpEvidence,
   replanRemainingFlow,
   snapshotAndPersistCookieJar,
+  wireNetworkCapture,
   writeSubmitManifest,
 };
