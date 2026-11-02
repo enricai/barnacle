@@ -285,3 +285,76 @@ describe("scraper/session-steel session-proxy binding", () => {
     expect(session.sessionProxy).toBeUndefined();
   });
 });
+
+describe("scraper/session-steel bounded teardown", () => {
+  beforeEach(() => {
+    configRef.value.scraper.steelApiKey = "steel-key";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+  });
+
+  const stubStagehand = (init: () => Promise<void>, close: () => Promise<void>) =>
+    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.init = vi.fn(init);
+      this.close = vi.fn(close);
+      this.context = { conn: fakeConn };
+    } as never);
+
+  it("close() releases the steel session even when stagehand.close() never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      stubStagehand(
+        async () => {},
+        () => new Promise<void>(() => {})
+      );
+      const session = await createSteelBrowserSession();
+      const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+        sessions: { release: ReturnType<typeof vi.fn> };
+      };
+      const closing = session.close();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await closing;
+      expect(steelInstance.sessions.release).toHaveBeenCalledWith("steel-session-id");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("close() still releases when stagehand.close() throws", async () => {
+    stubStagehand(
+      async () => {},
+      async () => {
+        throw new Error("close boom");
+      }
+    );
+    const session = await createSteelBrowserSession();
+    const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+      sessions: { release: ReturnType<typeof vi.fn> };
+    };
+    await session.close();
+    expect(steelInstance.sessions.release).toHaveBeenCalledWith("steel-session-id");
+  });
+
+  it("init failure with a hanging close rethrows the init error and releases", async () => {
+    vi.useFakeTimers();
+    try {
+      stubStagehand(
+        async () => {
+          throw new Error("init boom");
+        },
+        () => new Promise<void>(() => {})
+      );
+      const p = createSteelBrowserSession();
+      const assertion = expect(p).rejects.toThrow("init boom");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+      const steelInstance = vi.mocked(Steel).mock.results.at(-1)?.value as {
+        sessions: { release: ReturnType<typeof vi.fn> };
+      };
+      expect(steelInstance.sessions.release).toHaveBeenCalledWith("steel-session-id");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
