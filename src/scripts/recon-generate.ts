@@ -16741,6 +16741,14 @@ function healUnreferencedUrlFieldsOnce(
   return retried;
 }
 
+export function buildSingleEntityWarning(
+  winningCapture: { url: string } | null | undefined,
+  entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>
+): string | null {
+  if (!(entityVariance.entityParameterized && entityVariance.singleEntity)) return null;
+  return `WARN response schema inferred from a single entity — every captured response of ${winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint"} shares identifying parameter(s) ${Object.entries(entityVariance.params).map(([k, v]) => `${k}=${v}`).join(", ")}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
@@ -17142,12 +17150,9 @@ async function main(): Promise<void> {
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
       activeCaptures
     );
-    const singleEntityEvidence = entityVariance.entityParameterized && entityVariance.singleEntity;
-    if (singleEntityEvidence) {
-      logger.warn(
-        `WARN response schema inferred from a single entity — every captured response of ${winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint"} shares identifying parameter(s) ${Object.entries(entityVariance.params).map(([k, v]) => `${k}=${v}`).join(", ")}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`
-      );
-    }
+    const singleEntityWarning = buildSingleEntityWarning(winningCapture, entityVariance);
+    const singleEntityEvidence = singleEntityWarning !== null;
+    if (singleEntityWarning !== null) logger.warn(singleEntityWarning);
 
     // Detect a multi-step submission flow (transactional sites like apply forms,
     // checkout, etc.). When the action sequence has 2+ POSTs, switch the

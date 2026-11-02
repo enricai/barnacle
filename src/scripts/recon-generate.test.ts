@@ -21,6 +21,7 @@ import {
   emitBrowserFlowTs,
   emitConfigManifest,
   emitContractTs,
+  buildSingleEntityWarning,
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
@@ -5452,5 +5453,24 @@ describe("emitContractTs — singleEntityEvidence", () => {
   it("is unchanged when unflagged", () => {
     const src = emitContractTs({ ...BASE_OPTS, responseBody: body, responseBodySamples: [body] });
     expect(src).not.toContain("z.string().nullable().optional()");
+  });
+});
+
+describe("buildSingleEntityWarning", () => {
+  it("returns null unless entity-parameterized and single-entity", () => {
+    expect(buildSingleEntityWarning(null, { entityParameterized: false, singleEntity: false, params: {} })).toBeNull();
+    expect(buildSingleEntityWarning(null, { entityParameterized: true, singleEntity: false, params: {} })).toBeNull();
+  });
+  it("names the shared params and endpoint when single-entity", () => {
+    const msg = buildSingleEntityWarning(
+      { url: "https://example.com/api/item?id=7" },
+      { entityParameterized: true, singleEntity: true, params: { id: "7" } }
+    );
+    expect(msg).toContain("id=7");
+    expect(msg).toContain("single entity");
+  });
+  it("falls back to a generic endpoint name without a capture", () => {
+    const msg = buildSingleEntityWarning(null, { entityParameterized: true, singleEntity: true, params: { id: "7" } });
+    expect(msg).toContain("the winning endpoint");
   });
 });
