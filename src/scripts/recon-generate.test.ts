@@ -28,6 +28,7 @@ import {
   type FoldReturnSpec,
   firstEndpointCapture,
   gatherResponseBodySamples,
+  gatherEntityVarianceEvidence,
   harvestPersonaBindings,
   identifyNoiseCapturesForFields,
   indexStateValues,
@@ -5402,5 +5403,42 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
         vocabulary
       )
     ).toBeNull();
+  });
+});
+
+describe("gatherEntityVarianceEvidence", () => {
+  const cap = (url: string, status = 200): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url,
+    status,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+  const B = "https://x.example.com/api/items";
+
+  it("reports varying when id query values differ", () => {
+    const w = cap(`${B}?item_id=1`);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?item_id=2`)]);
+    expect(r.entityParameterized).toBe(true);
+    expect(r.singleEntity).toBe(false);
+  });
+  it("reports single entity with params when ids match", () => {
+    const w = cap(`${B}?itemId=1&page=1`);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?itemId=1&page=2`)]);
+    expect(r).toEqual({ entityParameterized: true, params: { itemId: "1" }, singleEntity: true });
+  });
+  it("reports not parameterized without id params and for GraphQL", () => {
+    const w = cap(`${B}?page=1`);
+    expect(gatherEntityVarianceEvidence(w, false, [w]).entityParameterized).toBe(false);
+    expect(gatherEntityVarianceEvidence(cap(`${B}?id=1`), true, []).entityParameterized).toBe(false);
+    expect(gatherEntityVarianceEvidence(null, false, []).entityParameterized).toBe(false);
   });
 });
