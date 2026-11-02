@@ -8883,10 +8883,7 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", {
-      looseServerResponse: true,
-      aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([cap.responseBody]),
-    });
+    const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
@@ -15262,12 +15259,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // apply.
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
-          const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
-            looseServerResponse: true,
-            aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
-              chainStep.capture.responseBody,
-            ]),
-          });
+          const schemaExpr = inferChainStepResponseSchema(chainStep.capture, allCaptures);
           // This emitter never renders a per-hop `produces` accessor (unlike
           // emitMultiStepExecuteHttp's identical chain loop) — only the
           // chain terminal's response is ever read, via
@@ -16759,6 +16751,31 @@ export function evaluateSingleEntityEvidence(
   const warning = buildSingleEntityWarning(winningCapture, entityVariance);
   if (warning !== null) warn(warning);
   return { singleEntityEvidence: warning !== null };
+}
+
+/**
+ * Response schema for one chain step/hop, inferred through the same
+ * entity-aware path as the contract schema: every same-identity 2xx sibling
+ * capture is a sample, and when the step is addressed by identifying
+ * parameters that all siblings share, scalar leaves are emitted lenient.
+ */
+export function inferChainStepResponseSchema(
+  stepCapture: Capture,
+  captures: readonly Capture[]
+): string {
+  const isGraphQL = stepCapture.query != null || stepCapture.operationName != null;
+  const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  const { singleEntityEvidence } = evaluateSingleEntityEvidence(
+    stepCapture,
+    isGraphQL,
+    captures,
+    () => {}
+  );
+  return inferZodSchemaFromSamples(samples, 0, "", {
+    looseServerResponse: true,
+    aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
+    ...(singleEntityEvidence ? { singleEntityEvidence: true } : {}),
+  });
 }
 
 async function main(): Promise<void> {
