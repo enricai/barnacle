@@ -5508,4 +5508,17 @@ describe("inferChainStepResponseSchema", () => {
     const a = mk("https://example.com/api/item?item_id=1", { id: 1 });
     expect(inferChainStepResponseSchema(a, [])).toContain("id");
   });
+  it("treats a capture carrying query/operationName as GraphQL", () => {
+    const g = {
+      url: "https://example.com/graphql",
+      method: "POST",
+      status: 200,
+      query: "query Foo { foo { id } }",
+      operationName: "Foo",
+      responseBody: { data: { foo: { id: 1 } } },
+    } as never;
+    const out = inferChainStepResponseSchema(g, [g]);
+    expect(out).toContain("data");
+    expect(out).toContain("foo");
+  });
 });
