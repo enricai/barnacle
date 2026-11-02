@@ -184,6 +184,33 @@ const REPLAN_CYCLE_THRESHOLD = 3;
 const HTML_STATIC_TOLERANCE = 100;
 
 /**
+ * Writes a capture and, when decoding changed the payload, its decoded sidecar.
+ * Parsed JSON (object/array) goes to `<name>.decoded.json`; a decoded string
+ * (url-/base64-decoded text) is not JSON, so it goes raw to `<name>.decoded.txt`
+ * — every `.json` file in the dir therefore parses with JSON.parse.
+ */
+export function writeCaptureFiles(
+  graphqlDir: string,
+  capture: { decodedParams: unknown; requestPostData: unknown },
+  filename: string
+): void {
+  writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
+  if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
+    if (typeof capture.decodedParams === "string") {
+      writeFileSync(
+        join(graphqlDir, filename.replace(/\.json$/, ".decoded.txt")),
+        capture.decodedParams
+      );
+    } else {
+      writeFileSync(
+        join(graphqlDir, filename.replace(/\.json$/, ".decoded.json")),
+        JSON.stringify(capture.decodedParams, null, 2)
+      );
+    }
+  }
+}
+
+/**
  * Thin CLI wrapper over {@link wireSignalCapture}: owns the on-disk capture
  * layout (writes each capture — and its decoded-params sidecar — under the
  * resolved run dir's `graphql` subdir) while delegating all in-memory
@@ -214,14 +241,7 @@ function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       try {
-        writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
-        if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
-          const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
-          writeFileSync(
-            join(graphqlDir, decodedFilename),
-            JSON.stringify(capture.decodedParams, null, 2)
-          );
-        }
+        writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
         logger.warn(
           `capture-write skipped for ${capture.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
