@@ -62,7 +62,7 @@ describe("recon-generate main() guard (in-process)", () => {
       writeFileSync(join(siteDir, "contract.ts"), "");
       process.argv = ["node", "/x/recon-generate.ts", "--site-id", siteId];
       vi.resetModules();
-      await import("./recon-generate");
+      await import("./recon-generate.js");
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
       expect(out.join("")).toContain(`src/sites/${siteId}/contract.ts already exists`);
     } finally {
