@@ -15452,7 +15452,17 @@ export function unreferencedRequiredUrlFields(
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return [...contractCode.matchAll(urlFieldLinePattern)]
+  // Scan only the payload schema: a response schema's required `*Url` field is
+  // output, not caller input. Falls back to the whole contract when the
+  // payload-schema declaration is absent (hand-built fixtures).
+  const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
+  let scanned = contractCode;
+  if (payloadStart >= 0) {
+    const rest = contractCode.slice(payloadStart);
+    const end = rest.search(/^export type \w*Payload\b/m);
+    scanned = end >= 0 ? rest.slice(0, end) : rest;
+  }
+  return [...scanned.matchAll(urlFieldLinePattern)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
