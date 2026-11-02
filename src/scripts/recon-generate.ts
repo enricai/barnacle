@@ -2449,6 +2449,23 @@ export function firstEndpointCapture(
       // skip
     }
   }
+  // No non-GET submit capture: a read-only REST flow. Prefer a successful
+  // own-backend GET over failed/noise captures that the generic fallback
+  // below would otherwise pick by array order.
+  for (const c of restrictToSubmitPattern(
+    captures.filter(
+      (c) =>
+        c.method === "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url) && allowed(c)
+    ),
+    submitPatterns
+  )) {
+    try {
+      new URL(c.url);
+      return c;
+    } catch {
+      // skip
+    }
+  }
   for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
     try {
       new URL(c.url);
@@ -17269,7 +17286,21 @@ async function main(): Promise<void> {
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
-    const noReplayableActionFlow = !gql && actionSteps.length === 0 && flowSteps.length > 1;
+    // A flow of same-origin successful GET reads (no non-GET submit) is a
+    // single-endpoint REST read, not a browser-only submission flow.
+    const isReadOnlyGetFlow =
+      !gql &&
+      actionSteps.length === 0 &&
+      !activeCaptures.some((c) => c.method !== "GET" && c.status >= 200 && c.status < 300) &&
+      firstEndpointCapture(
+        activeCaptures,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      )?.method === "GET";
+    const noReplayableActionFlow =
+      !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
       (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
