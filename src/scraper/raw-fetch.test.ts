@@ -294,7 +294,7 @@ describe("rawFetch redirect: manual", () => {
   });
 
   it("passes init.redirect through to fetchImpl", async () => {
-    const fetchImpl = vi.fn(async () => ({
+    const fetchImpl = vi.fn(async (_u: string, _i: Parameters<FetchImpl>[1]) => ({
       status: 200,
       headers: new Headers(),
       text: async () => "ok",
