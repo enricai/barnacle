@@ -40,6 +40,7 @@ import {
   parsedOperationName,
   pathStructuralTokens,
   registrableDomain,
+  matchesTelemetryPattern,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
@@ -4386,7 +4387,7 @@ function detectFormSchemaFetchCapture(
       continue;
     }
     if (captureHost !== host) continue;
-    if (telemetryUrlPatterns().some((p) => capture.url.includes(p))) continue;
+    if (telemetryUrlPatterns().some((p) => matchesTelemetryPattern(capture.url, p))) continue;
     if (responseContainsSectionFields(capture.responseBody, formSchema)) {
       return { capture, index: i };
     }
