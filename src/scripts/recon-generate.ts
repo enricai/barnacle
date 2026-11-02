@@ -20,6 +20,7 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -8773,6 +8774,8 @@ export function emitMultiStepExecuteHttp(
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
+    // An unavailable-body marker means "a body existed" — never emit or parse it.
+    const emittableBody = cap.requestPostData === REQUEST_BODY_UNAVAILABLE ? null : cap.requestPostData;
     const prior = actions.slice(0, i);
     // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
     // must never be treated as an interpolation target at all: its URL is
@@ -8804,11 +8807,11 @@ export function emitMultiStepExecuteHttp(
     // also the only way the field maps are non-empty); without one they are
     // no-ops and the raw recon body flows straight through.
     const rawBodyWithFormSubs =
-      cap.requestPostData && formSchema !== null
+      emittableBody && formSchema !== null
         ? applyRawOptionIdPayloadSubstitutions(
             applyFormSchemaOptionIdSubstitutions(
               applyFormSchemaSubstitutions(
-                cap.requestPostData,
+                emittableBody,
                 fieldNameMap,
                 outDiscoveredFields,
                 formSchema
@@ -8822,14 +8825,14 @@ export function emitMultiStepExecuteHttp(
             outDiscoveredRawOptionFields,
             formSchema
           )
-        : (cap.requestPostData ?? "");
+        : (emittableBody ?? "");
     // Parsed once and shared by the structured (Mechanism B) and volatile passes
     // below — both walk the same body JSON, so parsing twice would be redundant.
     // null for absent/non-JSON bodies (multipart raw bytes), which both passes skip.
     const parsedBody = ((): unknown => {
-      if (!cap.requestPostData) return null;
+      if (!emittableBody) return null;
       try {
-        return JSON.parse(cap.requestPostData);
+        return JSON.parse(emittableBody);
       } catch {
         return null;
       }
@@ -8966,7 +8969,7 @@ export function emitMultiStepExecuteHttp(
     // matching substring INSIDE that placeholder and corrupt it. The closed-set
     // `"<key>":"<code>"` slot (numeric code, nested key) survives both earlier
     // passes untouched, so matching it here is still exact.
-    let bodyTemplate = cap.requestPostData
+    let bodyTemplate = emittableBody
       ? applyGenericRawCodeSubstitutions(
           applyGenericOptionCodeSubstitutions(
             bodyAfterStateAndKv,
