@@ -6,7 +6,7 @@ describe("inferZodSchemaFromSamples singleEntityEvidence", () => {
   it("makes scalar leaves outside arrays nullable and optional; array elements unchanged", () => {
     const out = inferZodSchemaFromSamples(samples, 0, "", { singleEntityEvidence: true });
     expect(out).toContain("title: z.string().nullable().optional()");
-    expect(out).toContain("n: z.number()\n");
+    expect(out).toContain("n: z.number(),");
     expect(out).not.toContain("n: z.number().nullable()");
     expect(out).not.toContain("n: z.number().optional()");
   });
