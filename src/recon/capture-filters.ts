@@ -130,7 +130,8 @@ export function matchesTelemetryPattern(url: string, pattern: string): boolean {
 
 /** True when any configured telemetry pattern matches `url` by component. */
 export function matchesAnyTelemetryPattern(url: string): boolean {
-  return telemetryUrlPatterns().some((p) => matchesTelemetryPattern(url, p));
+  const patterns = telemetryUrlPatterns();
+  return patterns.some((p) => matchesTelemetryPattern(url, p));
 }
 
 /**
