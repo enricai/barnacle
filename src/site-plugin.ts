@@ -9,6 +9,7 @@
  * to import from any layer without pulling in browser or config initialization.
  */
 
+import type { FastifyReply } from "fastify";
 import type { ZodType } from "zod/v4";
 
 import type { AppConfig } from "@/config";
@@ -36,6 +37,17 @@ export interface SitePluginExtraRouteRequest<TBody = unknown, TParams = Record<s
   params: TParams;
   /** Request-scoped Fastify/Pino logger. */
   log: Logger;
+  /** Parsed query string (e.g. `?author=x&tag=a&tag=b`); repeated keys become arrays. */
+  query: Record<string, string | string[] | undefined>;
+  /** Request headers with lowercased names (e.g. `x-api-key`). */
+  headers: Record<string, string | string[] | undefined>;
+  /**
+   * The Fastify reply, for opt-in response control: set the status with
+   * `reply.code(201)`, add headers with `reply.header(...)`, then
+   * `return reply.send(body)` on a route with `envelope: false` to send a
+   * non-envelope body unchanged. Handlers that ignore it behave as before.
+   */
+  reply: FastifyReply;
 }
 
 /**
@@ -43,9 +55,14 @@ export interface SitePluginExtraRouteRequest<TBody = unknown, TParams = Record<s
  * `meta.extraRoutes` at startup and registers each as an authenticated Fastify
  * route, building the same `SitePluginContext` it uses for `/run`.
  *
- * Error rendering is always delegated to the app-level `errorHandlerPlugin` —
- * handlers throw typed `ApiError`s; never return error shapes directly.
- * `envelope` governs only the success reply shape.
+ * By default, error rendering is delegated to the app-level
+ * `errorHandlerPlugin` — handlers throw typed `ApiError`s rather than
+ * returning error shapes. `envelope` governs the success reply shape.
+ * Handlers that need control over the response (e.g. a bookstore API that
+ * answers `201` with a `Location` header and a custom body) may opt in via
+ * `request.reply`: set `reply.code(...)`/`reply.header(...)`, then
+ * `return reply.send(body)` with `envelope: false`. Without that, core owns
+ * the status and body.
  */
 export interface SitePluginExtraRoute {
   /** HTTP method for the route (lowercase). */

@@ -711,7 +711,7 @@ function registerExtraRoutes(
         ...(!shared && soleRoute?.paramsSchema ? { params: soleRoute.paramsSchema } : {}),
         ...(entry.multipart ? { consumes: ["multipart/form-data"] } : {}),
       },
-      handler: async (request) => {
+      handler: async (request, reply) => {
         const siteId = (request.params as { siteId?: string }).siteId ?? "";
         const plugin = shared ? entry.owners.get(siteId) : soleOwner;
         if (!plugin) {
@@ -746,6 +746,9 @@ function registerExtraRoutes(
               body,
               params: request.params as Record<string, string>,
               log: request.log as unknown as Logger,
+              query: request.query as Record<string, string | string[] | undefined>,
+              headers: request.headers,
+              reply,
             },
             context
           );
