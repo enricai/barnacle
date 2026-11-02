@@ -133,7 +133,11 @@ export function matchesTelemetryPattern(url: string, pattern: string): boolean {
  * {@link isNoiseUrl} delegates here so there is one definition.
  */
 export function noiseReason(url: string): string | null {
-  if (!isHttpUrl(url)) return "scheme: not http(s)";
+  if (!isHttpUrl(url)) {
+    // Unparseable strings stay "not noise" (pre-existing contract); parseable
+    // non-http(s) schemes (data:, blob:) are noise.
+    return URL.canParse(url) ? "scheme: not http(s)" : null;
+  }
   const hit = telemetryUrlPatterns().find((p) => matchesTelemetryPattern(url, p));
   if (hit !== undefined) return `telemetry pattern: ${hit}`;
   let parsed: URL;
