@@ -2242,6 +2242,66 @@ export function gatherResponseBodySamples(
   return samples.length > 0 ? samples : [winningCapture.responseBody];
 }
 
+export interface EntityVarianceEvidence {
+  /** The winning REST capture carries at least one identifying parameter. */
+  entityParameterized: boolean;
+  /** Identifying parameters of the winning capture (`path[i]` / query name -> value). */
+  params: Record<string, string>;
+  /** True when every gathered capture has identical identifying values. */
+  singleEntity: boolean;
+}
+
+const ID_QUERY_NAME = /^(id|ids|.+_ids?|.+Ids?)$/;
+
+function identifyingParams(url: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const u = new URL(url);
+    u.pathname.split("/").forEach((segment, i) => {
+      if (RESOURCE_ID_SEGMENT.test(segment)) out[`path[${i}]`] = segment;
+    });
+    const byName = new Map<string, string[]>();
+    for (const [rawName, value] of u.searchParams) {
+      const name = rawName.replace(/\[\]$/, "");
+      if (!ID_QUERY_NAME.test(name)) continue;
+      byName.set(name, [...(byName.get(name) ?? []), value]);
+    }
+    for (const [name, values] of byName) out[name] = values.join(",");
+  } catch {
+    // unparseable URL: no identifying params
+  }
+  return out;
+}
+
+/**
+ * Reports whether the winning REST capture is addressed by identifying
+ * path/query parameters and whether every gathered 2xx capture of the same
+ * endpoint shares identical values (i.e. the samples describe one entity).
+ * GraphQL winners report no identifying params.
+ */
+export function gatherEntityVarianceEvidence(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[]
+): EntityVarianceEvidence {
+  const none: EntityVarianceEvidence = { entityParameterized: false, params: {}, singleEntity: false };
+  if (!winningCapture || isGraphQLWinner) return none;
+  const params = identifyingParams(winningCapture.url);
+  if (Object.keys(params).length === 0) return none;
+  const winningKey = endpointKey(winningCapture.url);
+  const signature = JSON.stringify(Object.entries(params).sort());
+  let singleEntity = true;
+  for (const c of captures) {
+    if (c.status < 200 || c.status >= 300) continue;
+    if (endpointKey(c.url) !== winningKey) continue;
+    if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
+      singleEntity = false;
+      break;
+    }
+  }
+  return { entityParameterized: true, params, singleEntity };
+}
+
 /**
  * A declared variable is "populated" only by a non-null, non-empty-string
  * value — an operation can declare a filter input that every capture leaves
