@@ -25,7 +25,7 @@ describe("assertBodyFieldSourceNameCorrelates", () => {
   it("throws when a spliced item field's own name doesn't correlate with the JSON key it lands under", () => {
     const renderedBody = [
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
-      "const r1 = await httpClient(`${payload.BaseUrl}/status`, {",
+      "const r1 = await httpClient(`${context.baseUrl}/status`, {",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal text representing generated code, not a template literal to evaluate
       '  body: `{"orderId":"${item.orderId}","region":${item.warehouseZone}}`,',
       "});",

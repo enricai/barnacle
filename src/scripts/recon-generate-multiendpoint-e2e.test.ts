@@ -168,7 +168,7 @@ describe("recon-generate multiendpoint CLI e2e: never fabricate a {query} POST t
     // captured tenant-API host -- never dropped by an exact-host filter.
     // The dominant tenant-API host (8 captures) correctly wins `baseUrl`
     // over the single-capture landing page, so the emitter templates it as
-    // `payload.BaseUrl` rather than embedding the literal origin per call.
+    // `context.baseUrl` rather than embedding the literal origin per call.
     expect(contract).toContain("executeHttp(");
     expect(contract).toContain('defaultBaseUrl: "https://api.example.com"');
     expect(contract).toContain("/applications");

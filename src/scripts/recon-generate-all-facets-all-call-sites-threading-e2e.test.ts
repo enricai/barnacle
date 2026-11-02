@@ -194,7 +194,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
 
     const chunks = contract.split("httpClient(`").slice(1);
     const siteChunk = (path: string): string => {
-      const chunk = chunks.find((candidate) => candidate.startsWith(`\${payload.BaseUrl}${path}`));
+      const chunk = chunks.find((candidate) => candidate.startsWith(`\${context.baseUrl}${path}`));
       expect(chunk, contract).toBeDefined();
       return chunk ?? "";
     };
@@ -268,7 +268,7 @@ describe("recon-generate CLI — every facet at every call site", () => {
 
     const chunks = contract.split("httpClient(`").slice(1);
     for (const path of MIX_PATHS) {
-      const chunk = chunks.find((c) => c.startsWith(`\${payload.BaseUrl}${path}`)) ?? "";
+      const chunk = chunks.find((c) => c.startsWith(`\${context.baseUrl}${path}`)) ?? "";
       expect(chunk, `${path}: ${contract}`).toContain("payload.FirstFacet");
       expect(chunk, path).toContain("payload.SecondFacet");
     }
