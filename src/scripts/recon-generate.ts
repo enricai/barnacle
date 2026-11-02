@@ -5624,6 +5624,23 @@ export function indexStateValues(
     if (!chainConsumers && !forceConsumers) return undefined;
     return new Set([...(chainConsumers ?? []), ...(forceConsumers ?? [])]);
   };
+  // A response-header value (e.g. a CSRF token) that no request up to and
+  // including its origin capture carried, but a LATER capture sends verbatim
+  // in a request header, was minted by the server at this hop and must be
+  // re-read at runtime — freezing it would replay a stale recon-session
+  // literal. Requiring that the value is absent from the origin's own (and
+  // earlier) request headers excludes constants echoed both ways such as
+  // `application/json`.
+  const isMintedThenSentAsRequestHeader = (value: string, originIdx: number): boolean => {
+    if (value.length < MIN_STATE_VALUE_LENGTH) return false;
+    const sentIn = (c: Capture): boolean =>
+      Object.entries(c.requestHeaders).some(
+        ([k, v]) => k.toLowerCase() !== "cookie" && v === value
+      );
+    for (let j = 0; j <= originIdx; j++) if (sentIn(captures[j]!)) return false;
+    for (let j = originIdx + 1; j < captures.length; j++) if (sentIn(captures[j]!)) return true;
+    return false;
+  };
   // First pass: identify the earliest origin among ACTION captures for each
   // value. Action-only earliest-origin tracking is what compileActionSteps'
   // produces[] check needs — it ignores non-action captures (telemetry GETs,
@@ -5672,7 +5689,11 @@ export function indexStateValues(
     // sweeps every header value as noise.
     for (const [headerName, headerValue] of Object.entries(c.responseHeaders)) {
       if (headerName.toLowerCase() === "set-cookie") continue;
-      if (!chainForceIncludeValues.has(headerValue)) continue;
+      if (
+        !chainForceIncludeValues.has(headerValue) &&
+        !isMintedThenSentAsRequestHeader(headerValue, i)
+      )
+        continue;
       if (headerValue.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(headerValue)) continue;
       if (!index.has(headerValue)) {
@@ -8772,7 +8793,8 @@ export function emitMultiStepExecuteHttp(
     const step = actions[i]!;
     const cap = step.capture;
     // An unavailable-body marker means "a body existed" — never emit or parse it.
-    const emittableBody = cap.requestPostData === REQUEST_BODY_UNAVAILABLE ? null : cap.requestPostData;
+    const emittableBody =
+      cap.requestPostData === REQUEST_BODY_UNAVAILABLE ? null : cap.requestPostData;
     const prior = actions.slice(0, i);
     // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
     // must never be treated as an interpolation target at all: its URL is
