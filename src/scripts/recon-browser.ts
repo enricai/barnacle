@@ -140,6 +140,7 @@ import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
@@ -219,6 +220,15 @@ export function writeCaptureFiles(
  * persistence policy stays with the recon entry-point and `flow-runner.ts`
  * remains filesystem-agnostic.
  */
+/** Count of captures this run whose request body was recorded as the unavailable marker. */
+const bodyUnavailableCounter = { n: 0 };
+
+/** Warning for the end-of-run summary; null when no capture carried the marker. */
+export function formatBodyUnavailableWarning(count: number): string | null {
+  if (count <= 0) return null;
+  return `${count} capture(s) have an unavailable request body (${REQUEST_BODY_UNAVAILABLE}) — recon-http will skip them on replay`;
+}
+
 function wireNetworkCapture(
   page: Page,
   counter: { n: number },
@@ -241,6 +251,7 @@ function wireNetworkCapture(
       // shouldn't crash the whole recon run. Drop the capture, log loudly,
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
+      if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) bodyUnavailableCounter.n++;
       try {
         writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
@@ -3759,6 +3770,8 @@ async function main(): Promise<void> {
       );
 
       logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
+      const bodyWarning = formatBodyUnavailableWarning(bodyUnavailableCounter.n);
+      if (bodyWarning) logger.warn(bodyWarning);
     } catch (err) {
       // Runs before the finally closes the session so any error that escaped
       // the step loop (deathSignal rejection, page.url() timeout, uninitialized

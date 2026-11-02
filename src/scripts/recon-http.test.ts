@@ -487,3 +487,38 @@ describe("selectRateLimitTargets — fixture shape and safety", () => {
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/x/schedule.json"]);
   });
 });
+
+describe("replayCapture — marker and methods filter", () => {
+  const base = {
+    url: "https://example.com/api",
+    operationName: null,
+    query: null,
+    variables: null,
+  } as never;
+  const mk = (method: string, requestPostData: string | null) =>
+    ({ ...(base as object), method, requestPostData }) as never;
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("skips marker captures without fetching, sends real bodies unchanged", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const { replayCapture } = await import("@/scripts/recon-http");
+    expect(await replayCapture("a.json", mk("POST", "<unavailable>"))).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+    const r = await replayCapture("b.json", mk("POST", "x=1"));
+    expect(r?.requestBody).toBe("x=1");
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("methods filter skips non-listed methods", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const { replayCapture, parseMethodsFilter } = await import("@/scripts/recon-http");
+    const methods = parseMethodsFilter("get, head");
+    expect(await replayCapture("a.json", mk("PUT", "x"), { methods })).toBeNull();
+    expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+    expect(await replayCapture("c.json", mk("GET", null), { methods })).not.toBeNull();
+  });
+});
