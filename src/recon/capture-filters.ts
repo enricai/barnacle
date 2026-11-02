@@ -128,6 +128,11 @@ export function matchesTelemetryPattern(url: string, pattern: string): boolean {
   return hostMatches(hostname, pat) || pathHasSegments(parsed.pathname, [pat], false);
 }
 
+/** True when any configured telemetry pattern matches `url` by component. */
+export function matchesAnyTelemetryPattern(url: string): boolean {
+  return telemetryUrlPatterns().some((p) => matchesTelemetryPattern(url, p));
+}
+
 /**
  * Names the rule that makes `url` noise, or null when it is not noise.
  * {@link isNoiseUrl} delegates here so there is one definition.
