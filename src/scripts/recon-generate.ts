@@ -8465,14 +8465,10 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // G1: register the recon's baseUrl so the existing payload-substitution pass
-  // rewrites every URL occurrence to `${payload.BaseUrl}/...`. Same plugin
-  // then works for any tenant on the same ATS just by passing a different
-  // BaseUrl. Site-agnostic: just registers the recon's own baseUrl as a payload
-  // accessor; no site-specific URL knowledge.
-  if (baseUrl.length >= MIN_STATE_VALUE_LENGTH) {
-    payloadAccessorByValue.set(baseUrl, "payload.BaseUrl");
-    outDiscoveredFields.add("BaseUrl");
+  // G1: register the recon's baseUrl so the existing substitution pass
+  // rewrites every URL occurrence to `${context.baseUrl}/...`. The origin comes
+  // from the runtime context, never a caller payload field (no schema key).
+    payloadAccessorByValue.set(baseUrl, "context.baseUrl");
   }
   // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
   // paired to a payload field by the consumer vocabulary). Merged into the same
@@ -8552,7 +8548,7 @@ export function emitMultiStepExecuteHttp(
     outDiscoveredFields.add(field);
   }
   // Job coordinates from the recon entry URL's query string (e.g.
-  // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
+  // `?jobSeqNo=...`). Registered the same way as the origin so every verbatim
   // occurrence — and, via length-descending order, embedded substrings like a
   // jobId inside a jobSeqNo — rewrites to the caller-supplied value.
   for (const [value, accessor] of entryUrlParams) {
@@ -9048,13 +9044,13 @@ export function emitMultiStepExecuteHttp(
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
-    // payload.BaseUrl. interpolateStateValues already substituted the literal
-    // baseUrl with `${payload.BaseUrl}`, so a simple sub of the recon's
-    // observed baseUrl in each header value gives us `${payload.BaseUrl}/`.
-    // Emit "${payload.BaseUrl}" as a template-literal placeholder into the
+    // context.baseUrl. interpolateStateValues already substituted the literal
+    // baseUrl with `${context.baseUrl}`, so a simple sub of the recon's
+    // observed baseUrl in each header value gives us `${context.baseUrl}/`.
+    // Emit "${context.baseUrl}" as a template-literal placeholder into the
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
-    const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+    const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
       perCallHeaders[headerName] = observedValue.split(baseUrl).join(baseUrlPlaceholder);
     }
@@ -9717,7 +9713,7 @@ export function emitMultiStepExecuteHttp(
       // G1+G2: include tenant-derived headers in the multipart fetch too.
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
-      const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+      const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
         const v = observedValue.split(baseUrl).join(baseUrlPlaceholder);
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
@@ -17780,7 +17776,7 @@ async function main(): Promise<void> {
     const errorSignals = detectErrorSignals(actionSteps);
     const discoveredFormFields = new Set<string>();
     // emitMultiStepExecuteHttp's outDiscoveredFields parameter is a generic
-    // payload-accessor accumulator — BaseUrl substitution, persona/producer-
+    // payload-accessor accumulator — origin substitution, persona/producer-
     // boundary bindings, entryUrlParams, tenant-subdomain headers, and
     // walkStringLeaves-derived accessors all write into it, independent of
     // form-schema discovery. It gets its own Set (rather than aliasing
@@ -17819,7 +17815,7 @@ async function main(): Promise<void> {
     // G1+G2: partition baseHeaders into three buckets:
     //   - static: values that don't reference baseUrl or tenant subdomain
     //   - baseUrl-derived: values containing the recon's baseUrl as substring
-    //     (e.g. Origin, Referer) — emit per-call from payload.BaseUrl
+    //     (e.g. Origin, Referer) — emit per-call from context.baseUrl
     //   - tenant-subdomain: values that EXACTLY equal the first subdomain
     //     (e.g. API-ShortName: "addus") — emit per-call from a payload field
     const staticBaseHeaders: Record<string, string> = {};
@@ -17891,7 +17887,7 @@ async function main(): Promise<void> {
           )
         : undefined;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
-    // `payload.<field>` accessor (BaseUrl, persona, entryUrlParams, tenant-
+    // `payload.<field>` accessor (persona, entryUrlParams, tenant-
     // subdomain headers, walkStringLeaves) flows into the same discovered-
     // fields set emitContractTs's schema `.extend()` reads from below.
     for (const field of discoveredPayloadAccessorFields) {
