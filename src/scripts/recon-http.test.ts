@@ -39,7 +39,9 @@ vi.mock("@/lib/logging", () => ({
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
 import {
+  parseMethodsFilter,
   probeAuxiliaryEndpoints,
+  replayCapture,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
 } from "@/scripts/recon-http";
@@ -503,7 +505,6 @@ describe("replayCapture — marker and methods filter", () => {
   it("skips marker captures without fetching, sends real bodies unchanged", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
-    const { replayCapture } = await import("@/scripts/recon-http");
     expect(await replayCapture("a.json", mk("POST", "<unavailable>"))).toBeNull();
     expect(f).not.toHaveBeenCalled();
     const r = await replayCapture("b.json", mk("POST", "x=1"));
@@ -514,7 +515,6 @@ describe("replayCapture — marker and methods filter", () => {
   it("methods filter skips non-listed methods", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
-    const { replayCapture, parseMethodsFilter } = await import("@/scripts/recon-http");
     const methods = parseMethodsFilter("get, head");
     expect(await replayCapture("a.json", mk("PUT", "x"), { methods })).toBeNull();
     expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
