@@ -8468,6 +8468,7 @@ export function emitMultiStepExecuteHttp(
   // G1: register the recon's baseUrl so the existing substitution pass
   // rewrites every URL occurrence to `${context.baseUrl}/...`. The origin comes
   // from the runtime context, never a caller payload field (no schema key).
+  if (baseUrl.length >= MIN_STATE_VALUE_LENGTH) {
     payloadAccessorByValue.set(baseUrl, "context.baseUrl");
   }
   // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
