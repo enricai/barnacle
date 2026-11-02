@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod/v4";
 
-import {
-  type Capture,
-  gatherEntityVarianceEvidence,
-  inferZodSchemaFromSamples,
-} from "@/scripts/recon-generate";
+import { gatherEntityVarianceEvidence, inferZodSchemaFromSamples } from "@/scripts/recon-generate";
+import type { Capture } from "@/scripts/recon-shared";
 
 function evalSchema(expr: string): z.ZodType {
   return new Function("z", `return ${expr};`)(z) as z.ZodType;
