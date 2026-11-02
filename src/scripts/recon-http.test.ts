@@ -582,7 +582,7 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
   it("runs end to end, skipping marker captures and method-filtered captures without fetching", async () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");
     const { REQUEST_BODY_UNAVAILABLE } =
-      await import("@/scraper/request-body-marker");
+      await import("@/scraper/request-body-marker.js");
     vi.resetModules();
     const root = mkdtempSync(join(tmpdir(), "recon-http-main-"));
     const caps = join(root, "caps");
@@ -625,7 +625,7 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
       "PUT",
     ];
     try {
-      await import("@/scripts/recon-http");
+      await import("@/scripts/recon-http.js");
       await vi.waitFor(() =>
         expect(loggerStub.info).toHaveBeenCalledWith(
           expect.stringContaining("recon-http complete"),
