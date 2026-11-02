@@ -45,6 +45,7 @@ import {
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 
 configureHttpDispatcher();
 
@@ -159,7 +160,7 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       query: capture.query,
       variables: capture.variables ?? {},
     });
-  } else if (capture.requestPostData) {
+  } else if (capture.requestPostData && capture.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
     requestBody = capture.requestPostData;
   }
 
