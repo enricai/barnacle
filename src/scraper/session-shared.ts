@@ -3,6 +3,7 @@ import type Bottleneck from "bottleneck";
 
 import { pickRandom } from "@/lib/random";
 import type { CdpTransportClosedError } from "@/scraper/errors";
+import { withWatchdog } from "@/scraper/watchdog";
 import type { SessionProxyTuple } from "@/types/session-proxy";
 
 /** Allowed provider names. */
@@ -137,4 +138,28 @@ const VIEWPORTS = [
 
 export function pickRandomViewport(): { width: number; height: number } {
   return pickRandom(VIEWPORTS);
+}
+
+/** Upper bound on how long teardown waits for `stagehand.close()`. */
+export const STAGEHAND_CLOSE_TIMEOUT_MS = 20_000;
+
+/**
+ * Closes a Stagehand instance bounded by {@link STAGEHAND_CLOSE_TIMEOUT_MS}.
+ * Never throws: a hung or failing close is logged as a warning so callers can
+ * always proceed to release the remote session afterwards.
+ */
+export async function closeStagehandBounded(
+  stagehand: Pick<Stagehand, "close">,
+  logger: { warn: (...args: unknown[]) => void },
+  timeoutMs: number = STAGEHAND_CLOSE_TIMEOUT_MS
+): Promise<void> {
+  try {
+    await withWatchdog(() => stagehand.close(), { timeoutMs, label: "stagehand.close" });
+  } catch (err) {
+    try {
+      logger.warn({ err }, "stagehand close failed or timed out; continuing teardown");
+    } catch {
+      // logging must never break teardown
+    }
+  }
 }
