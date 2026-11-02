@@ -114,19 +114,30 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
     // caller to add site-specific telemetry hosts, so this test uses it
     // rather than editing the shared noise list, which is out of this
     // subtask's scope.
-    process.env.RECON_TELEMETRY_URL_PATTERNS = "bat.bing.com,tr.snapchat.com,sw88.go.com";
+    process.env.RECON_TELEMETRY_URL_PATTERNS =
+      "bat.bing.com,tr.snapchat.com,sw88.go.com";
   });
 
   afterEach(() => {
-    if (originalPatterns === undefined) delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    if (originalPatterns === undefined)
+      delete process.env.RECON_TELEMETRY_URL_PATTERNS;
     else process.env.RECON_TELEMETRY_URL_PATTERNS = originalPatterns;
   });
 
   it("keeps only the real endpoint when noise hosts are mixed into the replay list", () => {
     const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/real/endpoint", sourceCapture: "000-real.json" }),
-      replay({ url: "https://bat.bing.com/action/0", sourceCapture: "001-bing.json" }),
-      replay({ url: "https://tr.snapchat.com/cm", sourceCapture: "002-snap.json" }),
+      replay({
+        url: "https://api.example.com/real/endpoint",
+        sourceCapture: "000-real.json",
+      }),
+      replay({
+        url: "https://bat.bing.com/action/0",
+        sourceCapture: "001-bing.json",
+      }),
+      replay({
+        url: "https://tr.snapchat.com/cm",
+        sourceCapture: "002-snap.json",
+      }),
       replay({
         url: "https://sw88.go.com/rd?g=beacon&pixel=1",
         sourceCapture: "003-adobe.json",
@@ -135,7 +146,9 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
+    expect(Array.from(targets.keys())).toEqual([
+      "https://api.example.com/real/endpoint",
+    ]);
   });
 
   it("still drops static fixture endpoints (path-suffix check) alongside noise", () => {
@@ -147,12 +160,18 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
+    expect(Array.from(targets.keys())).toEqual([
+      "https://api.example.com/real/endpoint",
+    ]);
   });
 
   it("excludes failed replays regardless of noise status", () => {
     const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/real/endpoint", success: false, replayStatus: 500 }),
+      replay({
+        url: "https://api.example.com/real/endpoint",
+        success: false,
+        replayStatus: 500,
+      }),
     ];
 
     const { targets } = selectRateLimitTargets(replays);
@@ -165,35 +184,53 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
   it("excludes a fictitious third-party vendor host even though it is path-shaped like a fixture", () => {
     const replays: ReplayResult[] = [
       replay({ url: "https://api.example.com/config/markets.json" }),
-      replay({ url: "https://widgets.some-survey-vendor.example/formDataV2_123_en.json" }),
+      replay({
+        url: "https://widgets.some-survey-vendor.example/formDataV2_123_en.json",
+      }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://api.example.com/config/markets.json",
+    ]);
   });
 
   it("excludes a locale-dictionary-shaped path on a declared subdomain, but keeps a real reference-data path", () => {
     const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/pulse/api/v1/locales/en/dictionary" }),
+      replay({
+        url: "https://api.example.com/pulse/api/v1/locales/en/dictionary",
+      }),
       replay({ url: "https://www.example.com/labels/en.json" }),
     ];
 
     const candidates = selectAuxFixtureCandidates(
       replays,
       ["api.example.com", "www.example.com"],
-      null
+      null,
     );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://www.example.com/labels/en.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://www.example.com/labels/en.json",
+    ]);
   });
 
   it("excludes a feature-flag-resolver-shaped path even though it ends in .json", () => {
     const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/bin/services/core/flags/resolve.json" }),
+      replay({
+        url: "https://api.example.com/bin/services/core/flags/resolve.json",
+      }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -204,9 +241,15 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, [], "api.example.com");
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      [],
+      "api.example.com",
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://static.example.com/currencies.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://static.example.com/currencies.json",
+    ]);
   });
 
   it("harvests nothing when ownBackendHostnames is unset and there is no fallback host", () => {
@@ -224,7 +267,11 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://cdn.cookielaw.org/consent/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["cdn.cookielaw.org"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["cdn.cookielaw.org"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -233,26 +280,43 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     const replays: ReplayResult[] = [
       replay({ url: "https://api.example.com/config/markets.json" }),
       replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
-      replay({ url: "https://cdn.some-analytics-vendor.example/pixel/config.json" }),
-      replay({ url: "https://tag.some-tagmanager-vendor.example/labels/en.json" }),
+      replay({
+        url: "https://cdn.some-analytics-vendor.example/pixel/config.json",
+      }),
+      replay({
+        url: "https://tag.some-tagmanager-vendor.example/labels/en.json",
+      }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
-    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
+    expect(candidates.map((c) => c.url)).toEqual([
+      "https://api.example.com/config/markets.json",
+    ]);
   });
 
   it("excludes non-fixture-shaped paths and failed/GraphQL replays", () => {
     const replays: ReplayResult[] = [
       replay({ url: "https://api.example.com/order/checkout" }),
-      replay({ url: "https://api.example.com/config/markets.json", success: false }),
+      replay({
+        url: "https://api.example.com/config/markets.json",
+        success: false,
+      }),
       replay({
         url: "https://api.example.com/config/markets.json",
         operationName: "GetMarkets",
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
+    const candidates = selectAuxFixtureCandidates(
+      replays,
+      ["api.example.com"],
+      null,
+    );
 
     expect(candidates).toEqual([]);
   });
@@ -284,9 +348,16 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
       replay({ url: "https://www.example.com/labels/en.json" }),
     ];
 
-    await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com", "www.example.com"], null);
+    await probeAuxiliaryEndpoints(
+      replays,
+      auxDir,
+      ["api.example.com", "www.example.com"],
+      null,
+    );
 
-    const manifest = JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"));
+    const manifest = JSON.parse(
+      readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"),
+    );
 
     expect(manifest).toHaveLength(2);
     expect(manifest).toEqual(
@@ -301,17 +372,42 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
           url: "https://www.example.com/labels/en.json",
           hostname: "www.example.com",
         }),
-      ])
+      ]),
     );
   });
 
   it("writes no manifest when there are no candidates to write", async () => {
     global.fetch = vi.fn() as unknown as typeof fetch;
 
-    const replays: ReplayResult[] = [replay({ url: "https://api.example.com/order/checkout" })];
+    const replays: ReplayResult[] = [
+      replay({ url: "https://api.example.com/order/checkout" }),
+    ];
 
     await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com"], null);
 
     expect(existsSync(join(auxDir, "aux-manifest.json"))).toBe(false);
+  });
+});
+
+describe("selectReplayCaptures", () => {
+  const mk = (url: string, method: string) => ({
+    filename: `${method}-${url}`,
+    capture: { url, method } as never,
+  });
+  it("skips unsafe methods with reason, unless opted in; never selects data:", async () => {
+    const { selectReplayCaptures } = await import("./recon-http");
+    const caps = [
+      mk("https://example.com/api/a", "GET"),
+      mk("https://example.com/api/b", "POST"),
+      mk("data:text/plain,hi", "GET"),
+    ];
+    const r = selectReplayCaptures(caps, false);
+    expect(r.selected).toHaveLength(1);
+    expect(r.skipped.map((s) => s.reason).some((x) => x.includes("POST"))).toBe(
+      true,
+    );
+    expect(r.skipped.some((s) => s.url.startsWith("data:"))).toBe(true);
+    const r2 = selectReplayCaptures(caps, true);
+    expect(r2.selected).toHaveLength(2);
   });
 });

@@ -36,8 +36,17 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { isAllowedFixtureHost, isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
-import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
+import {
+  isAllowedFixtureHost,
+  isNoiseUrl,
+  noiseReason,
+  registrableDomain,
+} from "@/recon/capture-filters";
+import { unsafeReplayReason } from "@/recon/replay-safety";
+import {
+  readOwnBackendHostnames,
+  resolveReconRunDir,
+} from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
 
@@ -96,7 +105,9 @@ interface AuxManifestEntry {
   hostname: string;
 }
 
-function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }> {
+function loadCaptures(
+  dir: string,
+): Array<{ filename: string; capture: Capture }> {
   let files: string[];
   try {
     files = readdirSync(dir)
@@ -119,14 +130,17 @@ function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }
       capture: {
         ...capture,
         query: typeof capture.query === "string" ? capture.query : null,
-        operationName: typeof capture.operationName === "string" ? capture.operationName : null,
+        operationName:
+          typeof capture.operationName === "string"
+            ? capture.operationName
+            : null,
       },
     };
   });
 }
 
 function deduplicateCaptures(
-  captures: Array<{ filename: string; capture: Capture }>
+  captures: Array<{ filename: string; capture: Capture }>,
 ): Array<{ filename: string; capture: Capture }> {
   const seen = new Set<string>();
   return captures.filter(({ capture }) => {
@@ -137,7 +151,10 @@ function deduplicateCaptures(
   });
 }
 
-async function replayCapture(filename: string, capture: Capture): Promise<ReplayResult> {
+async function replayCapture(
+  filename: string,
+  capture: Capture,
+): Promise<ReplayResult> {
   const origin = new URL(capture.url).origin;
   const headers: Record<string, string> = {
     ...RC_HEADERS,
@@ -186,17 +203,17 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       logger.warn(`[${response.status}] ${capture.method} ${capture.url}`);
       if (response.status === 403)
         logger.warn(
-          "  → 403: try adding more headers; if persistent, accept Stagehand-only production"
+          "  → 403: try adding more headers; if persistent, accept Stagehand-only production",
         );
       if (response.status === 401)
         logger.warn(
-          "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy"
+          "  → 401: endpoint requires auth — capture token, determine lifetime, build refresh strategy",
         );
     } else {
       const bodyStr = JSON.stringify(replayBody);
       if (bodyStr === "{}" || bodyStr === "[]" || bodyStr === "null")
         logger.warn(
-          `[${response.status}] ${capture.method} ${capture.url} (empty body — check Origin/Referer)`
+          `[${response.status}] ${capture.method} ${capture.url} (empty body — check Origin/Referer)`,
         );
       else logger.info(`[${response.status}] ${capture.method} ${capture.url}`);
     }
@@ -214,7 +231,9 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       error: null,
     };
   } catch (err) {
-    logger.error(`[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`);
+    logger.error(
+      `[ERR] ${capture.method} ${capture.url}: ${toErrorMessage(err)}`,
+    );
     return {
       sourceCapture: filename,
       url: capture.url,
@@ -230,7 +249,10 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
   }
 }
 
-async function probeIntrospection(endpoint: string, replaysDir: string): Promise<void> {
+async function probeIntrospection(
+  endpoint: string,
+  replaysDir: string,
+): Promise<void> {
   logger.info(`introspection probe: ${endpoint}`);
   const origin = new URL(endpoint).origin;
   const headers: Record<string, string> = {
@@ -247,9 +269,14 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
     const body = (await response.json()) as Record<string, unknown>;
     if (body.data) {
       logger.info("  → introspection ENABLED — full schema available");
-      writeFileSync(join(replaysDir, "introspection-schema.json"), JSON.stringify(body, null, 2));
+      writeFileSync(
+        join(replaysDir, "introspection-schema.json"),
+        JSON.stringify(body, null, 2),
+      );
     } else {
-      logger.info("  → introspection DISABLED — write Zod schemas by hand from captured JSON");
+      logger.info(
+        "  → introspection DISABLED — write Zod schemas by hand from captured JSON",
+      );
     }
   } catch (err) {
     logger.error(`  → introspection error: ${toErrorMessage(err)}`);
@@ -275,7 +302,7 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
 export function selectAuxFixtureCandidates(
   replays: ReplayResult[],
   ownBackendHostnames: string[],
-  fallbackHost: string | null
+  fallbackHost: string | null,
 ): ReplayResult[] {
   const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
 
@@ -289,9 +316,14 @@ export function selectAuxFixtureCandidates(
       return false;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isFixtureShaped = /\/(markets|currencies|labels|config)(\/|\.json|$)/.test(pathname);
+    const isFixtureShaped =
+      /\/(markets|currencies|labels|config)(\/|\.json|$)/.test(pathname);
     if (!isFixtureShaped) return false;
-    return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
+    return isAllowedFixtureHost(
+      parsed.hostname,
+      ownBackendHostnames,
+      fallbackDomain,
+    );
   });
 }
 
@@ -305,13 +337,17 @@ export async function probeAuxiliaryEndpoints(
   replays: ReplayResult[],
   auxDir: string,
   ownBackendHostnames: string[],
-  fallbackHost: string | null
+  fallbackHost: string | null,
 ): Promise<void> {
   mkdirSync(auxDir, { recursive: true });
   const writtenInRun = new Set<string>();
   const manifestEntries: AuxManifestEntry[] = [];
 
-  const candidates = selectAuxFixtureCandidates(replays, ownBackendHostnames, fallbackHost);
+  const candidates = selectAuxFixtureCandidates(
+    replays,
+    ownBackendHostnames,
+    fallbackHost,
+  );
 
   if (candidates.length === 0) {
     logger.info("no auxiliary endpoints detected");
@@ -326,34 +362,50 @@ export async function probeAuxiliaryEndpoints(
       Referer: `${origin}/`,
     };
     try {
-      const response = await fetch(candidate.url, { method: candidate.method, headers });
+      const response = await fetch(candidate.url, {
+        method: candidate.method,
+        headers,
+      });
       if (!response.ok) {
-        logger.warn(`[aux skip] ${candidate.url}: ${response.status} — not a fixture`);
+        logger.warn(
+          `[aux skip] ${candidate.url}: ${response.status} — not a fixture`,
+        );
         continue;
       }
       const body = (await response.json()) as unknown;
       const parsed = new URL(candidate.url);
       const rawBase = parsed.pathname.split("/").pop() ?? "aux";
       const base = rawBase.endsWith(".json") ? rawBase : `${rawBase}.json`;
-      const filename = writtenInRun.has(base) ? `${parsed.hostname}-${base}` : base;
+      const filename = writtenInRun.has(base)
+        ? `${parsed.hostname}-${base}`
+        : base;
       writeFileSync(join(auxDir, filename), JSON.stringify(body, null, 2));
       writtenInRun.add(base);
-      manifestEntries.push({ filename, url: candidate.url, hostname: parsed.hostname });
-      logger.info(`[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`);
+      manifestEntries.push({
+        filename,
+        url: candidate.url,
+        hostname: parsed.hostname,
+      });
+      logger.info(
+        `[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`,
+      );
     } catch (err) {
       logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
     }
   }
 
   if (manifestEntries.length > 0) {
-    writeFileSync(join(auxDir, "aux-manifest.json"), JSON.stringify(manifestEntries, null, 2));
+    writeFileSync(
+      join(auxDir, "aux-manifest.json"),
+      JSON.stringify(manifestEntries, null, 2),
+    );
   }
 }
 
 async function probeRateLimit(
   endpoint: string,
   method: string,
-  body: string | null
+  body: string | null,
 ): Promise<RateLimitFinding> {
   logger.info(`rate-limit probe: ${endpoint} (1→3→5 rps, stops at 429/403)`);
   const origin = new URL(endpoint).origin;
@@ -402,7 +454,10 @@ async function probeRateLimit(
         });
 
         if (Object.keys(respHeaders).length > 0) {
-          finding.xRateLimitHeaders = { ...finding.xRateLimitHeaders, ...respHeaders };
+          finding.xRateLimitHeaders = {
+            ...finding.xRateLimitHeaders,
+            ...respHeaders,
+          };
         }
 
         if (response.status === 429 || response.status === 403) {
@@ -411,7 +466,7 @@ async function probeRateLimit(
           finding.retryAfter = response.headers.get("retry-after");
           triggered = true;
           logger.warn(
-            `  → triggered ${response.status} at ${rps} rps (request ${i + 1}/${requestsPerLevel})`
+            `  → triggered ${response.status} at ${rps} rps (request ${i + 1}/${requestsPerLevel})`,
           );
           break;
         }
@@ -430,9 +485,10 @@ async function probeRateLimit(
   }
 
   if (finding.triggerRps !== null) {
-    finding.safeRps = rpsCeilings[rpsCeilings.indexOf(finding.triggerRps) - 1] ?? null;
+    finding.safeRps =
+      rpsCeilings[rpsCeilings.indexOf(finding.triggerRps) - 1] ?? null;
     logger.info(
-      `  → safe ceiling: ${finding.safeRps ?? "unknown"} rps (triggered at ${finding.triggerRps} rps)`
+      `  → safe ceiling: ${finding.safeRps ?? "unknown"} rps (triggered at ${finding.triggerRps} rps)`,
     );
   }
 
@@ -464,7 +520,9 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (
         pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
+        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(
+          pathname,
+        )
       )
         continue;
       const key = `${u.origin}${u.pathname}`;
@@ -478,10 +536,38 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
   return { targets, skipped };
 }
 
+/**
+ * Chooses which captures to replay. Noise URLs (incl. non-http(s)) are always
+ * skipped, with the matching rule; non-safe methods are skipped unless
+ * `includeUnsafe` is set.
+ */
+export function selectReplayCaptures<
+  T extends { filename: string; capture: Capture },
+>(
+  captures: T[],
+  includeUnsafe: boolean,
+): {
+  selected: T[];
+  skipped: Array<{ filename: string; url: string; reason: string }>;
+} {
+  const selected: T[] = [];
+  const skipped: Array<{ filename: string; url: string; reason: string }> = [];
+  for (const item of captures) {
+    const { capture, filename } = item;
+    const noise = noiseReason(capture.url);
+    const unsafe = includeUnsafe ? null : unsafeReplayReason(capture);
+    const reason = noise ?? unsafe;
+    if (reason) skipped.push({ filename, url: capture.url, reason });
+    else selected.push(item);
+  }
+  return { selected, skipped };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--out-dir" && args[i + 1]) process.env.RECON_OUT_DIR = args[++i]!;
+    if (args[i] === "--out-dir" && args[i + 1])
+      process.env.RECON_OUT_DIR = args[++i]!;
   }
 
   const runDir = resolveReconRunDir();
@@ -503,18 +589,25 @@ async function main(): Promise<void> {
   // host — burning hours on clicktale/adsrvr/tiktok — and never reaches the one
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
-  const probeworthy = unique.filter(({ capture }) => !isNoiseUrl(capture.url));
-  const skipped = unique.length - probeworthy.length;
+  const includeUnsafe = args.includes("--include-unsafe-methods");
+  const { selected: probeworthy, skipped } = selectReplayCaptures(
+    unique,
+    includeUnsafe,
+  );
   logger.info(
     `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
-      (skipped > 0 ? ` (${skipped} asset/telemetry/error host(s) skipped)` : "")
+      (skipped.length > 0 ? ` (${skipped.length} skipped)` : ""),
   );
+  for (const sk of skipped) logger.info(`skipped ${sk.url}: ${sk.reason}`);
 
   const replays: ReplayResult[] = [];
   for (const { filename, capture } of probeworthy) {
     const result = await replayCapture(filename, capture);
     replays.push(result);
-    writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
+    writeFileSync(
+      join(runDir.replaysDir, filename),
+      JSON.stringify(result, null, 2),
+    );
   }
 
   const passed = replays.filter((r) => r.success).length;
@@ -532,7 +625,7 @@ async function main(): Promise<void> {
         } catch {
           return r.url;
         }
-      })
+      }),
   );
   if (graphqlEndpoints.size === 0) {
     logger.info("no GraphQL endpoints found in captures");
@@ -553,14 +646,22 @@ async function main(): Promise<void> {
       return null;
     }
   })();
-  await probeAuxiliaryEndpoints(replays, runDir.auxDir, ownBackendHostnames, fallbackHost);
+  await probeAuxiliaryEndpoints(
+    replays,
+    runDir.auxDir,
+    ownBackendHostnames,
+    fallbackHost,
+  );
 
   // Rate-limit probe — runs last
-  logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(replays);
+  logger.info(
+    "=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===",
+  );
+  const { targets: probeTargets, skipped: skippedAsNoise } =
+    selectRateLimitTargets(replays);
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
-      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")
+      (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : ""),
   );
 
   const rateLimitFindings: RateLimitFinding[] = [];
@@ -571,7 +672,7 @@ async function main(): Promise<void> {
 
   writeFileSync(
     join(runDir.replaysDir, "rate-limit.json"),
-    JSON.stringify(rateLimitFindings, null, 2)
+    JSON.stringify(rateLimitFindings, null, 2),
   );
 
   logger.info(`recon-http complete — replays in ${runDir.replaysDir}`);
@@ -579,7 +680,8 @@ async function main(): Promise<void> {
 
 if (
   process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("recon-http.ts") || process.argv[1].endsWith("recon-http.js"))
+  (process.argv[1].endsWith("recon-http.ts") ||
+    process.argv[1].endsWith("recon-http.js"))
 ) {
   main().catch((err) => {
     logger.error(`recon-http failed: ${toErrorMessage(err)}`);
