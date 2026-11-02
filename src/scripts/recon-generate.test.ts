@@ -5442,3 +5442,15 @@ describe("gatherEntityVarianceEvidence", () => {
     expect(gatherEntityVarianceEvidence(null, false, []).entityParameterized).toBe(false);
   });
 });
+
+describe("emitContractTs — singleEntityEvidence", () => {
+  const body = { name: "Widget", count: 3 };
+  it("emits nullable().optional() leaves when flagged", () => {
+    const src = emitContractTs({ ...BASE_OPTS, responseBody: body, responseBodySamples: [body], singleEntityEvidence: true });
+    expect(src).toContain("z.string().nullable().optional()");
+  });
+  it("is unchanged when unflagged", () => {
+    const src = emitContractTs({ ...BASE_OPTS, responseBody: body, responseBodySamples: [body] });
+    expect(src).not.toContain("z.string().nullable().optional()");
+  });
+});
