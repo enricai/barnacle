@@ -100,7 +100,7 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
     ];
     vi.resetModules();
     try {
-      await import("@/scripts/recon-generate");
+      await import("./recon-generate.js");
       const out = join(siteOutDir, "contract.ts");
       for (let i = 0; i < 300 && !existsSync(out); i++) {
         await new Promise((r) => setTimeout(r, 100));
