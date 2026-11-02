@@ -2485,6 +2485,101 @@ function safeUrlPathname(url: string): string {
   }
 }
 
+/** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
+export interface GetInputModel {
+  /** Query keys whose values vary across successful same-pathname GET siblings. */
+  dynamicFields: Array<{ field: string; queryKey: string }>;
+  /** Query params with a single observed value across siblings (queryKey -> value). */
+  fixedParams: Record<string, string>;
+  /** Safe identifier -> real query key. */
+  fieldToQueryKey: Record<string, string>;
+  /** Path segments of the winning URL that repeat a query value. */
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+}
+
+function safeGetFieldIdentifier(key: string): string {
+  const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
+  let id = parts
+    .map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join("");
+  if (id === "") id = "param";
+  if (/^[0-9]/.test(id)) id = `_${id}`;
+  return id;
+}
+
+/**
+ * Pure derivation of the GET input model from the winning capture and its
+ * successful same-pathname GET siblings. Returns null for non-GET winners.
+ * `reservedNames` are existing payload field names; collisions get a numeric suffix.
+ */
+export function deriveGetInputModel(
+  winner: Capture | null | undefined,
+  captures: readonly Capture[],
+  reservedNames: Iterable<string> = []
+): GetInputModel | null {
+  if (!winner || winner.method !== "GET") return null;
+  let winnerUrl: URL;
+  try {
+    winnerUrl = new URL(winner.url);
+  } catch {
+    return null;
+  }
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      return new URL(c.url).pathname === winnerUrl.pathname;
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
+  const valuesByKey = new Map<string, Set<string>>();
+  for (const c of siblings) {
+    for (const [k, v] of new URL(c.url).searchParams) {
+      let s = valuesByKey.get(k);
+      if (!s) valuesByKey.set(k, (s = new Set()));
+      s.add(v);
+    }
+  }
+  const taken = new Set(reservedNames);
+  const dynamicFields: GetInputModel["dynamicFields"] = [];
+  const fixedParams: Record<string, string> = {};
+  const fieldToQueryKey: Record<string, string> = {};
+  const pathVars: GetInputModel["pathVars"] = [];
+  const unique = (base: string): string => {
+    let name = base;
+    for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+    taken.add(name);
+    return name;
+  };
+  const segments = winnerUrl.pathname.split("/");
+  for (const [key, values] of valuesByKey) {
+    const winnerValue = winnerUrl.searchParams.get(key);
+    const segIdx =
+      winnerValue !== null && winnerValue !== ""
+        ? segments.findIndex((s) => {
+            try {
+              return decodeURIComponent(s) === winnerValue;
+            } catch {
+              return s === winnerValue;
+            }
+          })
+        : -1;
+    if (segIdx >= 0) {
+      const field = unique(safeGetFieldIdentifier(key));
+      pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else if (values.size > 1) {
+      const field = unique(safeGetFieldIdentifier(key));
+      dynamicFields.push({ field, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else {
+      fixedParams[key] = [...values][0] as string;
+    }
+  }
+  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
+}
+
 export function firstEndpointPath(
   captures: Capture[],
   ownBackendHostnames: string[] = [],
@@ -14110,6 +14205,8 @@ export function emitContractTs(opts: {
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
+  /** Derived GET input model (read-only REST GET flows); null/absent otherwise. */
+  getInputModel?: GetInputModel | null;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -17605,6 +17702,9 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
+      getInputModel: isReadOnlyGetFlow
+        ? deriveGetInputModel(winningCapture, activeCaptures, browserFlow.payloadFieldNames)
+        : null,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))

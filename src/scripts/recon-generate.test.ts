@@ -5433,3 +5433,20 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     ).toEqual(["ClickUrl"]);
   });
 });
+
+describe("deriveGetInputModel", () => {
+  const cap = (url: string, method = "GET", status = 200) =>
+    ({ method, url, status }) as unknown as import("./recon-shared").Capture;
+  it("derives dynamic, fixed, path vars and safe identifiers", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate");
+    const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
+    const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
+    expect(m.fieldToQueryKey.ids).toBe("ids[]");
+    expect(m.fixedParams).toEqual({ sort: "asc" });
+    expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
+    expect(deriveGetInputModel(a, [a], ["ids"])!.dynamicFields).toEqual([]);
+    expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
+  });
+});
