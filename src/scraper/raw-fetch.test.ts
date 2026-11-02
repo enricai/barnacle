@@ -1,8 +1,11 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { fetch as undiciFetch } from "undici";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
-import { rawFetch } from "@/scraper/raw-fetch";
+import { type FetchImpl, rawFetch } from "@/scraper/raw-fetch";
 import { makeMockFetchResponse } from "@/testing/mock-fetch-response";
 
 vi.mock("undici", () => ({
@@ -229,5 +232,81 @@ describe("rawFetch", () => {
       expect(captured).toHaveLength(1);
       expect(result.status).toBe(403);
     });
+  });
+});
+
+describe("rawFetch redirect: manual", () => {
+  let server: Server;
+  let base: string;
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      if (req.url === "/start") {
+        res.writeHead(302, { Location: "/final", "Set-Cookie": "flow=step2; Path=/" });
+        res.end();
+      } else {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(`cookie=${req.headers.cookie ?? ""}`);
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => {
+    server.close();
+  });
+
+  const realFetch = async (u: string, init: Parameters<FetchImpl>[1]) =>
+    (await vi.importActual<typeof import("undici")>("undici")).fetch(
+      u,
+      init as never
+    ) as unknown as ReturnType<FetchImpl>;
+
+  it("calls onResponse per hop, carries cookie, returns headers and finalUrl", async () => {
+    const seen: Array<{ setCookie: string[]; location: string | null }> = [];
+    const result = await rawFetch(`${base}/start`, {
+      method: "GET",
+      headers: {},
+      onResponse: (h) => seen.push({ setCookie: h.getSetCookie(), location: h.get("location") }),
+      contextLabel: "demo",
+      skipClassify: true,
+      redirect: "manual",
+      fetchImpl: realFetch,
+    });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toEqual({ setCookie: ["flow=step2; Path=/"], location: "/final" });
+    expect(result.finalUrl.endsWith("/final")).toBe(true);
+    expect(result.rawBody).toBe("cookie=flow=step2");
+    expect(result.headers.get("content-type")).toBe("text/plain");
+  });
+
+  it("default keeps a single onResponse call", async () => {
+    const onResponse = vi.fn();
+    const result = await rawFetch(`${base}/start`, {
+      method: "GET",
+      headers: {},
+      onResponse,
+      contextLabel: "demo",
+      skipClassify: true,
+      fetchImpl: realFetch,
+    });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe(200);
+  });
+
+  it("passes init.redirect through to fetchImpl", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      status: 200,
+      headers: new Headers(),
+      text: async () => "ok",
+    }));
+    await rawFetch("https://example.com/", {
+      method: "GET",
+      headers: {},
+      onResponse: vi.fn(),
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
   });
 });
