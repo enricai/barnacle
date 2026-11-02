@@ -395,7 +395,7 @@ describe("selectReplayCaptures", () => {
     capture: { url, method } as never,
   });
   it("skips unsafe methods with reason, unless opted in; never selects data:", async () => {
-    const { selectReplayCaptures } = await import("./recon-http");
+    const { selectReplayCaptures } = await import("./recon-http.js");
     const caps = [
       mk("https://example.com/api/a", "GET"),
       mk("https://example.com/api/b", "POST"),
