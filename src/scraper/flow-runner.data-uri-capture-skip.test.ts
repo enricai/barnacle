@@ -28,7 +28,7 @@ describe("flow-runner/wireSignalCapture — non-http(s) URLs are not captured", 
     const { page, emit } = fakeCapturePage();
     const captured: Capture[] = [];
     const counter = { n: 0 };
-    const recentCaptures: Capture[] = [];
+    const recentCaptures: string[] = [];
     const teardown = wireSignalCapture(page, {
       counter,
       signalCounter: { n: 0 },
