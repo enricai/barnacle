@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { findExistingGeneratedPaths } from "./recon-generate";
 
 const has = (...present: string[]) => (p: string) => present.includes(p);
@@ -33,6 +33,40 @@ describe("recon-generate main() guard (end to end)", () => {
       expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(1);
       expect(`${r.stdout}${r.stderr}`).toContain(`src/sites/${siteId}/contract.ts already exists`);
     } finally {
+      rmSync(siteDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe("recon-generate main() guard (in-process)", () => {
+  it("calls process.exit(1) naming the existing file when contract.ts exists without --force", async () => {
+    const root = join(__dirname, "..", "..");
+    const siteId = `zz-guard-ip-${process.pid}`;
+    const siteDir = join(root, "src", "sites", siteId);
+    const origArgv = process.argv;
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+    const out: string[] = [];
+    const capture = ((s: string) => {
+      out.push(String(s));
+      return true;
+    }) as never;
+    const w = vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    const w2 = vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    try {
+      mkdirSync(siteDir, { recursive: true });
+      writeFileSync(join(siteDir, "contract.ts"), "");
+      process.argv = ["node", "/x/recon-generate.ts", "--site-id", siteId];
+      vi.resetModules();
+      await import("./recon-generate");
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+      expect(out.join("")).toContain(`src/sites/${siteId}/contract.ts already exists`);
+    } finally {
+      process.argv = origArgv;
+      exit.mockRestore();
+      w.mockRestore();
+      w2.mockRestore();
       rmSync(siteDir, { recursive: true, force: true });
     }
   }, 60000);
