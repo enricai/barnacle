@@ -172,7 +172,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // r5 must not be re-issued a second time outside the fold loop.
     expect(
       body.match(
-        /httpClient\(`\$\{payload\.BaseUrl\}\/listings-avail-api\/units\/\$\{unitId\}\/hold`/g
+        /httpClient\(`\$\{context\.baseUrl\}\/listings-avail-api\/units\/\$\{unitId\}\/hold`/g
       )
     ).toHaveLength(1);
   });
