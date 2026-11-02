@@ -23,6 +23,7 @@ import {
   emitContractTs,
   buildSingleEntityWarning,
   evaluateSingleEntityEvidence,
+  inferChainStepResponseSchema,
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
@@ -5490,5 +5491,21 @@ describe("evaluateSingleEntityEvidence", () => {
     const warn: string[] = [];
     expect(evaluateSingleEntityEvidence(null, false, [], (m) => warn.push(m)).singleEntityEvidence).toBe(false);
     expect(warn).toHaveLength(0);
+  });
+});
+
+describe("inferChainStepResponseSchema", () => {
+  const mk = (url: string, responseBody: unknown) =>
+    ({ url, method: "GET", status: 200, responseBody }) as never;
+  it("emits a schema string for a step whose id param is shared by all siblings", () => {
+    const a = mk("https://example.com/api/item?item_id=1", { id: 1, name: "a" });
+    const b = mk("https://example.com/api/item?item_id=1", { id: 1, name: "b" });
+    const out = inferChainStepResponseSchema(a, [a, b]);
+    expect(out).toContain("z.object");
+    expect(out).toContain("name");
+  });
+  it("falls back to the step's own body when no sibling matches", () => {
+    const a = mk("https://example.com/api/item?item_id=1", { id: 1 });
+    expect(inferChainStepResponseSchema(a, [])).toContain("id");
   });
 });
