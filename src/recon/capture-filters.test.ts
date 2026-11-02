@@ -4,6 +4,7 @@ import {
   ERROR_SINK_PATH_SEGMENT,
   isAllowedFixtureHost,
   isNoiseUrl,
+  noiseReason,
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
@@ -1935,5 +1936,30 @@ describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", 
     // slack for wall-clock noise, so it fails on a reintroduced full rescan
     // while tolerating normal timing jitter on the linear implementation.
     expect(largeElapsedMs / smallElapsedMs).toBeLessThan(8);
+  });
+});
+
+describe("isNoiseUrl scheme/component matching", () => {
+  it("treats data: and blob: as noise", () => {
+    expect(isNoiseUrl("data:image/svg+xml;base64,PHN2ZyBm")).toBe(true);
+    expect(isNoiseUrl("blob:https://example.com/abc")).toBe(true);
+  });
+  it("matches host patterns by label, not substring", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "w.example.com,/a/visits";
+    try {
+      expect(isNoiseUrl("https://www.example.com/x")).toBe(false);
+      expect(isNoiseUrl("https://w.example.com/x")).toBe(true);
+      expect(isNoiseUrl("https://example.org/a/visits/1")).toBe(true);
+      expect(isNoiseUrl("https://example.org/a/visitsx")).toBe(false);
+    } finally {
+      delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    }
+  });
+  it("flags new vendor hosts and names the rule", () => {
+    expect(isNoiseUrl("https://widget.intercom.io/x")).toBe(true);
+    expect(isNoiseUrl("https://notify.bugsnag.com/")).toBe(true);
+    expect(isNoiseUrl("https://storage.googleapis.com/b/o")).toBe(true);
+    expect(noiseReason("https://storage.googleapis.com/b/o")).toContain("storage.googleapis.com");
+    expect(noiseReason("https://example.com/api/x")).toBeNull();
   });
 });
