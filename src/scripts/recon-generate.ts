@@ -231,6 +231,14 @@ function toCamelCase(siteId: string): string {
   return pascal.charAt(0).toLowerCase() + pascal.slice(1);
 }
 
+/** Generated outputs already present in `outDir` (conflicts without --force). */
+export function findExistingGeneratedPaths(
+  outDir: string,
+  exists: (path: string) => boolean = existsSync
+): string[] {
+  return ["contract.ts", "index.ts", "flows"].map((n) => `${outDir}/${n}`).filter((p) => exists(p));
+}
+
 /**
  * Decide whether a flow step should splice a runtime `payload.<field>` value in
  * place of the frozen recon constant baked into its instruction. Exists so
@@ -17099,8 +17107,9 @@ async function main(): Promise<void> {
   const outDir = `src/sites/${siteId}`;
   const manifestPath = `src/sites/${siteId}/${siteId}.plugin.json`;
 
-  if (emit === "ts" && existsSync(outDir) && !force) {
-    logger.error(`${outDir} already exists — pass --force to overwrite`);
+  const conflicts = emit === "ts" && !force ? findExistingGeneratedPaths(outDir) : [];
+  if (conflicts.length > 0) {
+    logger.error(`${conflicts.join(", ")} already exists — pass --force to overwrite`);
     process.exit(1);
   }
   if (emit === "config" && existsSync(manifestPath) && !force) {
