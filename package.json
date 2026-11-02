@@ -31,7 +31,7 @@
   },
   "packageManager": "pnpm@10.4.1",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.19.0"
   },
   "main": "dist/server.js",
   "types": "dist/server.d.ts",

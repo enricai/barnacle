@@ -1,4 +1,4 @@
-FROM node:22-slim AS build
+FROM node:22.19-slim AS build
 
 RUN corepack enable && corepack prepare pnpm@10.4.1 --activate
 
@@ -13,7 +13,7 @@ RUN pnpm run build
 
 RUN pnpm prune --prod --ignore-scripts
 
-FROM node:22-slim
+FROM node:22.19-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/*
