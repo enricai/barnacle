@@ -22,6 +22,7 @@ import {
   emitConfigManifest,
   emitContractTs,
   buildSingleEntityWarning,
+  evaluateSingleEntityEvidence,
   emitMultiStepExecuteHttp,
   extractActionSequence,
   extractGraphQLActionSequence,
@@ -5472,5 +5473,22 @@ describe("buildSingleEntityWarning", () => {
   it("falls back to a generic endpoint name without a capture", () => {
     const msg = buildSingleEntityWarning(null, { entityParameterized: true, singleEntity: true, params: { id: "7" } });
     expect(msg).toContain("the winning endpoint");
+  });
+});
+
+describe("evaluateSingleEntityEvidence", () => {
+  const mk = (url: string) => ({ url, method: "GET", status: 200 }) as never;
+  it("warns and flags evidence for a single entity", () => {
+    const w = mk("https://example.com/api/item?item_id=1");
+    const warn: string[] = [];
+    const r = evaluateSingleEntityEvidence(w, false, [w, mk("https://example.com/api/item?item_id=1")], (m) => warn.push(m));
+    expect(r.singleEntityEvidence).toBe(true);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("item_id=1");
+  });
+  it("is silent without a winning capture", () => {
+    const warn: string[] = [];
+    expect(evaluateSingleEntityEvidence(null, false, [], (m) => warn.push(m)).singleEntityEvidence).toBe(false);
+    expect(warn).toHaveLength(0);
   });
 });
