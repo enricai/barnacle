@@ -1489,6 +1489,81 @@ describe("registerRoutes — extraRoutes loop", () => {
     await app.close();
   });
 
+  function pluginWithRoute(
+    route: Record<string, unknown>
+  ): SitePlugin<unknown, unknown> {
+    return {
+      meta: {
+        siteId: "lib-test",
+        displayName: "Lib Test",
+        bodySchema: z.object({ q: z.string() }),
+        responseSchema: z.unknown(),
+        extraRoutes: [{ method: "post", path: "/v1/lib-test/books", ...route }],
+      },
+      execute: vi.fn(),
+    } as unknown as SitePlugin<unknown, unknown>;
+  }
+
+  it("passes query (incl. repeated keys) and headers to the handler and echoes a header", async () => {
+    const app = await buildAppWithPlugin(
+      pluginWithRoute({
+        envelope: false,
+        handler: async ({ query, headers, reply }: any) => {
+          reply.header("x-echo", headers["x-trace"]);
+          return { genre: query.genre, tags: query.tag };
+        },
+      })
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/lib-test/books?genre=poetry&tag=a&tag=b",
+      headers: { "x-trace": "t-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-echo"]).toBe("t-1");
+    expect(res.json()).toEqual({ genre: "poetry", tags: ["a", "b"] });
+    await app.close();
+  });
+
+  it("lets a handler send 409 with a non-envelope error body", async () => {
+    const app = await buildAppWithPlugin(
+      pluginWithRoute({
+        envelope: false,
+        handler: async ({ reply }: any) =>
+          reply.code(409).send({ error: { code: "DUPLICATE", message: "already exists" } }),
+      })
+    );
+    const res = await app.inject({ method: "POST", url: "/v1/lib-test/books" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: { code: "DUPLICATE", message: "already exists" } });
+    await app.close();
+  });
+
+  it("lets a handler send 204 with no body", async () => {
+    const app = await buildAppWithPlugin(
+      pluginWithRoute({
+        envelope: false,
+        handler: async ({ reply }: any) => reply.code(204).send(),
+      })
+    );
+    const res = await app.inject({ method: "POST", url: "/v1/lib-test/books" });
+    expect(res.statusCode).toBe(204);
+    expect(res.body).toBe("");
+    await app.close();
+  });
+
+  it("keeps the enveloped 200 for a handler that ignores query/headers/reply", async () => {
+    const app = await buildAppWithPlugin(
+      pluginWithRoute({ handler: async () => ({ title: "Odes" }) })
+    );
+    const res = await app.inject({ method: "POST", url: "/v1/lib-test/books?x=1" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { status: { httpStatus: string }; title: string };
+    expect(body.status.httpStatus).toBe("OK");
+    expect(body.title).toBe("Odes");
+    await app.close();
+  });
+
   it("triggers multipart registration when an extraRoute declares multipart:true", async () => {
     const plugin: SitePlugin<unknown, unknown> = {
       meta: {
