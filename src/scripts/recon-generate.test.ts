@@ -10,6 +10,7 @@ import type { ReconVocabulary } from "@/recon/vocabulary";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import {
   ancestorScopedAccessor,
+  toPascalCase,
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   collectHeaderBindings,
@@ -5402,5 +5403,17 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
         vocabulary
       )
     ).toBeNull();
+  });
+});
+
+describe("toPascalCase", () => {
+  it("prefixes digit-leading ids so derived identifiers are valid", () => {
+    const pascal = toPascalCase("3dprint-shop");
+    for (const name of [`${pascal}Response`, `${pascal}PayloadSchema`, `${pascal.toUpperCase()}_QUERY`]) {
+      expect(name).toMatch(/^[A-Za-z_$][\w$]*$/);
+    }
+  });
+  it("leaves existing ids unchanged", () => {
+    expect(toPascalCase("acme-jobs_board")).toBe("AcmeJobsBoard");
   });
 });

@@ -214,7 +214,7 @@ const OPERATIONAL_ANSWER =
 
 const EMPTY_KNOWN_FIELD_VALUES: ReadonlyMap<string, string> = new Map();
 
-function toPascalCase(siteId: string): string {
+export function toPascalCase(siteId: string): string {
   const pascal = siteId
     .split(/[-_]/)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
