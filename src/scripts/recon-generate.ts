@@ -926,6 +926,14 @@ interface InferOpts {
    * satisfy the sum relation for the same aggregate -- every confirmed
    * derivation is described, not just the last one found. */
   aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
+  /** Every sample came from ONE entity (e.g. a single product page of a
+   * catalog), so a scalar leaf reached without crossing an array boundary is
+   * present and non-null there only by accident of which entity was captured;
+   * another entity may omit it or return null. Such leaves are emitted
+   * `.nullable().optional()`. Array element fields are unaffected: elements
+   * are within-response variance evidence, so their presence/nullability stay
+   * sample-driven. Unset keeps output identical to before. */
+  singleEntityEvidence?: boolean;
 }
 
 /**
@@ -953,6 +961,14 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
     if (fieldName) names.add(fieldName);
   }
   return names;
+}
+
+/** True when every non-null observation is a string/number/boolean of one kind. */
+function isScalarLeaf(values: readonly unknown[]): boolean {
+  const kinds = new Set(values.filter((v) => v !== null && v !== undefined).map((v) => typeof v));
+  if (kinds.size !== 1) return false;
+  const [k] = [...kinds];
+  return k === "string" || k === "number" || k === "boolean";
 }
 
 /**
@@ -988,6 +1004,10 @@ export function inferZodSchemaFromSamples(
   if (nonNull.length === 0) return "z.unknown()";
 
   const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
+  // Scalar leaf outside any array under single-entity evidence: invariance
+  // across entities is unproven, so always nullable.
+  const wrapScalar = (expr: string): string =>
+    nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -999,13 +1019,13 @@ export function inferZodSchemaFromSamples(
 
   const kind = [...kinds][0];
 
-  if (kind === "string") return wrap("z.string()");
-  if (kind === "number") return wrap(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
+  if (kind === "string") return wrapScalar("z.string()");
+  if (kind === "number") return wrapScalar(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
   if (kind === "boolean") {
     // multipart/form-data encodes booleans as "true"/"false". The contract
     // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
     // when any field needs this coercion; we call it here to keep field declarations short.
-    return wrap(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
+    return wrapScalar(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
   }
 
   if (kind === "array") {
@@ -1013,7 +1033,9 @@ export function inferZodSchemaFromSamples(
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
-    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`);
+    // Elements are within-response variance evidence: drop the single-entity flag.
+    const elementOpts = opts.singleEntityEvidence ? { ...opts, singleEntityEvidence: false } : opts;
+    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`);
   }
 
   if (kind === "object") {
@@ -1035,7 +1057,9 @@ export function inferZodSchemaFromSamples(
         // legally omit it regardless of what this sample happened to show):
         // either signal alone is enough to require callers to guard the field.
         const isOptional =
-          valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
+          valuesForKey.length < objects.length ||
+          (opts.conditionalFieldNames?.has(k) ?? false) ||
+          (opts.singleEntityEvidence === true && isScalarLeaf(valuesForKey));
         const optional = isOptional ? `${expr}.optional()` : expr;
         const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
         const described = findings?.length
