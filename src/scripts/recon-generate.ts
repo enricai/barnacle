@@ -14174,6 +14174,11 @@ export function emitContractTs(opts: {
    * instead of required from `responseBody` alone. Defaults to
    * `[responseBody]` for call sites that only have the one capture. */
   responseBodySamples?: readonly unknown[];
+  /** Every response sample came from one entity of a parameterized endpoint
+   * (see {@link gatherEntityVarianceEvidence}); the primary response schema
+   * then infers top-level scalar leaves `.nullable().optional()`. Unset keeps
+   * output unchanged. */
+  singleEntityEvidence?: boolean;
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
@@ -14311,6 +14316,7 @@ export function emitContractTs(opts: {
     hasRateLimitProbeData = false,
     responseBody,
     responseBodySamples = [responseBody],
+    singleEntityEvidence = false,
     gql,
     gqlQuery,
     endpointPath,
@@ -14399,6 +14405,7 @@ export function emitContractTs(opts: {
             conditionalFieldNames,
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath,
+            ...(singleEntityEvidence ? { singleEntityEvidence: true } : {}),
           });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
@@ -17130,6 +17137,17 @@ async function main(): Promise<void> {
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
       activeCaptures
     );
+    const entityVariance = gatherEntityVarianceEvidence(
+      winningCapture,
+      primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+      activeCaptures
+    );
+    const singleEntityEvidence = entityVariance.entityParameterized && entityVariance.singleEntity;
+    if (singleEntityEvidence) {
+      logger.warn(
+        `WARN response schema inferred from a single entity — every captured response of ${winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint"} shares identifying parameter(s) ${Object.entries(entityVariance.params).map(([k, v]) => `${k}=${v}`).join(", ")}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`
+      );
+    }
 
     // Detect a multi-step submission flow (transactional sites like apply forms,
     // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -17645,6 +17663,7 @@ async function main(): Promise<void> {
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
       responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      singleEntityEvidence,
       gql,
       gqlQuery,
       endpointPath,
