@@ -309,4 +309,54 @@ describe("rawFetch redirect: manual", () => {
     });
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
   });
+
+  describe("manual redirect handling", () => {
+    const resp = (status: number, headers: Record<string, string> = {}, text = "") => ({
+      status,
+      headers: new Headers(headers),
+      text: async () => text,
+    });
+    const opts = (fetchImpl: FetchImpl, extra: Record<string, unknown> = {}) => ({
+      method: "POST",
+      headers: { Authorization: "x", Cookie: "a=1", "Content-Type": "text/plain" },
+      body: "payload",
+      onResponse: vi.fn(),
+      contextLabel: "demo",
+      skipClassify: true,
+      redirect: "manual" as const,
+      fetchImpl,
+      ...extra,
+    });
+
+    it("303 switches to GET, drops body; cross-origin strips auth/cookie", async () => {
+      const fetchImpl = vi
+        .fn<FetchImpl>()
+        .mockResolvedValueOnce(resp(303, { location: "https://other.test/n" }))
+        .mockResolvedValueOnce(resp(200, {}, "done"));
+      const r = await rawFetch("https://a.test/s", opts(fetchImpl));
+      const second = fetchImpl.mock.calls[1]?.[1];
+      expect(second?.method).toBe("GET");
+      expect(second?.body).toBeUndefined();
+      expect(Object.keys(second?.headers ?? {}).map((k) => k.toLowerCase())).toEqual([]);
+      expect(r.finalUrl).toBe("https://other.test/n");
+    });
+
+    it("307 preserves method and body same-origin", async () => {
+      const fetchImpl = vi
+        .fn<FetchImpl>()
+        .mockResolvedValueOnce(resp(307, { location: "/n" }))
+        .mockResolvedValueOnce(resp(200));
+      await rawFetch("https://a.test/s", opts(fetchImpl));
+      const second = fetchImpl.mock.calls[1]?.[1];
+      expect(second?.method).toBe("POST");
+      expect(second?.body).toBe("payload");
+      expect(second?.headers.Authorization).toBe("x");
+    });
+
+    it("throws after exceeding the hop cap", async () => {
+      const fetchImpl = vi.fn<FetchImpl>().mockImplementation(async () => resp(302, { location: "/loop" }));
+      await expect(rawFetch("https://a.test/s", opts(fetchImpl))).rejects.toBeInstanceOf(HttpServerError);
+      expect(fetchImpl).toHaveBeenCalledTimes(21);
+    });
+  });
 });
