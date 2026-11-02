@@ -752,7 +752,24 @@ function registerExtraRoutes(
             },
             context
           );
-          if (route.submits && isCompletedRun(result)) {
+          // A handler that answered via `reply.send(...)` returns the reply
+          // itself, not the body: judge success by status code and never pass
+          // the reply object (sockets, server) to the audit serializer.
+          // FastifyReply is thenable, so `await` may resolve it to undefined: also test `sent`.
+          const replied = (result as unknown) === reply || reply.sent;
+          if (route.submits && replied && reply.statusCode < 400) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "submitted",
+              auditPayload: null,
+              errorMessage: null,
+            });
+          } else if (route.submits && replied) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "error",
+              auditPayload: null,
+              errorMessage: `handler replied with HTTP ${reply.statusCode}`,
+            });
+          } else if (route.submits && isCompletedRun(result)) {
             await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
               status: "submitted",
               auditPayload: result,
