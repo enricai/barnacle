@@ -96,4 +96,15 @@ describe("gatherEntityVarianceEvidence — catalog scenarios", () => {
     const w = cap(`${base}?productId=7`);
     expect(gatherEntityVarianceEvidence(w, true, [w]).entityParameterized).toBe(false);
   });
+
+  it("path ids differing across captures -> multi-entity", () => {
+    const t = "https://example.test/things";
+    const w = cap(`${t}/9/x?ids[]=1&from=2024-01-01&to=2024-02-01`);
+    const r = gatherEntityVarianceEvidence(w, false, [
+      w,
+      cap(`${t}/10/x?ids[]=1&from=2024-01-01&to=2024-02-01`),
+    ]);
+    expect(r.entityParameterized).toBe(true);
+    expect(r.singleEntity).toBe(false);
+  });
 });
