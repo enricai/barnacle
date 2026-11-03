@@ -372,6 +372,12 @@ describe("gatherResponseBodySamples — groups by operation identity, filters to
     expect(samples).toEqual([{ id: "1" }]);
   });
 
+  it("groups sibling-id captures (/things/9/x, /things/10/x) as one endpoint", () => {
+    const winning = restCapture("/things/9/x", 200, { a: 1 });
+    const captures = [winning, restCapture("/things/10/x", 200, { a: 2 }), restCapture("/things/10/y", 200, { z: 1 })];
+    expect(gatherResponseBodySamples(winning, false, captures)).toEqual([{ a: 1 }, { a: 2 }]);
+  });
+
   it("returns [null] when there is no winning capture", () => {
     expect(gatherResponseBodySamples(null, false, [])).toEqual([null]);
   });
