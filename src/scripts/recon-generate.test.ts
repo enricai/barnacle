@@ -12,6 +12,7 @@ import {
   ancestorScopedAccessor,
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
+  buildSingleEntityWarning,
   collectHeaderBindings,
   collectUnboundLiterals,
   compileActionSteps,
@@ -22,15 +23,18 @@ import {
   emitConfigManifest,
   emitContractTs,
   emitMultiStepExecuteHttp,
+  evaluateSingleEntityEvidence,
   extractActionSequence,
   extractGraphQLActionSequence,
   extractStepPersonaValue,
   type FoldReturnSpec,
   firstEndpointCapture,
+  gatherEntityVarianceEvidence,
   gatherResponseBodySamples,
   harvestPersonaBindings,
   identifyNoiseCapturesForFields,
   indexStateValues,
+  inferChainStepResponseSchema,
   inferZodSchemaFromSamples,
   isGraphQL,
   resolveFoldPlan,
@@ -303,7 +307,8 @@ describe("emitContractTs — responseBodySamples widens the client-level Respons
       ...BASE_OPTS,
       responseBody: { id: "abc", active: true, tags: ["a"] },
     });
-    expect(singleSample).toContain("tags: z.array(z.string()),");
+    // One distinct observation cannot prove the array's elements are never null.
+    expect(singleSample).toContain("tags: z.array(z.string().nullable()),");
 
     const multiSample = emitContractTs({
       ...BASE_OPTS,
@@ -3963,11 +3968,12 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     // repro is the author narrowing that client schema further and
     // expecting it to leave every other call's own inferred schema alone.
     const contract = emitContractTs({ ...BASE_OPTS, multiStepBody: body });
-    expect(contract).toContain(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();"
-    );
+    // BASE_OPTS carries one distinct response, so its scalar leaves are lenient.
+    const LENIENT_CLIENT_SCHEMA =
+      "const TestSiteResponseSchema = z.object({\n  id: z.string().nullable().optional(),\n  active: z.boolean().nullable().optional(),\n}).loose();";
+    expect(contract).toContain(LENIENT_CLIENT_SCHEMA);
     const narrowedContract = contract.replace(
-      "const TestSiteResponseSchema = z.object({\n  id: z.string(),\n  active: z.boolean(),\n}).loose();",
+      LENIENT_CLIENT_SCHEMA,
       "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
@@ -5402,5 +5408,209 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
         vocabulary
       )
     ).toBeNull();
+  });
+});
+
+describe("gatherEntityVarianceEvidence", () => {
+  const cap = (url: string, status = 200): Capture => ({
+    timestamp: "2024-01-01T00:00:00Z",
+    phase: "action",
+    method: "GET",
+    url,
+    status,
+    requestHeaders: {},
+    requestPostData: null,
+    responseHeaders: {},
+    responseBody: {},
+    operationName: null,
+    query: null,
+    variables: null,
+    decodedParams: null,
+  });
+  const B = "https://x.example.com/api/items";
+
+  it("reports varying when id query values differ", () => {
+    const w = cap(`${B}?item_id=1`);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?item_id=2`)]);
+    expect(r.entityParameterized).toBe(true);
+    expect(r.singleEntity).toBe(false);
+  });
+  it("reports single entity with params when ids match", () => {
+    const w = cap(`${B}?itemId=1&page=1`);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?itemId=1&page=2`)]);
+    expect(r).toEqual({ entityParameterized: true, params: { itemId: "1" }, singleEntity: true });
+  });
+  it("reports not parameterized without id params and for GraphQL", () => {
+    const w = cap(`${B}?page=1`);
+    expect(gatherEntityVarianceEvidence(w, false, [w]).entityParameterized).toBe(false);
+    expect(gatherEntityVarianceEvidence(cap(`${B}?id=1`), true, []).entityParameterized).toBe(
+      false
+    );
+    expect(gatherEntityVarianceEvidence(null, false, []).entityParameterized).toBe(false);
+  });
+});
+
+describe("emitContractTs — singleEntityEvidence", () => {
+  const body = { name: "Widget", count: 3 };
+  it("emits nullable().optional() leaves when flagged", () => {
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body],
+      singleEntityEvidence: true,
+    });
+    expect(src).toContain("z.string().nullable().optional()");
+  });
+  it("is unchanged when explicitly unflagged", () => {
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body],
+      singleEntityEvidence: false,
+    });
+    expect(src).not.toContain("z.string().nullable().optional()");
+  });
+  it("a lone distinct response is single-entity evidence by default", () => {
+    const src = emitContractTs({ ...BASE_OPTS, responseBody: body, responseBodySamples: [body] });
+    expect(src).toContain("name: z.string().nullable().optional()");
+    expect(src).toContain("count: z.number().nullable().optional()");
+  });
+  it("several distinct responses keep strict leaves when unflagged", () => {
+    const other = { name: "Gadget", count: 4 };
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body, other],
+    });
+    expect(src).toContain("name: z.string(),");
+    expect(src).toContain("count: z.number(),");
+  });
+  it("GraphQL emission is not covered by the lone-response default", () => {
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      gql: true,
+      gqlQuery: "{ widget { name count } }",
+      responseBody: body,
+      responseBodySamples: [body],
+    });
+    expect(src).not.toContain("z.string().nullable().optional()");
+  });
+});
+
+describe("buildSingleEntityWarning", () => {
+  it("returns null unless entity-parameterized and single-entity", () => {
+    expect(
+      buildSingleEntityWarning(null, {
+        entityParameterized: false,
+        singleEntity: false,
+        params: {},
+      })
+    ).toBeNull();
+    expect(
+      buildSingleEntityWarning(null, { entityParameterized: true, singleEntity: false, params: {} })
+    ).toBeNull();
+  });
+  it("names the shared params and endpoint when single-entity", () => {
+    const msg = buildSingleEntityWarning(
+      { url: "https://example.com/api/item?id=7" },
+      { entityParameterized: true, singleEntity: true, params: { id: "7" } }
+    );
+    expect(msg).toContain("id=7");
+    expect(msg).toContain("single entity");
+  });
+  it("falls back to a generic endpoint name without a capture", () => {
+    const msg = buildSingleEntityWarning(null, {
+      entityParameterized: true,
+      singleEntity: true,
+      params: { id: "7" },
+    });
+    expect(msg).toContain("the winning endpoint");
+  });
+});
+
+describe("evaluateSingleEntityEvidence", () => {
+  const mk = (url: string) => ({ url, method: "GET", status: 200 }) as never;
+  it("warns and flags evidence for a single entity", () => {
+    const w = mk("https://example.com/api/item?item_id=1");
+    const warn: string[] = [];
+    const r = evaluateSingleEntityEvidence(
+      w,
+      false,
+      [w, mk("https://example.com/api/item?item_id=1")],
+      (m) => warn.push(m)
+    );
+    expect(r.singleEntityEvidence).toBe(true);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("item_id=1");
+  });
+  it("flags and warns for one distinct REST response even when the URL names no entity", () => {
+    const body = { a: 1 };
+    const w = {
+      url: "https://example.com/api/item?slug=x",
+      method: "GET",
+      status: 200,
+      responseBody: body,
+    } as never;
+    const warn: string[] = [];
+    const r = evaluateSingleEntityEvidence(
+      w,
+      false,
+      [w, { ...(w as object), responseBody: body } as never],
+      (m) => warn.push(m)
+    );
+    expect(r.singleEntityEvidence).toBe(true);
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("single captured response");
+  });
+  it("does not flag one distinct GraphQL response", () => {
+    const w = {
+      url: "https://example.com/graphql",
+      method: "POST",
+      status: 200,
+      responseBody: { a: 1 },
+      operationName: "Q",
+      query: "{ a }",
+    } as never;
+    const warn: string[] = [];
+    expect(
+      evaluateSingleEntityEvidence(w, true, [w], (m) => warn.push(m)).singleEntityEvidence
+    ).toBe(false);
+    expect(warn).toHaveLength(0);
+  });
+  it("is silent without a winning capture", () => {
+    const warn: string[] = [];
+    expect(
+      evaluateSingleEntityEvidence(null, false, [], (m) => warn.push(m)).singleEntityEvidence
+    ).toBe(false);
+    expect(warn).toHaveLength(0);
+  });
+});
+
+describe("inferChainStepResponseSchema", () => {
+  const mk = (url: string, responseBody: unknown) =>
+    ({ url, method: "GET", status: 200, responseBody }) as never;
+  it("emits a schema string for a step whose id param is shared by all siblings", () => {
+    const a = mk("https://example.com/api/item?item_id=1", { id: 1, name: "a" });
+    const b = mk("https://example.com/api/item?item_id=1", { id: 1, name: "b" });
+    const out = inferChainStepResponseSchema(a, [a, b]);
+    expect(out).toContain("z.object");
+    expect(out).toContain("name");
+  });
+  it("falls back to the step's own body when no sibling matches", () => {
+    const a = mk("https://example.com/api/item?item_id=1", { id: 1 });
+    expect(inferChainStepResponseSchema(a, [])).toContain("id");
+  });
+  it("treats a capture carrying query/operationName as GraphQL", () => {
+    const g = {
+      url: "https://example.com/graphql",
+      method: "POST",
+      status: 200,
+      query: "query Foo { foo { id } }",
+      operationName: "Foo",
+      responseBody: { data: { foo: { id: 1 } } },
+    } as never;
+    const out = inferChainStepResponseSchema(g, [g]);
+    expect(out).toContain("data");
+    expect(out).toContain("foo");
   });
 });
