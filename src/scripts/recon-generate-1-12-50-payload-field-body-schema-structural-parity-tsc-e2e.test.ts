@@ -201,9 +201,9 @@ describe("recon-generate CLI + tsc --noEmit — generalized payload.<field> body
     const accessors = extractPayloadAccessors(contract);
     const schemaFields = extractSchemaFields(contract);
 
-    // The corpus is shaped to thread 5+ distinct fields — a trivial/empty
+    // The corpus is shaped to thread 4+ distinct fields — a trivial/empty
     // extraction would silently pass an inclusion check with nothing to check.
-    expect(accessors.size).toBeGreaterThanOrEqual(5);
+    expect(accessors.size).toBeGreaterThanOrEqual(4);
 
     const undeclared = [...accessors].filter((name) => !schemaFields.has(name));
     expect(

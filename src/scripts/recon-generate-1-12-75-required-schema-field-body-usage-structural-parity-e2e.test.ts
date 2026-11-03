@@ -266,7 +266,9 @@ describe("recon-generate CLI — generalized required-schema-field body-usage st
     // Sanity: the header/body split is actually doing work on this corpus —
     // BaseUrl is genuinely reachable only from a header, never a body, on
     // every emitted contract.
-    expect(headerAccessors.has("BaseUrl")).toBe(true);
+    // BaseUrl is no longer a payload field at all (the origin is emitted as
+    // context.baseUrl), so it must be absent from both accessor sets.
+    expect(headerAccessors.has("BaseUrl")).toBe(false);
     expect(bodyAccessors.has("BaseUrl")).toBe(false);
 
     // Category is the report's own shape: reachable from BOTH a tracking
