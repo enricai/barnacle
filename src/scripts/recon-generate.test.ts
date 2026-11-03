@@ -5479,6 +5479,16 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('["skip", String(skip)]');
     expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
   });
+  it("declares derived GET fields as optional strings on the payload schema", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: { ...model, dynamicFields: [{ field: "ids", queryKey: "ids[]" }, { field: "a-b", queryKey: "a-b" }] },
+    });
+    expect(source).toContain("ids: z.string().optional(),");
+    expect(source).toContain('"a-b": z.string().optional(),');
+    expect(source).toContain("id: z.string().optional(),");
+  });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });
     expect(source).toContain("JSON.stringify({ query: payload.query })");
