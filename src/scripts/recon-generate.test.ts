@@ -5465,6 +5465,20 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('["ids[]", String(payload.ids)]');
     expect(source).not.toContain("JSON.stringify({ query: payload.query })");
   });
+  it("builds the paginated GET page fetch from payload, overriding paging keys", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: model,
+      responseBody: { total: 4, items: [{ id: 1 }, { id: 2 }] },
+      gqlVariables: { limit: 2, skip: 0 },
+    });
+    expect(source).toContain("PAGE_SIZE");
+    expect(source).toContain('{ method: "GET" }');
+    expect(source).toContain('["limit", String(PAGE_SIZE)]');
+    expect(source).toContain('["skip", String(skip)]');
+    expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+  });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });
     expect(source).toContain("JSON.stringify({ query: payload.query })");
