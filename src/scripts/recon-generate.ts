@@ -13872,6 +13872,54 @@ function buildNestedSpreadOverride(
 }
 
 /**
+ * Builds the single-expression request URL for a read-only REST GET flow from
+ * the derived {@link GetInputModel}: path segments and query values come from
+ * the caller's payload, with the recorded value as fallback for path
+ * segments, and each payload field is mapped back to its real query key.
+ * `extraParams` lets a caller (the paging loop) append already-rendered
+ * `[keyLiteral, valueExpr]` pairs that override same-named model params.
+ */
+function buildGetRequestUrlExpr(
+  endpointPath: string,
+  model: GetInputModel,
+  extraParams: ReadonlyArray<readonly [string, string]> = []
+): string {
+  const overridden = new Set(extraParams.map(([k]) => k));
+  const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
+  const segments = endpointPath.split("/");
+  for (const pv of model.pathVars) {
+    const recorded = segments[pv.segmentIndex] ?? "";
+    let decoded = recorded;
+    try {
+      decoded = decodeURIComponent(recorded);
+    } catch {
+      // keep the raw segment
+    }
+    segments[pv.segmentIndex] =
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)}))}`;
+  }
+  const pairs: string[] = [];
+  for (const [k, v] of Object.entries(model.fixedParams)) {
+    if (!overridden.has(k)) pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
+  }
+  const bound = [
+    ...model.dynamicFields,
+    ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
+  ];
+  for (const { field, queryKey } of bound) {
+    if (overridden.has(queryKey)) continue;
+    pairs.push(
+      `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
+    );
+  }
+  for (const [k, v] of extraParams) pairs.push(`[${k}, ${v}]`);
+  const path = segments.join("/");
+  return pairs.length === 0
+    ? `\${context.baseUrl}${path}`
+    : `\${context.baseUrl}${path}?\${new URLSearchParams([${pairs.join(", ")}] as string[][])}`;
+}
+
+/**
  * Emits a bounded paging loop for a read-only primary operation exposing
  * {@link PaginationSignal}: advances the skip/offset variable by the
  * observed page size on each call, stops once the response's own reported
@@ -13899,7 +13947,7 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   foldMergeLines: string[];
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
-    | { kind: "rest"; endpointPath: string };
+    | { kind: "rest"; endpointPath: string; getInputModel?: GetInputModel | null };
   /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
    * the detected pagination count-key field has a declared `max`, that real
    * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
@@ -13914,7 +13962,12 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   const pageFetchExpr = (variablesExpr: string): string =>
     fetchCall.kind === "gql"
       ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
-      : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
+      : fetchCall.getInputModel
+        ? `httpClient(\`${buildGetRequestUrlExpr(fetchCall.endpointPath, fetchCall.getInputModel, [
+            [JSON.stringify(countKey), "String(PAGE_SIZE)"],
+            [JSON.stringify(skipKey), "String(skip)"],
+          ])}\`, { method: "GET" })`
+        : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
 
   const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
   const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
@@ -14344,6 +14397,7 @@ export function emitContractTs(opts: {
     gql,
     gqlQuery,
     endpointPath,
+    getInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -15374,12 +15428,17 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 gqlOperationNameExpr,
                 queryConstName: `${pascal.toUpperCase()}_QUERY`,
               }
-            : { kind: "rest", endpointPath },
+            : { kind: "rest", endpointPath, getInputModel },
         })
       : isGqlEmission
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
-        : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
+        : getInputModel
+          ? `    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
+      method: "GET",
+    });
+${dataFoldMergeBlock}    return { data };`
+          : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
