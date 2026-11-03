@@ -113,4 +113,64 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
       process.argv = origArgv;
     }
   }, 60_000);
+
+  it("binds the browser fallback extract prompt to the derived payload fields", async () => {
+    const workDir = mkdtempSync(join(tmpdir(), "barnacle-get-read-bf-"));
+    dirs.push(workDir);
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    for (const [n, q] of [["000", "alpha"], ["001", "beta"]] as const) {
+      writeFileSync(
+        join(capturesDir, `${n}-read.json`),
+        JSON.stringify(
+          buildCapture({
+            url: `https://api.example.com/search?term=${q}`,
+            requestPostData: null,
+            responseBody: { id: 1, name: q },
+            timestamp: `2024-02-01T00:00:0${n.slice(-1)}Z`,
+            method: "GET",
+          })
+        )
+      );
+    }
+    const siteId = `get-read-flow-bf-${process.pid}`;
+    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    dirs.push(siteOutDir);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ steps: [{ step: "open the page" }, { step: "view the item" }] })
+    );
+    const origArgv = process.argv;
+    process.argv = [
+      origArgv[0] ?? "node",
+      GENERATE_SCRIPT,
+      "--site-id",
+      siteId,
+      "--run-dir",
+      runRoot,
+      "--emit",
+      "ts",
+      "--force",
+    ];
+    vi.resetModules();
+    let flow: string;
+    try {
+      await import("./recon-generate.js");
+      const out = join(siteOutDir, "flows", "browser-flow.ts");
+      for (let i = 0; i < 300 && !existsSync(out); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      flow = readFileSync(out, "utf8");
+    } finally {
+      process.argv = origArgv;
+    }
+    expect(flow).toContain("payload.term");
+    expect(flow).not.toContain('"extract the results shown on the page"');
+  }, 60_000);
 });

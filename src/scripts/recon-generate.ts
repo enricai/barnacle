@@ -16525,6 +16525,10 @@ export function emitBrowserFlowTs(opts: {
   /** Payload-driven GET read flow: the payload schema has no `query` field, so
    * the read fallback's extract prompt must not reference `payload.query`. */
   readOnlyGetFlow?: boolean;
+  /** Read-only GET flow: caller-controlled input fields from the derived
+   * {@link GetInputModel}. The extract prompt binds each to `payload.<field>`
+   * so the fallback honours caller inputs, as executeHttp does. */
+  getInputFields?: readonly string[];
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16546,6 +16550,7 @@ export function emitBrowserFlowTs(opts: {
     frameSelector,
     capturedFallbackFields = new Set<string>(),
     readOnlyGetFlow = false,
+    getInputFields = [],
     env = process.env,
   } = opts;
 
@@ -16783,7 +16788,7 @@ ${flowStepsBlock}
       : `
   const result = await guardedExtract(
     stagehand,
-    ${/* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ readOnlyGetFlow ? '"extract the results shown on the page"' : "`extract results matching query: ${payload.query}`"},
+    ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},
     ${pascal}ResponseSchema
   );
 
@@ -16793,6 +16798,18 @@ ${flowStepsBlock}
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+}
+
+/** Emitted extract-prompt expression for a read-only GET browser fallback: binds
+ * each derived caller input to its payload value rather than a recorded literal. */
+function readOnlyGetExtractPromptExpr(fields: readonly string[]): string {
+  if (fields.length === 0) return '"extract the results shown on the page"';
+  const parts = fields.map((f) => {
+    const access = isValidJsIdentifier(f) ? `payload.${f}` : `payload[${JSON.stringify(f)}]`;
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source
+    return `${f.replace(/[`\\$]/g, "")}=\${${access} ?? ""}`;
+  });
+  return `\`extract the results shown on the page for: ${parts.join(", ")}\``;
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -18083,8 +18100,27 @@ async function main(): Promise<void> {
       vocabulary,
       frameSelector,
       readOnlyGetFlow: isReadOnlyGetFlow,
+      getInputFields: undefined as readonly string[] | undefined,
     };
-    const browserFlow = emitBrowserFlowTs(browserFlowOpts);
+    let browserFlow = emitBrowserFlowTs(browserFlowOpts);
+    const getInputModel = isReadOnlyGetFlow
+      ? deriveGetInputModel(winningCapture, activeCaptures, [
+          ...browserFlow.payloadFieldNames,
+          ...browserFlow.optionalPayloadFieldNames,
+        ])
+      : null;
+    if (getInputModel) {
+      // Re-emit with the derived fields so the read fallback binds them to the
+      // payload; payloadFieldNames is unaffected (same flow steps).
+      const getInputFields = [
+        ...getInputModel.dynamicFields.map((d) => d.field),
+        ...getInputModel.pathVars.map((v) => v.field),
+      ];
+      if (getInputFields.length > 0) {
+        browserFlowOpts.getInputFields = getInputFields;
+        browserFlow = emitBrowserFlowTs(browserFlowOpts);
+      }
+    }
 
     const contractOpts = {
       siteId,
@@ -18107,12 +18143,7 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
-      getInputModel: isReadOnlyGetFlow
-        ? deriveGetInputModel(winningCapture, activeCaptures, [
-            ...browserFlow.payloadFieldNames,
-            ...browserFlow.optionalPayloadFieldNames,
-          ])
-        : null,
+      getInputModel,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
