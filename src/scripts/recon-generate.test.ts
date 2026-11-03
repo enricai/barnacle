@@ -5450,3 +5450,23 @@ describe("deriveGetInputModel", () => {
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
 });
+
+describe("emitContractTs — payload-driven GET request", () => {
+  const model = {
+    dynamicFields: [{ field: "ids", queryKey: "ids[]" }],
+    fixedParams: { sort: "asc" },
+    fieldToQueryKey: { ids: "ids[]", id: "id" },
+    pathVars: [{ field: "id", segmentIndex: 2, queryKey: "id" }],
+  };
+  it("builds the single-call GET from payload with recorded fallback", () => {
+    const source = emitContractTs({ ...BASE_OPTS, endpointPath: "/items/42", getInputModel: model });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+    expect(source).toContain('["ids[]", String(payload.ids)]');
+    expect(source).not.toContain("JSON.stringify({ query: payload.query })");
+  });
+  it("keeps the POST emission when no GET model is given", () => {
+    const source = emitContractTs({ ...BASE_OPTS });
+    expect(source).toContain("JSON.stringify({ query: payload.query })");
+  });
+});
