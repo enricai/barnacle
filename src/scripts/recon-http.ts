@@ -42,6 +42,7 @@ import {
   noiseReason,
   registrableDomain,
 } from "@/recon/capture-filters";
+import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { unsafeReplayReason } from "@/recon/replay-safety";
 import {
   readOwnBackendHostnames,
@@ -563,6 +564,54 @@ export function selectReplayCaptures<
   return { selected, skipped };
 }
 
+/** Fetches /robots.txt once per origin; missing/unreachable means no rules. */
+async function fetchRobotsByOrigin(
+  urls: string[],
+): Promise<Map<string, RobotsRule[]>> {
+  const out = new Map<string, RobotsRule[]>();
+  for (const url of urls) {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      continue;
+    }
+    if (out.has(origin)) continue;
+    let rules: RobotsRule[] = [];
+    try {
+      const res = await fetch(`${origin}/robots.txt`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) rules = parseRobots(await res.text());
+    } catch {
+      // unreachable: no restriction
+    }
+    out.set(origin, rules);
+  }
+  return out;
+}
+
+/** Splits captures into allowed and robots-disallowed (with the rule). */
+export function applyRobots<T extends { capture: Capture }>(
+  items: T[],
+  robots: Map<string, RobotsRule[]>,
+): { allowed: T[]; blocked: Array<{ url: string; rule: string }> } {
+  const allowed: T[] = [];
+  const blocked: Array<{ url: string; rule: string }> = [];
+  for (const item of items) {
+    let rule: string | null = null;
+    try {
+      const u = new URL(item.capture.url);
+      rule = matchingDisallow(robots.get(u.origin) ?? [], u.pathname + u.search);
+    } catch {
+      // unparseable URL: leave to existing handling
+    }
+    if (rule) blocked.push({ url: item.capture.url, rule });
+    else allowed.push(item);
+  }
+  return { allowed, blocked };
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -590,10 +639,14 @@ async function main(): Promise<void> {
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
   const includeUnsafe = args.includes("--include-unsafe-methods");
-  const { selected: probeworthy, skipped } = selectReplayCaptures(
+  const { selected: preRobots, skipped } = selectReplayCaptures(
     unique,
     includeUnsafe,
   );
+  const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
+  const { allowed: probeworthy, blocked } = applyRobots(preRobots, robots);
+  for (const b of blocked)
+    logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);
   logger.info(
     `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
       (skipped.length > 0 ? ` (${skipped.length} skipped)` : ""),
