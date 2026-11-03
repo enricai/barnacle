@@ -1371,13 +1371,21 @@ function deriveMinTime(rateLimits: RateLimitFinding[]): number {
  * endpoint paged or filtered differently still collapses to one key. Matching
  * captures to replays depends on both sides deriving this the same way.
  */
+// Memoized: chain-step schema inference calls this per capture per step, which
+// is quadratic in capture count without a cache.
+const endpointKeyCache = new Map<string, string>();
 function endpointKey(url: string): string {
+  const hit = endpointKeyCache.get(url);
+  if (hit !== undefined) return hit;
+  let key: string;
   try {
     const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
+    key = `${u.origin}${u.pathname}`;
   } catch {
-    return url;
+    key = url;
   }
+  endpointKeyCache.set(url, key);
+  return key;
 }
 
 const RESOURCE_ID_SEGMENT =
@@ -2257,7 +2265,16 @@ const ID_QUERY_NAME = /^(id|ids|.+_ids?|.+Ids?)$/;
 // identify the addressed entity.
 const CONSTANT_ID_QUERY_NAME = /^(client|app|api|session|tenant|device|visitor|trace|request|correlation)[_-]?id$/i;
 
+const identifyingParamsCache = new Map<string, Record<string, string>>();
 function identifyingParams(url: string): Record<string, string> {
+  const hit = identifyingParamsCache.get(url);
+  if (hit) return hit;
+  const computed = computeIdentifyingParams(url);
+  identifyingParamsCache.set(url, computed);
+  return computed;
+}
+
+function computeIdentifyingParams(url: string): Record<string, string> {
   const out: Record<string, string> = {};
   try {
     const u = new URL(url);
@@ -16763,11 +16780,30 @@ export function evaluateSingleEntityEvidence(
  * capture is a sample, and when the step is addressed by identifying
  * parameters that all siblings share, scalar leaves are emitted lenient.
  */
+const chainEndpointIndex = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+
 export function inferChainStepResponseSchema(
   stepCapture: Capture,
-  captures: readonly Capture[]
+  allCaptures: readonly Capture[]
 ): string {
   const isGraphQL = stepCapture.query != null || stepCapture.operationName != null;
+  // REST identity is the endpoint key: narrow to that group via a per-array
+  // index so a many-step chain is not quadratic in total captures.
+  let captures = allCaptures;
+  if (!isGraphQL) {
+    let index = chainEndpointIndex.get(allCaptures);
+    if (!index) {
+      index = new Map();
+      for (const c of allCaptures) {
+        const k = endpointKey(c.url);
+        const g = index.get(k);
+        if (g) g.push(c);
+        else index.set(k, [c]);
+      }
+      chainEndpointIndex.set(allCaptures, index);
+    }
+    captures = index.get(endpointKey(stepCapture.url)) ?? allCaptures;
+  }
   const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
   const { singleEntityEvidence } = evaluateSingleEntityEvidence(
     stepCapture,
