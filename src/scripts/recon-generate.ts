@@ -5280,7 +5280,11 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // those checks, and before even locating the span) keeps the generated
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
-    registerStructuredPayloadField(outStructuredKeys, key, value);
+    // The field is named from the full path (not the bare leaf key) so it is the
+    // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
+    // key for a nested array would declare the one array twice.
+    const fieldName = pathToPayloadFieldName(valuePath);
+    registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
     // array carries none falls through to the same opaque `payload.<key>`
@@ -5380,7 +5384,7 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // substring `payload.`) avoids false-positiving on scraped leaf data that
     // merely happens to contain the word "payload." as ordinary text.
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
-    const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
+    const replacement = `$${"{"}JSON.stringify(payload.${fieldName})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
   }
