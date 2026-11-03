@@ -11,7 +11,9 @@ describe("robots", () => {
   it("is plain prefix matching: /orders-info is also blocked, /other is not", () => {
     expect(isDisallowed(rules, "/orders-info")).toBe(true);
     expect(isDisallowed(rules, "/other")).toBe(false);
-    expect(isDisallowed(parseRobots("User-agent: *\nDisallow: /order/"), "/orders-info")).toBe(false);
+    expect(isDisallowed(parseRobots("User-agent: *\nDisallow: /order/"), "/orders-info")).toBe(
+      false
+    );
   });
   it("Allow overrides by longest match", () => {
     const r = parseRobots("User-agent: *\nDisallow: /a\nAllow: /a/public");
@@ -28,8 +30,9 @@ describe("robots", () => {
   });
 });
 
-import { parseRobots as _pr, isDisallowed as _isD } from "./robots";
-import { it as _it, expect as _expect } from "vitest";
+import { expect as _expect, it as _it } from "vitest";
+import { isDisallowed as _isD, parseRobots as _pr } from "./robots";
+
 _it("honours * and $ wildcards (RFC 9309)", () => {
   const r = _pr("User-agent: *\nDisallow: /*/order\nDisallow: /*.json$");
   _expect(_isD(r, "/x/order")).toBe(true);

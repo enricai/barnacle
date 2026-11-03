@@ -4,12 +4,12 @@ import {
   ERROR_SINK_PATH_SEGMENT,
   isAllowedFixtureHost,
   isNoiseUrl,
-  noiseReason,
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
-  matchesAnyTelemetryPattern,
   isZeroVarianceRepeatCapture,
+  matchesAnyTelemetryPattern,
+  noiseReason,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 
@@ -1955,6 +1955,14 @@ describe("isNoiseUrl scheme/component matching", () => {
     } finally {
       delete process.env.RECON_TELEMETRY_URL_PATTERNS;
     }
+  });
+  it("treats //host and scheme://host patterns as authority-led, not path segments", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "//w.example.com,https://other.test/pixel";
+    expect(isNoiseUrl("https://w.example.com/x")).toBe(true);
+    expect(isNoiseUrl("https://www.example.com/x")).toBe(false);
+    expect(isNoiseUrl("https://other.test/pixel/1")).toBe(true);
+    expect(isNoiseUrl("https://notother.test/pixel/1")).toBe(false);
+    expect(isNoiseUrl("https://other.test/api")).toBe(false);
   });
   it("flags new vendor hosts and names the rule", () => {
     expect(isNoiseUrl("https://widget.intercom.io/x")).toBe(true);

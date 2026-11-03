@@ -90,7 +90,10 @@ function hostMatches(hostname: string, h: string): boolean {
 }
 
 function pathHasSegments(pathname: string, want: string[], prefixOnly: boolean): boolean {
-  const segs = pathname.split("/").filter(Boolean).map((x) => x.toLowerCase());
+  const segs = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((x) => x.toLowerCase());
   if (want.length === 0) return true;
   const start = (i: number) => want.every((w, j) => segs[i + j] === w);
   if (prefixOnly) return start(0);
@@ -102,7 +105,8 @@ function pathHasSegments(pathname: string, want: string[], prefixOnly: boolean):
  * Match one telemetry pattern against a parsed URL by component, never by raw
  * substring: `/a/b` is a path prefix (whole segments); `host.tld` matches the
  * host or a dotted-label suffix of it; `host.tld/a` combines both; a bare word
- * matches a whole path segment (or the host label-wise).
+ * matches a whole path segment (or the host label-wise). A leading `//` or
+ * `scheme://` marks the rest as authority-led (`//host`, `https://host/a`).
  */
 export function matchesTelemetryPattern(url: string, pattern: string): boolean {
   let parsed: URL;
@@ -111,7 +115,12 @@ export function matchesTelemetryPattern(url: string, pattern: string): boolean {
   } catch {
     return false;
   }
-  const pat = pattern.trim().toLowerCase();
+  // `//host/...` and `scheme://host/...` are authority-led: the leading marker
+  // only says "what follows is a host", so drop it and match like `host/...`.
+  const pat = pattern
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\//, "");
   if (!pat) return false;
   const hostname = parsed.hostname.toLowerCase();
   const slash = pat.indexOf("/");
@@ -140,9 +149,10 @@ export function matchesAnyTelemetryPattern(url: string): boolean {
  */
 export function noiseReason(url: string): string | null {
   if (!isHttpUrl(url)) {
-    // Unparseable strings stay "not noise" (pre-existing contract); parseable
-    // non-http(s) schemes (data:, blob:) are noise.
-    return URL.canParse(url) ? "scheme: not http(s)" : null;
+    // Anything carrying a non-http(s) scheme (data:, blob:, ...) is noise,
+    // whether or not the WHATWG parser accepts the payload; scheme-less
+    // strings stay "not noise" (pre-existing contract).
+    return /^[a-z][a-z0-9+.-]*:/i.test(url) ? "scheme: not http(s)" : null;
   }
   const hit = telemetryUrlPatterns().find((p) => matchesTelemetryPattern(url, p));
   if (hit !== undefined) return `telemetry pattern: ${hit}`;

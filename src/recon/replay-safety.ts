@@ -26,8 +26,9 @@ export function isGraphqlQueryDocument(doc: string): boolean {
   let depth = 0;
   let sawOp = false;
   const re = /[{}]|\b(query|mutation|subscription)\b/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(s)) !== null) {
+  for (;;) {
+    const m = re.exec(s);
+    if (m === null) break;
     if (m[0] === "{") {
       if (depth === 0) sawOp = true; // anonymous query shorthand or operation body
       depth++;

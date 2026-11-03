@@ -37,10 +37,10 @@ import {
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
+  matchesAnyTelemetryPattern,
   parsedOperationName,
   pathStructuralTokens,
   registrableDomain,
-  matchesAnyTelemetryPattern,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";

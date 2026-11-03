@@ -49,14 +49,11 @@ function ruleMatches(rule: string, path: string): boolean {
     .split("*")
     .map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
     .join(".*");
-  return new RegExp("^" + re + (anchored ? "$" : "")).test(path);
+  return new RegExp(`^${re}${anchored ? "$" : ""}`).test(path);
 }
 
 /** Returns the Disallow rule that blocks `path` (with query), or null. */
-export function matchingDisallow(
-  rules: RobotsRule[],
-  path: string,
-): string | null {
+export function matchingDisallow(rules: RobotsRule[], path: string): string | null {
   let best: RobotsRule | null = null;
   for (const r of rules) {
     if (!ruleMatches(r.path, path)) continue;

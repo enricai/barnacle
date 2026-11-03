@@ -117,6 +117,7 @@ import { createBrowserSession } from "@/scraper/session";
 import { UPLOAD_AFFORDANCE_MATCHER_EXPR } from "@/scraper/upload-affordance-expr";
 import {
   applyFailedStepFlagsToResumingBridgeStep,
+  auditFinalSubmitMatch,
   buildRadioIdXPath,
   capturesAfterIndex,
   chooseRequiredSelectOption,
@@ -196,7 +197,6 @@ import {
   windowHasTransitionBody,
   writeFixtureToTempFile,
   writeSubmitManifest,
-  auditFinalSubmitMatch,
 } from "@/scripts/recon-browser";
 import type { Logger } from "@/types/logging";
 
@@ -7685,9 +7685,9 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     const runRoot = mkdtempSync(join(tmpdir(), "recon-sm-"));
     const capturesDir = join(runRoot, "graphql");
     mkdirSync(capturesDir);
-    caps.forEach((c, i) =>
-      writeFileSync(join(capturesDir, `${String(i).padStart(3, "0")}-p.json`), JSON.stringify(c))
-    );
+    caps.forEach((c, i) => {
+      writeFileSync(join(capturesDir, `${String(i).padStart(3, "0")}-p.json`), JSON.stringify(c));
+    });
     return { runRoot, capturesDir };
   }
   function manifest(runRoot: string): { index: number }[] {

@@ -75,6 +75,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
+import { matchesSubmitPattern } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -139,7 +140,6 @@ import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
-import { matchesSubmitPattern } from "@/recon/submit-match";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
@@ -436,7 +436,8 @@ function auditFinalSubmitMatch(params: {
   if (ownBackendHostnames.length === 0) return { auditFailed: true, rejectionReason: null };
   const auditEndpointRx =
     params.submitEndpointPattern != null ? new RegExp(params.submitEndpointPattern) : null;
-  const auditBodyRx = params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
+  const auditBodyRx =
+    params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
   let entries: string[];
   try {
     entries = readdirSync(capturesDir);
