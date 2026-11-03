@@ -130,6 +130,7 @@ import {
   SIGN_IN_PATTERNS,
   splitIntoActionClauses,
 } from "@/scraper/phantom-click";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { withScraperRetry } from "@/scraper/retry";
 import { createBrowserSession, type ProviderName } from "@/scraper/session";
 import { raceAgainstTeardown, resolveSessionDeathError } from "@/scraper/session-teardown";
@@ -140,7 +141,6 @@ import { summarizeAttemptTransience } from "@/scraper/transient-provider-error";
 import { withWatchdog } from "@/scraper/watchdog";
 import { filterByCallType, parseSamples } from "@/scripts/judge-llm-batch";
 import { createCaptureRebinder } from "@/scripts/recon-capture-rebind";
-import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 import { RESUME_FIXTURE_PATH } from "@/testing/resume-fixture";
 import { allocateTestmailInbox, type TestmailInbox } from "@/testmail/client";
@@ -3958,6 +3958,5 @@ export {
   readFailureDumpEvidence,
   replanRemainingFlow,
   snapshotAndPersistCookieJar,
-  wireNetworkCapture,
   writeSubmitManifest,
 };

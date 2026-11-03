@@ -56,7 +56,7 @@ describe("recon-browser unavailable-body accounting", () => {
       [],
       [],
       () => "p",
-      () => "https://x.test",
+      () => "https://x.test"
     );
     expect(hooks.onCapture).not.toBeNull();
     const before = getBodyUnavailableCount();
@@ -67,10 +67,7 @@ describe("recon-browser unavailable-body accounting", () => {
     };
     hooks.onCapture!({ ...base, requestPostData: "{}" }, "001.json");
     expect(getBodyUnavailableCount()).toBe(before);
-    hooks.onCapture!(
-      { ...base, requestPostData: REQUEST_BODY_UNAVAILABLE },
-      "002.json",
-    );
+    hooks.onCapture!({ ...base, requestPostData: REQUEST_BODY_UNAVAILABLE }, "002.json");
     expect(getBodyUnavailableCount()).toBe(before + 1);
   });
 });

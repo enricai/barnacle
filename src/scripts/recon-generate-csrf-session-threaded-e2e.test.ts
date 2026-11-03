@@ -73,9 +73,9 @@ describe("recon-generate session-minted csrf header and cookie", () => {
     mkdirSync(join(runRoot, "replays"), { recursive: true });
     mkdirSync(join(runRoot, "aux"), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-    [create, update].forEach((c, i) =>
-      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c))
-    );
+    [create, update].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
     const siteId = `recon-cart-update-e2e-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
@@ -104,6 +104,7 @@ describe("recon-generate session-minted csrf header and cookie", () => {
     expect(contract).toContain('method: "POST"');
     expect(contract).toContain('method: "PUT"');
     expect(contract).toContain("const id = (r0 as { id: string }).id;");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain('{"id":"${id}","contact":${JSON.stringify(payload.contact)}}');
     expect(contract).toMatch(
       /contact: multipartJsonObject\(z\.object\(\{\s*name: z\.string\(\),\s*email: z\.string\(\)/

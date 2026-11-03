@@ -81,7 +81,9 @@ describe("emitMultiStepExecuteHttp — multipart upload threads baseUrl-derived 
   );
 
   it("emits Origin and Referer as context.baseUrl templates, not literals", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(body).toContain('"Origin": `${context.baseUrl}`');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(body).toContain('"Referer": `${context.baseUrl}/`');
   });
 });

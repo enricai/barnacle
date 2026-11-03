@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
-import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
@@ -44,9 +44,9 @@ describe("recon-generate — unavailable-body writes", () => {
         timestamp: "2026-01-01T00:00:01Z",
       }),
     ];
-    caps.forEach((c, i) =>
-      writeFileSync(join(runRoot, "graphql", `00${i}-capture.json`), JSON.stringify(c))
-    );
+    caps.forEach((c, i) => {
+      writeFileSync(join(runRoot, "graphql", `00${i}-capture.json`), JSON.stringify(c));
+    });
     const siteId = `marker-bodied-writes-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
@@ -100,9 +100,9 @@ describe("recon-generate — unavailable-body writes", () => {
         timestamp: "2026-01-01T00:00:01Z",
       }),
     ];
-    caps.forEach((c, i) =>
-      writeFileSync(join(runRoot, "graphql", `10${i}-capture.json`), JSON.stringify(c))
-    );
+    caps.forEach((c, i) => {
+      writeFileSync(join(runRoot, "graphql", `10${i}-capture.json`), JSON.stringify(c));
+    });
     const siteId = `marker-null-get-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });

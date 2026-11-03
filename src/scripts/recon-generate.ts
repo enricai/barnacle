@@ -20,10 +20,8 @@
  *   src/sites/<siteId>/recon-flow.json — plain-English flow steps
  */
 
-import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
@@ -51,6 +49,7 @@ import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/val
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   type Capture,
   type RateLimitFinding,

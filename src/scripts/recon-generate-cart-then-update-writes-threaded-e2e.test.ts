@@ -63,24 +63,42 @@ describe("recon-generate cart-then-update flow", () => {
     mkdirSync(join(runRoot, "replays"), { recursive: true });
     mkdirSync(join(runRoot, "aux"), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-    [create, update].forEach((c, i) =>
-      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c))
-    );
+    [create, update].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
     const siteId = `recon-cart-update-e2e-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     mkdirSync(siteOutDir, { recursive: true });
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8", env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") } }
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     expect(contract).toContain('method: "POST"');
     expect(contract).toContain('method: "PUT"');
-    expect(contract).toContain('const id = (r0 as { id: string }).id;');
+    expect(contract).toContain("const id = (r0 as { id: string }).id;");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
     expect(contract).toContain('{"id":"${id}","contact":${JSON.stringify(payload.contact)}}');
-    expect(contract).toMatch(/contact: multipartJsonObject\(z\.object\(\{\s*name: z\.string\(\),\s*email: z\.string\(\)/);
+    expect(contract).toMatch(
+      /contact: multipartJsonObject\(z\.object\(\{\s*name: z\.string\(\),\s*email: z\.string\(\)/
+    );
     expect(contract).not.toContain(ORDER_ID);
     expect(contract).not.toContain("Jane Roe");
   }, 60_000);

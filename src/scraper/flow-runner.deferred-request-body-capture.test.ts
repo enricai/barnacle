@@ -16,9 +16,7 @@ async function capture(
     off: () => {},
   };
   const sendCDP = vi.fn(async (method: string) =>
-    method === "Network.getRequestPostData"
-      ? getPostData()
-      : { body: "{}", base64Encoded: false }
+    method === "Network.getRequestPostData" ? getPostData() : { body: "{}", base64Encoded: false }
   );
   const page = {
     getSessionForFrame: () => session,

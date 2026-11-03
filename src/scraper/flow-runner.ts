@@ -21,7 +21,9 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 
 import { REQUEST_BODY_UNAVAILABLE } from "./request-body-marker";
+
 export { REQUEST_BODY_UNAVAILABLE };
+
 import type { Action, Page, Stagehand } from "@browserbasehq/stagehand";
 import { generateObject } from "ai";
 import { format, isValid, parse } from "date-fns";
@@ -260,7 +262,10 @@ export function wireSignalCapture(
 
   type RequestWillBeSentEvent = {
     requestId: string;
-    request: { url: string; method: string; headers: Record<string, string>;
+    request: {
+      url: string;
+      method: string;
+      headers: Record<string, string>;
       postData?: string;
       hasPostData?: boolean;
     };
@@ -287,6 +292,9 @@ export function wireSignalCapture(
       requestHeaders: params.request.headers as Record<string, string>,
       requestPostData: params.request.postData ?? null,
       hasPostData: params.request.hasPostData === true,
+      bodyMaybe:
+        params.request.hasPostData === undefined &&
+        /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method),
       responseStatus: 0,
       responseHeaders: {},
     });
@@ -366,7 +374,7 @@ export function wireSignalCapture(
     // CDP omits `postData` when the body is deferred (hasPostData: true). Fetch
     // it here, before the Capture is built; on failure record an explicit marker
     // rather than null so "body existed" is never conflated with "no body".
-    if (!req.requestPostData && req.hasPostData) {
+    if (!req.requestPostData && (req.hasPostData || req.bodyMaybe)) {
       try {
         const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
           requestId: params.requestId,
@@ -374,9 +382,12 @@ export function wireSignalCapture(
         req.requestPostData =
           typeof res?.postData === "string" && res.postData.length > 0
             ? res.postData
-            : REQUEST_BODY_UNAVAILABLE;
+            : req.hasPostData
+              ? REQUEST_BODY_UNAVAILABLE
+              : null;
       } catch {
-        req.requestPostData = REQUEST_BODY_UNAVAILABLE;
+        // hasPostData unknown (field omitted) and fetch failed: no evidence of a body.
+        if (req.hasPostData) req.requestPostData = REQUEST_BODY_UNAVAILABLE;
       }
     }
 
@@ -1053,6 +1064,7 @@ type InFlightRequest = {
   requestHeaders: Record<string, string>;
   requestPostData: string | null;
   hasPostData?: boolean;
+  bodyMaybe?: boolean;
   responseStatus: number;
   responseHeaders: Record<string, string>;
 };
