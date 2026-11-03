@@ -13900,14 +13900,14 @@ function buildGetRequestUrlExpr(
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
-    if (!overridden.has(k)) pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
+    if (!overridden.has(JSON.stringify(k))) pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
   }
   const bound = [
     ...model.dynamicFields,
     ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
   ];
   for (const { field, queryKey } of bound) {
-    if (overridden.has(queryKey)) continue;
+    if (overridden.has(JSON.stringify(queryKey))) continue;
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
     );
