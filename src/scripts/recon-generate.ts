@@ -2641,13 +2641,17 @@ function safeGetFieldIdentifier(key: string): string {
 
 /**
  * Pure derivation of the GET input model from the winning capture and its
- * successful same-pathname GET siblings. Returns null for non-GET winners.
- * `reservedNames` are existing payload field names; collisions get a numeric suffix.
+ * successful same-shape GET siblings (same segment count). Returns null for
+ * non-GET winners. A query key is caller-controlled when it varies across
+ * siblings, repeats a path segment, or is declared by the flow.
+ * `declaredNames` are the flow's required + optional payloadField names; a key
+ * whose identifier matches one keeps that declared name. Undeclared fields that
+ * collide with a declared name get a numeric suffix.
  */
 export function deriveGetInputModel(
   winner: Capture | null | undefined,
   captures: readonly Capture[],
-  reservedNames: Iterable<string> = []
+  declaredNames: Iterable<string> = []
 ): GetInputModel | null {
   if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
@@ -2656,59 +2660,84 @@ export function deriveGetInputModel(
   } catch {
     return null;
   }
+  const segments = winnerUrl.pathname.split("/");
   const siblings = captures.filter((c) => {
     if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
     try {
-      return new URL(c.url).pathname === winnerUrl.pathname;
+      return new URL(c.url).pathname.split("/").length === segments.length;
     } catch {
       return false;
     }
   });
   if (!siblings.includes(winner)) siblings.push(winner);
-  const valuesByKey = new Map<string, Set<string>>();
-  for (const c of siblings) {
-    for (const [k, v] of new URL(c.url).searchParams) {
-      const existing = valuesByKey.get(k);
-      const s = existing ?? new Set<string>();
-      if (!existing) valuesByKey.set(k, s);
-      s.add(v);
+  const decode = (s: string): string => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
     }
+  };
+  const valuesByKey = new Map<string, Set<string>>();
+  const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
+  for (const c of siblings) {
+    const u = new URL(c.url);
+    for (const [k, v] of u.searchParams) {
+      const existing = valuesByKey.get(k);
+      const set = existing ?? new Set<string>();
+      if (!existing) valuesByKey.set(k, set);
+      set.add(v);
+    }
+    u.pathname.split("/").forEach((seg, i) => valuesBySegment[i]?.add(decode(seg)));
   }
-  const taken = new Set(reservedNames);
+  const declared = new Set<string>();
+  for (const n of declaredNames) declared.add(n);
+  const taken = new Set(declared);
   const dynamicFields: GetInputModel["dynamicFields"] = [];
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
-  const unique = (base: string): string => {
+  const nameFor = (key: string): string => {
+    const base = safeGetFieldIdentifier(key);
+    if (declared.has(key) && safeGetFieldIdentifier(key) === key) return key;
+    if (declared.has(base)) return base;
     let name = base;
     for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
     taken.add(name);
     return name;
   };
-  const segments = winnerUrl.pathname.split("/");
+  const boundSegments = new Map<number, string>();
   for (const [key, values] of valuesByKey) {
     const winnerValue = winnerUrl.searchParams.get(key);
     const segIdx =
       winnerValue !== null && winnerValue !== ""
-        ? segments.findIndex((s) => {
-            try {
-              return decodeURIComponent(s) === winnerValue;
-            } catch {
-              return s === winnerValue;
-            }
-          })
+        ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
+    const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
     if (segIdx >= 0) {
-      const field = unique(safeGetFieldIdentifier(key));
+      const bound = boundSegments.get(segIdx);
+      if (bound !== undefined) continue; // twin of an already-bound segment
+      const field = nameFor(key);
+      boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1) {
-      const field = unique(safeGetFieldIdentifier(key));
+    } else if (values.size > 1 || isDeclared) {
+      const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
       fixedParams[key] = [...values][0] as string;
     }
+  }
+  // Path segments that vary between captures with no query twin.
+  for (let i = 1; i < segments.length; i++) {
+    if (boundSegments.has(i) || (valuesBySegment[i]?.size ?? 0) < 2) continue;
+    const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
+    const base = prev === "param" ? "id" : `${prev}Id`;
+    let field = base;
+    for (let n = 2; taken.has(field); n++) field = `${base}${n}`;
+    taken.add(field);
+    boundSegments.set(i, field);
+    pathVars.push({ field, segmentIndex: i, queryKey: "" });
   }
   return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
 }
@@ -18079,7 +18108,10 @@ async function main(): Promise<void> {
       gqlQuery,
       endpointPath,
       getInputModel: isReadOnlyGetFlow
-        ? deriveGetInputModel(winningCapture, activeCaptures, browserFlow.payloadFieldNames)
+        ? deriveGetInputModel(winningCapture, activeCaptures, [
+            ...browserFlow.payloadFieldNames,
+            ...browserFlow.optionalPayloadFieldNames,
+          ])
         : null,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
