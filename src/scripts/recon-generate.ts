@@ -5283,7 +5283,7 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // The field is named from the full path (not the bare leaf key) so it is the
     // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
     // key for a nested array would declare the one array twice.
-    const fieldName = pathToPayloadFieldName(valuePath);
+    const fieldName = pathToPayloadFieldName([...valuePath]);
     registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
