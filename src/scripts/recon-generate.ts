@@ -1034,7 +1034,7 @@ export function inferZodSchemaFromSamples(
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
     // Elements are within-response variance evidence: drop the single-entity flag.
-    const elementOpts = opts.singleEntityEvidence ? { ...opts, singleEntityEvidence: false } : opts;
+    const elementOpts = opts.singleEntityEvidence && items.length > 1 ? { ...opts, singleEntityEvidence: false } : opts;
     return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`);
   }
 
@@ -2253,6 +2253,10 @@ export interface EntityVarianceEvidence {
 
 const ID_QUERY_NAME = /^(id|ids|.+_ids?|.+Ids?)$/;
 
+// Credential/tenant/session ids are constant across captures and do not
+// identify the addressed entity.
+const CONSTANT_ID_QUERY_NAME = /^(client|app|api|session|tenant|device|visitor|trace|request|correlation)[_-]?id$/i;
+
 function identifyingParams(url: string): Record<string, string> {
   const out: Record<string, string> = {};
   try {
@@ -2263,7 +2267,7 @@ function identifyingParams(url: string): Record<string, string> {
     const byName = new Map<string, string[]>();
     for (const [rawName, value] of u.searchParams) {
       const name = rawName.replace(/\[\]$/, "");
-      if (!ID_QUERY_NAME.test(name)) continue;
+      if (!ID_QUERY_NAME.test(name) || CONSTANT_ID_QUERY_NAME.test(name)) continue;
       byName.set(name, [...(byName.get(name) ?? []), value]);
     }
     for (const [name, values] of byName) out[name] = values.join(",");
