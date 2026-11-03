@@ -14,10 +14,14 @@ describe("inferZodSchemaFromSamples singleEntityEvidence — evaluated schema", 
   const sample = {
     product: { title: "Widget", genre: "tools", tags: [{ label: "a" }, { label: "b" }] },
   };
-  const schema = evalSchema(inferZodSchemaFromSamples([sample], 0, "", { singleEntityEvidence: true }));
+  const schema = evalSchema(
+    inferZodSchemaFromSamples([sample], 0, "", { singleEntityEvidence: true })
+  );
 
-  it("accepts the report's literal `\"genre\": null` on a sibling body", () => {
-    const sibling = JSON.parse('{"product":{"title":"Gadget","genre": null,"tags":[{"label":"x"}]}}');
+  it('accepts the report\'s literal `"genre": null` on a sibling body', () => {
+    const sibling = JSON.parse(
+      '{"product":{"title":"Gadget","genre": null,"tags":[{"label":"x"}]}}'
+    );
     expect(schema.safeParse(sibling).success).toBe(true);
   });
 
@@ -27,7 +31,9 @@ describe("inferZodSchemaFromSamples singleEntityEvidence — evaluated schema", 
 
   it("keeps array-element presence evidence (elements stay required)", () => {
     expect(schema.safeParse({ product: { title: "G", tags: [{}] } }).success).toBe(false);
-    expect(schema.safeParse({ product: { title: "G", tags: [{ label: null }] } }).success).toBe(false);
+    expect(schema.safeParse({ product: { title: "G", tags: [{ label: null }] } }).success).toBe(
+      false
+    );
   });
 
   it("still rejects a wrong scalar type", () => {
@@ -40,7 +46,9 @@ describe("inferZodSchemaFromSamples singleEntityEvidence — evaluated schema", 
     expect(off).not.toContain(".nullable()");
     expect(off).not.toContain(".optional()");
     const strict = evalSchema(off);
-    expect(strict.safeParse({ product: { title: "G", genre: null, tags: [] } }).success).toBe(false);
+    expect(strict.safeParse({ product: { title: "G", genre: null, tags: [] } }).success).toBe(
+      false
+    );
   });
 });
 

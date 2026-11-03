@@ -19,7 +19,9 @@ describe("inferZodSchemaFromSamples singleEntityEvidence", () => {
 
 describe("single-element arrays holding the captured entity", () => {
   it("keeps single-entity leniency for a lone element", () => {
-    const out = inferZodSchemaFromSamples([{ rooms: [{ genre: "x" }] }], 0, "", { singleEntityEvidence: true });
+    const out = inferZodSchemaFromSamples([{ rooms: [{ genre: "x" }] }], 0, "", {
+      singleEntityEvidence: true,
+    });
     expect(out).toContain("genre: z.string().nullable().optional()");
   });
 });

@@ -151,7 +151,10 @@ describe("recon-generate CLI regression: recon-flow.json fallback-gate/timeout k
     // PRE_CHANGE_REF predates the hyphen-digit identifier-sanitizer fix (91a94b8), which
     // is intentional and unrelated to the fallback-gate feature this test pins, so the
     // siteId-derived identifier is normalized out of both sides before the byte-diff.
-    expect(stripJobTracking(stripSiteIdentifier(currentContract, siteId))).toBe(
+    // PRE_CHANGE_REF also predates lenient scalar leaves for a lone captured
+    // response, which is unrelated to the fallback-gate feature, so that
+    // suffix is normalized out of the current side.
+    expect(stripLenientLeaves(stripJobTracking(stripSiteIdentifier(currentContract, siteId)))).toBe(
       stripSiteIdentifier(preChangeContract, siteId)
     );
     expect(currentContract).not.toContain("browserFallbackGate");
@@ -163,6 +166,10 @@ function stripSiteIdentifier(contract: string, siteId: string): string {
   const camel = siteId.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
   const camelLegacy = siteId.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
   return contract.split(camel).join("__SITE_IDENT__").split(camelLegacy).join("__SITE_IDENT__");
+}
+
+function stripLenientLeaves(contract: string): string {
+  return contract.replaceAll(".nullable().optional()", "");
 }
 
 function stripJobTracking(contract: string): string {
