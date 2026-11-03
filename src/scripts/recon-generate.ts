@@ -2499,9 +2499,7 @@ export interface GetInputModel {
 
 function safeGetFieldIdentifier(key: string): string {
   const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
-  let id = parts
-    .map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)))
-    .join("");
+  let id = parts.map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1))).join("");
   if (id === "") id = "param";
   if (/^[0-9]/.test(id)) id = `_${id}`;
   return id;
@@ -2517,7 +2515,7 @@ export function deriveGetInputModel(
   captures: readonly Capture[],
   reservedNames: Iterable<string> = []
 ): GetInputModel | null {
-  if (!winner || winner.method !== "GET") return null;
+  if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
   try {
     winnerUrl = new URL(winner.url);
@@ -2536,8 +2534,9 @@ export function deriveGetInputModel(
   const valuesByKey = new Map<string, Set<string>>();
   for (const c of siblings) {
     for (const [k, v] of new URL(c.url).searchParams) {
-      let s = valuesByKey.get(k);
-      if (!s) valuesByKey.set(k, (s = new Set()));
+      const existing = valuesByKey.get(k);
+      const s = existing ?? new Set<string>();
+      if (!existing) valuesByKey.set(k, s);
       s.add(v);
     }
   }
@@ -13900,7 +13899,8 @@ function buildGetRequestUrlExpr(
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
-    if (!overridden.has(JSON.stringify(k))) pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
+    if (!overridden.has(JSON.stringify(k)))
+      pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
   }
   const bound = [
     ...model.dynamicFields,
@@ -15630,16 +15630,18 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string
+  browserFlowCode: string,
+  payloadOnly = false
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   // Scan only the payload schema: a response schema's required `*Url` field is
   // output, not caller input. Falls back to the whole contract when the
-  // payload-schema declaration is absent (hand-built fixtures).
+  // payload-schema declaration is absent (hand-built fixtures). Opt-in
+  // (read-only GET flows): submission flows keep scanning the whole contract.
   const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
   let scanned = contractCode;
-  if (payloadStart >= 0) {
+  if (payloadOnly && payloadStart >= 0) {
     const rest = contractCode.slice(payloadStart);
     const end = rest.search(/^export type \w*Payload\b/m);
     scanned = end >= 0 ? rest.slice(0, end) : rest;
@@ -16294,6 +16296,9 @@ export function emitBrowserFlowTs(opts: {
    * still drives the browser fallback with a real value rather than
    * `undefined`. */
   capturedFallbackFields?: ReadonlySet<string>;
+  /** Payload-driven GET read flow: the payload schema has no `query` field, so
+   * the read fallback's extract prompt must not reference `payload.query`. */
+  readOnlyGetFlow?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16314,6 +16319,7 @@ export function emitBrowserFlowTs(opts: {
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
+    readOnlyGetFlow = false,
     env = process.env,
   } = opts;
 
@@ -16551,7 +16557,7 @@ ${flowStepsBlock}
       : `
   const result = await guardedExtract(
     stagehand,
-    \`extract results matching query: \${payload.query}\`,
+    ${/* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ readOnlyGetFlow ? '"extract the results shown on the page"' : "`extract results matching query: ${payload.query}`"},
     ${pascal}ResponseSchema
   );
 
@@ -16781,9 +16787,11 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
+  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code
+    firstAttempt.browserFlow.code,
+    payloadOnly
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -16829,7 +16837,8 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code
+    retried.browserFlow.code,
+    !!retried.contractOpts.getInputModel
   );
   if (stillOffending.length > 0) {
     throw new Error(
@@ -17456,7 +17465,9 @@ async function main(): Promise<void> {
     const isReadOnlyGetFlow =
       !gql &&
       actionSteps.length === 0 &&
-      !activeCaptures.some((c) => c.method !== "GET" && c.status >= 200 && c.status < 300) &&
+      !activeCaptures.some(
+        (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
+      ) &&
       firstEndpointCapture(
         activeCaptures,
         ownBackendHostnames,
@@ -17747,6 +17758,7 @@ async function main(): Promise<void> {
       inputBody,
       vocabulary,
       frameSelector,
+      readOnlyGetFlow: isReadOnlyGetFlow,
     };
     const browserFlow = emitBrowserFlowTs(browserFlowOpts);
 

@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { RECON_GENERATE_CWD, RECON_GENERATE_CWD_FROM_REPO_ROOT } from "@/scripts/recon-generate-cwd.test-helper";
+import {
+  RECON_GENERATE_CWD,
+  RECON_GENERATE_CWD_FROM_REPO_ROOT,
+} from "@/scripts/recon-generate-cwd.test-helper";
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -55,12 +58,21 @@ describe("recon-generate CLI — read-only REST GET flow is payload-driven", () 
     for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(runRoot, d), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
     const captures = [
-      getCapture("order=4821&from_date=2026-01-05&to_date=2026-01-31&items[]=sku-a&3pl=42north&region=emea", "2026-05-01T00:00:00.000Z"),
-      getCapture("order=4821&from_date=2026-02-10&to_date=2026-02-28&items[]=sku-b&3pl=77south&region=emea", "2026-05-01T00:00:01.000Z"),
+      getCapture(
+        "order=4821&from_date=2026-01-05&to_date=2026-01-31&items[]=sku-a&3pl=42north&region=emea",
+        "2026-05-01T00:00:00.000Z"
+      ),
+      getCapture(
+        "order=4821&from_date=2026-02-10&to_date=2026-02-28&items[]=sku-b&3pl=77south&region=emea",
+        "2026-05-01T00:00:01.000Z"
+      ),
     ];
-    captures.forEach((c, i) =>
-      writeFileSync(join(runRoot, "graphql", `${String(i).padStart(3, "0")}-capture.json`), JSON.stringify(c))
-    );
+    captures.forEach((c, i) => {
+      writeFileSync(
+        join(runRoot, "graphql", `${String(i).padStart(3, "0")}-capture.json`),
+        JSON.stringify(c)
+      );
+    });
 
     const siteId = `rest-get-payload-driven-test-${process.pid}`;
     siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
@@ -69,10 +81,14 @@ describe("recon-generate CLI — read-only REST GET flow is payload-driven", () 
       join(siteOutDir, "recon-flow.json"),
       JSON.stringify({ steps: [{ step: "view orders" }], ownBackendHostnames: [HOST] })
     );
-    const result = spawnSync(TSX_BIN, [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"], {
-      cwd: RECON_GENERATE_CWD,
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+      }
+    );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     const execStart = contract.indexOf("async executeHttp(");
@@ -89,7 +105,16 @@ describe("recon-generate CLI — read-only REST GET flow is payload-driven", () 
     // Digit-leading key yields a valid identifier and maps back to the real key.
     expect(executeHttp).toContain('["3pl", String(payload._3pl)]');
     // No recorded varying values baked into the request.
-    for (const recorded of ["2026-01-05", "2026-01-31", "2026-02-10", "2026-02-28", "sku-a", "sku-b", "42north", "77south"]) {
+    for (const recorded of [
+      "2026-01-05",
+      "2026-01-31",
+      "2026-02-10",
+      "2026-02-28",
+      "sku-a",
+      "sku-b",
+      "42north",
+      "77south",
+    ]) {
       expect(executeHttp).not.toContain(recorded);
     }
     // Truly constant param stays fixed.
@@ -120,13 +145,18 @@ describe("recon-generate CLI — read-only REST GET flow is payload-driven", () 
         include: [`${RECON_GENERATE_CWD_FROM_REPO_ROOT}/src/sites/${siteId}/**/*.ts`],
       })
     );
-    const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], { cwd: REPO_ROOT, encoding: "utf8" });
+    const check = spawnSync(TSC_BIN, ["-p", tsconfigPath, "--noEmit"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
     const diagnostics = `${check.stdout}\n${check.stderr}`;
     // The contract (schema + executeHttp) must typecheck clean. The browser
     // fallback's generic `payload.query` extract prompt is a separate,
     // pre-existing concern outside this flow's request construction, so only
     // diagnostics that point at the contract are asserted on.
-    const contractDiagnostics = diagnostics.split("\n").filter((line) => line.includes("contract.ts"));
+    const contractDiagnostics = diagnostics
+      .split("\n")
+      .filter((line) => line.includes("contract.ts"));
     expect(contractDiagnostics, diagnostics).toEqual([]);
   }, 60_000);
 });

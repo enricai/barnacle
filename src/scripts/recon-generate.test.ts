@@ -10,8 +10,6 @@ import type { ReconVocabulary } from "@/recon/vocabulary";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
 import {
   ancestorScopedAccessor,
-  toPascalCase,
-  unreferencedRequiredUrlFields,
   assertRequiredUrlFieldsReferenced,
   buildKnownFieldValues,
   collectHeaderBindings,
@@ -43,7 +41,9 @@ import {
   selectPayloadAction,
   selectPrimaryGraphQLOperation,
   selectReturnAction,
+  toPascalCase,
   truncateActionSequenceAtSubmitPattern,
+  unreferencedRequiredUrlFields,
 } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
@@ -5410,7 +5410,11 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
 describe("toPascalCase", () => {
   it("prefixes digit-leading ids so derived identifiers are valid", () => {
     const pascal = toPascalCase("3dprint-shop");
-    for (const name of [`${pascal}Response`, `${pascal}PayloadSchema`, `${pascal.toUpperCase()}_QUERY`]) {
+    for (const name of [
+      `${pascal}Response`,
+      `${pascal}PayloadSchema`,
+      `${pascal.toUpperCase()}_QUERY`,
+    ]) {
       expect(name).toMatch(/^[A-Za-z_$][\w$]*$/);
     }
   });
@@ -5424,12 +5428,16 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "")
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", true)
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"), "")
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
+        "",
+        true
+      )
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -5459,7 +5467,11 @@ describe("emitContractTs — payload-driven GET request", () => {
     pathVars: [{ field: "id", segmentIndex: 2, queryKey: "id" }],
   };
   it("builds the single-call GET from payload with recorded fallback", () => {
-    const source = emitContractTs({ ...BASE_OPTS, endpointPath: "/items/42", getInputModel: model });
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: model,
+    });
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
     expect(source).toContain('["ids[]", String(payload.ids)]');
@@ -5483,7 +5495,13 @@ describe("emitContractTs — payload-driven GET request", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
       endpointPath: "/items/42",
-      getInputModel: { ...model, dynamicFields: [{ field: "ids", queryKey: "ids[]" }, { field: "a-b", queryKey: "a-b" }] },
+      getInputModel: {
+        ...model,
+        dynamicFields: [
+          { field: "ids", queryKey: "ids[]" },
+          { field: "a-b", queryKey: "a-b" },
+        ],
+      },
     });
     expect(source).toContain("ids: z.string().optional(),");
     expect(source).toContain('"a-b": z.string().optional(),');
