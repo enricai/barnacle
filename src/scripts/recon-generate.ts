@@ -926,6 +926,14 @@ interface InferOpts {
    * satisfy the sum relation for the same aggregate -- every confirmed
    * derivation is described, not just the last one found. */
   aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
+  /** Every sample came from ONE entity (e.g. a single product page of a
+   * catalog), so a scalar leaf reached without crossing an array boundary is
+   * present and non-null there only by accident of which entity was captured;
+   * another entity may omit it or return null. Such leaves are emitted
+   * `.nullable().optional()`. Array element fields are unaffected: elements
+   * are within-response variance evidence, so their presence/nullability stay
+   * sample-driven. Unset keeps output identical to before. */
+  singleEntityEvidence?: boolean;
 }
 
 /**
@@ -953,6 +961,14 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
     if (fieldName) names.add(fieldName);
   }
   return names;
+}
+
+/** True when every non-null observation is a string/number/boolean of one kind. */
+function isScalarLeaf(values: readonly unknown[]): boolean {
+  const kinds = new Set(values.filter((v) => v !== null && v !== undefined).map((v) => typeof v));
+  if (kinds.size !== 1) return false;
+  const [k] = [...kinds];
+  return k === "string" || k === "number" || k === "boolean";
 }
 
 /**
@@ -988,6 +1004,10 @@ export function inferZodSchemaFromSamples(
   if (nonNull.length === 0) return "z.unknown()";
 
   const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
+  // Scalar leaf outside any array under single-entity evidence: invariance
+  // across entities is unproven, so always nullable.
+  const wrapScalar = (expr: string): string =>
+    nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -999,13 +1019,14 @@ export function inferZodSchemaFromSamples(
 
   const kind = [...kinds][0];
 
-  if (kind === "string") return wrap("z.string()");
-  if (kind === "number") return wrap(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
+  if (kind === "string") return wrapScalar("z.string()");
+  if (kind === "number")
+    return wrapScalar(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
   if (kind === "boolean") {
     // multipart/form-data encodes booleans as "true"/"false". The contract
     // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
     // when any field needs this coercion; we call it here to keep field declarations short.
-    return wrap(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
+    return wrapScalar(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
   }
 
   if (kind === "array") {
@@ -1013,7 +1034,14 @@ export function inferZodSchemaFromSamples(
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
-    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`);
+    // Elements are within-response variance evidence: drop the single-entity flag.
+    const elementOpts =
+      opts.singleEntityEvidence && items.length > 1
+        ? { ...opts, singleEntityEvidence: false }
+        : opts;
+    return wrap(
+      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`
+    );
   }
 
   if (kind === "object") {
@@ -1035,7 +1063,9 @@ export function inferZodSchemaFromSamples(
         // legally omit it regardless of what this sample happened to show):
         // either signal alone is enough to require callers to guard the field.
         const isOptional =
-          valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
+          valuesForKey.length < objects.length ||
+          (opts.conditionalFieldNames?.has(k) ?? false) ||
+          (opts.singleEntityEvidence === true && isScalarLeaf(valuesForKey));
         const optional = isOptional ? `${expr}.optional()` : expr;
         const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
         const described = findings?.length
@@ -1347,13 +1377,21 @@ function deriveMinTime(rateLimits: RateLimitFinding[]): number {
  * endpoint paged or filtered differently still collapses to one key. Matching
  * captures to replays depends on both sides deriving this the same way.
  */
+// Memoized: chain-step schema inference calls this per capture per step, which
+// is quadratic in capture count without a cache.
+const endpointKeyCache = new Map<string, string>();
 function endpointKey(url: string): string {
+  const hit = endpointKeyCache.get(url);
+  if (hit !== undefined) return hit;
+  let key: string;
   try {
     const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
+    key = `${u.origin}${u.pathname}`;
   } catch {
-    return url;
+    key = url;
   }
+  endpointKeyCache.set(url, key);
+  return key;
 }
 
 const RESOURCE_ID_SEGMENT =
@@ -2216,6 +2254,84 @@ export function gatherResponseBodySamples(
     samples.push(c.responseBody);
   }
   return samples.length > 0 ? samples : [winningCapture.responseBody];
+}
+
+export interface EntityVarianceEvidence {
+  /** The winning REST capture carries at least one identifying parameter. */
+  entityParameterized: boolean;
+  /** Identifying parameters of the winning capture (`path[i]` / query name -> value). */
+  params: Record<string, string>;
+  /** True when every gathered capture has identical identifying values. */
+  singleEntity: boolean;
+}
+
+const ID_QUERY_NAME = /^(id|ids|.+_ids?|.+Ids?)$/;
+
+// Credential/tenant/session ids are constant across captures and do not
+// identify the addressed entity.
+const CONSTANT_ID_QUERY_NAME =
+  /^(client|app|api|session|tenant|device|visitor|trace|request|correlation)[_-]?id$/i;
+
+const identifyingParamsCache = new Map<string, Record<string, string>>();
+function identifyingParams(url: string): Record<string, string> {
+  const hit = identifyingParamsCache.get(url);
+  if (hit) return hit;
+  const computed = computeIdentifyingParams(url);
+  identifyingParamsCache.set(url, computed);
+  return computed;
+}
+
+function computeIdentifyingParams(url: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const u = new URL(url);
+    u.pathname.split("/").forEach((segment, i) => {
+      if (RESOURCE_ID_SEGMENT.test(segment)) out[`path[${i}]`] = segment;
+    });
+    const byName = new Map<string, string[]>();
+    for (const [rawName, value] of u.searchParams) {
+      const name = rawName.replace(/\[\]$/, "");
+      if (!ID_QUERY_NAME.test(name) || CONSTANT_ID_QUERY_NAME.test(name)) continue;
+      byName.set(name, [...(byName.get(name) ?? []), value]);
+    }
+    for (const [name, values] of byName) out[name] = values.join(",");
+  } catch {
+    // unparseable URL: no identifying params
+  }
+  return out;
+}
+
+/**
+ * Reports whether the winning REST capture is addressed by identifying
+ * path/query parameters and whether every gathered 2xx capture of the same
+ * endpoint shares identical values (i.e. the samples describe one entity).
+ * GraphQL winners report no identifying params.
+ */
+export function gatherEntityVarianceEvidence(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[]
+): EntityVarianceEvidence {
+  const none: EntityVarianceEvidence = {
+    entityParameterized: false,
+    params: {},
+    singleEntity: false,
+  };
+  if (!winningCapture || isGraphQLWinner) return none;
+  const params = identifyingParams(winningCapture.url);
+  if (Object.keys(params).length === 0) return none;
+  const winningKey = endpointKey(winningCapture.url);
+  const signature = JSON.stringify(Object.entries(params).sort());
+  let singleEntity = true;
+  for (const c of captures) {
+    if (c.status < 200 || c.status >= 300) continue;
+    if (endpointKey(c.url) !== winningKey) continue;
+    if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
+      singleEntity = false;
+      break;
+    }
+  }
+  return { entityParameterized: true, params, singleEntity };
 }
 
 /**
@@ -8910,10 +9026,7 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", {
-      looseServerResponse: true,
-      aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([cap.responseBody]),
-    });
+    const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
@@ -14255,6 +14368,13 @@ export function emitContractTs(opts: {
    * instead of required from `responseBody` alone. Defaults to
    * `[responseBody]` for call sites that only have the one capture. */
   responseBodySamples?: readonly unknown[];
+  /** The response samples cannot show which leaves every valid response
+   * carries: they came from one entity of a parameterized endpoint (see
+   * {@link gatherEntityVarianceEvidence}) or are a single distinct observation.
+   * The primary response schema then infers scalar leaves outside arrays
+   * `.nullable().optional()`. Unset derives it from the sample count (one
+   * distinct sample is single-entity evidence). */
+  singleEntityEvidence?: boolean;
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
@@ -14394,6 +14514,7 @@ export function emitContractTs(opts: {
     hasRateLimitProbeData = false,
     responseBody,
     responseBodySamples = [responseBody],
+    singleEntityEvidence,
     gql,
     gqlQuery,
     endpointPath,
@@ -14474,6 +14595,13 @@ export function emitContractTs(opts: {
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
   const aggregateUnitBasisFindingsByPath =
     groupAggregateUnitBasisFindingsByPath(responseBodySamples);
+  // One distinct observation proves nothing about which leaves every valid
+  // response of a REST endpoint carries, so it is single-entity evidence by
+  // itself; callers that measured more (parameter variance across captures)
+  // pass the verdict. GraphQL responses are typed by the query, not by the
+  // entity addressed, so they are not covered by this default.
+  const leniencyForUnprovenLeaves =
+    singleEntityEvidence ?? (!isGqlEmission && responseBodySamples.length <= 1);
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -14483,6 +14611,7 @@ export function emitContractTs(opts: {
             conditionalFieldNames,
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath,
+            ...(leniencyForUnprovenLeaves ? { singleEntityEvidence: true } : {}),
           });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
@@ -15348,12 +15477,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // apply.
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
-          const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
-            looseServerResponse: true,
-            aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
-              chainStep.capture.responseBody,
-            ]),
-          });
+          const schemaExpr = inferChainStepResponseSchema(chainStep.capture, allCaptures);
           // This emitter never renders a per-hop `produces` accessor (unlike
           // emitMultiStepExecuteHttp's identical chain loop) — only the
           // chain terminal's response is ever read, via
@@ -16851,6 +16975,91 @@ function healUnreferencedUrlFieldsOnce(
   return retried;
 }
 
+export function buildSingleEntityWarning(
+  winningCapture: { url: string } | null | undefined,
+  entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>,
+  distinctSampleCount = 2
+): string | null {
+  const endpoint = winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint";
+  if (entityVariance.entityParameterized && entityVariance.singleEntity) {
+    return `WARN response schema inferred from a single entity — every captured response of ${endpoint} shares identifying parameter(s) ${Object.entries(
+      entityVariance.params
+    )
+      .map(([k, v]) => `${k}=${v}`)
+      .join(
+        ", "
+      )}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
+  }
+  if (distinctSampleCount <= 1) {
+    return `WARN response schema inferred from a single captured response of ${endpoint}; scalar fields are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
+  }
+  return null;
+}
+
+export function evaluateSingleEntityEvidence(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[],
+  warn: (msg: string) => void
+): { singleEntityEvidence: boolean } {
+  const entityVariance = gatherEntityVarianceEvidence(winningCapture, isGraphQLWinner, captures);
+  // A lone REST observation is evidence of one entity even when the URL names
+  // none; GraphQL is typed by its query, and no capture means no evidence.
+  const distinctSampleCount =
+    winningCapture && !isGraphQLWinner
+      ? gatherResponseBodySamples(winningCapture, isGraphQLWinner, captures).length
+      : Number.POSITIVE_INFINITY;
+  const warning = buildSingleEntityWarning(winningCapture, entityVariance, distinctSampleCount);
+  if (warning !== null) warn(warning);
+  return { singleEntityEvidence: warning !== null };
+}
+
+/**
+ * Response schema for one chain step/hop, inferred through the same
+ * entity-aware path as the contract schema: every same-identity 2xx sibling
+ * capture is a sample, and when the step is addressed by identifying
+ * parameters that all siblings share, scalar leaves are emitted lenient.
+ * Unlike the primary schema, a lone sample alone does not relax a step.
+ */
+const chainEndpointIndex = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+
+export function inferChainStepResponseSchema(
+  stepCapture: Capture,
+  allCaptures: readonly Capture[]
+): string {
+  const isGraphQL = stepCapture.query != null || stepCapture.operationName != null;
+  // REST identity is the endpoint key: narrow to that group via a per-array
+  // index so a many-step chain is not quadratic in total captures.
+  let captures = allCaptures;
+  if (!isGraphQL) {
+    let index = chainEndpointIndex.get(allCaptures);
+    if (!index) {
+      index = new Map();
+      for (const c of allCaptures) {
+        const k = endpointKey(c.url);
+        const g = index.get(k);
+        if (g) g.push(c);
+        else index.set(k, [c]);
+      }
+      chainEndpointIndex.set(allCaptures, index);
+    }
+    captures = index.get(endpointKey(stepCapture.url)) ?? allCaptures;
+  }
+  const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  // Only measured entity evidence (shared identifying parameters) relaxes a
+  // step: a flow records one response per call by construction, so a lone
+  // sample here is not a statement about which entity was addressed, and
+  // required `*Url` leaves of a step's schema are what the required-URL-field
+  // guard uses to attribute unreferenced fields to unrelated captures.
+  const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
+  const singleEntityEvidence = variance.entityParameterized && variance.singleEntity;
+  return inferZodSchemaFromSamples(samples, 0, "", {
+    looseServerResponse: true,
+    aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
+    ...(singleEntityEvidence ? { singleEntityEvidence: true } : {}),
+  });
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let siteId = "";
@@ -17246,6 +17455,12 @@ async function main(): Promise<void> {
       winningCapture,
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
       activeCaptures
+    );
+    const { singleEntityEvidence } = evaluateSingleEntityEvidence(
+      winningCapture,
+      primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+      activeCaptures,
+      (msg) => logger.warn(msg)
     );
 
     // Detect a multi-step submission flow (transactional sites like apply forms,
@@ -17779,6 +17994,7 @@ async function main(): Promise<void> {
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
       responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      singleEntityEvidence: singleEntityEvidence && !isSubmissionFlow,
       gql,
       gqlQuery,
       endpointPath,
