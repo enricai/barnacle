@@ -124,7 +124,7 @@ describe("recon-generate CLI — read-only REST GET flow is payload-driven", () 
       expect(contract).toContain(`${field}: z.string().optional(),`);
     }
     // Response `url` fields did not trip the payload URL guard.
-    expect(contract).toContain("url: z.string(),");
+    expect(contract).toContain("url: z.string().nullable().optional(),");
 
     tsconfigPath = join(REPO_ROOT, `tsconfig.rest-get-payload-driven.${process.pid}.json`);
     writeFileSync(
