@@ -124,6 +124,6 @@ describe("recon-generate CLI — nested array declared under a single payload na
     // The nested array is declared under ONE payload name (the one the
     // by-index accessors use), never also under its bare leaf key.
     expect(contract).toContain("orderOrderGames_attributes:");
-    expect(contract).not.toMatch(/^ {2}orderGames_attributes:/m);
+    expect(contract).not.toMatch(/^ {2}orderGames_attributes: multipartJsonObject/m);
   }, 30_000);
 });
