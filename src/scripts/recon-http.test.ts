@@ -411,3 +411,127 @@ describe("selectReplayCaptures", () => {
     expect(r2.selected).toHaveLength(2);
   });
 });
+
+describe("recon-http main() end to end", () => {
+  let tmpRoot: string;
+  const saved = {
+    argv: process.argv,
+    out: process.env.RECON_OUT_DIR,
+    run: process.env.RECON_RUN_ID,
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    loggerStub.info.mockClear();
+    tmpRoot = mkdtempSync(join(tmpdir(), "recon-http-main-"));
+    process.env.RECON_RUN_ID = "main-run";
+  });
+  afterEach(() => {
+    process.argv = saved.argv;
+    if (saved.out === undefined) delete process.env.RECON_OUT_DIR;
+    else process.env.RECON_OUT_DIR = saved.out;
+    if (saved.run === undefined) delete process.env.RECON_RUN_ID;
+    else process.env.RECON_RUN_ID = saved.run;
+    vi.unstubAllGlobals();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  async function runMain(extra: string[]): Promise<string[]> {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const capDir = join(tmpRoot, "caps");
+    mkdirSync(capDir, { recursive: true });
+    const base = {
+      timestamp: "t",
+      phase: "p",
+      status: 200,
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: {},
+      responseBody: {},
+      operationName: null,
+      query: null,
+      variables: null,
+      decodedParams: null,
+    };
+    writeFileSync(
+      join(capDir, "001.json"),
+      JSON.stringify({
+        ...base,
+        method: "GET",
+        url: "https://api.example.com/a",
+      }),
+    );
+    writeFileSync(
+      join(capDir, "002.json"),
+      JSON.stringify({
+        ...base,
+        method: "POST",
+        url: "https://api.example.com/b",
+        requestPostData: "{}",
+      }),
+    );
+    const fetched: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { method?: string }) => {
+        fetched.push(`${init?.method ?? "GET"} ${url}`);
+        return new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    process.argv = [
+      "node",
+      "/x/recon-http.ts",
+      "--out-dir",
+      tmpRoot,
+      "--captures-dir",
+      capDir,
+      ...extra,
+    ];
+    // Collapse the rate-limit probe's pacing delay so main() finishes fast.
+    const realSetTimeout = globalThis.setTimeout;
+    vi.stubGlobal("setTimeout", (fn: () => void, ms?: number) =>
+      realSetTimeout(fn, ms && ms > 50 ? 0 : ms),
+    );
+    vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    await import("./recon-http.js");
+    await vi.waitFor(
+      () =>
+        expect(
+          loggerStub.info.mock.calls.some((c) =>
+            String(c[0]).startsWith("recon-http complete"),
+          ),
+        ).toBe(true),
+      { timeout: 60000 },
+    );
+    return fetched;
+  }
+
+  it("skips unsafe-method captures by default and logs the rule", async () => {
+    await runMain([]);
+    const logs = loggerStub.info.mock.calls.map((c) => String(c[0]));
+    expect(logs.some((l) => /1 skipped/.test(l))).toBe(true);
+    expect(
+      logs.some((l) => l.startsWith("skipped https://api.example.com/b")),
+    ).toBe(true);
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "001.json"))).toBe(
+      true,
+    );
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(
+      false,
+    );
+  }, 70000);
+
+  it("replays unsafe-method captures with --include-unsafe-methods", async () => {
+    await runMain(["--include-unsafe-methods"]);
+    const logs = loggerStub.info.mock.calls.map((c) => String(c[0]));
+    expect(
+      logs.some((l) => /skipped/.test(l) && /\(\d+ skipped\)/.test(l)),
+    ).toBe(false);
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(
+      true,
+    );
+  }, 70000);
+});
