@@ -166,7 +166,7 @@ describe("recon-generate foldReturn declared joinFields — single-hop, identica
     // A single-hop drill: exactly one bare/bound httpClient call against the
     // details endpoint, no intermediate chain hop in between.
     expect(contract).toMatch(
-      /await httpClient\(`\$\{payload\.BaseUrl\}\/catalog\/reservation-details`/
+      /await httpClient\(`\$\{context\.baseUrl\}\/catalog\/reservation-details`/
     );
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);

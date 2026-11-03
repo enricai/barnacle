@@ -38,7 +38,7 @@ function evalExecuteHttpBodyWithMultipartBindings(
     "mergeFoldedPrimaryBodies",
     "omitHeaderCaseInsensitive",
     "BASE_HEADERS",
-    `return async function executeHttp(payload) {\n${stripped}\n};`
+    `return async function executeHttp(payload, context = { baseUrl: payload.BaseUrl }) {\n${stripped}\n};`
   ) as (
     httpClient: unknown,
     z: unknown,

@@ -119,9 +119,9 @@ describe("recon-generate fold/drill-loop — dead call after value-coincidence t
     // Its response is never bound to a variable — nothing downstream reads
     // it, so `emitMultiStepExecuteHttp`'s referencedNames-gated bind
     // suppression must leave it a bare, unbound call.
-    expect(body).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/config\/feature-toggles\/`/);
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/config\/feature-toggles\/`/);
     expect(body).not.toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/config\/feature-toggles\/`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/config\/feature-toggles\/`/
     );
 
     // No `Object.assign` merge sources the toggle's response fields

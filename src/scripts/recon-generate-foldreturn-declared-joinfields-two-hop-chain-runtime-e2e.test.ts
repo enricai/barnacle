@@ -197,12 +197,12 @@ describe("recon-generate foldReturn declared joinFields + 2-hop drill chain — 
     // The dead hold-hop response must never be bound to a local — only the
     // availability (produces sessionToken) and details (chain terminal)
     // responses are.
-    expect(contract).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/catalog\/hold`/);
+    expect(contract).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/catalog\/hold`/);
     expect(contract).not.toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/catalog\/hold`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/catalog\/hold`/
     );
     expect(contract).toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/catalog\/details`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/catalog\/details`/
     );
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);

@@ -177,7 +177,7 @@ describe("recon-generate foldReturn declared joinFields — item-scoped per-item
     // dead `await httpClient(...)` whose result is discarded (Finding 1
     // regression guard).
     expect(contract).toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/catalog\/details`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/catalog\/details`/
     );
 
     const executeHttpBody = extractExecuteHttpBodyFromContract(contract);

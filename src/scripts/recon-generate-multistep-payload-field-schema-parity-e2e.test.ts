@@ -139,7 +139,7 @@ describe("recon-generate CLI + tsc --noEmit — emitMultiStepExecuteHttp's gener
     // the persona-bound field, and the tenant-subdomain header field — must
     // actually appear as a `payload.<field>` reference for the assertion below
     // to exercise the parity this test pins.
-    expect(contract).toMatch(/payload\.BaseUrl/);
+    expect(contract).toMatch(/context\.baseUrl/);
 
     tsconfigPath = join(REPO_ROOT, `tsconfig.multistep-field-parity.${process.pid}.json`);
     writeFileSync(

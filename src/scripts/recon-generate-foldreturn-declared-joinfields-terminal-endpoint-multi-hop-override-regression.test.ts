@@ -116,7 +116,7 @@ describe("recon-generate foldReturn declared joinFields — chain terminal vs th
     // Exactly one drill target/URL was emitted per structural hop — no
     // duplicate target competing for the same chain.
     expect(body.match(/const foldMatches\w* =/g)?.length).toBe(2);
-    expect(body.match(/\$\{payload\.BaseUrl\}\/widgets\/lookup-b\//g)?.length).toBe(1);
-    expect(body.match(/\$\{payload\.BaseUrl\}\/widgets\/lookup-a\//g)?.length).toBe(1);
+    expect(body.match(/\$\{context\.baseUrl\}\/widgets\/lookup-b\//g)?.length).toBe(1);
+    expect(body.match(/\$\{context\.baseUrl\}\/widgets\/lookup-a\//g)?.length).toBe(1);
   });
 });
