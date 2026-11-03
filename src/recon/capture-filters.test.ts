@@ -8,6 +8,7 @@ import {
   isSamePathFamily,
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
+  matchesAnyTelemetryPattern,
   isZeroVarianceRepeatCapture,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
@@ -1965,8 +1966,7 @@ describe("isNoiseUrl scheme/component matching", () => {
 });
 
 describe("matchesAnyTelemetryPattern", () => {
-  it("matches built-in and env patterns by component, not substring", async () => {
-    const { matchesAnyTelemetryPattern } = await import("@/recon/capture-filters");
+  it("matches built-in and env patterns by component, not substring", () => {
     process.env.RECON_TELEMETRY_URL_PATTERNS = "tracker.example";
     expect(matchesAnyTelemetryPattern("https://a.com/blank/page")).toBe(true);
     expect(matchesAnyTelemetryPattern("https://x.tracker.example/y")).toBe(true);
