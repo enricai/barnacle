@@ -17703,7 +17703,11 @@ async function main(): Promise<void> {
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
-      (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
+      (actionSteps.length > 1 &&
+        (!gql
+          ? // A read flow whose manifest holds only GET captures is not a submission.
+            actionCaptures.some((a) => (a.capture.method ?? "").toUpperCase() !== "GET")
+          : graphqlActionSequenceHasMutation));
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome

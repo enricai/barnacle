@@ -27,3 +27,13 @@ describe("robots", () => {
     expect(isDisallowed(r, "/p")).toBe(true);
   });
 });
+
+import { parseRobots as _pr, isDisallowed as _isD } from "./robots";
+import { it as _it, expect as _expect } from "vitest";
+_it("honours * and $ wildcards (RFC 9309)", () => {
+  const r = _pr("User-agent: *\nDisallow: /*/order\nDisallow: /*.json$");
+  _expect(_isD(r, "/x/order")).toBe(true);
+  _expect(_isD(r, "/a.json")).toBe(true);
+  _expect(_isD(r, "/a.json?x=1")).toBe(false);
+  _expect(_isD(r, "/x/other")).toBe(false);
+});

@@ -1,6 +1,6 @@
 /**
  * Pure robots.txt parser (RFC 9309 subset): only the `User-agent: *` group is
- * honoured; Disallow/Allow use plain prefix matching, longest rule wins, and
+ * honoured; Disallow/Allow use prefix matching with `*` and `$`, longest rule wins, and
  * Allow wins a tie. No network access here — the caller fetches the body.
  * Example: "User-agent: *\nDisallow: /order" blocks https://example.com/order.
  */
@@ -40,6 +40,18 @@ export function parseRobots(body: string): RobotsRule[] {
   return rules;
 }
 
+/** RFC 9309 §2.2.3: `*` matches any run of characters, trailing `$` anchors the end. */
+function ruleMatches(rule: string, path: string): boolean {
+  if (!rule.includes("*") && !rule.endsWith("$")) return path.startsWith(rule);
+  const anchored = rule.endsWith("$");
+  const body = anchored ? rule.slice(0, -1) : rule;
+  const re = body
+    .split("*")
+    .map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*");
+  return new RegExp("^" + re + (anchored ? "$" : "")).test(path);
+}
+
 /** Returns the Disallow rule that blocks `path` (with query), or null. */
 export function matchingDisallow(
   rules: RobotsRule[],
@@ -47,7 +59,7 @@ export function matchingDisallow(
 ): string | null {
   let best: RobotsRule | null = null;
   for (const r of rules) {
-    if (!path.startsWith(r.path)) continue;
+    if (!ruleMatches(r.path, path)) continue;
     if (
       !best ||
       r.path.length > best.path.length ||
