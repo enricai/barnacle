@@ -6217,9 +6217,9 @@ describe("deriveGetInputModel", () => {
     expect(m.dynamicFields.map((d) => d.field)).toEqual(["from", "to"]);
     expect(m.fixedParams).toEqual({});
     expect(m.pathVars).toEqual([
-      { field: "itemIds", segmentIndex: 2, queryKey: "item_ids[]" },
+      { field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" },
     ]);
-    expect(m.fieldToQueryKey.itemIds).toBe("item_ids[]");
+    expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
   it("makes varying date keys dynamic and binds the path id", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
