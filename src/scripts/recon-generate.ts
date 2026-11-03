@@ -4372,7 +4372,7 @@ function stripCacheBusterParams(url: string): string {
  * Site-agnostic: identifies the fetch by structural fingerprint of the
  * response body, not by URL or site name.
  */
-function detectFormSchemaFetchCapture(
+export function detectFormSchemaFetchCapture(
   captures: Capture[],
   baseUrl: string,
   formSchema: ReconFormSchema

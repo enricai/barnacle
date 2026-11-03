@@ -1963,3 +1963,13 @@ describe("isNoiseUrl scheme/component matching", () => {
     expect(noiseReason("https://example.com/api/x")).toBeNull();
   });
 });
+
+describe("matchesAnyTelemetryPattern", () => {
+  it("matches built-in and env patterns by component, not substring", async () => {
+    const { matchesAnyTelemetryPattern } = await import("@/recon/capture-filters");
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "tracker.example";
+    expect(matchesAnyTelemetryPattern("https://a.com/blank/page")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://x.tracker.example/y")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://a.com/api/fields")).toBe(false);
+  });
+});
