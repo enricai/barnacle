@@ -29,11 +29,14 @@ describe("inferZodSchemaFromSamples singleEntityEvidence — evaluated schema", 
     expect(schema.safeParse({ product: { title: "Gadget", tags: [] } }).success).toBe(true);
   });
 
-  it("keeps array-element presence evidence (elements stay required)", () => {
-    expect(schema.safeParse({ product: { title: "G", tags: [{}] } }).success).toBe(false);
+  it("keeps leniency for array elements and non-scalar properties", () => {
+    expect(schema.safeParse({ product: { title: "G", tags: [{}] } }).success).toBe(true);
     expect(schema.safeParse({ product: { title: "G", tags: [{ label: null }] } }).success).toBe(
-      false
+      true
     );
+    expect(schema.safeParse({ product: { title: "G", tags: null } }).success).toBe(true);
+    expect(schema.safeParse({ product: null }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(true);
   });
 
   it("still rejects a wrong scalar type", () => {
