@@ -14523,7 +14523,7 @@ export function emitContractTs(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow)
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || getInputModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -14898,6 +14898,15 @@ export function emitContractTs(opts: {
         ].join("");
     const optional = line.trimEnd().endsWith(".optional(),");
     extendFields.set(fieldName, `  ${key}: ${zod}${optional ? ".optional()" : ""},`);
+  }
+  // Read-only GET flow: the caller supplies the derived query/path fields
+  // (no recorded `query`), so declare each as an optional string.
+  if (getInputModel) {
+    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+      if (extendFields.has(field)) continue;
+      const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
+      extendFields.set(field, `  ${key}: z.string().optional(),`);
+    }
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
