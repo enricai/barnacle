@@ -45,7 +45,9 @@ import {
   selectPayloadAction,
   selectPrimaryGraphQLOperation,
   selectReturnAction,
+  toPascalCase,
   truncateActionSequenceAtSubmitPattern,
+  unreferencedRequiredUrlFields,
 } from "@/scripts/recon-generate";
 import { RECON_GENERATE_CWD } from "@/scripts/recon-generate-cwd.test-helper";
 import {
@@ -5408,6 +5410,112 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
         vocabulary
       )
     ).toBeNull();
+  });
+});
+
+describe("toPascalCase", () => {
+  it("prefixes digit-leading ids so derived identifiers are valid", () => {
+    const pascal = toPascalCase("3dprint-shop");
+    for (const name of [
+      `${pascal}Response`,
+      `${pascal}PayloadSchema`,
+      `${pascal.toUpperCase()}_QUERY`,
+    ]) {
+      expect(name).toMatch(/^[A-Za-z_$][\w$]*$/);
+    }
+  });
+  it("leaves existing ids unchanged", () => {
+    expect(toPascalCase("acme-jobs_board")).toBe("AcmeJobsBoard");
+  });
+});
+
+describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
+  const mk = (resp: string, pay: string) =>
+    `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
+  it("ignores a required response *Url field", () => {
+    expect(
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", true)
+    ).toEqual([]);
+  });
+  it("still flags an unreferenced required payload *Url field", () => {
+    expect(
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
+        "",
+        true
+      )
+    ).toEqual(["ClickUrl"]);
+  });
+});
+
+describe("deriveGetInputModel", () => {
+  const cap = (url: string, method = "GET", status = 200) =>
+    ({ method, url, status }) as unknown as import("./recon-shared").Capture;
+  it("derives dynamic, fixed, path vars and safe identifiers", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
+    const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
+    expect(m.fieldToQueryKey.ids).toBe("ids[]");
+    expect(m.fixedParams).toEqual({ sort: "asc" });
+    expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
+    expect(deriveGetInputModel(a, [a], ["ids"])!.dynamicFields).toEqual([]);
+    expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
+  });
+});
+
+describe("emitContractTs — payload-driven GET request", () => {
+  const model = {
+    dynamicFields: [{ field: "ids", queryKey: "ids[]" }],
+    fixedParams: { sort: "asc" },
+    fieldToQueryKey: { ids: "ids[]", id: "id" },
+    pathVars: [{ field: "id", segmentIndex: 2, queryKey: "id" }],
+  };
+  it("builds the single-call GET from payload with recorded fallback", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: model,
+    });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+    expect(source).toContain('["ids[]", String(payload.ids)]');
+    expect(source).not.toContain("JSON.stringify({ query: payload.query })");
+  });
+  it("builds the paginated GET page fetch from payload, overriding paging keys", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: model,
+      responseBody: { total: 4, items: [{ id: 1 }, { id: 2 }] },
+      gqlVariables: { limit: 2, skip: 0 },
+    });
+    expect(source).toContain("PAGE_SIZE");
+    expect(source).toContain('{ method: "GET" }');
+    expect(source).toContain('["limit", String(PAGE_SIZE)]');
+    expect(source).toContain('["skip", String(skip)]');
+    expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+  });
+  it("declares derived GET fields as optional strings on the payload schema", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: {
+        ...model,
+        dynamicFields: [
+          { field: "ids", queryKey: "ids[]" },
+          { field: "a-b", queryKey: "a-b" },
+        ],
+      },
+    });
+    expect(source).toContain("ids: z.string().optional(),");
+    expect(source).toContain('"a-b": z.string().optional(),');
+    expect(source).toContain("id: z.string().optional(),");
+  });
+  it("keeps the POST emission when no GET model is given", () => {
+    const source = emitContractTs({ ...BASE_OPTS });
+    expect(source).toContain("JSON.stringify({ query: payload.query })");
   });
 });
 

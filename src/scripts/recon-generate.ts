@@ -214,7 +214,7 @@ const OPERATIONAL_ANSWER =
 
 const EMPTY_KNOWN_FIELD_VALUES: ReadonlyMap<string, string> = new Map();
 
-function toPascalCase(siteId: string): string {
+export function toPascalCase(siteId: string): string {
   const pascal = siteId
     .split(/[-_]/)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
@@ -2565,6 +2565,23 @@ export function firstEndpointCapture(
       // skip
     }
   }
+  // No non-GET submit capture: a read-only REST flow. Prefer a successful
+  // own-backend GET over failed/noise captures that the generic fallback
+  // below would otherwise pick by array order.
+  for (const c of restrictToSubmitPattern(
+    captures.filter(
+      (c) =>
+        c.method === "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url) && allowed(c)
+    ),
+    submitPatterns
+  )) {
+    try {
+      new URL(c.url);
+      return c;
+    } catch {
+      // skip
+    }
+  }
   for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
     try {
       new URL(c.url);
@@ -2582,6 +2599,100 @@ function safeUrlPathname(url: string): string {
   } catch {
     return "/api/search";
   }
+}
+
+/** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
+export interface GetInputModel {
+  /** Query keys whose values vary across successful same-pathname GET siblings. */
+  dynamicFields: Array<{ field: string; queryKey: string }>;
+  /** Query params with a single observed value across siblings (queryKey -> value). */
+  fixedParams: Record<string, string>;
+  /** Safe identifier -> real query key. */
+  fieldToQueryKey: Record<string, string>;
+  /** Path segments of the winning URL that repeat a query value. */
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+}
+
+function safeGetFieldIdentifier(key: string): string {
+  const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
+  let id = parts.map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1))).join("");
+  if (id === "") id = "param";
+  if (/^[0-9]/.test(id)) id = `_${id}`;
+  return id;
+}
+
+/**
+ * Pure derivation of the GET input model from the winning capture and its
+ * successful same-pathname GET siblings. Returns null for non-GET winners.
+ * `reservedNames` are existing payload field names; collisions get a numeric suffix.
+ */
+export function deriveGetInputModel(
+  winner: Capture | null | undefined,
+  captures: readonly Capture[],
+  reservedNames: Iterable<string> = []
+): GetInputModel | null {
+  if (winner?.method !== "GET") return null;
+  let winnerUrl: URL;
+  try {
+    winnerUrl = new URL(winner.url);
+  } catch {
+    return null;
+  }
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      return new URL(c.url).pathname === winnerUrl.pathname;
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
+  const valuesByKey = new Map<string, Set<string>>();
+  for (const c of siblings) {
+    for (const [k, v] of new URL(c.url).searchParams) {
+      const existing = valuesByKey.get(k);
+      const s = existing ?? new Set<string>();
+      if (!existing) valuesByKey.set(k, s);
+      s.add(v);
+    }
+  }
+  const taken = new Set(reservedNames);
+  const dynamicFields: GetInputModel["dynamicFields"] = [];
+  const fixedParams: Record<string, string> = {};
+  const fieldToQueryKey: Record<string, string> = {};
+  const pathVars: GetInputModel["pathVars"] = [];
+  const unique = (base: string): string => {
+    let name = base;
+    for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+    taken.add(name);
+    return name;
+  };
+  const segments = winnerUrl.pathname.split("/");
+  for (const [key, values] of valuesByKey) {
+    const winnerValue = winnerUrl.searchParams.get(key);
+    const segIdx =
+      winnerValue !== null && winnerValue !== ""
+        ? segments.findIndex((s) => {
+            try {
+              return decodeURIComponent(s) === winnerValue;
+            } catch {
+              return s === winnerValue;
+            }
+          })
+        : -1;
+    if (segIdx >= 0) {
+      const field = unique(safeGetFieldIdentifier(key));
+      pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else if (values.size > 1) {
+      const field = unique(safeGetFieldIdentifier(key));
+      dynamicFields.push({ field, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else {
+      fixedParams[key] = [...values][0] as string;
+    }
+  }
+  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
 }
 
 export function firstEndpointPath(
@@ -13873,6 +13984,55 @@ function buildNestedSpreadOverride(
 }
 
 /**
+ * Builds the single-expression request URL for a read-only REST GET flow from
+ * the derived {@link GetInputModel}: path segments and query values come from
+ * the caller's payload, with the recorded value as fallback for path
+ * segments, and each payload field is mapped back to its real query key.
+ * `extraParams` lets a caller (the paging loop) append already-rendered
+ * `[keyLiteral, valueExpr]` pairs that override same-named model params.
+ */
+function buildGetRequestUrlExpr(
+  endpointPath: string,
+  model: GetInputModel,
+  extraParams: ReadonlyArray<readonly [string, string]> = []
+): string {
+  const overridden = new Set(extraParams.map(([k]) => k));
+  const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
+  const segments = endpointPath.split("/");
+  for (const pv of model.pathVars) {
+    const recorded = segments[pv.segmentIndex] ?? "";
+    let decoded = recorded;
+    try {
+      decoded = decodeURIComponent(recorded);
+    } catch {
+      // keep the raw segment
+    }
+    segments[pv.segmentIndex] =
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)}))}`;
+  }
+  const pairs: string[] = [];
+  for (const [k, v] of Object.entries(model.fixedParams)) {
+    if (!overridden.has(JSON.stringify(k)))
+      pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
+  }
+  const bound = [
+    ...model.dynamicFields,
+    ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
+  ];
+  for (const { field, queryKey } of bound) {
+    if (overridden.has(JSON.stringify(queryKey))) continue;
+    pairs.push(
+      `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
+    );
+  }
+  for (const [k, v] of extraParams) pairs.push(`[${k}, ${v}]`);
+  const path = segments.join("/");
+  return pairs.length === 0
+    ? `\${context.baseUrl}${path}`
+    : `\${context.baseUrl}${path}?\${new URLSearchParams([${pairs.join(", ")}] as string[][])}`;
+}
+
+/**
  * Emits a bounded paging loop for a read-only primary operation exposing
  * {@link PaginationSignal}: advances the skip/offset variable by the
  * observed page size on each call, stops once the response's own reported
@@ -13900,7 +14060,7 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   foldMergeLines: string[];
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
-    | { kind: "rest"; endpointPath: string };
+    | { kind: "rest"; endpointPath: string; getInputModel?: GetInputModel | null };
   /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
    * the detected pagination count-key field has a declared `max`, that real
    * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
@@ -13915,7 +14075,12 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   const pageFetchExpr = (variablesExpr: string): string =>
     fetchCall.kind === "gql"
       ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
-      : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
+      : fetchCall.getInputModel
+        ? `httpClient(\`${buildGetRequestUrlExpr(fetchCall.endpointPath, fetchCall.getInputModel, [
+            [JSON.stringify(countKey), "String(PAGE_SIZE)"],
+            [JSON.stringify(skipKey), "String(skip)"],
+          ])}\`, { method: "GET" })`
+        : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
 
   const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
   const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
@@ -14213,6 +14378,8 @@ export function emitContractTs(opts: {
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
+  /** Derived GET input model (read-only REST GET flows); null/absent otherwise. */
+  getInputModel?: GetInputModel | null;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -14351,6 +14518,7 @@ export function emitContractTs(opts: {
     gql,
     gqlQuery,
     endpointPath,
+    getInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -14484,7 +14652,7 @@ export function emitContractTs(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow)
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || getInputModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -14859,6 +15027,15 @@ export function emitContractTs(opts: {
         ].join("");
     const optional = line.trimEnd().endsWith(".optional(),");
     extendFields.set(fieldName, `  ${key}: ${zod}${optional ? ".optional()" : ""},`);
+  }
+  // Read-only GET flow: the caller supplies the derived query/path fields
+  // (no recorded `query`), so declare each as an optional string.
+  if (getInputModel) {
+    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+      if (extendFields.has(field)) continue;
+      const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
+      extendFields.set(field, `  ${key}: z.string().optional(),`);
+    }
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
@@ -15384,12 +15561,17 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 gqlOperationNameExpr,
                 queryConstName: `${pascal.toUpperCase()}_QUERY`,
               }
-            : { kind: "rest", endpointPath },
+            : { kind: "rest", endpointPath, getInputModel },
         })
       : isGqlEmission
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
-        : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
+        : getInputModel
+          ? `    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
+      method: "GET",
+    });
+${dataFoldMergeBlock}    return { data };`
+          : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
@@ -15572,11 +15754,23 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string
+  browserFlowCode: string,
+  payloadOnly = false
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return [...contractCode.matchAll(urlFieldLinePattern)]
+  // Scan only the payload schema: a response schema's required `*Url` field is
+  // output, not caller input. Falls back to the whole contract when the
+  // payload-schema declaration is absent (hand-built fixtures). Opt-in
+  // (read-only GET flows): submission flows keep scanning the whole contract.
+  const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
+  let scanned = contractCode;
+  if (payloadOnly && payloadStart >= 0) {
+    const rest = contractCode.slice(payloadStart);
+    const end = rest.search(/^export type \w*Payload\b/m);
+    scanned = end >= 0 ? rest.slice(0, end) : rest;
+  }
+  return [...scanned.matchAll(urlFieldLinePattern)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
@@ -16226,6 +16420,9 @@ export function emitBrowserFlowTs(opts: {
    * still drives the browser fallback with a real value rather than
    * `undefined`. */
   capturedFallbackFields?: ReadonlySet<string>;
+  /** Payload-driven GET read flow: the payload schema has no `query` field, so
+   * the read fallback's extract prompt must not reference `payload.query`. */
+  readOnlyGetFlow?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16246,6 +16443,7 @@ export function emitBrowserFlowTs(opts: {
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
+    readOnlyGetFlow = false,
     env = process.env,
   } = opts;
 
@@ -16483,7 +16681,7 @@ ${flowStepsBlock}
       : `
   const result = await guardedExtract(
     stagehand,
-    \`extract results matching query: \${payload.query}\`,
+    ${/* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ readOnlyGetFlow ? '"extract the results shown on the page"' : "`extract results matching query: ${payload.query}`"},
     ${pascal}ResponseSchema
   );
 
@@ -16713,9 +16911,11 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
+  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code
+    firstAttempt.browserFlow.code,
+    payloadOnly
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -16761,7 +16961,8 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code
+    retried.browserFlow.code,
+    !!retried.contractOpts.getInputModel
   );
   if (stillOffending.length > 0) {
     throw new Error(
@@ -17474,7 +17675,23 @@ async function main(): Promise<void> {
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
-    const noReplayableActionFlow = !gql && actionSteps.length === 0 && flowSteps.length > 1;
+    // A flow of same-origin successful GET reads (no non-GET submit) is a
+    // single-endpoint REST read, not a browser-only submission flow.
+    const isReadOnlyGetFlow =
+      !gql &&
+      actionSteps.length === 0 &&
+      !activeCaptures.some(
+        (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
+      ) &&
+      firstEndpointCapture(
+        activeCaptures,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      )?.method === "GET";
+    const noReplayableActionFlow =
+      !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
       (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
@@ -17756,6 +17973,7 @@ async function main(): Promise<void> {
       inputBody,
       vocabulary,
       frameSelector,
+      readOnlyGetFlow: isReadOnlyGetFlow,
     };
     const browserFlow = emitBrowserFlowTs(browserFlowOpts);
 
@@ -17780,6 +17998,9 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
+      getInputModel: isReadOnlyGetFlow
+        ? deriveGetInputModel(winningCapture, activeCaptures, browserFlow.payloadFieldNames)
+        : null,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
