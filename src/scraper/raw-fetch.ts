@@ -19,7 +19,7 @@ export interface RawFetchResult {
   rawBody: string;
   /** Headers of the final response. */
   headers: Headers;
-  /** URL of the final response (after any manually followed redirects). */
+  /** URL of the final response (after any redirects the fetch implementation followed). */
   finalUrl: string;
 }
 
@@ -37,10 +37,6 @@ export type FetchImpl = (
     redirect?: "follow" | "manual";
   }
 ) => Promise<{ status: number; headers: Headers; url?: string; text: () => Promise<string> }>;
-
-const MAX_REDIRECT_HOPS = 20;
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-const CROSS_ORIGIN_STRIPPED = new Set(["authorization", "cookie", "proxy-authorization"]);
 
 /** Input options for {@link rawFetch}. */
 export interface RawFetchOptions {
@@ -70,46 +66,26 @@ export interface RawFetchOptions {
   contextLabel: string;
   /**
    * When `true`, skip the automatic `classifyHttpStatus` call and return
-   * `{ status, rawBody }` for every response. Use when the caller needs
+   * the result for every response. Use when the caller needs
    * to inspect the body before deciding how to classify (e.g. transient-500
    * detection that must precede the generic 5xx path).
    */
   skipClassify?: boolean;
   /**
-   * `"follow"` (default) lets the fetch implementation follow redirects and
-   * calls `onResponse` once. `"manual"` makes rawFetch follow `Location` hops
-   * itself, calling `onResponse` for every hop (so intermediate `Set-Cookie`
-   * is visible) and carrying hop cookies into the next request.
+   * `"follow"` (default) lets the fetch implementation follow redirects, so
+   * `onResponse` only sees the final hop. `"manual"` makes the call return the
+   * 3xx response itself: `onResponse` sees that hop's `Set-Cookie` / `Location`,
+   * and the caller issues the next request (carrying any cookies) as another
+   * `rawFetch` call, one `onResponse` per hop.
    */
   redirect?: "follow" | "manual";
-}
-
-function setCookiePairs(headers: Headers): Array<[string, string]> {
-  const out: Array<[string, string]> = [];
-  for (const line of headers.getSetCookie?.() ?? []) {
-    const pair = line.split(";", 1)[0] ?? "";
-    const eq = pair.indexOf("=");
-    if (eq > 0) out.push([pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()]);
-  }
-  return out;
-}
-
-function mergeCookies(existing: string | undefined, jar: Map<string, string>): string | undefined {
-  const merged = new Map<string, string>();
-  for (const part of (existing ?? "").split(";")) {
-    const eq = part.indexOf("=");
-    if (eq > 0) merged.set(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
-  }
-  for (const [k, v] of jar) merged.set(k, v);
-  if (merged.size === 0) return existing;
-  return [...merged].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 /**
  * Issues an undici fetch with caller-supplied URL / method / headers / body,
  * invokes `onResponse` with the response headers (for token rotation or audit),
  * delegates status classification to `classifyHttpStatus`, and returns
- * `{ status, rawBody }` for the caller to parse. Network errors are wrapped
+ * `{ status, rawBody, headers, finalUrl }` for the caller to parse. Network errors are wrapped
  * in `HttpServerError` so callers get a typed, non-retryable error from the
  * same error hierarchy as classification errors.
  */
@@ -125,13 +101,9 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
     fetchImpl = undiciFetch as unknown as FetchImpl,
   } = options;
 
-  if (redirect === "manual") {
-    return rawFetchManual(url, options, fetchImpl);
-  }
-
   let response: Awaited<ReturnType<FetchImpl>>;
   try {
-    response = await fetchImpl(url, { method, headers, body });
+    response = await fetchImpl(url, { method, headers, body, redirect });
   } catch (err) {
     throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
   }
@@ -143,77 +115,10 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
     classifyHttpStatus(response.status, rawBody.slice(0, 200), contextLabel);
   }
 
-  return { status: response.status, rawBody, headers: response.headers, finalUrl: response.url || url };
-}
-
-async function rawFetchManual(
-  startUrl: string,
-  options: RawFetchOptions,
-  fetchImpl: FetchImpl
-): Promise<RawFetchResult> {
-  const { onResponse, contextLabel, skipClassify = false } = options;
-  let method = options.method;
-  let body = options.body;
-  let headers = { ...options.headers };
-  let url = startUrl;
-  const jar = new Map<string, string>();
-
-  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
-    const reqHeaders = { ...headers };
-    const cookieKey = Object.keys(reqHeaders).find((k) => k.toLowerCase() === "cookie");
-    const cookie = mergeCookies(cookieKey ? reqHeaders[cookieKey] : undefined, jar);
-    if (cookie !== undefined) {
-      reqHeaders[cookieKey ?? "Cookie"] = cookie;
-    }
-
-    let response: Awaited<ReturnType<FetchImpl>>;
-    try {
-      response = await fetchImpl(url, { method, headers: reqHeaders, body, redirect: "manual" });
-    } catch (err) {
-      throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
-    }
-
-    onResponse(response.headers);
-    for (const [k, v] of setCookiePairs(response.headers)) jar.set(k, v);
-
-    const location = response.headers.get("location");
-    if (REDIRECT_STATUSES.has(response.status) && location) {
-      let next: URL;
-      try {
-        next = new URL(location, url);
-      } catch (err) {
-        throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
-      }
-      try {
-        await response.text();
-      } catch {
-        // intermediate body is discarded
-      }
-      if (next.origin !== new URL(url).origin) {
-        headers = Object.fromEntries(
-          Object.entries(headers).filter(([k]) => !CROSS_ORIGIN_STRIPPED.has(k.toLowerCase()))
-        );
-        jar.clear();
-      }
-      if (
-        response.status === 303 ||
-        ((response.status === 301 || response.status === 302) && method.toUpperCase() === "POST")
-      ) {
-        if (method.toUpperCase() !== "HEAD") method = "GET";
-        body = undefined;
-        headers = Object.fromEntries(
-          Object.entries(headers).filter(([k]) => !k.toLowerCase().startsWith("content-"))
-        );
-      }
-      url = next.toString();
-      continue;
-    }
-
-    const rawBody = await response.text();
-    if (!skipClassify) {
-      classifyHttpStatus(response.status, rawBody.slice(0, 200), contextLabel);
-    }
-    return { status: response.status, rawBody, headers: response.headers, finalUrl: url };
-  }
-  throw new HttpServerError(`${contextLabel} network error: too many redirects`);
+  return {
+    status: response.status,
+    rawBody,
+    headers: response.headers,
+    finalUrl: response.url || url,
+  };
 }

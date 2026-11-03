@@ -235,13 +235,16 @@ describe("rawFetch", () => {
   });
 });
 
-describe("rawFetch redirect: manual", () => {
+describe("rawFetch redirect hops", () => {
   let server: Server;
   let base: string;
   beforeAll(async () => {
     server = createServer((req, res) => {
       if (req.url === "/start") {
-        res.writeHead(302, { Location: "/final", "Set-Cookie": "flow=step2; Path=/" });
+        res.writeHead(302, { Location: "/mid", "Set-Cookie": "flow=step2; Path=/" });
+        res.end();
+      } else if (req.url === "/mid") {
+        res.writeHead(301, { Location: "/final", "Set-Cookie": "flow2=step3; Path=/" });
         res.end();
       } else {
         res.writeHead(200, { "Content-Type": "text/plain" });
@@ -261,25 +264,55 @@ describe("rawFetch redirect: manual", () => {
       init as never
     ) as unknown as ReturnType<FetchImpl>;
 
-  it("calls onResponse per hop, carries cookie, returns headers and finalUrl", async () => {
+  it("manual returns the 3xx itself; onResponse sees its Set-Cookie and Location", async () => {
     const seen: Array<{ setCookie: string[]; location: string | null }> = [];
     const result = await rawFetch(`${base}/start`, {
       method: "GET",
       headers: {},
       onResponse: (h) => seen.push({ setCookie: h.getSetCookie(), location: h.get("location") }),
       contextLabel: "demo",
-      skipClassify: true,
       redirect: "manual",
       fetchImpl: realFetch,
     });
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).toEqual({ setCookie: ["flow=step2; Path=/"], location: "/final" });
-    expect(result.finalUrl.endsWith("/final")).toBe(true);
-    expect(result.rawBody).toBe("cookie=flow=step2");
-    expect(result.headers.get("content-type")).toBe("text/plain");
+    expect(seen).toEqual([{ setCookie: ["flow=step2; Path=/"], location: "/mid" }]);
+    expect(result.status).toBe(302);
+    expect(result.headers.get("location")).toBe("/mid");
+    expect(result.finalUrl).toBe(`${base}/start`);
   });
 
-  it("default keeps a single onResponse call", async () => {
+  it("a caller can walk a chain, one onResponse per hop, carrying cookies", async () => {
+    const hops: Array<string | null> = [];
+    let url = `${base}/start`;
+    let cookie = "";
+    let result = await rawFetch(url, {
+      method: "GET",
+      headers: {},
+      onResponse: () => {},
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl: realFetch,
+    });
+    for (let i = 0; i < 5 && result.status >= 300 && result.status < 400; i++) {
+      hops.push(result.headers.get("location"));
+      cookie = [cookie, ...result.headers.getSetCookie().map((c) => c.split(";")[0])]
+        .filter(Boolean)
+        .join("; ");
+      url = new URL(result.headers.get("location") as string, url).toString();
+      result = await rawFetch(url, {
+        method: "GET",
+        headers: { Cookie: cookie },
+        onResponse: () => {},
+        contextLabel: "demo",
+        redirect: "manual",
+        fetchImpl: realFetch,
+      });
+    }
+    expect(hops).toEqual(["/mid", "/final"]);
+    expect(result.rawBody).toBe("cookie=flow=step2; flow2=step3");
+    expect(result.finalUrl).toBe(`${base}/final`);
+  });
+
+  it("default follows via the fetch implementation: one onResponse, final headers and url", async () => {
     const onResponse = vi.fn();
     const result = await rawFetch(`${base}/start`, {
       method: "GET",
@@ -291,15 +324,17 @@ describe("rawFetch redirect: manual", () => {
     });
     expect(onResponse).toHaveBeenCalledTimes(1);
     expect(result.status).toBe(200);
+    expect(result.finalUrl).toBe(`${base}/final`);
+    expect(result.headers.get("content-type")).toBe("text/plain");
   });
 
-  it("passes init.redirect through to fetchImpl", async () => {
+  it("passes init.redirect through to fetchImpl and does not classify 3xx", async () => {
     const fetchImpl = vi.fn(async (_u: string, _i: Parameters<FetchImpl>[1]) => ({
-      status: 200,
-      headers: new Headers(),
-      text: async () => "ok",
+      status: 302,
+      headers: new Headers({ location: "/x" }),
+      text: async () => "",
     }));
-    await rawFetch("https://example.com/", {
+    const result = await rawFetch("https://example.com/", {
       method: "GET",
       headers: {},
       onResponse: vi.fn(),
@@ -308,55 +343,7 @@ describe("rawFetch redirect: manual", () => {
       fetchImpl,
     });
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
-  });
-
-  describe("manual redirect handling", () => {
-    const resp = (status: number, headers: Record<string, string> = {}, text = "") => ({
-      status,
-      headers: new Headers(headers),
-      text: async () => text,
-    });
-    const opts = (fetchImpl: FetchImpl, extra: Record<string, unknown> = {}) => ({
-      method: "POST",
-      headers: { Authorization: "x", Cookie: "a=1", "Content-Type": "text/plain" },
-      body: "payload",
-      onResponse: vi.fn(),
-      contextLabel: "demo",
-      skipClassify: true,
-      redirect: "manual" as const,
-      fetchImpl,
-      ...extra,
-    });
-
-    it("303 switches to GET, drops body; cross-origin strips auth/cookie", async () => {
-      const fetchImpl = vi
-        .fn<FetchImpl>()
-        .mockResolvedValueOnce(resp(303, { location: "https://other.test/n" }))
-        .mockResolvedValueOnce(resp(200, {}, "done"));
-      const r = await rawFetch("https://a.test/s", opts(fetchImpl));
-      const second = fetchImpl.mock.calls[1]?.[1];
-      expect(second?.method).toBe("GET");
-      expect(second?.body).toBeUndefined();
-      expect(Object.keys(second?.headers ?? {}).map((k) => k.toLowerCase())).toEqual([]);
-      expect(r.finalUrl).toBe("https://other.test/n");
-    });
-
-    it("307 preserves method and body same-origin", async () => {
-      const fetchImpl = vi
-        .fn<FetchImpl>()
-        .mockResolvedValueOnce(resp(307, { location: "/n" }))
-        .mockResolvedValueOnce(resp(200));
-      await rawFetch("https://a.test/s", opts(fetchImpl));
-      const second = fetchImpl.mock.calls[1]?.[1];
-      expect(second?.method).toBe("POST");
-      expect(second?.body).toBe("payload");
-      expect(second?.headers.Authorization).toBe("x");
-    });
-
-    it("throws after exceeding the hop cap", async () => {
-      const fetchImpl = vi.fn<FetchImpl>().mockImplementation(async () => resp(302, { location: "/loop" }));
-      await expect(rawFetch("https://a.test/s", opts(fetchImpl))).rejects.toBeInstanceOf(HttpServerError);
-      expect(fetchImpl).toHaveBeenCalledTimes(21);
-    });
+    expect(result.status).toBe(302);
+    expect(result.finalUrl).toBe("https://example.com/");
   });
 });
