@@ -8,6 +8,8 @@ import {
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
+  matchesAnyTelemetryPattern,
+  noiseReason,
   telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 
@@ -1935,5 +1937,47 @@ describe("isZeroVarianceRepeatCapture — full-scan-per-call regression guard", 
     // slack for wall-clock noise, so it fails on a reintroduced full rescan
     // while tolerating normal timing jitter on the linear implementation.
     expect(largeElapsedMs / smallElapsedMs).toBeLessThan(8);
+  });
+});
+
+describe("isNoiseUrl scheme/component matching", () => {
+  it("treats data: and blob: as noise", () => {
+    expect(isNoiseUrl("data:image/svg+xml;base64,PHN2ZyBm")).toBe(true);
+    expect(isNoiseUrl("blob:https://example.com/abc")).toBe(true);
+  });
+  it("matches host patterns by label, not substring", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "w.example.com,/a/visits";
+    try {
+      expect(isNoiseUrl("https://www.example.com/x")).toBe(false);
+      expect(isNoiseUrl("https://w.example.com/x")).toBe(true);
+      expect(isNoiseUrl("https://example.org/a/visits/1")).toBe(true);
+      expect(isNoiseUrl("https://example.org/a/visitsx")).toBe(false);
+    } finally {
+      delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    }
+  });
+  it("treats //host and scheme://host patterns as authority-led, not path segments", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "//w.example.com,https://other.test/pixel";
+    expect(isNoiseUrl("https://w.example.com/x")).toBe(true);
+    expect(isNoiseUrl("https://www.example.com/x")).toBe(false);
+    expect(isNoiseUrl("https://other.test/pixel/1")).toBe(true);
+    expect(isNoiseUrl("https://notother.test/pixel/1")).toBe(false);
+    expect(isNoiseUrl("https://other.test/api")).toBe(false);
+  });
+  it("flags new vendor hosts and names the rule", () => {
+    expect(isNoiseUrl("https://widget.intercom.io/x")).toBe(true);
+    expect(isNoiseUrl("https://notify.bugsnag.com/")).toBe(true);
+    expect(isNoiseUrl("https://storage.googleapis.com/b/o")).toBe(true);
+    expect(noiseReason("https://storage.googleapis.com/b/o")).toContain("storage.googleapis.com");
+    expect(noiseReason("https://example.com/api/x")).toBeNull();
+  });
+});
+
+describe("matchesAnyTelemetryPattern", () => {
+  it("matches built-in and env patterns by component, not substring", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "tracker.example";
+    expect(matchesAnyTelemetryPattern("https://a.com/blank/page")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://x.tracker.example/y")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://a.com/api/fields")).toBe(false);
   });
 });

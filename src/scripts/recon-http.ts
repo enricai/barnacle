@@ -36,7 +36,14 @@ import { join } from "node:path";
 import { toErrorMessage } from "@/lib/errors";
 import { configureHttpDispatcher } from "@/lib/http";
 import { getScriptLogger } from "@/lib/logging";
-import { isAllowedFixtureHost, isNoiseUrl, registrableDomain } from "@/recon/capture-filters";
+import {
+  isAllowedFixtureHost,
+  isNoiseUrl,
+  noiseReason,
+  registrableDomain,
+} from "@/recon/capture-filters";
+import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
+import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
@@ -257,6 +264,35 @@ async function probeIntrospection(endpoint: string, replaysDir: string): Promise
 }
 
 /**
+ * Segment-anchored static-fixture path shape, shared by the aux-fixture
+ * selector and the rate-limit target selector. A bare `.json` suffix is NOT
+ * enough — real REST endpoints end in `.json` too.
+ */
+export function isStaticFixturePath(pathname: string, includeLocaleDictionaries = false): boolean {
+  const segs = includeLocaleDictionaries
+    ? "markets|currencies|labels|config|dictionaries|locales|i18n"
+    : "markets|currencies|labels|config";
+  return new RegExp(`/(${segs})(/|\\.json$|$)`).test(pathname.toLowerCase());
+}
+
+function isReplayResultSafe(r: ReplayResult): boolean {
+  let query: string | null = null;
+  if (r.requestBody) {
+    try {
+      const b = JSON.parse(r.requestBody) as { query?: unknown };
+      if (typeof b?.query === "string") query = b.query;
+    } catch {
+      // non-JSON body
+    }
+  }
+  return isSafeToReplay({
+    method: r.method,
+    query,
+    operationName: r.operationName,
+  });
+}
+
+/**
  * Builds the aux-fixture candidate set from replay results. A candidate must
  * be path-shaped like genuine static reference data (markets/currencies/
  * labels/config), must not be `isNoiseUrl` noise (defense-in-depth,
@@ -289,8 +325,7 @@ export function selectAuxFixtureCandidates(
       return false;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isFixtureShaped = /\/(markets|currencies|labels|config)(\/|\.json|$)/.test(pathname);
-    if (!isFixtureShaped) return false;
+    if (!isStaticFixturePath(pathname)) return false;
     return isAllowedFixtureHost(parsed.hostname, ownBackendHostnames, fallbackDomain);
   });
 }
@@ -326,7 +361,10 @@ export async function probeAuxiliaryEndpoints(
       Referer: `${origin}/`,
     };
     try {
-      const response = await fetch(candidate.url, { method: candidate.method, headers });
+      const response = await fetch(candidate.url, {
+        method: candidate.method,
+        headers,
+      });
       if (!response.ok) {
         logger.warn(`[aux skip] ${candidate.url}: ${response.status} — not a fixture`);
         continue;
@@ -338,7 +376,11 @@ export async function probeAuxiliaryEndpoints(
       const filename = writtenInRun.has(base) ? `${parsed.hostname}-${base}` : base;
       writeFileSync(join(auxDir, filename), JSON.stringify(body, null, 2));
       writtenInRun.add(base);
-      manifestEntries.push({ filename, url: candidate.url, hostname: parsed.hostname });
+      manifestEntries.push({
+        filename,
+        url: candidate.url,
+        hostname: parsed.hostname,
+      });
       logger.info(`[fixture] ${candidate.url} → ${auxDir}/${filename} — commit as static fixture`);
     } catch (err) {
       logger.error(`[aux err] ${candidate.url}: ${toErrorMessage(err)}`);
@@ -402,7 +444,10 @@ async function probeRateLimit(
         });
 
         if (Object.keys(respHeaders).length > 0) {
-          finding.xRateLimitHeaders = { ...finding.xRateLimitHeaders, ...respHeaders };
+          finding.xRateLimitHeaders = {
+            ...finding.xRateLimitHeaders,
+            ...respHeaders,
+          };
         }
 
         if (response.status === 429 || response.status === 403) {
@@ -453,6 +498,7 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
   let skipped = 0;
   for (const replay of replays) {
     if (!replay.success) continue;
+    if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
       continue;
@@ -462,11 +508,7 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
       if (u.protocol !== "http:" && u.protocol !== "https:") continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
-      if (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(pathname)
-      )
-        continue;
+      if (isStaticFixturePath(pathname, true)) continue;
       const key = `${u.origin}${u.pathname}`;
       if (!targets.has(key)) {
         targets.set(key, { method: replay.method, body: replay.requestBody });
@@ -476,6 +518,77 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
     }
   }
   return { targets, skipped };
+}
+
+/**
+ * Chooses which captures to replay. Noise URLs (incl. non-http(s)) are always
+ * skipped, with the matching rule; non-safe methods are skipped unless
+ * `includeUnsafe` is set.
+ */
+export function selectReplayCaptures<T extends { filename: string; capture: Capture }>(
+  captures: T[],
+  includeUnsafe: boolean
+): {
+  selected: T[];
+  skipped: Array<{ filename: string; url: string; reason: string }>;
+} {
+  const selected: T[] = [];
+  const skipped: Array<{ filename: string; url: string; reason: string }> = [];
+  for (const item of captures) {
+    const { capture, filename } = item;
+    const noise = noiseReason(capture.url);
+    const unsafe = includeUnsafe ? null : unsafeReplayReason(capture);
+    const reason = noise ?? unsafe;
+    if (reason) skipped.push({ filename, url: capture.url, reason });
+    else selected.push(item);
+  }
+  return { selected, skipped };
+}
+
+/** Fetches /robots.txt once per origin; missing/unreachable means no rules. */
+async function fetchRobotsByOrigin(urls: string[]): Promise<Map<string, RobotsRule[]>> {
+  const out = new Map<string, RobotsRule[]>();
+  for (const url of urls) {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      continue;
+    }
+    if (out.has(origin)) continue;
+    let rules: RobotsRule[] = [];
+    try {
+      const res = await fetch(`${origin}/robots.txt`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.ok) rules = parseRobots(await res.text());
+    } catch {
+      // unreachable: no restriction
+    }
+    out.set(origin, rules);
+  }
+  return out;
+}
+
+/** Splits captures into allowed and robots-disallowed (with the rule). */
+export function applyRobots<T extends { capture: Capture }>(
+  items: T[],
+  robots: Map<string, RobotsRule[]>
+): { allowed: T[]; blocked: Array<{ url: string; rule: string }> } {
+  const allowed: T[] = [];
+  const blocked: Array<{ url: string; rule: string }> = [];
+  for (const item of items) {
+    let rule: string | null = null;
+    try {
+      const u = new URL(item.capture.url);
+      rule = matchingDisallow(robots.get(u.origin) ?? [], u.pathname + u.search);
+    } catch {
+      // unparseable URL: leave to existing handling
+    }
+    if (rule) blocked.push({ url: item.capture.url, rule });
+    else allowed.push(item);
+  }
+  return { allowed, blocked };
 }
 
 async function main(): Promise<void> {
@@ -503,12 +616,16 @@ async function main(): Promise<void> {
   // host — burning hours on clicktale/adsrvr/tiktok — and never reaches the one
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
-  const probeworthy = unique.filter(({ capture }) => !isNoiseUrl(capture.url));
-  const skipped = unique.length - probeworthy.length;
+  const includeUnsafe = args.includes("--include-unsafe-methods");
+  const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe);
+  const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
+  const { allowed: probeworthy, blocked } = applyRobots(preRobots, robots);
+  for (const b of blocked) logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);
   logger.info(
     `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
-      (skipped > 0 ? ` (${skipped} asset/telemetry/error host(s) skipped)` : "")
+      (skipped.length > 0 ? ` (${skipped.length} skipped)` : "")
   );
+  for (const sk of skipped) logger.info(`skipped ${sk.url}: ${sk.reason}`);
 
   const replays: ReplayResult[] = [];
   for (const { filename, capture } of probeworthy) {

@@ -70,33 +70,109 @@ const THIRD_PARTY_ASSET_HOSTS = [
   "omtrdc.net",
   "quantserve.com",
   "scorecardresearch.com",
+  "intercom.io",
+  "intercom.com",
+  "intercomcdn.com",
+  "bugsnag.com",
+  "storage.googleapis.com",
 ];
 
 /** Static-asset extensions a probe should never replay as an API endpoint. */
 const ASSET_EXTENSION = /\.(js|mjs|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|map)$/i;
 
+/** True for http(s) URLs only; data:, blob:, etc. are never replayable captures. */
+export function isHttpUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+function hostMatches(hostname: string, h: string): boolean {
+  return hostname === h || hostname.endsWith(`.${h}`);
+}
+
+function pathHasSegments(pathname: string, want: string[], prefixOnly: boolean): boolean {
+  const segs = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((x) => x.toLowerCase());
+  if (want.length === 0) return true;
+  const start = (i: number) => want.every((w, j) => segs[i + j] === w);
+  if (prefixOnly) return start(0);
+  for (let i = 0; i + want.length <= segs.length; i++) if (start(i)) return true;
+  return false;
+}
+
 /**
- * True when a captured URL is noise the recon pipeline should skip: a telemetry
- * pattern (including any `RECON_TELEMETRY_URL_PATTERNS` addition), a third-party
- * asset/tracking host, a same-host error-reporting sink, or a static asset.
- *
- * The one gate both the emitter and the probe consult so "what counts as the
- * site's real flow" cannot drift between them.
+ * Match one telemetry pattern against a parsed URL by component, never by raw
+ * substring: `/a/b` is a path prefix (whole segments); `host.tld` matches the
+ * host or a dotted-label suffix of it; `host.tld/a` combines both; a bare word
+ * matches a whole path segment (or the host label-wise). A leading `//` or
+ * `scheme://` marks the rest as authority-led (`//host`, `https://host/a`).
  */
-export function isNoiseUrl(url: string): boolean {
-  const patterns = telemetryUrlPatterns();
-  if (patterns.some((p) => url.includes(p))) return true;
+export function matchesTelemetryPattern(url: string, pattern: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return false;
   }
-  const host = parsed.host.toLowerCase();
-  if (THIRD_PARTY_ASSET_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))) return true;
-  if (ERROR_SINK_PATH_SEGMENT.test(parsed.pathname)) return true;
-  if (ASSET_EXTENSION.test(parsed.pathname)) return true;
-  return false;
+  // `//host/...` and `scheme://host/...` are authority-led: the leading marker
+  // only says "what follows is a host", so drop it and match like `host/...`.
+  const pat = pattern
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\//, "");
+  if (!pat) return false;
+  const hostname = parsed.hostname.toLowerCase();
+  const slash = pat.indexOf("/");
+  if (slash === 0) {
+    return pathHasSegments(parsed.pathname, pat.split("/").filter(Boolean), true);
+  }
+  if (slash > 0) {
+    const h = pat.slice(0, slash);
+    return (
+      hostMatches(hostname, h) &&
+      pathHasSegments(parsed.pathname, pat.slice(slash).split("/").filter(Boolean), true)
+    );
+  }
+  return hostMatches(hostname, pat) || pathHasSegments(parsed.pathname, [pat], false);
+}
+
+/** True when any configured telemetry pattern matches `url` by component. */
+export function matchesAnyTelemetryPattern(url: string): boolean {
+  const patterns = telemetryUrlPatterns();
+  return patterns.some((p) => matchesTelemetryPattern(url, p));
+}
+
+/**
+ * Names the rule that makes `url` noise, or null when it is not noise.
+ * {@link isNoiseUrl} delegates here so there is one definition.
+ */
+export function noiseReason(url: string): string | null {
+  if (!isHttpUrl(url)) {
+    // Anything carrying a non-http(s) scheme (data:, blob:, ...) is noise,
+    // whether or not the WHATWG parser accepts the payload; scheme-less
+    // strings stay "not noise" (pre-existing contract).
+    return /^[a-z][a-z0-9+.-]*:/i.test(url) ? "scheme: not http(s)" : null;
+  }
+  const hit = telemetryUrlPatterns().find((p) => matchesTelemetryPattern(url, p));
+  if (hit !== undefined) return `telemetry pattern: ${hit}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const third = THIRD_PARTY_ASSET_HOSTS.find((h) => hostMatches(host, h));
+  if (third) return `third-party host: ${third}`;
+  if (ERROR_SINK_PATH_SEGMENT.test(parsed.pathname)) return "error sink path";
+  if (ASSET_EXTENSION.test(parsed.pathname)) return "asset extension";
+  return null;
+}
+
+/** True when a captured URL is noise the recon pipeline should skip. */
+export function isNoiseUrl(url: string): boolean {
+  return noiseReason(url) !== null;
 }
 
 /**

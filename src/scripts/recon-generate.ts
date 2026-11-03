@@ -37,10 +37,10 @@ import {
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
+  matchesAnyTelemetryPattern,
   parsedOperationName,
   pathStructuralTokens,
   registrableDomain,
-  telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
@@ -228,6 +228,14 @@ export function toPascalCase(siteId: string): string {
 function toCamelCase(siteId: string): string {
   const pascal = toPascalCase(siteId);
   return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+}
+
+/** Generated outputs already present in `outDir` (conflicts without --force). */
+export function findExistingGeneratedPaths(
+  outDir: string,
+  exists: (path: string) => boolean = existsSync
+): string[] {
+  return ["contract.ts", "index.ts", "flows"].map((n) => `${outDir}/${n}`).filter((p) => exists(p));
 }
 
 /**
@@ -4364,7 +4372,7 @@ function stripCacheBusterParams(url: string): string {
  * Site-agnostic: identifies the fetch by structural fingerprint of the
  * response body, not by URL or site name.
  */
-function detectFormSchemaFetchCapture(
+export function detectFormSchemaFetchCapture(
   captures: Capture[],
   baseUrl: string,
   formSchema: ReconFormSchema
@@ -4386,7 +4394,7 @@ function detectFormSchemaFetchCapture(
       continue;
     }
     if (captureHost !== host) continue;
-    if (telemetryUrlPatterns().some((p) => capture.url.includes(p))) continue;
+    if (matchesAnyTelemetryPattern(capture.url)) continue;
     if (responseContainsSectionFields(capture.responseBody, formSchema)) {
       return { capture, index: i };
     }
@@ -17098,8 +17106,9 @@ async function main(): Promise<void> {
   const outDir = `src/sites/${siteId}`;
   const manifestPath = `src/sites/${siteId}/${siteId}.plugin.json`;
 
-  if (emit === "ts" && existsSync(outDir) && !force) {
-    logger.error(`${outDir} already exists — pass --force to overwrite`);
+  const conflicts = emit === "ts" && !force ? findExistingGeneratedPaths(outDir) : [];
+  if (conflicts.length > 0) {
+    logger.error(`${conflicts.join(", ")} already exists — pass --force to overwrite`);
     process.exit(1);
   }
   if (emit === "config" && existsSync(manifestPath) && !force) {
@@ -17694,7 +17703,11 @@ async function main(): Promise<void> {
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
-      (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
+      (actionSteps.length > 1 &&
+        (!gql
+          ? // A read flow whose manifest holds only GET captures is not a submission.
+            actionCaptures.some((a) => (a.capture.method ?? "").toUpperCase() !== "GET")
+          : graphqlActionSequenceHasMutation));
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome
