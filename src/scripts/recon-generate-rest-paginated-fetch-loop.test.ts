@@ -162,9 +162,9 @@ describe("recon-generate REST paginated fetch loop: total/count signal present",
     // issuing each page via httpClient rather than getGql.
     expect(contract).toContain("const PAGE_SIZE = payload.pageSize ?? 5;");
     expect(contract).toContain("skip += PAGE_SIZE;");
-    expect(contract).toContain("{ ...baseVariables, count: PAGE_SIZE, skip: skip }");
-    expect(contract).toMatch(
-      /await httpClient\(`\$\{context\.baseUrl\}\/api\/products\/search`, \{ method: "POST", body: JSON\.stringify\(/
+    // Read-only GET: paging keys ride the shared URL builder as query params.
+    expect(contract).toContain(
+      '/api/products/search?${new URLSearchParams([["count", String(PAGE_SIZE)], ["skip", String(skip)]] as string[][])}`, { method: "GET" }'
     );
 
     // (b) It terminates once accumulated results reach the response's own reported
@@ -210,8 +210,9 @@ describe("recon-generate REST paginated fetch loop: total/count signal present",
     const TOTAL_DISTINCT_IDS = 12;
     const PAGE_SIZE = 5;
     let callCount = 0;
-    const fetchMock = vi.fn(async (_url: string, init: { body?: string }) => {
-      const body = JSON.parse((init.body as string) ?? "{}") as { skip: number; count: number };
+    const fetchMock = vi.fn(async (url: string) => {
+      const q = new URL(String(url)).searchParams;
+      const body = { skip: Number(q.get("skip")), count: Number(q.get("count")) };
       callCount += 1;
       const remaining = Math.max(0, TOTAL_DISTINCT_IDS - body.skip);
       const pageItemCount = Math.min(body.count, remaining);
@@ -271,7 +272,7 @@ describe("recon-generate REST paginated fetch loop: no total/count signal", () =
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
 
     expect(contract).toMatch(
-      /const data = await httpClient\(`\$\{context\.baseUrl\}\/api\/products\/search`, \{\n {6}method: "POST",\n {6}body: JSON\.stringify\(\{ query: payload\.query \}\),\n {4}\}\);/
+      /const data = await httpClient\(`\$\{context\.baseUrl\}\/api\/products\/search`, \{\n {6}method: "GET",\n {4}\}\);/
     );
     expect(contract).not.toContain("MAX_PAGES");
     expect(contract).not.toContain("maxPages");
