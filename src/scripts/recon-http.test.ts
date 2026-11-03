@@ -535,3 +535,18 @@ describe("recon-http main() end to end", () => {
     );
   }, 70000);
 });
+
+describe("selectRateLimitTargets — fixture shape and safety", () => {
+  it("probes real .json endpoints, skips fixtures and unsafe methods", () => {
+    const { targets } = selectRateLimitTargets([
+      replay({ url: "https://api.example.com/x/schedule.json" }),
+      replay({ url: "https://api.example.com/markets.json" }),
+      replay({ url: "https://api.example.com/config/app" }),
+      replay({ url: "https://api.example.com/locales/en" }),
+      replay({ url: "https://api.example.com/submit", method: "POST" }),
+    ]);
+    expect(Array.from(targets.keys())).toEqual([
+      "https://api.example.com/x/schedule.json",
+    ]);
+  });
+});

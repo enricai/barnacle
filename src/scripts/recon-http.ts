@@ -43,7 +43,7 @@ import {
   registrableDomain,
 } from "@/recon/capture-filters";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
-import { unsafeReplayReason } from "@/recon/replay-safety";
+import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import {
   readOwnBackendHostnames,
   resolveReconRunDir,
@@ -285,6 +285,38 @@ async function probeIntrospection(
 }
 
 /**
+ * Segment-anchored static-fixture path shape, shared by the aux-fixture
+ * selector and the rate-limit target selector. A bare `.json` suffix is NOT
+ * enough — real REST endpoints end in `.json` too.
+ */
+export function isStaticFixturePath(
+  pathname: string,
+  includeLocaleDictionaries = false,
+): boolean {
+  const segs = includeLocaleDictionaries
+    ? "markets|currencies|labels|config|dictionaries|locales|i18n"
+    : "markets|currencies|labels|config";
+  return new RegExp(`/(${segs})(/|\\.json$|$)`).test(pathname.toLowerCase());
+}
+
+function isReplayResultSafe(r: ReplayResult): boolean {
+  let query: string | null = null;
+  if (r.requestBody) {
+    try {
+      const b = JSON.parse(r.requestBody) as { query?: unknown };
+      if (typeof b?.query === "string") query = b.query;
+    } catch {
+      // non-JSON body
+    }
+  }
+  return isSafeToReplay({
+    method: r.method,
+    query,
+    operationName: r.operationName,
+  });
+}
+
+/**
  * Builds the aux-fixture candidate set from replay results. A candidate must
  * be path-shaped like genuine static reference data (markets/currencies/
  * labels/config), must not be `isNoiseUrl` noise (defense-in-depth,
@@ -317,9 +349,7 @@ export function selectAuxFixtureCandidates(
       return false;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isFixtureShaped =
-      /\/(markets|currencies|labels|config)(\/|\.json|$)/.test(pathname);
-    if (!isFixtureShaped) return false;
+    if (!isStaticFixturePath(pathname)) return false;
     return isAllowedFixtureHost(
       parsed.hostname,
       ownBackendHostnames,
@@ -510,6 +540,7 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
   let skipped = 0;
   for (const replay of replays) {
     if (!replay.success) continue;
+    if (!isReplayResultSafe(replay)) continue;
     if (isNoiseUrl(replay.url)) {
       skipped++;
       continue;
@@ -519,13 +550,7 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
       if (u.protocol !== "http:" && u.protocol !== "https:") continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
-      if (
-        pathname.endsWith(".json") ||
-        /\/(markets|currencies|labels|dictionaries|config|locales|i18n)/.test(
-          pathname,
-        )
-      )
-        continue;
+      if (isStaticFixturePath(pathname, true)) continue;
       const key = `${u.origin}${u.pathname}`;
       if (!targets.has(key)) {
         targets.set(key, { method: replay.method, body: replay.requestBody });
