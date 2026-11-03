@@ -971,14 +971,6 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
   return names;
 }
 
-/** True when every non-null observation is a string/number/boolean of one kind. */
-function isScalarLeaf(values: readonly unknown[]): boolean {
-  const kinds = new Set(values.filter((v) => v !== null && v !== undefined).map((v) => typeof v));
-  if (kinds.size !== 1) return false;
-  const [k] = [...kinds];
-  return k === "string" || k === "number" || k === "boolean";
-}
-
 /**
  * Infers a Zod schema expression string from every observed sample of a value,
  * not just the first.
@@ -1012,7 +1004,7 @@ export function inferZodSchemaFromSamples(
   if (nonNull.length === 0) return "z.unknown()";
 
   const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
-  // Scalar leaf outside any array under single-entity evidence: invariance
+  // Observed value under single-entity evidence: invariance
   // across entities is unproven, so always nullable.
   const wrapScalar = (expr: string): string =>
     nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
@@ -1041,14 +1033,11 @@ export function inferZodSchemaFromSamples(
     // Merge across every element of every sample so optional/among-elements
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
-    if (items.length === 0) return wrap("z.array(z.unknown())");
-    // Elements are within-response variance evidence: drop the single-entity flag.
-    const elementOpts =
-      opts.singleEntityEvidence && items.length > 1
-        ? { ...opts, singleEntityEvidence: false }
-        : opts;
-    return wrap(
-      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`
+    if (items.length === 0) return wrapScalar("z.array(z.unknown())");
+    // Within-response element variance is not cross-entity variance, so the
+    // single-entity flag is kept for elements.
+    return wrapScalar(
+      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`
     );
   }
 
@@ -1057,7 +1046,7 @@ export function inferZodSchemaFromSamples(
     const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
       (k) => !(opts.looseServerResponse && k === "__typename")
     );
-    if (keys.length === 0) return wrap("z.record(z.string(), z.unknown())");
+    if (keys.length === 0) return wrapScalar("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
     // the generated file on first lint:fix.
@@ -1073,7 +1062,7 @@ export function inferZodSchemaFromSamples(
         const isOptional =
           valuesForKey.length < objects.length ||
           (opts.conditionalFieldNames?.has(k) ?? false) ||
-          (opts.singleEntityEvidence === true && isScalarLeaf(valuesForKey));
+          opts.singleEntityEvidence === true;
         const optional = isOptional ? `${expr}.optional()` : expr;
         const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
         const described = findings?.length
@@ -1090,7 +1079,7 @@ export function inferZodSchemaFromSamples(
       })
       .join(",\n");
     const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
-    return wrap(objectExpr);
+    return wrapScalar(objectExpr);
   }
 
   return wrap("z.unknown()");
