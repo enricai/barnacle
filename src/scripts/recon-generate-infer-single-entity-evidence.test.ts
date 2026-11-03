@@ -3,12 +3,13 @@ import { inferZodSchemaFromSamples } from "./recon-generate";
 
 describe("inferZodSchemaFromSamples singleEntityEvidence", () => {
   const samples = [{ title: "a", tags: [{ n: 1 }, { n: 2 }] }];
-  it("makes scalar leaves outside arrays nullable and optional; array elements unchanged", () => {
+  it("makes scalar leaves and non-scalar properties nullable and optional; array elements keep the flag", () => {
     const out = inferZodSchemaFromSamples(samples, 0, "", { singleEntityEvidence: true });
     expect(out).toContain("title: z.string().nullable().optional()");
-    expect(out).toContain("n: z.number(),");
-    expect(out).not.toContain("n: z.number().nullable()");
-    expect(out).not.toContain("n: z.number().optional()");
+    expect(out).toContain("tags: z.array(");
+    expect(out).toContain("n: z.number().nullable().optional(),");
+    // The root response itself is never made nullable by evidence alone.
+    expect(out.trimEnd().endsWith("})")).toBe(true);
   });
   it("is byte-identical to previous output when unset", () => {
     const out = inferZodSchemaFromSamples(samples);

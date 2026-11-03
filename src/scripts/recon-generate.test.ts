@@ -310,7 +310,7 @@ describe("emitContractTs — responseBodySamples widens the client-level Respons
       responseBody: { id: "abc", active: true, tags: ["a"] },
     });
     // One distinct observation cannot prove the array's elements are never null.
-    expect(singleSample).toContain("tags: z.array(z.string().nullable()),");
+    expect(singleSample).toContain("tags: z.array(z.string().nullable()).nullable().optional(),");
 
     const multiSample = emitContractTs({
       ...BASE_OPTS,

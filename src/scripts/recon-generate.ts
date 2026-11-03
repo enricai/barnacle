@@ -1008,6 +1008,9 @@ export function inferZodSchemaFromSamples(
   // across entities is unproven, so always nullable.
   const wrapScalar = (expr: string): string =>
     nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
+  // Containers: the root response is never made nullable by evidence alone
+  // (consumers dereference it); only nested containers get the leniency.
+  const wrapContainer = (expr: string): string => (depth === 0 ? wrap(expr) : wrapScalar(expr));
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -1033,10 +1036,10 @@ export function inferZodSchemaFromSamples(
     // Merge across every element of every sample so optional/among-elements
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
-    if (items.length === 0) return wrapScalar("z.array(z.unknown())");
+    if (items.length === 0) return wrapContainer("z.array(z.unknown())");
     // Within-response element variance is not cross-entity variance, so the
     // single-entity flag is kept for elements.
-    return wrapScalar(
+    return wrapContainer(
       `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`
     );
   }
@@ -1046,7 +1049,7 @@ export function inferZodSchemaFromSamples(
     const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
       (k) => !(opts.looseServerResponse && k === "__typename")
     );
-    if (keys.length === 0) return wrapScalar("z.record(z.string(), z.unknown())");
+    if (keys.length === 0) return wrapContainer("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
     // the generated file on first lint:fix.
@@ -1079,7 +1082,7 @@ export function inferZodSchemaFromSamples(
       })
       .join(",\n");
     const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
-    return wrapScalar(objectExpr);
+    return wrapContainer(objectExpr);
   }
 
   return wrap("z.unknown()");
