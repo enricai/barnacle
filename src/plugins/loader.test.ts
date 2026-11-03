@@ -32,7 +32,7 @@ import {
 } from "@/scraper/errors";
 import { createHttpClient } from "@/scraper/http-client";
 import { resetMetrics } from "@/scraper/metrics";
-import type { SitePlugin, SitePluginContext } from "@/site-plugin";
+import type { SitePlugin, SitePluginContext, SitePluginExtraRouteRequest } from "@/site-plugin";
 
 // vi.hoisted runs before vi.mock factories — required so these references
 // are available when the factory closures execute.
@@ -1489,9 +1489,7 @@ describe("registerRoutes — extraRoutes loop", () => {
     await app.close();
   });
 
-  function pluginWithRoute(
-    route: Record<string, unknown>
-  ): SitePlugin<unknown, unknown> {
+  function pluginWithRoute(route: Record<string, unknown>): SitePlugin<unknown, unknown> {
     return {
       meta: {
         siteId: "lib-test",
@@ -1508,7 +1506,7 @@ describe("registerRoutes — extraRoutes loop", () => {
     const app = await buildAppWithPlugin(
       pluginWithRoute({
         envelope: false,
-        handler: async ({ query, headers, reply }: any) => {
+        handler: async ({ query, headers, reply }: SitePluginExtraRouteRequest) => {
           reply.header("x-echo", headers["x-trace"]);
           return { genre: query.genre, tags: query.tag };
         },
@@ -1529,7 +1527,7 @@ describe("registerRoutes — extraRoutes loop", () => {
     const app = await buildAppWithPlugin(
       pluginWithRoute({
         envelope: false,
-        handler: async ({ reply }: any) =>
+        handler: async ({ reply }: SitePluginExtraRouteRequest) =>
           reply.code(409).send({ error: { code: "DUPLICATE", message: "already exists" } }),
       })
     );
@@ -1543,7 +1541,7 @@ describe("registerRoutes — extraRoutes loop", () => {
     const app = await buildAppWithPlugin(
       pluginWithRoute({
         envelope: false,
-        handler: async ({ reply }: any) => reply.code(204).send(),
+        handler: async ({ reply }: SitePluginExtraRouteRequest) => reply.code(204).send(),
       })
     );
     const res = await app.inject({ method: "POST", url: "/v1/lib-test/books" });
