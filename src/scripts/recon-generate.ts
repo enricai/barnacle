@@ -1424,6 +1424,16 @@ function endpointTemplateKey(url: string): string {
   }
 }
 
+/**
+ * The one REST response identity: sibling entities of one endpoint
+ * (`/products/9/availability`, `/products/10/availability`) share it, so
+ * response-sample gathering, entity-variance evidence and chain-step schema
+ * inference all group captures identically.
+ */
+function restResponseIdentity(url: string): string {
+  return endpointTemplateKey(url);
+}
+
 /** Empty or absent response bodies carry no evidence of an endpoint's purpose. */
 function isVoidResponse(body: unknown): boolean {
   if (body === null || body === undefined || body === "") return true;
@@ -2249,7 +2259,7 @@ export function gatherResponseBodySamples(
 ): unknown[] {
   if (!winningCapture) return [null];
   const identityOf = (c: Capture): string =>
-    isGraphQLWinner ? operationGroupKey(c) : endpointKey(c.url);
+    isGraphQLWinner ? operationGroupKey(c) : restResponseIdentity(c.url);
   const winningIdentity = identityOf(winningCapture);
   const seen = new Set<string>();
   const samples: unknown[] = [];
@@ -2328,12 +2338,12 @@ export function gatherEntityVarianceEvidence(
   if (!winningCapture || isGraphQLWinner) return none;
   const params = identifyingParams(winningCapture.url);
   if (Object.keys(params).length === 0) return none;
-  const winningKey = endpointKey(winningCapture.url);
+  const winningKey = restResponseIdentity(winningCapture.url);
   const signature = JSON.stringify(Object.entries(params).sort());
   let singleEntity = true;
   for (const c of captures) {
     if (c.status < 200 || c.status >= 300) continue;
-    if (endpointKey(c.url) !== winningKey) continue;
+    if (restResponseIdentity(c.url) !== winningKey) continue;
     if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
       singleEntity = false;
       break;
@@ -17044,14 +17054,14 @@ export function inferChainStepResponseSchema(
     if (!index) {
       index = new Map();
       for (const c of allCaptures) {
-        const k = endpointKey(c.url);
+        const k = restResponseIdentity(c.url);
         const g = index.get(k);
         if (g) g.push(c);
         else index.set(k, [c]);
       }
       chainEndpointIndex.set(allCaptures, index);
     }
-    captures = index.get(endpointKey(stepCapture.url)) ?? allCaptures;
+    captures = index.get(restResponseIdentity(stepCapture.url)) ?? allCaptures;
   }
   const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
   // Only measured entity evidence (shared identifying parameters) relaxes a
