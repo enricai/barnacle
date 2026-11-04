@@ -2754,6 +2754,8 @@ export function deriveGetInputModel(
   };
   const boundSegments = new Map<number, string>();
   for (const [key, values] of valuesByKey) {
+    // Per-request cache-busters are noise: neither a caller input nor a fixed param.
+    if (CACHE_BUSTER_QUERY_KEYS.has(key) && !declared.has(key)) continue;
     const winnerValue = winnerUrl.searchParams.get(key);
     const segIdx =
       winnerValue !== null && winnerValue !== ""

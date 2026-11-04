@@ -5611,6 +5611,15 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
     expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
+  it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/stock.json?_=111&date_from=2030-01-01&date_to=2030-01-07");
+    const b = cap("https://shop.example/stock.json?_=222&date_from=2030-02-01&date_to=2030-02-07");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    expect(m.fixedParams).toEqual({});
+    expect(m.fieldToQueryKey).not.toHaveProperty("_");
+  });
   it("makes varying date keys dynamic and binds the path id", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(
