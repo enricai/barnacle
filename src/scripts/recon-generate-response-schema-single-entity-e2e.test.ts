@@ -201,7 +201,7 @@ describe("venue schedule endpoint, date-window-only variance (e2e)", () => {
     expect(schema.safeParse(nullGenre).success).toBe(false);
   });
 
-  it("chain step: date-window-only siblings lenient; lone sample strict", () => {
+  it("chain step: date-window-only siblings lenient; lone sample and unparameterized repeats lenient", () => {
     const a = mk(u(`/venues/7/schedule?ids[]=7&${W1}`), fantasy);
     const b = mk(u(`/venues/7/schedule?ids[]=7&${W2}`), body2);
     const lenient = evalSchema(inferChainStepResponseSchema(a, [a, b]));
@@ -209,11 +209,11 @@ describe("venue schedule endpoint, date-window-only variance (e2e)", () => {
     const solo = mk(u("/schedule"), fantasy);
     const lone = evalSchema(inferChainStepResponseSchema(solo, [solo]));
     expect(lone.safeParse(fantasy).success).toBe(true);
-    expect(lone.safeParse(nullGenre).success).toBe(false);
+    expect(lone.safeParse(nullGenre).success).toBe(true);
     const r1 = mk(u("/schedule"), fantasy);
     const r2 = mk(u("/schedule"), body2);
     const repeats = evalSchema(inferChainStepResponseSchema(r1, [r1, r2]));
-    expect(repeats.safeParse(nullGenre).success).toBe(false);
+    expect(repeats.safeParse(nullGenre).success).toBe(true);
   });
 });
 
