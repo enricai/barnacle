@@ -304,7 +304,12 @@ export function wireSignalCapture(
     // A repeated requestWillBeSent for one requestId (redirect) must not discard
     // a body already resolved for that id.
     const priorBody = prior?.requestPostData ?? null;
-    if (!entry.requestPostData && priorBody && priorBody !== REQUEST_BODY_UNAVAILABLE) {
+    if (
+      !entry.requestPostData &&
+      mutating &&
+      priorBody &&
+      priorBody !== REQUEST_BODY_UNAVAILABLE
+    ) {
       entry.requestPostData = priorBody;
     }
     if (!entry.requestPostData && mayHaveBody) {
@@ -319,7 +324,11 @@ export function wireSignalCapture(
         } catch {
           // fall through to the explicit marker
         }
-        if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
+        // Only an explicit hasPostData=true proves a body existed; an omitted flag
+        // with nothing recovered means a bodyless request, which stays null.
+        if (!entry.requestPostData && params.request.hasPostData === true) {
+          entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
+        }
       })();
     }
     inFlight.set(params.requestId, entry);
