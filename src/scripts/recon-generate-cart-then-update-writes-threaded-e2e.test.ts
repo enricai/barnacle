@@ -148,4 +148,58 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).not.toContain(ORDER_ID);
     expect(contract).not.toContain("Jane Roe");
   }, 60_000);
+
+  it.each(["orderId", "order_id"])(
+    "threads a bare response id into a PUT body keyed %s instead of freezing it",
+    (bodyKey) => {
+      workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-idkey-"));
+      const runRoot = join(workDir, "run");
+      const capturesDir = join(runRoot, "graphql");
+      mkdirSync(capturesDir, { recursive: true });
+      mkdirSync(join(runRoot, "replays"), { recursive: true });
+      mkdirSync(join(runRoot, "aux"), { recursive: true });
+      writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+      const put: Capture = {
+        ...update,
+        requestPostData: JSON.stringify({
+          [bodyKey]: ORDER_ID,
+          contact: { name: "Jane Roe", email: "jane.roe@mail.example.org" },
+        }),
+        responseBody: { status: "updated" },
+      };
+      const post: Capture = { ...create, responseBody: { order: { id: ORDER_ID } } };
+      [post, put].forEach((c, i) => {
+        writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+      });
+      const siteId = `recon-cart-update-idkey-${bodyKey}-${process.pid}`;
+      siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+      mkdirSync(siteOutDir, { recursive: true });
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          GENERATE_SCRIPT,
+          "--site-id",
+          siteId,
+          "--run-dir",
+          runRoot,
+          "--emit",
+          "ts",
+          "--force",
+        ],
+        {
+          cwd: RECON_GENERATE_CWD,
+          encoding: "utf8",
+          env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+        }
+      );
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+      expect(contract).toContain("const id = (r0 as { order: { id: string } }).order.id;");
+      expect(contract).toContain(`{"${bodyKey}":"\${id}"`);
+      expect(contract).not.toContain(ORDER_ID);
+    },
+    60_000
+  );
 });

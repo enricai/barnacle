@@ -4084,6 +4084,26 @@ const GENERIC_KEY_WORDS = new Set([
   "time",
 ]);
 
+/** Splits a field name into its camelCase/snake_case/kebab-case words, keeping
+ * short words (unlike {@link keyNameWords}), so an identifier suffix like `Id`
+ * survives. An acronym run (`orderID`) stays one word. */
+function keyNameTokens(key: string): string[] {
+  return key.match(/[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])/g) ?? [];
+}
+
+/** True for a field named only `id`: the record's own identifier. Its entity
+ * name lives on the enclosing object, not on the key, so it carries no word of
+ * its own that {@link keyNamesCorrelate} could compare. */
+function isBareIdentifierKey(key: string): boolean {
+  const tokens = keyNameTokens(key);
+  return tokens.length === 1 && tokens[0]!.toLowerCase() === "id";
+}
+
+/** True when a field name's last word is `id` (`orderId`, `order_id`, `ID`). */
+function endsWithIdentifierWord(key: string): boolean {
+  return keyNameTokens(key).at(-1)?.toLowerCase() === "id";
+}
+
 /**
  * True when a SOURCE field name and a TARGET field name plausibly name the
  * same concept — an exact match, or a shared word (one a substring of the
@@ -4104,6 +4124,7 @@ const GENERIC_KEY_WORDS = new Set([
  */
 function keyNamesCorrelate(sourceKey: string, targetKey: string): boolean {
   if (sourceKey === targetKey) return true;
+  if (isBareIdentifierKey(sourceKey) && endsWithIdentifierWord(targetKey)) return true;
   const sourceWords = keyNameWords(sourceKey);
   const targetWords = keyNameWords(targetKey);
   const wordsMatch = (a: string, b: string): boolean => a.includes(b) || b.includes(a);

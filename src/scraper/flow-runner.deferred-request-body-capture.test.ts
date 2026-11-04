@@ -85,12 +85,28 @@ describe("flow-runner/wireSignalCapture — request-time body capture", () => {
     const { cap } = await capture({ method: "PUT" }, async () => ({ postData: '{"a":2}' }));
     expect(cap.requestPostData).toBe('{"a":2}');
   });
-  it("marks an empty fetch result as unavailable only when hasPostData is true", async () => {
-    const { cap: bodyless } = await capture({ method: "PUT" }, async () => ({ postData: "" }));
-    expect(bodyless.requestPostData).toBeNull();
-    const { cap } = await capture({ method: "PUT", hasPostData: true }, async () => ({
-      postData: "",
-    }));
+  it.each(["PUT", "PATCH", "POST", "put"])(
+    "records the marker for %s with hasPostData omitted when the body fetch rejects",
+    async (method) => {
+      const { cap } = await capture({ method }, async () => {
+        throw new Error("No resource with given identifier");
+      });
+      expect(cap.requestPostData).toBe(REQUEST_BODY_UNAVAILABLE);
+      expect(cap.decodedParams).toBeNull();
+    }
+  );
+  it("records the marker for a PUT with hasPostData omitted when the fetch returns nothing", async () => {
+    const { cap } = await capture({ method: "PUT" }, async () => ({ postData: "" }));
     expect(cap.requestPostData).toBe(REQUEST_BODY_UNAVAILABLE);
+  });
+  it("keeps a bodyless DELETE with hasPostData omitted as null", async () => {
+    const { cap } = await capture({ method: "DELETE" }, async () => ({ postData: "" }));
+    expect(cap.requestPostData).toBeNull();
+  });
+  it("keeps inline postData verbatim when hasPostData is omitted", async () => {
+    const { cap } = await capture({ method: "PUT", postData: "BODY" }, async () => ({
+      postData: "other",
+    }));
+    expect(cap.requestPostData).toBe("BODY");
   });
 });

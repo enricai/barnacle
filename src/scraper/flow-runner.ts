@@ -289,6 +289,7 @@ export function wireSignalCapture(
     const prior = inFlight.get(params.requestId);
     const inline = params.request.postData;
     const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
+    const carriesBodyByMethod = /^(POST|PUT|PATCH)$/i.test(params.request.method);
     const mayHaveBody =
       params.request.hasPostData === true || (params.request.hasPostData === undefined && mutating);
     const entry: InFlightRequest = {
@@ -304,12 +305,7 @@ export function wireSignalCapture(
     // A repeated requestWillBeSent for one requestId (redirect) must not discard
     // a body already resolved for that id.
     const priorBody = prior?.requestPostData ?? null;
-    if (
-      !entry.requestPostData &&
-      mutating &&
-      priorBody &&
-      priorBody !== REQUEST_BODY_UNAVAILABLE
-    ) {
+    if (!entry.requestPostData && mutating && priorBody && priorBody !== REQUEST_BODY_UNAVAILABLE) {
       entry.requestPostData = priorBody;
     }
     if (!entry.requestPostData && mayHaveBody) {
@@ -324,9 +320,13 @@ export function wireSignalCapture(
         } catch {
           // fall through to the explicit marker
         }
-        // Only an explicit hasPostData=true proves a body existed; an omitted flag
-        // with nothing recovered means a bodyless request, which stays null.
-        if (!entry.requestPostData && params.request.hasPostData === true) {
+        // A null body must mean "no body". An omitted flag proves nothing, so a
+        // body-bearing method with nothing recovered is recorded as unavailable;
+        // DELETE is bodyless by convention and needs the explicit flag.
+        if (
+          !entry.requestPostData &&
+          (params.request.hasPostData === true || carriesBodyByMethod)
+        ) {
           entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
         }
       })();
