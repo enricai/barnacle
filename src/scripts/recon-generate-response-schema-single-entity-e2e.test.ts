@@ -105,3 +105,35 @@ describe("single-entity chain step schemas (e2e)", () => {
     expect(schema.safeParse(sibling).success).toBe(false);
   });
 });
+
+describe("path-id endpoints with sibling null/omitted fields (e2e)", () => {
+  const q = "ids[]=1&from=2024-01-01&to=2024-02-01";
+  const P9 = `https://example.test/things/9/x?${q}`;
+  const P10 = `https://example.test/things/10/x?${q}`;
+  const body = {
+    genre: "tools",
+    description: null,
+    owner: { name: "n" },
+    tags: [{ label: "a" }],
+  };
+
+  it("single-entity capture: sibling with null scalar, null object and omitted array validates", () => {
+    const { src, warns } = contractFor([mk(P9, body), mk(P9, body)]);
+    expect(warns).toHaveLength(1);
+    const schema = evalSchema(responseSchemaExpr(src));
+    expect(schema.safeParse(body).success).toBe(true);
+    expect(schema.safeParse({ genre: null, description: null, owner: null }).success).toBe(true);
+    expect(schema.safeParse({ genre: "x", description: "d", owner: { name: "m" } }).success).toBe(
+      true
+    );
+  });
+
+  it("different path ids: no WARN and the strict schema rejects a null scalar", () => {
+    const other = { ...body, genre: "toys" };
+    const { src, warns } = contractFor([mk(P9, body), mk(P10, other)]);
+    expect(warns).toHaveLength(0);
+    const schema = evalSchema(responseSchemaExpr(src));
+    expect(schema.safeParse(body).success).toBe(true);
+    expect(schema.safeParse({ ...body, genre: null }).success).toBe(false);
+  });
+});

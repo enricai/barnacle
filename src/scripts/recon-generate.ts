@@ -224,10 +224,18 @@ export function toPascalCase(siteId: string): string {
   return /^[0-9]/.test(pascal) ? `Site${pascal}` : pascal;
 }
 
-/** camelCase twin of toPascalCase: same identifier with the first char lowercased. */
-function toCamelCase(siteId: string): string {
-  const pascal = toPascalCase(siteId);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+/**
+ * camelCase twin of an already-derived Pascal identifier. Takes the Pascal name
+ * rather than the siteId so a caller that supplies its own `pascal` (tests, and
+ * any future identifier-sanitizing scheme) gets a camel twin from the SAME
+ * identifier family — re-deriving from siteId would emit a contract whose types
+ * and plugin const disagree. A leading `_` is preserved: `_3dprintShop` must
+ * lowercase to `_3dprintShop`, not `_3dprintShop` with the digit touched.
+ */
+function camelFromPascal(pascal: string): string {
+  const lead = /^_+/.exec(pascal)?.[0] ?? "";
+  const rest = pascal.slice(lead.length);
+  return `${lead}${rest.charAt(0).toLowerCase()}${rest.slice(1)}`;
 }
 
 /** Generated outputs already present in `outDir` (conflicts without --force). */
@@ -971,14 +979,6 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
   return names;
 }
 
-/** True when every non-null observation is a string/number/boolean of one kind. */
-function isScalarLeaf(values: readonly unknown[]): boolean {
-  const kinds = new Set(values.filter((v) => v !== null && v !== undefined).map((v) => typeof v));
-  if (kinds.size !== 1) return false;
-  const [k] = [...kinds];
-  return k === "string" || k === "number" || k === "boolean";
-}
-
 /**
  * Infers a Zod schema expression string from every observed sample of a value,
  * not just the first.
@@ -1012,10 +1012,13 @@ export function inferZodSchemaFromSamples(
   if (nonNull.length === 0) return "z.unknown()";
 
   const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
-  // Scalar leaf outside any array under single-entity evidence: invariance
+  // Observed value under single-entity evidence: invariance
   // across entities is unproven, so always nullable.
   const wrapScalar = (expr: string): string =>
     nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
+  // Containers: the root response is never made nullable by evidence alone
+  // (consumers dereference it); only nested containers get the leniency.
+  const wrapContainer = (expr: string): string => (depth === 0 ? wrap(expr) : wrapScalar(expr));
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -1041,14 +1044,11 @@ export function inferZodSchemaFromSamples(
     // Merge across every element of every sample so optional/among-elements
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
-    if (items.length === 0) return wrap("z.array(z.unknown())");
-    // Elements are within-response variance evidence: drop the single-entity flag.
-    const elementOpts =
-      opts.singleEntityEvidence && items.length > 1
-        ? { ...opts, singleEntityEvidence: false }
-        : opts;
-    return wrap(
-      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`
+    if (items.length === 0) return wrapContainer("z.array(z.unknown())");
+    // Within-response element variance is not cross-entity variance, so the
+    // single-entity flag is kept for elements.
+    return wrapContainer(
+      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`
     );
   }
 
@@ -1057,7 +1057,7 @@ export function inferZodSchemaFromSamples(
     const keys = [...new Set(objects.flatMap((o) => Object.keys(o)))].filter(
       (k) => !(opts.looseServerResponse && k === "__typename")
     );
-    if (keys.length === 0) return wrap("z.record(z.string(), z.unknown())");
+    if (keys.length === 0) return wrapContainer("z.record(z.string(), z.unknown())");
     const inner = `${indent}  `;
     // Emit identifier-shaped keys unquoted so Biome's formatter doesn't rewrite
     // the generated file on first lint:fix.
@@ -1073,7 +1073,7 @@ export function inferZodSchemaFromSamples(
         const isOptional =
           valuesForKey.length < objects.length ||
           (opts.conditionalFieldNames?.has(k) ?? false) ||
-          (opts.singleEntityEvidence === true && isScalarLeaf(valuesForKey));
+          opts.singleEntityEvidence === true;
         const optional = isOptional ? `${expr}.optional()` : expr;
         const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
         const described = findings?.length
@@ -1090,7 +1090,7 @@ export function inferZodSchemaFromSamples(
       })
       .join(",\n");
     const objectExpr = `z.object({\n${fields},\n${indent}})${opts.looseServerResponse ? ".loose()" : ""}`;
-    return wrap(objectExpr);
+    return wrapContainer(objectExpr);
   }
 
   return wrap("z.unknown()");
@@ -1422,6 +1422,16 @@ function endpointTemplateKey(url: string): string {
   } catch {
     return key;
   }
+}
+
+/**
+ * The one REST response identity: sibling entities of one endpoint
+ * (`/products/9/availability`, `/products/10/availability`) share it, so
+ * response-sample gathering, entity-variance evidence and chain-step schema
+ * inference all group captures identically.
+ */
+function restResponseIdentity(url: string): string {
+  return endpointTemplateKey(url);
 }
 
 /** Empty or absent response bodies carry no evidence of an endpoint's purpose. */
@@ -2249,7 +2259,7 @@ export function gatherResponseBodySamples(
 ): unknown[] {
   if (!winningCapture) return [null];
   const identityOf = (c: Capture): string =>
-    isGraphQLWinner ? operationGroupKey(c) : endpointKey(c.url);
+    isGraphQLWinner ? operationGroupKey(c) : restResponseIdentity(c.url);
   const winningIdentity = identityOf(winningCapture);
   const seen = new Set<string>();
   const samples: unknown[] = [];
@@ -2328,12 +2338,12 @@ export function gatherEntityVarianceEvidence(
   if (!winningCapture || isGraphQLWinner) return none;
   const params = identifyingParams(winningCapture.url);
   if (Object.keys(params).length === 0) return none;
-  const winningKey = endpointKey(winningCapture.url);
+  const winningKey = restResponseIdentity(winningCapture.url);
   const signature = JSON.stringify(Object.entries(params).sort());
   let singleEntity = true;
   for (const c of captures) {
     if (c.status < 200 || c.status >= 300) continue;
-    if (endpointKey(c.url) !== winningKey) continue;
+    if (restResponseIdentity(c.url) !== winningKey) continue;
     if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
       singleEntity = false;
       break;
@@ -2701,6 +2711,36 @@ export function deriveGetInputModel(
     }
   }
   return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
+}
+
+/**
+ * Whether a GET capture's recorded inputs are expressible in its URL.
+ *
+ * A GET whose request inputs were recorded in a `variables` container rather
+ * than in the URL (own-backend search endpoints that take a JSON body, which
+ * the browser capture records under `variables`) derives an EMPTY
+ * {@link GetInputModel}: no query keys, no path vars, nothing. Emitting the
+ * URL-shaped GET read for it would silently drop every input the capture
+ * proved the operation needs — including a bounded-pagination container — and
+ * replay a single argument-less request. Such a capture is a variables-driven
+ * read, so the single-endpoint request-body branch owns it, not the GET branch.
+ */
+function getInputsAreUrlShaped(winner: Capture | null | undefined): boolean {
+  const model = deriveGetInputModel(winner, winner ? [winner] : []);
+  if (!model) return false;
+  const urlCarriesInputs =
+    model.dynamicFields.length > 0 ||
+    model.pathVars.length > 0 ||
+    Object.keys(model.fixedParams).length > 0;
+  if (urlCarriesInputs) return true;
+  const variables = winner?.variables;
+  const hasRecordedVariables =
+    variables !== null &&
+    variables !== undefined &&
+    typeof variables === "object" &&
+    !Array.isArray(variables) &&
+    Object.keys(variables as Record<string, unknown>).length > 0;
+  return !hasRecordedVariables;
 }
 
 export function firstEndpointPath(
@@ -15619,7 +15659,7 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
 `
     : "";
 
-  const camel = toCamelCase(siteId);
+  const camel = camelFromPascal(pascal);
 
   // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
   // client) nor BASE_HEADERS (no per-call headers to bake in) — both would
@@ -16704,8 +16744,8 @@ ${flowStepsBlock}
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
  * test can drive the emitter directly without spawning the CLI. */
 export function emitIndexTs(opts: { siteId: string; pascal: string }): string {
-  const { siteId } = opts;
-  const camel = toCamelCase(siteId);
+  const { siteId, pascal } = opts;
+  const camel = camelFromPascal(pascal);
   return `/**
  * Generated by recon-generate.ts.
  * Build this package, then point BARNACLE_PLUGINS at the compiled module —
@@ -16996,10 +17036,10 @@ export function buildSingleEntityWarning(
       .map(([k, v]) => `${k}=${v}`)
       .join(
         ", "
-      )}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
+      )}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
   }
   if (distinctSampleCount <= 1) {
-    return `WARN response schema inferred from a single captured response of ${endpoint}; scalar fields are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
+    return `WARN response schema inferred from a single captured response of ${endpoint}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
   }
   return null;
 }
@@ -17044,14 +17084,14 @@ export function inferChainStepResponseSchema(
     if (!index) {
       index = new Map();
       for (const c of allCaptures) {
-        const k = endpointKey(c.url);
+        const k = restResponseIdentity(c.url);
         const g = index.get(k);
         if (g) g.push(c);
         else index.set(k, [c]);
       }
       chainEndpointIndex.set(allCaptures, index);
     }
-    captures = index.get(endpointKey(stepCapture.url)) ?? allCaptures;
+    captures = index.get(restResponseIdentity(stepCapture.url)) ?? allCaptures;
   }
   const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
   // Only measured entity evidence (shared identifying parameters) relaxes a
@@ -17692,13 +17732,15 @@ async function main(): Promise<void> {
       !activeCaptures.some(
         (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
       ) &&
-      firstEndpointCapture(
-        activeCaptures,
-        ownBackendHostnames,
-        fallbackDomain,
-        submitPatterns,
-        primaryHost
-      )?.method === "GET";
+      getInputsAreUrlShaped(
+        firstEndpointCapture(
+          activeCaptures,
+          ownBackendHostnames,
+          fallbackDomain,
+          submitPatterns,
+          primaryHost
+        )
+      );
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =

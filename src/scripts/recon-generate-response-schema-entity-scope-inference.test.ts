@@ -29,11 +29,14 @@ describe("inferZodSchemaFromSamples singleEntityEvidence — evaluated schema", 
     expect(schema.safeParse({ product: { title: "Gadget", tags: [] } }).success).toBe(true);
   });
 
-  it("keeps array-element presence evidence (elements stay required)", () => {
-    expect(schema.safeParse({ product: { title: "G", tags: [{}] } }).success).toBe(false);
+  it("keeps leniency for array elements and non-scalar properties", () => {
+    expect(schema.safeParse({ product: { title: "G", tags: [{}] } }).success).toBe(true);
     expect(schema.safeParse({ product: { title: "G", tags: [{ label: null }] } }).success).toBe(
-      false
+      true
     );
+    expect(schema.safeParse({ product: { title: "G", tags: null } }).success).toBe(true);
+    expect(schema.safeParse({ product: null }).success).toBe(true);
+    expect(schema.safeParse({}).success).toBe(true);
   });
 
   it("still rejects a wrong scalar type", () => {
@@ -92,5 +95,16 @@ describe("gatherEntityVarianceEvidence — catalog scenarios", () => {
   it("GraphQL winner -> not parameterized", () => {
     const w = cap(`${base}?productId=7`);
     expect(gatherEntityVarianceEvidence(w, true, [w]).entityParameterized).toBe(false);
+  });
+
+  it("path ids differing across captures -> multi-entity", () => {
+    const t = "https://example.test/things";
+    const w = cap(`${t}/9/x?ids[]=1&from=2024-01-01&to=2024-02-01`);
+    const r = gatherEntityVarianceEvidence(w, false, [
+      w,
+      cap(`${t}/10/x?ids[]=1&from=2024-01-01&to=2024-02-01`),
+    ]);
+    expect(r.entityParameterized).toBe(true);
+    expect(r.singleEntity).toBe(false);
   });
 });
