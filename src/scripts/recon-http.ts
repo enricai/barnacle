@@ -559,11 +559,13 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
 /**
  * Chooses which captures to replay. Noise URLs (incl. non-http(s)) are always
  * skipped, with the matching rule; non-safe methods are skipped unless
- * `includeUnsafe` is set.
+ * `includeUnsafe` is set or the method is explicitly listed in `optInMethods`
+ * (the `--methods` flag).
  */
 export function selectReplayCaptures<T extends { filename: string; capture: Capture }>(
   captures: T[],
-  includeUnsafe: boolean
+  includeUnsafe: boolean,
+  optInMethods: Set<string> | null = null
 ): {
   selected: T[];
   skipped: Array<{ filename: string; url: string; reason: string }>;
@@ -573,7 +575,8 @@ export function selectReplayCaptures<T extends { filename: string; capture: Capt
   for (const item of captures) {
     const { capture, filename } = item;
     const noise = noiseReason(capture.url);
-    const unsafe = includeUnsafe ? null : unsafeReplayReason(capture);
+    const optedIn = optInMethods?.has((capture.method || "GET").toUpperCase()) ?? false;
+    const unsafe = includeUnsafe || optedIn ? null : unsafeReplayReason(capture);
     const reason = noise ?? unsafe;
     if (reason) skipped.push({ filename, url: capture.url, reason });
     else selected.push(item);
@@ -655,7 +658,7 @@ async function main(): Promise<void> {
   // endpoint that matters. The count is logged so a skipped endpoint is never
   // silently mistaken for "nothing captured it."
   const includeUnsafe = args.includes("--include-unsafe-methods");
-  const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe);
+  const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe, methods);
   const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
   const { allowed: probeworthy, blocked } = applyRobots(preRobots, robots);
   for (const b of blocked) logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);

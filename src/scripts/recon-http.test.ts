@@ -42,6 +42,7 @@ import {
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
   replayCapture,
+  selectReplayCaptures,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
 } from "@/scripts/recon-http";
@@ -603,5 +604,29 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
       vi.unstubAllGlobals();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("selectReplayCaptures — safe-by-default with --methods opt-in", () => {
+  const mk = (method: string) => ({
+    filename: `${method}.json`,
+    capture: { method, url: "https://example.com/api", query: null, operationName: null } as never,
+  });
+  const items = [mk("GET"), mk("POST"), mk("PUT")];
+
+  it("skips and reports POST/PUT by default", () => {
+    const r = selectReplayCaptures(items, false);
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json"]);
+    expect(r.skipped.map((s) => s.filename)).toEqual(["POST.json", "PUT.json"]);
+  });
+
+  it("--methods PUT,POST opts those methods in", () => {
+    const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT,POST"));
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "POST.json", "PUT.json"]);
+  });
+
+  it("--methods PUT opts in only PUT", () => {
+    const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT"));
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "PUT.json"]);
   });
 });
