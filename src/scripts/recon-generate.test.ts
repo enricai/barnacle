@@ -244,7 +244,11 @@ describe("emitContractTs — submission-flow candidate-payload bodySchema with g
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
-    inputBody: { ddoKey: "applySubmit", formData: {}, Email: "applicant@example.com" },
+    inputBody: {
+      ddoKey: "applySubmit",
+      formData: {},
+      Email: "applicant@example.com",
+    },
     multiStepBody: `    return { data: {} as unknown };`,
   });
 
@@ -569,7 +573,10 @@ const MULTIPART_ACTION_STEP = {
     method: "POST",
     url: "https://api.example.com/upload/files",
     status: 200,
-    requestHeaders: { "Content-Type": "multipart/form-data", Accept: "application/json" },
+    requestHeaders: {
+      "Content-Type": "multipart/form-data",
+      Accept: "application/json",
+    },
     requestPostData: null,
     responseHeaders: { "content-type": "application/json" },
     responseBody: { success: true },
@@ -1530,7 +1537,9 @@ describe("extractActionSequence — a repeatedly-fired real search primary survi
     requestHeaders: {},
     requestPostData: `query=${i}`,
     responseHeaders: { "content-type": "application/json" },
-    responseBody: { itemSearch: { results: { items: [{ itemId: `item-${i}` }] } } },
+    responseBody: {
+      itemSearch: { results: { items: [{ itemId: `item-${i}` }] } },
+    },
     operationName: "SearchItems",
     query: null,
     variables: null,
@@ -2069,7 +2078,11 @@ describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks resp
     responseHeaders: {},
     responseBody:
       paddingLength > 0
-        ? { data: { products: [{ id: "1", padding: "x".repeat(paddingLength) }] } }
+        ? {
+            data: {
+              products: [{ id: "1", padding: "x".repeat(paddingLength) }],
+            },
+          }
         : { data: { products: [{ id: "1" }] } },
     operationName: "SearchProducts",
     query: QUERY,
@@ -2117,7 +2130,11 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
     responseHeaders: {},
     responseBody:
       paddingLength > 0
-        ? { data: { products: [{ id: "1", padding: "x".repeat(paddingLength) }] } }
+        ? {
+            data: {
+              products: [{ id: "1", padding: "x".repeat(paddingLength) }],
+            },
+          }
         : { data: { products: [{ id: "1" }] } },
     operationName: "SearchProducts",
     query: QUERY,
@@ -2532,7 +2549,10 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     method: "POST",
     url: "https://api.example.com/available-products/",
     status: 200,
-    requestHeaders: { "Content-Type": "application/json", Cookie: `__pa=${longJwt}` },
+    requestHeaders: {
+      "Content-Type": "application/json",
+      Cookie: `__pa=${longJwt}`,
+    },
     requestPostData: "{}",
     responseHeaders: { "content-type": "application/json" },
     responseBody: { products: [{ productId: "p1" }] },
@@ -2547,7 +2567,10 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     const stateIndex = indexStateValues([tokenMintCapture, statefulCallCapture]);
     const sv = stateIndex.get(longJwt);
     expect(sv).toBeDefined();
-    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+    expect(sv?.headerOrigin).toEqual({
+      sourceHeader: "set-cookie",
+      cookieName: "__pa",
+    });
   });
 
   it("still excludes a 300-char body-origin string — the exemption is scoped to cookie origins only", () => {
@@ -2615,7 +2638,10 @@ describe("compileActionSteps — Set-Cookie state binding (listings-fixture-styl
     method: "POST",
     url: "https://api.example.com/available-products/",
     status: 200,
-    requestHeaders: { "Content-Type": "application/json", Cookie: "__pa=abc.def.ghi" },
+    requestHeaders: {
+      "Content-Type": "application/json",
+      Cookie: "__pa=abc.def.ghi",
+    },
     requestPostData: "{}",
     responseHeaders: { "content-type": "application/json" },
     responseBody: { products: [{ productId: "p1" }] },
@@ -2633,7 +2659,10 @@ describe("compileActionSteps — Set-Cookie state binding (listings-fixture-styl
   it("indexes the Set-Cookie value with a header origin, not a body path", () => {
     const sv = stateIndex.get("abc.def.ghi");
     expect(sv).toBeDefined();
-    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+    expect(sv?.headerOrigin).toEqual({
+      sourceHeader: "set-cookie",
+      cookieName: "__pa",
+    });
     expect(sv?.path).toEqual([]);
   });
 
@@ -2779,7 +2808,9 @@ describe("compileActionSteps — a response value used downstream ONLY as a JSON
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
     responseHeaders: { "content-type": "application/json" },
-    responseBody: { thankYouEmailParams: { tokens: ["firstName", "lastName"] } },
+    responseBody: {
+      thankYouEmailParams: { tokens: ["firstName", "lastName"] },
+    },
     operationName: null,
     query: null,
     variables: null,
@@ -2951,7 +2982,9 @@ describe("indexStateValues — a non-cookie response header value threaded throu
     buildStep("r0", {
       url: "https://api.example.com/catalog/search/",
       requestPostData: '{"page":1}',
-      responseBody: { results: [{ orderId: "order-a" }, { orderId: "order-b" }] },
+      responseBody: {
+        results: [{ orderId: "order-a" }, { orderId: "order-b" }],
+      },
       timestamp: "2024-10-05T00:00:00Z",
     }),
     buildStep("r1", {
@@ -2968,7 +3001,9 @@ describe("indexStateValues — a non-cookie response header value threaded throu
         "Content-Type": "application/json",
         "X-Session-Token": "sess-a1b2c3d4e5f6",
       },
-      responseBody: { entries: [{ ts: "2024-10-05T00:00:02Z", event: "shipped" }] },
+      responseBody: {
+        entries: [{ ts: "2024-10-05T00:00:02Z", event: "shipped" }],
+      },
       timestamp: "2024-10-05T00:00:02Z",
     }),
   ];
@@ -3003,13 +3038,19 @@ describe("indexStateValues — a non-cookie response header value threaded throu
       steps[0]!,
       {
         ...steps[1]!,
-        capture: { ...steps[1]!.capture, responseHeaders: { "x-session-token": "s1a2b3" } },
+        capture: {
+          ...steps[1]!.capture,
+          responseHeaders: { "x-session-token": "s1a2b3" },
+        },
       },
       {
         ...steps[2]!,
         capture: {
           ...steps[2]!.capture,
-          requestHeaders: { "Content-Type": "application/json", "X-Session-Token": "s1a2b3" },
+          requestHeaders: {
+            "Content-Type": "application/json",
+            "X-Session-Token": "s1a2b3",
+          },
         },
       },
     ];
@@ -3034,7 +3075,10 @@ describe("indexStateValues — a short Set-Cookie value threaded through a depen
   it("indexes the short cookie-sourced chain-produced token despite it being under MIN_STATE_VALUE_LENGTH", () => {
     const sv = stateIndex.get("tok1");
     expect(sv).toBeDefined();
-    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "sess" });
+    expect(sv?.headerOrigin).toEqual({
+      sourceHeader: "set-cookie",
+      cookieName: "sess",
+    });
   });
 });
 
@@ -3075,7 +3119,9 @@ describe("collectHeaderBindings — multi-cookie regression (listings-fixture __
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: "{}",
-    responseHeaders: { "set-cookie": "__pa=eyJhbGciOiJIUzI1NiJ9.payload.sig; Path=/; HttpOnly" },
+    responseHeaders: {
+      "set-cookie": "__pa=eyJhbGciOiJIUzI1NiJ9.payload.sig; Path=/; HttpOnly",
+    },
     responseBody: {},
     operationName: null,
     query: null,
@@ -3116,14 +3162,21 @@ describe("collectHeaderBindings — multi-cookie regression (listings-fixture __
   it("indexes __pa with a header origin on the authz/private capture", () => {
     const sv = stateIndex.get("eyJhbGciOiJIUzI1NiJ9.payload.sig");
     expect(sv).toBeDefined();
-    expect(sv?.headerOrigin).toEqual({ sourceHeader: "set-cookie", cookieName: "__pa" });
+    expect(sv?.headerOrigin).toEqual({
+      sourceHeader: "set-cookie",
+      cookieName: "__pa",
+    });
   });
 
   it("produces a header-kind binding for __pa on the authz/private step, not just the toggle step", () => {
     const [, authzStep] = actionSteps;
     const pa = authzStep?.produces.find((p) => p.kind === "header" && p.cookieName === "__pa");
     expect(pa).toBeDefined();
-    expect(pa).toMatchObject({ kind: "header", cookieName: "__pa", targetHeader: "Cookie" });
+    expect(pa).toMatchObject({
+      kind: "header",
+      cookieName: "__pa",
+      targetHeader: "Cookie",
+    });
   });
 
   it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestGeoIP", () => {
@@ -3499,7 +3552,12 @@ describe("emitBrowserFlowTs — navigateTo step", () => {
       pascal: "S",
       baseUrl: "https://x",
       isSubmissionFlow: false,
-      flowSteps: [{ step: "Go to the unfiltered report", navigateTo: "https://x/report?all=true" }],
+      flowSteps: [
+        {
+          step: "Go to the unfiltered report",
+          navigateTo: "https://x/report?all=true",
+        },
+      ],
     });
     expect(code).toContain('navigateTo: "https://x/report?all=true"');
   });
@@ -3666,8 +3724,12 @@ describe("selectPayloadAction", () => {
     // opening POST, and later steps only carry the transaction forward.
     const steps = [
       step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
-      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
-      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', {
+        sections: [{ fields: [] }],
+      }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', {
+        success: true,
+      }),
     ];
     expect(selectPayloadAction(steps)).toBe(steps[0]);
   });
@@ -3677,8 +3739,12 @@ describe("selectPayloadAction", () => {
     // happened to load first is incidental.
     const steps = [
       step("https://shop.test/toggles", '{"flags":["a"]}', { featureA: true }),
-      step("https://shop.test/search", '{"page":1,"filters":[]}', { total: 699 }),
-      step("https://shop.test/search", '{"page":1,"filters":["2-bed"]}', { total: 151 }),
+      step("https://shop.test/search", '{"page":1,"filters":[]}', {
+        total: 699,
+      }),
+      step("https://shop.test/search", '{"page":1,"filters":["2-bed"]}', {
+        total: 151,
+      }),
     ];
     expect(selectPayloadAction(steps)).toBe(steps[1]);
   });
@@ -3719,7 +3785,9 @@ describe("selectPayloadAction", () => {
     // ever sent a job id. Selection lands on the writes, which is where the
     // caller's fields actually are.
     const steps = [
-      step("https://ats.test/hcm/sourceTrackings", '{"jobId":"1"}', { items: [{ id: 1 }] }),
+      step("https://ats.test/hcm/sourceTrackings", '{"jobId":"1"}', {
+        items: [{ id: 1 }],
+      }),
       step("https://ats.test/hcm/applicationDrafts", '{"FirstName":"Reginald"}', { draftId: "d1" }),
       step("https://ats.test/hcm/applicationDrafts", '{"MobilePhone":"5125550123"}', {
         draftId: "d1",
@@ -3748,7 +3816,10 @@ describe("selectReturnAction", () => {
     // subject, not the drill-down's single-building body.
     const steps = [
       step("https://listings.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
-      step("https://listings.test/authz/private", "{}", { result: "ok", successful: true }),
+      step("https://listings.test/authz/private", "{}", {
+        result: "ok",
+        successful: true,
+      }),
       step("https://listings.test/available-products/", '{"filters":[]}', {
         totalAvailableListings: 699,
         products: [{ id: "p1" }],
@@ -3771,8 +3842,12 @@ describe("selectReturnAction", () => {
     // the FIRST (that's selectPayloadAction's fallback).
     const steps = [
       step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
-      step("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [{ fields: [] }] }),
-      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', { success: true }),
+      step("https://ats.test/api/form-schema", '{"jobId":"9"}', {
+        sections: [{ fields: [] }],
+      }),
+      step("https://ats.test/api/application/a1/submit", '{"confirm":true}', {
+        success: true,
+      }),
     ];
     expect(selectReturnAction(steps)).toBe(steps[2]);
   });
@@ -4370,7 +4445,11 @@ describe("inferZodSchemaFromSamples", () => {
     const deep = {
       products: [
         {
-          buildings: [{ units: [{ unitId: "UU1522", price: { summary: { total: 1402 } } }] }],
+          buildings: [
+            {
+              units: [{ unitId: "UU1522", price: { summary: { total: 1402 } } }],
+            },
+          ],
         },
       ],
     };
@@ -4409,7 +4488,9 @@ describe("collectUnboundLiterals — composite array/object values", () => {
   });
 
   it("still flags an unbound long literal string leaf (pre-existing scalar behavior unchanged)", () => {
-    const parsedBody = { description: "a reasonably long literal string value" };
+    const parsedBody = {
+      description: "a reasonably long literal string value",
+    };
     const finalTemplate = `{"description":${JSON.stringify(parsedBody.description)}}`;
     expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("description");
   });
@@ -4445,7 +4526,12 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     // onto the job-application template either (recon-generate-payload-schema-mismatch.md).
     const contract = emitContractTs({
       ...BASE_OPTS,
-      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+      inputBody: {
+        page: 1,
+        region: "INTL",
+        filters: [],
+        sorts: [{ criteria: "RECOMMENDED" }],
+      },
     });
     expect(contract).not.toContain("ApplicantContactSchema");
     expect(contract).not.toContain("query: z.string().min(1)");
@@ -4454,7 +4540,12 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
   it("demotes the captured request shape to a documented internal-reference const, distinct from the payload schema", () => {
     const contract = emitContractTs({
       ...BASE_OPTS,
-      inputBody: { page: 1, region: "INTL", filters: [], sorts: [{ criteria: "RECOMMENDED" }] },
+      inputBody: {
+        page: 1,
+        region: "INTL",
+        filters: [],
+        sorts: [{ criteria: "RECOMMENDED" }],
+      },
     });
     const referenceConst = `${BASE_OPTS.pascal}InternalRequestReference`;
     expect(contract).toContain(`export const ${referenceConst} =`);
@@ -4502,8 +4593,14 @@ describe("emitConfigManifest — config-only plugin emission", () => {
     baseUrl: "https://apply.acme.example",
     flowSteps: [
       "click the apply button",
-      { step: "fill the First Name field with 'Jane'", payloadField: "FirstName" },
-      { step: `fill the Email field with ${RECON_EMAIL_TOKEN}`, payloadField: "Email" },
+      {
+        step: "fill the First Name field with 'Jane'",
+        payloadField: "FirstName",
+      },
+      {
+        step: `fill the Email field with ${RECON_EMAIL_TOKEN}`,
+        payloadField: "Email",
+      },
       { step: "click Submit", submitStep: true },
       { step: "upload resume", upload: true, optional: true },
     ],
@@ -4539,8 +4636,14 @@ describe("emitConfigManifest — config-only plugin emission", () => {
 
   it("preserves submit and upload/optional flags on object-form steps", () => {
     const objectSteps = manifest.spec.flow.steps.filter(
-      (s): s is { step: string; submitStep?: boolean; upload?: boolean; optional?: boolean } =>
-        typeof s === "object" && s !== null
+      (
+        s
+      ): s is {
+        step: string;
+        submitStep?: boolean;
+        upload?: boolean;
+        optional?: boolean;
+      } => typeof s === "object" && s !== null
     );
     expect(objectSteps.some((s) => s.submitStep === true)).toBe(true);
     expect(objectSteps.some((s) => s.upload === true && s.optional === true)).toBe(true);
@@ -4554,7 +4657,9 @@ describe("emitConfigManifest — displayName omitted rather than derived from si
       baseUrl: "https://apply.example.com",
       flowSteps: ["click the apply button"],
     });
-    const manifest = JSON.parse(manifestStr) as { metadata: Record<string, unknown> };
+    const manifest = JSON.parse(manifestStr) as {
+      metadata: Record<string, unknown>;
+    };
     expect(manifest.metadata).not.toHaveProperty("displayName");
     expect(manifestStr).not.toContain("WholesaleFishMarket");
   });
@@ -4606,7 +4711,10 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
-      JSON.stringify({ steps: [{ step: "search for widgets" }], displayName: "Widget Depot" })
+      JSON.stringify({
+        steps: [{ step: "search for widgets" }],
+        displayName: "Widget Depot",
+      })
     );
 
     const result = spawnSync(
@@ -4691,7 +4799,9 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     expect(configResult.status, `${configResult.stdout}\n${configResult.stderr}`).toBe(0);
 
     const manifestStr = readFileSync(join(siteOutDir, `${siteId}.plugin.json`), "utf8");
-    const manifest = JSON.parse(manifestStr) as { metadata: Record<string, unknown> };
+    const manifest = JSON.parse(manifestStr) as {
+      metadata: Record<string, unknown>;
+    };
     expect(manifest.metadata).not.toHaveProperty("displayName");
     expect(manifestStr).not.toContain("Wholesale Fish Market");
   }, 30_000);
@@ -4706,7 +4816,10 @@ describe("emitConfigManifest — a reserved RECON_PASSWORD env token never leaks
     flowSteps: [`Enter ${RECON_PASSWORD_TOKEN} in the Password field`],
   });
   const manifest = JSON.parse(manifestStr) as {
-    spec: { request: { properties: Record<string, unknown> }; flow: { steps: unknown[] } };
+    spec: {
+      request: { properties: Record<string, unknown> };
+      flow: { steps: unknown[] };
+    };
   };
 
   it("emits no literal RECON_PASSWORD substring anywhere", () => {
@@ -4751,7 +4864,12 @@ describe("emitConfigManifest — recovered request contract", () => {
       siteId: "acme-demo",
       displayName: "AcmeDemo",
       baseUrl: "https://apply.acme.example",
-      flowSteps: [{ step: "fill the First Name field with 'Jane'", payloadField: "FirstName" }],
+      flowSteps: [
+        {
+          step: "fill the First Name field with 'Jane'",
+          payloadField: "FirstName",
+        },
+      ],
       inputBody: {
         page: 1,
         filters: [],
@@ -4787,7 +4905,9 @@ describe("emitConfigManifest — recovered request contract", () => {
         inputBody: { page: 1 },
         recoveredFields: new Set(["page"]),
       })
-    ) as { spec: { request: { properties: Record<string, { type: string }> } } };
+    ) as {
+      spec: { request: { properties: Record<string, { type: string }> } };
+    };
     expect(overlapped.spec.request.properties.page).toEqual({ type: "number" });
   });
 
@@ -4961,7 +5081,11 @@ describe("emitContractTs — sanitizeFixtureIdentifier keeps loadFixture comment
       filename,
       url: `https://example.com/${filename}`,
     }));
-    const source = emitContractTs({ ...BASE_OPTS, hasMultipartStep: false, auxFiles });
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      hasMultipartStep: false,
+      auxFiles,
+    });
     return source
       .split("\n")
       .filter((line) => line.trimStart().startsWith("// const ") && line.includes("loadFixture("));
@@ -5154,7 +5278,9 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       url: `https://${OWN_BACKEND}/graphql/marketing-promotions`,
       status: 200,
       requestHeaders: { "Content-Type": "application/json" },
-      requestPostData: JSON.stringify({ operationName: "PromotionsWidgetSearch" }),
+      requestPostData: JSON.stringify({
+        operationName: "PromotionsWidgetSearch",
+      }),
       responseHeaders: {},
       responseBody: { promotionsWidget: { items: [{ id: "promo-1" }] } },
       operationName: "PromotionsWidgetSearch",
@@ -5470,8 +5596,83 @@ describe("deriveGetInputModel", () => {
     expect(m.fieldToQueryKey.ids).toBe("ids[]");
     expect(m.fixedParams).toEqual({ sort: "asc" });
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
-    expect(deriveGetInputModel(a, [a], ["ids"])!.dynamicFields).toEqual([]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
+  });
+  it("keeps declared names for non-varying keys instead of freezing them", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(
+      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07"
+    );
+    const m = deriveGetInputModel(a, [a], ["from", "to"])!;
+    expect(m.dynamicFields.map((d) => d.field)).toEqual(["from", "to"]);
+    expect(m.fixedParams).toEqual({});
+    expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
+    expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
+  });
+  it("makes varying date keys dynamic and binds the path id", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(
+      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07"
+    );
+    const b = cap(
+      "https://shop.example/items/8/stock.json?item_ids[]=8&from=2030-02-01&to=2030-02-07"
+    );
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["from", "to"]);
+    expect(m.pathVars).toHaveLength(1);
+    expect(m.pathVars[0]!.segmentIndex).toBe(2);
+  });
+  it("binds a varying path-only id and one binding for twin keys", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/items/7/stock.json?q=1");
+    const b = cap("https://shop.example/items/8/stock.json?q=1");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "itemsId", segmentIndex: 2, queryKey: "" }]);
+    expect(m.fixedParams).toEqual({ q: "1" });
+    const c = cap("https://shop.example/items/7?id=7&item=7");
+    expect(deriveGetInputModel(c, [c])!.pathVars).toHaveLength(1);
+  });
+  it("takes a lone numeric or slug entity id from the payload with no sibling evidence", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    for (const [url, field] of [
+      ["https://shop.example/rooms/42/slots", "roomsId"],
+      ["https://shop.example/rooms/room-42/slots", "roomsId"],
+      ["https://shop.example/o/3f2504e0-4f89-11d3-9a0c-0305e82c3301/slots", "oId"],
+    ] as const) {
+      const a = cap(url);
+      expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([
+        { field, segmentIndex: 2, queryKey: "" },
+      ]);
+    }
+  });
+  it("leaves version tokens and fixed route words frozen", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/api/v2/oauth2/stock.json");
+    expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([]);
+  });
+  it("binds a path slug that differs across same-signature captures", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
+    const b = cap("https://shop.example/teams/beta-team/slots?x=1");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "teamsId", segmentIndex: 2, queryKey: "" }]);
+    const other = cap("https://shop.example/users/beta-team/slots?y=1");
+    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual([]);
+  });
+  it("keeps a declared query key payload-driven when it never varies", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/search?q=1&from=2");
+    const m = deriveGetInputModel(a, [a], ["from"])!;
+    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
+    expect(m.fixedParams).toEqual({ q: "1" });
+  });
+  it("treats a single varying key as dynamic", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
+    const b = cap("https://api.example.com/v1/search?page=2&sort=asc");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page" }]);
+    expect(m.fixedParams).toEqual({ sort: "asc" });
   });
 });
 
@@ -5556,7 +5757,11 @@ describe("gatherEntityVarianceEvidence", () => {
   it("reports single entity with params when ids match", () => {
     const w = cap(`${B}?itemId=1&page=1`);
     const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?itemId=1&page=2`)]);
-    expect(r).toEqual({ entityParameterized: true, params: { itemId: "1" }, singleEntity: true });
+    expect(r).toEqual({
+      entityParameterized: true,
+      params: { itemId: "1" },
+      singleEntity: true,
+    });
   });
   it("reports not parameterized without id params and for GraphQL", () => {
     const w = cap(`${B}?page=1`);
@@ -5589,7 +5794,11 @@ describe("emitContractTs — singleEntityEvidence", () => {
     expect(src).not.toContain("z.string().nullable().optional()");
   });
   it("a lone distinct response is single-entity evidence by default", () => {
-    const src = emitContractTs({ ...BASE_OPTS, responseBody: body, responseBodySamples: [body] });
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body],
+    });
     expect(src).toContain("name: z.string().nullable().optional()");
     expect(src).toContain("count: z.number().nullable().optional()");
   });
@@ -5625,7 +5834,11 @@ describe("buildSingleEntityWarning", () => {
       })
     ).toBeNull();
     expect(
-      buildSingleEntityWarning(null, { entityParameterized: true, singleEntity: false, params: {} })
+      buildSingleEntityWarning(null, {
+        entityParameterized: true,
+        singleEntity: false,
+        params: {},
+      })
     ).toBeNull();
   });
   it("names the shared params and endpoint when single-entity", () => {
@@ -5708,8 +5921,14 @@ describe("inferChainStepResponseSchema", () => {
   const mk = (url: string, responseBody: unknown) =>
     ({ url, method: "GET", status: 200, responseBody }) as never;
   it("emits a schema string for a step whose id param is shared by all siblings", () => {
-    const a = mk("https://example.com/api/item?item_id=1", { id: 1, name: "a" });
-    const b = mk("https://example.com/api/item?item_id=1", { id: 1, name: "b" });
+    const a = mk("https://example.com/api/item?item_id=1", {
+      id: 1,
+      name: "a",
+    });
+    const b = mk("https://example.com/api/item?item_id=1", {
+      id: 1,
+      name: "b",
+    });
     const out = inferChainStepResponseSchema(a, [a, b]);
     expect(out).toContain("z.object");
     expect(out).toContain("name");

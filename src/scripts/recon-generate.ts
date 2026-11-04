@@ -2621,13 +2621,13 @@ function safeUrlPathname(url: string): string {
 
 /** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
 export interface GetInputModel {
-  /** Query keys whose values vary across successful same-pathname GET siblings. */
+  /** Query keys the caller controls: varying across successful same-route GET siblings, or declared by the flow. */
   dynamicFields: Array<{ field: string; queryKey: string }>;
   /** Query params with a single observed value across siblings (queryKey -> value). */
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
   fieldToQueryKey: Record<string, string>;
-  /** Path segments of the winning URL that repeat a query value. */
+  /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
 
@@ -2640,14 +2640,37 @@ function safeGetFieldIdentifier(key: string): string {
 }
 
 /**
+ * True when a decoded path segment names a specific entity rather than a fixed
+ * route part: a bare number, UUID or long hex id, or a slug carrying one
+ * (`acme-42`, `order_0007`, `abc123`). Version tokens (`v2`) and words with a
+ * lone digit (`oauth2`) are route parts.
+ */
+function carriesEntityId(segment: string): boolean {
+  if (RESOURCE_ID_SEGMENT.test(segment)) return true;
+  if (/^v\d+$/i.test(segment)) return false;
+  const tokens = segment.split(/[-_]/);
+  if (tokens.length > 1) return tokens.some((t) => /^\d+$/.test(t));
+  return /^[A-Za-z]+\d{2,}$/.test(segment);
+}
+
+/** A hyphen/underscore-joined multi-word segment, e.g. a human-readable entity slug. */
+function isSlugSegment(segment: string): boolean {
+  return /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(segment);
+}
+
+/**
  * Pure derivation of the GET input model from the winning capture and its
- * successful same-pathname GET siblings. Returns null for non-GET winners.
- * `reservedNames` are existing payload field names; collisions get a numeric suffix.
+ * successful same-shape GET siblings (same segment count). Returns null for
+ * non-GET winners. A query key is caller-controlled when it varies across
+ * siblings, repeats a path segment, or is declared by the flow.
+ * `declaredNames` are the flow's required + optional payloadField names; a key
+ * whose identifier matches one keeps that declared name. Undeclared fields that
+ * collide with a declared name get a numeric suffix.
  */
 export function deriveGetInputModel(
   winner: Capture | null | undefined,
   captures: readonly Capture[],
-  reservedNames: Iterable<string> = []
+  declaredNames: Iterable<string> = []
 ): GetInputModel | null {
   if (winner?.method !== "GET") return null;
   let winnerUrl: URL;
@@ -2656,59 +2679,100 @@ export function deriveGetInputModel(
   } catch {
     return null;
   }
+  const segments = winnerUrl.pathname.split("/");
+  const decode = (s: string): string => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  };
+  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
+  const winnerKeys = queryKeySet(winnerUrl);
   const siblings = captures.filter((c) => {
     if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
     try {
-      return new URL(c.url).pathname === winnerUrl.pathname;
+      const u = new URL(c.url);
+      if (u.host !== winnerUrl.host) return false;
+      const segs = u.pathname.split("/");
+      if (segs.length !== segments.length) return false;
+      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
+      // Same route shape: segments may differ only where both carry an entity id,
+      // or, for a lone differing slug, when the call signature (query keys) matches.
+      return differing.every(
+        ([a, b]) =>
+          (carriesEntityId(decode(a as string)) && carriesEntityId(decode(b as string))) ||
+          (differing.length === 1 &&
+            isSlugSegment(a as string) &&
+            isSlugSegment(b as string) &&
+            queryKeySet(u) === winnerKeys)
+      );
     } catch {
       return false;
     }
   });
   if (!siblings.includes(winner)) siblings.push(winner);
   const valuesByKey = new Map<string, Set<string>>();
+  const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
   for (const c of siblings) {
-    for (const [k, v] of new URL(c.url).searchParams) {
+    const u = new URL(c.url);
+    for (const [k, v] of u.searchParams) {
       const existing = valuesByKey.get(k);
-      const s = existing ?? new Set<string>();
-      if (!existing) valuesByKey.set(k, s);
-      s.add(v);
+      const set = existing ?? new Set<string>();
+      if (!existing) valuesByKey.set(k, set);
+      set.add(v);
     }
+    for (const [i, seg] of u.pathname.split("/").entries()) valuesBySegment[i]?.add(decode(seg));
   }
-  const taken = new Set(reservedNames);
+  const declared = new Set<string>();
+  for (const n of declaredNames) declared.add(n);
+  const taken = new Set(declared);
   const dynamicFields: GetInputModel["dynamicFields"] = [];
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
-  const unique = (base: string): string => {
+  const nameFor = (key: string): string => {
+    const base = safeGetFieldIdentifier(key);
+    if (declared.has(key) && safeGetFieldIdentifier(key) === key) return key;
+    if (declared.has(base)) return base;
     let name = base;
     for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
     taken.add(name);
     return name;
   };
-  const segments = winnerUrl.pathname.split("/");
+  const boundSegments = new Map<number, string>();
   for (const [key, values] of valuesByKey) {
     const winnerValue = winnerUrl.searchParams.get(key);
     const segIdx =
       winnerValue !== null && winnerValue !== ""
-        ? segments.findIndex((s) => {
-            try {
-              return decodeURIComponent(s) === winnerValue;
-            } catch {
-              return s === winnerValue;
-            }
-          })
+        ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
-    if (segIdx >= 0) {
-      const field = unique(safeGetFieldIdentifier(key));
+    const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
+    if (segIdx >= 0 && !boundSegments.has(segIdx)) {
+      const field = nameFor(key);
+      boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1) {
-      const field = unique(safeGetFieldIdentifier(key));
+    } else if (values.size > 1 || isDeclared) {
+      const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
       fixedParams[key] = [...values][0] as string;
     }
+  }
+  // Path segments with no query twin that vary between captures or carry an entity id.
+  for (let i = 1; i < segments.length; i++) {
+    if (boundSegments.has(i)) continue;
+    const varies = (valuesBySegment[i]?.size ?? 0) > 1;
+    if (!varies && !carriesEntityId(decode(segments[i] ?? ""))) continue;
+    const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
+    const base = prev === "param" ? "id" : `${prev}Id`;
+    let field = base;
+    for (let n = 2; taken.has(field); n++) field = `${base}${n}`;
+    taken.add(field);
+    boundSegments.set(i, field);
+    pathVars.push({ field, segmentIndex: i, queryKey: "" });
   }
   return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
 }
@@ -14093,6 +14157,7 @@ function buildGetRequestUrlExpr(
     ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
   ];
   for (const { field, queryKey } of bound) {
+    if (queryKey === "") continue; // path-only id: no query pair
     if (overridden.has(JSON.stringify(queryKey))) continue;
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
@@ -16496,6 +16561,10 @@ export function emitBrowserFlowTs(opts: {
   /** Payload-driven GET read flow: the payload schema has no `query` field, so
    * the read fallback's extract prompt must not reference `payload.query`. */
   readOnlyGetFlow?: boolean;
+  /** Read-only GET flow: caller-controlled input fields from the derived
+   * {@link GetInputModel}. The extract prompt binds each to `payload.<field>`
+   * so the fallback honours caller inputs, as executeHttp does. */
+  getInputFields?: readonly string[];
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16517,6 +16586,7 @@ export function emitBrowserFlowTs(opts: {
     frameSelector,
     capturedFallbackFields = new Set<string>(),
     readOnlyGetFlow = false,
+    getInputFields = [],
     env = process.env,
   } = opts;
 
@@ -16754,7 +16824,7 @@ ${flowStepsBlock}
       : `
   const result = await guardedExtract(
     stagehand,
-    ${/* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ readOnlyGetFlow ? '"extract the results shown on the page"' : "`extract results matching query: ${payload.query}`"},
+    ${readOnlyGetFlow ? readOnlyGetExtractPromptExpr(getInputFields) : /* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ "`extract results matching query: ${payload.query}`"},
     ${pascal}ResponseSchema
   );
 
@@ -16764,6 +16834,17 @@ ${flowStepsBlock}
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+}
+
+/** Emitted extract-prompt expression for a read-only GET browser fallback: binds
+ * each derived caller input to its payload value rather than a recorded literal. */
+function readOnlyGetExtractPromptExpr(fields: readonly string[]): string {
+  if (fields.length === 0) return '"extract the results shown on the page"';
+  const parts = fields.map((f) => {
+    const access = isValidJsIdentifier(f) ? `payload.${f}` : `payload[${JSON.stringify(f)}]`;
+    return `${f.replace(/[`\\$]/g, "")}=\${${access} ?? ""}`;
+  });
+  return `\`extract the results shown on the page for: ${parts.join(", ")}\``;
 }
 
 /** Generates the site's index.ts barrel — exported so the out-of-tree e2e
@@ -18054,8 +18135,27 @@ async function main(): Promise<void> {
       vocabulary,
       frameSelector,
       readOnlyGetFlow: isReadOnlyGetFlow,
+      getInputFields: undefined as readonly string[] | undefined,
     };
-    const browserFlow = emitBrowserFlowTs(browserFlowOpts);
+    let browserFlow = emitBrowserFlowTs(browserFlowOpts);
+    const getInputModel = isReadOnlyGetFlow
+      ? deriveGetInputModel(winningCapture, activeCaptures, [
+          ...browserFlow.payloadFieldNames,
+          ...browserFlow.optionalPayloadFieldNames,
+        ])
+      : null;
+    if (getInputModel) {
+      // Re-emit with the derived fields so the read fallback binds them to the
+      // payload; payloadFieldNames is unaffected (same flow steps).
+      const getInputFields = [
+        ...getInputModel.dynamicFields.map((d) => d.field),
+        ...getInputModel.pathVars.map((v) => v.field),
+      ];
+      if (getInputFields.length > 0) {
+        browserFlowOpts.getInputFields = getInputFields;
+        browserFlow = emitBrowserFlowTs(browserFlowOpts);
+      }
+    }
 
     const contractOpts = {
       siteId,
@@ -18078,9 +18178,7 @@ async function main(): Promise<void> {
       gql,
       gqlQuery,
       endpointPath,
-      getInputModel: isReadOnlyGetFlow
-        ? deriveGetInputModel(winningCapture, activeCaptures, browserFlow.payloadFieldNames)
-        : null,
+      getInputModel,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))
