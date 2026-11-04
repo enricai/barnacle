@@ -2664,7 +2664,12 @@ export function deriveGetInputModel(
   const siblings = captures.filter((c) => {
     if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
     try {
-      return new URL(c.url).pathname.split("/").length === segments.length;
+      const u = new URL(c.url);
+      if (u.host !== winnerUrl.host) return false;
+      const segs = u.pathname.split("/");
+      if (segs.length !== segments.length) return false;
+      // Same route shape: segments may differ only where both look like ids.
+      return segs.every((s, i) => s === segments[i] || (/\d/.test(s) && /\d/.test(segments[i] ?? "")));
     } catch {
       return false;
     }
@@ -2713,9 +2718,7 @@ export function deriveGetInputModel(
         ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
     const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
-    if (segIdx >= 0) {
-      const bound = boundSegments.get(segIdx);
-      if (bound !== undefined) continue; // twin of an already-bound segment
+    if (segIdx >= 0 && !boundSegments.has(segIdx)) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
