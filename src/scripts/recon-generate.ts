@@ -17208,7 +17208,10 @@ export function inferChainStepResponseSchema(
   // required `*Url` leaves of a step's schema are what the required-URL-field
   // guard uses to attribute unreferenced fields to unrelated captures.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
-  const singleEntityEvidence = variance.entityParameterized && variance.singleEntity;
+  // Same verdict as evaluateSingleEntityEvidence (unproven variance), except
+  // a lone unparameterized sample stays strict.
+  const singleEntityEvidence =
+    variance.singleEntity && (variance.entityParameterized || samples.length > 1);
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
     aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
