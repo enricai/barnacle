@@ -5611,6 +5611,15 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
     expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
+  it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/stock.json?_=111&date_from=2030-01-01&date_to=2030-01-07");
+    const b = cap("https://shop.example/stock.json?_=222&date_from=2030-02-01&date_to=2030-02-07");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    expect(m.fixedParams).toEqual({});
+    expect(m.fieldToQueryKey).not.toHaveProperty("_");
+  });
   it("makes varying date keys dynamic and binds the path id", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(
@@ -5668,6 +5677,23 @@ describe("deriveGetInputModel", () => {
     expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
     expect(m.fixedParams).toEqual({ q: "1" });
   });
+  it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
+    const b = cap("https://api.example.com/v1/search?page=2&sort=asc&filter=open");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["page", "filter"]);
+    expect(m.fixedParams).toEqual({ sort: "asc" });
+  });
+  it("binds every query key repeating the path id to the same caller field", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/v1/spaces/5/slots?space=5&ref=5&from=1");
+    const b = cap("https://api.example.com/v1/spaces/5/slots?space=5&ref=5&from=2");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "space", segmentIndex: 3, queryKey: "space" }]);
+    expect(m.pathTwins).toEqual([{ field: "space", segmentIndex: 3, queryKey: "ref" }]);
+    expect(m.fixedParams).toEqual({});
+  });
   it("treats a single varying key as dynamic", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
@@ -5693,8 +5719,28 @@ describe("emitContractTs — payload-driven GET request", () => {
     });
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+    expect(source).toContain('["id", String(payload.id ?? "42")]');
+    expect(source).not.toContain("payload.id !== undefined");
     expect(source).toContain('["ids[]", String(payload.ids)]');
     expect(source).not.toContain("JSON.stringify({ query: payload.query })");
+  });
+  it("renders every path-twin query key from the same payload field once in the path", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/v1/spaces/5/slots",
+      getInputModel: {
+        dynamicFields: [],
+        fixedParams: {},
+        fieldToQueryKey: { space: "space" },
+        pathVars: [{ field: "space", segmentIndex: 3, queryKey: "space" }],
+        pathTwins: [{ field: "space", segmentIndex: 3, queryKey: "ref" }],
+      },
+    });
+    expect(source).toContain(
+      `/v1/spaces/\${encodeURIComponent(String(payload.space ?? "5"))}/slots`
+    );
+    expect(source).toContain('["space", String(payload.space ?? "5")]');
+    expect(source).toContain('["ref", String(payload.space ?? "5")]');
   });
   it("builds the paginated GET page fetch from payload, overriding paging keys", () => {
     const source = emitContractTs({

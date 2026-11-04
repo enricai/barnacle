@@ -2641,6 +2641,8 @@ export interface GetInputModel {
   fieldToQueryKey: Record<string, string>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
+  pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
 
 function safeGetFieldIdentifier(key: string): string {
@@ -2670,6 +2672,56 @@ function isSlugSegment(segment: string): boolean {
   return /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(segment);
 }
 
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/**
+ * The successful same-host GET captures sharing the winner's route shape: same
+ * segment count, differing only where both segments carry an entity id or, for
+ * a lone differing slug, when the call signature (query keys) matches.
+ */
+function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Capture[] {
+  let winnerUrl: URL;
+  try {
+    winnerUrl = new URL(winner.url);
+  } catch {
+    return [winner];
+  }
+  const segments = winnerUrl.pathname.split("/");
+  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
+  const winnerKeys = queryKeySet(winnerUrl);
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      const u = new URL(c.url);
+      if (u.host !== winnerUrl.host) return false;
+      const segs = u.pathname.split("/");
+      if (segs.length !== segments.length) return false;
+      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
+      // Same route shape: segments may differ only where both carry an entity id,
+      // or, for a lone differing slug, when the call signature (query keys) matches.
+      return differing.every(
+        ([a, b]) =>
+          (carriesEntityId(decodePathSegment(a as string)) &&
+            carriesEntityId(decodePathSegment(b as string))) ||
+          (differing.length === 1 &&
+            isSlugSegment(a as string) &&
+            isSlugSegment(b as string) &&
+            queryKeySet(u) === winnerKeys)
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
+  return siblings;
+}
+
 /**
  * Pure derivation of the GET input model from the winning capture and its
  * successful same-shape GET siblings (same segment count). Returns null for
@@ -2692,42 +2744,18 @@ export function deriveGetInputModel(
     return null;
   }
   const segments = winnerUrl.pathname.split("/");
-  const decode = (s: string): string => {
-    try {
-      return decodeURIComponent(s);
-    } catch {
-      return s;
-    }
-  };
-  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
-  const winnerKeys = queryKeySet(winnerUrl);
-  const siblings = captures.filter((c) => {
-    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
-    try {
-      const u = new URL(c.url);
-      if (u.host !== winnerUrl.host) return false;
-      const segs = u.pathname.split("/");
-      if (segs.length !== segments.length) return false;
-      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
-      // Same route shape: segments may differ only where both carry an entity id,
-      // or, for a lone differing slug, when the call signature (query keys) matches.
-      return differing.every(
-        ([a, b]) =>
-          (carriesEntityId(decode(a as string)) && carriesEntityId(decode(b as string))) ||
-          (differing.length === 1 &&
-            isSlugSegment(a as string) &&
-            isSlugSegment(b as string) &&
-            queryKeySet(u) === winnerKeys)
-      );
-    } catch {
-      return false;
-    }
-  });
+  const decode = decodePathSegment;
+  const siblings = sameRouteGetSiblings(winner, captures);
   if (!siblings.includes(winner)) siblings.push(winner);
   const valuesByKey = new Map<string, Set<string>>();
+  // How many siblings carry each key: a key absent from some of them is chosen
+  // by the caller per request, so its recorded value is not a constant.
+  const capturesWithKey = new Map<string, number>();
   const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
   for (const c of siblings) {
     const u = new URL(c.url);
+    for (const k of new Set(u.searchParams.keys()))
+      capturesWithKey.set(k, (capturesWithKey.get(k) ?? 0) + 1);
     for (const [k, v] of u.searchParams) {
       const existing = valuesByKey.get(k);
       const set = existing ?? new Set<string>();
@@ -2743,6 +2771,7 @@ export function deriveGetInputModel(
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
+  const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
   const nameFor = (key: string): string => {
     const base = safeGetFieldIdentifier(key);
     if (declared.has(key) && safeGetFieldIdentifier(key) === key) return key;
@@ -2754,18 +2783,24 @@ export function deriveGetInputModel(
   };
   const boundSegments = new Map<number, string>();
   for (const [key, values] of valuesByKey) {
+    // Per-request cache-busters are noise: neither a caller input nor a fixed param.
+    if (CACHE_BUSTER_QUERY_KEYS.has(key) && !declared.has(key)) continue;
     const winnerValue = winnerUrl.searchParams.get(key);
     const segIdx =
       winnerValue !== null && winnerValue !== ""
         ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
     const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
-    if (segIdx >= 0 && !boundSegments.has(segIdx)) {
+    const boundField = boundSegments.get(segIdx);
+    if (segIdx >= 0 && boundField !== undefined) {
+      // Another query key repeating an already-bound path segment follows the same caller input.
+      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
+    } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1 || isDeclared) {
+    } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared) {
       const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
@@ -2786,7 +2821,7 @@ export function deriveGetInputModel(
     boundSegments.set(i, field);
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
   }
-  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
+  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars, pathTwins };
 }
 
 /**
@@ -14155,29 +14190,35 @@ function buildGetRequestUrlExpr(
 ): string {
   const overridden = new Set(extraParams.map(([k]) => k));
   const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
-  const segments = endpointPath.split("/");
-  for (const pv of model.pathVars) {
-    const recorded = segments[pv.segmentIndex] ?? "";
-    let decoded = recorded;
+  const recordedSegments = endpointPath.split("/");
+  const recordedPathValue = (segmentIndex: number): string => {
+    const recorded = recordedSegments[segmentIndex] ?? "";
     try {
-      decoded = decodeURIComponent(recorded);
+      return decodeURIComponent(recorded);
     } catch {
-      // keep the raw segment
+      return recorded; // keep the raw segment
     }
+  };
+  const segments = [...recordedSegments];
+  for (const pv of model.pathVars) {
     segments[pv.segmentIndex] =
-      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)}))}`;
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))}))}`;
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
     if (!overridden.has(JSON.stringify(k)))
       pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
   }
-  const bound = [
-    ...model.dynamicFields,
-    ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
-  ];
-  for (const { field, queryKey } of bound) {
-    if (queryKey === "") continue; // path-only id: no query pair
+  for (const pv of [...model.pathVars, ...(model.pathTwins ?? [])]) {
+    if (pv.queryKey === "") continue; // path-only id: no query pair
+    if (overridden.has(JSON.stringify(pv.queryKey))) continue;
+    // Path-twin pair: same payload value / recorded fallback as its path segment.
+    pairs.push(
+      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`
+    );
+  }
+  for (const { field, queryKey } of model.dynamicFields) {
+    if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
@@ -17914,28 +17955,55 @@ async function main(): Promise<void> {
             dependentDrillDownChainValues
           )
         : new Map<string, StateValue>();
-    const actionSteps =
+    const compiledActionSteps =
       actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
     // A flow of same-origin successful GET reads (no non-GET submit) is a
     // single-endpoint REST read, not a browser-only submission flow.
+    // Strict submit-pattern match (no whole-pool fallback): a declared pattern
+    // that matches only the GET reads must not be vetoed by an unrelated
+    // same-host non-GET (visit beacon) that merely falls back into the pool.
+    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
+    const readFlowCaptures = activeCaptures.filter(
+      (c) => c.method === "GET" || matchesDeclaredSubmit(c)
+    );
+    const readFlowWinner = firstEndpointCapture(
+      readFlowCaptures,
+      ownBackendHostnames,
+      fallbackDomain,
+      submitPatterns,
+      primaryHost
+    );
+    // A declared submit pattern may select several same-route GET reads of the
+    // winner as the "action sequence"; those are samples of one read, not steps.
+    const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
+    const actionSequenceIsReadSamples =
+      compiledActionSteps.length === 0 ||
+      actionCaptures.every((a) => readSiblings.includes(a.capture));
     const isReadOnlyGetFlow =
       !gql &&
-      actionSteps.length === 0 &&
-      !activeCaptures.some(
-        (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
-      ) &&
-      getInputsAreUrlShaped(
-        firstEndpointCapture(
-          activeCaptures,
-          ownBackendHostnames,
-          fallbackDomain,
-          submitPatterns,
-          primaryHost
-        )
-      );
+      actionSequenceIsReadSamples &&
+      // Only non-GET 2xx captures the flow could treat as its endpoint (same
+      // host/submit-pattern candidate set as firstEndpointCapture) veto the
+      // read classification; an unrelated off-backend POST must not.
+      readFlowCaptures.filter(
+        (c) =>
+          c.method !== "GET" &&
+          c.status >= 200 &&
+          c.status < 300 &&
+          !isNoiseUrl(c.url) &&
+          (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
+            isAllowedFixtureHost(
+              captureHostname(c.url),
+              ownBackendHostnames,
+              fallbackDomain,
+              primaryHost
+            ))
+      ).length === 0 &&
+      getInputsAreUrlShaped(readFlowWinner);
+    const actionSteps = isReadOnlyGetFlow ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
