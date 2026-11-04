@@ -14759,7 +14759,8 @@ export function emitContractTs(opts: {
   // pass the verdict. GraphQL responses are typed by the query, not by the
   // entity addressed, so they are not covered by this default.
   const leniencyForUnprovenLeaves =
-    singleEntityEvidence ?? (!isGqlEmission && responseBodySamples.length <= 1);
+    singleEntityEvidence ??
+    singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null);
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -17145,6 +17146,24 @@ function healUnreferencedUrlFieldsOnce(
   return retried;
 }
 
+/**
+ * The one verdict on whether a REST response schema lacks proof that its
+ * samples span more than one entity (GraphQL is typed by its query and never
+ * qualifies). Lenient when a lone distinct sample was observed, or when every
+ * gathered same-endpoint capture shares identical identifying parameters
+ * (including none). `variance` may be null when only the sample count is known.
+ */
+export function singleEntityVerdict(
+  winningCapture: { url: string } | null,
+  isGraphQL: boolean,
+  distinctSampleCount: number,
+  variance: EntityVarianceEvidence | null
+): boolean {
+  if (isGraphQL) return false;
+  if (distinctSampleCount <= 1) return true;
+  return variance?.singleEntity === true && winningCapture !== null;
+}
+
 export function buildSingleEntityWarning(
   winningCapture: { url: string } | null | undefined,
   entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>,
@@ -17184,15 +17203,19 @@ export function evaluateSingleEntityEvidence(
       : Number.POSITIVE_INFINITY;
   const warning = buildSingleEntityWarning(winningCapture, entityVariance, distinctSampleCount);
   if (warning !== null) warn(warning);
-  return { singleEntityEvidence: warning !== null };
+  return {
+    singleEntityEvidence:
+      winningCapture !== null &&
+      singleEntityVerdict(winningCapture, isGraphQLWinner, distinctSampleCount, entityVariance),
+  };
 }
 
 /**
  * Response schema for one chain step/hop, inferred through the same
  * entity-aware path as the contract schema: every same-identity 2xx sibling
  * capture is a sample, and when the step is addressed by identifying
- * parameters that all siblings share, scalar leaves are emitted lenient.
- * Unlike the primary schema, a lone sample alone does not relax a step.
+ * parameters that all siblings share (or there is a lone sample), leaves are
+ * emitted lenient via the shared singleEntityVerdict.
  */
 const chainEndpointIndex = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
 
@@ -17219,15 +17242,10 @@ export function inferChainStepResponseSchema(
     captures = index.get(restResponseIdentity(stepCapture.url)) ?? allCaptures;
   }
   const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
-  // Only measured entity evidence (shared identifying parameters) relaxes a
-  // step: a flow records one response per call by construction, so a lone
-  // sample here is not a statement about which entity was addressed, and
-  // required `*Url` leaves of a step's schema are what the required-URL-field
-  // guard uses to attribute unreferenced fields to unrelated captures.
+  // Same verdict as the primary schema: no proof of more than one entity
+  // means lenient leaves.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
-  // Unparameterized steps stay strict (repeats without identifying params are
-  // not entity evidence), so the required-URL-field guard still sees them.
-  const singleEntityEvidence = variance.singleEntity && variance.entityParameterized;
+  const singleEntityEvidence = singleEntityVerdict(stepCapture, isGraphQL, samples.length, variance);
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
     aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
