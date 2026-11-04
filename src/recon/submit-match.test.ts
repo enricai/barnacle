@@ -49,8 +49,12 @@ describe("matchesSubmitPattern", () => {
   it("matches a form-urlencoded body pattern on a generic domain", () => {
     const body = /ev=ViewContent/;
     const url = "https://track.example.com/collect";
-    expect(matchesSubmitPattern({ url, requestPostData: "id=1&ev=ViewContent&x=2" }, /collect/, body)).toBe(true);
-    expect(matchesSubmitPattern({ url, requestPostData: "id=1&ev=Other" }, /collect/, body)).toBe(false);
+    expect(
+      matchesSubmitPattern({ url, requestPostData: "id=1&ev=ViewContent&x=2" }, /collect/, body)
+    ).toBe(true);
+    expect(matchesSubmitPattern({ url, requestPostData: "id=1&ev=Other" }, /collect/, body)).toBe(
+      false
+    );
     expect(matchesSubmitPattern({ url }, /collect/, body)).toBe(false);
   });
 });

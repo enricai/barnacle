@@ -7,10 +7,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
 import { format } from "date-fns";
-
 import { getScriptLogger } from "@/lib/logging";
+import { isRawCaptureFilename } from "@/recon/capture-filters";
 
 const logger = getScriptLogger("recon-shared");
 
@@ -201,7 +200,7 @@ export interface RateLimitFinding {
 export function readJsonDir<T>(dir: string, exclude: string[] = []): T[] {
   try {
     return readdirSync(dir)
-      .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json") && !exclude.includes(f))
+      .filter((f) => isRawCaptureFilename(f) && !exclude.includes(f))
       .sort()
       .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as T);
   } catch {

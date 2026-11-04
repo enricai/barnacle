@@ -75,6 +75,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
+import { isRawCaptureFilename } from "@/recon/capture-filters";
 import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
@@ -456,7 +457,7 @@ function auditFinalSubmitMatch(params: {
     params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
   let entries: string[];
   try {
-    entries = readdirSync(capturesDir);
+    entries = readdirSync(capturesDir).filter(isRawCaptureFilename);
   } catch (err) {
     logger.warn(
       `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
@@ -541,9 +542,7 @@ function writeSubmitManifest(params: {
   const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
   let entries: string[];
   try {
-    entries = readdirSync(capturesDir)
-      .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
-      .sort();
+    entries = readdirSync(capturesDir).filter(isRawCaptureFilename).sort();
   } catch (err) {
     logger.warn(
       `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`

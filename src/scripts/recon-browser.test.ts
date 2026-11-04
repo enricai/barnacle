@@ -7810,6 +7810,37 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     ).toBe(true);
   });
 
+  it("audit and manifest ignore sidecars that mention the pattern", () => {
+    const { runRoot, capturesDir } = setup([]);
+    const sidecar = JSON.stringify({
+      method: "GET",
+      url: `${BASE}/schedule.json`,
+      status: 200,
+      responseBody: "{}",
+    });
+    writeFileSync(join(capturesDir, "000-p.decoded.json"), sidecar);
+    writeFileSync(join(capturesDir, "000-p.decoded.txt"), sidecar);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/schedule.json",
+      submitBodyPattern: null,
+      ownBackendHostnames: ["api.example.org"],
+      logger: lg,
+    });
+    expect(manifest(runRoot)).toEqual([]);
+    for (const submitEndpointPattern of ["/schedule.json", null]) {
+      expect(
+        auditFinalSubmitMatch({
+          ownBackendHostnames: ["api.example.org"],
+          submitEndpointPattern,
+          capturesDir,
+          logger: lg,
+        }).auditFailed
+      ).toBe(true);
+    }
+  });
+
   it("audit rejects a data: URL containing the pattern text", () => {
     const { capturesDir } = setup([
       { method: "GET", url: "data:text/plain,/schedule.json", status: 200, responseBody: "{}" },

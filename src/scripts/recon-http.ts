@@ -39,6 +39,7 @@ import { getScriptLogger } from "@/lib/logging";
 import {
   isAllowedFixtureHost,
   isNoiseUrl,
+  isRawCaptureFilename,
   noiseReason,
   registrableDomain,
 } from "@/recon/capture-filters";
@@ -107,9 +108,7 @@ interface AuxManifestEntry {
 function loadCaptures(dir: string): Array<{ filename: string; capture: Capture }> {
   let files: string[];
   try {
-    files = readdirSync(dir)
-      .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
-      .sort();
+    files = readdirSync(dir).filter(isRawCaptureFilename).sort();
   } catch {
     logger.error(`captures directory not found: ${dir}`);
     logger.error("run recon-browser.ts first");
