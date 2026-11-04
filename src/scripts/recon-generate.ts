@@ -15912,18 +15912,17 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string,
-  payloadOnly = false
+  browserFlowCode: string
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   // Scan only the payload schema: a response schema's required `*Url` field is
   // output, not caller input. Falls back to the whole contract when the
-  // payload-schema declaration is absent (hand-built fixtures). Opt-in
-  // (read-only GET flows): submission flows keep scanning the whole contract.
+  // payload-schema declaration is absent (hand-built fixtures). Applies to
+  // every flow.
   const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
   let scanned = contractCode;
-  if (payloadOnly && payloadStart >= 0) {
+  if (payloadStart >= 0) {
     const rest = contractCode.slice(payloadStart);
     const end = rest.search(/^export type \w*Payload\b/m);
     scanned = end >= 0 ? rest.slice(0, end) : rest;
@@ -17085,11 +17084,9 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
-  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code,
-    payloadOnly
+    firstAttempt.browserFlow.code
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -17135,8 +17132,7 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code,
-    !!retried.contractOpts.getInputModel
+    retried.browserFlow.code
   );
   if (stillOffending.length > 0) {
     throw new Error(

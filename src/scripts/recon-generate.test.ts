@@ -5570,15 +5570,14 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", true)
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "")
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
       unreferencedRequiredUrlFields(
         mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
-        "",
-        true
+        ""
       )
     ).toEqual(["ClickUrl"]);
   });
