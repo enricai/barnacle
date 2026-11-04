@@ -17934,32 +17934,36 @@ async function main(): Promise<void> {
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
     // A flow of same-origin successful GET reads (no non-GET submit) is a
     // single-endpoint REST read, not a browser-only submission flow.
+    // Strict submit-pattern match (no whole-pool fallback): a declared pattern
+    // that matches only the GET reads must not be vetoed by an unrelated
+    // same-host non-GET (visit beacon) that merely falls back into the pool.
+    const matchesDeclaredSubmit = compileSubmitMatcher(submitPatterns);
+    const readFlowCaptures = activeCaptures.filter(
+      (c) => c.method === "GET" || matchesDeclaredSubmit(c)
+    );
     const isReadOnlyGetFlow =
       !gql &&
       actionSteps.length === 0 &&
       // Only non-GET 2xx captures the flow could treat as its endpoint (same
       // host/submit-pattern candidate set as firstEndpointCapture) veto the
       // read classification; an unrelated off-backend POST must not.
-      restrictToSubmitPattern(
-        activeCaptures.filter(
-          (c) =>
-            c.method !== "GET" &&
-            c.status >= 200 &&
-            c.status < 300 &&
-            !isNoiseUrl(c.url) &&
-            (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
-              isAllowedFixtureHost(
-                captureHostname(c.url),
-                ownBackendHostnames,
-                fallbackDomain,
-                primaryHost
-              ))
-        ),
-        submitPatterns
+      readFlowCaptures.filter(
+        (c) =>
+          c.method !== "GET" &&
+          c.status >= 200 &&
+          c.status < 300 &&
+          !isNoiseUrl(c.url) &&
+          (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
+            isAllowedFixtureHost(
+              captureHostname(c.url),
+              ownBackendHostnames,
+              fallbackDomain,
+              primaryHost
+            ))
       ).length === 0 &&
       getInputsAreUrlShaped(
         firstEndpointCapture(
-          activeCaptures,
+          readFlowCaptures,
           ownBackendHostnames,
           fallbackDomain,
           submitPatterns,
