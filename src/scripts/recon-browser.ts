@@ -75,7 +75,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
-import { isSuccessStatus, matchesSubmitPattern } from "@/recon/submit-match";
+import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -477,14 +477,13 @@ function auditFinalSubmitMatch(params: {
         requestPostData?: unknown;
       };
       if (typeof data.url === "string" && isSuccessStatus(data.status)) {
-        let hostname: string;
-        try {
-          hostname = new URL(data.url).hostname;
-        } catch {
-          continue;
-        }
-        if (!ownBackendHostnames.includes(hostname)) continue;
-        if (auditEndpointRx !== null && !matchesSubmitPattern(data, auditEndpointRx, auditBodyRx)) {
+        if (
+          !isQualifyingSubmitCapture(data, {
+            endpointRx: auditEndpointRx,
+            bodyRx: auditBodyRx,
+            ownBackendHostnames,
+          })
+        ) {
           continue;
         }
         const parsedBody = normalizeResponseBodyForAudit(data);
@@ -531,9 +530,12 @@ function writeSubmitManifest(params: {
   capturesDir: string;
   submitEndpointPattern: string | null;
   submitBodyPattern: string | null;
+  /** Own-backend host gate shared with the audit; empty/absent = no host gate. */
+  ownBackendHostnames?: readonly string[];
   logger: Logger;
 }): void {
   const { runRoot, capturesDir, submitEndpointPattern, submitBodyPattern, logger } = params;
+  const ownBackendHostnames = params.ownBackendHostnames ?? [];
   if (submitEndpointPattern === null) return;
   const endpointRx = new RegExp(submitEndpointPattern);
   const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
@@ -560,7 +562,7 @@ function writeSubmitManifest(params: {
         status?: number;
       };
       if (typeof data.url !== "string") continue;
-      if (!matchesSubmitPattern(data, endpointRx, bodyRx)) continue;
+      if (!isQualifyingSubmitCapture(data, { endpointRx, bodyRx, ownBackendHostnames })) continue;
       if (data.method === "GET") {
         if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
         continue;
@@ -3728,6 +3730,7 @@ async function main(): Promise<void> {
         capturesDir: runDir.graphqlDir,
         submitEndpointPattern,
         submitBodyPattern,
+        ownBackendHostnames,
         logger,
       });
 

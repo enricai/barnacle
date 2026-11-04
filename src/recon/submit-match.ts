@@ -31,3 +31,33 @@ export function matchesSubmitPattern(
 export function isSuccessStatus(status: unknown): boolean {
   return typeof status === "number" && status >= 200 && status < 300;
 }
+
+/**
+ * The one qualifying-submit-capture predicate shared by the submit manifest and
+ * the end-of-run audit: http(s) URL, matches `endpointRx` (and `bodyRx` when
+ * declared), and — when `ownBackendHostnames` is non-empty — the URL hostname
+ * is one of them (e.g. `shop.example.com` for `https://shop.example.com/api/orders`).
+ * An empty list applies no host gate. `endpointRx === null` skips pattern
+ * matching (host gate only). Status policy stays with each caller.
+ */
+export function isQualifyingSubmitCapture(
+  capture: SubmitMatchCapture,
+  opts: {
+    endpointRx: RegExp | null;
+    bodyRx: RegExp | null;
+    ownBackendHostnames: readonly string[];
+  }
+): boolean {
+  if (typeof capture.url !== "string") return false;
+  if (opts.ownBackendHostnames.length > 0) {
+    let hostname: string;
+    try {
+      hostname = new URL(capture.url).hostname;
+    } catch {
+      return false;
+    }
+    if (!opts.ownBackendHostnames.includes(hostname)) return false;
+  }
+  if (opts.endpointRx === null) return true;
+  return matchesSubmitPattern(capture, opts.endpointRx, opts.bodyRx);
+}
