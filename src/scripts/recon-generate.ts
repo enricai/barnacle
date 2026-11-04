@@ -2641,6 +2641,8 @@ export interface GetInputModel {
   fieldToQueryKey: Record<string, string>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+  /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
+  pathTwins?: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
 
 function safeGetFieldIdentifier(key: string): string {
@@ -2725,9 +2727,14 @@ export function deriveGetInputModel(
   });
   if (!siblings.includes(winner)) siblings.push(winner);
   const valuesByKey = new Map<string, Set<string>>();
+  // How many siblings carry each key: a key absent from some of them is chosen
+  // by the caller per request, so its recorded value is not a constant.
+  const capturesWithKey = new Map<string, number>();
   const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
   for (const c of siblings) {
     const u = new URL(c.url);
+    for (const k of new Set(u.searchParams.keys()))
+      capturesWithKey.set(k, (capturesWithKey.get(k) ?? 0) + 1);
     for (const [k, v] of u.searchParams) {
       const existing = valuesByKey.get(k);
       const set = existing ?? new Set<string>();
@@ -2743,6 +2750,7 @@ export function deriveGetInputModel(
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
+  const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
   const nameFor = (key: string): string => {
     const base = safeGetFieldIdentifier(key);
     if (declared.has(key) && safeGetFieldIdentifier(key) === key) return key;
@@ -2762,12 +2770,16 @@ export function deriveGetInputModel(
         ? segments.findIndex((s, i) => i > 0 && decode(s) === winnerValue)
         : -1;
     const isDeclared = declared.has(key) || declared.has(safeGetFieldIdentifier(key));
-    if (segIdx >= 0 && !boundSegments.has(segIdx)) {
+    const boundField = boundSegments.get(segIdx);
+    if (segIdx >= 0 && boundField !== undefined) {
+      // Another query key repeating an already-bound path segment follows the same caller input.
+      pathTwins.push({ field: boundField, segmentIndex: segIdx, queryKey: key });
+    } else if (segIdx >= 0) {
       const field = nameFor(key);
       boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1 || isDeclared) {
+    } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared) {
       const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
@@ -2788,7 +2800,7 @@ export function deriveGetInputModel(
     boundSegments.set(i, field);
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
   }
-  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
+  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars, pathTwins };
 }
 
 /**
@@ -14157,36 +14169,31 @@ function buildGetRequestUrlExpr(
 ): string {
   const overridden = new Set(extraParams.map(([k]) => k));
   const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
-  const segments = endpointPath.split("/");
-  for (const pv of model.pathVars) {
-    const recorded = segments[pv.segmentIndex] ?? "";
-    let decoded = recorded;
+  const recordedSegments = endpointPath.split("/");
+  const recordedPathValue = (segmentIndex: number): string => {
+    const recorded = recordedSegments[segmentIndex] ?? "";
     try {
-      decoded = decodeURIComponent(recorded);
+      return decodeURIComponent(recorded);
     } catch {
-      // keep the raw segment
+      return recorded; // keep the raw segment
     }
+  };
+  const segments = [...recordedSegments];
+  for (const pv of model.pathVars) {
     segments[pv.segmentIndex] =
-      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)}))}`;
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))}))}`;
   }
   const pairs: string[] = [];
   for (const [k, v] of Object.entries(model.fixedParams)) {
     if (!overridden.has(JSON.stringify(k)))
       pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
   }
-  for (const pv of model.pathVars) {
+  for (const pv of [...model.pathVars, ...(model.pathTwins ?? [])]) {
     if (pv.queryKey === "") continue; // path-only id: no query pair
     if (overridden.has(JSON.stringify(pv.queryKey))) continue;
     // Path-twin pair: same payload value / recorded fallback as its path segment.
-    const recorded = endpointPath.split("/")[pv.segmentIndex] ?? "";
-    let decoded = recorded;
-    try {
-      decoded = decodeURIComponent(recorded);
-    } catch {
-      // keep the raw segment
-    }
     pairs.push(
-      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)})]`
+      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`
     );
   }
   for (const { field, queryKey } of model.dynamicFields) {
