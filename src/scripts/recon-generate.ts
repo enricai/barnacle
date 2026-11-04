@@ -2797,9 +2797,16 @@ export function deriveGetInputModel(
  * the browser capture records under `variables`) derives an EMPTY
  * {@link GetInputModel}: no query keys, no path vars, nothing. Emitting the
  * URL-shaped GET read for it would silently drop every input the capture
- * proved the operation needs — including a bounded-pagination container — and
- * replay a single argument-less request. Such a capture is a variables-driven
- * read, so the single-endpoint request-body branch owns it, not the GET branch.
+ * proved the operation needs and replay a single argument-less request. Such
+ * a capture is a variables-driven read, so the single-endpoint request-body
+ * branch owns it, not the GET branch.
+ *
+ * Exception: when those recorded variables are a bounded-pagination container,
+ * the paging loop renders the count/skip keys into the query string itself
+ * (see {@link buildGetRequestUrlExpr}'s `extraParams`), so the inputs that
+ * drive the read are NOT dropped and the recorded method stays a GET. Routing
+ * such a capture to the body branch instead would rewrite a proven GET into a
+ * POST carrying an invented `{ query }` body the endpoint never accepted.
  */
 function getInputsAreUrlShaped(winner: Capture | null | undefined): boolean {
   const model = deriveGetInputModel(winner, winner ? [winner] : []);
@@ -2810,6 +2817,7 @@ function getInputsAreUrlShaped(winner: Capture | null | undefined): boolean {
     Object.keys(model.fixedParams).length > 0;
   if (urlCarriesInputs) return true;
   const variables = winner?.variables;
+  if (findPaginationContainer(variables)) return true;
   const hasRecordedVariables =
     variables !== null &&
     variables !== undefined &&
