@@ -5,6 +5,8 @@ import {
   evaluateSingleEntityEvidence,
   gatherResponseBodySamples,
   inferChainStepResponseSchema,
+  singleEntityVerdict,
+  unreferencedRequiredUrlFields,
 } from "./recon-generate";
 
 const BASE = {
@@ -199,7 +201,7 @@ describe("venue schedule endpoint, date-window-only variance (e2e)", () => {
     expect(schema.safeParse(nullGenre).success).toBe(false);
   });
 
-  it("chain step: date-window-only siblings lenient; lone sample strict", () => {
+  it("chain step: date-window-only siblings lenient; lone sample and unparameterized repeats lenient", () => {
     const a = mk(u(`/venues/7/schedule?ids[]=7&${W1}`), fantasy);
     const b = mk(u(`/venues/7/schedule?ids[]=7&${W2}`), body2);
     const lenient = evalSchema(inferChainStepResponseSchema(a, [a, b]));
@@ -207,6 +209,72 @@ describe("venue schedule endpoint, date-window-only variance (e2e)", () => {
     const solo = mk(u("/schedule"), fantasy);
     const lone = evalSchema(inferChainStepResponseSchema(solo, [solo]));
     expect(lone.safeParse(fantasy).success).toBe(true);
-    expect(lone.safeParse(nullGenre).success).toBe(false);
+    expect(lone.safeParse(nullGenre).success).toBe(true);
+    const r1 = mk(u("/schedule"), fantasy);
+    const r2 = mk(u("/schedule"), body2);
+    const repeats = evalSchema(inferChainStepResponseSchema(r1, [r1, r2]));
+    expect(repeats.safeParse(nullGenre).success).toBe(true);
+  });
+});
+
+describe("bookstore catalog item, id in path and bracketed query, repeated across date windows (e2e)", () => {
+  const W1 = "from=2024-01-01&to=2024-01-31";
+  const W2 = "from=2024-02-01&to=2024-02-28";
+  const item = (p: string) => `https://example.test/catalog/items/42/sales?ids[]=42&${p}`;
+  const captured = {
+    id: 42,
+    title: "Dune",
+    category: "scifi",
+    coverUrl: "https://example.test/c.png",
+    discount: null,
+    note: null,
+  };
+  const sibNullCat = { ...captured, category: null };
+  const { category: _c, ...sibNoCat } = captured;
+
+  it("primary schema accepts sibling with the string field null or absent", () => {
+    const { src } = contractFor([mk(item(W1), captured), mk(item(W2), { ...captured, id: 42 })]);
+    const schema = evalSchema(responseSchemaExpr(src));
+    expect(schema.safeParse(captured).success).toBe(true);
+    expect(schema.safeParse(sibNullCat).success).toBe(true);
+    expect(schema.safeParse(sibNoCat).success).toBe(true);
+  });
+
+  it("chain step schema accepts the same siblings", () => {
+    const a = mk(item(W1), captured);
+    const schema = evalSchema(inferChainStepResponseSchema(a, [a, mk(item(W2), captured)]));
+    expect(schema.safeParse(sibNullCat).success).toBe(true);
+    expect(schema.safeParse(sibNoCat).success).toBe(true);
+  });
+
+  it("lone sample and submission-terminal emission accept the siblings", () => {
+    const one = mk(item(W1), captured);
+    const lone = contractFor([one]);
+    expect(evalSchema(responseSchemaExpr(lone.src)).safeParse(sibNullCat).success).toBe(true);
+    const terminal = emitContractTs({
+      ...BASE,
+      responseBody: captured,
+      responseBodySamples: [captured],
+      singleEntityEvidence: singleEntityVerdict(null, false, 1, null),
+    });
+    const schema = evalSchema(responseSchemaExpr(terminal));
+    expect(schema.safeParse(sibNullCat).success).toBe(true);
+    expect(schema.safeParse(sibNoCat).success).toBe(true);
+  });
+
+  it("a required *Url response leaf does not trip the required-URL-field guard", () => {
+    const { src } = contractFor([mk(item(W1), captured), mk(item(W2), captured)]);
+    expect(src).toContain("coverUrl");
+    expect(unreferencedRequiredUrlFields(src, "", true)).toEqual([]);
+  });
+
+  it("multi-entity captures stay strict", () => {
+    const other = { ...captured, id: 43, title: "Emma", category: "classic" };
+    const { src, warns } = contractFor([
+      mk(item(W1), captured),
+      mk("https://example.test/catalog/items/43/sales?ids[]=43&" + W1, other),
+    ]);
+    expect(warns).toHaveLength(0);
+    expect(evalSchema(responseSchemaExpr(src)).safeParse(sibNullCat).success).toBe(false);
   });
 });

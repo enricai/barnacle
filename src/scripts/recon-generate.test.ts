@@ -4152,7 +4152,9 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       new Map()
     );
     expect(body).not.toContain("__typename");
-    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/);
+    expect(body).toMatch(
+      /schema:\s*z\.object\(\{\n\s*id: z\.string\(\)\.nullable\(\)\.optional\(\),\n\s*\}\)\.loose\(\)/
+    );
   });
 
   it("leaves the input-body-derived payload schema and structured-key inference unaffected by __typename/.loose()", () => {
@@ -5784,14 +5786,44 @@ describe("emitContractTs — singleEntityEvidence", () => {
     });
     expect(src).toContain("z.string().nullable().optional()");
   });
-  it("is unchanged when explicitly unflagged", () => {
+  it("is unchanged when explicitly unflagged with several samples", () => {
+    const other = { name: "Gadget", count: 4 };
+    const src = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body, other],
+      singleEntityEvidence: false,
+    });
+    expect(src).not.toContain("z.string().nullable().optional()");
+  });
+  it("a lone sample stays lenient even when a caller unflags it", () => {
     const src = emitContractTs({
       ...BASE_OPTS,
       responseBody: body,
       responseBodySamples: [body],
       singleEntityEvidence: false,
     });
-    expect(src).not.toContain("z.string().nullable().optional()");
+    expect(src).toContain("name: z.string().nullable().optional()");
+  });
+  it("derives the verdict from allCaptures when several samples share identifying parameters", () => {
+    const other = { name: "Gadget", count: 4 };
+    const cap = (url: string, responseBody: unknown) =>
+      ({ url, method: "GET", status: 200, responseBody }) as never;
+    const same = "https://example.test/api/widgets?ids[]=1";
+    const lenient = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body, other],
+      allCaptures: [cap(same, body), cap(same, other)],
+    });
+    expect(lenient).toContain("name: z.string().nullable().optional()");
+    const strict = emitContractTs({
+      ...BASE_OPTS,
+      responseBody: body,
+      responseBodySamples: [body, other],
+      allCaptures: [cap(same, body), cap("https://example.test/api/widgets?ids[]=2", other)],
+    });
+    expect(strict).toContain("name: z.string(),");
   });
   it("a lone distinct response is single-entity evidence by default", () => {
     const src = emitContractTs({
