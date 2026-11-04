@@ -1410,8 +1410,21 @@ const RESOURCE_ID_SEGMENT =
  * `PATCH /orders/17` and `PATCH /orders/18` count as one recurring REST
  * endpoint rather than two one-off paths.
  */
+// Memoized for the same reason as {@link endpointKey}: response-sample
+// gathering and entity-variance evidence both call this per capture per step,
+// and the extra URL parse plus per-segment regex here costs more than the
+// endpointKey lookup it wraps.
+const endpointTemplateKeyCache = new Map<string, string>();
 function endpointTemplateKey(url: string): string {
+  const memoized = endpointTemplateKeyCache.get(url);
+  if (memoized !== undefined) return memoized;
   const key = endpointKey(url);
+  const templated = computeEndpointTemplateKey(key);
+  endpointTemplateKeyCache.set(url, templated);
+  return templated;
+}
+
+function computeEndpointTemplateKey(key: string): string {
   try {
     const u = new URL(key);
     const pathname = u.pathname
@@ -17208,10 +17221,9 @@ export function inferChainStepResponseSchema(
   // required `*Url` leaves of a step's schema are what the required-URL-field
   // guard uses to attribute unreferenced fields to unrelated captures.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
-  // Same verdict as evaluateSingleEntityEvidence (unproven variance), except
-  // a lone unparameterized sample stays strict.
-  const singleEntityEvidence =
-    variance.singleEntity && (variance.entityParameterized || samples.length > 1);
+  // Unparameterized steps stay strict (repeats without identifying params are
+  // not entity evidence), so the required-URL-field guard still sees them.
+  const singleEntityEvidence = variance.singleEntity && variance.entityParameterized;
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
     aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
