@@ -523,6 +523,7 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
   skipped: number;
 } {
   const targets = new Map<string, { method: string; body: string | null }>();
+  const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
     if (!replay.success) continue;
@@ -537,9 +538,17 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (isStaticFixturePath(pathname, true)) continue;
-      const key = `${u.origin}${u.pathname}`;
-      if (!targets.has(key)) {
-        targets.set(key, { method: replay.method, body: replay.requestBody });
+      // One probe per endpoint (origin + path), but the probed URL is the
+      // captured request itself: its query string selects the resource and
+      // often gates the response, so probing the bare path measures a
+      // different request than the one recorded.
+      const endpointKey = `${u.origin}${u.pathname}`;
+      if (!seenEndpoints.has(endpointKey)) {
+        seenEndpoints.add(endpointKey);
+        targets.set(`${endpointKey}${u.search}`, {
+          method: replay.method,
+          body: replay.requestBody,
+        });
       }
     } catch {
       // skip unparseable urls

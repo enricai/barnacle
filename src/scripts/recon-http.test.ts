@@ -176,6 +176,25 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
   });
 });
 
+describe("selectRateLimitTargets — captured query string", () => {
+  it("probes the captured request including its query string, not the bare path", () => {
+    const { targets } = selectRateLimitTargets([
+      replay({ url: "https://api.example.com/items?id=42&lang=en" }),
+    ]);
+
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/items?id=42&lang=en"]);
+  });
+
+  it("keeps the query for a path ending in .json and probes each endpoint once", () => {
+    const { targets } = selectRateLimitTargets([
+      replay({ url: "https://api.example.com/v1/search.json?q=a" }),
+      replay({ url: "https://api.example.com/v1/search.json?q=b" }),
+    ]);
+
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/v1/search.json?q=a"]);
+  });
+});
+
 describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
   it("excludes a fictitious third-party vendor host even though it is path-shaped like a fixture", () => {
     const replays: ReplayResult[] = [
