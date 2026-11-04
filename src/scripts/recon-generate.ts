@@ -14122,6 +14122,7 @@ function buildGetRequestUrlExpr(
     ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
   ];
   for (const { field, queryKey } of bound) {
+    if (queryKey === "") continue; // path-only id: no query pair
     if (overridden.has(JSON.stringify(queryKey))) continue;
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
