@@ -56,7 +56,9 @@ describe("emitMultiStepExecuteHttp — per-call aggregate/per-unit basis annotat
       new Map()
     );
 
-    expect(body).toMatch(/total: z\.number\(\)(?:\.nullable\(\)\.optional\(\))?\.describe\(.*breakdownByUnit.*\)/);
+    expect(body).toMatch(
+      /total: z\.number\(\)(?:\.nullable\(\)\.optional\(\))?\.describe\(.*breakdownByUnit.*\)/
+    );
   });
 
   it("emits no .describe() on calls whose own response has no aggregate/per-unit shape", () => {

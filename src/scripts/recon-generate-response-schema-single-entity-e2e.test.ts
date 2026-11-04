@@ -272,7 +272,7 @@ describe("bookstore catalog item, id in path and bracketed query, repeated acros
     const other = { ...captured, id: 43, title: "Emma", category: "classic" };
     const { src, warns } = contractFor([
       mk(item(W1), captured),
-      mk("https://example.test/catalog/items/43/sales?ids[]=43&" + W1, other),
+      mk(`https://example.test/catalog/items/43/sales?ids[]=43&${W1}`, other),
     ]);
     expect(warns).toHaveLength(0);
     expect(evalSchema(responseSchemaExpr(src)).safeParse(sibNullCat).success).toBe(false);
