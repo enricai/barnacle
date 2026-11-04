@@ -5594,7 +5594,7 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
     const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]", recorded: "1" }]);
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
     expect(m.fieldToQueryKey.ids).toBe("ids[]");
     expect(m.fixedParams).toEqual({ sort: "asc" });
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
@@ -5674,7 +5674,7 @@ describe("deriveGetInputModel", () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/search?q=1&from=2");
     const m = deriveGetInputModel(a, [a], ["from"])!;
-    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from", recorded: "2" }]);
+    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
     expect(m.fixedParams).toEqual({ q: "1" });
   });
   it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
@@ -5699,7 +5699,7 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
     const b = cap("https://api.example.com/v1/search?page=2&sort=asc");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page", recorded: "1" }]);
+    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page" }]);
     expect(m.fixedParams).toEqual({ sort: "asc" });
   });
 });
