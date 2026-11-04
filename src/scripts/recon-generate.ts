@@ -2723,6 +2723,13 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
   return siblings;
 }
 
+/** A query value shaped like a calendar date, timestamp or epoch: a time-window input, not a constant. */
+function isDateWindowValue(v: string): boolean {
+  if (/^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(v))
+    return !Number.isNaN(Date.parse(v.slice(0, 10)));
+  return /^\d{10}(\d{3})?$/.test(v);
+}
+
 /**
  * Pure derivation of the GET input model from the winning capture and its
  * successful same-shape GET siblings (same segment count). Returns null for
@@ -2801,7 +2808,7 @@ export function deriveGetInputModel(
       boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared) {
+    } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared || [...values].every(isDateWindowValue)) {
       const field = nameFor(key);
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
