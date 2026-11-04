@@ -15913,23 +15913,31 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string
+  browserFlowCode: string,
+  payloadOnly = false
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   // Scan only the payload schema: a response schema's required `*Url` field is
   // output, not caller input. Falls back to the whole contract when the
-  // payload-schema declaration is absent (hand-built fixtures). Applies to
-  // every flow.
+  // payload-schema declaration is absent (hand-built fixtures). Opt-in
+  // (read-only GET flows): submission flows keep scanning the whole contract.
   const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
   let scanned = contractCode;
-  if (payloadStart >= 0) {
+  if (payloadOnly && payloadStart >= 0) {
     const rest = contractCode.slice(payloadStart);
     const end = rest.search(/^export type \w*Payload\b/m);
     scanned = end >= 0 ? rest.slice(0, end) : rest;
   }
   return [...scanned.matchAll(urlFieldLinePattern)]
-    .filter((match) => !match[0].includes(".optional("))
+    // Whole-contract scans also see response-schema leaves relaxed by the
+    // single-entity verdict (`.nullable().optional()`); those still attribute
+    // an unreferenced URL field to its source capture.
+    .filter((match) =>
+      payloadOnly
+        ? !match[0].includes(".optional(")
+        : !match[0].includes(".optional(") || match[0].includes(".nullable().optional(")
+    )
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
@@ -17085,9 +17093,11 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
+  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code
+    firstAttempt.browserFlow.code,
+    payloadOnly
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -17133,7 +17143,8 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code
+    retried.browserFlow.code,
+    !!retried.contractOpts.getInputModel
   );
   if (stillOffending.length > 0) {
     throw new Error(

@@ -4152,7 +4152,7 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       new Map()
     );
     expect(body).not.toContain("__typename");
-    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/);
+    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\)\.nullable\(\)\.optional\(\),\n\s*\}\)\.loose\(\)/);
   });
 
   it("leaves the input-body-derived payload schema and structured-key inference unaffected by __typename/.loose()", () => {
@@ -5570,14 +5570,15 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "")
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", true)
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
       unreferencedRequiredUrlFields(
         mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
-        ""
+        "",
+        true
       )
     ).toEqual(["ClickUrl"]);
   });
