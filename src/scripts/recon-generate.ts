@@ -5757,6 +5757,15 @@ export function indexStateValues(
     captures.map((capture) => ({ capture })),
     null
   );
+  // Short record ids a later write re-sends under an identifier key are exempt
+  // from the length floor exactly like a fold-chain value, scoped to the
+  // consuming write captures.
+  for (const [value, consumers] of collectMutationIdentifierThreadedValues(captures)) {
+    chainForceIncludeValues.set(
+      value,
+      new Set([...(chainForceIncludeValues.get(value) ?? []), ...consumers])
+    );
+  }
   // The set of captures a short/force-included value is actually eligible to
   // be spliced into — the union of whatever `chainForceIncludeValues` and the
   // caller-supplied `forceIncludeValues` proved for that value. `undefined`
@@ -6346,6 +6355,65 @@ function emitItemLoopLines(
     `${indent}  })`,
     `${indent});`,
   ];
+}
+
+/**
+ * Short identifier values (below {@link MIN_STATE_VALUE_LENGTH}, e.g. a
+ * six-digit numeric record id) that an earlier response mints under an
+ * identifier-named key and a LATER body-bearing (non-GET/HEAD) request re-sends
+ * in its JSON body under an identifier-named key the two names correlate on.
+ * This is the cart-then-update shape: `POST /order` -> `{id: 514391}`, then
+ * `PUT /order` carrying `{order: {id: 514391}}`. Without this the length floor
+ * drops the id from the state index and the update call freezes the recon
+ * session's literal id, which belongs to a cart that no longer exists on replay.
+ *
+ * Narrow on purpose, like {@link collectDependentDrillDownChainValues}: the
+ * value must sit under an identifier key (`id`, `orderId`, ...) on BOTH sides
+ * and be consumed by a strictly later capture, and the result is scoped to
+ * those consumer captures so a short value is never spliced into an unrelated
+ * capture that merely contains the same digits.
+ */
+function collectMutationIdentifierThreadedValues(
+  captures: readonly Capture[]
+): Map<string, Set<Capture>> {
+  const result = new Map<string, Set<Capture>>();
+  const isIdentifierKey = (key: string | undefined): key is string =>
+    key !== undefined && !ARRAY_INDEX_KEY_PATTERN.test(key) && endsWithIdentifierWord(key);
+  for (let i = 0; i < captures.length; i++) {
+    const source = captures[i]!;
+    if (source.responseBody === undefined || source.responseBody === null) continue;
+    const produced = new Map<string, string>();
+    for (const { value, path } of walkAllPrimitiveLeaves(source.responseBody)) {
+      const key = path.at(-1);
+      if (value === null || !isIdentifierKey(key)) continue;
+      const text = String(value);
+      if (text.length === 0 || text.length >= MIN_STATE_VALUE_LENGTH) continue;
+      if (!produced.has(text)) produced.set(text, key);
+    }
+    if (produced.size === 0) continue;
+    for (let j = i + 1; j < captures.length; j++) {
+      const consumer = captures[j]!;
+      const method = consumer.method.toUpperCase();
+      if (method === "GET" || method === "HEAD" || !consumer.requestPostData) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(consumer.requestPostData);
+      } catch {
+        continue;
+      }
+      for (const { value, path } of walkAllPrimitiveLeaves(parsed)) {
+        const targetKey = path.at(-1);
+        if (value === null || !isIdentifierKey(targetKey)) continue;
+        const text = String(value);
+        const sourceKey = produced.get(text);
+        if (sourceKey === undefined || !keyNamesCorrelate(sourceKey, targetKey)) continue;
+        const consumers = result.get(text) ?? new Set<Capture>();
+        consumers.add(consumer);
+        result.set(text, consumers);
+      }
+    }
+  }
+  return result;
 }
 
 /** Suggests a JS-camelCase variable name for a state value path. Falls back
