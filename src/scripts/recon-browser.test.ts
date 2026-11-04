@@ -7841,6 +7841,25 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     }
   });
 
+  it("audit judges by the declared pattern alone when no own-backend hosts are given", () => {
+    const hit = setup([
+      { method: "GET", url: `${BASE}/schedule.json`, status: 200, responseBody: "{}" },
+    ]);
+    const miss = setup([{ method: "GET", url: `${BASE}/chrome`, status: 200, responseBody: "{}" }]);
+    const sidecarOnly = setup([]);
+    writeFileSync(
+      join(sidecarOnly.capturesDir, "000-p.decoded.json"),
+      JSON.stringify({ method: "GET", url: `${BASE}/schedule.json`, status: 200 })
+    );
+    const audit = (capturesDir: string, submitEndpointPattern: string | null): boolean =>
+      auditFinalSubmitMatch({ submitEndpointPattern, capturesDir, logger: lg }).auditFailed;
+    expect(audit(hit.capturesDir, "/schedule.json")).toBe(false);
+    expect(audit(miss.capturesDir, "/schedule.json")).toBe(true);
+    expect(audit(sidecarOnly.capturesDir, "/schedule.json")).toBe(true);
+    // Neither hosts nor a pattern: nothing to verify a submission against.
+    expect(audit(hit.capturesDir, null)).toBe(true);
+  });
+
   it("audit rejects a data: URL containing the pattern text", () => {
     const { capturesDir } = setup([
       { method: "GET", url: "data:text/plain,/schedule.json", status: 200, responseBody: "{}" },
