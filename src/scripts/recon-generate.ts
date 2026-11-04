@@ -17937,9 +17937,26 @@ async function main(): Promise<void> {
     const isReadOnlyGetFlow =
       !gql &&
       actionSteps.length === 0 &&
-      !activeCaptures.some(
-        (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
-      ) &&
+      // Only non-GET 2xx captures the flow could treat as its endpoint (same
+      // host/submit-pattern candidate set as firstEndpointCapture) veto the
+      // read classification; an unrelated off-backend POST must not.
+      restrictToSubmitPattern(
+        activeCaptures.filter(
+          (c) =>
+            c.method !== "GET" &&
+            c.status >= 200 &&
+            c.status < 300 &&
+            !isNoiseUrl(c.url) &&
+            (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
+              isAllowedFixtureHost(
+                captureHostname(c.url),
+                ownBackendHostnames,
+                fallbackDomain,
+                primaryHost
+              ))
+        ),
+        submitPatterns
+      ).length === 0 &&
       getInputsAreUrlShaped(
         firstEndpointCapture(
           activeCaptures,
