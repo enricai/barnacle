@@ -286,18 +286,43 @@ export function wireSignalCapture(
   type GetResponseBodyResponse = { body: string; base64Encoded: boolean };
 
   const onRequest = (params: RequestWillBeSentEvent): void => {
-    inFlight.set(params.requestId, {
+    const prior = inFlight.get(params.requestId);
+    const inline = params.request.postData;
+    const mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method);
+    const mayHaveBody =
+      params.request.hasPostData === true || (params.request.hasPostData === undefined && mutating);
+    const entry: InFlightRequest = {
       url: params.request.url,
       method: params.request.method,
       requestHeaders: params.request.headers as Record<string, string>,
-      requestPostData: params.request.postData ?? null,
+      requestPostData: inline ? inline : null,
       hasPostData: params.request.hasPostData === true,
-      bodyMaybe:
-        params.request.hasPostData === undefined &&
-        /^(POST|PUT|PATCH|DELETE)$/i.test(params.request.method),
       responseStatus: 0,
       responseHeaders: {},
-    });
+    };
+    // Resolve the body now: the browser may drop it by the time loading finishes.
+    // A repeated requestWillBeSent for one requestId (redirect) must not discard
+    // a body already resolved for that id.
+    const priorBody = prior?.requestPostData ?? null;
+    if (!entry.requestPostData && priorBody && priorBody !== REQUEST_BODY_UNAVAILABLE) {
+      entry.requestPostData = priorBody;
+    }
+    if (!entry.requestPostData && mayHaveBody) {
+      entry.bodyPending = (async () => {
+        try {
+          const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
+            requestId: params.requestId,
+          });
+          if (typeof res?.postData === "string" && res.postData.length > 0) {
+            entry.requestPostData = res.postData;
+          }
+        } catch {
+          // fall through to the explicit marker
+        }
+        if (!entry.requestPostData) entry.requestPostData = REQUEST_BODY_UNAVAILABLE;
+      })();
+    }
+    inFlight.set(params.requestId, entry);
   };
 
   const onResponse = (params: ResponseReceivedEvent): void => {
@@ -371,25 +396,8 @@ export function wireSignalCapture(
       // binary or body unavailable
     }
 
-    // CDP omits `postData` when the body is deferred (hasPostData: true). Fetch
-    // it here, before the Capture is built; on failure record an explicit marker
-    // rather than null so "body existed" is never conflated with "no body".
-    if (!req.requestPostData && (req.hasPostData || req.bodyMaybe)) {
-      try {
-        const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
-          requestId: params.requestId,
-        });
-        req.requestPostData =
-          typeof res?.postData === "string" && res.postData.length > 0
-            ? res.postData
-            : req.hasPostData
-              ? REQUEST_BODY_UNAVAILABLE
-              : null;
-      } catch {
-        // hasPostData unknown (field omitted) and fetch failed: no evidence of a body.
-        if (req.hasPostData) req.requestPostData = REQUEST_BODY_UNAVAILABLE;
-      }
-    }
+    // The body fetch was started at request time; wait for it to settle.
+    if (req.bodyPending) await req.bodyPending;
 
     let operationName: string | null = null;
     let query: string | null = null;
@@ -1064,7 +1072,7 @@ type InFlightRequest = {
   requestHeaders: Record<string, string>;
   requestPostData: string | null;
   hasPostData?: boolean;
-  bodyMaybe?: boolean;
+  bodyPending?: Promise<void>;
   responseStatus: number;
   responseHeaders: Record<string, string>;
 };
