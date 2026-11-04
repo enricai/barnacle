@@ -2635,7 +2635,7 @@ function safeUrlPathname(url: string): string {
 /** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
 export interface GetInputModel {
   /** Query keys the caller controls: varying across successful same-route GET siblings, or declared by the flow. */
-  dynamicFields: Array<{ field: string; queryKey: string; recorded?: string }>;
+  dynamicFields: Array<{ field: string; queryKey: string }>;
   /** Query params with a single observed value across siblings (queryKey -> value). */
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
@@ -2803,11 +2803,7 @@ export function deriveGetInputModel(
       fieldToQueryKey[field] = key;
     } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared) {
       const field = nameFor(key);
-      dynamicFields.push(
-        winnerValue !== null
-          ? { field, queryKey: key, recorded: winnerValue }
-          : { field, queryKey: key }
-      );
+      dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
       fixedParams[key] = [...values][0] as string;
@@ -14311,15 +14307,9 @@ function buildGetRequestUrlExpr(
       `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`
     );
   }
-  for (const { field, queryKey, recorded } of model.dynamicFields) {
+  for (const { field, queryKey } of model.dynamicFields) {
     if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
-    if (recorded !== undefined) {
-      pairs.push(
-        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`
-      );
-      continue;
-    }
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
     );
