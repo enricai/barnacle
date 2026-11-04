@@ -5701,6 +5701,17 @@ describe("deriveGetInputModel", () => {
     expect(m.pathTwins).toEqual([{ field: "space", segmentIndex: 3, queryKey: "ref" }]);
     expect(m.fixedParams).toEqual({});
   });
+  it("gives a digit-leading key a valid identifier that maps back to the real key", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/stock.json?60x=1&site-id=2");
+    const b = cap("https://shop.example/stock.json?60x=3&site-id=4");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([
+      { field: "_60x", queryKey: "60x" },
+      { field: "siteId", queryKey: "site-id" },
+    ]);
+    expect(m.fieldToQueryKey._60x).toBe("60x");
+  });
   it("treats a single varying key as dynamic", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
@@ -5778,6 +5789,28 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain("ids: z.string().optional(),");
     expect(source).toContain('"a-b": z.string().optional(),');
     expect(source).toContain("id: z.string().optional(),");
+  });
+  it("emits a lone date window, bracketed key and path id as payload inputs in a read-only GET", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = {
+      method: "GET",
+      status: 200,
+      url: "https://shop.example/items/7/stock.json?item_ids[]=7&date_from=2030-01-01&date_to=2030-01-07",
+    } as unknown as Capture;
+    const getInputModel = deriveGetInputModel(a, [a])!;
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/7/stock.json",
+      getInputModel,
+    });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('encodeURIComponent(String(payload.item_ids ?? "7"))');
+    expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
+    expect(source).toContain('["date_from", String(payload.date_from)]');
+    expect(source).toContain('["date_to", String(payload.date_to)]');
+    expect(source).not.toContain('"2030-01-01"]');
+    // Read-only GET: no mutation body, not emitted as a submission.
+    expect(source).not.toContain('method: "POST"');
   });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });
