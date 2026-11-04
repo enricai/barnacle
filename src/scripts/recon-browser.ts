@@ -75,7 +75,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
-import { matchesSubmitPattern } from "@/recon/submit-match";
+import { isSuccessStatus, matchesSubmitPattern } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -476,12 +476,7 @@ function auditFinalSubmitMatch(params: {
         responseBody?: unknown;
         requestPostData?: unknown;
       };
-      if (
-        typeof data.url === "string" &&
-        typeof data.status === "number" &&
-        data.status >= 200 &&
-        data.status < 300
-      ) {
+      if (typeof data.url === "string" && isSuccessStatus(data.status)) {
         let hostname: string;
         try {
           hostname = new URL(data.url).hostname;
@@ -567,11 +562,12 @@ function writeSubmitManifest(params: {
       if (typeof data.url !== "string") continue;
       if (!matchesSubmitPattern(data, endpointRx, bodyRx)) continue;
       if (data.method === "GET") {
-        if (typeof data.status === "number" && data.status >= 200 && data.status < 300) {
-          getMatched.push({ index, filename, url: data.url });
-        }
+        if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
         continue;
       }
+      // A non-GET that returned an error status never landed the submission;
+      // a capture with no recorded status is kept (unknown, not failed).
+      if (data.status !== undefined && !isSuccessStatus(data.status)) continue;
       matched.push({ index, filename, url: data.url });
     } catch {
       // Ignore unparseable/non-capture files, as the audit does.

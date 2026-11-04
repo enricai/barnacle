@@ -105,7 +105,7 @@ function pathHasSegments(pathname: string, want: string[], prefixOnly: boolean):
  * Match one telemetry pattern against a parsed URL by component, never by raw
  * substring: `/a/b` is a path prefix (whole segments); `host.tld` matches the
  * host or a dotted-label suffix of it; `host.tld/a` combines both; a bare word
- * matches a whole path segment (or the host label-wise). A leading `//` or
+ * matches a whole path segment or any single label of the host. A leading `//` or
  * `scheme://` marks the rest as authority-led (`//host`, `https://host/a`).
  */
 export function matchesTelemetryPattern(url: string, pattern: string): boolean {
@@ -134,7 +134,10 @@ export function matchesTelemetryPattern(url: string, pattern: string): boolean {
       pathHasSegments(parsed.pathname, pat.slice(slash).split("/").filter(Boolean), true)
     );
   }
-  return hostMatches(hostname, pat) || pathHasSegments(parsed.pathname, [pat], false);
+  const hostHit = pat.includes(".")
+    ? hostMatches(hostname, pat)
+    : hostname.split(".").includes(pat);
+  return hostHit || pathHasSegments(parsed.pathname, [pat], false);
 }
 
 /** True when any configured telemetry pattern matches `url` by component. */

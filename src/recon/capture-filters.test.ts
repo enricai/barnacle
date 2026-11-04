@@ -1981,3 +1981,15 @@ describe("matchesAnyTelemetryPattern", () => {
     expect(matchesAnyTelemetryPattern("https://a.com/api/fields")).toBe(false);
   });
 });
+
+describe("matchesAnyTelemetryPattern — bare word host labels", () => {
+  it("matches a bare word against any host label but not a label substring", () => {
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "pixel";
+    expect(matchesAnyTelemetryPattern("https://pixel.example.com/x")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://cdn.pixel.example.com/x")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://example.pixel/x")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://pixelated.example.com/x")).toBe(false);
+    expect(matchesAnyTelemetryPattern("https://example.com/a/pixel/1")).toBe(true);
+    expect(matchesAnyTelemetryPattern("https://example.com/a/pixels/1")).toBe(false);
+  });
+});

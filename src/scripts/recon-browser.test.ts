@@ -7728,6 +7728,37 @@ describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch s
     expect(manifest(runRoot).map((e) => e.index)).toEqual([1]);
   });
 
+  it("never records a non-http(s) URL that merely contains the pattern text", () => {
+    const { runRoot, capturesDir } = setup([
+      { method: "GET", url: "data:text/plain,/schedule.json", status: 200 },
+      { method: "POST", url: "blob:https://api.example.org/schedule.json", status: 200 },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/schedule.json",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(manifest(runRoot)).toEqual([]);
+  });
+
+  it("does not record a failed non-GET match; a 2xx GET read is recorded instead", () => {
+    const { runRoot, capturesDir } = setup([
+      { method: "POST", url: `${BASE}/schedule.json`, status: 503, requestPostData: "{}" },
+      { method: "POST", url: `${BASE}/schedule.json`, status: 403, requestPostData: "{}" },
+      { method: "GET", url: `${BASE}/schedule.json`, status: 200 },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/schedule.json",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(manifest(runRoot).map((e) => e.index)).toEqual([2]);
+  });
+
   it("audit fails on own-host 2xx not matching the pattern, passes on a matching GET", () => {
     const miss = setup([{ method: "GET", url: `${BASE}/chrome`, status: 200, responseBody: "{}" }]);
     expect(
