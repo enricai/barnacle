@@ -2672,6 +2672,56 @@ function isSlugSegment(segment: string): boolean {
   return /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(segment);
 }
 
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/**
+ * The successful same-host GET captures sharing the winner's route shape: same
+ * segment count, differing only where both segments carry an entity id or, for
+ * a lone differing slug, when the call signature (query keys) matches.
+ */
+function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Capture[] {
+  let winnerUrl: URL;
+  try {
+    winnerUrl = new URL(winner.url);
+  } catch {
+    return [winner];
+  }
+  const segments = winnerUrl.pathname.split("/");
+  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
+  const winnerKeys = queryKeySet(winnerUrl);
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      const u = new URL(c.url);
+      if (u.host !== winnerUrl.host) return false;
+      const segs = u.pathname.split("/");
+      if (segs.length !== segments.length) return false;
+      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
+      // Same route shape: segments may differ only where both carry an entity id,
+      // or, for a lone differing slug, when the call signature (query keys) matches.
+      return differing.every(
+        ([a, b]) =>
+          (carriesEntityId(decodePathSegment(a as string)) &&
+            carriesEntityId(decodePathSegment(b as string))) ||
+          (differing.length === 1 &&
+            isSlugSegment(a as string) &&
+            isSlugSegment(b as string) &&
+            queryKeySet(u) === winnerKeys)
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
+  return siblings;
+}
+
 /**
  * Pure derivation of the GET input model from the winning capture and its
  * successful same-shape GET siblings (same segment count). Returns null for
@@ -2694,37 +2744,8 @@ export function deriveGetInputModel(
     return null;
   }
   const segments = winnerUrl.pathname.split("/");
-  const decode = (s: string): string => {
-    try {
-      return decodeURIComponent(s);
-    } catch {
-      return s;
-    }
-  };
-  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
-  const winnerKeys = queryKeySet(winnerUrl);
-  const siblings = captures.filter((c) => {
-    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
-    try {
-      const u = new URL(c.url);
-      if (u.host !== winnerUrl.host) return false;
-      const segs = u.pathname.split("/");
-      if (segs.length !== segments.length) return false;
-      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
-      // Same route shape: segments may differ only where both carry an entity id,
-      // or, for a lone differing slug, when the call signature (query keys) matches.
-      return differing.every(
-        ([a, b]) =>
-          (carriesEntityId(decode(a as string)) && carriesEntityId(decode(b as string))) ||
-          (differing.length === 1 &&
-            isSlugSegment(a as string) &&
-            isSlugSegment(b as string) &&
-            queryKeySet(u) === winnerKeys)
-      );
-    } catch {
-      return false;
-    }
-  });
+  const decode = decodePathSegment;
+  const siblings = sameRouteGetSiblings(winner, captures);
   if (!siblings.includes(winner)) siblings.push(winner);
   const valuesByKey = new Map<string, Set<string>>();
   // How many siblings carry each key: a key absent from some of them is chosen
@@ -17934,7 +17955,7 @@ async function main(): Promise<void> {
             dependentDrillDownChainValues
           )
         : new Map<string, StateValue>();
-    const actionSteps =
+    const compiledActionSteps =
       actionCaptures.length > 1 ? compileActionSteps(actionCaptures, stateIndex) : [];
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
@@ -17948,9 +17969,22 @@ async function main(): Promise<void> {
     const readFlowCaptures = activeCaptures.filter(
       (c) => c.method === "GET" || matchesDeclaredSubmit(c)
     );
+    const readFlowWinner = firstEndpointCapture(
+      readFlowCaptures,
+      ownBackendHostnames,
+      fallbackDomain,
+      submitPatterns,
+      primaryHost
+    );
+    // A declared submit pattern may select several same-route GET reads of the
+    // winner as the "action sequence"; those are samples of one read, not steps.
+    const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
+    const actionSequenceIsReadSamples =
+      compiledActionSteps.length === 0 ||
+      actionCaptures.every((a) => readSiblings.includes(a.capture));
     const isReadOnlyGetFlow =
       !gql &&
-      actionSteps.length === 0 &&
+      actionSequenceIsReadSamples &&
       // Only non-GET 2xx captures the flow could treat as its endpoint (same
       // host/submit-pattern candidate set as firstEndpointCapture) veto the
       // read classification; an unrelated off-backend POST must not.
@@ -17968,15 +18002,8 @@ async function main(): Promise<void> {
               primaryHost
             ))
       ).length === 0 &&
-      getInputsAreUrlShaped(
-        firstEndpointCapture(
-          readFlowCaptures,
-          ownBackendHostnames,
-          fallbackDomain,
-          submitPatterns,
-          primaryHost
-        )
-      );
+      getInputsAreUrlShaped(readFlowWinner);
+    const actionSteps = isReadOnlyGetFlow ? [] : compiledActionSteps;
     const noReplayableActionFlow =
       !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
