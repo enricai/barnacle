@@ -2320,8 +2320,8 @@ function computeIdentifyingParams(url: string): Record<string, string> {
 }
 
 /**
- * Reports whether the winning REST capture is addressed by identifying
- * path/query parameters and whether every gathered 2xx capture of the same
+ * Reports the winning REST capture's identifying path/query parameters (if
+ * any) and whether every gathered 2xx capture of the same
  * endpoint shares identical values (i.e. the samples describe one entity).
  * GraphQL winners report no identifying params.
  */
@@ -2337,7 +2337,6 @@ export function gatherEntityVarianceEvidence(
   };
   if (!winningCapture || isGraphQLWinner) return none;
   const params = identifyingParams(winningCapture.url);
-  if (Object.keys(params).length === 0) return none;
   const winningKey = restResponseIdentity(winningCapture.url);
   const signature = JSON.stringify(Object.entries(params).sort());
   let singleEntity = true;
@@ -2349,7 +2348,7 @@ export function gatherEntityVarianceEvidence(
       break;
     }
   }
-  return { entityParameterized: true, params, singleEntity };
+  return { entityParameterized: Object.keys(params).length > 0, params, singleEntity };
 }
 
 /**
@@ -17135,14 +17134,14 @@ export function buildSingleEntityWarning(
   distinctSampleCount = 2
 ): string | null {
   const endpoint = winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint";
-  if (entityVariance.entityParameterized && entityVariance.singleEntity) {
-    return `WARN response schema inferred from a single entity — every captured response of ${endpoint} shares identifying parameter(s) ${Object.entries(
-      entityVariance.params
-    )
+  if (entityVariance.singleEntity) {
+    const shared = Object.entries(entityVariance.params)
       .map(([k, v]) => `${k}=${v}`)
-      .join(
-        ", "
-      )}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
+      .join(", ");
+    const sharing = shared
+      ? `shares identifying parameter(s) ${shared}`
+      : "shows no variation in identifying parameters";
+    return `WARN response schema inferred from a single entity — every captured response of ${endpoint} ${sharing}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
   }
   if (distinctSampleCount <= 1) {
     return `WARN response schema inferred from a single captured response of ${endpoint}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
