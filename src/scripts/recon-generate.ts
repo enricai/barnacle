@@ -2084,6 +2084,7 @@ export function isGraphQL(
   }, new Map<string, number>());
   const isSubmissionShapedNonGet = (c: Capture): boolean =>
     c.requestPostData !== null &&
+    c.requestPostData !== REQUEST_BODY_UNAVAILABLE &&
     c.requestPostData !== "" &&
     (nonGetEndpointCounts.get(`${c.method.toUpperCase()} ${endpointTemplateKey(c.url)}`) ?? 0) >= 2;
   const restAntiVoteCandidates = scoped.filter(
