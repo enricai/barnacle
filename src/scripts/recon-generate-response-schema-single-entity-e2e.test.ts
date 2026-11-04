@@ -73,10 +73,11 @@ describe("single-entity response schema (e2e)", () => {
     expect(schema.safeParse(sibling).success).toBe(false);
   });
 
-  it("unparameterized endpoint with several distinct responses: no WARN", () => {
+  it("unparameterized endpoint with several distinct responses and no identity variance: WARN, lenient", () => {
     const u = "https://example.test/api/widgets";
-    const { warns } = contractFor([mk(u, full), mk(u, fullB)]);
-    expect(warns).toHaveLength(0);
+    const { src, warns } = contractFor([mk(u, full), mk(u, fullB)]);
+    expect(warns).toHaveLength(1);
+    expect(evalSchema(responseSchemaExpr(src)).safeParse(sibling).success).toBe(true);
   });
 
   it("unparameterized endpoint with one distinct response: WARN and a sibling with a null or omitted leaf validates", () => {

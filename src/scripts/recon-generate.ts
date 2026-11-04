@@ -17134,7 +17134,7 @@ export function buildSingleEntityWarning(
   distinctSampleCount = 2
 ): string | null {
   const endpoint = winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint";
-  if (entityVariance.singleEntity) {
+  if (entityVariance.entityParameterized && entityVariance.singleEntity) {
     const shared = Object.entries(entityVariance.params)
       .map(([k, v]) => `${k}=${v}`)
       .join(", ");
@@ -17145,6 +17145,9 @@ export function buildSingleEntityWarning(
   }
   if (distinctSampleCount <= 1) {
     return `WARN response schema inferred from a single captured response of ${endpoint}; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
+  }
+  if (entityVariance.singleEntity) {
+    return `WARN response schema inferred without proof of more than one entity — captured responses of ${endpoint} show no variation in identifying parameters; fields (scalars, nested objects and arrays) are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
   }
   return null;
 }
