@@ -202,4 +202,51 @@ describe("recon-generate cart-then-update flow", () => {
     },
     60_000
   );
+  it("threads a short numeric response id into a nested PUT order.id instead of freezing it", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-shortid-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const SHORT_ID = 514391;
+    const post: Capture = { ...create, responseBody: { id: SHORT_ID, state: "cart" } };
+    const put: Capture = {
+      ...update,
+      requestPostData: JSON.stringify({ order: { id: SHORT_ID, contactName: "Jane Roe" } }),
+      responseBody: { id: SHORT_ID, state: "cart" },
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-shortid-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain('method: "PUT"');
+    expect(contract).toContain("(r0 as { id: number }).id");
+    expect(contract).not.toContain(String(SHORT_ID));
+  }, 60_000);
 });

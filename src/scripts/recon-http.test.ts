@@ -42,9 +42,9 @@ import {
   parseMethodsFilter,
   probeAuxiliaryEndpoints,
   replayCapture,
-  selectReplayCaptures,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
+  selectReplayCaptures,
 } from "@/scripts/recon-http";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
@@ -117,13 +117,11 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
     // caller to add site-specific telemetry hosts, so this test uses it
     // rather than editing the shared noise list, which is out of this
     // subtask's scope.
-    process.env.RECON_TELEMETRY_URL_PATTERNS =
-      "bat.bing.com,tr.snapchat.com,sw88.go.com";
+    process.env.RECON_TELEMETRY_URL_PATTERNS = "bat.bing.com,tr.snapchat.com,sw88.go.com";
   });
 
   afterEach(() => {
-    if (originalPatterns === undefined)
-      delete process.env.RECON_TELEMETRY_URL_PATTERNS;
+    if (originalPatterns === undefined) delete process.env.RECON_TELEMETRY_URL_PATTERNS;
     else process.env.RECON_TELEMETRY_URL_PATTERNS = originalPatterns;
   });
 
@@ -149,9 +147,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual([
-      "https://api.example.com/real/endpoint",
-    ]);
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
 
   it("still drops static fixture endpoints (path-suffix check) alongside noise", () => {
@@ -163,9 +159,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
 
     const { targets } = selectRateLimitTargets(replays);
 
-    expect(Array.from(targets.keys())).toEqual([
-      "https://api.example.com/real/endpoint",
-    ]);
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
 
   it("excludes failed replays regardless of noise status", () => {
@@ -211,15 +205,9 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      ["api.example.com"],
-      null,
-    );
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
 
-    expect(candidates.map((c) => c.url)).toEqual([
-      "https://api.example.com/config/markets.json",
-    ]);
+    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
   });
 
   it("excludes a locale-dictionary-shaped path on a declared subdomain, but keeps a real reference-data path", () => {
@@ -233,12 +221,10 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
     const candidates = selectAuxFixtureCandidates(
       replays,
       ["api.example.com", "www.example.com"],
-      null,
+      null
     );
 
-    expect(candidates.map((c) => c.url)).toEqual([
-      "https://www.example.com/labels/en.json",
-    ]);
+    expect(candidates.map((c) => c.url)).toEqual(["https://www.example.com/labels/en.json"]);
   });
 
   it("excludes a feature-flag-resolver-shaped path even though it ends in .json", () => {
@@ -248,11 +234,7 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      ["api.example.com"],
-      null,
-    );
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
 
     expect(candidates).toEqual([]);
   });
@@ -263,15 +245,9 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://widgets.some-survey-vendor.example/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      [],
-      "api.example.com",
-    );
+    const candidates = selectAuxFixtureCandidates(replays, [], "api.example.com");
 
-    expect(candidates.map((c) => c.url)).toEqual([
-      "https://static.example.com/currencies.json",
-    ]);
+    expect(candidates.map((c) => c.url)).toEqual(["https://static.example.com/currencies.json"]);
   });
 
   it("harvests nothing when ownBackendHostnames is unset and there is no fallback host", () => {
@@ -289,11 +265,7 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       replay({ url: "https://cdn.cookielaw.org/consent/config.json" }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      ["cdn.cookielaw.org"],
-      null,
-    );
+    const candidates = selectAuxFixtureCandidates(replays, ["cdn.cookielaw.org"], null);
 
     expect(candidates).toEqual([]);
   });
@@ -310,15 +282,9 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      ["api.example.com"],
-      null,
-    );
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
 
-    expect(candidates.map((c) => c.url)).toEqual([
-      "https://api.example.com/config/markets.json",
-    ]);
+    expect(candidates.map((c) => c.url)).toEqual(["https://api.example.com/config/markets.json"]);
   });
 
   it("excludes non-fixture-shaped paths and failed/GraphQL replays", () => {
@@ -334,11 +300,7 @@ describe("selectAuxFixtureCandidates — own-backend host allowlist", () => {
       }),
     ];
 
-    const candidates = selectAuxFixtureCandidates(
-      replays,
-      ["api.example.com"],
-      null,
-    );
+    const candidates = selectAuxFixtureCandidates(replays, ["api.example.com"], null);
 
     expect(candidates).toEqual([]);
   });
@@ -370,16 +332,9 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
       replay({ url: "https://www.example.com/labels/en.json" }),
     ];
 
-    await probeAuxiliaryEndpoints(
-      replays,
-      auxDir,
-      ["api.example.com", "www.example.com"],
-      null,
-    );
+    await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com", "www.example.com"], null);
 
-    const manifest = JSON.parse(
-      readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"),
-    );
+    const manifest = JSON.parse(readFileSync(join(auxDir, "aux-manifest.json"), "utf-8"));
 
     expect(manifest).toHaveLength(2);
     expect(manifest).toEqual(
@@ -394,16 +349,14 @@ describe("probeAuxiliaryEndpoints — aux-manifest.json host provenance", () => 
           url: "https://www.example.com/labels/en.json",
           hostname: "www.example.com",
         }),
-      ]),
+      ])
     );
   });
 
   it("writes no manifest when there are no candidates to write", async () => {
     global.fetch = vi.fn() as unknown as typeof fetch;
 
-    const replays: ReplayResult[] = [
-      replay({ url: "https://api.example.com/order/checkout" }),
-    ];
+    const replays: ReplayResult[] = [replay({ url: "https://api.example.com/order/checkout" })];
 
     await probeAuxiliaryEndpoints(replays, auxDir, ["api.example.com"], null);
 
@@ -425,9 +378,7 @@ describe("selectReplayCaptures", () => {
     ];
     const r = selectReplayCaptures(caps, false);
     expect(r.selected).toHaveLength(1);
-    expect(r.skipped.map((s) => s.reason).some((x) => x.includes("POST"))).toBe(
-      true,
-    );
+    expect(r.skipped.map((s) => s.reason).some((x) => x.includes("POST"))).toBe(true);
     expect(r.skipped.some((s) => s.url.startsWith("data:"))).toBe(true);
     const r2 = selectReplayCaptures(caps, true);
     expect(r2.selected).toHaveLength(2);
@@ -481,7 +432,7 @@ describe("recon-http main() end to end", () => {
         ...base,
         method: "GET",
         url: "https://api.example.com/a",
-      }),
+      })
     );
     writeFileSync(
       join(capDir, "002.json"),
@@ -490,7 +441,7 @@ describe("recon-http main() end to end", () => {
         method: "POST",
         url: "https://api.example.com/b",
         requestPostData: "{}",
-      }),
+      })
     );
     const fetched: string[] = [];
     vi.stubGlobal(
@@ -501,7 +452,7 @@ describe("recon-http main() end to end", () => {
           status: 200,
           headers: { "content-type": "application/json" },
         });
-      }),
+      })
     );
     process.argv = [
       "node",
@@ -515,18 +466,16 @@ describe("recon-http main() end to end", () => {
     // Collapse the rate-limit probe's pacing delay so main() finishes fast.
     const realSetTimeout = globalThis.setTimeout;
     vi.stubGlobal("setTimeout", (fn: () => void, ms?: number) =>
-      realSetTimeout(fn, ms && ms > 50 ? 0 : ms),
+      realSetTimeout(fn, ms && ms > 50 ? 0 : ms)
     );
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     await import("./recon-http.js");
     await vi.waitFor(
       () =>
         expect(
-          loggerStub.info.mock.calls.some((c) =>
-            String(c[0]).startsWith("recon-http complete"),
-          ),
+          loggerStub.info.mock.calls.some((c) => String(c[0]).startsWith("recon-http complete"))
         ).toBe(true),
-      { timeout: 60000 },
+      { timeout: 60000 }
     );
     return fetched;
   }
@@ -535,26 +484,16 @@ describe("recon-http main() end to end", () => {
     await runMain([]);
     const logs = loggerStub.info.mock.calls.map((c) => String(c[0]));
     expect(logs.some((l) => /1 skipped/.test(l))).toBe(true);
-    expect(
-      logs.some((l) => l.startsWith("skipped https://api.example.com/b")),
-    ).toBe(true);
-    expect(existsSync(join(tmpRoot, "main-run", "replays", "001.json"))).toBe(
-      true,
-    );
-    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(
-      false,
-    );
+    expect(logs.some((l) => l.startsWith("skipped https://api.example.com/b"))).toBe(true);
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "001.json"))).toBe(true);
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(false);
   }, 70000);
 
   it("replays unsafe-method captures with --include-unsafe-methods", async () => {
     await runMain(["--include-unsafe-methods"]);
     const logs = loggerStub.info.mock.calls.map((c) => String(c[0]));
-    expect(
-      logs.some((l) => /skipped/.test(l) && /\(\d+ skipped\)/.test(l)),
-    ).toBe(false);
-    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(
-      true,
-    );
+    expect(logs.some((l) => /skipped/.test(l) && /\(\d+ skipped\)/.test(l))).toBe(false);
+    expect(existsSync(join(tmpRoot, "main-run", "replays", "002.json"))).toBe(true);
   }, 70000);
 });
 
@@ -567,9 +506,7 @@ describe("selectRateLimitTargets — fixture shape and safety", () => {
       replay({ url: "https://api.example.com/locales/en" }),
       replay({ url: "https://api.example.com/submit", method: "POST" }),
     ]);
-    expect(Array.from(targets.keys())).toEqual([
-      "https://api.example.com/x/schedule.json",
-    ]);
+    expect(Array.from(targets.keys())).toEqual(["https://api.example.com/x/schedule.json"]);
   });
 });
 
@@ -588,9 +525,7 @@ describe("replayCapture — marker and methods filter", () => {
   it("skips marker captures without fetching, sends real bodies unchanged", async () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
-    expect(
-      await replayCapture("a.json", mk("POST", "<unavailable>")),
-    ).toBeNull();
+    expect(await replayCapture("a.json", mk("POST", "<unavailable>"))).toBeNull();
     expect(f).not.toHaveBeenCalled();
     const r = await replayCapture("b.json", mk("POST", "x=1"));
     expect(r?.requestBody).toBe("x=1");
@@ -601,24 +536,17 @@ describe("replayCapture — marker and methods filter", () => {
     const f = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", f);
     const methods = parseMethodsFilter("get, head");
-    expect(
-      await replayCapture("a.json", mk("PUT", "x"), { methods }),
-    ).toBeNull();
-    expect(
-      await replayCapture("b.json", mk("POST", null), { methods }),
-    ).toBeNull();
+    expect(await replayCapture("a.json", mk("PUT", "x"), { methods })).toBeNull();
+    expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
     expect(f).not.toHaveBeenCalled();
-    expect(
-      await replayCapture("c.json", mk("GET", null), { methods }),
-    ).not.toBeNull();
+    expect(await replayCapture("c.json", mk("GET", null), { methods })).not.toBeNull();
   });
 });
 
 describe("recon-http main() --methods and unavailable-body skipping", () => {
   it("runs end to end, skipping marker captures and method-filtered captures without fetching", async () => {
     const { mkdirSync, writeFileSync } = await import("node:fs");
-    const { REQUEST_BODY_UNAVAILABLE } =
-      await import("@/scraper/request-body-marker.js");
+    const { REQUEST_BODY_UNAVAILABLE } = await import("@/scraper/request-body-marker.js");
     vi.resetModules();
     const root = mkdtempSync(join(tmpdir(), "recon-http-main-"));
     const caps = join(root, "caps");
@@ -636,7 +564,7 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
         url: "https://api.example.com/a",
         method: "POST",
         requestPostData: REQUEST_BODY_UNAVAILABLE,
-      }),
+      })
     );
     writeFileSync(
       join(caps, "002.json"),
@@ -645,42 +573,29 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
         url: "https://api.example.com/b",
         method: "GET",
         requestPostData: null,
-      }),
+      })
     );
-    const fetchSpy = vi.fn(
-      async (_url: string | URL) => new Response("{}", { status: 200 }),
-    );
+    const fetchSpy = vi.fn(async (_url: string | URL) => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const savedArgv = process.argv;
     const savedOut = process.env.RECON_OUT_DIR;
     process.env.RECON_OUT_DIR = root;
-    process.argv = [
-      "node",
-      "recon-http.ts",
-      "--captures-dir",
-      caps,
-      "--methods",
-      "PUT",
-    ];
+    process.argv = ["node", "recon-http.ts", "--captures-dir", caps, "--methods", "PUT"];
     try {
       await import("@/scripts/recon-http.js");
       await vi.waitFor(() =>
-        expect(loggerStub.info).toHaveBeenCalledWith(
-          expect.stringContaining("recon-http complete"),
-        ),
+        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
       );
       // main() fetches /robots.txt per origin before per-capture filtering, so a
       // blanket "never fetched" assertion would fail on that politeness request.
       expect(
-        fetchSpy.mock.calls.filter(
-          ([url]) => !String(url).endsWith("/robots.txt"),
-        ),
+        fetchSpy.mock.calls.filter(([url]) => !String(url).endsWith("/robots.txt"))
       ).toHaveLength(0);
       expect(loggerStub.warn).toHaveBeenCalledWith(
-        expect.stringContaining("request body unavailable"),
+        expect.stringContaining("request body unavailable")
       );
       expect(loggerStub.info).toHaveBeenCalledWith(
-        expect.stringContaining("not in --methods filter"),
+        expect.stringContaining("not in --methods filter")
       );
     } finally {
       process.argv = savedArgv;
@@ -712,7 +627,7 @@ describe("recon-http main() --methods opt-in wiring", () => {
         url: "https://api.example.com/put",
         method: "PUT",
         requestPostData: "{}",
-      }),
+      })
     );
     writeFileSync(
       join(caps, "002.json"),
@@ -721,30 +636,20 @@ describe("recon-http main() --methods opt-in wiring", () => {
         url: "https://api.example.com/post",
         method: "POST",
         requestPostData: "{}",
-      }),
+      })
     );
     const fetchSpy = vi.fn(
-      async (_url: string | URL, _init?: RequestInit) =>
-        new Response("{}", { status: 200 }),
+      async (_url: string | URL, _init?: RequestInit) => new Response("{}", { status: 200 })
     );
     vi.stubGlobal("fetch", fetchSpy);
     const savedArgv = process.argv;
     const savedOut = process.env.RECON_OUT_DIR;
     process.env.RECON_OUT_DIR = root;
-    process.argv = [
-      "node",
-      "recon-http.ts",
-      "--captures-dir",
-      caps,
-      "--methods",
-      "PUT",
-    ];
+    process.argv = ["node", "recon-http.ts", "--captures-dir", caps, "--methods", "PUT"];
     try {
       await import("@/scripts/recon-http.js");
       await vi.waitFor(() =>
-        expect(loggerStub.info).toHaveBeenCalledWith(
-          expect.stringContaining("recon-http complete"),
-        ),
+        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
       );
       const urls = fetchSpy.mock.calls.map(([u]) => String(u));
       expect(urls).toContain("https://api.example.com/put");
@@ -778,16 +683,8 @@ describe("selectReplayCaptures — safe-by-default with --methods opt-in", () =>
   });
 
   it("--methods PUT,POST opts those methods in", () => {
-    const r = selectReplayCaptures(
-      items,
-      false,
-      parseMethodsFilter("PUT,POST"),
-    );
-    expect(r.selected.map((i) => i.filename)).toEqual([
-      "GET.json",
-      "POST.json",
-      "PUT.json",
-    ]);
+    const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT,POST"));
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "POST.json", "PUT.json"]);
   });
 
   it("--methods PUT opts in only PUT", () => {
