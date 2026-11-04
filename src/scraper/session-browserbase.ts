@@ -11,6 +11,7 @@ import { resolveSessionOutboundIp } from "@/scraper/session-ip";
 import {
   type BrowserSession,
   type BrowserSessionOptions,
+  closeStagehandBounded,
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
@@ -352,10 +353,17 @@ export async function createBrowserbaseBrowserSession(
 
     await stagehand.init();
   } catch (err) {
+    let initSessionId: string | undefined;
     try {
-      if (stagehand) await stagehand.close();
-    } catch (closeErr) {
-      logger.warn(`stagehand close during failed init: ${toErrorMessage(closeErr)}`);
+      initSessionId = stagehand?.browserbaseSessionID;
+    } catch {
+      // reading the id must never mask the init error
+    }
+    try {
+      if (stagehand) await closeStagehandBounded(stagehand, logger);
+    } finally {
+      // keepAlive: true means close() does not release; do it explicitly.
+      if (initSessionId) await releaseBrowserbaseSession(initSessionId);
     }
     throw err;
   }
@@ -399,13 +407,15 @@ export async function createBrowserbaseBrowserSession(
     heartbeat.stop();
     weInitiatedClose = true;
     try {
-      await stagehand.close();
-    } catch (err) {
-      logger.warn(`stagehand close failed for session ${sessionId}: ${toErrorMessage(err)}`);
+      await closeStagehandBounded(stagehand, logger);
+    } finally {
+      try {
+        await releaseBrowserbaseSession(sessionId);
+      } finally {
+        await limiter.stop({ dropWaitingJobs: true });
+        reportSuppressedAisdkErrors();
+      }
     }
-    await releaseBrowserbaseSession(sessionId);
-    await limiter.stop({ dropWaitingJobs: true });
-    reportSuppressedAisdkErrors();
   };
 
   const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>

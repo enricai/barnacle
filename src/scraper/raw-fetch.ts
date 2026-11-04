@@ -17,6 +17,10 @@ import { classifyHttpStatus } from "@/scraper/http-status-classifier";
 export interface RawFetchResult {
   status: number;
   rawBody: string;
+  /** Headers of the final response. */
+  headers: Headers;
+  /** URL of the final response (after any redirects the fetch implementation followed). */
+  finalUrl: string;
 }
 
 /**
@@ -26,8 +30,13 @@ export interface RawFetchResult {
  */
 export type FetchImpl = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: Buffer | string }
-) => Promise<{ status: number; headers: Headers; text: () => Promise<string> }>;
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: Buffer | string;
+    redirect?: "follow" | "manual";
+  }
+) => Promise<{ status: number; headers: Headers; url?: string; text: () => Promise<string> }>;
 
 /** Input options for {@link rawFetch}. */
 export interface RawFetchOptions {
@@ -57,18 +66,26 @@ export interface RawFetchOptions {
   contextLabel: string;
   /**
    * When `true`, skip the automatic `classifyHttpStatus` call and return
-   * `{ status, rawBody }` for every response. Use when the caller needs
+   * the result for every response. Use when the caller needs
    * to inspect the body before deciding how to classify (e.g. transient-500
    * detection that must precede the generic 5xx path).
    */
   skipClassify?: boolean;
+  /**
+   * `"follow"` (default) lets the fetch implementation follow redirects, so
+   * `onResponse` only sees the final hop. `"manual"` makes the call return the
+   * 3xx response itself: `onResponse` sees that hop's `Set-Cookie` / `Location`,
+   * and the caller issues the next request (carrying any cookies) as another
+   * `rawFetch` call, one `onResponse` per hop.
+   */
+  redirect?: "follow" | "manual";
 }
 
 /**
  * Issues an undici fetch with caller-supplied URL / method / headers / body,
  * invokes `onResponse` with the response headers (for token rotation or audit),
  * delegates status classification to `classifyHttpStatus`, and returns
- * `{ status, rawBody }` for the caller to parse. Network errors are wrapped
+ * `{ status, rawBody, headers, finalUrl }` for the caller to parse. Network errors are wrapped
  * in `HttpServerError` so callers get a typed, non-retryable error from the
  * same error hierarchy as classification errors.
  */
@@ -80,12 +97,13 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
     onResponse,
     contextLabel,
     skipClassify = false,
+    redirect,
     fetchImpl = undiciFetch as unknown as FetchImpl,
   } = options;
 
   let response: Awaited<ReturnType<FetchImpl>>;
   try {
-    response = await fetchImpl(url, { method, headers, body });
+    response = await fetchImpl(url, { method, headers, body, redirect });
   } catch (err) {
     throw new HttpServerError(`${contextLabel} network error: ${toErrorMessage(err)}`);
   }
@@ -97,5 +115,10 @@ export async function rawFetch(url: string, options: RawFetchOptions): Promise<R
     classifyHttpStatus(response.status, rawBody.slice(0, 200), contextLabel);
   }
 
-  return { status: response.status, rawBody };
+  return {
+    status: response.status,
+    rawBody,
+    headers: response.headers,
+    finalUrl: response.url || url,
+  };
 }

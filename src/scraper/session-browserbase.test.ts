@@ -522,6 +522,83 @@ describe("createBrowserbaseBrowserSession close() release", () => {
   });
 });
 
+describe("createBrowserbaseBrowserSession bounded teardown", () => {
+  beforeEach(() => {
+    configRef.value.scraper.browserbaseApiKey = "bb-key";
+    configRef.value.scraper.browserbaseProjectId = "bb-project";
+    configRef.value.scraper.anthropicApiKey = "anthropic-key";
+    configRef.value.scraper.useBedrock = false;
+    vi.clearAllMocks();
+    bbUpdate.mockResolvedValue({});
+  });
+
+  const stubStagehand = (init: () => Promise<void>, close: () => Promise<void>) =>
+    vi.mocked(Stagehand).mockImplementationOnce(function (this: Record<string, unknown>) {
+      this.init = vi.fn(init);
+      this.close = vi.fn(close);
+      this.browserbaseSessionID = "bb-session-id";
+      this.context = {
+        conn: { send: vi.fn().mockResolvedValue(undefined), onTransportClosed: vi.fn() },
+        addInitScript: vi.fn().mockResolvedValue(undefined),
+        awaitActivePage: vi.fn().mockResolvedValue(fakePage),
+      };
+    } as never);
+
+  it("close() releases the session and stops the limiter when stagehand.close() never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      stubStagehand(
+        async () => {},
+        () => new Promise<void>(() => {})
+      );
+      const session = await createBrowserbaseBrowserSession();
+      const closing = session.close();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await closing;
+      expect(bbUpdate).toHaveBeenCalledWith("bb-session-id", {
+        projectId: "bb-project",
+        status: "REQUEST_RELEASE",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("close() still releases when stagehand.close() throws", async () => {
+    stubStagehand(
+      async () => {},
+      async () => {
+        throw new Error("close boom");
+      }
+    );
+    const session = await createBrowserbaseBrowserSession();
+    await session.close();
+    expect(bbUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("init failure with a hanging close rethrows the init error and releases the session", async () => {
+    vi.useFakeTimers();
+    try {
+      stubStagehand(
+        async () => {
+          throw new Error("init boom");
+        },
+        () => new Promise<void>(() => {})
+      );
+      const p = createBrowserbaseBrowserSession();
+      const assertion = expect(p).rejects.toThrow("init boom");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+      expect(bbUpdate).toHaveBeenCalledWith("bb-session-id", {
+        projectId: "bb-project",
+        status: "REQUEST_RELEASE",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("createBrowserbaseBrowserSession CDP-transport-teardown detection", () => {
   beforeEach(() => {
     configRef.value.scraper.browserbaseApiKey = "bb-key";

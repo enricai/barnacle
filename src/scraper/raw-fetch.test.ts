@@ -1,8 +1,11 @@
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { fetch as undiciFetch } from "undici";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { HttpBotChallengeError, HttpSchemaError, HttpServerError } from "@/scraper/errors";
-import { rawFetch } from "@/scraper/raw-fetch";
+import { type FetchImpl, rawFetch } from "@/scraper/raw-fetch";
 import { makeMockFetchResponse } from "@/testing/mock-fetch-response";
 
 vi.mock("undici", () => ({
@@ -229,5 +232,118 @@ describe("rawFetch", () => {
       expect(captured).toHaveLength(1);
       expect(result.status).toBe(403);
     });
+  });
+});
+
+describe("rawFetch redirect hops", () => {
+  let server: Server;
+  let base: string;
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      if (req.url === "/start") {
+        res.writeHead(302, { Location: "/mid", "Set-Cookie": "flow=step2; Path=/" });
+        res.end();
+      } else if (req.url === "/mid") {
+        res.writeHead(301, { Location: "/final", "Set-Cookie": "flow2=step3; Path=/" });
+        res.end();
+      } else {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(`cookie=${req.headers.cookie ?? ""}`);
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => {
+    server.close();
+  });
+
+  const realFetch = async (u: string, init: Parameters<FetchImpl>[1]) =>
+    (await vi.importActual<typeof import("undici")>("undici")).fetch(
+      u,
+      init as never
+    ) as unknown as ReturnType<FetchImpl>;
+
+  it("manual returns the 3xx itself; onResponse sees its Set-Cookie and Location", async () => {
+    const seen: Array<{ setCookie: string[]; location: string | null }> = [];
+    const result = await rawFetch(`${base}/start`, {
+      method: "GET",
+      headers: {},
+      onResponse: (h) => seen.push({ setCookie: h.getSetCookie(), location: h.get("location") }),
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl: realFetch,
+    });
+    expect(seen).toEqual([{ setCookie: ["flow=step2; Path=/"], location: "/mid" }]);
+    expect(result.status).toBe(302);
+    expect(result.headers.get("location")).toBe("/mid");
+    expect(result.finalUrl).toBe(`${base}/start`);
+  });
+
+  it("a caller can walk a chain, one onResponse per hop, carrying cookies", async () => {
+    const hops: Array<string | null> = [];
+    let url = `${base}/start`;
+    let cookie = "";
+    let result = await rawFetch(url, {
+      method: "GET",
+      headers: {},
+      onResponse: () => {},
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl: realFetch,
+    });
+    for (let i = 0; i < 5 && result.status >= 300 && result.status < 400; i++) {
+      hops.push(result.headers.get("location"));
+      cookie = [cookie, ...result.headers.getSetCookie().map((c) => c.split(";")[0])]
+        .filter(Boolean)
+        .join("; ");
+      url = new URL(result.headers.get("location") as string, url).toString();
+      result = await rawFetch(url, {
+        method: "GET",
+        headers: { Cookie: cookie },
+        onResponse: () => {},
+        contextLabel: "demo",
+        redirect: "manual",
+        fetchImpl: realFetch,
+      });
+    }
+    expect(hops).toEqual(["/mid", "/final"]);
+    expect(result.rawBody).toBe("cookie=flow=step2; flow2=step3");
+    expect(result.finalUrl).toBe(`${base}/final`);
+  });
+
+  it("default follows via the fetch implementation: one onResponse, final headers and url", async () => {
+    const onResponse = vi.fn();
+    const result = await rawFetch(`${base}/start`, {
+      method: "GET",
+      headers: {},
+      onResponse,
+      contextLabel: "demo",
+      skipClassify: true,
+      fetchImpl: realFetch,
+    });
+    expect(onResponse).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe(200);
+    expect(result.finalUrl).toBe(`${base}/final`);
+    expect(result.headers.get("content-type")).toBe("text/plain");
+  });
+
+  it("passes init.redirect through to fetchImpl and does not classify 3xx", async () => {
+    const fetchImpl = vi.fn(async (_u: string, _i: Parameters<FetchImpl>[1]) => ({
+      status: 302,
+      headers: new Headers({ location: "/x" }),
+      text: async () => "",
+    }));
+    const result = await rawFetch("https://example.com/", {
+      method: "GET",
+      headers: {},
+      onResponse: vi.fn(),
+      contextLabel: "demo",
+      redirect: "manual",
+      fetchImpl,
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+    expect(result.status).toBe(302);
+    expect(result.finalUrl).toBe("https://example.com/");
   });
 });

@@ -10,6 +10,7 @@ import { CdpTransportClosedError } from "@/scraper/errors";
 import type { StagehandLogLine } from "@/scraper/session-browserbase";
 import {
   type BrowserSession,
+  closeStagehandBounded,
   createTimeoutFetch,
   pickRandomViewport,
 } from "@/scraper/session-shared";
@@ -179,16 +180,15 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     // error surfaces to the caller.
     heartbeat?.stop();
     try {
-      if (stagehand) await stagehand.close();
-    } catch (closeErr) {
-      logger.warn(`stagehand close during failed init: ${toErrorMessage(closeErr)}`);
-    }
-    try {
-      await steel.sessions.release(session.id);
-    } catch (releaseErr) {
-      logger.warn(
-        `steel release during failed init for ${session.id}: ${toErrorMessage(releaseErr)}`
-      );
+      if (stagehand) await closeStagehandBounded(stagehand, logger);
+    } finally {
+      try {
+        await steel.sessions.release(session.id);
+      } catch (releaseErr) {
+        logger.warn(
+          `steel release during failed init for ${session.id}: ${toErrorMessage(releaseErr)}`
+        );
+      }
     }
     throw err;
   }
@@ -212,16 +212,15 @@ export async function createSteelBrowserSession(): Promise<BrowserSession> {
     weInitiatedClose = true;
     heartbeat?.stop();
     try {
-      await stagehand.close();
-    } catch (err) {
-      logger.warn(`stagehand close failed for session ${session.id}: ${toErrorMessage(err)}`);
+      await closeStagehandBounded(stagehand, logger);
+    } finally {
+      try {
+        await steel.sessions.release(session.id);
+      } catch (err) {
+        logger.warn(`steel release failed for session ${session.id}: ${toErrorMessage(err)}`);
+      }
+      await limiter.stop({ dropWaitingJobs: true });
     }
-    try {
-      await steel.sessions.release(session.id);
-    } catch (err) {
-      logger.warn(`steel release failed for session ${session.id}: ${toErrorMessage(err)}`);
-    }
-    await limiter.stop({ dropWaitingJobs: true });
   };
 
   const getCdpTransportClosedError = (): CdpTransportClosedError | undefined =>
