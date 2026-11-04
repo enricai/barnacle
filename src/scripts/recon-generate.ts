@@ -17245,7 +17245,12 @@ export function inferChainStepResponseSchema(
   // Same verdict as the primary schema: no proof of more than one entity
   // means lenient leaves.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
-  const singleEntityEvidence = singleEntityVerdict(stepCapture, isGraphQL, samples.length, variance);
+  // Unparameterized steps stay strict: their required `*Url` leaves are what
+  // the required-URL-field guard uses to attribute unreferenced fields, and
+  // repeats without identifying params are not entity evidence.
+  const singleEntityEvidence =
+    singleEntityVerdict(stepCapture, isGraphQL, Number.POSITIVE_INFINITY, variance) &&
+    variance.entityParameterized;
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
     aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
