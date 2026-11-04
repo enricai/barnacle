@@ -555,7 +555,7 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
         requestPostData: null,
       })
     );
-    const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetchSpy = vi.fn(async (_url: string | URL) => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const savedArgv = process.argv;
     const savedOut = process.env.RECON_OUT_DIR;
