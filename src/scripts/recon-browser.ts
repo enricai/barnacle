@@ -75,7 +75,8 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
-import { isSuccessStatus, matchesSubmitPattern } from "@/recon/submit-match";
+import { isRawCaptureFilename } from "@/recon/capture-filters";
+import { isQualifyingSubmitCapture, isSuccessStatus } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -434,29 +435,31 @@ function normalizeResponseBodyForAudit(data: { responseBody?: unknown }): unknow
  */
 function auditFinalSubmitMatch(params: {
   /**
-   * Hostnames considered "the site's own backend." A 2xx capture whose URL
-   * resolves to one of these hostnames is treated as proof the submit
-   * landed. Replaces the prior submitEndpointPattern regex with
-   * deterministic hostname equality on a URL component — no more URL-path
-   * pattern matching at the audit gate. Empty list = audit always returns
-   * "no proof of submit" (caller decides what that means).
+   * Hostnames considered "the site's own backend." When non-empty, a qualifying
+   * 2xx capture's URL hostname must equal one of them. Empty/absent applies no
+   * host gate (same as the submit manifest) — the declared pattern alone then
+   * decides. With neither hostnames nor a pattern there is nothing to verify
+   * a submission against, so the audit returns "no proof of submit".
    */
-  ownBackendHostnames: readonly string[];
+  ownBackendHostnames?: readonly string[];
   /** When declared, a capture must also match this (shared predicate with the manifest). */
   submitEndpointPattern?: string | null;
   submitBodyPattern?: string | null;
   capturesDir: string;
   logger: Logger;
 }): { auditFailed: boolean; rejectionReason: string | null } {
-  const { ownBackendHostnames, capturesDir, logger } = params;
-  if (ownBackendHostnames.length === 0) return { auditFailed: true, rejectionReason: null };
+  const { capturesDir, logger } = params;
+  const ownBackendHostnames = params.ownBackendHostnames ?? [];
+  if (ownBackendHostnames.length === 0 && params.submitEndpointPattern == null) {
+    return { auditFailed: true, rejectionReason: null };
+  }
   const auditEndpointRx =
     params.submitEndpointPattern != null ? new RegExp(params.submitEndpointPattern) : null;
   const auditBodyRx =
     params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
   let entries: string[];
   try {
-    entries = readdirSync(capturesDir);
+    entries = readdirSync(capturesDir).filter(isRawCaptureFilename);
   } catch (err) {
     logger.warn(
       `end-of-run audit: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
@@ -477,14 +480,13 @@ function auditFinalSubmitMatch(params: {
         requestPostData?: unknown;
       };
       if (typeof data.url === "string" && isSuccessStatus(data.status)) {
-        let hostname: string;
-        try {
-          hostname = new URL(data.url).hostname;
-        } catch {
-          continue;
-        }
-        if (!ownBackendHostnames.includes(hostname)) continue;
-        if (auditEndpointRx !== null && !matchesSubmitPattern(data, auditEndpointRx, auditBodyRx)) {
+        if (
+          !isQualifyingSubmitCapture(data, {
+            endpointRx: auditEndpointRx,
+            bodyRx: auditBodyRx,
+            ownBackendHostnames,
+          })
+        ) {
           continue;
         }
         const parsedBody = normalizeResponseBodyForAudit(data);
@@ -531,17 +533,18 @@ function writeSubmitManifest(params: {
   capturesDir: string;
   submitEndpointPattern: string | null;
   submitBodyPattern: string | null;
+  /** Own-backend host gate shared with the audit; empty/absent = no host gate. */
+  ownBackendHostnames?: readonly string[];
   logger: Logger;
 }): void {
   const { runRoot, capturesDir, submitEndpointPattern, submitBodyPattern, logger } = params;
+  const ownBackendHostnames = params.ownBackendHostnames ?? [];
   if (submitEndpointPattern === null) return;
   const endpointRx = new RegExp(submitEndpointPattern);
   const bodyRx = submitBodyPattern === null ? null : new RegExp(submitBodyPattern);
   let entries: string[];
   try {
-    entries = readdirSync(capturesDir)
-      .filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"))
-      .sort();
+    entries = readdirSync(capturesDir).filter(isRawCaptureFilename).sort();
   } catch (err) {
     logger.warn(
       `submit-manifest: could not read captures dir ${capturesDir}: ${toErrorMessage(err)}`
@@ -560,7 +563,7 @@ function writeSubmitManifest(params: {
         status?: number;
       };
       if (typeof data.url !== "string") continue;
-      if (!matchesSubmitPattern(data, endpointRx, bodyRx)) continue;
+      if (!isQualifyingSubmitCapture(data, { endpointRx, bodyRx, ownBackendHostnames })) continue;
       if (data.method === "GET") {
         if (isSuccessStatus(data.status)) getMatched.push({ index, filename, url: data.url });
         continue;
@@ -3728,6 +3731,7 @@ async function main(): Promise<void> {
         capturesDir: runDir.graphqlDir,
         submitEndpointPattern,
         submitBodyPattern,
+        ownBackendHostnames,
         logger,
       });
 
@@ -3740,7 +3744,10 @@ async function main(): Promise<void> {
       // success. This closes the loop the silent-pass bug exposed on 2026-
       // 06-09: per-step verifier accepted DOM-fallback as proof; run-level
       // audit catches that the network proof never actually arrived.
-      if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
+      if (
+        requireSubmitEndpointMatch &&
+        (ownBackendHostnames.length > 0 || submitEndpointPattern != null)
+      ) {
         const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
           ownBackendHostnames,
           submitEndpointPattern,
@@ -3751,14 +3758,14 @@ async function main(): Promise<void> {
         if (auditFailed) {
           const reasonSuffix = rejectionReason
             ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
-            : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)}${submitEndpointPattern != null ? ` AND matching submitEndpointPattern ${JSON.stringify(submitEndpointPattern)}${submitBodyPattern != null ? ` + submitBodyPattern ${JSON.stringify(submitBodyPattern)}` : ""}` : ""} — submission did not land despite verifier success`;
+            : ` — no captured 2xx${ownBackendHostnames.length > 0 ? ` had hostname in ${JSON.stringify(ownBackendHostnames)}` : ""}${submitEndpointPattern != null ? `${ownBackendHostnames.length > 0 ? " AND" : ""} matching submitEndpointPattern ${JSON.stringify(submitEndpointPattern)}${submitBodyPattern != null ? ` + submitBodyPattern ${JSON.stringify(submitBodyPattern)}` : ""}` : ""} — submission did not land despite verifier success`;
           logger.error(`end-of-run audit FAILED${reasonSuffix}`);
           // Exit non-zero so the runner counts this as a real failure rather
           // than rolling silent-pass forward as success.
           process.exit(1);
         }
         logger.info(
-          `end-of-run audit PASSED: at least one captured 2xx on an own-backend host${submitEndpointPattern != null ? ` matching submitEndpointPattern${submitBodyPattern != null ? " + submitBodyPattern" : ""}` : " (no submitEndpointPattern declared)"} had a clean response body`
+          `end-of-run audit PASSED: at least one captured 2xx${ownBackendHostnames.length > 0 ? " on an own-backend host" : ""}${submitEndpointPattern != null ? ` matching submitEndpointPattern${submitBodyPattern != null ? " + submitBodyPattern" : ""}` : " (no submitEndpointPattern declared)"} had a clean response body`
         );
       }
 

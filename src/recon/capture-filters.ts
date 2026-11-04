@@ -11,6 +11,16 @@
  */
 
 /**
+ * True for a raw capture file in a captures directory: a `.json` file that is
+ * not a `.decoded.json` sidecar. Every stage that enumerates captures (submit
+ * manifest, end-of-run audit, replay/probe, generate) applies this one
+ * definition so none of them re-reads a sidecar as if it were a capture.
+ */
+export function isRawCaptureFilename(filename: string): boolean {
+  return filename.endsWith(".json") && !filename.endsWith(".decoded.json");
+}
+
+/**
  * Path/URL substrings we always treat as analytics or logging noise. Site-specific
  * trackers belong in the `RECON_TELEMETRY_URL_PATTERNS` env var (comma-separated),
  * not here — the engine must not carry any one site's ad-tech domains.

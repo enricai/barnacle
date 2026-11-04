@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isRawCaptureFilename } from "@/recon/capture-filters";
 import type { Capture } from "@/scripts/recon-shared";
 import { resolveReconRunDir } from "@/scripts/recon-shared";
 
@@ -90,7 +91,7 @@ export function listCaptureFiles(dir: string): string[] {
   const store = storeFor(dir);
   if (store) return [...store.captures.keys()];
   try {
-    return readdirSync(dir).filter((f) => f.endsWith(".json") && !f.endsWith(".decoded.json"));
+    return readdirSync(dir).filter(isRawCaptureFilename);
   } catch {
     return [];
   }
