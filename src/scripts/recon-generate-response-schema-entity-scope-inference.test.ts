@@ -92,6 +92,32 @@ describe("gatherEntityVarianceEvidence — catalog scenarios", () => {
     expect(gatherEntityVarianceEvidence(w, false, [w]).entityParameterized).toBe(false);
   });
 
+  it("slug path with no identifying params -> not parameterized, single entity (absence of variance)", () => {
+    const slug = "https://shop.example.com/api/widgets/blue-widget";
+    const w = cap(slug);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(slug)]);
+    expect(r.entityParameterized).toBe(false);
+    expect(r.params).toEqual({});
+    expect(r.singleEntity).toBe(true);
+  });
+
+  it("date window varying with a shared id query -> single entity", () => {
+    const w = cap(`${base}?ids[]=100&from=2024-01-01&to=2024-01-31`);
+    const r = gatherEntityVarianceEvidence(w, false, [
+      w,
+      cap(`${base}?ids[]=100&from=2024-02-01&to=2024-02-28`),
+    ]);
+    expect(r.entityParameterized).toBe(true);
+    expect(r.params).toEqual({ ids: "100" });
+    expect(r.singleEntity).toBe(true);
+  });
+
+  it("date window with a varying id query -> multi-entity", () => {
+    const w = cap(`${base}?ids[]=100&from=2024-01-01`);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${base}?ids[]=200&from=2024-01-01`)]);
+    expect(r.singleEntity).toBe(false);
+  });
+
   it("GraphQL winner -> not parameterized", () => {
     const w = cap(`${base}?productId=7`);
     expect(gatherEntityVarianceEvidence(w, true, [w]).entityParameterized).toBe(false);
