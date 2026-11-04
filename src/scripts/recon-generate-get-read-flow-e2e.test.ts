@@ -54,7 +54,8 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
     const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
     // Single-endpoint REST read: an HTTP hot path against the GET endpoint.
     expect(contract).toContain("async executeHttp(");
-    expect(contract).toContain("/items/1");
+    // The entity id in the path is a caller input; the recording is only its fallback.
+    expect(contract).toContain('payload.itemsId ?? "1"');
   }, 60_000);
 
   it("in-process: main() selects the GET endpoint (covered path)", async () => {
@@ -108,7 +109,7 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
       await new Promise((r) => setTimeout(r, 500));
       const contract = readFileSync(out, "utf8");
       expect(contract).toContain("async executeHttp(");
-      expect(contract).toContain("/items/2");
+      expect(contract).toContain('payload.itemsId ?? "2"');
     } finally {
       process.argv = origArgv;
     }
@@ -123,7 +124,10 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
     mkdirSync(join(runRoot, "replays"), { recursive: true });
     mkdirSync(join(runRoot, "aux"), { recursive: true });
     writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-    for (const [n, q] of [["000", "alpha"], ["001", "beta"]] as const) {
+    for (const [n, q] of [
+      ["000", "alpha"],
+      ["001", "beta"],
+    ] as const) {
       writeFileSync(
         join(capturesDir, `${n}-read.json`),
         JSON.stringify(

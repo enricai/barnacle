@@ -2621,13 +2621,13 @@ function safeUrlPathname(url: string): string {
 
 /** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
 export interface GetInputModel {
-  /** Query keys whose values vary across successful same-pathname GET siblings. */
+  /** Query keys the caller controls: varying across successful same-route GET siblings, or declared by the flow. */
   dynamicFields: Array<{ field: string; queryKey: string }>;
   /** Query params with a single observed value across siblings (queryKey -> value). */
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
   fieldToQueryKey: Record<string, string>;
-  /** Path segments of the winning URL that repeat a query value. */
+  /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
 }
 
@@ -2637,6 +2637,25 @@ function safeGetFieldIdentifier(key: string): string {
   if (id === "") id = "param";
   if (/^[0-9]/.test(id)) id = `_${id}`;
   return id;
+}
+
+/**
+ * True when a decoded path segment names a specific entity rather than a fixed
+ * route part: a bare number, UUID or long hex id, or a slug carrying one
+ * (`acme-42`, `order_0007`, `abc123`). Version tokens (`v2`) and words with a
+ * lone digit (`oauth2`) are route parts.
+ */
+function carriesEntityId(segment: string): boolean {
+  if (RESOURCE_ID_SEGMENT.test(segment)) return true;
+  if (/^v\d+$/i.test(segment)) return false;
+  const tokens = segment.split(/[-_]/);
+  if (tokens.length > 1) return tokens.some((t) => /^\d+$/.test(t));
+  return /^[A-Za-z]+\d{2,}$/.test(segment);
+}
+
+/** A hyphen/underscore-joined multi-word segment, e.g. a human-readable entity slug. */
+function isSlugSegment(segment: string): boolean {
+  return /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(segment);
 }
 
 /**
@@ -2661,20 +2680,6 @@ export function deriveGetInputModel(
     return null;
   }
   const segments = winnerUrl.pathname.split("/");
-  const siblings = captures.filter((c) => {
-    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
-    try {
-      const u = new URL(c.url);
-      if (u.host !== winnerUrl.host) return false;
-      const segs = u.pathname.split("/");
-      if (segs.length !== segments.length) return false;
-      // Same route shape: segments may differ only where both look like ids.
-      return segs.every((s, i) => s === segments[i] || (/\d/.test(s) && /\d/.test(segments[i] ?? "")));
-    } catch {
-      return false;
-    }
-  });
-  if (!siblings.includes(winner)) siblings.push(winner);
   const decode = (s: string): string => {
     try {
       return decodeURIComponent(s);
@@ -2682,6 +2687,31 @@ export function deriveGetInputModel(
       return s;
     }
   };
+  const queryKeySet = (u: URL): string => [...new Set(u.searchParams.keys())].sort().join("\n");
+  const winnerKeys = queryKeySet(winnerUrl);
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      const u = new URL(c.url);
+      if (u.host !== winnerUrl.host) return false;
+      const segs = u.pathname.split("/");
+      if (segs.length !== segments.length) return false;
+      const differing = segs.flatMap((s, i) => (s === segments[i] ? [] : [[s, segments[i] ?? ""]]));
+      // Same route shape: segments may differ only where both carry an entity id,
+      // or, for a lone differing slug, when the call signature (query keys) matches.
+      return differing.every(
+        ([a, b]) =>
+          (carriesEntityId(decode(a as string)) && carriesEntityId(decode(b as string))) ||
+          (differing.length === 1 &&
+            isSlugSegment(a as string) &&
+            isSlugSegment(b as string) &&
+            queryKeySet(u) === winnerKeys)
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
   const valuesByKey = new Map<string, Set<string>>();
   const valuesBySegment: Array<Set<string>> = segments.map(() => new Set<string>());
   for (const c of siblings) {
@@ -2692,7 +2722,7 @@ export function deriveGetInputModel(
       if (!existing) valuesByKey.set(k, set);
       set.add(v);
     }
-    u.pathname.split("/").forEach((seg, i) => valuesBySegment[i]?.add(decode(seg)));
+    for (const [i, seg] of u.pathname.split("/").entries()) valuesBySegment[i]?.add(decode(seg));
   }
   const declared = new Set<string>();
   for (const n of declaredNames) declared.add(n);
@@ -2731,9 +2761,11 @@ export function deriveGetInputModel(
       fixedParams[key] = [...values][0] as string;
     }
   }
-  // Path segments that vary between captures with no query twin.
+  // Path segments with no query twin that vary between captures or carry an entity id.
   for (let i = 1; i < segments.length; i++) {
-    if (boundSegments.has(i) || (valuesBySegment[i]?.size ?? 0) < 2) continue;
+    if (boundSegments.has(i)) continue;
+    const varies = (valuesBySegment[i]?.size ?? 0) > 1;
+    if (!varies && !carriesEntityId(decode(segments[i] ?? ""))) continue;
     const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
     const base = prev === "param" ? "id" : `${prev}Id`;
     let field = base;
@@ -16810,7 +16842,6 @@ function readOnlyGetExtractPromptExpr(fields: readonly string[]): string {
   if (fields.length === 0) return '"extract the results shown on the page"';
   const parts = fields.map((f) => {
     const access = isValidJsIdentifier(f) ? `payload.${f}` : `payload[${JSON.stringify(f)}]`;
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source
     return `${f.replace(/[`\\$]/g, "")}=\${${access} ?? ""}`;
   });
   return `\`extract the results shown on the page for: ${parts.join(", ")}\``;

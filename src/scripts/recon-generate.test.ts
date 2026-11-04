@@ -1,19 +1,10 @@
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  CONFIG_PLUGIN_API_VERSION,
-  CONFIG_PLUGIN_KIND,
-} from "@/plugins/plugin-manifest-envelope";
+import { CONFIG_PLUGIN_API_VERSION, CONFIG_PLUGIN_KIND } from "@/plugins/plugin-manifest-envelope";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
@@ -103,19 +94,11 @@ const BASE_OPTS = {
 
 describe("countSpliceableFacets", () => {
   it("counts every segment whose key matches a given field", () => {
-    expect(
-      countSpliceableFacets("ship:IC|visiting:CARI", [
-        "ship",
-        "visiting",
-        "port",
-      ]),
-    ).toBe(2);
+    expect(countSpliceableFacets("ship:IC|visiting:CARI", ["ship", "visiting", "port"])).toBe(2);
   });
 
   it("counts a single matching segment", () => {
-    expect(
-      countSpliceableFacets("visiting:CARI", ["ship", "visiting", "port"]),
-    ).toBe(1);
+    expect(countSpliceableFacets("visiting:CARI", ["ship", "visiting", "port"])).toBe(1);
   });
 
   it("returns 0 for a non-string value", () => {
@@ -141,9 +124,7 @@ describe("emitContractTs — BASE_HEADERS volatile value regeneration", () => {
   });
 
   it("mints a fresh crypto.randomUUID() for a UUID-shaped captured header value instead of freezing the recon literal", () => {
-    expect(source).toContain(
-      `"X-Correlation-Id": \`${interpRef("crypto.randomUUID()")}\``,
-    );
+    expect(source).toContain(`"X-Correlation-Id": \`${interpRef("crypto.randomUUID()")}\``);
     expect(source).not.toContain('"a1b2c3d4-e5f6-4789-a012-3456789abcde"');
   });
 
@@ -163,7 +144,7 @@ describe("emitContractTs — multipart plugin", () => {
 
   it("imports multipartBoolean and multipartJsonObject from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"',
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
     );
   });
 
@@ -194,9 +175,7 @@ describe("emitContractTs — valueConstraints", () => {
   it("overrides a Phase F additional-body-key field's emitted zod expression with a declared min/max", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
-      discoveredAdditionalBodyKeys: new Map([
-        ["seatCount", { kind: "number" }],
-      ]),
+      discoveredAdditionalBodyKeys: new Map([["seatCount", { kind: "number" }]]),
       valueConstraints: { seatCount: { min: 1, max: 4 } },
     });
     expect(source).toContain("seatCount: z.number().min(1).max(4),");
@@ -223,9 +202,7 @@ describe("emitContractTs — valueConstraints", () => {
   it("preserves the .optional() downgrade from an unpopulated declared GraphQL variable when also overridden by a value constraint", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
-      discoveredAdditionalBodyKeys: new Map([
-        ["seatCount", { kind: "number" }],
-      ]),
+      discoveredAdditionalBodyKeys: new Map([["seatCount", { kind: "number" }]]),
       unpopulatedDeclaredVariables: ["seatCount"],
       valueConstraints: { seatCount: { min: 1, max: 4 } },
     });
@@ -277,13 +254,13 @@ describe("emitContractTs — submission-flow candidate-payload bodySchema with g
 
   it("imports ApplicantContactSchema from the package's applicant-payload subpath", () => {
     expect(source).toContain(
-      'import { ApplicantContactSchema } from "@enricai/barnacle/lib/applicant-payload"',
+      'import { ApplicantContactSchema } from "@enricai/barnacle/lib/applicant-payload"'
     );
   });
 
   it("imports multipartJsonObject from the zod-multipart subpath, without multipartBoolean since inputBody has no boolean field", () => {
     expect(source).toContain(
-      'import { multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"',
+      'import { multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
     );
     expect(source).not.toContain("multipartBoolean");
   });
@@ -302,7 +279,7 @@ describe("emitContractTs — submission-flow candidate-payload bodySchema with g
   it("does not emit the site-shaped inputBody keys as bodySchema fields", () => {
     const payloadSchemaBlock = source.slice(
       source.indexOf("const TestSitePayloadSchema"),
-      source.indexOf("export type TestSitePayload"),
+      source.indexOf("export type TestSitePayload")
     );
     expect(payloadSchemaBlock).not.toContain("ddoKey");
   });
@@ -362,11 +339,7 @@ describe("emitContractTs — responseBodySamples widens the client-level Respons
 
 describe("gatherResponseBodySamples — groups by operation identity, filters to 2xx, dedupes", () => {
   const BASE = "https://jobs.example.com";
-  const restCapture = (
-    path: string,
-    status: number,
-    responseBody: unknown,
-  ): Capture => ({
+  const restCapture = (path: string, status: number, responseBody: unknown): Capture => ({
     timestamp: "2024-01-01T00:00:00Z",
     phase: "action",
     method: "GET",
@@ -422,9 +395,7 @@ describe("emitContractTs — non-scalar discoveredStructuredKeys field forces mu
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: false,
-    discoveredStructuredKeys: new Map([
-      ["eventData", "z.object({ a: z.string() })"],
-    ]),
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
   });
 
   it("emits multipart: true in meta even though hasMultipartStep is false", () => {
@@ -432,15 +403,11 @@ describe("emitContractTs — non-scalar discoveredStructuredKeys field forces mu
   });
 
   it("wraps the structured field in multipartJsonObject(...)", () => {
-    expect(source).toContain(
-      "eventData: multipartJsonObject(z.object({ a: z.string() })),",
-    );
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
   });
 
   it("imports multipartJsonObject from the package subpath", () => {
-    expect(source).toContain(
-      'multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"',
-    );
+    expect(source).toContain('multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"');
   });
 });
 
@@ -474,7 +441,7 @@ describe("emitContractTs — hasMultipartStep:true with no structured keys keeps
 
   it("keeps the current unwrapped Resume-extend shape unchanged", () => {
     expect(source).toContain(
-      ".extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})",
+      ".extend({\n  Resume: z.instanceof(Buffer),\n  ResumeContentType: z.string(),\n  ResumeFilename: z.string(),\n})"
     );
     expect(source).not.toContain("multipartJsonObject(z.instanceof(Buffer))");
   });
@@ -492,9 +459,7 @@ describe("emitContractTs — plain file-upload flow with no boolean fields does 
   const source = emitContractTs({
     ...BASE_OPTS,
     hasMultipartStep: true,
-    discoveredStructuredKeys: new Map([
-      ["eventData", "z.object({ a: z.string() })"],
-    ]),
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
   });
 
   it("imports multipartJsonObject (Answers/structured field, genuinely used)", () => {
@@ -516,7 +481,7 @@ describe("emitContractTs — multipartCoerce boolean inside inputBody alone (no 
 
   it("imports multipartBoolean", () => {
     expect(source).toContain(
-      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"',
+      'import { multipartBoolean, multipartJsonObject } from "@enricai/barnacle/lib/zod-multipart"'
     );
   });
 
@@ -553,9 +518,7 @@ describe("emitContractTs — hasMultipartStep:true combined with non-empty disco
     ...BASE_OPTS,
     hasMultipartStep: true,
     inputBody: { Name: "Alice" },
-    discoveredStructuredKeys: new Map([
-      ["eventData", "z.object({ a: z.string() })"],
-    ]),
+    discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
   });
 
   it("still emits multipart: true", () => {
@@ -563,9 +526,7 @@ describe("emitContractTs — hasMultipartStep:true combined with non-empty disco
   });
 
   it("still wraps the structured field in multipartJsonObject(...)", () => {
-    expect(source).toContain(
-      "eventData: multipartJsonObject(z.object({ a: z.string() })),",
-    );
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
   });
 
   it("does not import multipartBoolean — no boolean field is ever wrapped in it, even though multipartJsonObject is genuinely used", () => {
@@ -588,10 +549,7 @@ describe("emitContractTs — incrediblehealth-shaped regression: resume-upload s
       Answers: [{ questionId: "q1", answer: "yes" }],
     },
     discoveredStructuredKeys: new Map([
-      [
-        "Answers",
-        "z.array(z.object({ questionId: z.string(), answer: z.string() }))",
-      ],
+      ["Answers", "z.array(z.object({ questionId: z.string(), answer: z.string() }))"],
     ]),
     multiStepBody: `    return { data: {} as unknown };`,
   });
@@ -602,7 +560,7 @@ describe("emitContractTs — incrediblehealth-shaped regression: resume-upload s
 
   it("wraps the Answers-derived field in multipartJsonObject(...)", () => {
     expect(source).toContain(
-      "Answers: multipartJsonObject(z.array(z.object({ questionId: z.string(), answer: z.string() }))),",
+      "Answers: multipartJsonObject(z.array(z.object({ questionId: z.string(), answer: z.string() }))),"
     );
   });
 });
@@ -646,19 +604,15 @@ describe("emitMultiStepExecuteHttp — multipart upload step", () => {
     new Map(),
     "https://api.example.com",
     new Map(),
-    new Map(),
+    new Map()
   );
 
   it('emits omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type") for the upload headers', () => {
-    expect(body).toContain(
-      'omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type")',
-    );
+    expect(body).toContain('omitHeaderCaseInsensitive(BASE_HEADERS, "Content-Type")');
   });
 
   it("does not emit the inline Object.fromEntries filter idiom", () => {
-    expect(body).not.toContain(
-      "Object.fromEntries(Object.entries(BASE_HEADERS)",
-    );
+    expect(body).not.toContain("Object.fromEntries(Object.entries(BASE_HEADERS)");
   });
 });
 
@@ -699,7 +653,7 @@ describe("emitMultiStepExecuteHttp — payload accessor through an array-indexed
     new Map(),
     "https://api.example.com",
     new Map(),
-    new Map(),
+    new Map()
   );
 
   it("emits a non-null-asserted bracket accessor for the array element", () => {
@@ -730,7 +684,7 @@ describe("extractActionSequence — error-reporting sinks never reach the emitte
   // to the site as a fabricated error report on every invocation.
   const errorReport = capture(
     `${BASE}/listings-avail-spa/error`,
-    '[["Error logged by WDPR RA Angular Error handler service","{\\"timestamp\\":1784247853926,\\"message\\":\\"Script load error for //connect.facebook.net/en_US/fbevents.js\\"}"]]',
+    '[["Error logged by WDPR RA Angular Error handler service","{\\"timestamp\\":1784247853926,\\"message\\":\\"Script load error for //connect.facebook.net/en_US/fbevents.js\\"}"]]'
   );
 
   it("drops error sinks while keeping the calls that carry the flow", () => {
@@ -839,7 +793,7 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       null,
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([
@@ -867,12 +821,9 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
     // primaryHost set, only the dominant host's own genuine submit survives.
     const minorityHostCoincidentalMatch = capture(
       "https://auth.tenant.example.com/submit-token-refresh",
-      "{}",
+      "{}"
     );
-    const primarySubmit = capture(
-      "https://api.tenant.example.com/submit",
-      "{}",
-    );
+    const primarySubmit = capture("https://api.tenant.example.com/submit", "{}");
 
     const kept = extractActionSequence(
       [minorityHostCoincidentalMatch, primarySubmit],
@@ -881,50 +832,32 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       ["api.tenant.example.com", "auth.tenant.example.com"],
       null,
       true,
-      "api.tenant.example.com",
+      "api.tenant.example.com"
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([primarySubmit.url]);
   });
 
   it("keeps the primary host's genuine matching captures undiminished when primaryHost narrows the pool", () => {
-    const primaryAccountCreate = capture(
-      "https://api.tenant.example.com/account/create",
-      "{}",
-    );
+    const primaryAccountCreate = capture("https://api.tenant.example.com/account/create", "{}");
     const primarySectionName = capture(
       "https://api.tenant.example.com/sections/name",
-      '{"name":"x"}',
+      '{"name":"x"}'
     );
-    const primarySubmit = capture(
-      "https://api.tenant.example.com/submit",
-      "{}",
-    );
-    const minorityHostNoise = capture(
-      "https://auth.tenant.example.com/refresh",
-      "{}",
-    );
+    const primarySubmit = capture("https://api.tenant.example.com/submit", "{}");
+    const minorityHostNoise = capture("https://auth.tenant.example.com/refresh", "{}");
 
     const kept = extractActionSequence(
-      [
-        primaryAccountCreate,
-        primarySectionName,
-        primarySubmit,
-        minorityHostNoise,
-      ],
+      [primaryAccountCreate, primarySectionName, primarySubmit, minorityHostNoise],
       null,
       null,
       ["api.tenant.example.com", "auth.tenant.example.com"],
       null,
       true,
-      "api.tenant.example.com",
+      "api.tenant.example.com"
     ).map((a) => a.capture.url);
 
-    expect(kept).toEqual([
-      primaryAccountCreate.url,
-      primarySectionName.url,
-      primarySubmit.url,
-    ]);
+    expect(kept).toEqual([primaryAccountCreate.url, primarySectionName.url, primarySubmit.url]);
   });
 
   it("includes the dominant backend's own submitEndpointPattern-matching captures once a same-company redirect no longer mis-anchors primaryHost", () => {
@@ -945,10 +878,10 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       timestamp: `2024-01-01T00:00:0${i + 1}Z`,
     }));
 
-    const primaryHost = deriveBaseUrl(
-      [marketingRedirect, ...matchingSubmits],
-      [],
-    )?.replace(/^https?:\/\//, "");
+    const primaryHost = deriveBaseUrl([marketingRedirect, ...matchingSubmits], [])?.replace(
+      /^https?:\/\//,
+      ""
+    );
     expect(primaryHost).toBe("api.tenant.example.com");
 
     const kept = extractActionSequence(
@@ -958,7 +891,7 @@ describe("extractActionSequence — host-gated when ownBackendHostnames is provi
       ["www.tenant-landing.com", "api.tenant.example.com"],
       null,
       true,
-      primaryHost,
+      primaryHost
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual(matchingSubmits.map((c) => c.url));
@@ -989,15 +922,15 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     // nothing but the host — admitted by host-gating alone.
     const productAvail = capture(
       "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
-      "{}",
+      "{}"
     );
     const sailingAvail = capture(
       "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/search",
-      "{}",
+      "{}"
     );
     const promoBanner = capture(
       "https://api.tenant.example.com/site-banner/api/promotions/widget",
-      "{}",
+      "{}"
     );
 
     const kept = extractActionSequence(
@@ -1005,7 +938,7 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       { endpoint: "sailingavailability-vas", body: null },
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([productAvail.url, sailingAvail.url]);
@@ -1017,7 +950,7 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     // reference — the endpoint-regex match must stay admitted regardless.
     const authMint = capture(
       "https://api.tenant.example.com/booking-apps-sailingavailability-vas/v1/token",
-      "{}",
+      "{}"
     );
     const submit = capture("https://api.tenant.example.com/apply", "{}");
 
@@ -1026,7 +959,7 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       { endpoint: "apply$", body: null },
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([submit.url]);
@@ -1035,11 +968,11 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
   it("is a no-op when no submitEndpointPattern is declared — no authoritative anchor to narrow against", () => {
     const productAvail = capture(
       "https://api.tenant.example.com/booking-apps-productavail-vas/v1/search",
-      "{}",
+      "{}"
     );
     const promoBanner = capture(
       "https://api.tenant.example.com/site-banner/api/promotions/widget",
-      "{}",
+      "{}"
     );
 
     const kept = extractActionSequence(
@@ -1047,7 +980,7 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       null,
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([productAvail.url, promoBanner.url]);
@@ -1062,23 +995,17 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     // real match down to zero.
     const genuineSubmit = capture(
       "https://api.tenant.example.com/dcl-apps-productavail-vas/available-sailings/",
-      "{}",
+      "{}"
     );
-    const widgetNoise = capture(
-      "https://api.tenant.example.com/widget-loader/api/config",
-      "{}",
-    );
-    const chatNoise = capture(
-      "https://api.tenant.example.com/chat-bot/session/start",
-      "{}",
-    );
+    const widgetNoise = capture("https://api.tenant.example.com/widget-loader/api/config", "{}");
+    const chatNoise = capture("https://api.tenant.example.com/chat-bot/session/start", "{}");
 
     const kept = extractActionSequence(
       [genuineSubmit, widgetNoise, chatNoise],
       { endpoint: "available-sailings", body: null },
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(kept).toContain(genuineSubmit.url);
@@ -1094,17 +1021,14 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
     // over-aggressive narrowing while still keeping the earlier
     // structural-isolation exemption for the declared submit match.
     const hold = capture("https://api.tenant.example.com/lodging/hold/", "{}");
-    const submit = capture(
-      "https://api.tenant.example.com/lodging/submit/",
-      "{}",
-    );
+    const submit = capture("https://api.tenant.example.com/lodging/submit/", "{}");
 
     const narrowed = extractActionSequence(
       [hold, submit],
       { endpoint: "submit", body: null },
       null,
       ["api.tenant.example.com"],
-      null,
+      null
     ).map((a) => a.capture.url);
 
     expect(narrowed).not.toContain(hold.url);
@@ -1115,7 +1039,7 @@ describe("extractActionSequence — structural relevance narrows the host-gated 
       null,
       ["api.tenant.example.com"],
       null,
-      false,
+      false
     ).map((a) => a.capture.url);
 
     expect(unnarrowed).toContain(hold.url);
@@ -1161,51 +1085,32 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
     // widget capture would all survive it. This is the boundary that
     // actually decides which of those is noise: it must own the offending
     // field itself, on top of merely sharing the host.
-    const catalogCreate = capture(
-      "https://api.tenant.example.com/api/catalog-vas/create",
-      {},
-    );
-    const catalogName = capture(
-      "https://api.tenant.example.com/api/catalog-vas/name",
-      {},
-    );
-    const catalogSubmit = capture(
-      "https://api.tenant.example.com/api/catalog-vas/submit",
-      {},
-    );
-    const promoBanner = capture(
-      "https://api.tenant.example.com/api/promotions/banner",
-      {
-        webBannerImageUrl: "https://cdn.example.com/banner.png",
-      },
-    );
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogName = capture("https://api.tenant.example.com/api/catalog-vas/name", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/api/promotions/banner", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
 
     const noise = identifyNoiseCapturesForFields(
       ["webBannerImageUrl"],
       asPool([catalogCreate, promoBanner, catalogName, catalogSubmit]),
-      catalogSubmit,
+      catalogSubmit
     );
 
     expect(noise).toEqual(new Set([promoBanner]));
   });
 
   it("never excludes the resolved primary capture, even when it is the sole source of the offending field", () => {
-    const catalogCreate = capture(
-      "https://api.tenant.example.com/api/catalog-vas/create",
-      {},
-    );
-    const catalogSubmit = capture(
-      "https://api.tenant.example.com/api/catalog-vas/submit",
-      {
-        confirmationDetailsUrl:
-          "https://api.tenant.example.com/confirmation/app-7f3c2e",
-      },
-    );
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {
+      confirmationDetailsUrl: "https://api.tenant.example.com/confirmation/app-7f3c2e",
+    });
 
     const noise = identifyNoiseCapturesForFields(
       ["confirmationDetailsUrl"],
       asPool([catalogCreate, catalogSubmit]),
-      catalogSubmit,
+      catalogSubmit
     );
 
     expect(noise.size).toBe(0);
@@ -1215,25 +1120,16 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
     // the field-discovery schema walk recurses into nested response shapes,
     // so a capture that owns the field only under a parent key must still
     // be attributable as its source — not silently missed by a depth-0 check.
-    const catalogCreate = capture(
-      "https://api.tenant.example.com/api/catalog-vas/create",
-      {},
-    );
-    const catalogSubmit = capture(
-      "https://api.tenant.example.com/api/catalog-vas/submit",
-      {},
-    );
-    const promoBanner = capture(
-      "https://api.tenant.example.com/api/promotions/banner",
-      {
-        data: { webBannerImageUrl: "https://cdn.example.com/banner.png" },
-      },
-    );
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/api/promotions/banner", {
+      data: { webBannerImageUrl: "https://cdn.example.com/banner.png" },
+    });
 
     const noise = identifyNoiseCapturesForFields(
       ["webBannerImageUrl"],
       asPool([catalogCreate, promoBanner, catalogSubmit]),
-      catalogSubmit,
+      catalogSubmit
     );
 
     expect(noise).toEqual(new Set([promoBanner]));
@@ -1245,29 +1141,20 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
     // parameterized `/default` variant of the SAME repeated-segment path
     // family that carries no offending field of its own — it must still be
     // recognized as noise, purely by path-family relatedness to its sibling.
-    const catalogCreate = capture(
-      "https://api.tenant.example.com/api/catalog-vas/create",
-      {},
-    );
-    const catalogSubmit = capture(
-      "https://api.tenant.example.com/api/catalog-vas/submit",
-      {},
-    );
-    const promoBanner = capture(
-      "https://api.tenant.example.com/promo/api/deals/promo",
-      {
-        webBannerImageUrl: "https://cdn.example.com/banner.png",
-      },
-    );
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/promo/api/deals/promo", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
     const promoBannerVariant = capture(
       "https://api.tenant.example.com/promo/api/deals/promo/default?siteId=x&pageId=home",
-      {},
+      {}
     );
 
     const noise = identifyNoiseCapturesForFields(
       ["webBannerImageUrl"],
       asPool([catalogCreate, promoBanner, promoBannerVariant, catalogSubmit]),
-      catalogSubmit,
+      catalogSubmit
     );
 
     expect(noise).toEqual(new Set([promoBanner, promoBannerVariant]));
@@ -1279,29 +1166,17 @@ describe("identifyNoiseCapturesForFields — required-URL-field guard's self-hea
     // coincidence — path-family broadening must be scoped to the SAME host
     // as the noise capture it is extending, or it would wrongly drop a
     // legitimate cross-host chain step from the resolved pool.
-    const catalogCreate = capture(
-      "https://api.tenant.example.com/api/catalog-vas/create",
-      {},
-    );
-    const catalogSubmit = capture(
-      "https://api.tenant.example.com/api/catalog-vas/submit",
-      {},
-    );
-    const promoBanner = capture(
-      "https://api.tenant.example.com/promo/api/deals/promo",
-      {
-        webBannerImageUrl: "https://cdn.example.com/banner.png",
-      },
-    );
-    const crossHostVariant = capture(
-      "https://auth.example.com/promo/api/deals/promo/default",
-      {},
-    );
+    const catalogCreate = capture("https://api.tenant.example.com/api/catalog-vas/create", {});
+    const catalogSubmit = capture("https://api.tenant.example.com/api/catalog-vas/submit", {});
+    const promoBanner = capture("https://api.tenant.example.com/promo/api/deals/promo", {
+      webBannerImageUrl: "https://cdn.example.com/banner.png",
+    });
+    const crossHostVariant = capture("https://auth.example.com/promo/api/deals/promo/default", {});
 
     const noise = identifyNoiseCapturesForFields(
       ["webBannerImageUrl"],
       asPool([catalogCreate, promoBanner, crossHostVariant, catalogSubmit]),
-      catalogSubmit,
+      catalogSubmit
     );
 
     expect(noise).toEqual(new Set([promoBanner]));
@@ -1329,25 +1204,14 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   // Matches a real ATS endpoint overload: /applySubmit is hit by the real
   // submission (ddoKey applySubmit) AND page-chrome reference-lookups (ddoKey
   // applyGetReferences), plus unrelated /widgets bootstrap chrome.
-  const realSubmit = capture(
-    `${BASE}/applySubmit`,
-    '{"ddoKey":"applySubmit","formData":{}}',
-  );
-  const chromeRefs = capture(
-    `${BASE}/applySubmit`,
-    '{"ddoKey":"applyGetReferences"}',
-  );
-  const chromeWidget = capture(
-    `${BASE}/widgets`,
-    '{"ddoKey":"canvasGetWidgetContent"}',
-  );
+  const realSubmit = capture(`${BASE}/applySubmit`, '{"ddoKey":"applySubmit","formData":{}}');
+  const chromeRefs = capture(`${BASE}/applySubmit`, '{"ddoKey":"applyGetReferences"}');
+  const chromeWidget = capture(`${BASE}/widgets`, '{"ddoKey":"canvasGetWidgetContent"}');
 
   it("with no patterns, keeps every same-origin POST (today's behavior)", () => {
-    const kept = extractActionSequence([
-      realSubmit,
-      chromeRefs,
-      chromeWidget,
-    ]).map((a) => a.capture.url);
+    const kept = extractActionSequence([realSubmit, chromeRefs, chromeWidget]).map(
+      (a) => a.capture.url
+    );
     expect(kept).toEqual([realSubmit.url, chromeRefs.url, chromeWidget.url]);
   });
 
@@ -1357,10 +1221,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
       body: null,
     }).map((a) => a.capture.requestPostData);
     // /widgets dropped; both /applySubmit POSTs kept (URL cannot separate them).
-    expect(kept).toEqual([
-      realSubmit.requestPostData,
-      chromeRefs.requestPostData,
-    ]);
+    expect(kept).toEqual([realSubmit.requestPostData, chromeRefs.requestPostData]);
   });
 
   it("with an endpoint + body pattern, isolates the real submission", () => {
@@ -1372,9 +1233,7 @@ describe("extractActionSequence — submit patterns isolate the submission from 
   });
 
   it("throws on a malformed pattern rather than silently reverting to unfiltered", () => {
-    expect(() =>
-      extractActionSequence([realSubmit], { endpoint: "(", body: null }),
-    ).toThrow();
+    expect(() => extractActionSequence([realSubmit], { endpoint: "(", body: null })).toThrow();
   });
 });
 
@@ -1397,22 +1256,10 @@ describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the L
 
   const BASE = "https://www.example-ats.org";
   const authMint = capture(`${BASE}/auth/mint`, "2024-01-01T00:00:00Z");
-  const pagedListing = capture(
-    `${BASE}/listing?page=1`,
-    "2024-01-01T00:00:01Z",
-  );
-  const firstSubmitMatch = capture(
-    `${BASE}/apply/submit`,
-    "2024-01-01T00:00:02Z",
-  );
-  const trailingChrome = capture(
-    `${BASE}/apply/receipt`,
-    "2024-01-01T00:00:03Z",
-  );
-  const secondSubmitMatch = capture(
-    `${BASE}/apply/submit`,
-    "2024-01-01T00:00:04Z",
-  );
+  const pagedListing = capture(`${BASE}/listing?page=1`, "2024-01-01T00:00:01Z");
+  const firstSubmitMatch = capture(`${BASE}/apply/submit`, "2024-01-01T00:00:02Z");
+  const trailingChrome = capture(`${BASE}/apply/receipt`, "2024-01-01T00:00:03Z");
+  const secondSubmitMatch = capture(`${BASE}/apply/submit`, "2024-01-01T00:00:04Z");
 
   const sequence = [
     authMint,
@@ -1460,14 +1307,8 @@ describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the L
   });
 
   describe("declared foldReturn drill fired AFTER the last submit match", () => {
-    const foldDrill = capture(
-      `${BASE}/apply/detail-availability/x1`,
-      "2024-01-01T00:00:05Z",
-    );
-    const withDrill = [
-      ...sequence,
-      { capture: foldDrill, index: sequence.length },
-    ];
+    const foldDrill = capture(`${BASE}/apply/detail-availability/x1`, "2024-01-01T00:00:05Z");
+    const withDrill = [...sequence, { capture: foldDrill, index: sequence.length }];
     const foldReturnSpec = {
       endpointPattern: "detail-availability",
       resultsPath: "items",
@@ -1478,7 +1319,7 @@ describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the L
       const kept = truncateActionSequenceAtSubmitPattern(
         withDrill,
         { endpoint: "/apply/submit$", body: null },
-        foldReturnSpec,
+        foldReturnSpec
       ).map((a) => a.capture.url);
       expect(kept).toEqual([
         authMint.url,
@@ -1494,7 +1335,7 @@ describe("truncateActionSequenceAtSubmitPattern — keeps everything up to the L
       const kept = truncateActionSequenceAtSubmitPattern(
         withDrill,
         { endpoint: "/no-such-endpoint$", body: null },
-        foldReturnSpec,
+        foldReturnSpec
       );
       expect(kept).toEqual([]);
     });
@@ -1517,44 +1358,36 @@ describe("ancestorScopedAccessor — plain access only where the primary-array a
   const g1Remainder = ["entries"];
 
   it("keeps a plain chain that stays on the typed path without entering an array", () => {
-    expect(ancestorScopedAccessor("g0", "groups", g0Remainder)).toBe(
-      "g0.groups",
-    );
-    expect(ancestorScopedAccessor("g1", "entries", g1Remainder)).toBe(
-      "g1.entries",
-    );
+    expect(ancestorScopedAccessor("g0", "groups", g0Remainder)).toBe("g0.groups");
+    expect(ancestorScopedAccessor("g1", "entries", g1Remainder)).toBe("g1.entries");
   });
 
   it("casts a sibling field the assertion type never declares", () => {
-    expect(
-      ancestorScopedAccessor("g1", "priceSummary.currency", g1Remainder),
-    ).toBe(
-      "((g1 as Record<string, unknown>).priceSummary as Record<string, unknown>).currency",
+    expect(ancestorScopedAccessor("g1", "priceSummary.currency", g1Remainder)).toBe(
+      "((g1 as Record<string, unknown>).priceSummary as Record<string, unknown>).currency"
     );
     expect(ancestorScopedAccessor("g0", "code", g0Remainder)).toBe(
-      "(g0 as Record<string, unknown>).code",
+      "(g0 as Record<string, unknown>).code"
     );
   });
 
   it("casts any chain that crosses an array element, since an index hop is possibly-undefined under noUncheckedIndexedAccess", () => {
     expect(ancestorScopedAccessor("g1", "entries.0.entryId", g1Remainder)).toBe(
-      '(((g1 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId',
+      '(((g1 as Record<string, unknown>).entries as Record<string, unknown>)["0"] as Record<string, unknown>).entryId'
     );
     expect(ancestorScopedAccessor("g0", "groups.0.entries", g0Remainder)).toBe(
-      '(((g0 as Record<string, unknown>).groups as Record<string, unknown>)["0"] as Record<string, unknown>).entries',
+      '(((g0 as Record<string, unknown>).groups as Record<string, unknown>)["0"] as Record<string, unknown>).entries'
     );
-    expect(
-      ancestorScopedAccessor("g0", "groups.0.label", g0Remainder),
-    ).toContain("(g0 as Record<string, unknown>)");
-    expect(
-      ancestorScopedAccessor("g1", "entries.length", g1Remainder),
-    ).toContain("(g1 as Record<string, unknown>)");
+    expect(ancestorScopedAccessor("g0", "groups.0.label", g0Remainder)).toContain(
+      "(g0 as Record<string, unknown>)"
+    );
+    expect(ancestorScopedAccessor("g1", "entries.length", g1Remainder)).toContain(
+      "(g1 as Record<string, unknown>)"
+    );
   });
 
   it("casts everything when no typed remainder is known for the var", () => {
-    expect(ancestorScopedAccessor("g0", "code", null)).toBe(
-      "(g0 as Record<string, unknown>).code",
-    );
+    expect(ancestorScopedAccessor("g0", "code", null)).toBe("(g0 as Record<string, unknown>).code");
   });
 });
 
@@ -1597,17 +1430,17 @@ describe("firstEndpointCapture — honors a declared submitEndpointPattern over 
   const chronologicallyEarlierDecoy = capture(
     "https://www.example.com/api/toggle",
     "2024-01-01T00:00:00Z",
-    { toggled: true },
+    { toggled: true }
   );
   const largerResponseDecoy = capture(
     "https://www.example.com/api/page-load",
     "2024-01-01T00:00:01Z",
-    { padding: "x".repeat(500) },
+    { padding: "x".repeat(500) }
   );
   const patternMatchedCapture = capture(
     "https://www.example.com/api/search-final",
     "2024-01-01T00:00:02Z",
-    { results: [] },
+    { results: [] }
   );
 
   it("picks the pattern-matching capture over a chronologically-earlier or larger-response decoy", () => {
@@ -1615,7 +1448,7 @@ describe("firstEndpointCapture — honors a declared submitEndpointPattern over 
       [chronologicallyEarlierDecoy, largerResponseDecoy, patternMatchedCapture],
       [],
       null,
-      { endpoint: "/api/search-final$", body: null },
+      { endpoint: "/api/search-final$", body: null }
     );
 
     expect(picked).toBe(patternMatchedCapture);
@@ -1626,7 +1459,7 @@ describe("firstEndpointCapture — honors a declared submitEndpointPattern over 
       [chronologicallyEarlierDecoy, largerResponseDecoy, patternMatchedCapture],
       [],
       null,
-      { endpoint: "/no-such-endpoint$", body: null },
+      { endpoint: "/no-such-endpoint$", body: null }
     );
 
     expect(picked).toBe(chronologicallyEarlierDecoy);
@@ -1668,12 +1501,9 @@ describe("extractActionSequence — foldReturnSpec-scoped GET admission", () => 
 
   it("admits a GET capture whose URL matches the flow's own foldReturnSpec.endpointPattern", () => {
     const kept = extractActionSequence(
-      [
-        capture("POST", `${BASE}/orders/search`),
-        capture("GET", `${BASE}/orders/1/detail`),
-      ],
+      [capture("POST", `${BASE}/orders/search`), capture("GET", `${BASE}/orders/1/detail`)],
       null,
-      foldReturnSpec,
+      foldReturnSpec
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([`${BASE}/orders/search`, `${BASE}/orders/1/detail`]);
@@ -1681,12 +1511,9 @@ describe("extractActionSequence — foldReturnSpec-scoped GET admission", () => 
 
   it("still drops a GET that does not match the declared endpointPattern", () => {
     const kept = extractActionSequence(
-      [
-        capture("POST", `${BASE}/orders/search`),
-        capture("GET", `${BASE}/orders/1/unrelated`),
-      ],
+      [capture("POST", `${BASE}/orders/search`), capture("GET", `${BASE}/orders/1/unrelated`)],
       null,
-      foldReturnSpec,
+      foldReturnSpec
     ).map((a) => a.capture.url);
 
     expect(kept).toEqual([`${BASE}/orders/search`]);
@@ -1736,10 +1563,7 @@ describe("extractActionSequence — a repeatedly-fired real search primary survi
   };
 
   it("keeps the repeated search POST and the fold-matched drill GET instead of excluding the real primary as noise", () => {
-    const captures = [
-      ...Array.from({ length: 19 }, (_, i) => searchCapture(i)),
-      drillCapture,
-    ];
+    const captures = [...Array.from({ length: 19 }, (_, i) => searchCapture(i)), drillCapture];
 
     const kept = extractActionSequence(captures, null, foldReturnSpec);
     const keptUrls = kept.map((a) => a.capture.url);
@@ -1749,18 +1573,9 @@ describe("extractActionSequence — a repeatedly-fired real search primary survi
   });
 
   it("keeps the repeated search POST and the fold-matched drill GET when host provenance gates the pool (structural-isolation pass)", () => {
-    const captures = [
-      ...Array.from({ length: 19 }, (_, i) => searchCapture(i)),
-      drillCapture,
-    ];
+    const captures = [...Array.from({ length: 19 }, (_, i) => searchCapture(i)), drillCapture];
 
-    const kept = extractActionSequence(
-      captures,
-      null,
-      foldReturnSpec,
-      ["api.example.com"],
-      null,
-    );
+    const kept = extractActionSequence(captures, null, foldReturnSpec, ["api.example.com"], null);
     const keptUrls = kept.map((a) => a.capture.url);
 
     expect(keptUrls).toContain(`${BASE}/search`);
@@ -1800,9 +1615,7 @@ describe("resolveManifestActionSequence — authoritative submission selection",
     const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
     writeFileSync(
       join(dir, "submit-manifest.json"),
-      JSON.stringify([
-        { index: 1, filename: "001-x.json", url: `${BASE}/applySubmit` },
-      ]),
+      JSON.stringify([{ index: 1, filename: "001-x.json", url: `${BASE}/applySubmit` }])
     );
     const resolved = resolveManifestActionSequence(dir, captures);
     expect(resolved).not.toBeNull();
@@ -1814,9 +1627,7 @@ describe("resolveManifestActionSequence — authoritative submission selection",
     const dir = mkdtempSync(join(tmpdir(), "recon-manifest-"));
     writeFileSync(
       join(dir, "submit-manifest.json"),
-      JSON.stringify([
-        { index: 0, filename: "000-x.json", url: `${BASE}/applySubmit` },
-      ]),
+      JSON.stringify([{ index: 0, filename: "000-x.json", url: `${BASE}/applySubmit` }])
     );
     // index 0 is /widgets, not /applySubmit — mismatch → null (safe fallback).
     expect(resolveManifestActionSequence(dir, captures)).toBeNull();
@@ -1835,7 +1646,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
     operationName: string,
     kind: "query" | "mutation",
     responseBody: unknown,
-    requestPostData: string,
+    requestPostData: string
   ) => ({
     timestamp: "2024-01-01T00:00:00Z",
     phase: "action" as const,
@@ -1862,26 +1673,19 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
       "UpsertSavedApplication",
       "mutation",
       { applicationId: "app-1" },
-      '{"op":"UpsertSavedApplication"}',
+      '{"op":"UpsertSavedApplication"}'
     ),
-    gqlCapture(
-      "SubmitForm",
-      "mutation",
-      { submissionId: "sub-1" },
-      '{"op":"SubmitForm"}',
-    ),
+    gqlCapture("SubmitForm", "mutation", { submissionId: "sub-1" }, '{"op":"SubmitForm"}'),
     gqlCapture(
       "FinalizeFormSubmission",
       "mutation",
       { finalized: true },
-      '{"op":"FinalizeFormSubmission"}',
+      '{"op":"FinalizeFormSubmission"}'
     ),
   ];
 
   it("drops the read-only bootstrap query and keeps only the mutation sequence", () => {
-    const kept = extractGraphQLActionSequence(captures).map(
-      (a) => a.capture.operationName,
-    );
+    const kept = extractGraphQLActionSequence(captures).map((a) => a.capture.operationName);
     expect(kept).toEqual([
       "Form",
       "UpsertSavedApplication",
@@ -1895,7 +1699,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
     const stateIndex = indexStateValues(
       captures,
       new Set(),
-      new Set(actionCaptures.map((a) => a.index)),
+      new Set(actionCaptures.map((a) => a.index))
     );
     const actionSteps = compileActionSteps(actionCaptures, stateIndex);
     const isSubmissionFlow = actionSteps.length > 1;
@@ -1914,7 +1718,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
       new Map(),
       BASE,
       new Map(),
-      new Map(),
+      new Map()
     );
 
     expect(actionSteps).toHaveLength(4);
@@ -1932,7 +1736,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
       "SubmitApplication",
       "mutation",
       { applicationId: "app-1" },
-      '{"op":"SubmitApplication"}',
+      '{"op":"SubmitApplication"}'
     );
     const nullNamed = {
       ...named,
@@ -1943,10 +1747,7 @@ describe("extractGraphQLActionSequence — GraphQL submission flows get state-th
 
     const kept = extractGraphQLActionSequence([named, nullNamed]);
     expect(kept).toHaveLength(2);
-    expect(kept.map((a) => a.capture.query)).toEqual([
-      named.query,
-      nullNamed.query,
-    ]);
+    expect(kept.map((a) => a.capture.query)).toEqual([named.query, nullNamed.query]);
   });
 });
 
@@ -1985,12 +1786,9 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
 
   it("admits a non-mutation capture whose URL matches the flow's own foldReturnSpec.endpointPattern", () => {
     const kept = extractGraphQLActionSequence(
-      [
-        gqlCapture("OrderDetail", "query"),
-        gqlCapture("SubmitForm", "mutation"),
-      ],
+      [gqlCapture("OrderDetail", "query"), gqlCapture("SubmitForm", "mutation")],
       null,
-      foldReturnSpec,
+      foldReturnSpec
     ).map((a) => a.capture.operationName);
 
     expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
@@ -1998,12 +1796,9 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
 
   it("still drops a non-mutation capture that does not match the declared endpointPattern", () => {
     const kept = extractGraphQLActionSequence(
-      [
-        gqlCapture("OrderDetail", "query"),
-        gqlCapture("SubmitForm", "mutation"),
-      ],
+      [gqlCapture("OrderDetail", "query"), gqlCapture("SubmitForm", "mutation")],
       null,
-      { ...foldReturnSpec, endpointPattern: "/unrelated" },
+      { ...foldReturnSpec, endpointPattern: "/unrelated" }
     ).map((a) => a.capture.operationName);
 
     expect(kept).toEqual(["SubmitForm"]);
@@ -2029,7 +1824,7 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
     const kept = extractGraphQLActionSequence(
       [restCapture("/inventory-lookup"), gqlCapture("SubmitForm", "mutation")],
       null,
-      { ...foldReturnSpec, endpointPattern: "/inventory-lookup" },
+      { ...foldReturnSpec, endpointPattern: "/inventory-lookup" }
     ).map((a) => a.capture.operationName ?? a.capture.url);
 
     expect(kept).toEqual([`${BASE}/inventory-lookup`, "SubmitForm"]);
@@ -2043,7 +1838,7 @@ describe("extractGraphQLActionSequence — foldReturnSpec-scoped non-mutation ad
         gqlCapture("SubmitForm", "mutation"),
       ],
       null,
-      foldReturnSpec,
+      foldReturnSpec
     ).map((a) => a.capture.operationName);
 
     expect(kept).toEqual(["OrderDetail", "SubmitForm"]);
@@ -2103,36 +1898,22 @@ describe("foldReturn-admitted read+drill classification — no mutation present 
     const drillCapture = restGetCapture("/itinerary/api/v1/sailings");
     const captures = [primaryQuery, drillCapture];
 
-    const graphqlActionSequence = extractGraphQLActionSequence(
-      captures,
-      null,
-      foldReturnSpec,
-    );
-    expect(
-      graphqlActionSequence.map(
-        (a) => a.capture.operationName ?? a.capture.url,
-      ),
-    ).toEqual(["SearchResults", `${BASE}/itinerary/api/v1/sailings`]);
+    const graphqlActionSequence = extractGraphQLActionSequence(captures, null, foldReturnSpec);
+    expect(graphqlActionSequence.map((a) => a.capture.operationName ?? a.capture.url)).toEqual([
+      "SearchResults",
+      `${BASE}/itinerary/api/v1/sailings`,
+    ]);
 
     const graphqlActionSequenceHasMutation = graphqlActionSequence.some(
-      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query),
+      (a) => a.capture.query !== null && /^\s*mutation\b/.test(a.capture.query)
     );
     expect(graphqlActionSequenceHasMutation).toBe(false);
 
     const primaryGraphQLOperation = graphqlActionSequenceHasMutation
       ? null
-      : selectPrimaryGraphQLOperation(
-          captures,
-          [],
-          EMPTY_VOCABULARY,
-          {},
-          [],
-          null,
-        );
+      : selectPrimaryGraphQLOperation(captures, [], EMPTY_VOCABULARY, {}, [], null);
     expect(primaryGraphQLOperation).not.toBeNull();
-    expect(primaryGraphQLOperation?.capture.operationName).toBe(
-      "SearchResults",
-    );
+    expect(primaryGraphQLOperation?.capture.operationName).toBe("SearchResults");
 
     const actionCaptures = [
       { capture: primaryQuery, index: 0 },
@@ -2141,11 +1922,10 @@ describe("foldReturn-admitted read+drill classification — no mutation present 
     const stateIndex = indexStateValues(
       captures,
       new Set(),
-      new Set(actionCaptures.map((a) => a.index)),
+      new Set(actionCaptures.map((a) => a.index))
     );
     const actionSteps = compileActionSteps(actionCaptures, stateIndex);
-    const isSubmissionFlow =
-      actionSteps.length > 1 && graphqlActionSequenceHasMutation;
+    const isSubmissionFlow = actionSteps.length > 1 && graphqlActionSequenceHasMutation;
     expect(isSubmissionFlow).toBe(false);
   });
 });
@@ -2205,7 +1985,7 @@ describe("extractGraphQLActionSequence — mutation-path narrowing ignores REST-
       null,
       foldReturnSpec,
       [OWN_BACKEND],
-      null,
+      null
     ).map((a) => a.capture.operationName ?? a.capture.url);
 
     expect(kept).toContain("SearchResults");
@@ -2227,8 +2007,7 @@ describe("extractGraphQLActionSequence — real read primary survives mutationPa
     responseHeaders: {},
     responseBody: { data: { searchResults: { items: [{ id: "1" }] } } },
     operationName: "SearchCatalog",
-    query:
-      "query SearchCatalog($filters: String) {\n  searchCatalog(filters: $filters) { id }\n}",
+    query: "query SearchCatalog($filters: String) {\n  searchCatalog(filters: $filters) { id }\n}",
     variables: null,
     decodedParams: null,
   };
@@ -2275,7 +2054,7 @@ describe("extractGraphQLActionSequence — real read primary survives mutationPa
       null,
       foldReturnSpec,
       [OWN_BACKEND],
-      null,
+      null
     ).map((a) => a.capture.operationName ?? a.capture.url);
 
     expect(kept).toContain("SearchCatalog");
@@ -2317,10 +2096,7 @@ describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks resp
   ];
 
   it("picks the two-facet capture over a larger one-facet capture of the same operation", () => {
-    const twoFacetCapture = searchCapture(
-      "category:widgets|priceRange:10~50",
-      0,
-    );
+    const twoFacetCapture = searchCapture("category:widgets|priceRange:10~50", 0);
     const oneFacetCapture = searchCapture("category:widgets", 20);
 
     const primary = selectPrimaryGraphQLOperation(
@@ -2329,7 +2105,7 @@ describe("selectPrimaryGraphQLOperation — spliceable-facet count outranks resp
       EMPTY_VOCABULARY,
       {},
       [],
-      null,
+      null
     );
 
     expect(primary?.capture).toBe(twoFacetCapture);
@@ -2343,11 +2119,7 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
   searchProducts(filters: $filters) { category priceRange }
 }`;
 
-  const searchCapture = (
-    url: string,
-    filters: string,
-    paddingLength: number,
-  ) => ({
+  const searchCapture = (url: string, filters: string, paddingLength: number) => ({
     timestamp: "2024-01-01T00:00:00Z",
     phase: "action" as const,
     method: "POST",
@@ -2376,15 +2148,11 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
   ];
 
   it("excludes a minority-host operation that would otherwise out-score the primary host's capture", () => {
-    const primaryHostCapture = searchCapture(
-      `${BASE}/graphql`,
-      "category:widgets",
-      0,
-    );
+    const primaryHostCapture = searchCapture(`${BASE}/graphql`, "category:widgets", 0);
     const minorityHostCapture = searchCapture(
       `${MINORITY_BASE}/graphql`,
       "category:widgets|priceRange:10~50",
-      0,
+      0
     );
 
     const primary = selectPrimaryGraphQLOperation(
@@ -2395,7 +2163,7 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
       [new URL(BASE).hostname, new URL(MINORITY_BASE).hostname],
       null,
       null,
-      new URL(BASE).hostname,
+      new URL(BASE).hostname
     );
 
     expect(primary?.capture).toBe(primaryHostCapture);
@@ -2404,13 +2172,7 @@ describe("selectPrimaryGraphQLOperation — primaryHost narrows own-backend sele
 
 describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant host with a minority of genuine GraphQL captures", () => {
   const BASE = "https://api.example.com";
-  const ENDPOINTS = [
-    "categories",
-    "nav-config",
-    "store-locations",
-    "site-flags",
-    "promotions",
-  ];
+  const ENDPOINTS = ["categories", "nav-config", "store-locations", "site-flags", "promotions"];
 
   const restCapture = (i: number) => {
     const endpoint = ENDPOINTS[i % ENDPOINTS.length];
@@ -2457,9 +2219,7 @@ describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant h
       gqlCapture(2),
     ];
 
-    expect(
-      isGraphQL(captures, ["api.example.com"], null, "api.example.com"),
-    ).toBe(false);
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
   });
 
   const postSubmitCapture = (i: number) => {
@@ -2488,9 +2248,7 @@ describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant h
       gqlCapture(2),
     ];
 
-    expect(
-      isGraphQL(captures, ["api.example.com"], null, "api.example.com"),
-    ).toBe(false);
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
   });
 
   it("still excludes a same-origin POST error-reporting sink from the anti-vote pool despite the non-GET widening", () => {
@@ -2514,14 +2272,9 @@ describe("isGraphQL — re-validated against a correctly-scoped, REST-dominant h
     // GraphQL document: if the beacon traffic diluted the vote, the pool
     // would be REST-majority; isNoiseUrl must keep it out entirely so the
     // sole genuine GraphQL document decides the classification.
-    const captures = [
-      ...Array.from({ length: 50 }, (_, i) => beaconCapture(i)),
-      gqlCapture(1),
-    ];
+    const captures = [...Array.from({ length: 50 }, (_, i) => beaconCapture(i)), gqlCapture(1)];
 
-    expect(
-      isGraphQL(captures, ["api.example.com"], null, "api.example.com"),
-    ).toBe(true);
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(true);
   });
 });
 
@@ -2567,14 +2320,9 @@ describe("isGraphQL — zero-variance-repeat and business-relevant-state safegua
       decodedParams: null,
     });
 
-    const captures = [
-      ...Array.from({ length: 50 }, () => heartbeatCapture()),
-      gqlCapture(1),
-    ];
+    const captures = [...Array.from({ length: 50 }, () => heartbeatCapture()), gqlCapture(1)];
 
-    expect(
-      isGraphQL(captures, ["api.example.com"], null, "api.example.com"),
-    ).toBe(true);
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(true);
   });
 
   it("retains a repeated, business-relevant POST endpoint as exactly one anti-vote representative rather than erasing it to zero", () => {
@@ -2607,9 +2355,7 @@ describe("isGraphQL — zero-variance-repeat and business-relevant-state safegua
       gqlCapture(1),
     ];
 
-    expect(
-      isGraphQL(captures, ["api.example.com"], null, "api.example.com"),
-    ).toBe(false);
+    expect(isGraphQL(captures, ["api.example.com"], null, "api.example.com")).toBe(false);
   });
 });
 
@@ -2646,14 +2392,12 @@ describe("isGraphQL — composes with deriveBaseUrl's cross-eTLD+1 noise-anchor 
     requestHeaders: { "Content-Type": "application/json" },
     requestPostData: JSON.stringify({
       operationName: "SessionRefresh",
-      query:
-        "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+      query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
     }),
     responseHeaders: { "content-type": "application/json" },
     responseBody: { data: { sessionRefresh: { ok: true } } },
     operationName: "SessionRefresh",
-    query:
-      "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
+    query: "mutation SessionRefresh($token: String!) { sessionRefresh(token: $token) { ok } }",
     variables: null,
     decodedParams: null,
   });
@@ -2673,9 +2417,7 @@ describe("isGraphQL — composes with deriveBaseUrl's cross-eTLD+1 noise-anchor 
     // fallbackDomain mirrors recon-generate.ts's own derivation
     // (`registrableDomain(new URL(baseUrl).hostname)`) so the scoping gate
     // isGraphQL actually exercises matches what the real caller computes.
-    expect(
-      isGraphQL(captures, [], "catalog-fixture.example.org", primaryHost),
-    ).toBe(false);
+    expect(isGraphQL(captures, [], "catalog-fixture.example.org", primaryHost)).toBe(false);
   });
 });
 
@@ -2715,10 +2457,7 @@ describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () 
       { FieldId: UUID_A, FieldSourceCode: "contact.first.name" },
       { FieldId: UUID_B, FieldSourceCode: "contact.email" },
     ];
-    const { fieldNameMap } = detectFormSchemaFieldNames(
-      [capture(body)],
-      HISTORICAL,
-    );
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], HISTORICAL);
     expect(fieldNameMap.get(UUID_A)).toBe("ContactFirstName");
     expect(fieldNameMap.get(UUID_B)).toBe("ContactEmail");
   });
@@ -2738,10 +2477,7 @@ describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () 
       { "field-id": UUID_A, "source-code": "contact.first.name" },
       { "field-id": UUID_B, "source-code": "contact.email" },
     ];
-    const { fieldNameMap } = detectFormSchemaFieldNames(
-      [capture(body)],
-      vendor,
-    );
+    const { fieldNameMap } = detectFormSchemaFieldNames([capture(body)], vendor);
     expect(fieldNameMap.get(UUID_A)).toBe("ContactFirstName");
     expect(fieldNameMap.get(UUID_B)).toBe("ContactEmail");
   });
@@ -2757,10 +2493,7 @@ describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () 
         ],
       },
     ];
-    const { fieldOptionsMap } = detectFormSchemaFieldNames(
-      [capture(body)],
-      HISTORICAL,
-    );
+    const { fieldOptionsMap } = detectFormSchemaFieldNames([capture(body)], HISTORICAL);
     expect(fieldOptionsMap.get(UUID_A)?.options.map((o) => o.value)).toEqual([
       "Texas",
       "California",
@@ -2769,10 +2502,7 @@ describe("detectFormSchemaFieldNames — consumer-supplied wire keys (#57)", () 
 
   it("recovers nothing when no form-schema is supplied — the engine hardcodes no vendor format", () => {
     const body = [{ FieldId: UUID_A, FieldSourceCode: "contact.first.name" }];
-    const { fieldNameMap, allSchemaUuids } = detectFormSchemaFieldNames(
-      [capture(body)],
-      null,
-    );
+    const { fieldNameMap, allSchemaUuids } = detectFormSchemaFieldNames([capture(body)], null);
     expect(fieldNameMap.size).toBe(0);
     expect(allSchemaUuids.size).toBe(0);
   });
@@ -2834,10 +2564,7 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
 
   it("indexes the 272-char JWT cookie value despite exceeding MAX_STATE_VALUE_LENGTH", () => {
     expect(longJwt.length).toBe(272);
-    const stateIndex = indexStateValues([
-      tokenMintCapture,
-      statefulCallCapture,
-    ]);
+    const stateIndex = indexStateValues([tokenMintCapture, statefulCallCapture]);
     const sv = stateIndex.get(longJwt);
     expect(sv).toBeDefined();
     expect(sv?.headerOrigin).toEqual({
@@ -2862,16 +2589,12 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
       ...tokenMintCapture,
       responseHeaders: { "set-cookie": "sid=abc; Path=/; HttpOnly" },
     };
-    const stateIndex = indexStateValues([
-      shortCookieCapture,
-      statefulCallCapture,
-    ]);
+    const stateIndex = indexStateValues([shortCookieCapture, statefulCallCapture]);
     expect(stateIndex.has("abc")).toBe(false);
   });
 
   it("admits a short Set-Cookie value confirmed as a dependent-drilldown chain join field, unlike the no-fold-plan case above", () => {
-    const steps =
-      buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+    const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
     const captures = steps.map((step) => step.capture);
     const stateIndex = indexStateValues(captures);
     expect(stateIndex.has("tok1")).toBe(true);
@@ -2881,14 +2604,10 @@ describe("indexStateValues — cookie-origin values get a separate, more permiss
     const placeholderCookieCapture = {
       ...tokenMintCapture,
       responseHeaders: {
-        "set-cookie":
-          "sid=00000000-0000-0000-0000-000000000000; Path=/; HttpOnly",
+        "set-cookie": "sid=00000000-0000-0000-0000-000000000000; Path=/; HttpOnly",
       },
     };
-    const stateIndex = indexStateValues([
-      placeholderCookieCapture,
-      statefulCallCapture,
-    ]);
+    const stateIndex = indexStateValues([placeholderCookieCapture, statefulCallCapture]);
     expect(stateIndex.has("00000000-0000-0000-0000-000000000000")).toBe(false);
   });
 });
@@ -2980,15 +2699,13 @@ describe("compileActionSteps — Set-Cookie state binding (listings-fixture-styl
         new Map(),
         "https://api.example.com",
         new Map(),
-        new Map(),
+        new Map()
       ),
-      headerBindings: actionSteps
-        .flatMap((s) => s.produces)
-        .filter((p) => p.kind === "header"),
+      headerBindings: actionSteps.flatMap((s) => s.produces).filter((p) => p.kind === "header"),
     });
 
     expect(contract).toContain(
-      'bind: [{ sourceHeader: "set-cookie", cookieName: "__pa", targetHeader: "Cookie" }]',
+      'bind: [{ sourceHeader: "set-cookie", cookieName: "__pa", targetHeader: "Cookie" }]'
     );
   });
 
@@ -3005,7 +2722,7 @@ describe("compileActionSteps — Set-Cookie state binding (listings-fixture-styl
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
     expect(body).not.toContain("abc.def.ghi");
     expect(body).not.toContain(": any");
@@ -3089,8 +2806,7 @@ describe("compileActionSteps — a response value used downstream ONLY as a JSON
     url: "https://api.example.com/applySubmit",
     status: 200,
     requestHeaders: { "Content-Type": "application/json" },
-    requestPostData:
-      '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
+    requestPostData: '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
     responseHeaders: { "content-type": "application/json" },
     responseBody: {
       thankYouEmailParams: { tokens: ["firstName", "lastName"] },
@@ -3105,8 +2821,7 @@ describe("compileActionSteps — a response value used downstream ONLY as a JSON
   const keyOnlyConsumerCapture = {
     ...producerCapture,
     timestamp: "2024-01-01T00:00:01Z",
-    requestPostData:
-      '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
+    requestPostData: '{"ddoKey":"applySubmit","firstName":"Reginald","lastName":"Reconaldo"}',
     responseBody: { ok: true },
   };
 
@@ -3116,9 +2831,7 @@ describe("compileActionSteps — a response value used downstream ONLY as a JSON
   const actionSteps = compileActionSteps(actionCaptures, stateIndex);
 
   it("does not produce a body binding for a value that only appears downstream as a JSON key", () => {
-    const producedNames = actionSteps
-      .flatMap((s) => s.produces)
-      .map((p) => p.name);
+    const producedNames = actionSteps.flatMap((s) => s.produces).map((p) => p.name);
     expect(producedNames).not.toContain("tokens");
     expect(producedNames).not.toContain("tokens2");
     const bodyProducedForFieldNames = actionSteps
@@ -3141,7 +2854,7 @@ describe("compileActionSteps — a response value used downstream ONLY as a JSON
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
     expect(body).not.toContain(DOUBLE_INTERP);
     expect(body).not.toContain(`"${interpRef("tokens")}"`);
@@ -3185,9 +2898,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
   const actionSteps = compileActionSteps(actionCaptures, stateIndex);
 
   it("still produces a binding for the re-sent value", () => {
-    const producedNames = actionSteps
-      .flatMap((s) => s.produces)
-      .map((p) => p.name);
+    const producedNames = actionSteps.flatMap((s) => s.produces).map((p) => p.name);
     expect(producedNames).toContain("draftId");
   });
 
@@ -3204,7 +2915,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
     expect(body).toContain(interpRef("draftId"));
     expect(body).not.toContain("draft-8f81e44c-4561");
@@ -3230,7 +2941,7 @@ describe("compileActionSteps — a response value genuinely re-sent as a JSON va
     };
     const steps = compileActionSteps(
       [producer, consumer].map((capture, index) => ({ capture, index })),
-      indexStateValues([producer, consumer]),
+      indexStateValues([producer, consumer])
     );
     const names = steps.flatMap((s) => s.produces).map((p) => p.name);
     expect(names).toContain("jobId");
@@ -3243,8 +2954,7 @@ describe("indexStateValues — a short numeric value threaded through a dependen
   // Without the chain-produced-value carve-out, indexStateValues drops it
   // entirely, so compileActionSteps never emits a produces[] accessor for it
   // and r2's templated body has nothing to substitute for the per-item token.
-  const steps =
-    buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps();
+  const steps = buildMulticallSingleShotSearchDrillDownShortNumericChainedJoinFieldActionSteps();
   const captures = steps.map((step) => step.capture);
   const actionCaptures = captures.map((capture, index) => ({ capture, index }));
   const stateIndex = indexStateValues(captures);
@@ -3256,12 +2966,8 @@ describe("indexStateValues — a short numeric value threaded through a dependen
   });
 
   it("produces a body accessor on the originating chain step for the short numeric token", () => {
-    const orderStatusStep = actionSteps.find(
-      (step) => step.capture.url === captures[1]!.url,
-    );
-    const bodyProduce = orderStatusStep?.produces.find(
-      (p) => p.kind === "body",
-    );
+    const orderStatusStep = actionSteps.find((step) => step.capture.url === captures[1]!.url);
+    const bodyProduce = orderStatusStep?.produces.find((p) => p.kind === "body");
     expect(bodyProduce).toBeDefined();
   });
 });
@@ -3323,9 +3029,7 @@ describe("indexStateValues — a non-cookie response header value threaded throu
       },
       steps[2]!,
     ];
-    const untouchedIndex = indexStateValues(
-      untouchedSteps.map((step) => step.capture),
-    );
+    const untouchedIndex = indexStateValues(untouchedSteps.map((step) => step.capture));
     expect(untouchedIndex.has("req-untouched-99999999")).toBe(false);
   });
 
@@ -3350,9 +3054,7 @@ describe("indexStateValues — a non-cookie response header value threaded throu
         },
       },
     ];
-    const shortValueIndex = indexStateValues(
-      shortValueSteps.map((step) => step.capture),
-    );
+    const shortValueIndex = indexStateValues(shortValueSteps.map((step) => step.capture));
     const sv = shortValueIndex.get("s1a2b3");
     expect(sv).toBeDefined();
     expect(sv?.headerOrigin).toEqual({ sourceHeader: "x-session-token" });
@@ -3366,8 +3068,7 @@ describe("indexStateValues — a short Set-Cookie value threaded through a depen
   // back via its request body. Without the chain-produced-value carve-out on
   // the Set-Cookie branch, indexStateValues drops it, so compileActionSteps
   // never emits a header-kind produces[] accessor for it.
-  const steps =
-    buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
+  const steps = buildMulticallSingleShotSearchDrillDownShortCookieChainedJoinFieldActionSteps();
   const captures = steps.map((step) => step.capture);
   const stateIndex = indexStateValues(captures);
 
@@ -3469,9 +3170,7 @@ describe("collectHeaderBindings — multi-cookie regression (listings-fixture __
 
   it("produces a header-kind binding for __pa on the authz/private step, not just the toggle step", () => {
     const [, authzStep] = actionSteps;
-    const pa = authzStep?.produces.find(
-      (p) => p.kind === "header" && p.cookieName === "__pa",
-    );
+    const pa = authzStep?.produces.find((p) => p.kind === "header" && p.cookieName === "__pa");
     expect(pa).toBeDefined();
     expect(pa).toMatchObject({
       kind: "header",
@@ -3481,18 +3180,16 @@ describe("collectHeaderBindings — multi-cookie regression (listings-fixture __
   });
 
   it("collectHeaderBindings returns all four Cookie-targeting bindings, __pa included — does not drop it in favour of latestGeoIP", () => {
-    const cookieBindings = headerBindings.filter(
-      (b) => b.targetHeader === "Cookie",
-    );
+    const cookieBindings = headerBindings.filter((b) => b.targetHeader === "Cookie");
     expect(cookieBindings.map((b) => b.cookieName).sort()).toEqual(
-      ["GeoIP", "__pa", "bm_sv", "latestGeoIP"].sort(),
+      ["GeoIP", "__pa", "bm_sv", "latestGeoIP"].sort()
     );
     expect(cookieBindings.some((b) => b.cookieName === "__pa")).toBe(true);
   });
 
   it("returns exactly one X-Conversation-Id binding", () => {
     const conversationBindings = headerBindings.filter(
-      (b) => b.targetHeader === "X-Conversation-Id",
+      (b) => b.targetHeader === "X-Conversation-Id"
     );
     expect(conversationBindings).toHaveLength(1);
     expect(conversationBindings[0]).toMatchObject({
@@ -3517,7 +3214,7 @@ describe("collectHeaderBindings — multi-cookie regression (listings-fixture __
         new Map(),
         "https://api.example.com",
         new Map(),
-        new Map(),
+        new Map()
       ),
       headerBindings,
     });
@@ -3536,7 +3233,7 @@ describe("emitContractTs — multipart plugin imports omitHeaderCaseInsensitive"
 
   it("imports omitHeaderCaseInsensitive from the package subpath, not the @/ alias", () => {
     expect(source).toContain(
-      'import { omitHeaderCaseInsensitive } from "@enricai/barnacle/lib/case-insensitive-headers"',
+      'import { omitHeaderCaseInsensitive } from "@enricai/barnacle/lib/case-insensitive-headers"'
     );
   });
 });
@@ -3597,12 +3294,7 @@ describe("resolveStepPayloadField — wizard-ATS-shaped positives", () => {
   for (const [instruction, field] of cases) {
     it(`maps ${JSON.stringify(instruction)} → ${field}`, () => {
       expect(
-        resolveStepPayloadField(
-          instruction,
-          undefined,
-          false,
-          TEST_RECRUITING_VOCABULARY,
-        ),
+        resolveStepPayloadField(instruction, undefined, false, TEST_RECRUITING_VOCABULARY)
       ).toBe(field);
     });
   }
@@ -3635,12 +3327,7 @@ describe("resolveStepPayloadField — trap negatives", () => {
   for (const instruction of traps) {
     it(`leaves ${JSON.stringify(instruction)} literal (null)`, () => {
       expect(
-        resolveStepPayloadField(
-          instruction,
-          undefined,
-          false,
-          TEST_RECRUITING_VOCABULARY,
-        ),
+        resolveStepPayloadField(instruction, undefined, false, TEST_RECRUITING_VOCABULARY)
       ).toBeNull();
     });
   }
@@ -3655,20 +3342,10 @@ describe("resolveStepPayloadField — Select answer must match the field's known
       "Type '5125550000' into the Mobile Phone field",
       "Select 'Mobile' from the phone device type popup list",
     ];
-    const known = buildKnownFieldValues(
-      steps,
-      TEST_RECRUITING_VOCABULARY,
-      {} as NodeJS.ProcessEnv,
-    );
+    const known = buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, {} as NodeJS.ProcessEnv);
     expect(known.get("MobilePhone")).toBe("5125550000");
     expect(
-      resolveStepPayloadField(
-        steps[1]!,
-        undefined,
-        false,
-        TEST_RECRUITING_VOCABULARY,
-        known,
-      ),
+      resolveStepPayloadField(steps[1]!, undefined, false, TEST_RECRUITING_VOCABULARY, known)
     ).toBeNull();
   });
 
@@ -3677,19 +3354,9 @@ describe("resolveStepPayloadField — Select answer must match the field's known
       "Type '5125550000' into the Mobile Phone field",
       "Select '5125550000' from the phone number confirmation list",
     ];
-    const known = buildKnownFieldValues(
-      steps,
-      TEST_RECRUITING_VOCABULARY,
-      {} as NodeJS.ProcessEnv,
-    );
+    const known = buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, {} as NodeJS.ProcessEnv);
     expect(
-      resolveStepPayloadField(
-        steps[1]!,
-        undefined,
-        false,
-        TEST_RECRUITING_VOCABULARY,
-        known,
-      ),
+      resolveStepPayloadField(steps[1]!, undefined, false, TEST_RECRUITING_VOCABULARY, known)
     ).toBe("MobilePhone");
   });
 });
@@ -3703,39 +3370,25 @@ describe("fill-step field gate — shared by known values and persona bindings",
 
   it("keeps an opted-out fill step out of both known values and bindings", () => {
     const steps = [OPTED_OUT];
-    expect(
-      buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size,
-    ).toBe(0);
-    expect(
-      harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size,
-    ).toBe(0);
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
   });
 
   it("keeps a vocabulary-excluded fill step out of known values", () => {
     const steps = ["Fill in the Employer field with 'Acme Hospital'"];
-    expect(
-      buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size,
-    ).toBe(0);
-    expect(
-      harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size,
-    ).toBe(0);
+    expect(buildKnownFieldValues(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
+    expect(harvestPersonaBindings(steps, TEST_RECRUITING_VOCABULARY, ENV).size).toBe(0);
   });
 });
 
 describe("resolveStepPayloadField — override + opt-out + no-constant", () => {
   it("honors an explicit payloadField override", () => {
-    expect(
-      resolveStepPayloadField("Click the Continue button", "FirstName"),
-    ).toBe("FirstName");
+    expect(resolveStepPayloadField("Click the Continue button", "FirstName")).toBe("FirstName");
   });
 
   it("returns null when forceNone is set even for a matching label", () => {
     expect(
-      resolveStepPayloadField(
-        "Fill in the First Name field with 'Reginald'",
-        undefined,
-        true,
-      ),
+      resolveStepPayloadField("Fill in the First Name field with 'Reginald'", undefined, true)
     ).toBeNull();
   });
 
@@ -3790,7 +3443,7 @@ describe("emitBrowserFlowTs — payload splicing", () => {
 
   it("wires the shared Anthropic client and rephrase model so the cascade can rephrase/replan", () => {
     expect(code).toContain(
-      'import { buildAnthropicClient, buildRephraseModel } from "@enricai/barnacle/lib/llm/anthropic-client"',
+      'import { buildAnthropicClient, buildRephraseModel } from "@enricai/barnacle/lib/llm/anthropic-client"'
     );
     expect(code).toContain("anthropic: buildAnthropicClient(),");
     expect(code).toContain("rephraseModel: buildRephraseModel(),");
@@ -3826,9 +3479,7 @@ describe("emitBrowserFlowTs — payload splicing — Yes/No screening answers st
 });
 
 describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () => {
-  const uploadFlow = [
-    { step: "Upload the resume PDF using the upload control", upload: true },
-  ];
+  const uploadFlow = [{ step: "Upload the resume PDF using the upload control", upload: true }];
 
   it("wires a Buffer-based uploadFixture when the contract is multipart", () => {
     const { code } = emitBrowserFlowTs({
@@ -3866,10 +3517,7 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
       isSubmissionFlow: true,
       hasMultipartStep: false,
       vocabulary: TEST_RECRUITING_VOCABULARY,
-      flowSteps: [
-        "Fill in the First Name field with 'Reginald'",
-        ...uploadFlow,
-      ],
+      flowSteps: ["Fill in the First Name field with 'Reginald'", ...uploadFlow],
     };
     const { code, payloadFieldNames } = emitBrowserFlowTs(opts);
     expect(payloadFieldNames.has("FirstName")).toBe(true);
@@ -3893,7 +3541,7 @@ describe("emitBrowserFlowTs — uploadFixture guard (upload vs multipart)", () =
       });
       expect(payloadFieldNames.has(field)).toBe(true);
       expect(code).toContain("Buffer.from(payload.Resume)");
-    },
+    }
   );
 });
 
@@ -3940,22 +3588,14 @@ describe("emitBrowserFlowTs + emitContractTs — schema/flow anti-drift", () => 
   // src/lib/applicant-payload.ts) don't get a redundant explicit key in the
   // merged `.extend({...})` — the single-extend dedup (bugfix-004) reserves
   // them so the schema stays a single, non-shadowing extend call.
-  const applicantContactFieldNames = new Set([
-    "FirstName",
-    "LastName",
-    "Phone",
-    "City",
-  ]);
+  const applicantContactFieldNames = new Set(["FirstName", "LastName", "Phone", "City"]);
 
   it("every payload.X the flow references appears as a contract schema key, unless ApplicantContactSchema already declares it", () => {
-    const referenced = [
-      ...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g),
-    ].map((m) => m[1]!);
+    const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
     expect(referenced.length).toBeGreaterThan(0);
     for (const field of referenced) {
       if (applicantContactFieldNames.has(field)) continue;
-      const decl =
-        field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
+      const decl = field === "Email" ? `${field}: z.email()` : `${field}: z.string()`;
       expect(contract).toContain(decl);
     }
   });
@@ -4035,11 +3675,9 @@ describe("emitBrowserFlowTs — a reserved RECON_PASSWORD env token splices a ge
 
   it("declares a local throwaway credential minted from the shared crypto-backed helper, never a hand-rolled RNG", () => {
     expect(code).toContain(
-      'import { generateThrowawayPassword } from "@enricai/barnacle/lib/random";',
+      'import { generateThrowawayPassword } from "@enricai/barnacle/lib/random";'
     );
-    expect(code).toContain(
-      "const throwawayPassword = generateThrowawayPassword();",
-    );
+    expect(code).toContain("const throwawayPassword = generateThrowawayPassword();");
   });
 
   it("splices the Password step to the generated throwaway, not a payload accessor", () => {
@@ -4075,11 +3713,7 @@ describe("emitBrowserFlowTs — no throwaway-password import/declaration when no
 
 describe("selectPayloadAction", () => {
   /** Minimal action step — only the fields selection reads. */
-  const step = (
-    url: string,
-    requestPostData: string | null,
-    responseBody: unknown,
-  ) => ({
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
     capture: { url, requestPostData, responseBody } as unknown as Parameters<
       typeof selectPayloadAction
     >[0][number]["capture"],
@@ -4089,11 +3723,7 @@ describe("selectPayloadAction", () => {
     // The regression that matters: an apply flow puts the caller's data in the
     // opening POST, and later steps only carry the transaction forward.
     const steps = [
-      step(
-        "https://ats.test/api/application/create",
-        '{"FirstName":"Reginald"}',
-        { id: "a1" },
-      ),
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
       step("https://ats.test/api/form-schema", '{"jobId":"9"}', {
         sections: [{ fields: [] }],
       }),
@@ -4158,18 +3788,10 @@ describe("selectPayloadAction", () => {
       step("https://ats.test/hcm/sourceTrackings", '{"jobId":"1"}', {
         items: [{ id: 1 }],
       }),
-      step(
-        "https://ats.test/hcm/applicationDrafts",
-        '{"FirstName":"Reginald"}',
-        { draftId: "d1" },
-      ),
-      step(
-        "https://ats.test/hcm/applicationDrafts",
-        '{"MobilePhone":"5125550123"}',
-        {
-          draftId: "d1",
-        },
-      ),
+      step("https://ats.test/hcm/applicationDrafts", '{"FirstName":"Reginald"}', { draftId: "d1" }),
+      step("https://ats.test/hcm/applicationDrafts", '{"MobilePhone":"5125550123"}', {
+        draftId: "d1",
+      }),
     ];
     expect(selectPayloadAction(steps)).toBe(steps[1]);
   });
@@ -4181,11 +3803,7 @@ describe("selectPayloadAction", () => {
 
 describe("selectReturnAction", () => {
   /** Minimal action step — only the fields selection reads. */
-  const step = (
-    url: string,
-    requestPostData: string | null,
-    responseBody: unknown,
-  ) => ({
+  const step = (url: string, requestPostData: string | null, responseBody: unknown) => ({
     capture: { url, requestPostData, responseBody } as unknown as Parameters<
       typeof selectReturnAction
     >[0][number]["capture"],
@@ -4197,9 +3815,7 @@ describe("selectReturnAction", () => {
     // into one building fires last. The search result is the flow's
     // subject, not the drill-down's single-building body.
     const steps = [
-      step("https://listings.test/toggles/product-avail", '["a"]', [
-        { name: "a" },
-      ]),
+      step("https://listings.test/toggles/product-avail", '["a"]', [{ name: "a" }]),
       step("https://listings.test/authz/private", "{}", {
         result: "ok",
         successful: true,
@@ -4208,14 +3824,10 @@ describe("selectReturnAction", () => {
         totalAvailableListings: 699,
         products: [{ id: "p1" }],
       }),
-      step(
-        "https://listings.test/available-products/",
-        '{"filters":["2-bed"]}',
-        {
-          totalAvailableListings: 151,
-          products: [{ id: "p2" }],
-        },
-      ),
+      step("https://listings.test/available-products/", '{"filters":["2-bed"]}', {
+        totalAvailableListings: 151,
+        products: [{ id: "p2" }],
+      }),
       step("https://listings.test/available-units/", '{"buildingId":"i1"}', {
         units: [{ id: "s1" }],
         exchangeRate: 1,
@@ -4229,11 +3841,7 @@ describe("selectReturnAction", () => {
     // fallback must be the LAST action (the terminal success signal), not
     // the FIRST (that's selectPayloadAction's fallback).
     const steps = [
-      step(
-        "https://ats.test/api/application/create",
-        '{"FirstName":"Reginald"}',
-        { id: "a1" },
-      ),
+      step("https://ats.test/api/application/create", '{"FirstName":"Reginald"}', { id: "a1" }),
       step("https://ats.test/api/form-schema", '{"jobId":"9"}', {
         sections: [{ fields: [] }],
       }),
@@ -4268,7 +3876,7 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
     url: string,
     requestPostData: string | null,
     responseBody: unknown,
-    varName: string,
+    varName: string
   ) => ({
     capture: {
       timestamp: "2024-01-01T00:00:00Z",
@@ -4294,29 +3902,24 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
   it("returns the re-queried search call's var, not the terminal drill-down's, when they differ", () => {
     const steps = [
       capture("https://listings.test/toggles", '["a"]', [{ name: "a" }], "r0"),
-      capture(
-        "https://listings.test/authz/private",
-        "{}",
-        { successful: true },
-        "r1",
-      ),
+      capture("https://listings.test/authz/private", "{}", { successful: true }, "r1"),
       capture(
         "https://listings.test/available-products/",
         '{"filters":[]}',
         { totalAvailableListings: 699, products: [{ id: "p1" }] },
-        "r2",
+        "r2"
       ),
       capture(
         "https://listings.test/available-products/",
         '{"filters":["2-bed"]}',
         { totalAvailableListings: 151, products: [{ id: "p2" }] },
-        "r3",
+        "r3"
       ),
       capture(
         "https://listings.test/available-units/",
         '{"buildingId":"i1"}',
         { units: [{ id: "s1" }], exchangeRate: 1 },
-        "r4",
+        "r4"
       ),
     ];
     const body = emitMultiStepExecuteHttp(
@@ -4331,7 +3934,7 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
       new Map(),
       "https://listings.test",
       new Map(),
-      new Map(),
+      new Map()
     );
 
     expect(body).toContain("return { data: r3 };");
@@ -4347,19 +3950,14 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
         "https://ats.test/api/application/create",
         '{"FirstName":"Reginald"}',
         { id: "a1" },
-        "r0",
+        "r0"
       ),
-      capture(
-        "https://ats.test/api/form-schema",
-        '{"jobId":"9"}',
-        { sections: [] },
-        "r1",
-      ),
+      capture("https://ats.test/api/form-schema", '{"jobId":"9"}', { sections: [] }, "r1"),
       capture(
         "https://ats.test/api/application/a1/submit",
         '{"confirm":true}',
         { success: true },
-        "r2",
+        "r2"
       ),
     ];
     const body = emitMultiStepExecuteHttp(
@@ -4374,7 +3972,7 @@ describe("emitMultiStepExecuteHttp — relevance-selected return value (G1)", ()
       new Map(),
       "https://ats.test",
       new Map(),
-      new Map(),
+      new Map()
     );
 
     expect(body).toContain("return { data: r2 };");
@@ -4400,7 +3998,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     new Map(),
     "https://api.example.com",
     new Map(),
-    new Map(),
+    new Map()
   );
   const callBlocks = body
     .split(/(?=(?:const \w+ = )?\(?await httpClient\()/)
@@ -4409,9 +4007,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
   function callBlockForUrl(urlSubstring: string): string {
     const block = callBlocks.find((b) => b.includes(urlSubstring));
     if (!block)
-      throw new Error(
-        `no httpClient call block found for URL containing ${urlSubstring}`,
-      );
+      throw new Error(`no httpClient call block found for URL containing ${urlSubstring}`);
     return block;
   }
 
@@ -4447,8 +4043,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
   });
 
   it("every httpClient(...) call carries its own schema: override rather than relying on the client default", () => {
-    const httpClientCallCount = (body.match(/await httpClient\(/g) ?? [])
-      .length;
+    const httpClientCallCount = (body.match(/await httpClient\(/g) ?? []).length;
     const schemaOverrideCount = (body.match(/\n\s*schema: /g) ?? []).length;
     expect(schemaOverrideCount).toBe(httpClientCallCount);
   });
@@ -4466,7 +4061,7 @@ describe("emitMultiStepExecuteHttp — per-call response schema override (G2)", 
     expect(contract).toContain(LENIENT_CLIENT_SCHEMA);
     const narrowedContract = contract.replace(
       LENIENT_CLIENT_SCHEMA,
-      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});",
+      "const TestSiteResponseSchema = z.object({\n  totalPages: z.number(),\n  totalAvailableListings: z.number(),\n  products: z.array(z.object({ productId: z.string() })),\n});"
     );
 
     // The toggles call carries its own inferred `schema:` literal, so the
@@ -4492,9 +4087,7 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       },
       multiStepBody: `    return { data: {} as unknown };`,
     });
-    const schemaMatch = source.match(
-      /export const TestSiteResponseSchema = [\s\S]*?;\n/,
-    );
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = [\s\S]*?;\n/);
     expect(schemaMatch).not.toBeNull();
     expect(schemaMatch?.[0]).not.toContain("__typename");
   });
@@ -4505,9 +4098,7 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       responseBody: { id: "abc", nested: { label: "x" } },
       multiStepBody: `    return { data: {} as unknown };`,
     });
-    const schemaMatch = source.match(
-      /export const TestSiteResponseSchema = ([\s\S]*?);\n/,
-    );
+    const schemaMatch = source.match(/export const TestSiteResponseSchema = ([\s\S]*?);\n/);
     expect(schemaMatch).not.toBeNull();
     const schemaText = schemaMatch?.[1] ?? "";
     const objectOpens = schemaText.match(/z\.object\(\{/g) ?? [];
@@ -4521,7 +4112,7 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       url: string,
       requestPostData: string | null,
       responseBody: unknown,
-      varName: string,
+      varName: string
     ) => ({
       capture: {
         timestamp: "2024-01-01T00:00:00Z",
@@ -4544,12 +4135,7 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       isCrossDomain: false,
     });
     const steps = [
-      capture(
-        "https://api.example.com/graphql",
-        null,
-        { __typename: "Widget", id: "abc" },
-        "r0",
-      ),
+      capture("https://api.example.com/graphql", null, { __typename: "Widget", id: "abc" }, "r0"),
     ];
     const body = emitMultiStepExecuteHttp(
       steps,
@@ -4563,27 +4149,21 @@ describe("inferZodSchemaFromSamples — __typename dropped and objects .loose() 
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
     expect(body).not.toContain("__typename");
-    expect(body).toMatch(
-      /schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/,
-    );
+    expect(body).toMatch(/schema:\s*z\.object\(\{\n\s*id: z\.string\(\),\n\s*\}\)\.loose\(\)/);
   });
 
   it("leaves the input-body-derived payload schema and structured-key inference unaffected by __typename/.loose()", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
       inputBody: { __typename: "Ignored", Name: "Alice" },
-      discoveredStructuredKeys: new Map([
-        ["eventData", "z.object({ a: z.string() })"],
-      ]),
+      discoveredStructuredKeys: new Map([["eventData", "z.object({ a: z.string() })"]]),
       multiStepBody: `    return { data: {} as unknown };`,
     });
     expect(source).toContain("__typename");
-    expect(source).toContain(
-      "eventData: multipartJsonObject(z.object({ a: z.string() })),",
-    );
+    expect(source).toContain("eventData: multipartJsonObject(z.object({ a: z.string() })),");
   });
 });
 
@@ -4594,13 +4174,10 @@ describe("emitContractTs — queryConst escapes hazardous template-literal seque
       ...BASE_OPTS,
       gql: true,
       // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting against emitted source, not a template
-      gqlQuery:
-        '{ widget(label: `starred`) { id note(format: "${RAW_EXPR}") } }',
+      gqlQuery: '{ widget(label: `starred`) { id note(format: "${RAW_EXPR}") } }',
       multiStepBody: `    return { data: {} as unknown };`,
     });
-    const queryConstMatch = source.match(
-      /const TESTSITE_QUERY = `([\s\S]*?)`;\n/,
-    );
+    const queryConstMatch = source.match(/const TESTSITE_QUERY = `([\s\S]*?)`;\n/);
     expect(queryConstMatch).not.toBeNull();
     const queryConstBody = queryConstMatch?.[1] ?? "";
     expect(queryConstBody).toContain("\\`starred\\`");
@@ -4722,24 +4299,19 @@ describe("selectEffectiveResponseBody — shape source agrees with the return va
   });
 
   it("folds the chain's terminal (price-history) response onto the primary item, not the drill step's own foldable prices[]", () => {
-    const steps =
-      buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
 
     const shapeSource = selectEffectiveResponseBody(true, steps, null);
 
     expect(shapeSource).toEqual({
-      results: [
-        { sku: "sku-a", amount: 18.5, asOf: "2024-11-01" },
-        { sku: "sku-b" },
-      ],
+      results: [{ sku: "sku-a", amount: 18.5, asOf: "2024-11-01" }, { sku: "sku-b" }],
     });
   });
 });
 
 describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () => {
   it("emits the full chain inside the fold loop instead of throwing when the drill step's own response is both foldable and depended on further", () => {
-    const steps =
-      buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
+    const steps = buildMulticallSingleShotSearchDrillDownChainedDependentActionSteps();
 
     expect(() =>
       emitMultiStepExecuteHttp(
@@ -4754,8 +4326,8 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
         new Map(),
         "https://api.example.com",
         new Map(),
-        new Map(),
-      ),
+        new Map()
+      )
     ).not.toThrow();
 
     const body = emitMultiStepExecuteHttp(
@@ -4770,7 +4342,7 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
 
     expect(body).toContain("(foldItems).map(async (item) => {");
@@ -4782,7 +4354,7 @@ describe("emitMultiStepExecuteHttp — chained per-item drill dependency", () =>
     expect(body).toContain("const r2 = (await httpClient(");
     expect(body).toContain("const foldMatches = (r2 as");
     expect(body).toContain(
-      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));",
+      "Object.assign(item, Object.fromEntries(Object.entries(foldMatch ?? {}).filter(([k]) => !(k in item))));"
     );
     // r2 is only ever issued inside the fold loop — never a second time
     // outside it.
@@ -4831,7 +4403,7 @@ describe("emitMultiStepExecuteHttp — fold-loop parameterize re-keys a boolean 
       new Map(),
       "https://api.example.com",
       new Map(),
-      new Map(),
+      new Map()
     );
 
     expect(body).toContain("(foldItems).map(async (item) => {");
@@ -4855,9 +4427,7 @@ describe("inferZodSchemaFromSamples", () => {
 
   it("stays permissive when every observation of a field is null", () => {
     // A z.null() here would reject the string the endpoint returns tomorrow.
-    expect(inferZodSchemaFromSamples([{ p: null }])).toContain(
-      "p: z.unknown()",
-    );
+    expect(inferZodSchemaFromSamples([{ p: null }])).toContain("p: z.unknown()");
   });
 
   it("merges every array element so a field missing from element 0 is still discovered", () => {
@@ -4866,9 +4436,7 @@ describe("inferZodSchemaFromSamples", () => {
   });
 
   it("falls back to unknown for a field whose type varies across samples", () => {
-    expect(inferZodSchemaFromSamples([{ v: "s" }, { v: 1 }])).toContain(
-      "v: z.unknown()",
-    );
+    expect(inferZodSchemaFromSamples([{ v: "s" }, { v: 1 }])).toContain("v: z.unknown()");
   });
 
   it("infers past four levels so deeply nested inventory fields survive", () => {
@@ -4879,9 +4447,7 @@ describe("inferZodSchemaFromSamples", () => {
         {
           buildings: [
             {
-              units: [
-                { unitId: "UU1522", price: { summary: { total: 1402 } } },
-              ],
+              units: [{ unitId: "UU1522", price: { summary: { total: 1402 } } }],
             },
           ],
         },
@@ -4894,9 +4460,7 @@ describe("inferZodSchemaFromSamples", () => {
 
   it("collapses to unknown past the configured depth so pathological payloads stay bounded", () => {
     const deep = { a: { b: { c: { d: { e: "too far" } } } } };
-    expect(inferZodSchemaFromSamples([deep], 0, "", { maxDepth: 2 })).toContain(
-      "z.unknown()",
-    );
+    expect(inferZodSchemaFromSamples([deep], 0, "", { maxDepth: 2 })).toContain("z.unknown()");
   });
 });
 
@@ -4909,9 +4473,7 @@ describe("collectUnboundLiterals — composite array/object values", () => {
       ],
     };
     const finalTemplate = `{"groupMix":${JSON.stringify(parsedBody.groupMix)}}`;
-    expect(
-      collectUnboundLiterals(finalTemplate, parsedBody, new Set()),
-    ).toContain("groupMix");
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("groupMix");
   });
 
   it("does not flag a composite value that was correctly substituted with a template expression", () => {
@@ -4922,9 +4484,7 @@ describe("collectUnboundLiterals — composite array/object values", () => {
       ],
     };
     const finalTemplate = `{"groupMix":\${JSON.stringify(payload.groupMix)}}`;
-    expect(
-      collectUnboundLiterals(finalTemplate, parsedBody, new Set()),
-    ).not.toContain("groupMix");
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).not.toContain("groupMix");
   });
 
   it("still flags an unbound long literal string leaf (pre-existing scalar behavior unchanged)", () => {
@@ -4932,9 +4492,7 @@ describe("collectUnboundLiterals — composite array/object values", () => {
       description: "a reasonably long literal string value",
     };
     const finalTemplate = `{"description":${JSON.stringify(parsedBody.description)}}`;
-    expect(
-      collectUnboundLiterals(finalTemplate, parsedBody, new Set()),
-    ).toContain("description");
+    expect(collectUnboundLiterals(finalTemplate, parsedBody, new Set())).toContain("description");
   });
 });
 
@@ -4954,9 +4512,7 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
 
   it("keeps the flow's payload references and the contract's schema keys in sync with no inputBody", () => {
     const contract = emitContractTs({ ...BASE_OPTS, inputBody: undefined });
-    const referenced = [
-      ...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g),
-    ].map((m) => m[1]!);
+    const referenced = [...code.matchAll(/\$\{payload\.([A-Za-z0-9_]+)\}/g)].map((m) => m[1]!);
     expect(referenced.length).toBeGreaterThan(0);
     for (const field of referenced) {
       expect(contract).toContain(`${field}:`);
@@ -4994,25 +4550,19 @@ describe("emitBrowserFlowTs + emitContractTs — read-flow payload", () => {
     const referenceConst = `${BASE_OPTS.pascal}InternalRequestReference`;
     expect(contract).toContain(`export const ${referenceConst} =`);
     expect(contract).toContain("region: z.");
-    expect(contract).toContain(
-      `const ${BASE_OPTS.pascal}PayloadSchema = z.object({})`,
-    );
+    expect(contract).toContain(`const ${BASE_OPTS.pascal}PayloadSchema = z.object({})`);
     // The reference const must carry TSDoc explaining it is builder input for
     // reconstructing the site's own request, not the public /run contract —
     // and must never itself become (or be assigned to) the exported bodySchema.
     const docBlockMatch = contract.match(
-      new RegExp(
-        `/\\*\\*[\\s\\S]*?\\*/\\s*\\nexport const ${referenceConst} =`,
-      ),
+      new RegExp(`/\\*\\*[\\s\\S]*?\\*/\\s*\\nexport const ${referenceConst} =`)
     );
     expect(docBlockMatch).not.toBeNull();
     const docBlock = docBlockMatch![0];
     expect(docBlock).toMatch(/builder module/i);
     expect(docBlock).toMatch(/site's own request/i);
     expect(docBlock).toMatch(/NOT the public/i);
-    expect(contract).not.toMatch(
-      new RegExp(`bodySchema:\\s*${referenceConst}\\b`),
-    );
+    expect(contract).not.toMatch(new RegExp(`bodySchema:\\s*${referenceConst}\\b`));
   });
 
   it("emits no internal-reference construct when no request body was captured", () => {
@@ -5087,18 +4637,16 @@ describe("emitConfigManifest — config-only plugin emission", () => {
   it("preserves submit and upload/optional flags on object-form steps", () => {
     const objectSteps = manifest.spec.flow.steps.filter(
       (
-        s,
+        s
       ): s is {
         step: string;
         submitStep?: boolean;
         upload?: boolean;
         optional?: boolean;
-      } => typeof s === "object" && s !== null,
+      } => typeof s === "object" && s !== null
     );
     expect(objectSteps.some((s) => s.submitStep === true)).toBe(true);
-    expect(
-      objectSteps.some((s) => s.upload === true && s.optional === true),
-    ).toBe(true);
+    expect(objectSteps.some((s) => s.upload === true && s.optional === true)).toBe(true);
   });
 });
 
@@ -5120,12 +4668,7 @@ describe("emitConfigManifest — displayName omitted rather than derived from si
 describe("recon-generate CLI — flow-authored displayName reaches emitConfigManifest's metadata", () => {
   const REPO_ROOT = join(__dirname, "..", "..");
   const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
-  const GENERATE_SCRIPT = join(
-    REPO_ROOT,
-    "src",
-    "scripts",
-    "recon-generate.ts",
-  );
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
   let workDir: string | null = null;
   let siteOutDir: string | null = null;
@@ -5143,10 +4686,7 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
     mkdirSync(join(runRoot, "graphql"), { recursive: true });
     mkdirSync(join(runRoot, "replays"), { recursive: true });
     mkdirSync(join(runRoot, "aux"), { recursive: true });
-    writeFileSync(
-      join(runRoot, "replays", "rate-limit.json"),
-      JSON.stringify([]),
-    );
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
     writeFileSync(
       join(runRoot, "graphql", "000-search.json"),
       JSON.stringify({
@@ -5163,7 +4703,7 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
         query: null,
         variables: null,
         decodedParams: null,
-      } satisfies Capture),
+      } satisfies Capture)
     );
 
     const siteId = `recon-cli-config-displayname-test-${process.pid}`;
@@ -5174,27 +4714,18 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
       JSON.stringify({
         steps: [{ step: "search for widgets" }],
         displayName: "Widget Depot",
-      }),
+      })
     );
 
     const result = spawnSync(
       TSX_BIN,
-      [
-        GENERATE_SCRIPT,
-        "--site-id",
-        siteId,
-        "--run-dir",
-        runRoot,
-        "--emit",
-        "config",
-        "--force",
-      ],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8" },
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "config", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 
     const manifest = JSON.parse(
-      readFileSync(join(siteOutDir, `${siteId}.plugin.json`), "utf8"),
+      readFileSync(join(siteOutDir, `${siteId}.plugin.json`), "utf8")
     ) as { metadata: Record<string, unknown> };
     expect(manifest.metadata.displayName).toBe("Widget Depot");
   }, 30_000);
@@ -5203,12 +4734,7 @@ describe("recon-generate CLI — flow-authored displayName reaches emitConfigMan
 describe("recon-generate CLI — no displayName override never fabricates PascalCase(siteId) at the extraction site", () => {
   const REPO_ROOT = join(__dirname, "..", "..");
   const TSX_BIN = join(REPO_ROOT, "node_modules", ".bin", "tsx");
-  const GENERATE_SCRIPT = join(
-    REPO_ROOT,
-    "src",
-    "scripts",
-    "recon-generate.ts",
-  );
+  const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
   let workDir: string | null = null;
   let siteOutDir: string | null = null;
@@ -5226,10 +4752,7 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     mkdirSync(join(runRoot, "graphql"), { recursive: true });
     mkdirSync(join(runRoot, "replays"), { recursive: true });
     mkdirSync(join(runRoot, "aux"), { recursive: true });
-    writeFileSync(
-      join(runRoot, "replays", "rate-limit.json"),
-      JSON.stringify([]),
-    );
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
     writeFileSync(
       join(runRoot, "graphql", "000-search.json"),
       JSON.stringify({
@@ -5246,7 +4769,7 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
         query: null,
         variables: null,
         decodedParams: null,
-      } satisfies Capture),
+      } satisfies Capture)
     );
 
     const siteId = "wholesale-fish-market";
@@ -5254,22 +4777,13 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
     mkdirSync(siteOutDir, { recursive: true });
     writeFileSync(
       join(siteOutDir, "recon-flow.json"),
-      JSON.stringify({ steps: [{ step: "search for widgets" }] }),
+      JSON.stringify({ steps: [{ step: "search for widgets" }] })
     );
 
     const tsResult = spawnSync(
       TSX_BIN,
-      [
-        GENERATE_SCRIPT,
-        "--site-id",
-        siteId,
-        "--run-dir",
-        runRoot,
-        "--emit",
-        "ts",
-        "--force",
-      ],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8" },
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
     expect(tsResult.status, `${tsResult.stdout}\n${tsResult.stderr}`).toBe(0);
 
@@ -5279,27 +4793,12 @@ describe("recon-generate CLI — no displayName override never fabricates Pascal
 
     const configResult = spawnSync(
       TSX_BIN,
-      [
-        GENERATE_SCRIPT,
-        "--site-id",
-        siteId,
-        "--run-dir",
-        runRoot,
-        "--emit",
-        "config",
-        "--force",
-      ],
-      { cwd: RECON_GENERATE_CWD, encoding: "utf8" },
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "config", "--force"],
+      { cwd: RECON_GENERATE_CWD, encoding: "utf8" }
     );
-    expect(
-      configResult.status,
-      `${configResult.stdout}\n${configResult.stderr}`,
-    ).toBe(0);
+    expect(configResult.status, `${configResult.stdout}\n${configResult.stderr}`).toBe(0);
 
-    const manifestStr = readFileSync(
-      join(siteOutDir, `${siteId}.plugin.json`),
-      "utf8",
-    );
+    const manifestStr = readFileSync(join(siteOutDir, `${siteId}.plugin.json`), "utf8");
     const manifest = JSON.parse(manifestStr) as {
       metadata: Record<string, unknown>;
     };
@@ -5379,7 +4878,7 @@ describe("emitConfigManifest — recovered request contract", () => {
         region: { country: "US" },
       },
       recoveredFields: new Set(["AddressLine1"]),
-    }),
+    })
   ) as { spec: { request: { properties: Record<string, { type: string }> } } };
   const props = manifest.spec.request.properties;
 
@@ -5405,7 +4904,7 @@ describe("emitConfigManifest — recovered request contract", () => {
         flowSteps: [],
         inputBody: { page: 1 },
         recoveredFields: new Set(["page"]),
-      }),
+      })
     ) as {
       spec: { request: { properties: Record<string, { type: string }> } };
     };
@@ -5420,7 +4919,7 @@ describe("emitConfigManifest — recovered request contract", () => {
         baseUrl: "https://apply.acme.example",
         flowSteps: [],
         httpModulePath: "./acme-demo.http.js",
-      }),
+      })
     ) as { spec: { httpModule?: string } };
     expect(withHttp.spec.httpModule).toBe("./acme-demo.http.js");
   });
@@ -5432,7 +4931,7 @@ describe("emitConfigManifest — recovered request contract", () => {
         displayName: "AcmeDemo",
         baseUrl: "https://apply.acme.example",
         flowSteps: [],
-      }),
+      })
     ) as { spec: { httpModule?: string } };
     expect(browserOnly.spec.httpModule).toBeUndefined();
   });
@@ -5463,9 +4962,7 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
       location: "Springfield, ST",
       visibilitySiteType: "external",
     },
-    experienceData: [
-      { employer: "Prior Health System", title: "RN", years: 3 },
-    ],
+    experienceData: [{ employer: "Prior Health System", title: "RN", years: 3 }],
     educationData: [{ school: "State University", degree: "BSN" }],
   };
 
@@ -5485,7 +4982,7 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
 
   it("does not leak the vendor site-dump field names into the public bodySchema", () => {
     const payloadSchemaMatch = contract.match(
-      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*(?:\.merge\(JobTrackingSchema\))?;/,
+      /const ExamplesitePayloadSchema = z\.object\(\{\}\)(?:\.extend\(\{[\s\S]*?\n\}\))*(?:\.merge\(JobTrackingSchema\))?;/
     );
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
@@ -5498,11 +4995,9 @@ describe("emitContractTs — vendor-dump golden fixture (recon-generate-payload-
   });
 
   it("demotes the vendor site-dump shape to the exported internal-reference const", () => {
-    expect(contract).toContain(
-      "export const ExamplesiteInternalRequestReference =",
-    );
+    expect(contract).toContain("export const ExamplesiteInternalRequestReference =");
     const referenceMatch = contract.match(
-      /export const ExamplesiteInternalRequestReference = [\s\S]*?;\n/,
+      /export const ExamplesiteInternalRequestReference = [\s\S]*?;\n/
     );
     expect(referenceMatch).not.toBeNull();
     const referenceSource = referenceMatch![0];
@@ -5529,9 +5024,7 @@ describe("emitContractTs — single merged `.extend()` payload schema (bugfix-00
       inputBody: { some: "data" },
       payloadFieldNames: new Set(["Email", "JobId"]),
     });
-    const payloadSchemaMatch = contract.match(
-      /const CollisionSitePayloadSchema = [\s\S]*?;\n/,
-    );
+    const payloadSchemaMatch = contract.match(/const CollisionSitePayloadSchema = [\s\S]*?;\n/);
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
 
@@ -5557,9 +5050,7 @@ describe("emitContractTs — single merged `.extend()` payload schema (bugfix-00
       discoveredFormFields: new Set(["City"]),
       payloadFieldNames: new Set(["FirstName"]),
     });
-    const payloadSchemaMatch = contract.match(
-      /const ShadowSitePayloadSchema = [\s\S]*?;\n/,
-    );
+    const payloadSchemaMatch = contract.match(/const ShadowSitePayloadSchema = [\s\S]*?;\n/);
     expect(payloadSchemaMatch).not.toBeNull();
     const payloadSchemaSource = payloadSchemaMatch![0];
 
@@ -5575,11 +5066,7 @@ describe("extractActionSequence + compileActionSteps — repeated-section flow w
     const captures = buildRepeatedSectionSubmissionCaptures();
     const actionCaptures = extractActionSequence(captures, null);
     const actionCaptureIndices = new Set(actionCaptures.map((a) => a.index));
-    const stateIndex = indexStateValues(
-      captures,
-      new Set(),
-      actionCaptureIndices,
-    );
+    const stateIndex = indexStateValues(captures, new Set(), actionCaptureIndices);
     const actionSteps = compileActionSteps(actionCaptures, stateIndex);
 
     expect(actionSteps.length).toBeGreaterThan(1);
@@ -5601,11 +5088,7 @@ describe("emitContractTs — sanitizeFixtureIdentifier keeps loadFixture comment
     });
     return source
       .split("\n")
-      .filter(
-        (line) =>
-          line.trimStart().startsWith("// const ") &&
-          line.includes("loadFixture("),
-      );
+      .filter((line) => line.trimStart().startsWith("// const ") && line.includes("loadFixture("));
   }
 
   it("never emits an invalid identifier for a digit-leading, dotted, or hyphenated fixture filename", () => {
@@ -5676,7 +5159,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
     url: string,
     operationName: string,
     kind: "query" | "mutation",
-    responseBody: unknown,
+    responseBody: unknown
   ) => ({
     timestamp: "2024-01-01T00:00:00Z",
     phase: "action" as const,
@@ -5697,19 +5180,14 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
   const THIRD_PARTY = "telemetry.thirdparty.com";
 
   it("drops a mutation-shaped 2xx POST capture on a third-party host once own-backend hosts are declared, keeping only the own-backend mutation", () => {
-    const ownCapture = gqlCapture(
-      `https://${OWN_BACKEND}/graphql`,
-      "SubmitForm",
-      "mutation",
-      {
-        submissionId: "sub-1",
-      },
-    );
+    const ownCapture = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
     const thirdPartyCapture = gqlCapture(
       `https://${THIRD_PARTY}/graphql`,
       "SubmitForm",
       "mutation",
-      { submissionId: "sub-1" },
+      { submissionId: "sub-1" }
     );
 
     const kept = extractGraphQLActionSequence(
@@ -5717,28 +5195,21 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null,
       null,
       [OWN_BACKEND],
-      null,
+      null
     );
 
-    expect(kept.map((a) => a.capture.url)).toEqual([
-      `https://${OWN_BACKEND}/graphql`,
-    ]);
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
   });
 
   it("admits every mutation capture regardless of host when no ownBackendHostnames/fallbackDomain is supplied", () => {
-    const ownCapture = gqlCapture(
-      `https://${OWN_BACKEND}/graphql`,
-      "SubmitForm",
-      "mutation",
-      {
-        submissionId: "sub-1",
-      },
-    );
+    const ownCapture = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
     const thirdPartyCapture = gqlCapture(
       `https://${THIRD_PARTY}/graphql`,
       "SubmitForm",
       "mutation",
-      { submissionId: "sub-1" },
+      { submissionId: "sub-1" }
     );
 
     const kept = extractGraphQLActionSequence([ownCapture, thirdPartyCapture]);
@@ -5781,7 +5252,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null,
       FOLD_SPEC,
       [OWN_BACKEND],
-      null,
+      null
     );
 
     expect(kept.map((a) => a.capture.url)).toEqual([ownDrillDown.url]);
@@ -5792,7 +5263,7 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       `https://${OWN_BACKEND}/graphql/bookingavail-vas`,
       "SubmitBookingavailVas",
       "mutation",
-      { submissionId: "sub-1" },
+      { submissionId: "sub-1" }
     );
 
     const FOLD_SPEC: FoldReturnSpec = {
@@ -5824,12 +5295,10 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null,
       FOLD_SPEC,
       [OWN_BACKEND],
-      null,
+      null
     );
 
-    expect(kept.map((a) => a.capture.operationName)).toEqual([
-      "SubmitBookingavailVas",
-    ]);
+    expect(kept.map((a) => a.capture.operationName)).toEqual(["SubmitBookingavailVas"]);
   });
 
   it("drops a minority own-backend host's mutation that coincidentally matches the declared submitEndpointPattern when primaryHost narrows to the dominant host", () => {
@@ -5838,16 +5307,11 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       `https://${MINORITY_HOST}/graphql`,
       "SubmitTokenRefresh",
       "mutation",
-      { refreshed: true },
+      { refreshed: true }
     );
-    const primaryMutation = gqlCapture(
-      `https://${OWN_BACKEND}/graphql`,
-      "SubmitForm",
-      "mutation",
-      {
-        submissionId: "sub-1",
-      },
-    );
+    const primaryMutation = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
 
     const kept = extractGraphQLActionSequence(
       [minorityMutation, primaryMutation],
@@ -5855,12 +5319,10 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null,
       [OWN_BACKEND, MINORITY_HOST],
       null,
-      OWN_BACKEND,
+      OWN_BACKEND
     );
 
-    expect(kept.map((a) => a.capture.url)).toEqual([
-      `https://${OWN_BACKEND}/graphql`,
-    ]);
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
   });
 
   it("keeps the primary host's genuine mutation undiminished when primaryHost narrows the pool", () => {
@@ -5869,16 +5331,11 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       `https://${MINORITY_HOST}/graphql`,
       "RefreshToken",
       "mutation",
-      { refreshed: true },
+      { refreshed: true }
     );
-    const primaryMutation = gqlCapture(
-      `https://${OWN_BACKEND}/graphql`,
-      "SubmitForm",
-      "mutation",
-      {
-        submissionId: "sub-1",
-      },
-    );
+    const primaryMutation = gqlCapture(`https://${OWN_BACKEND}/graphql`, "SubmitForm", "mutation", {
+      submissionId: "sub-1",
+    });
 
     const kept = extractGraphQLActionSequence(
       [minorityNoise, primaryMutation],
@@ -5886,24 +5343,21 @@ describe("extractGraphQLActionSequence — gated on ownBackendHostnames host pro
       null,
       [OWN_BACKEND, MINORITY_HOST],
       null,
-      OWN_BACKEND,
+      OWN_BACKEND
     );
 
-    expect(kept.map((a) => a.capture.url)).toEqual([
-      `https://${OWN_BACKEND}/graphql`,
-    ]);
+    expect(kept.map((a) => a.capture.url)).toEqual([`https://${OWN_BACKEND}/graphql`]);
   });
 });
 
 describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated violation still hard-fails", () => {
   it("throws when a required *Url field from the submit capture itself is never referenced as payload.<Field>", () => {
     const contractCode = "TrackingUrl: z.string(),";
-    const browserFlowCode =
-      'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+    const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-    expect(() =>
-      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode),
-    ).toThrow(/required URL field.*TrackingUrl/);
+    expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
+      /required URL field.*TrackingUrl/
+    );
   });
 });
 
@@ -5925,26 +5379,14 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   });
 
   it("resolves to the dominant host by capture count even when a minority host's capture appears first", () => {
-    const minorityFirst = capture(
-      "https://redirect.example.com/init",
-      "2024-01-01T00:00:00Z",
-    );
-    const dominant1 = capture(
-      "https://api.example.com/a",
-      "2024-01-01T00:00:01Z",
-    );
-    const dominant2 = capture(
-      "https://api.example.com/b",
-      "2024-01-01T00:00:02Z",
-    );
-    const dominant3 = capture(
-      "https://api.example.com/c",
-      "2024-01-01T00:00:03Z",
-    );
+    const minorityFirst = capture("https://redirect.example.com/init", "2024-01-01T00:00:00Z");
+    const dominant1 = capture("https://api.example.com/a", "2024-01-01T00:00:01Z");
+    const dominant2 = capture("https://api.example.com/b", "2024-01-01T00:00:02Z");
+    const dominant3 = capture("https://api.example.com/c", "2024-01-01T00:00:03Z");
 
     const baseUrl = deriveBaseUrl(
       [minorityFirst, dominant1, dominant2, dominant3],
-      ["redirect.example.com", "api.example.com"],
+      ["redirect.example.com", "api.example.com"]
     );
 
     expect(baseUrl).toBe("https://api.example.com");
@@ -5961,10 +5403,7 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
   it("resolves identically to today with no host provenance declared (first non-noise capture)", () => {
     const first = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
-    const second = capture(
-      "https://other.example.com/b",
-      "2024-01-01T00:00:01Z",
-    );
+    const second = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
 
     const baseUrl = deriveBaseUrl([first, second], []);
 
@@ -5972,12 +5411,9 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   });
 
   it("resolves to the dominant own-backend host when a same-company auth redirect on a different registrable domain sorts first", () => {
-    const authRedirect = capture(
-      "https://login.example-id.com/bounce",
-      "2024-01-01T00:00:00Z",
-    );
+    const authRedirect = capture("https://login.example-id.com/bounce", "2024-01-01T00:00:00Z");
     const backend = Array.from({ length: 4 }, (_, i) =>
-      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
+      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
     );
 
     const baseUrl = deriveBaseUrl([authRedirect, ...backend], []);
@@ -5987,10 +5423,7 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
   it("does not exclude a genuine own-backend host from the anchor pick just because its label matches the auth vocabulary", () => {
     const real = capture("https://login.example.com/a", "2024-01-01T00:00:00Z");
-    const other = capture(
-      "https://other.example.com/b",
-      "2024-01-01T00:00:01Z",
-    );
+    const other = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
 
     const baseUrl = deriveBaseUrl([real, other], []);
 
@@ -6000,10 +5433,10 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   it("resolves to the dominant own-backend host when a same-company marketing redirect on a different registrable domain sorts first", () => {
     const marketingRedirect = capture(
       "https://www.example-landing.com/bounce",
-      "2024-01-01T00:00:00Z",
+      "2024-01-01T00:00:00Z"
     );
     const backend = Array.from({ length: 4 }, (_, i) =>
-      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
+      capture(`https://api.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
     );
 
     const baseUrl = deriveBaseUrl([marketingRedirect, ...backend], []);
@@ -6013,10 +5446,7 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
   it("does not exclude a genuine own-backend host from the anchor pick just because its label matches the marketing vocabulary", () => {
     const real = capture("https://www.example.com/a", "2024-01-01T00:00:00Z");
-    const other = capture(
-      "https://other.example.com/b",
-      "2024-01-01T00:00:01Z",
-    );
+    const other = capture("https://other.example.com/b", "2024-01-01T00:00:01Z");
 
     const baseUrl = deriveBaseUrl([real, other], []);
 
@@ -6026,7 +5456,7 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   it("does not let a chatty host outvote the first non-noise capture when no hosts are declared", () => {
     const real = capture("https://api.example.com/a", "2024-01-01T00:00:00Z");
     const chatty = Array.from({ length: 5 }, (_, i) =>
-      capture(`https://chatty.example.net/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
+      capture(`https://chatty.example.net/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
     );
 
     const baseUrl = deriveBaseUrl([real, ...chatty], []);
@@ -6036,55 +5466,37 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
 
   it("does not run the dominance vote when the anchor host's own same-domain group has REST search text in `query`, not a parsed GraphQL operation (#bugfix-002)", () => {
     const anchor = {
-      ...capture(
-        "https://api.example.com/search?q=shoes",
-        "2024-01-01T00:00:00Z",
-      ),
+      ...capture("https://api.example.com/search?q=shoes", "2024-01-01T00:00:00Z"),
       query: "q=shoes&sort=price",
     };
     const sameRegistrableDomainMajority = Array.from({ length: 5 }, (_, i) =>
-      capture(`https://sub.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
+      capture(`https://sub.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
     );
 
-    const baseUrl = deriveBaseUrl(
-      [anchor, ...sameRegistrableDomainMajority],
-      [],
-    );
+    const baseUrl = deriveBaseUrl([anchor, ...sameRegistrableDomainMajority], []);
 
     expect(baseUrl).toBe("https://api.example.com");
   });
 
   it("runs the dominance vote when the anchor host's own same-domain group has a genuine GraphQL operation in `query`", () => {
     const anchor = {
-      ...capture(
-        "https://minority.example.com/graphql",
-        "2024-01-01T00:00:00Z",
-      ),
+      ...capture("https://minority.example.com/graphql", "2024-01-01T00:00:00Z"),
       query: "query GetWidgets { widgets { id } }",
     };
     const sameRegistrableDomainMajority = Array.from({ length: 5 }, (_, i) =>
-      capture(
-        `https://dominant.example.com/${i}`,
-        `2024-01-01T00:00:0${i + 1}Z`,
-      ),
+      capture(`https://dominant.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`)
     );
 
-    const baseUrl = deriveBaseUrl(
-      [anchor, ...sameRegistrableDomainMajority],
-      [],
-    );
+    const baseUrl = deriveBaseUrl([anchor, ...sameRegistrableDomainMajority], []);
 
     expect(baseUrl).toBe("https://dominant.example.com");
   });
 
   it("still lets a same-company auth-redirect-labeled host win when it is the pool's dominant host by capture count", () => {
     const authDominant = Array.from({ length: 5 }, (_, i) =>
-      capture(`https://login.example-id.com/${i}`, `2024-01-01T00:00:0${i}Z`),
+      capture(`https://login.example-id.com/${i}`, `2024-01-01T00:00:0${i}Z`)
     );
-    const minorityOther = capture(
-      "https://other.example.com/x",
-      "2024-01-01T00:00:05Z",
-    );
+    const minorityOther = capture("https://other.example.com/x", "2024-01-01T00:00:05Z");
 
     const baseUrl = deriveBaseUrl([...authDominant, minorityOther], []);
 
@@ -6092,22 +5504,13 @@ describe("deriveBaseUrl — resolves the dominant own-backend host, not the firs
   });
 
   it("lets a genuine own-backend host labeled like an auth bounce win the same-domain GraphQL dominance vote when it is the dominant host by count", () => {
-    const siblingSubdomainMinority = capture(
-      "https://sub.example.com/0",
-      "2024-01-01T00:00:00Z",
-    );
+    const siblingSubdomainMinority = capture("https://sub.example.com/0", "2024-01-01T00:00:00Z");
     const loginBackendMajority = Array.from({ length: 5 }, (_, i) => ({
-      ...capture(
-        `https://login.example.com/${i}`,
-        `2024-01-01T00:00:0${i + 1}Z`,
-      ),
+      ...capture(`https://login.example.com/${i}`, `2024-01-01T00:00:0${i + 1}Z`),
       query: i === 0 ? "query GetWidgets { widgets { id } }" : null,
     }));
 
-    const baseUrl = deriveBaseUrl(
-      [siblingSubdomainMinority, ...loginBackendMajority],
-      [],
-    );
+    const baseUrl = deriveBaseUrl([siblingSubdomainMinority, ...loginBackendMajority], []);
 
     expect(baseUrl).toBe("https://login.example.com");
   });
@@ -6120,21 +5523,14 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
     expect(
       extractStepPersonaValue(
         "In the 'Region' prompt selector, select 'Texas' and confirm the 'Region' field now shows Texas",
-        env,
-      ),
+        env
+      )
     ).toBe("Texas");
   });
 
   it("keeps the leading-verb and Fill behavior unchanged", () => {
-    expect(
-      extractStepPersonaValue(
-        "Select 'TX' in the 'Region' prompt selector",
-        env,
-      ),
-    ).toBe("TX");
-    expect(
-      extractStepPersonaValue("Fill in the 'Region' field with 'Texas'", env),
-    ).toBe("Texas");
+    expect(extractStepPersonaValue("Select 'TX' in the 'Region' prompt selector", env)).toBe("TX");
+    expect(extractStepPersonaValue("Fill in the 'Region' field with 'Texas'", env)).toBe("Texas");
   });
 
   it("keeps a phone-code label literal when the vocabulary excludes it", () => {
@@ -6147,8 +5543,8 @@ describe("pickValueSpan — select verb anywhere in the instruction", () => {
         "Select '+1' in the Country Phone Code list",
         undefined,
         false,
-        vocabulary,
-      ),
+        vocabulary
+      )
     ).toBeNull();
   });
 });
@@ -6174,11 +5570,7 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        mk("  resultUrl: z.string(),", "  q: z.string(),"),
-        "",
-        true,
-      ),
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", true)
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
@@ -6186,8 +5578,8 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
       unreferencedRequiredUrlFields(
         mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
         "",
-        true,
-      ),
+        true
+      )
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -6203,31 +5595,27 @@ describe("deriveGetInputModel", () => {
     expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
     expect(m.fieldToQueryKey.ids).toBe("ids[]");
     expect(m.fixedParams).toEqual({ sort: "asc" });
-    expect(m.pathVars).toEqual([
-      { field: "id", segmentIndex: 2, queryKey: "id" },
-    ]);
+    expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
   it("keeps declared names for non-varying keys instead of freezing them", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(
-      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07",
+      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07"
     );
     const m = deriveGetInputModel(a, [a], ["from", "to"])!;
     expect(m.dynamicFields.map((d) => d.field)).toEqual(["from", "to"]);
     expect(m.fixedParams).toEqual({});
-    expect(m.pathVars).toEqual([
-      { field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" },
-    ]);
+    expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
     expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
   it("makes varying date keys dynamic and binds the path id", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(
-      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07",
+      "https://shop.example/items/7/stock.json?item_ids[]=7&from=2030-01-01&to=2030-01-07"
     );
     const b = cap(
-      "https://shop.example/items/8/stock.json?item_ids[]=8&from=2030-02-01&to=2030-02-07",
+      "https://shop.example/items/8/stock.json?item_ids[]=8&from=2030-02-01&to=2030-02-07"
     );
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["from", "to"]);
@@ -6239,12 +5627,44 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://shop.example/items/7/stock.json?q=1");
     const b = cap("https://shop.example/items/8/stock.json?q=1");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.pathVars).toEqual([
-      { field: "itemsId", segmentIndex: 2, queryKey: "" },
-    ]);
+    expect(m.pathVars).toEqual([{ field: "itemsId", segmentIndex: 2, queryKey: "" }]);
     expect(m.fixedParams).toEqual({ q: "1" });
     const c = cap("https://shop.example/items/7?id=7&item=7");
     expect(deriveGetInputModel(c, [c])!.pathVars).toHaveLength(1);
+  });
+  it("takes a lone numeric or slug entity id from the payload with no sibling evidence", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    for (const [url, field] of [
+      ["https://shop.example/rooms/42/slots", "roomsId"],
+      ["https://shop.example/rooms/room-42/slots", "roomsId"],
+      ["https://shop.example/o/3f2504e0-4f89-11d3-9a0c-0305e82c3301/slots", "oId"],
+    ] as const) {
+      const a = cap(url);
+      expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([
+        { field, segmentIndex: 2, queryKey: "" },
+      ]);
+    }
+  });
+  it("leaves version tokens and fixed route words frozen", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/api/v2/oauth2/stock.json");
+    expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([]);
+  });
+  it("binds a path slug that differs across same-signature captures", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
+    const b = cap("https://shop.example/teams/beta-team/slots?x=1");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "teamsId", segmentIndex: 2, queryKey: "" }]);
+    const other = cap("https://shop.example/users/beta-team/slots?y=1");
+    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual([]);
+  });
+  it("keeps a declared query key payload-driven when it never varies", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/search?q=1&from=2");
+    const m = deriveGetInputModel(a, [a], ["from"])!;
+    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
+    expect(m.fixedParams).toEqual({ q: "1" });
   });
   it("treats a single varying key as dynamic", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -6330,19 +5750,13 @@ describe("gatherEntityVarianceEvidence", () => {
 
   it("reports varying when id query values differ", () => {
     const w = cap(`${B}?item_id=1`);
-    const r = gatherEntityVarianceEvidence(w, false, [
-      w,
-      cap(`${B}?item_id=2`),
-    ]);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?item_id=2`)]);
     expect(r.entityParameterized).toBe(true);
     expect(r.singleEntity).toBe(false);
   });
   it("reports single entity with params when ids match", () => {
     const w = cap(`${B}?itemId=1&page=1`);
-    const r = gatherEntityVarianceEvidence(w, false, [
-      w,
-      cap(`${B}?itemId=1&page=2`),
-    ]);
+    const r = gatherEntityVarianceEvidence(w, false, [w, cap(`${B}?itemId=1&page=2`)]);
     expect(r).toEqual({
       entityParameterized: true,
       params: { itemId: "1" },
@@ -6351,16 +5765,11 @@ describe("gatherEntityVarianceEvidence", () => {
   });
   it("reports not parameterized without id params and for GraphQL", () => {
     const w = cap(`${B}?page=1`);
-    expect(
-      gatherEntityVarianceEvidence(w, false, [w]).entityParameterized,
-    ).toBe(false);
-    expect(
-      gatherEntityVarianceEvidence(cap(`${B}?id=1`), true, [])
-        .entityParameterized,
-    ).toBe(false);
-    expect(
-      gatherEntityVarianceEvidence(null, false, []).entityParameterized,
-    ).toBe(false);
+    expect(gatherEntityVarianceEvidence(w, false, [w]).entityParameterized).toBe(false);
+    expect(gatherEntityVarianceEvidence(cap(`${B}?id=1`), true, []).entityParameterized).toBe(
+      false
+    );
+    expect(gatherEntityVarianceEvidence(null, false, []).entityParameterized).toBe(false);
   });
 });
 
@@ -6422,20 +5831,20 @@ describe("buildSingleEntityWarning", () => {
         entityParameterized: false,
         singleEntity: false,
         params: {},
-      }),
+      })
     ).toBeNull();
     expect(
       buildSingleEntityWarning(null, {
         entityParameterized: true,
         singleEntity: false,
         params: {},
-      }),
+      })
     ).toBeNull();
   });
   it("names the shared params and endpoint when single-entity", () => {
     const msg = buildSingleEntityWarning(
       { url: "https://example.com/api/item?id=7" },
-      { entityParameterized: true, singleEntity: true, params: { id: "7" } },
+      { entityParameterized: true, singleEntity: true, params: { id: "7" } }
     );
     expect(msg).toContain("id=7");
     expect(msg).toContain("single entity");
@@ -6459,7 +5868,7 @@ describe("evaluateSingleEntityEvidence", () => {
       w,
       false,
       [w, mk("https://example.com/api/item?item_id=1")],
-      (m) => warn.push(m),
+      (m) => warn.push(m)
     );
     expect(r.singleEntityEvidence).toBe(true);
     expect(warn).toHaveLength(1);
@@ -6478,7 +5887,7 @@ describe("evaluateSingleEntityEvidence", () => {
       w,
       false,
       [w, { ...(w as object), responseBody: body } as never],
-      (m) => warn.push(m),
+      (m) => warn.push(m)
     );
     expect(r.singleEntityEvidence).toBe(true);
     expect(warn).toHaveLength(1);
@@ -6495,16 +5904,14 @@ describe("evaluateSingleEntityEvidence", () => {
     } as never;
     const warn: string[] = [];
     expect(
-      evaluateSingleEntityEvidence(w, true, [w], (m) => warn.push(m))
-        .singleEntityEvidence,
+      evaluateSingleEntityEvidence(w, true, [w], (m) => warn.push(m)).singleEntityEvidence
     ).toBe(false);
     expect(warn).toHaveLength(0);
   });
   it("is silent without a winning capture", () => {
     const warn: string[] = [];
     expect(
-      evaluateSingleEntityEvidence(null, false, [], (m) => warn.push(m))
-        .singleEntityEvidence,
+      evaluateSingleEntityEvidence(null, false, [], (m) => warn.push(m)).singleEntityEvidence
     ).toBe(false);
     expect(warn).toHaveLength(0);
   });

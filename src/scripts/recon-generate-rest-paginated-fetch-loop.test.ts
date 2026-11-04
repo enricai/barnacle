@@ -164,6 +164,7 @@ describe("recon-generate REST paginated fetch loop: total/count signal present",
     expect(contract).toContain("skip += PAGE_SIZE;");
     // Read-only GET: paging keys ride the shared URL builder as query params.
     expect(contract).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: asserts on emitted plugin source
       '/api/products/search?${new URLSearchParams([["count", String(PAGE_SIZE)], ["skip", String(skip)]] as string[][])}`, { method: "GET" }'
     );
 
