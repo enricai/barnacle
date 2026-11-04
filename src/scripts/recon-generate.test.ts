@@ -5702,6 +5702,8 @@ describe("emitContractTs — payload-driven GET request", () => {
     });
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.id ?? "42"))');
+    expect(source).toContain('["id", String(payload.id ?? "42")]');
+    expect(source).not.toContain('payload.id !== undefined');
     expect(source).toContain('["ids[]", String(payload.ids)]');
     expect(source).not.toContain("JSON.stringify({ query: payload.query })");
   });

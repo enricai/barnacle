@@ -14174,12 +14174,23 @@ function buildGetRequestUrlExpr(
     if (!overridden.has(JSON.stringify(k)))
       pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
   }
-  const bound = [
-    ...model.dynamicFields,
-    ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
-  ];
-  for (const { field, queryKey } of bound) {
-    if (queryKey === "") continue; // path-only id: no query pair
+  for (const pv of model.pathVars) {
+    if (pv.queryKey === "") continue; // path-only id: no query pair
+    if (overridden.has(JSON.stringify(pv.queryKey))) continue;
+    // Path-twin pair: same payload value / recorded fallback as its path segment.
+    const recorded = endpointPath.split("/")[pv.segmentIndex] ?? "";
+    let decoded = recorded;
+    try {
+      decoded = decodeURIComponent(recorded);
+    } catch {
+      // keep the raw segment
+    }
+    pairs.push(
+      `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)})]`
+    );
+  }
+  for (const { field, queryKey } of model.dynamicFields) {
+    if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
