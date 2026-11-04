@@ -5724,6 +5724,18 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('["ids[]", String(payload.ids)]');
     expect(source).not.toContain("JSON.stringify({ query: payload.query })");
   });
+  it("emits the recorded fallback for a dynamic query key that has a recorded value", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/42",
+      getInputModel: {
+        ...model,
+        dynamicFields: [{ field: "page", queryKey: "page", recorded: "1" }],
+      },
+    });
+    expect(source).toContain('["page", String(payload.page ?? "1")]');
+    expect(source).not.toContain("payload.page !== undefined");
+  });
   it("renders every path-twin query key from the same payload field once in the path", () => {
     const source = emitContractTs({
       ...BASE_OPTS,
