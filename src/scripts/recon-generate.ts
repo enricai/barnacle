@@ -14758,9 +14758,13 @@ export function emitContractTs(opts: {
   // itself; callers that measured more (parameter variance across captures)
   // pass the verdict. GraphQL responses are typed by the query, not by the
   // entity addressed, so they are not covered by this default.
+  // A lone sample is never proof of required leaves, whatever the caller
+  // measured; with several samples a caller-measured verdict wins, else it is
+  // derived from the gathered captures here.
   const leniencyForUnprovenLeaves =
-    singleEntityEvidence ??
-    singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null);
+    singleEntityVerdict(null, isGqlEmission, responseBodySamples.length, null) ||
+    (singleEntityEvidence ??
+      singleEntityVerdictFromCaptures(isGqlEmission, responseBodySamples, allCaptures));
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -15929,18 +15933,20 @@ export function unreferencedRequiredUrlFields(
     const end = rest.search(/^export type \w*Payload\b/m);
     scanned = end >= 0 ? rest.slice(0, end) : rest;
   }
-  return [...scanned.matchAll(urlFieldLinePattern)]
-    // Whole-contract scans also see response-schema leaves relaxed by the
-    // single-entity verdict (`.nullable().optional()`); those still attribute
-    // an unreferenced URL field to its source capture.
-    .filter((match) =>
-      payloadOnly
-        ? !match[0].includes(".optional(")
-        : !match[0].includes(".optional(") || match[0].includes(".nullable().optional(")
-    )
-    .map((match) => match[1])
-    .filter((name): name is string => name !== undefined)
-    .filter((name) => !emittedCode.includes(`payload.${name}`));
+  return (
+    [...scanned.matchAll(urlFieldLinePattern)]
+      // Whole-contract scans also see response-schema leaves relaxed by the
+      // single-entity verdict (`.nullable().optional()`); those still attribute
+      // an unreferenced URL field to its source capture.
+      .filter((match) =>
+        payloadOnly
+          ? !match[0].includes(".optional(")
+          : !match[0].includes(".optional(") || match[0].includes(".nullable().optional(")
+      )
+      .map((match) => match[1])
+      .filter((name): name is string => name !== undefined)
+      .filter((name) => !emittedCode.includes(`payload.${name}`))
+  );
 }
 
 export function assertRequiredUrlFieldsReferenced(
@@ -17175,6 +17181,34 @@ export function singleEntityVerdict(
   return variance?.singleEntity === true && winningCapture !== null;
 }
 
+/**
+ * {@link singleEntityVerdict} for callers holding samples and captures but no
+ * measured variance: the samples' own source capture is located by body, and
+ * its same-endpoint siblings supply the identifying-parameter evidence. With
+ * no locatable source there is no variance evidence, so several samples stay
+ * strict (they are then the only cross-sample evidence available).
+ */
+function singleEntityVerdictFromCaptures(
+  isGraphQL: boolean,
+  samples: readonly unknown[],
+  captures: readonly Capture[]
+): boolean {
+  if (isGraphQL || samples.length <= 1) {
+    return singleEntityVerdict(null, isGraphQL, samples.length, null);
+  }
+  const bodies = new Set(samples.map((sample) => JSON.stringify(sample)));
+  const source =
+    captures.find(
+      (c) => c.status >= 200 && c.status < 300 && bodies.has(JSON.stringify(c.responseBody))
+    ) ?? null;
+  return singleEntityVerdict(
+    source,
+    false,
+    samples.length,
+    gatherEntityVarianceEvidence(source, false, captures)
+  );
+}
+
 export function buildSingleEntityWarning(
   winningCapture: { url: string } | null | undefined,
   entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>,
@@ -17256,7 +17290,12 @@ export function inferChainStepResponseSchema(
   // Same verdict as the primary schema: no proof of more than one entity
   // means lenient leaves.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
-  const singleEntityEvidence = singleEntityVerdict(stepCapture, isGraphQL, samples.length, variance);
+  const singleEntityEvidence = singleEntityVerdict(
+    stepCapture,
+    isGraphQL,
+    samples.length,
+    variance
+  );
   return inferZodSchemaFromSamples(samples, 0, "", {
     looseServerResponse: true,
     aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
