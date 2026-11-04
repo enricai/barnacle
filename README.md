@@ -30,7 +30,7 @@ adding a new site.
 
 ### Prerequisites
 
-- Node.js 22+
+- Node.js 22.19+
 - pnpm 10.4.1
 - A Browserbase account (`BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`) for managed browser sessions — the default provider. A Steel account (`STEEL_API_KEY`) is an alternative via `SCRAPER_PROVIDER=steel`
 - An Anthropic key (`ANTHROPIC_API_KEY`) for Stagehand's LLM calls, **or** AWS Bedrock (`USE_BEDROCK=true` + AWS credentials) — see [docs/configuration.md](./docs/configuration.md) for details

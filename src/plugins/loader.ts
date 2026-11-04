@@ -711,7 +711,7 @@ function registerExtraRoutes(
         ...(!shared && soleRoute?.paramsSchema ? { params: soleRoute.paramsSchema } : {}),
         ...(entry.multipart ? { consumes: ["multipart/form-data"] } : {}),
       },
-      handler: async (request) => {
+      handler: async (request, reply) => {
         const siteId = (request.params as { siteId?: string }).siteId ?? "";
         const plugin = shared ? entry.owners.get(siteId) : soleOwner;
         if (!plugin) {
@@ -746,10 +746,30 @@ function registerExtraRoutes(
               body,
               params: request.params as Record<string, string>,
               log: request.log as unknown as Logger,
+              query: request.query as Record<string, string | string[] | undefined>,
+              headers: request.headers,
+              reply,
             },
             context
           );
-          if (route.submits && isCompletedRun(result)) {
+          // A handler that answered via `reply.send(...)` returns the reply
+          // itself, not the body: judge success by status code and never pass
+          // the reply object (sockets, server) to the audit serializer.
+          // FastifyReply is thenable, so `await` may resolve it to undefined: also test `sent`.
+          const replied = (result as unknown) === reply || reply.sent;
+          if (route.submits && replied && reply.statusCode < 400) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "submitted",
+              auditPayload: null,
+              errorMessage: null,
+            });
+          } else if (route.submits && replied) {
+            await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
+              status: "error",
+              auditPayload: null,
+              errorMessage: `handler replied with HTTP ${reply.statusCode}`,
+            });
+          } else if (route.submits && isCompletedRun(result)) {
             await emitExtraRouteEnvelope(plugin, context, body, startedAt, {
               status: "submitted",
               auditPayload: result,

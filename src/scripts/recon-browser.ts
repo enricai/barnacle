@@ -75,6 +75,7 @@ import {
   resolveRunUrlPath,
   resolveSiteTelemetryDir,
 } from "@/lib/telemetry/telemetry-paths";
+import { matchesSubmitPattern } from "@/recon/submit-match";
 import { captureCookieJarSnapshot } from "@/scraper/cookie-jar";
 import {
   CdpTransportClosedError,
@@ -184,6 +185,33 @@ const REPLAN_CYCLE_THRESHOLD = 3;
 const HTML_STATIC_TOLERANCE = 100;
 
 /**
+ * Writes a capture and, when decoding changed the payload, its decoded sidecar.
+ * Parsed JSON (object/array) goes to `<name>.decoded.json`; a decoded string
+ * (url-/base64-decoded text) is not JSON, so it goes raw to `<name>.decoded.txt`
+ * — every `.json` file in the dir therefore parses with JSON.parse.
+ */
+export function writeCaptureFiles(
+  graphqlDir: string,
+  capture: { decodedParams: unknown; requestPostData: unknown },
+  filename: string
+): void {
+  writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
+  if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
+    if (typeof capture.decodedParams === "string") {
+      writeFileSync(
+        join(graphqlDir, filename.replace(/\.json$/, ".decoded.txt")),
+        capture.decodedParams
+      );
+    } else {
+      writeFileSync(
+        join(graphqlDir, filename.replace(/\.json$/, ".decoded.json")),
+        JSON.stringify(capture.decodedParams, null, 2)
+      );
+    }
+  }
+}
+
+/**
  * Thin CLI wrapper over {@link wireSignalCapture}: owns the on-disk capture
  * layout (writes each capture — and its decoded-params sidecar — under the
  * resolved run dir's `graphql` subdir) while delegating all in-memory
@@ -214,14 +242,7 @@ function wireNetworkCapture(
       // and let the cascade continue. The capture is forensic-only — the
       // happy-path doesn't read these files until something else fails.
       try {
-        writeFileSync(join(graphqlDir, filename), JSON.stringify(capture, null, 2));
-        if (capture.decodedParams !== null && capture.decodedParams !== capture.requestPostData) {
-          const decodedFilename = filename.replace(/\.json$/, ".decoded.json");
-          writeFileSync(
-            join(graphqlDir, decodedFilename),
-            JSON.stringify(capture.decodedParams, null, 2)
-          );
-        }
+        writeCaptureFiles(graphqlDir, capture, filename);
       } catch (err) {
         logger.warn(
           `capture-write skipped for ${capture.url.slice(0, 80)}: ${err instanceof Error ? err.message : String(err)}`
@@ -405,11 +426,18 @@ function auditFinalSubmitMatch(params: {
    * "no proof of submit" (caller decides what that means).
    */
   ownBackendHostnames: readonly string[];
+  /** When declared, a capture must also match this (shared predicate with the manifest). */
+  submitEndpointPattern?: string | null;
+  submitBodyPattern?: string | null;
   capturesDir: string;
   logger: Logger;
 }): { auditFailed: boolean; rejectionReason: string | null } {
   const { ownBackendHostnames, capturesDir, logger } = params;
   if (ownBackendHostnames.length === 0) return { auditFailed: true, rejectionReason: null };
+  const auditEndpointRx =
+    params.submitEndpointPattern != null ? new RegExp(params.submitEndpointPattern) : null;
+  const auditBodyRx =
+    params.submitBodyPattern != null ? new RegExp(params.submitBodyPattern) : null;
   let entries: string[];
   try {
     entries = readdirSync(capturesDir);
@@ -430,6 +458,7 @@ function auditFinalSubmitMatch(params: {
         status?: number;
         url?: string;
         responseBody?: unknown;
+        requestPostData?: unknown;
       };
       if (
         typeof data.url === "string" &&
@@ -444,6 +473,9 @@ function auditFinalSubmitMatch(params: {
           continue;
         }
         if (!ownBackendHostnames.includes(hostname)) continue;
+        if (auditEndpointRx !== null && !matchesSubmitPattern(data, auditEndpointRx, auditBodyRx)) {
+          continue;
+        }
         const parsedBody = normalizeResponseBodyForAudit(data);
         const rejection = detectRejectionInResponseBody(parsedBody);
         if (rejection.rejected) {
@@ -506,20 +538,34 @@ function writeSubmitManifest(params: {
     return;
   }
   const matched: SubmitManifestEntry[] = [];
+  // Read flows: 2xx GET captures that match, used only when no non-GET matches.
+  const getMatched: SubmitManifestEntry[] = [];
   for (const [index, filename] of entries.entries()) {
     try {
       const data = JSON.parse(readFileSync(join(capturesDir, filename), "utf8")) as {
         method?: string;
         url?: string;
         requestPostData?: string | null;
+        status?: number;
       };
-      if (data.method === "GET" || typeof data.url !== "string") continue;
-      if (!endpointRx.test(data.url)) continue;
-      if (bodyRx !== null && !bodyRx.test(data.requestPostData ?? "")) continue;
+      if (typeof data.url !== "string") continue;
+      if (!matchesSubmitPattern(data, endpointRx, bodyRx)) continue;
+      if (data.method === "GET") {
+        if (typeof data.status === "number" && data.status >= 200 && data.status < 300) {
+          getMatched.push({ index, filename, url: data.url });
+        }
+        continue;
+      }
       matched.push({ index, filename, url: data.url });
     } catch {
       // Ignore unparseable/non-capture files, as the audit does.
     }
+  }
+  if (matched.length === 0 && getMatched.length > 0) {
+    matched.push(...getMatched);
+    logger.info(
+      `submit-manifest: no non-GET capture matched; recording ${getMatched.length} 2xx GET capture(s) (read flow)`
+    );
   }
   if (matched.length === 0) {
     logger.warn(
@@ -3685,20 +3731,22 @@ async function main(): Promise<void> {
       if (requireSubmitEndpointMatch && ownBackendHostnames.length > 0) {
         const { auditFailed, rejectionReason } = auditFinalSubmitMatch({
           ownBackendHostnames,
+          submitEndpointPattern,
+          submitBodyPattern,
           capturesDir: runDir.graphqlDir,
           logger,
         });
         if (auditFailed) {
           const reasonSuffix = rejectionReason
             ? ` — server REJECTED submission with rejection envelope (reason: "${rejectionReason}"); HTTP layer succeeded but application was not accepted`
-            : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)} — submission did not land despite verifier success`;
+            : ` — no captured 2xx had hostname in ${JSON.stringify(ownBackendHostnames)}${submitEndpointPattern != null ? ` AND matching submitEndpointPattern ${JSON.stringify(submitEndpointPattern)}${submitBodyPattern != null ? ` + submitBodyPattern ${JSON.stringify(submitBodyPattern)}` : ""}` : ""} — submission did not land despite verifier success`;
           logger.error(`end-of-run audit FAILED${reasonSuffix}`);
           // Exit non-zero so the runner counts this as a real failure rather
           // than rolling silent-pass forward as success.
           process.exit(1);
         }
         logger.info(
-          `end-of-run audit PASSED: at least one captured 2xx matched submitEndpointPattern with clean response body`
+          `end-of-run audit PASSED: at least one captured 2xx on an own-backend host${submitEndpointPattern != null ? ` matching submitEndpointPattern${submitBodyPattern != null ? " + submitBodyPattern" : ""}` : " (no submitEndpointPattern declared)"} had a clean response body`
         );
       }
 
@@ -3882,6 +3930,7 @@ export type { NormalizedStep, ReplanEvent };
 // by the process.argv[1] check below), so a test driving it end-to-end with a
 // mocked browser session cannot trigger a real recon run.
 export {
+  auditFinalSubmitMatch,
   denormalizeStep,
   dumpStepFailure,
   main,
@@ -3891,5 +3940,6 @@ export {
   readFailureDumpEvidence,
   replanRemainingFlow,
   snapshotAndPersistCookieJar,
+  wireNetworkCapture,
   writeSubmitManifest,
 };

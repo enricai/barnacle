@@ -117,6 +117,7 @@ import { createBrowserSession } from "@/scraper/session";
 import { UPLOAD_AFFORDANCE_MATCHER_EXPR } from "@/scraper/upload-affordance-expr";
 import {
   applyFailedStepFlagsToResumingBridgeStep,
+  auditFinalSubmitMatch,
   buildRadioIdXPath,
   capturesAfterIndex,
   chooseRequiredSelectOption,
@@ -7667,5 +7668,86 @@ describe("recon-browser/step-start baseline wiring", () => {
 
   it("passes the settled read into the trailing-grace judge", () => {
     expect(source).toContain("settledPostVisibleText: settledAdvance?.post.visibleText,");
+  });
+});
+
+describe("recon-browser/writeSubmitManifest read flows + auditFinalSubmitMatch shared predicate", () => {
+  const warns: string[] = [];
+  const lg = {
+    info: (): void => {},
+    warn: (m: string): void => {
+      warns.push(m);
+    },
+    error: (): void => {},
+  } as unknown as Parameters<typeof writeSubmitManifest>[0]["logger"];
+  const BASE = "https://api.example.org";
+  function setup(caps: Record<string, unknown>[]): { runRoot: string; capturesDir: string } {
+    const runRoot = mkdtempSync(join(tmpdir(), "recon-sm-"));
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir);
+    caps.forEach((c, i) => {
+      writeFileSync(join(capturesDir, `${String(i).padStart(3, "0")}-p.json`), JSON.stringify(c));
+    });
+    return { runRoot, capturesDir };
+  }
+  function manifest(runRoot: string): { index: number }[] {
+    return JSON.parse(readFileSync(join(runRoot, "submit-manifest.json"), "utf8"));
+  }
+
+  it("records 2xx GET matches for a read flow without the empty warning", () => {
+    warns.length = 0;
+    const { runRoot, capturesDir } = setup([
+      { method: "GET", url: `${BASE}/schedule.json?a=1`, status: 200 },
+      { method: "GET", url: `${BASE}/other`, status: 200 },
+      { method: "GET", url: `${BASE}/schedule.json?a=2`, status: 200 },
+      { method: "GET", url: `${BASE}/schedule.json?a=3`, status: 500 },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/schedule.json",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(manifest(runRoot).map((e) => e.index)).toEqual([0, 2]);
+    expect(warns.some((w) => w.includes("no capture matched"))).toBe(false);
+  });
+
+  it("keeps only the POST when a same-URL GET exists", () => {
+    const { runRoot, capturesDir } = setup([
+      { method: "GET", url: `${BASE}/submit`, status: 200 },
+      { method: "POST", url: `${BASE}/submit`, status: 200, requestPostData: "{}" },
+    ]);
+    writeSubmitManifest({
+      runRoot,
+      capturesDir,
+      submitEndpointPattern: "/submit",
+      submitBodyPattern: null,
+      logger: lg,
+    });
+    expect(manifest(runRoot).map((e) => e.index)).toEqual([1]);
+  });
+
+  it("audit fails on own-host 2xx not matching the pattern, passes on a matching GET", () => {
+    const miss = setup([{ method: "GET", url: `${BASE}/chrome`, status: 200, responseBody: "{}" }]);
+    expect(
+      auditFinalSubmitMatch({
+        ownBackendHostnames: ["api.example.org"],
+        submitEndpointPattern: "/schedule.json",
+        capturesDir: miss.capturesDir,
+        logger: lg,
+      }).auditFailed
+    ).toBe(true);
+    const hit = setup([
+      { method: "GET", url: `${BASE}/schedule.json`, status: 200, responseBody: "{}" },
+    ]);
+    expect(
+      auditFinalSubmitMatch({
+        ownBackendHostnames: ["api.example.org"],
+        submitEndpointPattern: "/schedule.json",
+        capturesDir: hit.capturesDir,
+        logger: lg,
+      }).auditFailed
+    ).toBe(false);
   });
 });

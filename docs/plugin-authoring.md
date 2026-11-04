@@ -368,6 +368,34 @@ shapes — see `examples/plugins/acme-jobs.plugin.json` for a runnable example:
 - `POST /v1/<siteId>/trigger-otp` — body `{ offerId, email }`; returns
   `{ success: true }` or `2006 VERIFICATION_TRIGGER_FAILED`
 
+An extra-route handler receives a request object with `body`, `params`, `log`
+and three further members:
+
+- `query` — parsed query string (`?author=x&tag=a&tag=b`); repeated keys
+  become arrays, so values are `string | string[] | undefined`
+- `headers` — request headers with lowercased names (e.g. `x-api-key`)
+- `reply` — the Fastify reply, for opt-in response control. Handlers that
+  ignore it behave exactly as before (core owns the status and body)
+
+To send a custom response, declare the route with `envelope: false`, set the
+status/headers on `reply`, and `return reply.send(body)`:
+
+```ts
+{
+  method: "post",
+  path: "/v1/:siteId/books",
+  envelope: false,
+  handler: async ({ body, query, headers, reply }) => {
+    const book = await createBook(body, { author: query.author });
+    reply.code(201).header("Location", `/books/${book.id}`);
+    return reply.send(book); // sent unchanged, not wrapped in the envelope
+  },
+}
+```
+
+Errors are still rendered by the app-level error handler: throw a typed
+`ApiError` rather than returning an error shape.
+
 Operational routes:
 - `GET /healthz` / `GET /readyz` — liveness / readiness (credentials, queue depth)
 - `GET /docs` — Swagger UI (when `ENABLE_DOCS=true`)

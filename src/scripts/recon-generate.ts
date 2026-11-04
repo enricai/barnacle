@@ -37,10 +37,10 @@ import {
   isStructurallyIsolatedCapture,
   isStructurallyRelevantCapture,
   isZeroVarianceRepeatCapture,
+  matchesAnyTelemetryPattern,
   parsedOperationName,
   pathStructuralTokens,
   registrableDomain,
-  telemetryUrlPatterns,
 } from "@/recon/capture-filters";
 import type { ReconFormSchema } from "@/recon/form-schema";
 import { FORM_SCHEMA_NONE, loadReconFormSchema } from "@/recon/load-form-schema";
@@ -214,11 +214,28 @@ const OPERATIONAL_ANSWER =
 
 const EMPTY_KNOWN_FIELD_VALUES: ReadonlyMap<string, string> = new Map();
 
-function toPascalCase(siteId: string): string {
-  return siteId
+export function toPascalCase(siteId: string): string {
+  const pascal = siteId
     .split(/[-_]/)
     .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
     .join("");
+  // The siteId grammar permits a leading digit (e.g. `7-example-shop`), which is
+  // not a valid identifier start; prefix a letter so derived names stay valid.
+  return /^[0-9]/.test(pascal) ? `Site${pascal}` : pascal;
+}
+
+/** camelCase twin of toPascalCase: same identifier with the first char lowercased. */
+function toCamelCase(siteId: string): string {
+  const pascal = toPascalCase(siteId);
+  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+}
+
+/** Generated outputs already present in `outDir` (conflicts without --force). */
+export function findExistingGeneratedPaths(
+  outDir: string,
+  exists: (path: string) => boolean = existsSync
+): string[] {
+  return ["contract.ts", "index.ts", "flows"].map((n) => `${outDir}/${n}`).filter((p) => exists(p));
 }
 
 /**
@@ -917,6 +934,14 @@ interface InferOpts {
    * satisfy the sum relation for the same aggregate -- every confirmed
    * derivation is described, not just the last one found. */
   aggregateUnitBasisFindingsByPath?: ReadonlyMap<string, readonly AggregateUnitBasisFinding[]>;
+  /** Every sample came from ONE entity (e.g. a single product page of a
+   * catalog), so a scalar leaf reached without crossing an array boundary is
+   * present and non-null there only by accident of which entity was captured;
+   * another entity may omit it or return null. Such leaves are emitted
+   * `.nullable().optional()`. Array element fields are unaffected: elements
+   * are within-response variance evidence, so their presence/nullability stay
+   * sample-driven. Unset keeps output identical to before. */
+  singleEntityEvidence?: boolean;
 }
 
 /**
@@ -944,6 +969,14 @@ export function collectConditionalGraphQLFieldNames(query: string): ReadonlySet<
     if (fieldName) names.add(fieldName);
   }
   return names;
+}
+
+/** True when every non-null observation is a string/number/boolean of one kind. */
+function isScalarLeaf(values: readonly unknown[]): boolean {
+  const kinds = new Set(values.filter((v) => v !== null && v !== undefined).map((v) => typeof v));
+  if (kinds.size !== 1) return false;
+  const [k] = [...kinds];
+  return k === "string" || k === "number" || k === "boolean";
 }
 
 /**
@@ -979,6 +1012,10 @@ export function inferZodSchemaFromSamples(
   if (nonNull.length === 0) return "z.unknown()";
 
   const wrap = (expr: string): string => (nullable ? `${expr}.nullable()` : expr);
+  // Scalar leaf outside any array under single-entity evidence: invariance
+  // across entities is unproven, so always nullable.
+  const wrapScalar = (expr: string): string =>
+    nullable || opts.singleEntityEvidence ? `${expr}.nullable()` : expr;
 
   const kindOf = (v: unknown): string =>
     Array.isArray(v) ? "array" : v === null ? "null" : typeof v;
@@ -990,13 +1027,14 @@ export function inferZodSchemaFromSamples(
 
   const kind = [...kinds][0];
 
-  if (kind === "string") return wrap("z.string()");
-  if (kind === "number") return wrap(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
+  if (kind === "string") return wrapScalar("z.string()");
+  if (kind === "number")
+    return wrapScalar(opts.multipartCoerce ? "z.coerce.number()" : "z.number()");
   if (kind === "boolean") {
     // multipart/form-data encodes booleans as "true"/"false". The contract
     // emitter imports the shared multipartBoolean() helper from @/lib/zod-multipart
     // when any field needs this coercion; we call it here to keep field declarations short.
-    return wrap(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
+    return wrapScalar(opts.multipartCoerce ? "multipartBoolean()" : "z.boolean()");
   }
 
   if (kind === "array") {
@@ -1004,7 +1042,14 @@ export function inferZodSchemaFromSamples(
     // fields are discovered instead of being decided by element [0].
     const items = (nonNull as unknown[][]).flat();
     if (items.length === 0) return wrap("z.array(z.unknown())");
-    return wrap(`z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, opts, path)})`);
+    // Elements are within-response variance evidence: drop the single-entity flag.
+    const elementOpts =
+      opts.singleEntityEvidence && items.length > 1
+        ? { ...opts, singleEntityEvidence: false }
+        : opts;
+    return wrap(
+      `z.array(${inferZodSchemaFromSamples(items, depth + 1, indent, elementOpts, path)})`
+    );
   }
 
   if (kind === "object") {
@@ -1026,7 +1071,9 @@ export function inferZodSchemaFromSamples(
         // legally omit it regardless of what this sample happened to show):
         // either signal alone is enough to require callers to guard the field.
         const isOptional =
-          valuesForKey.length < objects.length || (opts.conditionalFieldNames?.has(k) ?? false);
+          valuesForKey.length < objects.length ||
+          (opts.conditionalFieldNames?.has(k) ?? false) ||
+          (opts.singleEntityEvidence === true && isScalarLeaf(valuesForKey));
         const optional = isOptional ? `${expr}.optional()` : expr;
         const findings = opts.aggregateUnitBasisFindingsByPath?.get(fieldPath.join("."));
         const described = findings?.length
@@ -1338,13 +1385,21 @@ function deriveMinTime(rateLimits: RateLimitFinding[]): number {
  * endpoint paged or filtered differently still collapses to one key. Matching
  * captures to replays depends on both sides deriving this the same way.
  */
+// Memoized: chain-step schema inference calls this per capture per step, which
+// is quadratic in capture count without a cache.
+const endpointKeyCache = new Map<string, string>();
 function endpointKey(url: string): string {
+  const hit = endpointKeyCache.get(url);
+  if (hit !== undefined) return hit;
+  let key: string;
   try {
     const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
+    key = `${u.origin}${u.pathname}`;
   } catch {
-    return url;
+    key = url;
   }
+  endpointKeyCache.set(url, key);
+  return key;
 }
 
 const RESOURCE_ID_SEGMENT =
@@ -2209,6 +2264,84 @@ export function gatherResponseBodySamples(
   return samples.length > 0 ? samples : [winningCapture.responseBody];
 }
 
+export interface EntityVarianceEvidence {
+  /** The winning REST capture carries at least one identifying parameter. */
+  entityParameterized: boolean;
+  /** Identifying parameters of the winning capture (`path[i]` / query name -> value). */
+  params: Record<string, string>;
+  /** True when every gathered capture has identical identifying values. */
+  singleEntity: boolean;
+}
+
+const ID_QUERY_NAME = /^(id|ids|.+_ids?|.+Ids?)$/;
+
+// Credential/tenant/session ids are constant across captures and do not
+// identify the addressed entity.
+const CONSTANT_ID_QUERY_NAME =
+  /^(client|app|api|session|tenant|device|visitor|trace|request|correlation)[_-]?id$/i;
+
+const identifyingParamsCache = new Map<string, Record<string, string>>();
+function identifyingParams(url: string): Record<string, string> {
+  const hit = identifyingParamsCache.get(url);
+  if (hit) return hit;
+  const computed = computeIdentifyingParams(url);
+  identifyingParamsCache.set(url, computed);
+  return computed;
+}
+
+function computeIdentifyingParams(url: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const u = new URL(url);
+    u.pathname.split("/").forEach((segment, i) => {
+      if (RESOURCE_ID_SEGMENT.test(segment)) out[`path[${i}]`] = segment;
+    });
+    const byName = new Map<string, string[]>();
+    for (const [rawName, value] of u.searchParams) {
+      const name = rawName.replace(/\[\]$/, "");
+      if (!ID_QUERY_NAME.test(name) || CONSTANT_ID_QUERY_NAME.test(name)) continue;
+      byName.set(name, [...(byName.get(name) ?? []), value]);
+    }
+    for (const [name, values] of byName) out[name] = values.join(",");
+  } catch {
+    // unparseable URL: no identifying params
+  }
+  return out;
+}
+
+/**
+ * Reports whether the winning REST capture is addressed by identifying
+ * path/query parameters and whether every gathered 2xx capture of the same
+ * endpoint shares identical values (i.e. the samples describe one entity).
+ * GraphQL winners report no identifying params.
+ */
+export function gatherEntityVarianceEvidence(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[]
+): EntityVarianceEvidence {
+  const none: EntityVarianceEvidence = {
+    entityParameterized: false,
+    params: {},
+    singleEntity: false,
+  };
+  if (!winningCapture || isGraphQLWinner) return none;
+  const params = identifyingParams(winningCapture.url);
+  if (Object.keys(params).length === 0) return none;
+  const winningKey = endpointKey(winningCapture.url);
+  const signature = JSON.stringify(Object.entries(params).sort());
+  let singleEntity = true;
+  for (const c of captures) {
+    if (c.status < 200 || c.status >= 300) continue;
+    if (endpointKey(c.url) !== winningKey) continue;
+    if (JSON.stringify(Object.entries(identifyingParams(c.url)).sort()) !== signature) {
+      singleEntity = false;
+      break;
+    }
+  }
+  return { entityParameterized: true, params, singleEntity };
+}
+
 /**
  * A declared variable is "populated" only by a non-null, non-empty-string
  * value — an operation can declare a filter input that every capture leaves
@@ -2440,6 +2573,23 @@ export function firstEndpointCapture(
       // skip
     }
   }
+  // No non-GET submit capture: a read-only REST flow. Prefer a successful
+  // own-backend GET over failed/noise captures that the generic fallback
+  // below would otherwise pick by array order.
+  for (const c of restrictToSubmitPattern(
+    captures.filter(
+      (c) =>
+        c.method === "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url) && allowed(c)
+    ),
+    submitPatterns
+  )) {
+    try {
+      new URL(c.url);
+      return c;
+    } catch {
+      // skip
+    }
+  }
   for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
     try {
       new URL(c.url);
@@ -2457,6 +2607,100 @@ function safeUrlPathname(url: string): string {
   } catch {
     return "/api/search";
   }
+}
+
+/** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
+export interface GetInputModel {
+  /** Query keys whose values vary across successful same-pathname GET siblings. */
+  dynamicFields: Array<{ field: string; queryKey: string }>;
+  /** Query params with a single observed value across siblings (queryKey -> value). */
+  fixedParams: Record<string, string>;
+  /** Safe identifier -> real query key. */
+  fieldToQueryKey: Record<string, string>;
+  /** Path segments of the winning URL that repeat a query value. */
+  pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
+}
+
+function safeGetFieldIdentifier(key: string): string {
+  const parts = key.split(/[^A-Za-z0-9_$]+/).filter(Boolean);
+  let id = parts.map((p, i) => (i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1))).join("");
+  if (id === "") id = "param";
+  if (/^[0-9]/.test(id)) id = `_${id}`;
+  return id;
+}
+
+/**
+ * Pure derivation of the GET input model from the winning capture and its
+ * successful same-pathname GET siblings. Returns null for non-GET winners.
+ * `reservedNames` are existing payload field names; collisions get a numeric suffix.
+ */
+export function deriveGetInputModel(
+  winner: Capture | null | undefined,
+  captures: readonly Capture[],
+  reservedNames: Iterable<string> = []
+): GetInputModel | null {
+  if (winner?.method !== "GET") return null;
+  let winnerUrl: URL;
+  try {
+    winnerUrl = new URL(winner.url);
+  } catch {
+    return null;
+  }
+  const siblings = captures.filter((c) => {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300) return false;
+    try {
+      return new URL(c.url).pathname === winnerUrl.pathname;
+    } catch {
+      return false;
+    }
+  });
+  if (!siblings.includes(winner)) siblings.push(winner);
+  const valuesByKey = new Map<string, Set<string>>();
+  for (const c of siblings) {
+    for (const [k, v] of new URL(c.url).searchParams) {
+      const existing = valuesByKey.get(k);
+      const s = existing ?? new Set<string>();
+      if (!existing) valuesByKey.set(k, s);
+      s.add(v);
+    }
+  }
+  const taken = new Set(reservedNames);
+  const dynamicFields: GetInputModel["dynamicFields"] = [];
+  const fixedParams: Record<string, string> = {};
+  const fieldToQueryKey: Record<string, string> = {};
+  const pathVars: GetInputModel["pathVars"] = [];
+  const unique = (base: string): string => {
+    let name = base;
+    for (let n = 2; taken.has(name); n++) name = `${base}${n}`;
+    taken.add(name);
+    return name;
+  };
+  const segments = winnerUrl.pathname.split("/");
+  for (const [key, values] of valuesByKey) {
+    const winnerValue = winnerUrl.searchParams.get(key);
+    const segIdx =
+      winnerValue !== null && winnerValue !== ""
+        ? segments.findIndex((s) => {
+            try {
+              return decodeURIComponent(s) === winnerValue;
+            } catch {
+              return s === winnerValue;
+            }
+          })
+        : -1;
+    if (segIdx >= 0) {
+      const field = unique(safeGetFieldIdentifier(key));
+      pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else if (values.size > 1) {
+      const field = unique(safeGetFieldIdentifier(key));
+      dynamicFields.push({ field, queryKey: key });
+      fieldToQueryKey[field] = key;
+    } else {
+      fixedParams[key] = [...values][0] as string;
+    }
+  }
+  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars };
 }
 
 export function firstEndpointPath(
@@ -4128,7 +4372,7 @@ function stripCacheBusterParams(url: string): string {
  * Site-agnostic: identifies the fetch by structural fingerprint of the
  * response body, not by URL or site name.
  */
-function detectFormSchemaFetchCapture(
+export function detectFormSchemaFetchCapture(
   captures: Capture[],
   baseUrl: string,
   formSchema: ReconFormSchema
@@ -4150,7 +4394,7 @@ function detectFormSchemaFetchCapture(
       continue;
     }
     if (captureHost !== host) continue;
-    if (telemetryUrlPatterns().some((p) => capture.url.includes(p))) continue;
+    if (matchesAnyTelemetryPattern(capture.url)) continue;
     if (responseContainsSectionFields(capture.responseBody, formSchema)) {
       return { capture, index: i };
     }
@@ -8790,10 +9034,7 @@ export function emitMultiStepExecuteHttp(
     // validates any individual call. Without this override, HttpRequestInit.schema
     // would default to the client's z.unknown() and narrowing the caller-facing
     // contract would enforce that narrowed shape on every call in the chain.
-    const schemaExpr = inferZodSchema(cap.responseBody, 0, "", {
-      looseServerResponse: true,
-      aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([cap.responseBody]),
-    });
+    const schemaExpr = inferChainStepResponseSchema(cap, allCaptures);
 
     rendered.push({ url, method: cap.method, headersExpr, bodyArg, schemaExpr });
   }
@@ -13751,6 +13992,55 @@ function buildNestedSpreadOverride(
 }
 
 /**
+ * Builds the single-expression request URL for a read-only REST GET flow from
+ * the derived {@link GetInputModel}: path segments and query values come from
+ * the caller's payload, with the recorded value as fallback for path
+ * segments, and each payload field is mapped back to its real query key.
+ * `extraParams` lets a caller (the paging loop) append already-rendered
+ * `[keyLiteral, valueExpr]` pairs that override same-named model params.
+ */
+function buildGetRequestUrlExpr(
+  endpointPath: string,
+  model: GetInputModel,
+  extraParams: ReadonlyArray<readonly [string, string]> = []
+): string {
+  const overridden = new Set(extraParams.map(([k]) => k));
+  const fieldAccess = (f: string): string => pathAccessExpr("payload", [f]);
+  const segments = endpointPath.split("/");
+  for (const pv of model.pathVars) {
+    const recorded = segments[pv.segmentIndex] ?? "";
+    let decoded = recorded;
+    try {
+      decoded = decodeURIComponent(recorded);
+    } catch {
+      // keep the raw segment
+    }
+    segments[pv.segmentIndex] =
+      `\${encodeURIComponent(String(${fieldAccess(pv.field)} ?? ${JSON.stringify(decoded)}))}`;
+  }
+  const pairs: string[] = [];
+  for (const [k, v] of Object.entries(model.fixedParams)) {
+    if (!overridden.has(JSON.stringify(k)))
+      pairs.push(`[${JSON.stringify(k)}, ${JSON.stringify(v)}]`);
+  }
+  const bound = [
+    ...model.dynamicFields,
+    ...model.pathVars.map((pv) => ({ field: pv.field, queryKey: pv.queryKey })),
+  ];
+  for (const { field, queryKey } of bound) {
+    if (overridden.has(JSON.stringify(queryKey))) continue;
+    pairs.push(
+      `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
+    );
+  }
+  for (const [k, v] of extraParams) pairs.push(`[${k}, ${v}]`);
+  const path = segments.join("/");
+  return pairs.length === 0
+    ? `\${context.baseUrl}${path}`
+    : `\${context.baseUrl}${path}?\${new URLSearchParams([${pairs.join(", ")}] as string[][])}`;
+}
+
+/**
  * Emits a bounded paging loop for a read-only primary operation exposing
  * {@link PaginationSignal}: advances the skip/offset variable by the
  * observed page size on each call, stops once the response's own reported
@@ -13778,7 +14068,7 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   foldMergeLines: string[];
   fetchCall:
     | { kind: "gql"; gqlOperationNameExpr: string; queryConstName: string }
-    | { kind: "rest"; endpointPath: string };
+    | { kind: "rest"; endpointPath: string; getInputModel?: GetInputModel | null };
   /** Consumer-declared domain facts (see {@link ReconValueConstraints}) — when
    * the detected pagination count-key field has a declared `max`, that real
    * API maximum is used as the `PAGE_SIZE` fallback instead of whatever page
@@ -13793,7 +14083,12 @@ function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   const pageFetchExpr = (variablesExpr: string): string =>
     fetchCall.kind === "gql"
       ? `getGql(context.baseUrl)(${fetchCall.gqlOperationNameExpr}, ${fetchCall.queryConstName}, ${variablesExpr})`
-      : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
+      : fetchCall.getInputModel
+        ? `httpClient(\`${buildGetRequestUrlExpr(fetchCall.endpointPath, fetchCall.getInputModel, [
+            [JSON.stringify(countKey), "String(PAGE_SIZE)"],
+            [JSON.stringify(skipKey), "String(skip)"],
+          ])}\`, { method: "GET" })`
+        : `httpClient(\`\${context.baseUrl}${fetchCall.endpointPath}\`, { method: "POST", body: JSON.stringify(${variablesExpr}) })`;
 
   const countKeyExpr = isValidJsIdentifier(countKey) ? countKey : JSON.stringify(countKey);
   const skipKeyExpr = isValidJsIdentifier(skipKey) ? skipKey : JSON.stringify(skipKey);
@@ -14081,9 +14376,18 @@ export function emitContractTs(opts: {
    * instead of required from `responseBody` alone. Defaults to
    * `[responseBody]` for call sites that only have the one capture. */
   responseBodySamples?: readonly unknown[];
+  /** The response samples cannot show which leaves every valid response
+   * carries: they came from one entity of a parameterized endpoint (see
+   * {@link gatherEntityVarianceEvidence}) or are a single distinct observation.
+   * The primary response schema then infers scalar leaves outside arrays
+   * `.nullable().optional()`. Unset derives it from the sample count (one
+   * distinct sample is single-entity evidence). */
+  singleEntityEvidence?: boolean;
   gql: boolean;
   gqlQuery: string | null;
   endpointPath: string;
+  /** Derived GET input model (read-only REST GET flows); null/absent otherwise. */
+  getInputModel?: GetInputModel | null;
   /** operationName recorded on the primary-operation capture selected by
    * {@link selectPrimaryGraphQLOperation} — when set, replaces the
    * `${pascal}Search` placeholder in the single-endpoint getGql() call. */
@@ -14218,9 +14522,11 @@ export function emitContractTs(opts: {
     hasRateLimitProbeData = false,
     responseBody,
     responseBodySamples = [responseBody],
+    singleEntityEvidence,
     gql,
     gqlQuery,
     endpointPath,
+    getInputModel = null,
     gqlOperationName,
     gqlVariables,
     allCaptures = [],
@@ -14297,6 +14603,13 @@ export function emitContractTs(opts: {
     gql && gqlQuery ? collectConditionalGraphQLFieldNames(gqlQuery) : undefined;
   const aggregateUnitBasisFindingsByPath =
     groupAggregateUnitBasisFindingsByPath(responseBodySamples);
+  // One distinct observation proves nothing about which leaves every valid
+  // response of a REST endpoint carries, so it is single-entity evidence by
+  // itself; callers that measured more (parameter variance across captures)
+  // pass the verdict. GraphQL responses are typed by the query, not by the
+  // entity addressed, so they are not covered by this default.
+  const leniencyForUnprovenLeaves =
+    singleEntityEvidence ?? (!isGqlEmission && responseBodySamples.length <= 1);
   const responseSchemaExpr =
     omitExecuteHttp && isSubmissionFlow
       ? `z.object({ verified: z.boolean() })`
@@ -14306,6 +14619,7 @@ export function emitContractTs(opts: {
             conditionalFieldNames,
             looseServerResponse: true,
             aggregateUnitBasisFindingsByPath,
+            ...(leniencyForUnprovenLeaves ? { singleEntityEvidence: true } : {}),
           });
   // Multi-step flows that include a multipart upload need the binary asset
   // on the payload. ApplicantContactSchema (via ApplicantResumeSchema) already
@@ -14346,7 +14660,7 @@ export function emitContractTs(opts: {
   // the other sources unchanged.
   const basePayloadSchemaExpr = usesApplicantContactSchema
     ? `ApplicantContactSchema`
-    : inputBody || (omitExecuteHttp && isSubmissionFlow)
+    : inputBody || (omitExecuteHttp && isSubmissionFlow) || getInputModel
       ? `z.object({})`
       : `z.object({\n  query: z.string().min(1),\n})`;
   // Only the single-endpoint read path (a real primary operation, no
@@ -14721,6 +15035,15 @@ export function emitContractTs(opts: {
         ].join("");
     const optional = line.trimEnd().endsWith(".optional(),");
     extendFields.set(fieldName, `  ${key}: ${zod}${optional ? ".optional()" : ""},`);
+  }
+  // Read-only GET flow: the caller supplies the derived query/path fields
+  // (no recorded `query`), so declare each as an optional string.
+  if (getInputModel) {
+    for (const { field } of [...getInputModel.dynamicFields, ...getInputModel.pathVars]) {
+      if (extendFields.has(field)) continue;
+      const key = isValidJsIdentifier(field) ? field : JSON.stringify(field);
+      extendFields.set(field, `  ${key}: z.string().optional(),`);
+    }
   }
   const mergedExtension =
     extendFields.size > 0 ? `.extend({\n${[...extendFields.values()].join("\n")}\n})` : "";
@@ -15162,12 +15485,7 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
           // apply.
           const url = parameterizeUrl(chainStep.capture.url, chainStep.capture);
           if (itemVarRefPattern.test(url)) referencesItemVar = true;
-          const schemaExpr = inferZodSchema(chainStep.capture.responseBody, 0, "", {
-            looseServerResponse: true,
-            aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath([
-              chainStep.capture.responseBody,
-            ]),
-          });
+          const schemaExpr = inferChainStepResponseSchema(chainStep.capture, allCaptures);
           // This emitter never renders a per-hop `produces` accessor (unlike
           // emitMultiStepExecuteHttp's identical chain loop) — only the
           // chain terminal's response is ever read, via
@@ -15251,12 +15569,17 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
                 gqlOperationNameExpr,
                 queryConstName: `${pascal.toUpperCase()}_QUERY`,
               }
-            : { kind: "rest", endpointPath },
+            : { kind: "rest", endpointPath, getInputModel },
         })
       : isGqlEmission
         ? `    const data = await getGql(context.baseUrl)(${gqlOperationNameExpr}, ${pascal.toUpperCase()}_QUERY, ${gqlVariablesExpr});
 ${dataFoldMergeBlock}    return { data };`
-        : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
+        : getInputModel
+          ? `    const data = await httpClient(\`${buildGetRequestUrlExpr(endpointPath, getInputModel)}\`, {
+      method: "GET",
+    });
+${dataFoldMergeBlock}    return { data };`
+          : `    const data = await httpClient(\`\${context.baseUrl}${endpointPath}\`, {
       method: "POST",
       body: JSON.stringify({ query: payload.query }),
     });
@@ -15296,7 +15619,7 @@ export const ${pascal}InternalRequestReference = ${internalRequestReferenceExpr}
 `
     : "";
 
-  const camel = siteId.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+  const camel = toCamelCase(siteId);
 
   // Browser-flow-only plugins need neither Bottleneck (no rate-limited HTTP
   // client) nor BASE_HEADERS (no per-call headers to bake in) — both would
@@ -15439,11 +15762,23 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string
+  browserFlowCode: string,
+  payloadOnly = false
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return [...contractCode.matchAll(urlFieldLinePattern)]
+  // Scan only the payload schema: a response schema's required `*Url` field is
+  // output, not caller input. Falls back to the whole contract when the
+  // payload-schema declaration is absent (hand-built fixtures). Opt-in
+  // (read-only GET flows): submission flows keep scanning the whole contract.
+  const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
+  let scanned = contractCode;
+  if (payloadOnly && payloadStart >= 0) {
+    const rest = contractCode.slice(payloadStart);
+    const end = rest.search(/^export type \w*Payload\b/m);
+    scanned = end >= 0 ? rest.slice(0, end) : rest;
+  }
+  return [...scanned.matchAll(urlFieldLinePattern)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
@@ -16093,6 +16428,9 @@ export function emitBrowserFlowTs(opts: {
    * still drives the browser fallback with a real value rather than
    * `undefined`. */
   capturedFallbackFields?: ReadonlySet<string>;
+  /** Payload-driven GET read flow: the payload schema has no `query` field, so
+   * the read fallback's extract prompt must not reference `payload.query`. */
+  readOnlyGetFlow?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16113,6 +16451,7 @@ export function emitBrowserFlowTs(opts: {
     vocabulary,
     frameSelector,
     capturedFallbackFields = new Set<string>(),
+    readOnlyGetFlow = false,
     env = process.env,
   } = opts;
 
@@ -16350,7 +16689,7 @@ ${flowStepsBlock}
       : `
   const result = await guardedExtract(
     stagehand,
-    \`extract results matching query: \${payload.query}\`,
+    ${/* biome-ignore lint/suspicious/noTemplateCurlyInString: emitted plugin source, interpolated at plugin runtime not here */ readOnlyGetFlow ? '"extract the results shown on the page"' : "`extract results matching query: ${payload.query}`"},
     ${pascal}ResponseSchema
   );
 
@@ -16366,7 +16705,7 @@ ${flowStepsBlock}
  * test can drive the emitter directly without spawning the CLI. */
 export function emitIndexTs(opts: { siteId: string; pascal: string }): string {
   const { siteId } = opts;
-  const camel = siteId.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+  const camel = toCamelCase(siteId);
   return `/**
  * Generated by recon-generate.ts.
  * Build this package, then point BARNACLE_PLUGINS at the compiled module —
@@ -16580,9 +16919,11 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
+  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code
+    firstAttempt.browserFlow.code,
+    payloadOnly
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -16628,7 +16969,8 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code
+    retried.browserFlow.code,
+    !!retried.contractOpts.getInputModel
   );
   if (stillOffending.length > 0) {
     throw new Error(
@@ -16639,6 +16981,91 @@ function healUnreferencedUrlFieldsOnce(
     );
   }
   return retried;
+}
+
+export function buildSingleEntityWarning(
+  winningCapture: { url: string } | null | undefined,
+  entityVariance: ReturnType<typeof gatherEntityVarianceEvidence>,
+  distinctSampleCount = 2
+): string | null {
+  const endpoint = winningCapture ? endpointKey(winningCapture.url) : "the winning endpoint";
+  if (entityVariance.entityParameterized && entityVariance.singleEntity) {
+    return `WARN response schema inferred from a single entity — every captured response of ${endpoint} shares identifying parameter(s) ${Object.entries(
+      entityVariance.params
+    )
+      .map(([k, v]) => `${k}=${v}`)
+      .join(
+        ", "
+      )}; scalar fields are emitted nullable().optional() because other entities may omit them or return null. Recon a second entity (different id) to tighten the schema`;
+  }
+  if (distinctSampleCount <= 1) {
+    return `WARN response schema inferred from a single captured response of ${endpoint}; scalar fields are emitted nullable().optional() because other responses of the endpoint may omit them or return null. Recon a second response (e.g. a different entity) to tighten the schema`;
+  }
+  return null;
+}
+
+export function evaluateSingleEntityEvidence(
+  winningCapture: Capture | null,
+  isGraphQLWinner: boolean,
+  captures: readonly Capture[],
+  warn: (msg: string) => void
+): { singleEntityEvidence: boolean } {
+  const entityVariance = gatherEntityVarianceEvidence(winningCapture, isGraphQLWinner, captures);
+  // A lone REST observation is evidence of one entity even when the URL names
+  // none; GraphQL is typed by its query, and no capture means no evidence.
+  const distinctSampleCount =
+    winningCapture && !isGraphQLWinner
+      ? gatherResponseBodySamples(winningCapture, isGraphQLWinner, captures).length
+      : Number.POSITIVE_INFINITY;
+  const warning = buildSingleEntityWarning(winningCapture, entityVariance, distinctSampleCount);
+  if (warning !== null) warn(warning);
+  return { singleEntityEvidence: warning !== null };
+}
+
+/**
+ * Response schema for one chain step/hop, inferred through the same
+ * entity-aware path as the contract schema: every same-identity 2xx sibling
+ * capture is a sample, and when the step is addressed by identifying
+ * parameters that all siblings share, scalar leaves are emitted lenient.
+ * Unlike the primary schema, a lone sample alone does not relax a step.
+ */
+const chainEndpointIndex = new WeakMap<readonly Capture[], Map<string, Capture[]>>();
+
+export function inferChainStepResponseSchema(
+  stepCapture: Capture,
+  allCaptures: readonly Capture[]
+): string {
+  const isGraphQL = stepCapture.query != null || stepCapture.operationName != null;
+  // REST identity is the endpoint key: narrow to that group via a per-array
+  // index so a many-step chain is not quadratic in total captures.
+  let captures = allCaptures;
+  if (!isGraphQL) {
+    let index = chainEndpointIndex.get(allCaptures);
+    if (!index) {
+      index = new Map();
+      for (const c of allCaptures) {
+        const k = endpointKey(c.url);
+        const g = index.get(k);
+        if (g) g.push(c);
+        else index.set(k, [c]);
+      }
+      chainEndpointIndex.set(allCaptures, index);
+    }
+    captures = index.get(endpointKey(stepCapture.url)) ?? allCaptures;
+  }
+  const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  // Only measured entity evidence (shared identifying parameters) relaxes a
+  // step: a flow records one response per call by construction, so a lone
+  // sample here is not a statement about which entity was addressed, and
+  // required `*Url` leaves of a step's schema are what the required-URL-field
+  // guard uses to attribute unreferenced fields to unrelated captures.
+  const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
+  const singleEntityEvidence = variance.entityParameterized && variance.singleEntity;
+  return inferZodSchemaFromSamples(samples, 0, "", {
+    looseServerResponse: true,
+    aggregateUnitBasisFindingsByPath: groupAggregateUnitBasisFindingsByPath(samples),
+    ...(singleEntityEvidence ? { singleEntityEvidence: true } : {}),
+  });
 }
 
 async function main(): Promise<void> {
@@ -16679,8 +17106,9 @@ async function main(): Promise<void> {
   const outDir = `src/sites/${siteId}`;
   const manifestPath = `src/sites/${siteId}/${siteId}.plugin.json`;
 
-  if (emit === "ts" && existsSync(outDir) && !force) {
-    logger.error(`${outDir} already exists — pass --force to overwrite`);
+  const conflicts = emit === "ts" && !force ? findExistingGeneratedPaths(outDir) : [];
+  if (conflicts.length > 0) {
+    logger.error(`${conflicts.join(", ")} already exists — pass --force to overwrite`);
     process.exit(1);
   }
   if (emit === "config" && existsSync(manifestPath) && !force) {
@@ -17037,6 +17465,12 @@ async function main(): Promise<void> {
       primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
       activeCaptures
     );
+    const { singleEntityEvidence } = evaluateSingleEntityEvidence(
+      winningCapture,
+      primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+      activeCaptures,
+      (msg) => logger.warn(msg)
+    );
 
     // Detect a multi-step submission flow (transactional sites like apply forms,
     // checkout, etc.). When the action sequence has 2+ POSTs, switch the
@@ -17250,10 +17684,30 @@ async function main(): Promise<void> {
     // A multi-step flow whose declared submit pattern selects no captures has no
     // replayable HTTP sequence, yet is still not a search: treat it as a
     // browser-flow-only submission flow rather than the single-endpoint `{query}` branch.
-    const noReplayableActionFlow = !gql && actionSteps.length === 0 && flowSteps.length > 1;
+    // A flow of same-origin successful GET reads (no non-GET submit) is a
+    // single-endpoint REST read, not a browser-only submission flow.
+    const isReadOnlyGetFlow =
+      !gql &&
+      actionSteps.length === 0 &&
+      !activeCaptures.some(
+        (c) => c.method !== "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url)
+      ) &&
+      firstEndpointCapture(
+        activeCaptures,
+        ownBackendHostnames,
+        fallbackDomain,
+        submitPatterns,
+        primaryHost
+      )?.method === "GET";
+    const noReplayableActionFlow =
+      !gql && actionSteps.length === 0 && flowSteps.length > 1 && !isReadOnlyGetFlow;
     const isSubmissionFlow =
       noReplayableActionFlow ||
-      (actionSteps.length > 1 && (!gql || graphqlActionSequenceHasMutation));
+      (actionSteps.length > 1 &&
+        (!gql
+          ? // A read flow whose manifest holds only GET captures is not a submission.
+            actionCaptures.some((a) => (a.capture.method ?? "").toUpperCase() !== "GET")
+          : graphqlActionSequenceHasMutation));
 
     // Diagnostic for the FAILURE-3 shape (a flowless recon capture): a "submission flow"
     // whose every action capture is landing-phase is almost certainly page-chrome
@@ -17532,6 +17986,7 @@ async function main(): Promise<void> {
       inputBody,
       vocabulary,
       frameSelector,
+      readOnlyGetFlow: isReadOnlyGetFlow,
     };
     const browserFlow = emitBrowserFlowTs(browserFlowOpts);
 
@@ -17552,9 +18007,13 @@ async function main(): Promise<void> {
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
       responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      singleEntityEvidence: singleEntityEvidence && !isSubmissionFlow,
       gql,
       gqlQuery,
       endpointPath,
+      getInputModel: isReadOnlyGetFlow
+        ? deriveGetInputModel(winningCapture, activeCaptures, browserFlow.payloadFieldNames)
+        : null,
       gqlOperationName: primaryGraphQLOperation
         ? (primaryGraphQLOperation.capture.operationName ??
           parsedOperationName(primaryGraphQLOperation.capture.query ?? ""))

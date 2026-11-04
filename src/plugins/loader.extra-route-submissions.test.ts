@@ -62,7 +62,9 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
         displayName: "resume-site",
         bodySchema: z.object({}),
         responseSchema: z.unknown(),
-        extraRoutes: [{ method: "post", path: "/v1/resume-site/resume", handler, submits }],
+        extraRoutes: [
+          { method: "post", path: "/v1/resume-site/resume", handler, submits, envelope: false },
+        ],
       },
       execute: vi.fn(),
     };
@@ -118,6 +120,23 @@ describe("registerRoutes — submission telemetry for extra routes that submit",
       })
     );
     await app.close();
+  });
+
+  it("judges a reply.send() handler by status code: 2xx submitted, 409 error, no reply object audited", async () => {
+    const ok = await appWith(async (req) => req.reply.send({ ok: true }), true);
+    expect((await post(ok)).statusCode).toBe(200);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "submitted", auditPayload: null })
+    );
+    await ok.close();
+    vi.clearAllMocks();
+
+    const conflict = await appWith(async (req) => req.reply.code(409).send({ error: "dup" }), true);
+    expect((await post(conflict)).statusCode).toBe(409);
+    expect(mockCaptureSubmissionEnvelope).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "error", auditPayload: null })
+    );
+    await conflict.close();
   });
 
   it("records nothing for a needsUserInfo hand-off, which is not a finished run", async () => {
