@@ -5611,6 +5611,13 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
     expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
+  it("treats date/epoch-valued query params of a lone capture as caller inputs", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at"]);
+    expect(m.fixedParams).toEqual({ sort: "asc", n: "2030" });
+  });
   it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/stock.json?_=111&date_from=2030-01-01&date_to=2030-01-07");
