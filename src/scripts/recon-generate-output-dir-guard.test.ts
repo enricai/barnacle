@@ -49,7 +49,6 @@ describe("recon-generate main() guard (end to end)", () => {
 
 describe("recon-generate main() guard (in-process)", () => {
   it("calls process.exit(1) naming the existing file when contract.ts exists without --force", async () => {
-    const root = join(__dirname, "..", "..");
     const siteId = `zz-guard-ip-${process.pid}`;
     const siteDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
     const origArgv = process.argv;
