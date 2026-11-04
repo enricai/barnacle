@@ -18218,7 +18218,16 @@ async function main(): Promise<void> {
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
       responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
-      singleEntityEvidence: singleEntityEvidence && !isSubmissionFlow,
+      // A submission flow validates its own lone terminal capture: one
+      // sample proves nothing about which leaves another response carries.
+      singleEntityEvidence: isSubmissionFlow
+        ? singleEntityVerdict(
+            null,
+            primaryGraphQLOperation !== null || fallbackGraphQLCapture !== null,
+            1,
+            null
+          )
+        : singleEntityEvidence,
       gql,
       gqlQuery,
       endpointPath,
