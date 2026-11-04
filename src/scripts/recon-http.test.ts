@@ -39,7 +39,9 @@ vi.mock("@/lib/logging", () => ({
 vi.mock("@/lib/http", () => ({ configureHttpDispatcher: vi.fn() }));
 
 import {
+  parseMethodsFilter,
   probeAuxiliaryEndpoints,
+  replayCapture,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
 } from "@/scripts/recon-http";
@@ -485,5 +487,102 @@ describe("selectRateLimitTargets — fixture shape and safety", () => {
       replay({ url: "https://api.example.com/submit", method: "POST" }),
     ]);
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/x/schedule.json"]);
+  });
+});
+
+describe("replayCapture — marker and methods filter", () => {
+  const base = {
+    url: "https://example.com/api",
+    operationName: null,
+    query: null,
+    variables: null,
+  } as never;
+  const mk = (method: string, requestPostData: string | null) =>
+    ({ ...(base as object), method, requestPostData }) as never;
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("skips marker captures without fetching, sends real bodies unchanged", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    expect(await replayCapture("a.json", mk("POST", "<unavailable>"))).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+    const r = await replayCapture("b.json", mk("POST", "x=1"));
+    expect(r?.requestBody).toBe("x=1");
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("methods filter skips non-listed methods", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    const methods = parseMethodsFilter("get, head");
+    expect(await replayCapture("a.json", mk("PUT", "x"), { methods })).toBeNull();
+    expect(await replayCapture("b.json", mk("POST", null), { methods })).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+    expect(await replayCapture("c.json", mk("GET", null), { methods })).not.toBeNull();
+  });
+});
+
+describe("recon-http main() --methods and unavailable-body skipping", () => {
+  it("runs end to end, skipping marker captures and method-filtered captures without fetching", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const { REQUEST_BODY_UNAVAILABLE } = await import("@/scraper/request-body-marker.js");
+    vi.resetModules();
+    const root = mkdtempSync(join(tmpdir(), "recon-http-main-"));
+    const caps = join(root, "caps");
+    mkdirSync(caps);
+    const base = {
+      query: null,
+      operationName: null,
+      variables: null,
+      decodedParams: null,
+    };
+    writeFileSync(
+      join(caps, "001.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/a",
+        method: "POST",
+        requestPostData: REQUEST_BODY_UNAVAILABLE,
+      })
+    );
+    writeFileSync(
+      join(caps, "002.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/b",
+        method: "GET",
+        requestPostData: null,
+      })
+    );
+    const fetchSpy = vi.fn(async (_url: string | URL) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const savedArgv = process.argv;
+    const savedOut = process.env.RECON_OUT_DIR;
+    process.env.RECON_OUT_DIR = root;
+    process.argv = ["node", "recon-http.ts", "--captures-dir", caps, "--methods", "PUT"];
+    try {
+      await import("@/scripts/recon-http.js");
+      await vi.waitFor(() =>
+        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
+      );
+      // main() fetches /robots.txt per origin before per-capture filtering, so a
+      // blanket "never fetched" assertion would fail on that politeness request.
+      expect(
+        fetchSpy.mock.calls.filter(([url]) => !String(url).endsWith("/robots.txt"))
+      ).toHaveLength(0);
+      expect(loggerStub.warn).toHaveBeenCalledWith(
+        expect.stringContaining("request body unavailable")
+      );
+      expect(loggerStub.info).toHaveBeenCalledWith(
+        expect.stringContaining("not in --methods filter")
+      );
+    } finally {
+      process.argv = savedArgv;
+      if (savedOut === undefined) delete process.env.RECON_OUT_DIR;
+      else process.env.RECON_OUT_DIR = savedOut;
+      vi.unstubAllGlobals();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

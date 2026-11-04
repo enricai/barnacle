@@ -115,7 +115,7 @@ describe("recon-generate: narrow submitEndpointPattern must surface, not silentl
     expect(contract).toContain("/contact");
     // The truncation-preserving fix keeps the applicant step too, since it
     // precedes the last pattern match (contact) in the chain.
-    expect(contract).toContain("BaseUrl}/applicant");
+    expect(contract).toContain("context.baseUrl}/applicant");
     // employment, attachments, and validate all come AFTER the last pattern
     // match, so truncation still excludes them.
     expect(contract).not.toContain("/employment");

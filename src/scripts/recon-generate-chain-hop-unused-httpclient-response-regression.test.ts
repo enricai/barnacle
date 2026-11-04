@@ -140,15 +140,15 @@ describe("recon-generate chain-hop unused httpClient response — regression", (
     // The confirm hop's call must still fire (the chain replay is faithful
     // to the recorded sequence) but must never be bound to a local — no
     // `const rN = ` immediately precedes its URL.
-    expect(body).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/confirm\/`/);
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/orders\/confirm\/`/);
     expect(body).not.toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/confirm\/`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/confirm\/`/
     );
 
     // The real terminal (availability) IS bound, since its response is what
     // gets folded onto the primary item.
     expect(body).toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/availability\/`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/availability\/`/
     );
 
     const limiter = new Bottleneck({ maxConcurrent: 1, minTime: 0 });

@@ -172,7 +172,7 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
     // r5 must not be re-issued a second time outside the fold loop.
     expect(
       body.match(
-        /httpClient\(`\$\{payload\.BaseUrl\}\/listings-avail-api\/units\/\$\{unitId\}\/hold`/g
+        /httpClient\(`\$\{context\.baseUrl\}\/listings-avail-api\/units\/\$\{unitId\}\/hold`/g
       )
     ).toHaveLength(1);
   });
@@ -335,10 +335,10 @@ describe("emitMultiStepExecuteHttp — G1 return-value selection", () => {
 
     expect(body).toContain("(foldItems).map(async (item) => {");
     expect(body).toContain(
-      `const r2 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
+      `const r2 = (await httpClient(\`\${context.baseUrl}/catalog/item-detail/\``
     );
     expect(body).not.toContain(
-      `const r3 = (await httpClient(\`\${payload.BaseUrl}/catalog/item-detail/\``
+      `const r3 = (await httpClient(\`\${context.baseUrl}/catalog/item-detail/\``
     );
     expect(body).toContain(`body: \`{"itemId":"\${item.itemId}"}\``);
     // Both drill calls' captured literal itemIds are parameterized away into

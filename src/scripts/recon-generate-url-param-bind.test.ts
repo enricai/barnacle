@@ -207,7 +207,7 @@ describe("emitMultiStepExecuteHttp — URL-param binding", () => {
       }),
     ];
     const out = emit(captures);
-    // Host is rewritten to ${payload.BaseUrl} by the existing BaseUrl pass; the
+    // Host is rewritten to ${context.baseUrl} by the existing BaseUrl pass; the
     // query string — including the cache-buster and the unmatched value — is untouched.
     expect(out).toContain("?status=success&_=1786423644996&other=UNMATCHEDLONGVALUE");
   });

@@ -126,17 +126,17 @@ describe("recon-generate — a chain-proven short state value is scoped to its p
     expect(authLineMatch, body).not.toBeNull();
     const authUrlTemplate = authLineMatch![0];
 
-    // `${payload.BaseUrl}` is the only legitimate interpolation any emitted
+    // `${context.baseUrl}` is the only legitimate interpolation any emitted
     // URL template carries.
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: matching literal "${payload.BaseUrl}" bytes captured from generator output, not a template literal
-    const pathPortion = authUrlTemplate.replace("${payload.BaseUrl}", "");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: matching literal "${context.baseUrl}" bytes captured from generator output, not a template literal
+    const pathPortion = authUrlTemplate.replace("${context.baseUrl}", "");
 
     // The authenticator's own path contains zero state-value references —
     // no `${` at all — despite coincidentally sharing "77" with the
     // genuinely threaded, chain-proven sessionCode value.
     expect(pathPortion).not.toContain("${");
     expect(authUrlTemplate).toBe(
-      `\`\${payload.BaseUrl}/authenticator/wJbfQL/77/K0X/responder.html?clientId=TPR-TEST&environment=PROD\``
+      `\`\${context.baseUrl}/authenticator/wJbfQL/77/K0X/responder.html?clientId=TPR-TEST&environment=PROD\``
     );
   });
 });

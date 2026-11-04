@@ -41,7 +41,7 @@ function tagged(token: string): string {
 function extractCallSiteBodies(contract: string): Map<string, string> {
   const bodies = new Map<string, string>();
   // biome-ignore lint/suspicious/noTemplateCurlyInString: matching against emitted source text, not a template.
-  const chunks = contract.split("httpClient(`${payload.BaseUrl}").slice(1);
+  const chunks = contract.split("httpClient(`${context.baseUrl}").slice(1);
   for (const chunk of chunks) {
     const url = chunk.slice(0, chunk.indexOf("`,"));
     const bodyStart = chunk.indexOf("body: `") + "body: `".length;

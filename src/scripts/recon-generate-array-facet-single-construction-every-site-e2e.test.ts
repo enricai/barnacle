@@ -106,7 +106,7 @@ function generate(): string {
 function extractCallSiteBodies(contract: string): Map<string, string> {
   const bodies = new Map<string, string>();
   // biome-ignore lint/suspicious/noTemplateCurlyInString: matching emitted source text, not a template.
-  for (const chunk of contract.split("httpClient(`${payload.BaseUrl}").slice(1)) {
+  for (const chunk of contract.split("httpClient(`${context.baseUrl}").slice(1)) {
     const bodyStart = chunk.indexOf("body: `") + "body: `".length;
     bodies.set(
       chunk.slice(0, chunk.indexOf("`,")),

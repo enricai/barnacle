@@ -22,7 +22,6 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { resolveCanonicalAtsFieldName } from "@/lib/ats-field-vocabulary";
 import { toErrorMessage } from "@/lib/errors";
 import { getScriptLogger } from "@/lib/logging";
@@ -50,6 +49,7 @@ import { EMPTY_VALUE_CONSTRAINTS, type ReconValueConstraints } from "@/recon/val
 import { EMPTY_VOCABULARY, type ReconVocabulary } from "@/recon/vocabulary";
 import { type EmailStepConfig, isStepDeclaredNonSubmit } from "@/scraper/flow-runner";
 import { findQuotedSpans, type QuotedSpan } from "@/scraper/quoted-spans";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import {
   type Capture,
   type RateLimitFinding,
@@ -5279,7 +5279,11 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // those checks, and before even locating the span) keeps the generated
     // contract's declared type in sync with payloadAccessorForPath's
     // array/object accessors even when the wholesale swallow is skipped.
-    registerStructuredPayloadField(outStructuredKeys, key, value);
+    // The field is named from the full path (not the bare leaf key) so it is the
+    // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
+    // key for a nested array would declare the one array twice.
+    const fieldName = pathToPayloadFieldName([...valuePath]);
+    registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
     // array carries none falls through to the same opaque `payload.<key>`
@@ -5379,7 +5383,7 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // substring `payload.`) avoids false-positiving on scraped leaf data that
     // merely happens to contain the word "payload." as ordinary text.
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
-    const replacement = `$${"{"}JSON.stringify(payload.${key})${"}"}`;
+    const replacement = `$${"{"}JSON.stringify(payload.${fieldName})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
   }
@@ -5623,6 +5627,23 @@ export function indexStateValues(
     if (!chainConsumers && !forceConsumers) return undefined;
     return new Set([...(chainConsumers ?? []), ...(forceConsumers ?? [])]);
   };
+  // A response-header value (e.g. a CSRF token) that no request up to and
+  // including its origin capture carried, but a LATER capture sends verbatim
+  // in a request header, was minted by the server at this hop and must be
+  // re-read at runtime — freezing it would replay a stale recon-session
+  // literal. Requiring that the value is absent from the origin's own (and
+  // earlier) request headers excludes constants echoed both ways such as
+  // `application/json`.
+  const isMintedThenSentAsRequestHeader = (value: string, originIdx: number): boolean => {
+    if (value.length < MIN_STATE_VALUE_LENGTH) return false;
+    const sentIn = (c: Capture): boolean =>
+      Object.entries(c.requestHeaders).some(
+        ([k, v]) => k.toLowerCase() !== "cookie" && v === value
+      );
+    for (let j = 0; j <= originIdx; j++) if (sentIn(captures[j]!)) return false;
+    for (let j = originIdx + 1; j < captures.length; j++) if (sentIn(captures[j]!)) return true;
+    return false;
+  };
   // First pass: identify the earliest origin among ACTION captures for each
   // value. Action-only earliest-origin tracking is what compileActionSteps'
   // produces[] check needs — it ignores non-action captures (telemetry GETs,
@@ -5671,7 +5692,11 @@ export function indexStateValues(
     // sweeps every header value as noise.
     for (const [headerName, headerValue] of Object.entries(c.responseHeaders)) {
       if (headerName.toLowerCase() === "set-cookie") continue;
-      if (!chainForceIncludeValues.has(headerValue)) continue;
+      if (
+        !chainForceIncludeValues.has(headerValue) &&
+        !isMintedThenSentAsRequestHeader(headerValue, i)
+      )
+        continue;
       if (headerValue.length > MAX_COOKIE_STATE_VALUE_LENGTH) continue;
       if (PLACEHOLDER_STATE_VALUES.has(headerValue)) continue;
       if (!index.has(headerValue)) {
@@ -8464,14 +8489,11 @@ export function emitMultiStepExecuteHttp(
       }
     }
   }
-  // G1: register the recon's baseUrl so the existing payload-substitution pass
-  // rewrites every URL occurrence to `${payload.BaseUrl}/...`. Same plugin
-  // then works for any tenant on the same ATS just by passing a different
-  // BaseUrl. Site-agnostic: just registers the recon's own baseUrl as a payload
-  // accessor; no site-specific URL knowledge.
+  // G1: register the recon's baseUrl so the existing substitution pass
+  // rewrites every URL occurrence to `${context.baseUrl}/...`. The origin comes
+  // from the runtime context, never a caller payload field (no schema key).
   if (baseUrl.length >= MIN_STATE_VALUE_LENGTH) {
-    payloadAccessorByValue.set(baseUrl, "payload.BaseUrl");
-    outDiscoveredFields.add("BaseUrl");
+    payloadAccessorByValue.set(baseUrl, "context.baseUrl");
   }
   // Persona identity bindings (from the flow's quoted literals + RECON_EMAIL,
   // paired to a payload field by the consumer vocabulary). Merged into the same
@@ -8551,7 +8573,7 @@ export function emitMultiStepExecuteHttp(
     outDiscoveredFields.add(field);
   }
   // Job coordinates from the recon entry URL's query string (e.g.
-  // `?jobSeqNo=...`). Registered the same way as BaseUrl so every verbatim
+  // `?jobSeqNo=...`). Registered the same way as the origin so every verbatim
   // occurrence — and, via length-descending order, embedded substrings like a
   // jobId inside a jobSeqNo — rewrites to the caller-supplied value.
   for (const [value, accessor] of entryUrlParams) {
@@ -8773,6 +8795,9 @@ export function emitMultiStepExecuteHttp(
   for (let i = 0; i < actions.length; i++) {
     const step = actions[i]!;
     const cap = step.capture;
+    // An unavailable-body marker means "a body existed" — never emit or parse it.
+    const emittableBody =
+      cap.requestPostData === REQUEST_BODY_UNAVAILABLE ? null : cap.requestPostData;
     const prior = actions.slice(0, i);
     // A capture proven request-invariant ({@link isZeroVarianceRepeatCapture})
     // must never be treated as an interpolation target at all: its URL is
@@ -8804,11 +8829,11 @@ export function emitMultiStepExecuteHttp(
     // also the only way the field maps are non-empty); without one they are
     // no-ops and the raw recon body flows straight through.
     const rawBodyWithFormSubs =
-      cap.requestPostData && formSchema !== null
+      emittableBody && formSchema !== null
         ? applyRawOptionIdPayloadSubstitutions(
             applyFormSchemaOptionIdSubstitutions(
               applyFormSchemaSubstitutions(
-                cap.requestPostData,
+                emittableBody,
                 fieldNameMap,
                 outDiscoveredFields,
                 formSchema
@@ -8822,14 +8847,14 @@ export function emitMultiStepExecuteHttp(
             outDiscoveredRawOptionFields,
             formSchema
           )
-        : (cap.requestPostData ?? "");
+        : (emittableBody ?? "");
     // Parsed once and shared by the structured (Mechanism B) and volatile passes
     // below — both walk the same body JSON, so parsing twice would be redundant.
     // null for absent/non-JSON bodies (multipart raw bytes), which both passes skip.
     const parsedBody = ((): unknown => {
-      if (!cap.requestPostData) return null;
+      if (!emittableBody) return null;
       try {
-        return JSON.parse(cap.requestPostData);
+        return JSON.parse(emittableBody);
       } catch {
         return null;
       }
@@ -8966,7 +8991,7 @@ export function emitMultiStepExecuteHttp(
     // matching substring INSIDE that placeholder and corrupt it. The closed-set
     // `"<key>":"<code>"` slot (numeric code, nested key) survives both earlier
     // passes untouched, so matching it here is still exact.
-    let bodyTemplate = cap.requestPostData
+    let bodyTemplate = emittableBody
       ? applyGenericRawCodeSubstitutions(
           applyGenericOptionCodeSubstitutions(
             bodyAfterStateAndKv,
@@ -9045,13 +9070,13 @@ export function emitMultiStepExecuteHttp(
       }
     }
     // G1: emit baseUrl-derived headers (Origin, Referer) per-call from
-    // payload.BaseUrl. interpolateStateValues already substituted the literal
-    // baseUrl with `${payload.BaseUrl}`, so a simple sub of the recon's
-    // observed baseUrl in each header value gives us `${payload.BaseUrl}/`.
-    // Emit "${payload.BaseUrl}" as a template-literal placeholder into the
+    // context.baseUrl. interpolateStateValues already substituted the literal
+    // baseUrl with `${context.baseUrl}`, so a simple sub of the recon's
+    // observed baseUrl in each header value gives us `${context.baseUrl}/`.
+    // Emit "${context.baseUrl}" as a template-literal placeholder into the
     // generated plugin code. Built via concatenation so Biome doesn't mistake
     // it for a placeholder in THIS file's source.
-    const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+    const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
     for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
       perCallHeaders[headerName] = observedValue.split(baseUrl).join(baseUrlPlaceholder);
     }
@@ -9714,7 +9739,7 @@ export function emitMultiStepExecuteHttp(
       // G1+G2: include tenant-derived headers in the multipart fetch too.
       // Build the placeholder via concatenation so Biome doesn't mistake it
       // for a template-literal in THIS file's source.
-      const baseUrlPlaceholder = `$${"{"}payload.BaseUrl${"}"}`;
+      const baseUrlPlaceholder = `$${"{"}context.baseUrl${"}"}`;
       for (const [headerName, observedValue] of baseUrlDerivedHeaders) {
         const v = observedValue.split(baseUrl).join(baseUrlPlaceholder);
         perCallHeaderEntries.push(`${JSON.stringify(headerName)}: \`${v}\``);
@@ -17777,7 +17802,7 @@ async function main(): Promise<void> {
     const errorSignals = detectErrorSignals(actionSteps);
     const discoveredFormFields = new Set<string>();
     // emitMultiStepExecuteHttp's outDiscoveredFields parameter is a generic
-    // payload-accessor accumulator — BaseUrl substitution, persona/producer-
+    // payload-accessor accumulator — origin substitution, persona/producer-
     // boundary bindings, entryUrlParams, tenant-subdomain headers, and
     // walkStringLeaves-derived accessors all write into it, independent of
     // form-schema discovery. It gets its own Set (rather than aliasing
@@ -17816,7 +17841,7 @@ async function main(): Promise<void> {
     // G1+G2: partition baseHeaders into three buckets:
     //   - static: values that don't reference baseUrl or tenant subdomain
     //   - baseUrl-derived: values containing the recon's baseUrl as substring
-    //     (e.g. Origin, Referer) — emit per-call from payload.BaseUrl
+    //     (e.g. Origin, Referer) — emit per-call from context.baseUrl
     //   - tenant-subdomain: values that EXACTLY equal the first subdomain
     //     (e.g. API-ShortName: "addus") — emit per-call from a payload field
     const staticBaseHeaders: Record<string, string> = {};
@@ -17888,7 +17913,7 @@ async function main(): Promise<void> {
           )
         : undefined;
     // Explicit merge — every field emitMultiStepExecuteHttp registered as a
-    // `payload.<field>` accessor (BaseUrl, persona, entryUrlParams, tenant-
+    // `payload.<field>` accessor (persona, entryUrlParams, tenant-
     // subdomain headers, walkStringLeaves) flows into the same discovered-
     // fields set emitContractTs's schema `.extend()` reads from below.
     for (const field of discoveredPayloadAccessorFields) {

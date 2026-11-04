@@ -11,7 +11,7 @@
  *   - Rate-limit probe (1 → 3 → 5 rps, stops at first 429/403)
  *
  * Usage:
- *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>] [--flow-file <path>]
+ *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>] [--flow-file <path>] [--methods GET,HEAD]
  *
  * `--flow-file` supplies the flow's `ownBackendHostnames` (same file
  * recon-browser.ts's own `--flow-file` reads) so the auxiliary-endpoint probe
@@ -44,6 +44,7 @@ import {
 } from "@/recon/capture-filters";
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
+import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
 import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
@@ -144,7 +145,34 @@ function deduplicateCaptures(
   });
 }
 
-async function replayCapture(filename: string, capture: Capture): Promise<ReplayResult> {
+/** Parses a comma-separated `--methods` value (e.g. "GET,HEAD") into an upper-cased set; null = no filter. */
+export function parseMethodsFilter(raw: string | undefined): Set<string> | null {
+  const parts = (raw ?? "")
+    .split(",")
+    .map((m) => m.trim().toUpperCase())
+    .filter((m) => m.length > 0);
+  return parts.length > 0 ? new Set(parts) : null;
+}
+
+/**
+ * Replays one capture. Returns null (and sends nothing) when the capture is
+ * skipped: its body was recorded as the `<unavailable>` marker (replaying it
+ * would send the marker literally or a body-less request), or its method is
+ * excluded by `opts.methods`.
+ */
+export async function replayCapture(
+  filename: string,
+  capture: Capture,
+  opts: { methods?: Set<string> | null } = {}
+): Promise<ReplayResult | null> {
+  if (capture.requestPostData === REQUEST_BODY_UNAVAILABLE) {
+    logger.warn(`skip ${capture.method} ${capture.url}: request body unavailable at capture time`);
+    return null;
+  }
+  if (opts.methods && !opts.methods.has(capture.method.toUpperCase())) {
+    logger.info(`skip ${capture.method} ${capture.url}: method not in --methods filter`);
+    return null;
+  }
   const origin = new URL(capture.url).origin;
   const headers: Record<string, string> = {
     ...RC_HEADERS,
@@ -159,7 +187,7 @@ async function replayCapture(filename: string, capture: Capture): Promise<Replay
       query: capture.query,
       variables: capture.variables ?? {},
     });
-  } else if (capture.requestPostData) {
+  } else if (capture.requestPostData && capture.requestPostData !== REQUEST_BODY_UNAVAILABLE) {
     requestBody = capture.requestPostData;
   }
 
@@ -600,8 +628,10 @@ async function main(): Promise<void> {
   const runDir = resolveReconRunDir();
   let capturesDir = runDir.graphqlDir;
   let flowFile: string | null = null;
+  let methods: Set<string> | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--captures-dir" && args[i + 1]) capturesDir = args[++i]!;
+    else if (args[i] === "--methods" && args[i + 1]) methods = parseMethodsFilter(args[++i]);
     else if (args[i] === "--flow-file" && args[i + 1]) flowFile = args[++i]!;
   }
   const ownBackendHostnames = flowFile ? readOwnBackendHostnames(flowFile) : [];
@@ -629,7 +659,8 @@ async function main(): Promise<void> {
 
   const replays: ReplayResult[] = [];
   for (const { filename, capture } of probeworthy) {
-    const result = await replayCapture(filename, capture);
+    const result = await replayCapture(filename, capture, { methods });
+    if (result === null) continue;
     replays.push(result);
     writeFileSync(join(runDir.replaysDir, filename), JSON.stringify(result, null, 2));
   }

@@ -95,9 +95,9 @@ describe("recon-generate standalone toggle-shaped capture — dead call after va
     // Left unbound — nothing downstream reads its response, so the same
     // referencedNames-gated bind suppression emitMultiStepExecuteHttp
     // already applies elsewhere leaves it a bare `await httpClient(...)`.
-    expect(body).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/config\/feature-toggles\/`/);
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/config\/feature-toggles\/`/);
     expect(body).not.toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/config\/feature-toggles\/`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/config\/feature-toggles\/`/
     );
 
     // Its own field names never leak into any interpolation anywhere in the

@@ -510,9 +510,9 @@ describe("emitMultiStepExecuteHttp — fold-chain produce-name-collision binding
     // r3 (hold-again) is a genuine prerequisite request and must still fire,
     // but its own `token` extraction is dedup-skipped (r2 already declared
     // the name), so it must never be bound to a local.
-    expect(body).toMatch(/await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/hold-again\/`/);
+    expect(body).toMatch(/await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold-again\/`/);
     expect(body).not.toMatch(
-      /const \w+ = \(await httpClient\(`\$\{payload\.BaseUrl\}\/orders\/hold-again\/`/
+      /const \w+ = \(await httpClient\(`\$\{context\.baseUrl\}\/orders\/hold-again\/`/
     );
     assertPatternsClean(body);
   });

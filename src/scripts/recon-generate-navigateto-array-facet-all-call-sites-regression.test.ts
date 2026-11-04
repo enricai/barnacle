@@ -101,18 +101,18 @@ function writeRunDir(root: string, captures: Capture[]): void {
 
 /**
  * Extracts the `body: \`...\`` template-literal content of each
- * `await httpClient(\`${payload.BaseUrl}<path>\`, { ... })` call in the
+ * `await httpClient(\`${context.baseUrl}<path>\`, { ... })` call in the
  * emitted contract, keyed by the call's URL path. Each body may itself
  * contain nested backtick template expressions (e.g.
  * `` `${payload.RegionFacet};src=facet` ``), so a naive `` /`([^`]*)`/ ``
  * regex would stop at the first nested backtick — splitting on the fixed
- * `httpClient(\`${payload.BaseUrl}` prefix and the fixed `` `,\n      schema: ``
+ * `httpClient(\`${context.baseUrl}` prefix and the fixed `` `,\n      schema: ``
  * suffix (the emitter's own stable idiom) avoids that.
  */
 function extractCallSiteBodies(contract: string): Map<string, string> {
   const bodies = new Map<string, string>();
   // biome-ignore lint/suspicious/noTemplateCurlyInString: matching against emitted source text, not a template.
-  const chunks = contract.split("httpClient(`${payload.BaseUrl}").slice(1);
+  const chunks = contract.split("httpClient(`${context.baseUrl}").slice(1);
   for (const chunk of chunks) {
     const urlEnd = chunk.indexOf("`,");
     const url = chunk.slice(0, urlEnd);
