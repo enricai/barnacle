@@ -138,3 +138,75 @@ describe("path-id endpoints with sibling null/omitted fields (e2e)", () => {
     expect(schema.safeParse({ ...body, genre: null }).success).toBe(false);
   });
 });
+
+describe("venue schedule endpoint, date-window-only variance (e2e)", () => {
+  const W1 = "from=2024-01-01&to=2024-01-31";
+  const W2 = "from=2024-02-01&to=2024-02-28";
+  const fantasy = { id: 1, name: "n", genre: "Fantasy", slots: [{ at: "t" }] };
+  const nullGenre = { id: 1, name: "n", genre: null, slots: [{ at: "t" }] };
+  const noGenre = { id: 1, name: "n", slots: [{ at: "t" }] };
+  const body2 = { ...fantasy, name: "m" };
+  const u = (p: string) => `https://example.test${p}`;
+
+  function expectLenient(caps: never[], warnCount = 1) {
+    const { src, warns } = contractFor(caps);
+    expect(warns).toHaveLength(warnCount);
+    const schema = evalSchema(responseSchemaExpr(src));
+    expect(schema.safeParse(fantasy).success).toBe(true);
+    expect(schema.safeParse(nullGenre).success).toBe(true);
+    expect(schema.safeParse(noGenre).success).toBe(true);
+  }
+
+  it("numeric path id + ids[] query varying only the date window: lenient", () => {
+    expectLenient([
+      mk(u(`/venues/7/schedule?ids[]=7&${W1}`), fantasy),
+      mk(u(`/venues/7/schedule?ids[]=7&${W2}`), body2),
+    ]);
+  });
+
+  it("slug path segment with no id query: lenient", () => {
+    expectLenient([
+      mk(u("/venues/grand-hall/schedule"), fantasy),
+      mk(u("/venues/grand-hall/schedule"), body2),
+    ]);
+  });
+
+  it("slug path with page/limit window: lenient", () => {
+    expectLenient([
+      mk(u("/venues/grand-hall/schedule?page=1&limit=10"), fantasy),
+      mk(u("/venues/grand-hall/schedule?page=2&limit=10"), body2),
+    ]);
+  });
+
+  it("slug path plus slug-valued ids[] query: lenient", () => {
+    expectLenient([
+      mk(u(`/venues/grand-hall/schedule?ids[]=grand-hall&${W1}`), fantasy),
+      mk(u(`/venues/grand-hall/schedule?ids[]=grand-hall&${W2}`), body2),
+    ]);
+  });
+
+  it("no identifying params, two distinct bodies: lenient", () => {
+    expectLenient([mk(u("/schedule"), fantasy), mk(u("/schedule"), body2)]);
+  });
+
+  it("differing path ids (9 vs 10) stay strict", () => {
+    const { src, warns } = contractFor([
+      mk(u(`/venues/9/schedule?${W1}`), fantasy),
+      mk(u(`/venues/10/schedule?${W1}`), { ...fantasy, id: 10, genre: "Drama" }),
+    ]);
+    expect(warns).toHaveLength(0);
+    const schema = evalSchema(responseSchemaExpr(src));
+    expect(schema.safeParse(nullGenre).success).toBe(false);
+  });
+
+  it("chain step: date-window-only siblings lenient; lone sample strict", () => {
+    const a = mk(u(`/venues/7/schedule?ids[]=7&${W1}`), fantasy);
+    const b = mk(u(`/venues/7/schedule?ids[]=7&${W2}`), body2);
+    const lenient = evalSchema(inferChainStepResponseSchema(a, [a, b]));
+    expect(lenient.safeParse(nullGenre).success).toBe(true);
+    const solo = mk(u("/schedule"), fantasy);
+    const lone = evalSchema(inferChainStepResponseSchema(solo, [solo]));
+    expect(lone.safeParse(fantasy).success).toBe(true);
+    expect(lone.safeParse(nullGenre).success).toBe(false);
+  });
+});
