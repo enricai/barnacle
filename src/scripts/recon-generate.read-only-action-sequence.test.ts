@@ -37,3 +37,21 @@ describe("extractActionSequence final structural pass", () => {
     expect(urls.indexOf("/orders")).toBeLessThan(urls.indexOf("/lookup/ord-12345"));
   });
 });
+
+describe("extractActionSequence repeated pages/drill calls", () => {
+  it("yields the primary search before the drill when pages and drill calls repeat", () => {
+    const page = (n: number, ids: string[]) =>
+      get(`/search?q=a&page=${n}`, { rows: ids.map((id) => ({ id })) }, n);
+    const caps = [
+      page(1, ["x1", "x2"]),
+      page(2, ["x3", "x4"]),
+      get("/lookup/x1", { rows: [{ id: "x1" }] }, 3),
+      get("/lookup/x3", { rows: [{ id: "x3" }] }, 4),
+      page(1, ["x1", "x2"]),
+    ];
+    const out = extractActionSequence(caps, null, fold, [], "example.com", true, null);
+    const urls = out.map((a) => new URL(a.capture.url).pathname);
+    expect(urls, urls.join()).toContain("/search");
+    expect(urls.indexOf("/search")).toBeLessThan(urls.findIndex((u) => u.startsWith("/lookup/")));
+  });
+});

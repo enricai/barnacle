@@ -3202,11 +3202,34 @@ export function extractActionSequence(
   const matchesDeclaredSubmitBody = (capture: Capture): boolean =>
     declaredSubmitBodyRx?.test(capture.requestPostData ?? "") ?? false;
 
+  // The read-only flow's PRIMARY is the FIRST occurrence of the chosen search:
+  // the first 2xx GET (not itself the drill) whose response resolves the
+  // declared foldReturn `resultsPath` to an array. Later pages/repeats of it
+  // are not the primary, so they stay out and cannot reorder the sequence.
+  const primaryResultsPath = foldReturnSpec?.resultsPath?.split(".") ?? null;
+  const resolvesResultsArray = (capture: Capture): boolean => {
+    if (primaryResultsPath === null) return false;
+    let cur: unknown = capture.responseBody;
+    for (const key of primaryResultsPath) {
+      if (cur === null || typeof cur !== "object") return false;
+      cur = (cur as Record<string, unknown>)[key];
+    }
+    return Array.isArray(cur);
+  };
+  const firstPrimaryIndex = captures.findIndex(
+    (c) =>
+      c.method === "GET" &&
+      c.status >= 200 &&
+      c.status < 300 &&
+      !matchesFoldReturn(c) &&
+      resolvesResultsArray(c)
+  );
   const hostGated = captures
     .map((capture, index) => ({ capture, index }))
-    .filter(({ capture }) => {
+    .filter(({ capture, index }) => {
       if (
         capture.method === "GET" &&
+        index !== firstPrimaryIndex &&
         !matchesFoldReturn(capture) &&
         !matchesDeclaredSubmitEndpoint(capture) &&
         !matchesDeclaredSubmitBody(capture)
@@ -3214,8 +3237,9 @@ export function extractActionSequence(
         return false;
       if (capture.status < 200 || capture.status >= 300) return false;
       if (isNoiseUrl(capture.url)) return false;
-      if (isZeroVarianceRepeatCapture(capture, captures)) return false;
-      if (!matchesSubmit(capture)) return false;
+      if (index !== firstPrimaryIndex && isZeroVarianceRepeatCapture(capture, captures))
+        return false;
+      if (index !== firstPrimaryIndex && !matchesSubmit(capture)) return false;
       if (
         hasHostProvenance &&
         !isAllowedFixtureHost(
