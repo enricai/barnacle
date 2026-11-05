@@ -12,11 +12,23 @@ import { config } from "@/config";
  * `InvalidArgumentError: invalid content-length header`. Dropping the SDK's
  * explicit header lets undici compute it once, itself.
  *
- * Merely importing undici is enough to trigger this — the `setGlobalDispatcher`
- * call below is not what causes it, and removing it would not help. Any entry
- * point that reaches undici (every one that uses `raw-fetch`, so in practice all
- * of them) needs this patch, which is why {@link configureHttpDispatcher} must
- * run in each one and why `./lib/http` is an exported subpath.
+ * Merely importing undici is enough to trigger this, which is worth spelling out
+ * because it looks impossible: `globalThis.fetch` is Node's *bundled* undici (6.x),
+ * a different copy from the undici 8 we install, and importing a module does not
+ * reassign `globalThis.fetch` — it does not. What it does is write its dispatcher
+ * into two well-known globals (`undici/lib/global.js`): `undici.globalDispatcher.2`
+ * for itself, and a `Dispatcher1Wrapper` around it into the legacy
+ * `undici.globalDispatcher.1` slot, which is exactly where Node's bundled undici
+ * looks for its global dispatcher. So after `import "undici"`, the bundled `fetch`
+ * dispatches through installed-undici-8's Agent and inherits its stricter header
+ * validation.
+ *
+ * Two consequences. The `setGlobalDispatcher` call below is not the cause — it only
+ * replaces an Agent that the import already installed, so removing it would not help.
+ * And any entry point that reaches undici at all needs this patch; since `raw-fetch`
+ * imports it, that is every entry point in practice, which is why
+ * {@link configureHttpDispatcher} must run in each one and why `./lib/http` is an
+ * exported subpath.
  */
 function patchBrowserbaseContentLengthHeader(): void {
   const apiClientPrototype = Object.getPrototypeOf(Browserbase.prototype) as {
