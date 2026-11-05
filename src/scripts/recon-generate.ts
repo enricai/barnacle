@@ -8384,7 +8384,7 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
  * inference so both describe the same attach. The key is the declared
  * `attachAs`, else the drill URL's last path segment.
  */
-function wholeArrayAttachKey(
+export function wholeArrayAttachKey(
   target: Pick<FoldTarget, "joinFields" | "chainArrayPath" | "attachAs">,
   terminalBody: unknown,
   drillUrl: string
@@ -8430,7 +8430,7 @@ function drillLabel(url: string): string {
  * drops only its own key instead of failing the whole item. Drills without
  * `payloadFlag`/`attachAs` are returned untouched.
  */
-function wrapIsolatedDrillLines(
+export function wrapIsolatedDrillLines(
   target: Pick<FoldTarget, "payloadFlag" | "attachAs">,
   drillName: string,
   itemVar: string,
@@ -8460,7 +8460,7 @@ function wrapIsolatedDrillLines(
  * both emitters describe the exact same match/merge semantics rather than
  * two copies that could drift apart.
  */
-function emitFoldMatchAndMergeLines(
+export function emitFoldMatchAndMergeLines(
   terminalStep: { varName: string; capture: { responseBody: unknown } },
   target: FoldTarget,
   itemVar: string,
@@ -14639,7 +14639,7 @@ function replaceByReference(value: unknown, target: object, replacement: unknown
  * response content alone (as the representative branch's own `drillMatch`
  * fallback does when the response doesn't echo it) can't identify WHICH item
  * an absorbed occurrence belongs to in the first place. */
-function foldOneDrillOccurrence(
+export function foldOneDrillOccurrence(
   body: unknown,
   primaryArrayPath: readonly string[],
   joinFields: readonly string[],
