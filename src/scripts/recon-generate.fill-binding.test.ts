@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { ReconVocabulary } from "@/recon/vocabulary";
 import {
   buildKnownFieldValues,
+  emitBrowserFlowTs,
   harvestPersonaBindings,
+  resolveStepPayloadField,
   warnUnmatchedFillSteps,
 } from "@/scripts/recon-generate";
 
@@ -42,5 +44,40 @@ describe("fill-to-vocabulary binding", () => {
     expect(harvestPersonaBindings([country], vocabulary, {}).get("Canada")).toBe(
       "payload.Country"
     );
+  });
+});
+
+describe("label matching tolerates quote delimiters and code-style variants", () => {
+  const phoneVocabulary: ReconVocabulary = {
+    subject: /candidate/i,
+    exclusions: [],
+    table: [
+      [/\bphone number\b/i, "MobilePhone"],
+      [/\bcountry\b/i, "Country"],
+    ],
+  };
+  it("binds a label whose one word is quoted ('phone 'Number' field')", () => {
+    const step = `Fill in the phone 'Number' field with ${phoneToken}`;
+    expect(resolveStepPayloadField(step, undefined, false, phoneVocabulary)).toBe("MobilePhone");
+  });
+  it.each([
+    "Select 'US' from the country-code dropdown",
+    "Select 'US' from the Country dialing code dropdown",
+    "Select 'US' from the 'Country' 'Code' dropdown",
+    "Select '+1' from the Country dropdown",
+    "Select 'United States (+1)' from the Country dropdown",
+  ])("does not bind a phone country-code control to Country: %s", (step) => {
+    expect(resolveStepPayloadField(step, undefined, false, phoneVocabulary)).toBeNull();
+  });
+  it("leaves a label-derived free-text fill literal without a persona leak", () => {
+    const { code } = emitBrowserFlowTs({
+      siteId: "test-agency",
+      pascal: "TestAgency",
+      baseUrl: "https://example.com",
+      isSubmissionFlow: true,
+      vocabulary,
+      flowSteps: ["Fill in the 'Salary expectations' field with '75000'"],
+    });
+    expect(code).toContain("'75000'");
   });
 });
