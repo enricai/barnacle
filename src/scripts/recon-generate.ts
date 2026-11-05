@@ -2731,6 +2731,16 @@ function isDateWindowValue(v: string): boolean {
 }
 
 /**
+ * A query key that names an entity (`id`, `room_id`, `roomId`, `room_ids[]`):
+ * the value selects which record to read, so it is a caller input even when
+ * every capture happened to use the same one.
+ */
+function isEntityIdQueryKey(key: string): boolean {
+  const name = key.replace(/\[\]$/, "");
+  return /^ids?$/i.test(name) || /[_-]ids?$/i.test(name) || /[a-z0-9]Ids?$/.test(name);
+}
+
+/**
  * Pure derivation of the GET input model from the winning capture and its
  * successful same-shape GET siblings (same segment count). Returns null for
  * non-GET winners. A query key is caller-controlled when it varies across
@@ -2808,19 +2818,39 @@ export function deriveGetInputModel(
       boundSegments.set(segIdx, field);
       pathVars.push({ field, segmentIndex: segIdx, queryKey: key });
       fieldToQueryKey[field] = key;
-    } else if (values.size > 1 || (capturesWithKey.get(key) ?? 0) < siblings.length || isDeclared || [...values].every(isDateWindowValue)) {
+    } else if (
+      values.size > 1 ||
+      (capturesWithKey.get(key) ?? 0) < siblings.length ||
+      isDeclared ||
+      isEntityIdQueryKey(key) ||
+      [...values].every(isDateWindowValue)
+    ) {
       const field = nameFor(key);
-      dynamicFields.push({ field, queryKey: key, ...(winnerValue !== null ? { recorded: winnerValue } : {}) });
+      dynamicFields.push({
+        field,
+        queryKey: key,
+        ...(winnerValue !== null ? { recorded: winnerValue } : {}),
+      });
       fieldToQueryKey[field] = key;
     } else {
       fixedParams[key] = [...values][0] as string;
     }
   }
   // Path segments with no query twin that vary between captures or carry an entity id.
+  // A value repeated in several segments is one caller input, not one per segment.
+  const fieldByValue = new Map<string, string>();
+  for (const [i, field] of boundSegments) fieldByValue.set(decode(segments[i] ?? ""), field);
   for (let i = 1; i < segments.length; i++) {
     if (boundSegments.has(i)) continue;
+    const value = decode(segments[i] ?? "");
+    const shared = fieldByValue.get(value);
+    if (shared !== undefined) {
+      boundSegments.set(i, shared);
+      pathVars.push({ field: shared, segmentIndex: i, queryKey: "" });
+      continue;
+    }
     const varies = (valuesBySegment[i]?.size ?? 0) > 1;
-    if (!varies && !carriesEntityId(decode(segments[i] ?? ""))) continue;
+    if (!varies && !carriesEntityId(value)) continue;
     const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
     const base = prev === "param" ? "id" : `${prev}Id`;
     let field = base;
@@ -2828,6 +2858,7 @@ export function deriveGetInputModel(
     taken.add(field);
     boundSegments.set(i, field);
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
+    fieldByValue.set(value, field);
   }
   return { dynamicFields, fixedParams, fieldToQueryKey, pathVars, pathTwins };
 }

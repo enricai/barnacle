@@ -5613,7 +5613,9 @@ describe("deriveGetInputModel", () => {
   });
   it("treats date/epoch-valued query params of a lone capture as caller inputs", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
-    const a = cap("https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030");
+    const a = cap(
+      "https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030"
+    );
     const m = deriveGetInputModel(a, [a])!;
     expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at"]);
     expect(m.fixedParams).toEqual({ sort: "asc", n: "2030" });
@@ -5719,6 +5721,35 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page", recorded: "1" }]);
     expect(m.fixedParams).toEqual({ sort: "asc" });
+  });
+  it.each([
+    ["id", "id"],
+    ["room_id", "room_id"],
+    ["roomId", "roomId"],
+    ["room_ids[]", "room_ids"],
+  ])("treats entity-id query key %s as a caller input although constant", async (key, field) => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
+    const b = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([{ field, queryKey: key, recorded: "7" }]);
+    expect(m.fixedParams).toEqual({ limit: "10" });
+  });
+  it("keeps a non-entity key that merely ends in id letters fixed", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/v1/list?valid=1&grid=2");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields).toEqual([]);
+    expect(m.fixedParams).toEqual({ valid: "1", grid: "2" });
+  });
+  it("binds a path value repeated in two segments to one caller input", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/rooms/42/schedule/42?sort=asc");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.pathVars).toEqual([
+      { field: "roomsId", segmentIndex: 2, queryKey: "" },
+      { field: "roomsId", segmentIndex: 4, queryKey: "" },
+    ]);
   });
 });
 
