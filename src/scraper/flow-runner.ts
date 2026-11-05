@@ -3764,10 +3764,11 @@ export async function judgeStepOutcome(params: {
   preVisibleTextDigest?: string;
   /**
    * Visible text of the settled post-click snapshot from the shared advance
-   * read (readMidFlowPostClickAdvance). Required: the non-final path judges it
-   * as-is and never settles on its own.
+   * read. When present the non-final path judges it as-is instead of settling
+   * and re-probing a second time; a caller without that read leaves it unset
+   * and the judge settles through the same shared reader itself.
    */
-  settledPostVisibleText: string;
+  settledPostVisibleText?: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3785,7 +3786,30 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  const settledText = params.settledPostVisibleText;
+  let settledText = params.settledPostVisibleText;
+  if (settledText === undefined) {
+    // Same settle + header-only resettle every other post-click site uses, judged
+    // against the step-start baseline, so quiescence (not a fixed delay) decides.
+    const baseline = {
+      networkCount: params.preNetworkCount,
+      visibleTextSignature: params.preVisibleTextSignature,
+      visibleText: params.preVisibleText,
+      visibleTextDigest: params.preVisibleTextDigest,
+    } as StepSnapshot;
+    const settled = await settleAndSnapshotPostClick(
+      target,
+      params.signalCounter,
+      params.page as unknown as Page,
+      baseline,
+      isStepSettleWaitShaped({
+        step,
+        submitStep: params.submitStep,
+        isFinalStep,
+        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
+      }) || params.elementSubmitShaped === true
+    );
+    settledText = settled.visibleText || (await probeVisibleTextForJudge(target));
+  }
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
     signatureColon === -1
@@ -15564,7 +15588,7 @@ export async function executeStepWithHealing(params: {
         preVisibleTextSignature: advanceBaseline.visibleTextSignature,
         preVisibleText: advanceBaseline.visibleText,
         preVisibleTextDigest: advanceBaseline.visibleTextDigest,
-        settledPostVisibleText: post.visibleText ?? "",
+        settledPostVisibleText: post.visibleText,
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -16259,7 +16283,7 @@ export async function executeStepWithHealing(params: {
               preVisibleTextSignature: retryAdvanceBaseline.visibleTextSignature,
               preVisibleText: retryAdvanceBaseline.visibleText,
               preVisibleTextDigest: retryAdvanceBaseline.visibleTextDigest,
-              settledPostVisibleText: retryPost.visibleText ?? "",
+              settledPostVisibleText: retryPost.visibleText,
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,

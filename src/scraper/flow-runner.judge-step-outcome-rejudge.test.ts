@@ -54,7 +54,7 @@ function run(reads: string[], waits: number[]): ReturnType<typeof judgeStepOutco
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: "5:start",
-    settledPostVisibleText: (reads[reads.length - 1] ?? ""),
+    settledPostVisibleText: reads[reads.length - 1] ?? "",
     submitInput: SUBMIT_INPUT,
   });
 }

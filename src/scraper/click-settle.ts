@@ -34,7 +34,7 @@ export const MAX_MS = 60000;
  * also counts as activity, so a DOM-only re-render that lands after the first
  * change is not snapshotted half-transitioned; the wait ends once activity has been quiet for the quiet window and is
  * bounded by the MAX_MS ceiling so a never-quiet page still terminates.
- * The required `readQuiescence` probe means in-flight fetch/XHR the capture never counts
+ * When `readQuiescence` is given, in-flight fetch/XHR the capture never counts
  * and DOM mutations are read from the page itself: either one is activity, and
  * the wait only ends once the page reports idle, so the fixed text quiet window
  * is no longer a guess about how late a re-render can land.
@@ -42,7 +42,7 @@ export const MAX_MS = 60000;
  * submit-shaped one gets, since a header flip can precede the body re-render by many seconds.
  * A silent submit-shaped click whose armed page probe reports no pending request and no mutation
  * gives up at QUIESCENT_NO_OP_GIVE_UP_MS, since a late re-render would itself register as
- * movement.
+ * movement; without a probe the long IDLE_GIVE_UP_MS guess remains.
  * Only submit-shaped steps keep the long idle wait for a slow round-trip to start;
  * any other click that shows no activity after one quiet poll gives up.
  * The probe is read once before the click (see snapshotPage) so early requests and
@@ -53,12 +53,13 @@ export async function settleAfterClick(
   counter: SettleCounter,
   preCount: number,
   submitShaped: boolean,
-  readText: (() => Promise<string>) | undefined,
-  preText: string | undefined,
-  readQuiescence: () => Promise<PageQuiescence>
+  readText?: () => Promise<string>,
+  preText?: string,
+  readQuiescence?: () => Promise<PageQuiescence>
 ): Promise<void> {
   const read = async (): Promise<string | undefined> => (readText ? readText() : undefined);
-  const quiescence = async (): Promise<PageQuiescence> => readQuiescence();
+  const quiescence = async (): Promise<PageQuiescence | undefined> =>
+    readQuiescence ? readQuiescence() : undefined;
   const startQ = await quiescence();
   let lastMutations = startQ?.mutations;
   const startText = await read();
@@ -105,7 +106,8 @@ export async function settleAfterClick(
       continue;
     }
     if (!submitShaped) return;
-    if (elapsed >= QUIESCENT_NO_OP_GIVE_UP_MS) return;
+    const giveUpMs = readQuiescence ? QUIESCENT_NO_OP_GIVE_UP_MS : IDLE_GIVE_UP_MS;
+    if (elapsed >= giveUpMs) return;
   }
 }
 
@@ -152,7 +154,7 @@ export interface SettleSnapshotTarget<
   submitShaped: boolean;
   /** Takes a snapshot; `withPage` marks the final post-settle read. */
   snapshot: (withPage: boolean) => Promise<S>;
-  readQuiescence: () => Promise<PageQuiescence>;
+  readQuiescence?: () => Promise<PageQuiescence>;
 }
 
 /**

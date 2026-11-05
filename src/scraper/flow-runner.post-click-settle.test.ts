@@ -326,6 +326,16 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(post.settled).toBe(true);
   });
 
+  it("keeps re-settling through a header flip that also shrank the text until the body lands", async () => {
+    const wide = `996:Sign In|Create Account|${CHROME}`;
+    const shrunkFlip = `300:My Account|Create Account|${CHROME}`;
+    const t = makeIo([shrunkFlip, shrunkFlip, shrunkFlip, BODY_SIG]);
+    const pre = snap(wide);
+    const post = await run(pre, t.io);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
+  });
+
   it("never credits a no-op click", async () => {
     const t = makeIo([PRE_SIG]);
     const pre = snap(PRE_SIG);
@@ -345,6 +355,24 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     const t = makeIo([PRE_SIG]);
     await run(snap(PRE_SIG), t.io);
     expect(t.settles()).toBe(1);
+  });
+});
+
+describe("settleAfterClick without a quiescence probe", () => {
+  it("waits the idle allowance for a silent submit-shaped click, so a late re-render is seen", async () => {
+    const c = makeClock(() => {});
+    await settleAfterClick(c.page, c.counter, 0, true);
+    expect(c.now()).toBe(IDLE_GIVE_UP_MS);
+  });
+
+  it("settles through a body-only re-render that lands within the idle allowance", async () => {
+    let text = "20:Create account form";
+    const c = makeClock((now) => {
+      if (now >= 9000) text = "30:Tell us about your work";
+    });
+    await settleAfterClick(c.page, c.counter, 0, true, async () => text, text);
+    expect(text).toBe("30:Tell us about your work");
+    expect(c.now()).toBeGreaterThan(9000);
   });
 });
 

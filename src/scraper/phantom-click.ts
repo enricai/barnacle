@@ -371,6 +371,21 @@ function fullTextAdvanceKind(
     : "none";
 }
 
+/**
+ * A header that flipped over retained chrome while the text shrank by a body's
+ * worth is a body that was cleared or is loading, not a next step that has
+ * rendered: the length drop proves content left, never that new copy arrived.
+ * It therefore stays a header-only flip until the text holds still.
+ */
+function isHeaderFlipThatShrank(preSig: string, postSig: string): boolean {
+  const preLen = textLengthOf(preSig);
+  const postLen = textLengthOf(postSig);
+  if (preLen === null || postLen === null) return false;
+  if (preLen - postLen < PAGE_ADVANCE_MIN_TEXT_LENGTH_DELTA) return false;
+  if (headWordSimilarity(preSig, postSig) < PAGE_ADVANCE_MAX_HEAD_SIMILARITY) return false;
+  return isHeadSwapped(preSig, postSig);
+}
+
 function signatureAdvanceKind(preSig: string, postSig: string): PageAdvanceKind {
   if (preSig === postSig) return "none";
   const preLen = textLengthOf(preSig);
@@ -425,7 +440,8 @@ function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot):
   if (!hasVisibleTextChanged(pre, post)) return "none";
   const fromSignature = signatureAdvanceKind(preSig, postSig);
   const fromFullText = fullTextAdvanceKind(pre, post);
-  return KIND_RANK[fromFullText] > KIND_RANK[fromSignature] ? fromFullText : fromSignature;
+  const kind = KIND_RANK[fromFullText] > KIND_RANK[fromSignature] ? fromFullText : fromSignature;
+  return kind === "body" && isHeaderFlipThatShrank(preSig, postSig) ? "header" : kind;
 }
 
 /**

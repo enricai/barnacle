@@ -152,6 +152,33 @@ describe("judgeStepOutcome", () => {
   });
 });
 
+describe("judgeStepOutcome without a handed settled read", () => {
+  it("settles itself and judges the settled text, seeding the settle with the pre-click signature", async () => {
+    settle.mockClear();
+    stepJudge.mockClear();
+    submitJudge.mockClear();
+    stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
+    const { settledPostVisibleText: _handed, ...unsettled } = params(false, [
+      "Create account",
+      "Create account",
+      "Loading",
+      "Shipping",
+      "Shipping",
+    ]);
+    await judgeStepOutcome(unsettled);
+    expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
+    expect(submitJudge).not.toHaveBeenCalled();
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBeTruthy();
+  });
+
+  it("does not settle when the caller hands over its settled read", async () => {
+    settle.mockClear();
+    stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
+    await judgeStepOutcome(params(false, ["Shipping"]));
+    expect(settle).not.toHaveBeenCalled();
+  });
+});
+
 describe("judgeStepOutcome full before text", () => {
   it("feeds the full pre-click excerpt, not the 200-char signature head", async () => {
     stepJudge.mockClear();
