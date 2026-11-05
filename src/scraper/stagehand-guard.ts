@@ -140,6 +140,15 @@ const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
  * classifier never matches selector, timeout, or schema errors raised after
  * one.
  */
+class EnvelopeTransient extends Error {
+  constructor(
+    message: string,
+    readonly envelope: never
+  ) {
+    super(message);
+  }
+}
+
 function retryTransient<T>(call: () => Promise<T>): Promise<T> {
   return pRetry(call, {
     retries: TRANSIENT_RETRIES,
@@ -429,15 +438,34 @@ export async function guardedAct(
     // `stagehand.act` to a variable then calling it as a standalone function
     // loses `this` in strict mode, which crashes inside Stagehand's
     // `withInstanceLogContext(this.instanceId, ...)` wrapper on entry.
-    const raw = await retryTransient(() =>
-      withWatchdog(
+    const raw = await retryTransient(async () => {
+      const result = await withWatchdog(
         () =>
           typeof sendInput === "string"
             ? stagehand.act(sendInput, sendOptions)
             : stagehand.act(sendInput, sendOptions),
         { timeoutMs: options?.timeout ?? DEFAULT_GUARD_TIMEOUT_MS, label: "stagehand-act" }
-      )
-    );
+      );
+      // Stagehand often reports an inference-time provider 5xx as a resolved
+      // `{success:false, message}` envelope rather than a throw. With no
+      // action performed it is the same transient blip: surface it to retry.
+      const env = result as { success?: unknown; message?: unknown; actions?: unknown };
+      if (
+        env &&
+        env.success === false &&
+        typeof env.message === "string" &&
+        (!Array.isArray(env.actions) || env.actions.length === 0) &&
+        isTransientProviderError(new Error(env.message))
+      ) {
+        throw new EnvelopeTransient(env.message, result);
+      }
+      return result;
+    }).catch((err) => {
+      // Retries exhausted on an envelope-borne transient: hand back the
+      // failure envelope as before instead of turning it into a throw.
+      if (err instanceof EnvelopeTransient) return err.envelope;
+      throw err;
+    });
     const latencyMs = performance.now() - t0;
     const parsed = ACT_RESULT_SCHEMA.safeParse(raw);
     if (!parsed.success) {

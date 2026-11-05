@@ -283,6 +283,22 @@ export function scoreCandidate(
   return 0;
 }
 
+/** Interchangeable control names: a candidate named by one is the control a step names by another. */
+const CONTROL_ALIAS_GROUPS: readonly (readonly string[])[] = [
+  ["next", "continue"],
+  ["submit", "submit application", "send application"],
+  ["back", "previous"],
+];
+
+/** Positive phrases plus every known alias of them (normalized). */
+function withAliases(positives: string[]): string[] {
+  const out = new Set(positives);
+  for (const group of CONTROL_ALIAS_GROUPS) {
+    if (positives.some((p) => group.includes(p))) for (const g of group) out.add(g);
+  }
+  return [...out];
+}
+
 /** Outcome of {@link vetObserveCandidates}: the best-scoring candidate, its score, and whether the caller should refuse to act on it. */
 export interface ObserveCandidateVerdict<T extends { description: string }> {
   candidate: T | undefined;
@@ -303,6 +319,17 @@ export function vetObserveCandidates<T extends { description: string }>(
 ): ObserveCandidateVerdict<T> {
   const first = candidates[0];
   if (!first || phrases.length === 0) return { candidate: first, score: 0, refuse: false };
+  const aliasPositives = withAliases(
+    phrases.filter((p) => !p.negated).map((p) => normalize(p.text))
+  );
+  const aliasHit = candidates.find((c) => aliasPositives.includes(normalize(c.description)));
+  if (
+    aliasHit &&
+    scoreCandidate(aliasHit.description, phrases) === 0 &&
+    !phrases.some((p) => p.negated && normalize(aliasHit.description).includes(normalize(p.text)))
+  ) {
+    return { candidate: aliasHit, score: 2, refuse: false };
+  }
   const scored = candidates.map((candidate) => ({
     candidate,
     score: scoreCandidate(candidate.description, phrases),
