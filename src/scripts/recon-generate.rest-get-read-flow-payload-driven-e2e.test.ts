@@ -90,8 +90,8 @@ function generateContract(
 function expectPayloadDrivenRead(contract: string): void {
   const http = contract.slice(contract.indexOf("async executeHttp("));
   expect(http).toContain(`encodeURIComponent(String(payload.item_ids ?? "9"))`);
-  expect(http).toContain('["date_from", String(payload.date_from ?? "');
-  expect(http).toContain('["date_to", String(payload.date_to ?? "');
+  expect(http).toContain('["date_from", String(payload.date_from)]');
+  expect(http).toContain('["date_to", String(payload.date_to)]');
   expect(http).toContain('["item_ids[]", String(payload.item_ids ?? "9")]');
   expect(http).not.toContain("item_ids%5B");
   expect(contract).not.toMatch(/^ {2}_: /m);
@@ -99,8 +99,8 @@ function expectPayloadDrivenRead(contract: string): void {
   expect(http).not.toContain("1700000000002");
   expect(contract).not.toMatch(/\b(?:const|class|function)\s+\d/);
   expect(contract).toMatch(/\bSite7GetPayloadDriven/);
-  // Only the recorded (winner) window is a fallback; other captures' windows never leak.
-  for (const literal of ["2030-11-02", "2030-11-08"]) {
+  // No captured window is replayed verbatim.
+  for (const literal of ["2030-10-26", "2030-11-01", "2030-11-02", "2030-11-08"]) {
     expect(http).not.toContain(literal);
   }
   // Schema declares the derived and flow-declared fields.
@@ -125,7 +125,7 @@ describe("recon-generate CLI — payload-driven GET read flow, end to end", () =
     const contract = generateContract(null);
     const http = contract.slice(contract.indexOf("async executeHttp("));
     expect(http).toContain(`encodeURIComponent(String(payload.item_ids ?? "9"))`);
-    expect(http).toContain('["date_from", String(payload.date_from ?? "');
+    expect(http).toContain('["date_from", String(payload.date_from)]');
     expect(http).toContain("await httpClient(");
     for (const f of ["date_from", "date_to", "item_ids"]) {
       expect(contract).toMatch(new RegExp(`^  ${f}: z\\.string\\(\\)`, "m"));
@@ -141,7 +141,8 @@ describe("recon-generate CLI — payload-driven GET read flow, end to end", () =
     const contract = generateContract(null, urls);
     const http = contract.slice(contract.indexOf("async executeHttp("));
     expect(http).toContain('["item_ids[]", String(payload.item_ids ?? "9")]');
-    expect(http).toContain('["date_from", String(payload.date_from ?? "2030-10-26")]');
+    expect(http).toContain('["date_from", String(payload.date_from)]');
+    expect(http).not.toContain("2030-10-26");
     expect(contract).toMatch(/^ {2}item_ids: z\.string\(\)/m);
     expect(contract).not.toMatch(/submission/i);
   }, 60_000);

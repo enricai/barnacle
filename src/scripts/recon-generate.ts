@@ -2635,7 +2635,7 @@ function safeUrlPathname(url: string): string {
 /** Input model for a read-only REST GET flow: what the caller supplies vs. what stays frozen. */
 export interface GetInputModel {
   /** Query keys the caller controls: varying across successful same-route GET siblings, or declared by the flow. */
-  dynamicFields: Array<{ field: string; queryKey: string; recorded?: string }>;
+  dynamicFields: Array<{ field: string; queryKey: string }>;
   /** Query params with a single observed value across siblings (queryKey -> value). */
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
@@ -2826,11 +2826,7 @@ export function deriveGetInputModel(
       [...values].every(isDateWindowValue)
     ) {
       const field = nameFor(key);
-      dynamicFields.push({
-        field,
-        queryKey: key,
-        ...(winnerValue !== null ? { recorded: winnerValue } : {}),
-      });
+      dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
       fixedParams[key] = [...values][0] as string;
@@ -14345,16 +14341,9 @@ function buildGetRequestUrlExpr(
       `[${JSON.stringify(pv.queryKey)}, String(${fieldAccess(pv.field)} ?? ${JSON.stringify(recordedPathValue(pv.segmentIndex))})]`
     );
   }
-  for (const { field, queryKey, recorded } of model.dynamicFields) {
+  for (const { field, queryKey } of model.dynamicFields) {
     if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
-    if (recorded !== undefined) {
-      // Caller value wins; otherwise replay the recorded value.
-      pairs.push(
-        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`
-      );
-      continue;
-    }
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
     );

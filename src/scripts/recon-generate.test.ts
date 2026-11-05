@@ -5594,7 +5594,7 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
     const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]", recorded: "1" }]);
+    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
     expect(m.fieldToQueryKey.ids).toBe("ids[]");
     expect(m.fixedParams).toEqual({ sort: "asc" });
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
@@ -5683,7 +5683,7 @@ describe("deriveGetInputModel", () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/search?q=1&from=2");
     const m = deriveGetInputModel(a, [a], ["from"])!;
-    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from", recorded: "2" }]);
+    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
     expect(m.fixedParams).toEqual({ q: "1" });
   });
   it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
@@ -5709,8 +5709,8 @@ describe("deriveGetInputModel", () => {
     const b = cap("https://shop.example/stock.json?60x=3&site-id=4");
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.dynamicFields).toEqual([
-      { field: "_60x", queryKey: "60x", recorded: "1" },
-      { field: "siteId", queryKey: "site-id", recorded: "2" },
+      { field: "_60x", queryKey: "60x" },
+      { field: "siteId", queryKey: "site-id" },
     ]);
     expect(m.fieldToQueryKey._60x).toBe("60x");
   });
@@ -5719,7 +5719,7 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
     const b = cap("https://api.example.com/v1/search?page=2&sort=asc");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page", recorded: "1" }]);
+    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page" }]);
     expect(m.fixedParams).toEqual({ sort: "asc" });
   });
   it.each([
@@ -5732,7 +5732,7 @@ describe("deriveGetInputModel", () => {
     const a = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
     const b = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field, queryKey: key, recorded: "7" }]);
+    expect(m.dynamicFields).toEqual([{ field, queryKey: key }]);
     expect(m.fixedParams).toEqual({ limit: "10" });
   });
   it("keeps a non-entity key that merely ends in id letters fixed", async () => {
@@ -5837,9 +5837,9 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.item_ids ?? "7"))');
     expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
-    expect(source).toContain('["date_from", String(payload.date_from ?? "');
-    expect(source).toContain('["date_to", String(payload.date_to ?? "');
-    expect(source).not.toContain('"2030-01-01"]');
+    expect(source).toContain('["date_from", String(payload.date_from)]');
+    expect(source).toContain('["date_to", String(payload.date_to)]');
+    expect(source).not.toContain("2030-01-01");
     // Read-only GET: no mutation body, not emitted as a submission.
     expect(source).not.toContain('method: "POST"');
   });
