@@ -317,4 +317,50 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).toContain("(r0 as { id: number }).id");
     expect(contract).not.toContain(String(SHORT_ID));
   }, 60_000);
+  it("emits one payload field and one body use for a wrapped nested array", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-wrapped-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const post: Capture = {
+      ...create,
+      requestPostData: JSON.stringify({
+        order: { items_attributes: [{ sku: "SKU-1", qty: 1 }] },
+      }),
+    };
+    const put: Capture = {
+      ...update,
+      requestPostData: JSON.stringify({
+        order: { id: ORDER_ID, items_attributes: [{ sku: "SKU-1", qty: 2 }], contact_name: "Jane" },
+      }),
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-wrapped-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toContain("orderItems_attributes");
+    expect(contract.match(/payload\.order\b/g)?.length ?? 0).toBeGreaterThan(0);
+    const schema = contract.slice(
+      contract.indexOf("PayloadSchema = "),
+      contract.indexOf(".merge(JobTrackingSchema)")
+    );
+    expect(schema.match(/items_attributes: z\.array/g)).toHaveLength(1);
+    expect(schema.match(/^ {2}\w+: /gm)).toHaveLength(1);
+  }, 60_000);
 });

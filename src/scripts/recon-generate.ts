@@ -5466,6 +5466,20 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // An array path the facet pass owns is rendered element by element at every
     // call site, so it is neither a payload field of its own nor swallowable.
     if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath))) continue;
+    // One field per distinct body value path: when an ancestor of this path is
+    // already a registered whole-structure payload field (a wrapped body such as
+    // `{"order":{"items_attributes":[...]}}` carries the array inside `order`),
+    // the nested value is that field's content, not a second caller input.
+    // Minting a flattened `orderItems_attributes` beside it would expose the
+    // same array twice.
+    let coveredByAncestorField = false;
+    for (let len = 1; len < valuePath.length; len++) {
+      if (outStructuredKeys.has(pathToPayloadFieldName(valuePath.slice(0, len)))) {
+        coveredByAncestorField = true;
+        break;
+      }
+    }
+    if (coveredByAncestorField) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
