@@ -9,6 +9,7 @@
  */
 
 import { getLogger } from "@/lib/logging";
+import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 import type { FrameTarget } from "@/scraper/frame-target";
 
 const logger = getLogger({ name: "scraper/trusted-click" });
@@ -237,7 +238,7 @@ function buildSelectorExpression(selector: string, expectText?: string): string 
   const stripped = selector.startsWith("xpath=") ? selector.slice("xpath=".length) : selector;
   const isXpath = stripped.startsWith("/") || stripped.startsWith("(");
   const lookup = isXpath
-    ? `document.evaluate(${JSON.stringify(stripped)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue`
+    ? shadowXpathLookupExpr(stripped)
     : `document.querySelector(${JSON.stringify(selector)})`;
   return `(() => {
     const el = ${lookup};
