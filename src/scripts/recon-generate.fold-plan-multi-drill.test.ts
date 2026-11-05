@@ -75,4 +75,19 @@ describe("resolveFoldPlan with several drills", () => {
     expect(onEndpoint).toHaveLength(1);
     expect(onEndpoint?.[0]?.chainArrayPath).toEqual(["detail", "items"]);
   });
+
+  it("drops a structural ancestor target when the declared drill path is a nested array", () => {
+    const deep = step(
+      "p",
+      1,
+      "/prices/",
+      { sku: "a1" },
+      { detail: { items: [{ sku: "a1", amount: 5, tags: [{ sku: "a1", t: 1 }] }] } }
+    );
+    const spec: FoldReturnSpec = { ...PRIMARY, drillResultsPath: "detail.items.tags" };
+    const plans = resolveFoldPlan([search, deep], spec);
+    const onEndpoint = plans[0]?.targets.filter((t) => t.chainTerminalIndex === 1);
+    expect(onEndpoint).toHaveLength(1);
+    expect(onEndpoint?.[0]?.chainArrayPath).toEqual(["detail", "items", "*", "tags"]);
+  });
 });
