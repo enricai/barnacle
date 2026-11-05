@@ -13,6 +13,7 @@
  * the terminal failure dump.
  */
 
+import { SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1128,6 +1129,8 @@ type InFlightRequest = {
 
 /** Max attempts inside the self-healing cascade for a single flow step. */
 const MAX_STEP_ATTEMPTS = 5;
+/** In-page function `(xpath) => Element | null`: shadow-aware first-match xpath lookup (see shadow-xpath.ts). */
+const SHADOW_XPATH_FIRST_NODE = SHADOW_XPATH_RESOLVER_SRC;
 /** Per-attempt linear backoff base; sleep = attempt * BACKOFF_MS. */
 const ATTEMPT_BACKOFF_MS = 1_000;
 /**
@@ -4215,8 +4218,8 @@ export async function fillHtml5DateTimeInput(
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
     const value = ${JSON.stringify(valueToTry)};
-    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = result.singleNodeValue;
+    const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
+    const el = result;
     if (!el || el.tagName !== "INPUT") return null;
     const inputType = (el.getAttribute("type") || "text").toLowerCase();
     if (!["date", "time", "datetime-local", "month", "week"].includes(inputType)) {
@@ -4283,8 +4286,8 @@ function parseDatepickerValue(
 /** Dispatch a real Enter keydown/keyup on the element (Stagehand's Locator has no `press`). */
 async function dispatchEnterKey(target: FrameTarget, xpath: string): Promise<void> {
   const expr = `(() => {
-    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    const el = r;
     if (!el) return "no-element";
     const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true };
     el.dispatchEvent(new KeyboardEvent("keydown", opts));
@@ -4357,8 +4360,8 @@ export async function fillTextDatepickerInput(
   // definitive signal is a `.react-datepicker__input-container` wrapper; we
   // also accept id/name/class/aria date hints for non-react libraries.
   const gateExpr = `(() => {
-    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    const el = r;
     if (!el || el.tagName !== "INPUT") return { match: false };
     const type = (el.getAttribute("type") || "text").toLowerCase();
     if (type !== "text") return { match: false };
@@ -4486,8 +4489,8 @@ export async function isDateSegmentAtSelector(
   const xpath = xpathBodyForEvaluate(selector);
   if (xpath === null) return false;
   const expr = `(() => {
-    const result = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = result.singleNodeValue;
+    const result = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    const el = result;
     if (!el) return false;
     ${SEGMENT_OWNER_JS}
     return isDateSegment(el);
@@ -4530,8 +4533,8 @@ export async function verifyFillReadback(
   const expr = `(() => {
     const xpath = ${JSON.stringify(xpath)};
     const expected = ${JSON.stringify(expectedValue)};
-    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = result.singleNodeValue;
+    const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
+    const el = result;
     if (!el) return null;
     const tag = el.tagName ? el.tagName.toLowerCase() : "";
     let actual = "";
@@ -4621,8 +4624,8 @@ export async function verifyPromptSelectorCommitted(
     const namesOption = ${PROMPT_NAMES_OPTION_EXPR};
     const want = ${JSON.stringify(requestedOption ?? "")};
     const xpath = ${JSON.stringify(xpath)};
-    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = result.singleNodeValue;
+    const result = ${SHADOW_XPATH_FIRST_NODE}(xpath);
+    const el = result;
     if (!el) return { isPromptWidget: false, committed: false };
     const widget = el.matches && el.matches(triggerSel) ? el : el.closest(triggerSel);
     if (!widget) return { isPromptWidget: false, committed: false };
@@ -4934,7 +4937,7 @@ function selectionFingerprintObjSrc(elVar: string, dsVar: string): string {
  * for a selection.
  */
 function elementSelectionFingerprintExpr(xpath: string): string {
-  return `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el) return null; const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; })()`;
+  return `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); const el = r; if (!el) return null; const ds = el.getAttribute("data-state") || ""; return ${selectionFingerprintObjSrc("el", "ds")}; })()`;
 }
 
 /**
@@ -5172,7 +5175,7 @@ async function resolvedClickTargetStillPresent(
 ): Promise<boolean> {
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return true;
-  const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); return r.singleNodeValue !== null; })()`;
+  const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); return r !== null; })()`;
   try {
     const result = await target.evaluate(expr);
     return result !== false;
@@ -5221,8 +5224,8 @@ async function resolvedClickTargetIsSubmitShaped(
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
   const expr = `(() => {
-    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    let el = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    let el = r;
     if (!el && ${JSON.stringify(xpathTail)}) {
       el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)}, ${JSON.stringify(phrases)});
     }
@@ -5306,8 +5309,8 @@ async function resolvedClickUsedXpathTailRetarget(
   const xpath = xpathBodyForEvaluate(selector);
   if (!xpath) return false;
   const expr = `(() => {
-    const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    if (r.singleNodeValue !== null) return false;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+    if (r !== null) return false;
     return ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(true)}, ${JSON.stringify(phrases)}) !== null;
   })()`;
   try {
@@ -5380,8 +5383,8 @@ async function selectionAncestorChanged(
       a.ariaChecked !== b.ariaChecked || a.ariaSelected !== b.ariaSelected ||
       a.dataState !== b.dataState || a.dataSelected !== b.dataSelected ||
       a.dataChecked !== b.dataChecked || a.checked !== b.checked || a.value !== b.value;
-    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    let node = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
+    let node = r;
     if (!node) return false;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       if (node.getAttribute) {
@@ -5440,8 +5443,8 @@ async function clickTargetHasSelectionMarker(
       }
       return false;
     };
-    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    let node = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
+    let node = r;
     if (!node) return false;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       if (node.getAttribute && hasMarker(node, fp(node))) return true;
@@ -5480,8 +5483,8 @@ async function selectionSiblingCommittedValueChanged(
     const BASE = ${JSON.stringify(preSelectionState)};
     const xpathOf = ${XPATH_OF_FN_SRC};
     const nearbySelectionContainer = ${NEARBY_SELECTION_CONTAINER_FN_SRC};
-    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const leaf = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
+    const leaf = r;
     if (!leaf) return false;
     // The hidden committed-value control's marker (the role=combobox trigger)
     // is commonly a SIBLING of the leaf and the control, not an ancestor of
@@ -5549,8 +5552,8 @@ async function comboboxOpenerPanelOpened(
     const OPTION_SEL = ${JSON.stringify(PROMPT_OPTION_SELECTORS)};
     const xpathOf = ${XPATH_OF_FN_SRC};
     const scopeRootOf = ${PROMPT_SCOPE_ROOT_EXPR};
-    const r = document.evaluate(LEAF, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    let node = r.singleNodeValue;
+    const r = ${SHADOW_XPATH_FIRST_NODE}(LEAF);
+    let node = r;
     for (let depth = 0; depth < ${MAX_SELECTION_ANCESTOR_DEPTH} && node; depth++) {
       if (node.getAttribute && node.matches && node.matches(TRIGGER_SEL)) {
         const pre = BASE[xpathOf(node)];
@@ -9460,7 +9463,7 @@ export async function applyRadioSelection(
   const readbackExpr = (sel: { id: string; xpath: string }): string => `((id, xp) => {
       const isInvalid = ${INVALID_MARKER_EL_EXPR};
       let rb = id ? document.getElementById(id) : null;
-      if (!rb && xp) { const r = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); rb = r.singleNodeValue; }
+      if (!rb && xp) { const r = ${SHADOW_XPATH_FIRST_NODE}(xp); rb = r; }
       if (!rb || rb.checked !== true) return { ok: false };
       let node = rb;
       for (let depth = 0; depth < 6 && node; depth++) {
@@ -10854,9 +10857,7 @@ export async function dispatchJqueryChangeEvent(
   const xpath = xpathBody(selector);
   if (!xpath) return;
   const expr = `(() => {
-    const r = document.evaluate(${JSON.stringify(xpath)}, document, null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    const el = r.singleNodeValue;
+    const el = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
     if (!el) return "no-element";
     try {
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -10980,7 +10981,7 @@ export async function verifyDomEffect(
         // misreporting genuinely-successful selections as unverified. Fall back to
         // reading the combobox's own displayed/aria value when the resolved element
         // isn't a real <select>, paralleling what a real ARIA combobox exposes.
-        const exprNative = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
+        const exprNative = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); const el = r; if (!el || el.tagName !== "SELECT") return null; const opt = el.options[el.selectedIndex]; if (!opt) return { value: "", label: "", text: "" }; return { value: (opt.value || "").trim(), label: (opt.label || "").trim(), text: (opt.textContent || "").trim() }; })()`;
         let selected: { value: string; label: string; text: string } | null = null;
         try {
           const result = await target.evaluate(exprNative);
@@ -11014,8 +11015,8 @@ export async function verifyDomEffect(
           // select's own selectedIndex option, or the opener's displayed text
           // with any nested select/listbox option list stripped out first).
           const exprCustom = `(() => {
-            const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-            const el = r.singleNodeValue;
+            const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+            const el = r;
             if (!el) return null;
             let combo = (el.closest && el.closest('[role="combobox"]')) || null;
             if (!combo) {
@@ -11087,8 +11088,8 @@ export async function verifyDomEffect(
         // have done anything — veto before trusting any other signal below.
         const targetDisabledExpr = `(() => {
           const isDisabled = ${DISABLED_MARKER_EL_EXPR};
-          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-          const el = r.singleNodeValue;
+          const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+          const el = r;
           return el ? isDisabled(el) : false;
         })()`;
         const targetDisabled = await target
@@ -11104,7 +11105,7 @@ export async function verifyDomEffect(
           // xpath content alone. String expression rather than a function so
           // Node-side typechecking doesn't choke on the browser globals
           // `document`/`XPathResult`.
-          const expr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? (el.type || null) : null; })()`;
+          const expr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); const el = r; return el ? (el.type || null) : null; })()`;
           const result = await target.evaluate(expr);
           inputType = typeof result === "string" ? result : null;
         } catch {
@@ -11152,7 +11153,7 @@ export async function verifyDomEffect(
         // A control exposing aria-checked is framework-managed: its own
         // aria-checked is the committed state, so a leftover invalid marker
         // on an ancestor must not veto a genuinely ticked box.
-        const ariaCheckedExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); const el = r.singleNodeValue; return el ? ${ariaCheckedReadExpr("el")} : null; })()`;
+        const ariaCheckedExpr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); const el = r; return el ? ${ariaCheckedReadExpr("el")} : null; })()`;
         const ariaChecked = await target.evaluate(ariaCheckedExpr).catch(() => null);
         if (ariaChecked === "true" || ariaChecked === "false") return ariaChecked === "true";
         const isCheckedNow = await locator.isChecked();
@@ -11169,8 +11170,8 @@ export async function verifyDomEffect(
         // past a step that didn't actually change the form state.
         const ancestorInvalidExpr = `(() => {
           const isInvalid = ${INVALID_MARKER_EL_EXPR};
-          const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-          let node = r.singleNodeValue;
+          const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+          let node = r;
           if (!node) return false;
           for (let depth = 0; depth < 6 && node; depth++) {
             if (node.getAttribute && isInvalid(node)) return true;
@@ -14815,8 +14816,8 @@ export async function executeStepWithHealing(params: {
           // / user input. JSON.stringify produces a safe JS string literal
           // for the composed page.evaluate expression.
           const probeExpr = `(() => {
-            const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-            const start = r.singleNodeValue;
+            const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+            const start = r;
             if (!start) return { resolved: false };
             const isCheckable = (n) => n && n.tagName === "INPUT" && (n.type === "radio" || n.type === "checkbox");
             // Find the checkable input reachable from the start element.
@@ -15802,7 +15803,7 @@ export async function executeStepWithHealing(params: {
             !n16TrustedDelivered && "reason" in n16TrustedClickResult
               ? n16TrustedClickResult
               : null;
-          const clickExpr = `(() => { const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); let el = r.singleNodeValue; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { const __ac = ${ariaCheckedReadExpr("el")}; if (__ac === "true" || __ac === "false") return { fired: true, kind: "checkbox", checked: __ac === "true", ariaManaged: true }; el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
+          const clickExpr = `(() => { const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)}); let el = r; if (!el && ${JSON.stringify(xpathTail)}) { el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)}); if (!el && ${JSON.stringify(tailPhrases.length > 0)} && ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(false)}, []) !== null) return { fired: false, phraseMismatch: true }; } if (!el || typeof el.click !== "function") return { fired: false }; if (el.tagName === "LABEL") { const wrapped = el.querySelector("input[type=checkbox], input[type=radio]"); if (wrapped) el = wrapped; } if (el.type === "checkbox" || el.type === "radio") { const __ac = ${ariaCheckedReadExpr("el")}; if (__ac === "true" || __ac === "false") return { fired: true, kind: "checkbox", checked: __ac === "true", ariaManaged: true }; el.checked = true; el.dispatchEvent(new Event("click", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return { fired: true, kind: "checkbox", checked: el.checked }; } let __n16SmMatched = false; ${retargetToSelectionMarkerExpr("el", "__n16SmMatched")} ${n16TrustedDelivered ? "" : clickActivationExpr("el")} if (__n16SmMatched) { el.dispatchEvent(new Event("change", { bubbles: true })); } return { fired: true, kind: "click" }; })()`;
           const n16FallbackTarget = frameTarget ?? mainFrameTarget(page);
           const probeResult = (await n16FallbackTarget.evaluate(clickExpr)) as {
             fired: boolean;
@@ -15829,8 +15830,8 @@ export async function executeStepWithHealing(params: {
           ) {
             const ancestorInvalidExpr = `(() => {
               const isInvalid = ${INVALID_MARKER_EL_EXPR};
-              const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-              let node = r.singleNodeValue;
+              const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+              let node = r;
               if (!node && ${JSON.stringify(xpathTail)}) {
                 node = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)});
               }
@@ -15954,8 +15955,8 @@ export async function executeStepWithHealing(params: {
             (await (async (): Promise<boolean> => {
               const disabledExpr = `(() => {
                 const isDisabled = ${DISABLED_MARKER_EL_EXPR};
-                const r = document.evaluate(${JSON.stringify(xpath)}, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-                let el = r.singleNodeValue;
+                const r = ${SHADOW_XPATH_FIRST_NODE}(${JSON.stringify(xpath)});
+                let el = r;
                 if (!el && ${JSON.stringify(xpathTail)}) {
                   el = ${XPATH_TAIL_RETARGET_RESOLVE_FN_SRC}(${JSON.stringify(xpathTail)}, ${JSON.stringify(!stepDeclaredNonSubmit)}, ${JSON.stringify(tailPhrases)});
                 }
