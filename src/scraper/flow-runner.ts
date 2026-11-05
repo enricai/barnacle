@@ -233,7 +233,7 @@ export async function awaitNativeCaptchaSolve(
   boundMs: number = NATIVE_SOLVE_WAIT_MS
 ): Promise<"idle" | "finished" | "stalled"> {
   const t = nativeSolveTrackers.get(page);
-  if (!t || !t.inFlight) return "idle";
+  if (!t?.inFlight) return "idle";
   const finished = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => {
       t.waiters.delete(done);
@@ -1071,6 +1071,28 @@ const PROMPT_WIDGET_CONTAINER_EXPR = `((el) => {
   }
   return container;
 })`;
+/**
+ * In-page predicate: is this element actually rendered? Walks the ancestor chain
+ * for "hidden"/"aria-hidden"/"inert" and computed display:none, and resolves
+ * visibility the way the cascade does: the element's own computed value
+ * wins, and an ancestor's inline visibility is inherited unless a nearer
+ * element sets it explicitly (computed styles in a layout-less DOM do not
+ * propagate the inherited value, so the ancestors are read directly). Geometry
+ * is deliberately not consulted — such a DOM reports every box as zero-sized.
+ */
+const PROMPT_RENDERED_EXPR = `((el) => {
+  let visibility = "";
+  for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    if (n.hidden || n.inert || n.getAttribute("aria-hidden") === "true") return false;
+    const cs = getComputedStyle(n);
+    if (cs.display === "none") return false;
+    if (n === el && (cs.visibility === "hidden" || cs.visibility === "collapse")) return false;
+    const own = (n.style && n.style.visibility) || "";
+    if (visibility === "" && own !== "" && own !== "inherit") visibility = own;
+  }
+  return visibility !== "hidden" && visibility !== "collapse";
+})`;
+
 /**
  * Browser-side expression resolving the DOM root within which a chosen widget's
  * popup options / filter input live. Popup placement is vendor-split: the ARIA
@@ -3104,7 +3126,11 @@ const REPHRASE_SYSTEM_PROMPT =
 export function withClearBeforeType(instruction: string): string {
   if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
   if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
-  if (/select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(instruction)) {
+  if (
+    /select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(
+      instruction
+    )
+  ) {
     return instruction;
   }
   return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
@@ -4847,11 +4873,12 @@ function xpathBody(selector: string, target?: FrameTarget): string | null {
  */
 export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): string {
   if (!target || (!target.frame && !target.frameSelector)) return xpath;
-  const re = /\/iframe(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
-  let cut = -1;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xpath)) !== null) cut = m.index + m[0].length - (m[1] ?? "").length;
-  return cut < 0 ? xpath : xpath.slice(cut);
+  const re = /\/i?frame(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
+  const hops = Array.from(xpath.matchAll(re));
+  const last = hops[hops.length - 1];
+  return last === undefined
+    ? xpath
+    : xpath.slice(last.index + last[0].length - (last[1] ?? "").length);
 }
 
 /**
@@ -9793,8 +9820,6 @@ async function tryPromptSelectorPrimitive(params: {
   if (!parsed) return null;
   const { option, questionLabel } = parsed;
   const optLabel = primitiveOptionLabel(option, questionLabel, redactValue, parsed.isFill);
-  const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
-
   // Phase 1 (browser, read-only except for the marker attribute stamped for
   // Phase 2's click addressing): find candidate widgets — popup-dropdown
   // triggers with no native <select> — that are still unfilled/invalid. Options
@@ -9883,14 +9908,7 @@ async function tryPromptSelectorPrimitive(params: {
     // one is rendered) so the field is ONE candidate, clicked at its rendered
     // trigger; the collapsed openers are stamped as mates so option scoping can
     // still follow their aria-controls link.
-    const rendered = (el) => {
-      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-        if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
-        const cs = getComputedStyle(n);
-        if (cs.display === "none" || cs.visibility === "hidden") return false;
-      }
-      return true;
-    };
+    const rendered = ${PROMPT_RENDERED_EXPR};
     for (const el of document.querySelectorAll("[" + markAttr + "-mate]")) el.removeAttribute(markAttr + "-mate");
     // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
     // outside the trigger union; adopt it when an unrendered union opener shares
@@ -9948,10 +9966,7 @@ async function tryPromptSelectorPrimitive(params: {
     // labeled match must be UNIQUE, and an unlabeled step only resolves when
     // there is exactly one unfilled widget on the page.
     const labelMatches = questionLabel
-      ? candidates.filter(
-          (c) =>
-            c.label !== "" && widgetLabelMatches(c.label, questionLabel)
-        )
+      ? candidates.filter((c) => c.label !== "" && widgetLabelMatches(c.label, questionLabel))
       : [];
     const chosen =
       labelMatches.length === 1
@@ -9984,6 +9999,7 @@ async function tryPromptSelectorPrimitive(params: {
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
       const scopeOf = ${PROMPT_SCOPE_ROOT_EXPR};
+      const renderedEl = ${PROMPT_RENDERED_EXPR};
       const mates = Array.from(document.querySelectorAll("[" + widgetMarkAttr + '-mate="' + wIdx + '"]'));
       let scope = scopeOf(w);
       // A rendered anchor without its own popup link borrows its collapsed
@@ -10043,16 +10059,7 @@ async function tryPromptSelectorPrimitive(params: {
           domText: (opts[i].textContent || "").replace(/\\s+/g, " ").trim(),
           // Rendered visibility: a closed popup may keep hidden role=option
           // items in the DOM; those must not count as "already open".
-          visible: (() => {
-            // Ancestor walk over inline/computed display+visibility (not
-            // geometry, which layout-less DOMs report as zero).
-            for (let n = opts[i]; n && n.nodeType === 1; n = n.parentElement) {
-              if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
-              const cs = getComputedStyle(n);
-              if (cs.display === "none" || (n === opts[i] && cs.visibility === "hidden")) return false;
-            }
-            return true;
-          })(),
+          visible: renderedEl(opts[i]),
         });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
@@ -10284,7 +10291,13 @@ const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
  * One enumerated option. `nodeId` is the in-page identity of the stamped node
  * and `domText` its own text content (what the click-time identity check sees).
  */
-type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string; visible?: boolean };
+type PromptOptionRead = {
+  oIdx: number;
+  text: string;
+  nodeId?: number;
+  domText?: string;
+  visible?: boolean;
+};
 
 /**
  * Re-reads the filtered list until two consecutive reads carry identical

@@ -9,9 +9,14 @@ describe("toFrameRelativeXpath", () => {
   const composite =
     "/html[1]/body[1]/main[1]/div[1]/div[1]/span[1]/iframe[1]/html[1]/body[1]/div[2]/div[3]/a[1]";
   it("strips the iframe prefix for a frame target", () => {
-    expect(toFrameRelativeXpath(composite, frameTarget)).toBe("/html[1]/body[1]/div[2]/div[3]/a[1]");
+    expect(toFrameRelativeXpath(composite, frameTarget)).toBe(
+      "/html[1]/body[1]/div[2]/div[3]/a[1]"
+    );
     expect(
-      toFrameRelativeXpath("/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]", frameTarget)
+      toFrameRelativeXpath(
+        "/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/a[1]",
+        frameTarget
+      )
     ).toBe("/html[1]/body[1]/div[2]/a[1]");
   });
   it("leaves main-document targets and iframe-free paths unchanged", () => {
@@ -24,10 +29,10 @@ describe("toFrameRelativeXpath", () => {
 });
 
 import {
+  dispatchJqueryChangeEvent,
   fillTextDatepickerInput,
   isDateSegmentAtSelector,
   verifyFillReadback,
-  dispatchJqueryChangeEvent,
 } from "./flow-runner.js";
 
 describe("frame-relative xpath reaches in-frame evaluate", () => {

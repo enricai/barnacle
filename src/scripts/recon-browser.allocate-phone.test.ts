@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  ALLOCATED_PHONE_PATTERN,
-  allocateFictionalPhone,
-  parseCli,
-} from "@/scripts/recon-browser";
+import { ALLOCATED_PHONE_PATTERN, allocateFictionalPhone, parseCli } from "@/scripts/recon-browser";
 
 const ORIGINAL_ARGV = process.argv;
-const base = ["node", "recon-browser.ts", "--url", "https://example.com", "--flow", '["Click Apply"]'];
+const base = [
+  "node",
+  "recon-browser.ts",
+  "--url",
+  "https://example.com",
+  "--flow",
+  '["Click Apply"]',
+];
 
 afterEach(() => {
   process.argv = ORIGINAL_ARGV;

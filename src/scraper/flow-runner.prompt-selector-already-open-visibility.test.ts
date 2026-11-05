@@ -61,11 +61,37 @@ async function run(popup: string): Promise<string[]> {
 }
 
 describe("prompt-selector alreadyOpen requires a visible option", () => {
-  it("clicks the trigger when options sit in a display:none container", async () => {
-    const clicks = await run(
-      `<div id="pop" style="display:none"><ul role="listbox"><li role="option">Mobile</li></ul></div>`
-    );
+  it.each([
+    [
+      "display:none container",
+      `<div id="pop" style="display:none"><ul role="listbox"><li role="option">Mobile</li></ul></div>`,
+    ],
+    [
+      "visibility:hidden listbox",
+      `<div id="pop"><ul role="listbox" style="visibility:hidden"><li role="option">Mobile</li></ul></div>`,
+    ],
+    [
+      "visibility:hidden owned container",
+      `<div id="pop" style="visibility:hidden"><ul role="listbox"><li role="option">Mobile</li></ul></div>`,
+    ],
+    [
+      "hidden attribute",
+      `<div id="pop" hidden><ul role="listbox"><li role="option">Mobile</li></ul></div>`,
+    ],
+    [
+      "aria-hidden listbox",
+      `<div id="pop"><ul role="listbox" aria-hidden="true"><li role="option">Mobile</li></ul></div>`,
+    ],
+  ])("clicks the trigger when the owned option list is hidden (%s)", async (_name, popup) => {
+    const clicks = await run(popup);
     expect(clicks.some((c) => c.includes("bcl-prompt-idx"))).toBe(true);
+  });
+
+  it("treats an option that re-declares visibility:visible inside a hidden-visibility ancestor as rendered", async () => {
+    const clicks = await run(
+      `<div id="pop" style="visibility:hidden"><ul role="listbox"><li role="option" style="visibility:visible">Mobile</li></ul></div>`
+    );
+    expect(clicks.some((c) => c.includes("bcl-prompt-idx"))).toBe(false);
   });
 
   it("does not click the trigger when a visible option is rendered", async () => {

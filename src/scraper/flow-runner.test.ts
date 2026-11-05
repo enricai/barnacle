@@ -770,7 +770,10 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
 
   it("applies withClearBeforeType to a click-then-type rephrase before the retry act() call", async () => {
     generateObjectMock.mockResolvedValueOnce({
-      object: { instruction: "Click the email input, then type a@example.com", outcome: "rewritten" },
+      object: {
+        instruction: "Click the email input, then type a@example.com",
+        outcome: "rewritten",
+      },
       usage: { inputTokens: 10, outputTokens: 5 },
     });
     const fakeRephraseModel = { modelId: "bedrock-claude-fake" } as unknown as Parameters<

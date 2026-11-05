@@ -1,10 +1,8 @@
-import { Window } from "happy-dom";
-import { describe, expect, it } from "vitest";
-
-import { widgetLabelMatches } from "@/scraper/flow-runner";
-
 // The expression constants are module-private; read them from source text.
 import { readFileSync } from "node:fs";
+import { Window } from "happy-dom";
+import { describe, expect, it } from "vitest";
+import { widgetLabelMatches } from "@/scraper/flow-runner";
 
 const src = readFileSync("src/scraper/flow-runner.ts", "utf8");
 const rxMatch = /const PROMPT_EMPTY_VALUE_RX =\s*(\/.*\/i);/.exec(src);
@@ -26,7 +24,13 @@ describe("combobox read-back", () => {
     const win = new Window();
     win.document.body.innerHTML = html;
     const expr = exprSrc
-      .replace("${BUTTON_VALUE_EXPR}", (/const BUTTON_VALUE_EXPR =\s*\n?\s*"([\s\S]*?)";\n/.exec(src)?.[1] ?? "").replace(/\\"/g, '"'))
+      .replace(
+        "${BUTTON_VALUE_EXPR}",
+        (/const BUTTON_VALUE_EXPR =\s*\n?\s*"([\s\S]*?)";\n/.exec(src)?.[1] ?? "").replace(
+          /\\"/g,
+          '"'
+        )
+      )
       .replace("${OPTION_ACCESSIBLE_LABEL_EXPR}", "(() => '')")
       .replace(/\\\\/g, "\\");
     const fn = new win.Function(`return ${expr}`)();

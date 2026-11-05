@@ -41,9 +41,7 @@ describe("fill-to-vocabulary binding", () => {
     const code = "Choose 'United States (+1)' in the Country Code dropdown";
     const country = "Select 'Canada' in the Country dropdown for the test candidate";
     expect(harvestPersonaBindings([code], vocabulary, {}).size).toBe(0);
-    expect(harvestPersonaBindings([country], vocabulary, {}).get("Canada")).toBe(
-      "payload.Country"
-    );
+    expect(harvestPersonaBindings([country], vocabulary, {}).get("Canada")).toBe("payload.Country");
   });
 });
 

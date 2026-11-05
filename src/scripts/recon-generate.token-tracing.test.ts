@@ -99,7 +99,11 @@ describe("token tracing across a multi-step flow", () => {
       });
 
     it("admits the GET and threads its token into the later POST", () => {
-      const caps = [getStep, post({ handle: TOKEN, qty: 1 }, 1), post({ handle: TOKEN, qty: 2 }, 2)];
+      const caps = [
+        getStep,
+        post({ handle: TOKEN, qty: 1 }, 1),
+        post({ handle: TOKEN, qty: 2 }, 2),
+      ];
       expect(extractActionSequence(caps).map((a) => a.index)).toEqual([0, 1, 2]);
       const out = emit(caps, true);
       expect(out).not.toContain(TOKEN);

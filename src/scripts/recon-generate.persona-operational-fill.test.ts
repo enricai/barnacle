@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assertNoLeakedPersonaConstant, buildKnownFieldValues } from "@/scripts/recon-generate";
 import { EMPTY_VOCABULARY } from "@/recon/vocabulary";
+import { assertNoLeakedPersonaConstant, buildKnownFieldValues } from "@/scripts/recon-generate";
 
 const salary = "Fill the 'What are your salary expectations for this position?' field with '75000'";
 const city = "Fill in the City field with 'Austin'";

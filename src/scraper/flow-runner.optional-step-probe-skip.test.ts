@@ -11,7 +11,12 @@ vi.mock("@/scraper/stagehand-guard", async (importOriginal) => {
   return { ...actual, guardedObserve: (...a: unknown[]) => guardedObserve(...a) };
 });
 
-const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+const logger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Logger;
 const page = { url: () => "https://example.org/" } as unknown as Page;
 
 function run(step: string, optional?: boolean) {

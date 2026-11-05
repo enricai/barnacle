@@ -328,7 +328,10 @@ export function resolveStepPayloadField(
  * ("candidate's") is not a delimiter and is kept.
  */
 function labelMatchText(instruction: string): string {
-  return instruction.replace(/(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu, "");
+  return instruction.replace(
+    /(?<![\p{L}\p{N}])['"\u2018\u2019\u201C\u201D]|['"\u2018\u2019\u201C\u201D](?![\p{L}\p{N}])/gu,
+    ""
+  );
 }
 
 /** Words that qualify a trailing "code"/"id" as a code-style control name. */
@@ -403,10 +406,7 @@ function fieldForFillStep(
  * explicit field, no vocabulary row) and the label is phrased as a question.
  * Such answers ('75000' salary) are not persona constants.
  */
-function isOperationalFill(
-  step: FlowStepInput,
-  vocabulary: ReconVocabulary
-): boolean {
+function isOperationalFill(step: FlowStepInput, vocabulary: ReconVocabulary): boolean {
   if (typeof step !== "string") {
     if (step.payloadFieldNone) return true;
     if (step.payloadField) return false;
@@ -3291,7 +3291,11 @@ function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
   for (let j = index + 1; j < captures.length; j++) {
     const later = captures[j]!;
     if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
-    const haystacks = [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)];
+    const haystacks = [
+      later.url,
+      later.requestPostData ?? "",
+      ...Object.values(later.requestHeaders),
+    ];
     for (const token of tokens) {
       if (haystacks.some((h) => h.includes(token))) return true;
     }
