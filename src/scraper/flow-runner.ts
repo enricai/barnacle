@@ -5268,8 +5268,8 @@ async function resolvedClickTargetIsSubmitShaped(
  * div[1]/button[1]` compare equal: a node's first-of-tag and sole-of-tag
  * forms can never coexist under one parent, so dropping `[1]` is injective.
  */
-function canonicalAbsoluteXpath(selector: string): string | null {
-  const body = xpathBodyForEvaluate(selector);
+function canonicalAbsoluteXpath(selector: string, target?: FrameTarget): string | null {
+  const body = xpathBodyForEvaluate(selector, target);
   return body?.startsWith("/") ? body.replace(/\[1\]/g, "").toLowerCase() : null;
 }
 
@@ -5297,7 +5297,7 @@ async function readSubmitShapedControlXpaths(target: FrameTarget): Promise<Set<s
     return new Set(
       result
         .filter((x): x is string => typeof x === "string")
-        .map(canonicalAbsoluteXpath)
+        .map((x) => canonicalAbsoluteXpath(x))
         .filter((x): x is string => x !== null)
     );
   } catch {
@@ -15085,7 +15085,7 @@ export async function executeStepWithHealing(params: {
       isClick && !stepDeclaredNonSubmit && resolvedAction?.selector
         ? submitShapeObservedBeforeClick.get(resolvedAction.selector) === true ||
           submitShapedControlsBeforeClick.has(
-            canonicalAbsoluteXpath(resolvedAction.selector) ?? ""
+            canonicalAbsoluteXpath(resolvedAction.selector, frameTarget ?? undefined) ?? ""
           ) ||
           (await resolvedClickTargetIsSubmitShaped(
             frameTarget ?? mainFrameTarget(page),
