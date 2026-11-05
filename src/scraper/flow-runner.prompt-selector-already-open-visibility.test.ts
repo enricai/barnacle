@@ -1,4 +1,4 @@
-import type { ActResult, Page, Stagehand } from "@browserbasehq/stagehand";
+import type { Page } from "@browserbasehq/stagehand";
 import { describe, expect, it, vi } from "vitest";
 
 import { executeStepWithHealing } from "@/scraper/flow-runner";
@@ -8,11 +8,12 @@ import type { Logger } from "@/types/logging";
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
 
 const WIDGET = (popup: string): string => `
-<div role="group" aria-labelledby="s"><span id="s">Contact</span>
-  <label for="t"><span>Phone Device Type</span></label>
-  <div id="w" data-uxi-widget-type="multiselect">
-    <div data-automation-id="promptSelectionLabel"></div>
-    <button id="t" aria-haspopup="listbox" type="button" aria-invalid="true"></button>
+<div>
+  <div role="group" aria-labelledby="phone-section">
+    <span id="phone-section">Phone</span>
+    <label for="phoneType"><span>Phone Device Type</span></label>
+    <button id="phoneType" aria-haspopup="listbox" type="button"
+            aria-invalid="true" aria-label="Phone Device Type Required"></button>
     ${popup}
   </div>
 </div>`;
@@ -20,21 +21,17 @@ const WIDGET = (popup: string): string => `
 async function run(popup: string): Promise<string[]> {
   const h = buildPromptWidgetHarness({
     html: WIDGET(popup),
-    popupByWidgetId: { w: { options: ["Mobile", "Home"] } },
+    popupByWidgetId: { phoneType: { options: ["Mobile", "Home"] } },
   });
-  const stagehand = {
-    context: {},
-    act: vi.fn().mockResolvedValue({ success: true, message: "", actionDescription: "", actions: [] } as ActResult),
-  } as unknown as Stagehand;
   await executeStepWithHealing({
-    stagehand,
+    stagehand: vi.fn() as never,
     page: h.page as Page,
     frameTarget: h.target,
-    step: "Select Phone Device Type: Mobile",
+    step: "for 'Phone Device Type' select 'Mobile'",
     optional: false,
     upload: false,
     submitStep: false,
-    stepIndex: 1,
+    stepIndex: 3,
     phase: "apply",
     signalCounter: { n: 0 },
     recentCaptures: [],
