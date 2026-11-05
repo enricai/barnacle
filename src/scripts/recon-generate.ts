@@ -11644,7 +11644,16 @@ export function applyDrillParamBindings(
     const accessor = `\${payload.${binding.payloadField} ?? ${formatDrillParamBindingDefault(binding.type, binding.default)}}`;
     const escapedParamName = paramName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const paramRx = new RegExp(`([?&]${escapedParamName}=)([^&]*)`, "g");
-    return acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
+    const withQuery = acc.replace(paramRx, (_full, prefix: string) => `${prefix}${accessor}`);
+    // JSON body key: `"name": <scalar>` — keeps the original quoting so a
+    // captured `"2"` stays a JSON string and a bare `2` stays a number.
+    const keyRx = new RegExp(
+      `("${escapedParamName}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*|true|false|null)`,
+      "g"
+    );
+    return withQuery.replace(keyRx, (_full, prefix: string, old: string) =>
+      old.startsWith('"') ? `${prefix}"${accessor}"` : `${prefix}${accessor}`
+    );
   }, text);
 }
 
