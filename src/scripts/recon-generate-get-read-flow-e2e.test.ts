@@ -58,6 +58,55 @@ describe("recon-generate — multi-step flow of successful GET reads", () => {
     expect(contract).toContain('payload.itemsId ?? "1"');
   }, 60_000);
 
+  it("a flow of schedule GET captures is a single-endpoint REST read; the URL guard ignores the response schema", () => {
+    const workDir = mkdtempSync(join(tmpdir(), "barnacle-get-sched-"));
+    dirs.push(workDir);
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const windows = [
+      ["2030-01-07", "2030-01-13"],
+      ["2030-01-14", "2030-01-20"],
+    ];
+    windows.forEach(([from, to], i) => {
+      writeFileSync(
+        join(capturesDir, `00${i}-read.json`),
+        JSON.stringify(
+          buildCapture({
+            url: `https://example.com/venues/9/schedule.json?room_ids%5B%5D=9&date_from=${from}&date_to=${to}`,
+            requestPostData: null,
+            responseBody: { slots: [{ id: i + 1 }], mapUrl: "https://example.com/map" },
+            timestamp: `2024-02-0${i + 1}T00:00:00Z`,
+            method: "GET",
+          })
+        )
+      );
+    });
+    const siteId = `get-sched-flow-test-${process.pid}`;
+    const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
+    dirs.push(siteOutDir);
+    mkdirSync(siteOutDir, { recursive: true });
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({ steps: [{ step: "open the page" }, { step: "view the schedule" }] })
+    );
+    const result = spawnSync(
+      TSX_BIN,
+      [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      { cwd: REPO_ROOT, encoding: "utf8" }
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.status, output).toBe(0);
+    expect(result.stdout).toContain("single-endpoint REST");
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain("async executeHttp(");
+    expect(contract).toContain("payload.date_from");
+    expect(contract).toContain("payload.date_to");
+  }, 60_000);
+
   it("in-process: main() selects the GET endpoint (covered path)", async () => {
     const workDir = mkdtempSync(join(tmpdir(), "barnacle-get-read-ip-"));
     dirs.push(workDir);
