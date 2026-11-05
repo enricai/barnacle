@@ -5358,7 +5358,7 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
       "const XPayloadSchema = z.object({\nTrackingUrl: z.string(),\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n";
     const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-    expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
+    expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).toThrow(
       /required URL field.*TrackingUrl/
     );
   });
@@ -5573,12 +5573,20 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "")
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  q: z.string(),"),
+        "",
+        "z.object({\n  q: z.string(),\n})"
+      )
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"), "")
+      unreferencedRequiredUrlFields(
+        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
+        "",
+        "z.object({\n  ClickUrl: z.string(),\n})"
+      )
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -5587,14 +5595,22 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
   const src =
     "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();\n";
   it("does not flag a required nested response *Url leaf", () => {
-    expect(unreferencedRequiredUrlFields(src, "")).toEqual([]);
+    expect(
+      unreferencedRequiredUrlFields(src, "", "z.object({}).extend({\n  date: z.string().optional(),\n})")
+    ).toEqual([]);
   });
   it("still flags a required unread payload *Url field", () => {
     const withUrl = src.replace(
       "date: z.string().optional(),",
       "date: z.string().optional(),\n  homeUrl: z.string(),"
     );
-    expect(unreferencedRequiredUrlFields(withUrl, "")).toEqual(["homeUrl"]);
+    expect(
+      unreferencedRequiredUrlFields(
+        withUrl,
+        "",
+        "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})"
+      )
+    ).toEqual(["homeUrl"]);
   });
 });
 
