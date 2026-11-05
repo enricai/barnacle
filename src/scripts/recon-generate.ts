@@ -304,7 +304,13 @@ export function resolveStepPayloadField(
   // validated below.
   const isSelectStep = /\b(select|choose|pick)\b/i.test(instruction);
   for (const [rx, field] of vocabulary.table) {
-    if (!rx.test(instruction)) continue;
+    const labelMatch = rx.exec(instruction);
+    if (labelMatch === null) continue;
+    // A code-style dropdown ("Country Code", "State ID") names a different
+    // control than the field its leading word matches; never bind it to that row.
+    if (/^\s*(?:code|id)\b/i.test(instruction.slice(labelMatch.index + labelMatch[0].length))) {
+      continue;
+    }
     const resolved = canonicalise ? canonicalPayloadField(field) : field;
     if (!isSelectStep) return resolved;
     const answer = pickedQuotedValue(instruction);
@@ -357,6 +363,58 @@ function fieldForFillStep(
 }
 
 /**
+ * True when a fill step answers a screening/operational question rather than
+ * naming an applicant datum: the field came only from label derivation (no
+ * explicit field, no vocabulary row) and the label is phrased as a question.
+ * Such answers ('75000' salary) are not persona constants.
+ */
+function isOperationalFill(
+  step: FlowStepInput,
+  vocabulary: ReconVocabulary
+): boolean {
+  if (typeof step !== "string") {
+    if (step.payloadFieldNone) return true;
+    if (step.payloadField) return false;
+  }
+  const instruction = typeof step === "string" ? step : step.step;
+  if (matchesVocabularyRow(instruction, vocabulary)) return false;
+  const label = /\b(?:fill(?:\s+in)?|enter|type)\s+(?:in\s+)?the\s+(.+?)\s+field\b/i.exec(
+    instruction
+  )?.[1];
+  if (label === undefined) return false;
+  return (
+    /\?/.test(label) ||
+    /^\W*(?:what|how|why|when|where|which|who|do|does|are|is|will|would|can|please)\b/i.test(label)
+  );
+}
+
+function matchesVocabularyRow(instruction: string, vocabulary: ReconVocabulary): boolean {
+  return vocabulary.table.some(([rx]) => rx.test(instruction));
+}
+
+/**
+ * Parse-time visibility: one warning per fill step whose instruction matches no
+ * vocabulary row (and carries no explicit field / opt-out), so a fill silently
+ * left to label derivation or a literal is surfaced.
+ */
+export function warnUnmatchedFillSteps(
+  flowSteps: FlowStepInput[],
+  vocabulary: ReconVocabulary,
+  warn: (msg: string) => void
+): void {
+  for (const step of flowSteps) {
+    const isObj = typeof step !== "string";
+    const instruction = isObj ? step.step : step;
+    if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
+    if (isObj && (step.payloadField || step.payloadFieldNone)) continue;
+    if (matchesVocabularyRow(instruction, vocabulary)) continue;
+    warn(
+      `recon-generate: fill step matches no vocabulary row; its value is not bound to a payload field via the vocabulary: ${JSON.stringify(instruction)}`
+    );
+  }
+}
+
+/**
  * Field→value pairs the flow establishes unambiguously via a Fill/Enter/Type
  * step — the applicant's own datum, per {@link deriveFillLabelField}'s same
  * self-describing grammar. {@link resolveStepPayloadField} uses this to verify
@@ -378,8 +436,10 @@ export function buildKnownFieldValues(
     if (!/^\s*(?:fill(?:\s+in)?|enter|type)\b/i.test(instruction)) continue;
     const field = fieldForFillStep(step, vocabulary, undefined, canonicalise);
     if (field === null) continue;
+    if (isOperationalFill(step, vocabulary)) continue;
     const value = extractStepPersonaValue(instruction, env);
     if (value === null) continue;
+    if (OPERATIONAL_ANSWER.test(value.trim())) continue;
     if (!known.has(field)) known.set(field, value);
   }
   return known;
@@ -894,12 +954,16 @@ function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): stri
  */
 function assertNoLeakedPersonaConstant(
   code: string,
-  knownFieldValues: ReadonlyMap<string, string>
+  knownFieldValues: ReadonlyMap<string, string>,
+  flowSteps: FlowStepInput[] = []
 ): void {
   for (const value of allPersonaLiterals(knownFieldValues)) {
     if (code.includes(`'${value}'`)) {
+      const step = flowSteps
+        .map((st) => (typeof st === "string" ? st : st.step))
+        .find((text) => text.includes(value));
       throw new Error(
-        `recon-generate: persona constant '${value}' survived emission — a flow step failed to splice its known field value to payload.<field>`
+        `recon-generate: persona constant '${value}' survived emission${step === undefined ? "" : ` (step: ${JSON.stringify(step)})`} — a flow step failed to splice its known field value to payload.<field>`
       );
     }
   }
@@ -17926,7 +17990,7 @@ ${flowStepsBlock}
 }
 `
   }`;
-  assertNoLeakedPersonaConstant(code, knownFieldValues);
+  assertNoLeakedPersonaConstant(code, knownFieldValues, flowSteps);
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
 }
 
@@ -18977,6 +19041,7 @@ async function main(): Promise<void> {
     // applicant fields and job context reach the caller's data instead of the
     // recon persona's. Both are site-agnostic: persona mapping comes from the
     // consumer vocabulary, job coordinates from the entry URL's own query keys.
+    warnUnmatchedFillSteps(flowSteps, vocabulary, (msg) => logger.warn(msg));
     const personaBindings = harvestPersonaBindings(flowSteps, vocabulary, process.env);
     const entryUrlParams = extractEntryUrlParams(activeCaptures[0]?.url ?? "");
     // T4 — Phase B+C: detect a form-schema GET capture and insert it into the
