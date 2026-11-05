@@ -2655,7 +2655,7 @@ export interface GetInputModel {
 }
 
 /** The model without the query keys `keys` (inputs another mechanism owns). */
-function pruneGetInputModelKeys(model: GetInputModel, keys: readonly string[]): GetInputModel {
+export function pruneGetInputModelKeys(model: GetInputModel, keys: readonly string[]): GetInputModel {
   const drop = new Set(keys);
   const dropped = model.dynamicFields.filter((d) => drop.has(d.queryKey)).map((d) => d.field);
   return {
@@ -14441,7 +14441,7 @@ function detectPaginationSignalFromSample(
  * numeric values coerced so a `limit=12&offset=0` pair is recognised as the
  * page-size/skip container it is.
  */
-function captureRequestParams(capture: Capture | null | undefined): unknown {
+export function captureRequestParams(capture: Capture | null | undefined): unknown {
   if (!capture) return null;
   const recorded = capture.variables ?? capture.decodedParams ?? null;
   if (recorded !== null || capture.method !== "GET") return recorded;
@@ -14473,7 +14473,7 @@ function captureRequestParams(capture: Capture | null | undefined): unknown {
  * variables satisfy the check — real cross-capture proof, not a relaxed or
  * defaulted check on the primary sample itself.
  */
-function detectPaginationSignal(
+export function detectPaginationSignal(
   responseBody: unknown,
   gqlVariables: unknown,
   operationIdentity?: string | null,
@@ -14611,7 +14611,7 @@ function buildGetRequestUrlExpr(
  * mutates its item in place (`Object.assign`), which is visible through
  * `itemsById`'s own stored references — no re-`set` needed.
  */
-function buildPaginatedFetchLoopExecuteHttpBody(opts: {
+export function buildPaginatedFetchLoopExecuteHttpBody(opts: {
   pascal: string;
   gqlVariablesExpr: string;
   signal: PaginationSignal;
