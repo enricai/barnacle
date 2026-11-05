@@ -5576,23 +5576,18 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
     `export const XResponseSchema = z.object({\n${resp}\n});\n\nexport type XResponse = z.infer<typeof XResponseSchema>;\n\nconst XPayloadSchema = z.object({\n${pay}\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n`;
   it("ignores a required response *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        mk("  resultUrl: z.string(),", "  q: z.string(),"),
-        "",
-        { expr: "z.object({\n  q: z.string(),\n})", fields: [{ name: "q", optional: false }] }
-      )
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  q: z.string(),"), "", {
+        expr: "z.object({\n  q: z.string(),\n})",
+        fields: [{ name: "q", optional: false }],
+      })
     ).toEqual([]);
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
-        "",
-        {
-          expr: "z.object({\n  ClickUrl: z.string(),\n})",
-          fields: [{ name: "ClickUrl", optional: false }],
-        }
-      )
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"), "", {
+        expr: "z.object({\n  ClickUrl: z.string(),\n})",
+        fields: [{ name: "ClickUrl", optional: false }],
+      })
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -5602,14 +5597,10 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
     "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();\n";
   it("does not flag a required nested response *Url leaf", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        src,
-        "",
-        {
-          expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
-          fields: [{ name: "date", optional: true }],
-        }
-      )
+      unreferencedRequiredUrlFields(src, "", {
+        expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
+        fields: [{ name: "date", optional: true }],
+      })
     ).toEqual([]);
   });
   it("still flags a required unread payload *Url field", () => {
@@ -5618,17 +5609,13 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
       "date: z.string().optional(),\n  homeUrl: z.string(),"
     );
     expect(
-      unreferencedRequiredUrlFields(
-        withUrl,
-        "",
-        {
-          expr: "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})",
-          fields: [
-            { name: "date", optional: true },
-            { name: "homeUrl", optional: false },
-          ],
-        }
-      )
+      unreferencedRequiredUrlFields(withUrl, "", {
+        expr: "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})",
+        fields: [
+          { name: "date", optional: true },
+          { name: "homeUrl", optional: false },
+        ],
+      })
     ).toEqual(["homeUrl"]);
   });
 });

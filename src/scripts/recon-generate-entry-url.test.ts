@@ -101,7 +101,10 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ClickUrl", optional: false }] })
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
+          expr: contractCode,
+          fields: [{ name: "ClickUrl", optional: false }],
+        })
       ).toThrow(/ClickUrl/);
     });
 
@@ -111,7 +114,10 @@ describe("recon-generate — browser-flow entry URL", () => {
         'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ClickUrl", optional: false }] })
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
+          expr: contractCode,
+          fields: [{ name: "ClickUrl", optional: false }],
+        })
       ).not.toThrow();
     });
 
@@ -120,7 +126,10 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "RedirectUrl", optional: true }] })
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
+          expr: contractCode,
+          fields: [{ name: "RedirectUrl", optional: true }],
+        })
       ).not.toThrow();
     });
 
@@ -128,11 +137,10 @@ describe("recon-generate — browser-flow entry URL", () => {
       const contractCode =
         "const SitePayloadSchema = z.object({\nq: z.string(),\n});\nexport type SitePayload = 1;\nconst SiteResponseSchema = z.object({\nmapUrl: z.string(),\n});";
       expect(() =>
-        assertRequiredUrlFieldsReferenced(
-          contractCode,
-          "await page.goto(baseUrl);",
-          { expr: "z.object({\nq: z.string(),\n})", fields: [{ name: "q", optional: false }] }
-        )
+        assertRequiredUrlFieldsReferenced(contractCode, "await page.goto(baseUrl);", {
+          expr: "z.object({\nq: z.string(),\n})",
+          fields: [{ name: "q", optional: false }],
+        })
       ).not.toThrow();
     });
 
@@ -142,7 +150,10 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ApplyUrl", optional: false }] })
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
+          expr: contractCode,
+          fields: [{ name: "ApplyUrl", optional: false }],
+        })
       ).toThrow(/ApplyUrl/);
     });
 
