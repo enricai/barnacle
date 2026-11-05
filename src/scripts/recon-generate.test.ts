@@ -5705,6 +5705,15 @@ describe("deriveGetInputModel", () => {
     // A different route is not a sibling; the winner's own slug is still bound on its own.
     expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual(m.pathVars);
   });
+  it("binds slugs that differ across several same-route siblings", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
+    const b = cap("https://shop.example/teams/beta-team/slots?x=1");
+    const c = cap("https://shop.example/teams/gamma-team/slots?x=1");
+    expect(deriveGetInputModel(a, [a, b, c])!.pathVars).toEqual([
+      { field: "teamsId", segmentIndex: 2, queryKey: "" },
+    ]);
+  });
   it("keeps a declared query key payload-driven when it never varies", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/search?q=1&from=2");
