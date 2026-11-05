@@ -10,6 +10,8 @@ describe("passive no-op steps", () => {
     expect(isPassiveNoopInstruction("Wait for the report to render")).toBe(true);
   });
   it("does not treat actionable steps as no-ops", () => {
+    expect(isPassiveNoopInstruction("Search for the report")).toBe(false);
+    expect(isPassiveNoopInstruction("Close the dialog")).toBe(false);
     expect(isPassiveNoopInstruction("Click the Search button")).toBe(false);
     expect(isPassiveNoopInstruction("Fill the query field, do not click submit")).toBe(false);
   });

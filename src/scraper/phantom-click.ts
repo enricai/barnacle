@@ -218,8 +218,20 @@ export function isPassiveNoopInstruction(instruction: string): boolean {
     `\\b(?:do not|don't|dont|never|without|no need to)\\s+(?:\\w+\\s+){0,2}?(?:${STEP_ACTION_VERBS.join("|")})\\b`,
     "g",
   );
-  return !STEP_ACTION_VERB_PATTERN.test(text.replace(negated, " "));
+  negated.lastIndex = 0;
+  const remaining = text.replace(negated, " ");
+  if (STEP_ACTION_VERB_PATTERN.test(remaining)) return false;
+  if (EXTRA_ACTION_VERB_PATTERN.test(remaining)) return false;
+  // Positive evidence required: a step whose verb is merely absent from the
+  // closed list (e.g. "Search for X") must still run, not be silently skipped.
+  negated.lastIndex = 0;
+  return negated.test(text) || PASSIVE_VERB_PATTERN.test(text);
 }
+
+const EXTRA_ACTION_VERB_PATTERN =
+  /\b(?:close|dismiss|search|sign|log|login|logout|go|add|save|apply|pick|set|hover|focus|next|view|run|start|begin|create|delete|remove|send|play|download|refresh|reload|visit|goto|reply|post|book|buy|pay|order|register|join|follow|search|find|look|use|try|retry|skip|back|cancel|ok|yes|no)\b/;
+const PASSIVE_VERB_PATTERN =
+  /\b(?:wait|pause|observe|idle|settle|nothing|noop)\b/;
 
 /**
  * Gates whether a landed destination plausibly corroborates a step's own
