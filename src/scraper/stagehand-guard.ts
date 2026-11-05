@@ -131,15 +131,7 @@ export function isTrustedClickMethod(method: string | undefined): boolean {
 const TRANSIENT_RETRIES = 2;
 const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
 
-/**
- * Retries a Stagehand call that failed with a transient provider error so a
- * blip is not recorded as a failed technique. Wrap it OUTSIDE `withWatchdog`:
- * each try gets its own watchdog timeout and the backoff is not charged to it.
- * Safe for `act` because the provider 5xx is raised during Stagehand's
- * inference request, before it performs any page action; the narrow
- * classifier never matches selector, timeout, or schema errors raised after
- * one.
- */
+/** A resolved failure envelope that classifies as a transient provider error; thrown so retryTransient retries it. */
 class EnvelopeTransient extends Error {
   constructor(
     message: string,
@@ -149,6 +141,15 @@ class EnvelopeTransient extends Error {
   }
 }
 
+/**
+ * Retries a Stagehand call that failed with a transient provider error so a
+ * blip is not recorded as a failed technique. Wrap it OUTSIDE `withWatchdog`:
+ * each try gets its own watchdog timeout and the backoff is not charged to it.
+ * Safe for `act` because the provider 5xx is raised during Stagehand's
+ * inference request, before it performs any page action; the narrow
+ * classifier never matches selector, timeout, or schema errors raised after
+ * one.
+ */
 function retryTransient<T>(call: () => Promise<T>): Promise<T> {
   return pRetry(call, {
     retries: TRANSIENT_RETRIES,
