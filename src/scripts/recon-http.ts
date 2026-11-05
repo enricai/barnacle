@@ -11,7 +11,13 @@
  *   - Rate-limit probe (1 → 3 → 5 rps, stops at first 429/403)
  *
  * Usage:
- *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>] [--flow-file <path>] [--methods GET,HEAD]
+ *   pnpm tsx src/scripts/recon-http.ts [--captures-dir <path>] [--out-dir <path>] [--flow-file <path>] [--methods GET,HEAD] [--include-unsafe-methods]
+ *
+ * Probes and replays stay on the flow's own backend: when `--flow-file` declares
+ * `ownBackendHostnames`, only those hosts are replayed/rate-limit probed (without
+ * it, the first captured host's registrable domain is the fallback). Loopback and
+ * link-local hosts are never probed. State-changing (non-idempotent) captures are
+ * replayed only with the explicit opt-in `--include-unsafe-methods`.
  *
  * `--flow-file` supplies the flow's `ownBackendHostnames` (same file
  * recon-browser.ts's own `--flow-file` reads) so the auxiliary-endpoint probe
@@ -521,6 +527,41 @@ async function probeRateLimit(
  * earlier in the pipeline — the probe fires 60 requests per target, so a noise host reaching
  * this function must never silently slip through on a caller's say-so.
  */
+export function isLoopbackOrLinkLocalHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "::1" || h === "::" || h.startsWith("fe80:")) return true;
+  if (/^127\./.test(h) || /^169\.254\./.test(h) || h === "0.0.0.0") return true;
+  return /^::ffff:(127\.|169\.254\.)/.test(h);
+}
+
+/**
+ * True when `url` is a non-loopback host inside the flow's own backend scope.
+ * Declared own hostnames match their subdomains too (`api.example.com` is in
+ * scope for a declared `example.com`) because the rate-limit budget being
+ * measured belongs to the site's backend as a whole, not one hostname — but the
+ * match is anchored on a dot boundary so a suffix-spoofing third party
+ * (`example.com.evil.example.org`) stays out. With neither own hostnames nor a
+ * fallback host known, scope is unknowable and nothing is in it: this gate
+ * fails closed rather than probing every captured host.
+ */
+export function isOwnBackendTarget(
+  url: string,
+  ownBackendHostnames: string[],
+  fallbackHost: string | null
+): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (isLoopbackOrLinkLocalHost(host)) return false;
+    const own = ownBackendHostnames.map((h) => h.toLowerCase());
+    if (own.length > 0) return own.some((o) => host === o || host.endsWith(`.${o}`));
+    const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
+    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  } catch {
+    return false;
+  }
+}
+
 export function selectRateLimitTargets(
   replays: ReplayResult[],
   ownBackendHostnames: string[],
@@ -530,13 +571,6 @@ export function selectRateLimitTargets(
   skipped: number;
 } {
   const targets = new Map<string, { method: string; body: string | null }>();
-  const own = ownBackendHostnames.map((h) => h.toLowerCase());
-  const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
-  const isOwnHost = (hostname: string): boolean => {
-    const host = hostname.toLowerCase();
-    if (own.length > 0) return own.some((o) => host === o || host.endsWith(`.${o}`));
-    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
-  };
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
@@ -546,11 +580,13 @@ export function selectRateLimitTargets(
       skipped++;
       continue;
     }
+    if (!isOwnBackendTarget(replay.url, ownBackendHostnames, fallbackHost)) {
+      skipped++;
+      continue;
+    }
     try {
       const u = new URL(replay.url);
       if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      // Never probe third-party hosts: only the site's own hosts and subdomains.
-      if (!isOwnHost(u.hostname)) continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (isStaticFixturePath(pathname, true)) continue;
@@ -688,7 +724,19 @@ async function main(): Promise<void> {
   const includeUnsafe = args.includes("--include-unsafe-methods");
   const { selected: preRobots, skipped } = selectReplayCaptures(unique, includeUnsafe, methods);
   const robots = await fetchRobotsByOrigin(preRobots.map((p) => p.capture.url));
-  const { allowed: probeworthy, blocked } = applyRobots(preRobots, robots);
+  const { allowed: robotsAllowed, blocked } = applyRobots(preRobots, robots);
+  const scopeHost = ((): string | null => {
+    try {
+      return robotsAllowed[0] ? new URL(robotsAllowed[0].capture.url).hostname : null;
+    } catch {
+      return null;
+    }
+  })();
+  const probeworthy = robotsAllowed.filter(({ capture }) => {
+    const ok = isOwnBackendTarget(capture.url, ownBackendHostnames, scopeHost);
+    if (!ok) logger.info(`skipped ${capture.url}: outside own-backend scope or loopback`);
+    return ok;
+  });
   for (const b of blocked) logger.info(`skipped ${b.url}: robots.txt Disallow: ${b.rule}`);
   logger.info(
     `found ${all.length} captures, ${unique.length} unique, ${probeworthy.length} probeworthy` +
