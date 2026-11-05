@@ -792,7 +792,7 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
       name: "StepVerificationError",
     });
     expect(stagehandAct).toHaveBeenCalledTimes(2);
-    const retryArg = String(stagehandAct.mock.calls[1][0]);
+    const retryArg = String(stagehandAct.mock.calls[1]?.[0]);
     expect(retryArg).toContain("Click the email input, then type a@example.com");
     expect(retryArg).toMatch(/selecting all existing text/);
   });
