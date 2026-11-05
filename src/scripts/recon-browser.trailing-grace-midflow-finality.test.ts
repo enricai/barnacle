@@ -143,6 +143,11 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
       url: pageUrl,
       title: vi.fn().mockResolvedValue(pageTitle),
       evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+        if (bodyText && typeof expr === "string" && expr.includes("b.outerHTML")) {
+          // The shared settled read judges the DOM snapshot's text, not a live probe.
+          const t = bodyText();
+          return { html: 10_000, text: `${t.length}:${t.slice(0, 200)}`, full: t, digest: `d:${t.length}` };
+        }
         if (bodyText && typeof expr === "string" && expr.includes('innerText || ""')) {
           return bodyText();
         }
