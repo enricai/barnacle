@@ -3076,7 +3076,7 @@ const REPHRASE_SYSTEM_PROMPT =
 export function withClearBeforeType(instruction: string): string {
   if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
   if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
-  if (/select all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(instruction)) {
+  if (/select(ing)? all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(instruction)) {
     return instruction;
   }
   return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
