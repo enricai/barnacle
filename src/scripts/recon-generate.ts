@@ -11964,7 +11964,7 @@ function isMintedDependencyValue(value: string): boolean {
   return true;
 }
 
-function computeFoldChain<T extends { capture: Capture }>(
+export function computeFoldChain<T extends { capture: Capture }>(
   actions: readonly T[],
   drillStepIndex: number,
   drillArrayPath: string[]
