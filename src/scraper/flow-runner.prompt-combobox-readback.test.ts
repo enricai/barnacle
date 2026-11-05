@@ -6,7 +6,7 @@ import { widgetLabelMatches } from "@/scraper/flow-runner";
 // The expression constants are module-private; read them from source text.
 import { readFileSync } from "node:fs";
 
-const src = readFileSync(new URL("./flow-runner.ts", import.meta.url), "utf8");
+const src = readFileSync("src/scraper/flow-runner.ts", "utf8");
 const rxMatch = /const PROMPT_EMPTY_VALUE_RX =\s*(\/.*\/i);/.exec(src);
 const emptyRx = new Function(`return ${rxMatch?.[1]}`)() as RegExp;
 
