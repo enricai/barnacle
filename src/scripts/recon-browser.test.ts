@@ -6605,7 +6605,10 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — foldReturn", () => {
     if (!result.success) return;
     expect(Array.isArray(result.data)).toBe(false);
     if (Array.isArray(result.data)) return;
-    expect(result.data.foldReturn?.drillResultsPath).toBeUndefined();
+    const fr = result.data.foldReturn;
+    expect(Array.isArray(fr)).toBe(false);
+    if (Array.isArray(fr)) return;
+    expect(fr?.drillResultsPath).toBeUndefined();
   });
 
   it("rejects a foldReturn with a non-string drillResultsPath", () => {
