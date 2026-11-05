@@ -5636,6 +5636,14 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
+  it("keeps a multi-word collection segment fixed in /<region>/<collection-slug>/<id>", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://x.test/api/us-east/price-lists/42/rates");
+    const m = deriveGetInputModel(a, [a])!;
+    const idxs = m.pathVars.map((v) => v.segmentIndex);
+    expect(idxs).toContain(4);
+    expect(idxs).not.toContain(3);
+  });
   it("keeps declared names for non-varying keys instead of freezing them", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap(
