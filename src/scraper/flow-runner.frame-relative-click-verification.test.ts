@@ -22,3 +22,54 @@ describe("toFrameRelativeXpath", () => {
     );
   });
 });
+
+import {
+  fillTextDatepickerInput,
+  isDateSegmentAtSelector,
+  verifyFillReadback,
+  dispatchJqueryChangeEvent,
+} from "./flow-runner.js";
+
+describe("frame-relative xpath reaches in-frame evaluate", () => {
+  const composite = "/html[1]/body[1]/main[1]/iframe[1]/html[1]/body[1]/div[2]/input[1]";
+  const rel = "/html[1]/body[1]/div[2]/input[1]";
+  function fake() {
+    const exprs: string[] = [];
+    const t = {
+      frame: {},
+      frameSelector: "iframe#f",
+      evaluate: async (e: unknown) => {
+        exprs.push(String(e));
+        return null;
+      },
+    } as unknown as FrameTarget;
+    return { t, exprs };
+  }
+  const check = (exprs: string[]) => {
+    expect(exprs.length).toBeGreaterThan(0);
+    for (const e of exprs) {
+      expect(e).toContain(JSON.stringify(rel));
+      expect(e).not.toContain("iframe[1]");
+    }
+  };
+  it("isDateSegmentAtSelector", async () => {
+    const { t, exprs } = fake();
+    await isDateSegmentAtSelector(t, `xpath=${composite}`).catch(() => false);
+    check(exprs);
+  });
+  it("verifyFillReadback", async () => {
+    const { t, exprs } = fake();
+    await verifyFillReadback(t, `xpath=${composite}`, "x").catch(() => null);
+    check(exprs);
+  });
+  it("dispatchJqueryChangeEvent", async () => {
+    const { t, exprs } = fake();
+    await dispatchJqueryChangeEvent(t, `xpath=${composite}`).catch(() => undefined);
+    check(exprs);
+  });
+  it("fillTextDatepickerInput", async () => {
+    const { t, exprs } = fake();
+    await fillTextDatepickerInput(t, `xpath=${composite}`, "01/02/2024").catch(() => null);
+    check(exprs);
+  });
+});
