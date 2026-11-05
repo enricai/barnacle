@@ -71,3 +71,23 @@ describe("lib/http is reachable by consumers", () => {
     });
   });
 });
+
+/**
+ * Pins the mechanism the comment in `lib/http.ts` describes, because it is
+ * surprising enough that a future reader may otherwise "fix" the explanation.
+ * `globalThis.fetch` stays Node's bundled undici, but importing the installed
+ * undici writes a `Dispatcher1Wrapper` into the legacy `undici.globalDispatcher.1`
+ * global that the bundled copy reads — which is how an import alone changes what
+ * the Browserbase SDK's `globalThis.fetch` call dispatches into.
+ */
+describe("importing undici redirects the bundled fetch's dispatcher", () => {
+  it("populates the legacy global dispatcher slot the bundled undici reads", async () => {
+    await import("undici");
+
+    const slots = Object.getOwnPropertySymbols(globalThis)
+      .map(String)
+      .filter((name) => name.includes("undici.globalDispatcher"));
+
+    expect(slots).toContain("Symbol(undici.globalDispatcher.1)");
+  });
+});
