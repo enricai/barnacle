@@ -3222,6 +3222,43 @@ export function resolveManifestActionSequence(
   return resolved;
 }
 
+/** Shortest string a response leaf must be to count as a server-issued token. */
+const ISSUED_TOKEN_MIN_LENGTH = 16;
+/** Longest string considered a token (a larger leaf is document content). */
+const ISSUED_TOKEN_MAX_LENGTH = 512;
+
+/**
+ * True when a GET capture's response issues a value (an opaque token: a
+ * session id, CSRF nonce, form handle) that a LATER non-GET 2xx request
+ * re-sends verbatim in its URL, body or headers. Such a GET is the only
+ * producer of that value, so dropping it (the default for GETs) leaves the
+ * consumer replaying the recon run's frozen token instead of the live one.
+ * Admitting it lets `indexStateValues`/`compileActionSteps` thread the value.
+ * A GET that issues nothing later reused stays dropped.
+ */
+function issuesTokenReusedLater(captures: Capture[], index: number): boolean {
+  const getCapture = captures[index]!;
+  if (getCapture.responseBody === undefined || getCapture.responseBody === null) return false;
+  const tokens = new Set<string>();
+  for (const { value } of walkAllPrimitiveLeaves(getCapture.responseBody)) {
+    if (typeof value !== "string") continue;
+    if (value.length < ISSUED_TOKEN_MIN_LENGTH || value.length > ISSUED_TOKEN_MAX_LENGTH) continue;
+    if (/\s/.test(value)) continue;
+    if (getCapture.url.includes(value)) continue;
+    tokens.add(value);
+  }
+  if (tokens.size === 0) return false;
+  for (let j = index + 1; j < captures.length; j++) {
+    const later = captures[j]!;
+    if (later.method === "GET" || later.status < 200 || later.status >= 300) continue;
+    const haystacks = [later.url, later.requestPostData ?? "", ...Object.values(later.requestHeaders)];
+    for (const token of tokens) {
+      if (haystacks.some((h) => h.includes(token))) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Extracts the ordered sequence of meaningful POSTs that represent the
  * transactional flow: non-noise 2xx POSTs, minus telemetry and error-reporting
@@ -3362,7 +3399,8 @@ export function extractActionSequence(
         index !== firstPrimaryIndex &&
         !matchesFoldReturn(capture) &&
         !matchesDeclaredSubmitEndpoint(capture) &&
-        !matchesDeclaredSubmitBody(capture)
+        !matchesDeclaredSubmitBody(capture) &&
+        !issuesTokenReusedLater(captures, index)
       )
         return false;
       if (capture.status < 200 || capture.status >= 300) return false;
