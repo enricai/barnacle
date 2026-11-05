@@ -27,4 +27,29 @@ describe("emitBrowserFlowTs — payload-driven read fallback", () => {
     expect(code).not.toContain("https://flights.example.com");
     expect(code).not.toContain("payload.query");
   });
+
+  it("rebases a field-less read-only navigateTo onto the runtime baseUrl origin", () => {
+    const { code: c } = emitBrowserFlowTs({
+      siteId: "travel-fixture",
+      pascal: "TravelFixture",
+      baseUrl: "https://flights.example.com",
+      flowSteps: [{ step: "Open home", navigateTo: "https://flights.example.com/deals?a=1" }],
+      isSubmissionFlow: false,
+      readOnlyGetFlow: true,
+      getInputFields: [],
+    });
+    expect(c).toContain("navigateTo: `${new URL(baseUrl).origin}/deals?a=1`");
+    expect(c).not.toContain("https://flights.example.com/deals");
+  });
+  it("keeps a non-read-only navigateTo as a plain literal URL", () => {
+    const { code: c } = emitBrowserFlowTs({
+      siteId: "travel-fixture",
+      pascal: "TravelFixture",
+      baseUrl: "https://flights.example.com",
+      flowSteps: [{ step: "Open home", navigateTo: "https://flights.example.com/deals" }],
+      isSubmissionFlow: true,
+      readOnlyGetFlow: false,
+    });
+    expect(c).toContain('navigateTo: "https://flights.example.com/deals"');
+  });
 });
