@@ -345,7 +345,18 @@ describe("recon-generate cart-then-update flow", () => {
     mkdirSync(siteOutDir, { recursive: true });
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
       {
         cwd: RECON_GENERATE_CWD,
         encoding: "utf8",
@@ -362,5 +373,81 @@ describe("recon-generate cart-then-update flow", () => {
     );
     expect(schema.match(/items_attributes: z\.array/g)).toHaveLength(1);
     expect(schema.match(/^ {2}\w+: multipartJsonObject/gm)).toHaveLength(1);
+  }, 60_000);
+  it("replays an HTML GET, a numeric-id POST and a marker-body PUT in order without leaking the marker", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-html-csrf-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const CSRF = "csrf_a1b2c3d4e5f6a7b8";
+    const SESS = "sess_9f8e7d6c5b4a";
+    const NUM_ID = 514391;
+    const page: Capture = {
+      ...create,
+      timestamp: "2024-01-01T00:00:00Z",
+      phase: "navigation",
+      method: "GET",
+      url: "https://shop.example.com/cart",
+      requestHeaders: {},
+      requestPostData: null,
+      responseHeaders: {
+        "content-type": "text/html",
+        "set-cookie": `sid=${SESS}; Path=/; HttpOnly`,
+      },
+      responseBody: `<html><head><meta name="csrf-token" content="${CSRF}"></head><body></body></html>`,
+    };
+    const hdrs = {
+      "content-type": "application/json",
+      "x-csrf-token": CSRF,
+      cookie: `sid=${SESS}`,
+    };
+    const post: Capture = {
+      ...create,
+      timestamp: "2024-01-01T00:00:03Z",
+      requestHeaders: hdrs,
+      responseBody: { id: NUM_ID, state: "cart" },
+    };
+    const put: Capture = {
+      ...update,
+      requestHeaders: hdrs,
+      requestPostData: REQUEST_BODY_UNAVAILABLE,
+      responseBody: { id: NUM_ID, state: "updated" },
+    };
+    [page, post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-html-csrf-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract.indexOf('method: "POST"')).toBeGreaterThan(-1);
+    expect(contract.indexOf('method: "PUT"')).toBeGreaterThan(contract.indexOf('method: "POST"'));
+    expect(contract).not.toContain(REQUEST_BODY_UNAVAILABLE);
+    expect(contract).not.toContain(String(NUM_ID));
+    expect(contract).toContain("x-csrf-token");
   }, 60_000);
 });
