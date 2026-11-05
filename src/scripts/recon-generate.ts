@@ -15625,7 +15625,9 @@ export function emitContractTsParts(opts: {
   // zod strips unknown keys, so without composing it every generated
   // contract drops the TrackingUrl the engine's fireTrackingClick reads. merge
   // rather than a second extend keeps the schema to a single `.extend()`.
-  const trackingMerge = ".merge(JobTrackingSchema)";
+  // A read-only GET flow has no submission step, so no tracking click fires.
+  const mergesTracking = !getInputModel;
+  const trackingMerge = mergesTracking ? ".merge(JobTrackingSchema)" : "";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
@@ -15647,7 +15649,9 @@ export function emitContractTsParts(opts: {
   // ApplicantContactSchema backs the job-application submission-flow payload
   // schema (see basePayloadSchemaExpr above); only referenced when
   // usesApplicantContactSchema is true.
-  const jobTrackingImport = `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`;
+  const jobTrackingImport = mergesTracking
+    ? `import { JobTrackingSchema } from "${ENGINE_PKG}/lib/job-tracking";\n`
+    : "";
   const applicantContactImport = usesApplicantContactSchema
     ? `import { ApplicantContactSchema } from "${ENGINE_PKG}/lib/applicant-payload";\n`
     : "";
