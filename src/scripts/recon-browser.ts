@@ -3440,6 +3440,8 @@ async function main(): Promise<void> {
               `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`
             );
             consecutiveStaleSkips = 0;
+            completedSteps.push(step.instruction);
+            session.recordStepCompleted?.();
             continue;
           }
 
