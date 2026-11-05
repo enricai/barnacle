@@ -10200,10 +10200,10 @@ function frameCdpSender(
 /**
  * Clicks at a frame-local viewport point through the same CDP route as keys, so
  * the press lands where the hit test just ran instead of re-resolving a locator.
- * A same-process child frame has no session of its own, so its offset in the
- * page is added to reach page coordinates.
+ * The frame's offset in the page is always added (frame.session only selects
+ * the CDP channel); it is zero only when frameElement is null (out-of-process).
  */
-async function dispatchTrustedClick(
+export async function dispatchTrustedClick(
   page: Page,
   target: FrameTarget,
   x: number,
@@ -10214,18 +10214,16 @@ async function dispatchTrustedClick(
     return;
   }
   const send = frameCdpSender(page, target);
-  const offset = target.frame.session
-    ? { x: 0, y: 0 }
-    : (((await target
-        .evaluate(
-          `(() => {
+  const offset = ((await target
+    .evaluate(
+      `(() => {
             const f = window.frameElement;
             if (!f) return null;
             const r = f.getBoundingClientRect();
             return { x: r.left, y: r.top };
           })()`
-        )
-        .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 });
+    )
+    .catch(() => null)) as { x: number; y: number } | null) ?? { x: 0, y: 0 };
   const point = { x: x + offset.x, y: y + offset.y, button: "left", clickCount: 1 };
   await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
   await send("Input.dispatchMouseEvent", { type: "mousePressed", ...point });
