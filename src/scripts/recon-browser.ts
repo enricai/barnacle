@@ -2916,6 +2916,7 @@ async function main(): Promise<void> {
     // rather than a previous attempt's partially-replanned plan.
     const plan: NormalizedStep[] = [];
     const replanEvents: ReplanEvent[] = [];
+    let runSucceeded = false;
     const transientStepRetries = new Map<string, number>();
     try {
       const stagehand = session.stagehand;
@@ -3431,6 +3432,17 @@ async function main(): Promise<void> {
             }
           }
 
+          // An optional step whose cascade is exhausted is conditional by the
+          // author's declaration: log and skip at ANY position (not only the
+          // trailing window) instead of replanning or aborting the run.
+          if (step.optional && err.kind === "cascade-exhausted") {
+            logger.warn(
+              `${formatStepPrefix(i, () => plan.length)} optional step cascade exhausted; logged and skipped (${step.instruction.slice(0, 60)})`
+            );
+            consecutiveStaleSkips = 0;
+            continue;
+          }
+
           if (!anthropic) throw err;
 
           // Cause-based replan budget. Probe replans are cheap (one observe +
@@ -3777,6 +3789,7 @@ async function main(): Promise<void> {
         plan.length - 1
       );
 
+      runSucceeded = true;
       logger.info(`recon complete — ${counter.n} captures written to ${runDir.root}`);
       const bodyWarning = formatBodyUnavailableWarning(bodyUnavailableCounter.n);
       if (bodyWarning) logger.warn(bodyWarning);
@@ -3795,7 +3808,12 @@ async function main(): Promise<void> {
       // needs to fire on failure as much as on success. Skipped on
       // --no-save-replan (diagnostic dry-runs) and when --flow was used
       // inline (no file to write back to).
-      if (replanEvents.length > 0) {
+      if (replanEvents.length > 0 && !runSucceeded) {
+        // A failed run must leave the author's flow file byte-identical.
+        logger.info(
+          `run failed with ${replanEvents.length} replan event(s); not writing replan steps back over the flow file`
+        );
+      } else if (replanEvents.length > 0) {
         if (!saveReplan) {
           logger.info(
             `run done with ${replanEvents.length} replan event(s); --no-save-replan, leaving flow.json unchanged`
