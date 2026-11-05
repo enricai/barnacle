@@ -1316,9 +1316,16 @@ export function isZeroVarianceRepeatCapture(
     return matchCount >= 2 && matchCount > sameEndpointUrls.length / 2;
   });
   if (!hasFixedKey) return false;
-  const bodyIdentical = sameEndpoint.every((c) => c.requestPostData === candidate.requestPostData);
+  const bodyless = candidate.requestPostData === null || candidate.requestPostData === "";
+  // A bodyless request's only input is its URL, so body equality is vacuous:
+  // require whole-URL equality, else a varying search GET reads as a repeat.
+  const bodyIdentical = sameEndpoint.every(
+    (c) =>
+      c.requestPostData === candidate.requestPostData && (!bodyless || c.url === candidate.url)
+  );
   if (bodyIdentical) return true;
   if (hasNoBusinessRelevantResponseState(candidate)) return true;
+  if (bodyless) return false;
   if (hasStableOperationIdentity(candidate, sameEndpoint)) return false;
   return hasFreelyVaryingResponseAcrossOccurrences(sameEndpoint);
 }
