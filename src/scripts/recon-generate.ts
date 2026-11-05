@@ -12510,6 +12510,10 @@ export interface FoldReturnSpec {
       default: string | number | boolean;
     }
   >;
+  /** Key under which this entry's folded result is attached (array form). */
+  attachAs?: string;
+  /** Name of the caller payload flag gating this entry (array form). */
+  payloadFlag?: string;
 }
 
 /**
@@ -12520,6 +12524,17 @@ export interface FoldReturnSpec {
  * `submitEndpointPattern`/`submitBodyPattern`.
  */
 export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | null {
+  const specs = parseFoldReturnSpecs(flowFileContents);
+  return specs === null ? null : specs[0]!;
+}
+
+/**
+ * Parses `foldReturn` as one-or-array. The first entry is the primary drill
+ * and must carry `resultsPath`; later entries inherit the primary's
+ * `resultsPath` when they omit it. Any invalid entry rejects the whole
+ * declaration (`null`), matching the single-object behavior.
+ */
+export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[] | null {
   try {
     const raw: unknown = JSON.parse(flowFileContents);
     if (Array.isArray(raw)) return null;
@@ -12532,43 +12547,68 @@ export function parseFoldReturnSpec(flowFileContents: string): FoldReturnSpec | 
       return null;
     }
     const foldReturn = (raw as { foldReturn?: unknown }).foldReturn;
-    if (foldReturn === undefined || foldReturn === null || typeof foldReturn !== "object") {
-      return null;
+    const entries: unknown[] = Array.isArray(foldReturn) ? foldReturn : [foldReturn];
+    if (entries.length === 0) return null;
+    const specs: FoldReturnSpec[] = [];
+    for (const entry of entries) {
+      const spec = parseFoldReturnEntry(entry, specs[0]?.resultsPath);
+      if (spec === null) return null;
+      specs.push(spec);
     }
-    const { endpointPattern, resultsPath, drillResultsPath, joinFields, drillParamBindings } =
-      foldReturn as {
-        endpointPattern?: unknown;
-        resultsPath?: unknown;
-        drillResultsPath?: unknown;
-        joinFields?: unknown;
-        drillParamBindings?: unknown;
-      };
-    if (
-      typeof endpointPattern !== "string" ||
-      typeof resultsPath !== "string" ||
-      (drillResultsPath !== undefined &&
-        (typeof drillResultsPath !== "string" || drillResultsPath.length === 0)) ||
-      !Array.isArray(joinFields) ||
-      joinFields.length === 0 ||
-      !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
-    ) {
-      return null;
-    }
-    const parsedDrillParamBindings =
-      drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
-    if (drillParamBindings !== undefined && parsedDrillParamBindings === null) {
-      return null;
-    }
-    return {
-      endpointPattern,
-      resultsPath,
-      ...(drillResultsPath !== undefined ? { drillResultsPath } : {}),
-      joinFields,
-      ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
-    };
+    return specs;
   } catch {
     return null;
   }
+}
+
+function parseFoldReturnEntry(entry: unknown, inheritedResultsPath?: string): FoldReturnSpec | null {
+  if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+  const {
+    endpointPattern,
+    resultsPath: declaredResultsPath,
+    drillResultsPath,
+    joinFields,
+    drillParamBindings,
+    attachAs,
+    payloadFlag,
+  } = entry as {
+    endpointPattern?: unknown;
+    resultsPath?: unknown;
+    drillResultsPath?: unknown;
+    joinFields?: unknown;
+    drillParamBindings?: unknown;
+    attachAs?: unknown;
+    payloadFlag?: unknown;
+  };
+  const resultsPath = declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
+  const optNonEmptyString = (v: unknown): boolean =>
+    v === undefined || (typeof v === "string" && v.length > 0);
+  if (
+    typeof endpointPattern !== "string" ||
+    typeof resultsPath !== "string" ||
+    !optNonEmptyString(drillResultsPath) ||
+    !optNonEmptyString(attachAs) ||
+    !optNonEmptyString(payloadFlag) ||
+    !Array.isArray(joinFields) ||
+    joinFields.length === 0 ||
+    !joinFields.every((f): f is string => typeof f === "string" && f.length > 0)
+  ) {
+    return null;
+  }
+  const parsedDrillParamBindings =
+    drillParamBindings !== undefined ? parseDrillParamBindings(drillParamBindings) : undefined;
+  if (drillParamBindings !== undefined && parsedDrillParamBindings === null) return null;
+  return {
+    endpointPattern,
+    resultsPath,
+    ...(drillResultsPath !== undefined ? { drillResultsPath: drillResultsPath as string } : {}),
+    joinFields,
+    ...(attachAs !== undefined ? { attachAs: attachAs as string } : {}),
+    ...(payloadFlag !== undefined ? { payloadFlag: payloadFlag as string } : {}),
+    ...(parsedDrillParamBindings ? { drillParamBindings: parsedDrillParamBindings } : {}),
+  };
 }
 
 /**
