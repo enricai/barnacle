@@ -8721,6 +8721,10 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      // The recon origin is runtime context, never a caller payload field: a
+      // leaf that is or embeds it must not mint a payload key (e.g. BaseUrl);
+      // the origin substitution below rewrites it to `${context.baseUrl}`.
+      if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
@@ -15718,8 +15722,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // parent object (e.g. a group id) resolve at all.
         const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
           const withBase =
-            baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
-              ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
+            baseUrl.length > 0
+              ? rawUrl.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`)
               : rawUrl;
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
