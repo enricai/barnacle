@@ -16137,7 +16137,7 @@ const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
  * unrelated capture is how that capture's fields end up in the contract, so
  * {@link healUnreferencedUrlFieldsOnce} uses them to attribute and drop noise.
  */
-function unreadRelaxedResponseUrlFields(
+export function unreadRelaxedResponseUrlFields(
   contractCode: string,
   browserFlowCode: string,
   payloadSchemaExpr: string
