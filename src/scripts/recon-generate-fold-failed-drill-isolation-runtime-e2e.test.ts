@@ -205,8 +205,9 @@ describe("unproductive drill at runtime drops only its own key", () => {
       GROUPS_QUERY
     );
     const result = await executeHttp({}, { baseUrl: BASE });
-    const groups = (result.data as { data: { search: { groups: { items: Record<string, unknown>[] }[] } } })
-      .data.search.groups;
+    const groups = (
+      result.data as { data: { search: { groups: { items: Record<string, unknown>[] }[] } } }
+    ).data.search.groups;
     expect(groups[0]!.items.map((i) => i.region)).toEqual(["north", "south", "east"]);
     expect(groups[1]!.items).toEqual([{ id: "item-4", title: "Gizmo" }]);
   });
