@@ -143,7 +143,7 @@ const TRANSIENT_RETRY_MIN_TIMEOUT_MS = 500;
 class EnvelopeTransient extends Error {
   constructor(
     message: string,
-    readonly envelope: never
+    readonly envelope: unknown
   ) {
     super(message);
   }
