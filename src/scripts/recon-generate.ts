@@ -16048,7 +16048,8 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string
+  browserFlowCode: string,
+  wholeContract = false
 ): string[] {
   const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
@@ -16056,6 +16057,16 @@ export function unreferencedRequiredUrlFields(
   // `*Url` leaf (e.g. `mapUrl: z.string()`) is output, not caller input. No
   // payload-schema declaration means no caller-supplied fields to judge.
   const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
+  // Submission/multi-step flows opt into the whole contract: per-step response
+  // `*Url` leaves relaxed to `.nullable().optional()` attribute a noise capture
+  // for the self-heal (captureOwnsTopLevelField matches response bodies).
+  if (wholeContract) {
+    return [...contractCode.matchAll(urlFieldLinePattern)]
+      .filter((m) => !m[0].includes(".optional(") || m[0].includes(".nullable().optional("))
+      .map((m) => m[1])
+      .filter((n): n is string => n !== undefined)
+      .filter((n) => !emittedCode.includes(`payload.${n}`));
+  }
   if (payloadStart < 0) return [];
   const rest = contractCode.slice(payloadStart);
   // End at the payload type export or the next top-level declaration,
@@ -17221,7 +17232,8 @@ function healUnreferencedUrlFieldsOnce(
 ): TsGenerationResult {
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code
+    firstAttempt.browserFlow.code,
+    !firstAttempt.contractOpts.getInputModel
   );
   if (offending.length === 0) return firstAttempt;
 
@@ -17267,7 +17279,8 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code
+    retried.browserFlow.code,
+    !retried.contractOpts.getInputModel
   );
   if (stillOffending.length > 0) {
     throw new Error(
