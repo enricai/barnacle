@@ -94,7 +94,8 @@ function expectPayloadDrivenRead(contract: string): void {
   expect(http).not.toContain("1700000000002");
   expect(contract).not.toMatch(/\b(?:const|class|function)\s+\d/);
   expect(contract).toMatch(/\bSite7GetPayloadDriven/);
-  for (const literal of ["2030-10-26", "2030-11-01", "2030-11-02", "2030-11-08"]) {
+  // Only the recorded (winner) window is a fallback; other captures' windows never leak.
+  for (const literal of ["2030-11-02", "2030-11-08"]) {
     expect(http).not.toContain(literal);
   }
   // Schema declares the derived and flow-declared fields.
