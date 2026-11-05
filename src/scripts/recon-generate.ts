@@ -2687,7 +2687,7 @@ function isInstanceSlug(i: number, value: string, next: string | undefined, next
   if (i < 2 || value.includes(".") || /^v\d+$/i.test(value)) return false;
   // A multi-word segment directly before an id-bearing or already-bound segment is the
   // collection word (`/<region>/<collection-slug>/<id>/...`), a fixed route part.
-  if (nextBound || (next !== undefined && carriesEntityId(next))) return false;
+  if (nextBound || (next !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(next) && carriesEntityId(next))) return false;
   return isSlugSegment(value);
 }
 
