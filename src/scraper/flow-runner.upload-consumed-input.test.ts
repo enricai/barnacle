@@ -17,20 +17,16 @@ async function run(textSeq: boolean[]): Promise<boolean> {
       return false;
     }),
   };
-  vi.useFakeTimers();
-  try {
+  {
     const r = attachToSurfacedInput({
-      page: { waitForTimeout: vi.fn(async () => undefined) } as unknown as Page,
+      page: { waitForTimeout: vi.fn(() => new Promise<void>((r) => setTimeout(r, 200))) } as unknown as Page,
       target: target as never,
       fixture,
       logger,
       signalCounter: { n: 0 },
       recentCaptureMeta: [],
     });
-    await vi.runAllTimersAsync();
     return await r;
-  } finally {
-    vi.useRealTimers();
   }
 }
 
@@ -40,8 +36,8 @@ describe("attachToSurfacedInput consumed input", () => {
   });
   it("is not success when the name was already present", async () => {
     expect(await run([true, true])).toBe(false);
-  });
+  }, 30000);
   it("is not success when the name never appears", async () => {
     expect(await run([false, false])).toBe(false);
-  });
+  }, 30000);
 });
