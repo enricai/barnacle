@@ -9868,6 +9868,18 @@ async function tryPromptSelectorPrimitive(params: {
           text: label,
           nodeId: ids.map.get(opts[i]),
           domText: (opts[i].textContent || "").replace(/\\s+/g, " ").trim(),
+          // Rendered visibility: a closed popup may keep hidden role=option
+          // items in the DOM; those must not count as "already open".
+          visible: (() => {
+            // Ancestor walk over inline/computed display+visibility (not
+            // geometry, which layout-less DOMs report as zero).
+            for (let n = opts[i]; n && n.nodeType === 1; n = n.parentElement) {
+              if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
+              const cs = getComputedStyle(n);
+              if (cs.display === "none" || (n === opts[i] && cs.visibility === "hidden")) return false;
+            }
+            return true;
+          })(),
         });
       }
       // scopeIsDocument distinguishes a genuinely resolved (portal or inline)
@@ -9907,7 +9919,7 @@ async function tryPromptSelectorPrimitive(params: {
     const precheck = (await target.evaluate(enumerateOptionsExpr)) as EnumerateOptionsResult;
     const alreadyOpen =
       precheck?.optionsPresent === true &&
-      (precheck.options?.length ?? 0) > 0 &&
+      (precheck.options ?? []).some((o) => o.visible !== false) &&
       precheck.scopeIsDocument !== true;
     if (!alreadyOpen) {
       // Phase 2 (real gesture): open the popup. These widgets' trigger requires a
@@ -10099,7 +10111,7 @@ const PROMPT_SELECTOR_MAX_STABLE_READS = 5;
  * One enumerated option. `nodeId` is the in-page identity of the stamped node
  * and `domText` its own text content (what the click-time identity check sees).
  */
-type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string };
+type PromptOptionRead = { oIdx: number; text: string; nodeId?: number; domText?: string; visible?: boolean };
 
 /**
  * Re-reads the filtered list until two consecutive reads carry identical
