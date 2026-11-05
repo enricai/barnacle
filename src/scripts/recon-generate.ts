@@ -5426,7 +5426,7 @@ function registerStructuredPayloadField(
   outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
 }
 
-function applyStructuredValuePayloadSubstitutionsForEnvelope(
+export function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
