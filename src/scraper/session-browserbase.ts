@@ -1,5 +1,6 @@
-import Browserbase from "@browserbasehq/sdk";
+import Browserbase, { type ClientOptions } from "@browserbasehq/sdk";
 import { AISdkClient, type ModelConfiguration, Stagehand } from "@browserbasehq/stagehand";
+import { fetch as undiciFetch } from "undici";
 
 import { config } from "@/config";
 import { createBedrockModel } from "@/lib/bedrock";
@@ -134,13 +135,71 @@ export function makeOutboundIpAccessor(
 }
 
 /**
+ * Per-attempt bound on the release call, with {@link RELEASE_MAX_RETRIES} attempts
+ * after it. The release is the only teardown step whose failure costs money, so it
+ * is worth retrying, but callers await teardown on their critical path and it must
+ * not outlive a run: short attempts retried a couple of times, never one patient
+ * wait. The SDK retries a request our own `fetch` aborted (its retry check reads
+ * the *caller's* signal, not ours), so the worst case is
+ * `RELEASE_TIMEOUT_MS × (RELEASE_MAX_RETRIES + 1)` plus its backoff.
+ */
+const RELEASE_TIMEOUT_MS = 5_000;
+const RELEASE_MAX_RETRIES = 2;
+
+/**
+ * The transport the release uses, bounded by {@link RELEASE_TIMEOUT_MS}.
+ *
+ * It must be an explicit `fetch`, not the SDK's default global one. The SDK sets an
+ * explicit `content-length`, and once undici is loaded in the process its dispatcher
+ * handles that fetch and folds the caller-supplied header together with its own
+ * computed value into a comma-joined string (`"53, 53"`), which fails undici's
+ * digit-only validation — `InvalidArgumentError: invalid content-length header`,
+ * surfacing through the SDK as the far less helpful `Connection error.`. Measured
+ * 2026-11-04 in a consumer script: every release failed — 27 across five runs — and each
+ * session stayed `RUNNING` until its own timeout (~90 min of billed browser time).
+ *
+ * {@link configureHttpDispatcher} fixes this at the other end, by dropping the SDK's
+ * header so undici computes it once — which is why the server was never affected. Two
+ * reasons to also fix it here: an entry point that never called it (until `./lib/http`
+ * was exported, no consumer could) still has to release its sessions, and that patch
+ * reaches only the SDK copy *it* imported, so a second resolved copy stays exposed.
+ * `raw-fetch.ts` and `captcha-solver.ts` already import `fetch` from undici, so this
+ * also keeps the release on the transport the rest of the engine is tested against.
+ *
+ * The bound is the second half. The SDK does apply a timeout — 60 s per attempt by
+ * default — but callers await teardown on their critical path, where a minute is far
+ * too long to wait on a call whose only job is to stop the billing clock.
+ *
+ * Replacing `init.signal` discards the controller the SDK put there, so its own 60 s
+ * timeout no longer reaches the fetch. That is intended: ours is strictly tighter, and
+ * no caller of the release passes a signal of its own.
+ */
+function createReleaseFetch(): ClientOptions["fetch"] {
+  return ((url: Parameters<typeof undiciFetch>[0], init: Parameters<typeof undiciFetch>[1]) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RELEASE_TIMEOUT_MS);
+    return undiciFetch(url, { ...init, signal: controller.signal }).finally(() =>
+      clearTimeout(timer)
+    );
+  }) as unknown as ClientOptions["fetch"];
+}
+
+/**
  * Releases the Browserbase session explicitly because `keepAlive: true` leaves
  * teardown to us; failures are logged so they never mask the rest of close().
+ *
+ * The explicit `fetch` is load-bearing, not a nicety — see {@link createReleaseFetch}
+ * for what the SDK's default transport does to this call. A caller-supplied `fetch`
+ * wins over the SDK's own shim (`core.js`: `overriddenFetch ?? …`).
  */
 async function releaseBrowserbaseSession(sessionId: string): Promise<void> {
   if (sessionId === "unknown") return;
   try {
-    const client = new Browserbase({ apiKey: config.scraper.browserbaseApiKey });
+    const client = new Browserbase({
+      apiKey: config.scraper.browserbaseApiKey,
+      fetch: createReleaseFetch(),
+      maxRetries: RELEASE_MAX_RETRIES,
+    });
     await client.sessions.update(sessionId, {
       projectId: config.scraper.browserbaseProjectId,
       status: "REQUEST_RELEASE",
