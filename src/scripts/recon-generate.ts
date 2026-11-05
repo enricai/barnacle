@@ -8133,6 +8133,53 @@ function applyVolatileFieldSubstitutions(
   return result;
 }
 
+/** True for the HTTP methods that change server state. */
+function isMutatingMethod(method: string): boolean {
+  return /^(POST|PUT|PATCH|DELETE)$/i.test(method);
+}
+
+/**
+ * Binds every string leaf of a later write's body that no earlier pass bound
+ * (still a bare literal in `template`) to a flat `payload.<field>` input, so the
+ * caller's own scalars are never frozen from the recording. The field name is
+ * derived from the leaf's path ({@link pathToPayloadFieldName}); a value already
+ * bound elsewhere reuses its accessor, and a name clash between different values
+ * is disambiguated with a numeric suffix. Leaves under an array are left to the
+ * structured-value passes, as are shielded ids, pure-digit strings, strings
+ * that embed the recorded origin, and single-character enum-like values.
+ */
+function bindLaterWriteScalarLeaves(
+  template: string,
+  parsedBody: unknown,
+  shieldedUuids: Set<string>,
+  boundValues: Set<string>,
+  baseUrl: string,
+  payloadAccessorByValue: Map<string, string>,
+  outDiscoveredFields: Set<string>
+): string {
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (typeof value !== "string" || value.length < 3) continue;
+    if (path.length === 0 || path.some((seg) => /^\d+$/.test(seg))) continue;
+    if (shieldedUuids.has(value) || boundValues.has(value) || /^\d+$/.test(value)) continue;
+    if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+    const literal = JSON.stringify(value);
+    if (!result.includes(literal)) continue;
+    let accessor = payloadAccessorByValue.get(value);
+    if (accessor === undefined) {
+      const base = pathToPayloadFieldName(path);
+      if (!isValidJsIdentifier(base)) continue;
+      let field = base;
+      for (let n = 2; outDiscoveredFields.has(field); n++) field = `${base}${n}`;
+      outDiscoveredFields.add(field);
+      accessor = `payload.${field}`;
+      payloadAccessorByValue.set(value, accessor);
+    }
+    result = result.split(literal).join(`"\${${accessor}}"`);
+  }
+  return result;
+}
+
 /**
  * Collects captured string leaves AND whole array/object values that survived
  * every binding/generation pass as still-literal — the values a reviewer must
@@ -9301,6 +9348,20 @@ export function emitMultiStepExecuteHttp(
         shieldedUuids,
         boundValues
       );
+      // A later write of a write flow carries the caller's own scalars (contact
+      // details and the like): bind each still-literal string leaf to a payload
+      // input instead of freezing the recorded value into the request.
+      if (isMutatingMethod(cap.method) && prior.some((p) => isMutatingMethod(p.capture.method))) {
+        bodyTemplate = bindLaterWriteScalarLeaves(
+          bodyTemplate,
+          parsedBody,
+          shieldedUuids,
+          boundValues,
+          baseUrl,
+          payloadAccessorByValue,
+          outDiscoveredFields
+        );
+      }
       for (const key of collectUnboundLiterals(bodyTemplate, parsedBody, shieldedUuids)) {
         unboundLiteralKeys.add(key);
       }
