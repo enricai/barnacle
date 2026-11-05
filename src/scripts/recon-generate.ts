@@ -2640,6 +2640,8 @@ export interface GetInputModel {
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
   fieldToQueryKey: Record<string, string>;
+  /** Recorded value (queryKey -> value) replayed when the payload omits a constant-valued query input. */
+  recordedQueryValues?: Record<string, string>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
@@ -2671,6 +2673,19 @@ function carriesEntityId(segment: string): boolean {
 /** A hyphen/underscore-joined multi-word segment, e.g. a human-readable entity slug. */
 function isSlugSegment(segment: string): boolean {
   return /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+$/.test(segment);
+}
+
+/**
+ * A path-only slug: a multi-word (hyphen/underscore-joined) segment that names
+ * one instance beneath a collection segment (index >= 2, so the first segment,
+ * which is the collection itself, never qualifies). Version tokens, single
+ * route words (`oauth2`) and file-like segments (`schedule.json`) are fixed
+ * route parts. Seen in a single capture it is still a caller input; the
+ * recorded value stays as its fallback.
+ */
+function isInstanceSlug(i: number, value: string): boolean {
+  if (i < 2 || value.includes(".") || /^v\d+$/i.test(value)) return false;
+  return isSlugSegment(value);
 }
 
 function decodePathSegment(segment: string): string {
@@ -2710,9 +2725,8 @@ function sameRouteGetSiblings(winner: Capture, captures: readonly Capture[]): Ca
         ([a, b]) =>
           (carriesEntityId(decodePathSegment(a as string)) &&
             carriesEntityId(decodePathSegment(b as string))) ||
-          (differing.length === 1 &&
-            isSlugSegment(a as string) &&
-            isSlugSegment(b as string) &&
+          (isSlugSegment(decodePathSegment(a as string)) &&
+            isSlugSegment(decodePathSegment(b as string)) &&
             queryKeySet(u) === winnerKeys)
       );
     } catch {
@@ -2788,6 +2802,7 @@ export function deriveGetInputModel(
   const dynamicFields: GetInputModel["dynamicFields"] = [];
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
+  const recordedQueryValues: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
   const nameFor = (key: string): string => {
@@ -2829,7 +2844,11 @@ export function deriveGetInputModel(
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
-      fixedParams[key] = [...values][0] as string;
+      // A constant-valued key is still a caller input; its recorded value is the fallback.
+      const field = nameFor(key);
+      dynamicFields.push({ field, queryKey: key });
+      fieldToQueryKey[field] = key;
+      recordedQueryValues[key] = [...values][0] as string;
     }
   }
   // Path segments with no query twin that vary between captures or carry an entity id.
@@ -2846,7 +2865,7 @@ export function deriveGetInputModel(
       continue;
     }
     const varies = (valuesBySegment[i]?.size ?? 0) > 1;
-    if (!varies && !carriesEntityId(value)) continue;
+    if (!varies && !carriesEntityId(value) && !isInstanceSlug(i, value)) continue;
     const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
     const base = prev === "param" ? "id" : `${prev}Id`;
     let field = base;
@@ -2856,7 +2875,7 @@ export function deriveGetInputModel(
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
     fieldByValue.set(value, field);
   }
-  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars, pathTwins };
+  return { dynamicFields, fixedParams, fieldToQueryKey, recordedQueryValues, pathVars, pathTwins };
 }
 
 /**
@@ -14344,6 +14363,13 @@ function buildGetRequestUrlExpr(
   for (const { field, queryKey } of model.dynamicFields) {
     if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
+    const recorded = model.recordedQueryValues?.[queryKey];
+    if (recorded !== undefined) {
+      pairs.push(
+        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`
+      );
+      continue;
+    }
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
     );

@@ -5606,9 +5606,13 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://x.test/items/42?ids[]=1&sort=asc&id=42");
     const b = cap("https://x.test/items/42?ids[]=2&sort=asc&id=42");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "ids", queryKey: "ids[]" }]);
+    expect(m.dynamicFields).toEqual([
+      { field: "ids", queryKey: "ids[]" },
+      { field: "sort", queryKey: "sort" },
+    ]);
     expect(m.fieldToQueryKey.ids).toBe("ids[]");
-    expect(m.fixedParams).toEqual({ sort: "asc" });
+    expect(m.fixedParams).toEqual({});
+    expect(m.recordedQueryValues).toEqual({ sort: "asc" });
     expect(m.pathVars).toEqual([{ field: "id", segmentIndex: 2, queryKey: "id" }]);
     expect(deriveGetInputModel(cap("https://x.test/a", "POST"), [])).toBeNull();
   });
@@ -5629,8 +5633,9 @@ describe("deriveGetInputModel", () => {
       "https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030"
     );
     const m = deriveGetInputModel(a, [a])!;
-    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at"]);
-    expect(m.fixedParams).toEqual({ sort: "asc", n: "2030" });
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at", "sort", "n"]);
+    expect(m.fixedParams).toEqual({});
+    expect(m.recordedQueryValues).toEqual({ sort: "asc", n: "2030" });
   });
   it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5660,7 +5665,7 @@ describe("deriveGetInputModel", () => {
     const b = cap("https://shop.example/items/8/stock.json?q=1");
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.pathVars).toEqual([{ field: "itemsId", segmentIndex: 2, queryKey: "" }]);
-    expect(m.fixedParams).toEqual({ q: "1" });
+    expect(m.recordedQueryValues).toEqual({ q: "1" });
     const c = cap("https://shop.example/items/7?id=7&item=7");
     expect(deriveGetInputModel(c, [c])!.pathVars).toHaveLength(1);
   });
@@ -5682,6 +5687,18 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://shop.example/api/v2/oauth2/stock.json");
     expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([]);
   });
+  it("binds a lone path-only slug as a caller input with the recorded fallback", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    for (const [url, field, idx] of [
+      ["https://shop.example/guided-tours/old-town/schedule.json", "guidedToursId", 2],
+      ["https://other.example/venues/blue_lagoon/hours", "venuesId", 2],
+    ] as const) {
+      const a = cap(url);
+      const pv = deriveGetInputModel(a, [a])!.pathVars;
+      expect(pv).toHaveLength(1);
+      expect(pv[0]).toMatchObject({ field, segmentIndex: idx, queryKey: "" });
+    }
+  });
   it("binds a path slug that differs across same-signature captures", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
@@ -5689,22 +5706,43 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.pathVars).toEqual([{ field: "teamsId", segmentIndex: 2, queryKey: "" }]);
     const other = cap("https://shop.example/users/beta-team/slots?y=1");
-    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual([]);
+    // A different route is not a sibling; the winner's own slug is still bound on its own.
+    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual(m.pathVars);
+  });
+  it("binds slugs that differ across several same-route siblings", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
+    const b = cap("https://shop.example/teams/beta-team/slots?x=1");
+    const c = cap("https://shop.example/teams/gamma-team/slots?x=1");
+    expect(deriveGetInputModel(a, [a, b, c])!.pathVars).toEqual([
+      { field: "teamsId", segmentIndex: 2, queryKey: "" },
+    ]);
+  });
+  it("exposes a constant undeclared query key as an input with its recorded value", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/search?q=1");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields).toEqual([{ field: "q", queryKey: "q" }]);
+    expect(m.recordedQueryValues).toEqual({ q: "1" });
+    expect(m.fixedParams).toEqual({});
   });
   it("keeps a declared query key payload-driven when it never varies", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/search?q=1&from=2");
     const m = deriveGetInputModel(a, [a], ["from"])!;
-    expect(m.dynamicFields).toEqual([{ field: "from", queryKey: "from" }]);
-    expect(m.fixedParams).toEqual({ q: "1" });
+    expect(m.dynamicFields).toEqual([
+      { field: "q", queryKey: "q" },
+      { field: "from", queryKey: "from" },
+    ]);
+    expect(m.recordedQueryValues).toEqual({ q: "1" });
   });
   it("treats a key present in only some same-route captures as dynamic, not a constant", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
     const b = cap("https://api.example.com/v1/search?page=2&sort=asc&filter=open");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["page", "filter"]);
-    expect(m.fixedParams).toEqual({ sort: "asc" });
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["page", "sort", "filter"]);
+    expect(m.recordedQueryValues).toEqual({ sort: "asc" });
   });
   it("binds every query key repeating the path id to the same caller field", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5731,8 +5769,11 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
     const b = cap("https://api.example.com/v1/search?page=2&sort=asc");
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page" }]);
-    expect(m.fixedParams).toEqual({ sort: "asc" });
+    expect(m.dynamicFields).toEqual([
+      { field: "page", queryKey: "page" },
+      { field: "sort", queryKey: "sort" },
+    ]);
+    expect(m.recordedQueryValues).toEqual({ sort: "asc" });
   });
   it.each([
     ["id", "id"],
@@ -5744,15 +5785,49 @@ describe("deriveGetInputModel", () => {
     const a = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
     const b = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
     const m = deriveGetInputModel(a, [a, b])!;
-    expect(m.dynamicFields).toEqual([{ field, queryKey: key }]);
-    expect(m.fixedParams).toEqual({ limit: "10" });
+    expect(m.dynamicFields).toEqual([
+      { field, queryKey: key },
+      { field: "limit", queryKey: "limit" },
+    ]);
+    expect(m.recordedQueryValues).toEqual({ limit: "10" });
   });
-  it("keeps a non-entity key that merely ends in id letters fixed", async () => {
+  it("exposes a non-entity key that merely ends in id letters as a recorded-fallback input", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/v1/list?valid=1&grid=2");
     const m = deriveGetInputModel(a, [a])!;
-    expect(m.dynamicFields).toEqual([]);
-    expect(m.fixedParams).toEqual({ valid: "1", grid: "2" });
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["valid", "grid"]);
+    expect(m.fixedParams).toEqual({});
+    expect(m.recordedQueryValues).toEqual({ valid: "1", grid: "2" });
+  });
+  it("exposes path id, twinned array id key and date window for a GET feed with recorded fallbacks", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(
+      "https://example.com/venues/9/schedule.json?room_ids%5B%5D=9&date_from=2030-01-07&date_to=2030-01-13"
+    );
+    const b = cap(
+      "https://example.com/venues/9/schedule.json?room_ids%5B%5D=9&date_from=2030-01-14&date_to=2030-01-20"
+    );
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "room_ids", segmentIndex: 2, queryKey: "room_ids[]" }]);
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    expect(m.fixedParams).toEqual({});
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/venues/9/schedule.json",
+      getInputModel: m,
+    });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('payload.room_ids ?? "9"');
+    expect(source).toContain("payload.date_from");
+    expect(source).toContain("payload.date_to");
+  });
+  it("exposes a lone path slug and a non-date non-id key as inputs", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://example.com/venues/9/schedule.json?view=week");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.pathVars.map((p) => p.segmentIndex)).toEqual([2]);
+    expect(m.dynamicFields).toEqual([{ field: "view", queryKey: "view" }]);
+    expect(m.recordedQueryValues).toEqual({ view: "week" });
   });
   it("binds a path value repeated in two segments to one caller input", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
@@ -5802,6 +5877,20 @@ describe("emitContractTs — payload-driven GET request", () => {
     );
     expect(source).toContain('["space", String(payload.space ?? "5")]');
     expect(source).toContain('["ref", String(payload.space ?? "5")]');
+  });
+  it("renders a constant query key as a payload input with its recorded fallback", () => {
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items",
+      getInputModel: {
+        dynamicFields: [{ field: "sort", queryKey: "sort" }],
+        fixedParams: {},
+        fieldToQueryKey: { sort: "sort" },
+        recordedQueryValues: { sort: "asc" },
+        pathVars: [],
+      },
+    });
+    expect(source).toContain('["sort", String(payload.sort ?? "asc")]');
   });
   it("builds the paginated GET page fetch from payload, overriding paging keys", () => {
     const source = emitContractTs({
