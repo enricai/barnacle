@@ -5367,6 +5367,67 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
   });
 });
 
+describe("assertRequiredUrlFieldsReferenced — response-schema *Url leaves are output, not payload input", () => {
+  const flow = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+  const reportContract =
+    "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();";
+  const dateOnly = {
+    expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
+    fields: [{ name: "date", optional: true }],
+  };
+
+  it("does not flag a nested required response mapUrl (report contract verbatim)", () => {
+    expect(unreferencedRequiredUrlFields(reportContract, flow, dateOnly)).toEqual([]);
+    expect(() => assertRequiredUrlFieldsReferenced(reportContract, flow, dateOnly)).not.toThrow();
+  });
+
+  it("does not flag top-level and array-element response leaves, response declared first", () => {
+    const contract =
+      "export const XResponseSchema = z.object({\n  mapUrl: z.string(),\n  items: z.array(z.object({\n    itemUrl: z.string(),\n  })),\n}).loose();\n\nconst XPayloadSchema = z.object({\n  date: z.string(),\n});";
+    expect(() =>
+      assertRequiredUrlFieldsReferenced(contract, flow, {
+        expr: "z.object({\n  date: z.string(),\n})",
+        fields: [{ name: "date", optional: false }],
+      })
+    ).not.toThrow();
+  });
+
+  it("does not flag anything for an empty or absent payload declaration", () => {
+    expect(unreferencedRequiredUrlFields(reportContract, flow, { expr: "", fields: [] })).toEqual([]);
+    expect(
+      unreferencedRequiredUrlFields(reportContract, flow, { expr: "z.object({})", fields: [] })
+    ).toEqual([]);
+  });
+
+  it("is unaffected by payload fields containing regex literals with quotes, parens, braces or brackets", () => {
+    const expr = 'z.object({\n  code: z.string().regex(/^["\'(){}[\\]]+$/),\n  date: z.string(),\n})';
+    const contract = `const XPayloadSchema = ${expr};\n\nexport const XResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();`;
+    expect(
+      unreferencedRequiredUrlFields(contract, flow, {
+        expr,
+        fields: [
+          { name: "code", optional: false },
+          { name: "date", optional: false },
+        ],
+      })
+    ).toEqual([]);
+  });
+
+  it("still flags a genuine unread required payload homeUrl alongside a response leaf", () => {
+    const contract =
+      "const XPayloadSchema = z.object({\n  homeUrl: z.string(),\n});\n\nexport const XResponseSchema = z.object({\n  mapUrl: z.string(),\n}).loose();";
+    const ps = {
+      expr: "z.object({\n  homeUrl: z.string(),\n})",
+      fields: [{ name: "homeUrl", optional: false }],
+    };
+    expect(unreferencedRequiredUrlFields(contract, flow, ps)).toEqual(["homeUrl"]);
+    expect(() => assertRequiredUrlFieldsReferenced(contract, flow, ps)).toThrow(
+      /required URL field.*homeUrl/
+    );
+    expect(unreferencedRequiredUrlFields(contract, "await page.goto(payload.homeUrl);", ps)).toEqual([]);
+  });
+});
+
 describe("deriveBaseUrl — resolves the dominant own-backend host, not the first-array-order match (#bugfix-005)", () => {
   const capture = (url: string, timestamp: string) => ({
     timestamp,
