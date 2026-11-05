@@ -3391,6 +3391,21 @@ async function main(): Promise<void> {
             // A non-final trailing step is judged through judgeStepOutcome so the
             // page is settled first; an unsettled read can land between a header
             // flip and the late body re-render and be held to final-submit proof.
+            const trailingGraceSettled =
+              baselineText === undefined || settledAdvance !== undefined
+                ? settledAdvance
+                : await readMidFlowPostClickAdvance({
+                    target: frameTarget,
+                    signalCounter,
+                    page,
+                    pre: {
+                      ...baselineText,
+                      networkCount: baselineText.networkCount ?? signalCounter.n,
+                    },
+                    stepStartSnapshot: baselineText,
+                    midFlowSubmit,
+                    io: { settle: settleWithPageQuiescence, snapshot: snapshotPage },
+                  }).catch(() => undefined);
             const trailingGraceVerdict =
               baselineText === undefined
                 ? undefined
@@ -3409,7 +3424,7 @@ async function main(): Promise<void> {
                     preVisibleTextSignature: baselineText.visibleTextSignature,
                     preVisibleText: baselineText.visibleText,
                     preVisibleTextDigest: baselineText.visibleTextDigest,
-                    settledPostVisibleText: settledAdvance?.post.visibleText ?? "",
+                    settledPostVisibleText: trailingGraceSettled?.post.visibleText ?? "",
                     submitInput: {
                       pageUrl: trailingGracePageUrl,
                       pageTitle,
