@@ -317,7 +317,7 @@ applicant. Supply a unique value per run instead of hard-coding one:
 
 - **Email:** pass `--allocate-email <ENV_VAR_NAME>` (UPPERCASE_SNAKE_CASE);
   the allocated testmail address is exposed under that env var, e.g.
-  `--allocate-email APPLICANT_EMAIL` yields a fresh `*@example.test`-style
+  `--allocate-email APPLICANT_EMAIL` yields a fresh `{namespace}.{tag}@inbox.testmail.app`
   address per run.
 - **Phone:** there is no allocation flag. Generate a unique number in your
   seed flow and export it in an env var (e.g. `APPLICANT_PHONE`) that the
