@@ -2705,7 +2705,6 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
-    allocatePhoneEnvVar,
       allocatePhoneEnvVar,
       maxCascadeReplans,
       maxProbeReplans,
