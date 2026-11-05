@@ -202,6 +202,58 @@ export function mergeResponseHeaders(
   return { ...base, ...extra };
 }
 
+/** Console messages the native (Browserbase) solver emits around a solve. */
+const NATIVE_SOLVE_STARTED = "browserbase-solving-started";
+const NATIVE_SOLVE_FINISHED = "browserbase-solving-finished";
+/** Upper bound on waiting for an in-flight native solve before judging a step. */
+export const NATIVE_SOLVE_WAIT_MS = 30_000;
+/** Short settle after a solve finishes, so the page can react to the token. */
+export const NATIVE_SOLVE_POST_SETTLE_MS = 1_000;
+
+type NativeSolveTracker = {
+  inFlight: boolean;
+  stalled: boolean;
+  waiters: Set<() => void>;
+};
+const nativeSolveTrackers = new WeakMap<object, NativeSolveTracker>();
+
+/** True when the last bounded wait on this page gave up on a started-but-unfinished solve. */
+export function isNativeCaptchaSolveStalled(page: Page): boolean {
+  return nativeSolveTrackers.get(page)?.stalled === true;
+}
+
+/**
+ * Waits (bounded) for an in-flight native captcha solve to finish, then a short
+ * settle. No-op when no solve is in flight. Returns "stalled" when the bound
+ * elapsed with the solve still unfinished (also exposed via
+ * {@link isNativeCaptchaSolveStalled}), else "idle" / "finished".
+ */
+export async function awaitNativeCaptchaSolve(
+  page: Page,
+  boundMs: number = NATIVE_SOLVE_WAIT_MS
+): Promise<"idle" | "finished" | "stalled"> {
+  const t = nativeSolveTrackers.get(page);
+  if (!t || !t.inFlight) return "idle";
+  const finished = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      t.waiters.delete(done);
+      resolve(false);
+    }, boundMs);
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    t.waiters.add(done);
+  });
+  if (!finished) {
+    t.stalled = true;
+    logger.warn({ boundMs }, "native captcha solve still in flight after bound; stalled");
+    return "stalled";
+  }
+  await page.waitForTimeout(NATIVE_SOLVE_POST_SETTLE_MS);
+  return "finished";
+}
+
 /**
  * Wires CDP Network event listeners onto the page's main session and returns
  * a cleanup function. Stagehand V3 already enables the Network domain
@@ -239,6 +291,20 @@ export function wireSignalCapture(
   } = params;
   const session = page.getSessionForFrame(page.mainFrameId());
   const inFlight = new Map<string, InFlightRequest>();
+  const solveTracker: NativeSolveTracker = { inFlight: false, stalled: false, waiters: new Set() };
+  nativeSolveTrackers.set(page, solveTracker);
+  const onConsole = (ev: { args?: { value?: unknown }[] }): void => {
+    const text = (ev.args ?? []).map((a) => (typeof a.value === "string" ? a.value : "")).join(" ");
+    if (text.includes(NATIVE_SOLVE_STARTED)) {
+      solveTracker.inFlight = true;
+      solveTracker.stalled = false;
+    } else if (text.includes(NATIVE_SOLVE_FINISHED)) {
+      solveTracker.inFlight = false;
+      solveTracker.stalled = false;
+      for (const w of [...solveTracker.waiters]) w();
+      solveTracker.waiters.clear();
+    }
+  };
   // Set-Cookie (and other extra-info-only headers) keyed by requestId. Held
   // separately because `responseReceivedExtraInfo` can fire before the request
   // is in `inFlight` and more than once per request; accumulated here and folded
@@ -566,6 +632,8 @@ export function wireSignalCapture(
   session.on("Network.responseReceived", onResponse);
   session.on("Network.responseReceivedExtraInfo", onResponseExtraInfo);
   session.on("Network.loadingFinished", onFinished);
+  session.on("Runtime.consoleAPICalled", onConsole);
+  void Promise.resolve(session.send?.("Runtime.enable")).catch(() => {});
 
   return (): void => {
     session.off("Network.requestWillBeSent", onRequest);
@@ -573,6 +641,7 @@ export function wireSignalCapture(
     session.off("Network.responseReceived", onResponse);
     session.off("Network.responseReceivedExtraInfo", onResponseExtraInfo);
     session.off("Network.loadingFinished", onFinished);
+    session.off("Runtime.consoleAPICalled", onConsole);
   };
 }
 
@@ -15117,6 +15186,7 @@ export async function executeStepWithHealing(params: {
       elementSubmitShaped: resolvedElementIsSubmitShaped,
     });
     await page.waitForTimeout(STEP_PAUSE_MS);
+    await awaitNativeCaptchaSolve(page);
     // A successful act that reported no actions still ran a click-class action;
     // judging it before its round-trip lands would cascade onto the advanced page.
     const mayTriggerRoundTrip =
@@ -15891,6 +15961,7 @@ export async function executeStepWithHealing(params: {
             probeResult.checked === true &&
             (probeResult.ariaManaged === true || !ancestorStillInvalid);
           await page.waitForTimeout(STEP_PAUSE_MS);
+    await awaitNativeCaptchaSolve(page);
           const { midFlowSubmit: retryMidFlowSubmit, advanceBaseline: retryAdvanceBaseline } =
             deriveMidFlowJudgement(retryResolvedElementIsSubmitShaped, pre);
           const { post: retryPost, pageAdvanced: retryPageAdvanced } =
