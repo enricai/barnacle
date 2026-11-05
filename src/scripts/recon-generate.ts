@@ -11960,7 +11960,6 @@ const AMBIENT_HEADER_NAMES = new Set([
  * type such as "application/json". */
 function isMintedDependencyValue(value: string): boolean {
   if (value.length < 2) return false;
-  if (value === "true" || value === "false" || value === "null") return false;
   if (/^[a-z]+\/[a-z0-9.+-]+(;.*)?$/i.test(value)) return false;
   return true;
 }
