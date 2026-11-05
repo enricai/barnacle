@@ -3068,6 +3068,21 @@ const REPHRASE_SYSTEM_PROMPT =
   "You rewrite a failed Stagehand act() instruction so the next attempt targets a different element than those already tried. If no different element exists on the page that could plausibly unblock the flow, return outcome=impossible. Never re-propose a selector or wording from the lists labeled SELECTORS ALREADY TRIED or INSTRUCTION TEXT ALREADY TRIED.";
 
 /**
+ * A rephrased "click the input, then type X" must replace, not append: Stagehand's
+ * click-then-type leaves existing text in place, so a prefilled field ends up
+ * holding the value twice. Appends an explicit select-all-and-replace clause to
+ * instructions that type into a field. Idempotent; other instructions unchanged.
+ */
+export function withClearBeforeType(instruction: string): string {
+  if (!/\b(type|typing|enter|input)\b/i.test(instruction)) return instruction;
+  if (!/\b(click|focus|select)\b/i.test(instruction)) return instruction;
+  if (/select all|clear(ing)? (the|any)|replac(e|ing) (the |any )?(existing|current)/i.test(instruction)) {
+    return instruction;
+  }
+  return `${instruction.replace(/[.\s]+$/, "")}, first selecting all existing text in the field (Ctrl/Cmd+A) and replacing it so the value is not appended to existing content`;
+}
+
+/**
  * Attempt-5 of the step-healing cascade: when three mechanical retry variations
  * all fail, this is the last resort before the step is declared terminal. Exported
  * so tests can inject a fake capture sink without touching the browser session.
@@ -15120,7 +15135,7 @@ export async function executeStepWithHealing(params: {
             instruction: a.instruction,
             verdict: a.errorMessage ?? failureReasons[i] ?? null,
           }));
-          const rephrased = await rephraseWithLLM(
+          let rephrased = await rephraseWithLLM(
             rephraseModel,
             step,
             triedSelectors,
@@ -15137,6 +15152,7 @@ export async function executeStepWithHealing(params: {
           if (!rephrased) {
             record.errorMessage = "llm declined to rephrase or returned outcome=impossible";
           } else {
+            rephrased = withClearBeforeType(rephrased);
             record.instruction = rephrased;
             params.abortSignal?.throwIfAborted();
             const preCentred = await preCentreNaturalLanguageClick(rephrased);
