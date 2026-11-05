@@ -78,7 +78,7 @@ describe("recon-http main() own-backend filter wiring", () => {
       join(dir, "out"),
     ];
     vi.resetModules();
-    await import("@/scripts/recon-http");
+    await import("./recon-http.js");
     await vi.waitFor(
       () => expect(logs.some((l) => l.includes("rate-limit targets: 1"))).toBe(true),
       {
