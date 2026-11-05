@@ -90,18 +90,18 @@ describe("judgeStepOutcome stale title", () => {
     expect(v).toMatchObject({ verified: true });
   });
 
-  it("judges a late re-render after STEP_REJUDGE_DELAY_MS on the settled read", async () => {
-    stepJudge
-      .mockResolvedValueOnce({ advanced: false, reason: "no change yet" })
-      .mockResolvedValueOnce({ advanced: true, reason: "late render" });
+  it("judges the body re-rendered after a header-only flip, with no fixed rejudge delay", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "late render" });
     const waits: number[] = [];
+    let reads = 0;
     const v = await run(
       false,
-      () => (stepJudge.mock.calls.length === 0 ? BEFORE_TEXT : AFTER_TEXT),
+      () => (reads++ < 1 ? "Sign In" : AFTER_TEXT),
       waits
     );
-    expect(waits).toContain(5000);
-    expect(stepJudge.mock.calls[1]?.[0].input.afterText).toBe(AFTER_TEXT);
+    expect(waits).not.toContain(5000);
+    expect(stepJudge).toHaveBeenCalledTimes(1);
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(AFTER_TEXT);
     expect(v).toMatchObject({ verified: true });
   });
 

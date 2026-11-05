@@ -3778,7 +3778,7 @@ export async function judgeStepOutcome(params: {
         flowHasSubmitSemantics: params.flowHasSubmitSemantics,
       }) || params.elementSubmitShaped === true
     );
-    settledText = settled.visibleText ?? (await probeVisibleTextForJudge(target));
+    settledText = settled.visibleText || (await probeVisibleTextForJudge(target));
   }
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
