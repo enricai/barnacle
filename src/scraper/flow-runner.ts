@@ -11908,6 +11908,13 @@ export async function probeStepBeforeAttempts(params: {
    * with no re-resolution attempt.
    */
   reresolveFrameTarget?: () => Promise<FrameTarget | undefined>;
+  /**
+   * When true and the step is click-shaped (not a fill/select/prompt-selector
+   * step), a zero-candidate focused probe is final: the unfocused-observe
+   * "treat as present" fallback is skipped so the optional step skips instead
+   * of running the cascade and replans. Required steps keep today's behavior.
+   */
+  optional?: boolean;
 }): Promise<"present" | "absent"> {
   const {
     stagehand,
@@ -11919,6 +11926,7 @@ export async function probeStepBeforeAttempts(params: {
     captureFn,
     frameTarget,
     reresolveFrameTarget,
+    optional,
   } = params;
   try {
     const candidates = await guardedObserve(
@@ -11928,6 +11936,12 @@ export async function probeStepBeforeAttempts(params: {
       captureFn,
       frameTarget
     );
+    if (candidates.length === 0 && optional && parsePromptSelectorStep(step) === null) {
+      logger.info(
+        `${formatStepPrefix(stepIndex, totalSteps)}: optional click-shaped step, focused probe found 0 candidates — treating as absent (skip, no cascade)`
+      );
+      return "absent";
+    }
     if (candidates.length === 0) {
       // Focused observe under-returns on some controlled-component forms:
       // Stagehand's instruction-scoped observe can resolve zero candidates for a
@@ -13433,6 +13447,7 @@ export async function executeStepWithHealing(params: {
       logger,
       captureFn,
       frameTarget,
+      optional,
       reresolveFrameTarget: async () => {
         await reresolveFrameTargetIfLost();
         return frameTarget;
