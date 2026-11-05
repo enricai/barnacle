@@ -20,7 +20,8 @@ function generate(
   urls: string[],
   steps: unknown[],
   tag: string,
-  withSensorPosts = false
+  withSensorPosts = false,
+  flowExtra: Record<string, unknown> = {}
 ): string {
   const workDir = mkdtempSync(join(tmpdir(), "rest-get-emit-"));
   dirs.push(workDir);
@@ -68,7 +69,7 @@ function generate(
   const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
   dirs.push(siteOutDir);
   mkdirSync(siteOutDir, { recursive: true });
-  writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify({ steps }));
+  writeFileSync(join(siteOutDir, "recon-flow.json"), JSON.stringify({ steps, ...flowExtra }));
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
@@ -131,5 +132,17 @@ describe("single-endpoint REST GET emit alongside recurring bot-manager POSTs", 
     expect(http).toContain('method: "GET"');
     expect(http).not.toContain('method: "POST"');
     expect(http).toContain('payload.category !== undefined ? [["category", String(payload.category)]]');
+  });
+});
+
+describe("array-form foldReturn through the generator CLI", () => {
+  it("generates when several declared drills match no capture", () => {
+    const contract = generate(URLS, STEPS, "foldarr", false, {
+      foldReturn: [
+        { endpointPattern: "/detail", resultsPath: "items", joinFields: ["id"] },
+        { endpointPattern: "/other", joinFields: ["id"], attachAs: "extra", payloadFlag: "wantExtra" },
+      ],
+    });
+    expect(contract).toContain('method: "GET"');
   });
 });

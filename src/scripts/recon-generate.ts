@@ -14531,7 +14531,9 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
   const primaryPlans = resolveFoldPlan(
     maskExtraDrillActions(actions, [primaryMatcher], extraMatchers),
     primarySpec,
-    primaryIdentityAnchor
+    primaryIdentityAnchor,
+    // Explicit: the ambient default would re-enter this function forever.
+    []
   );
   if (primaryPlans.length === 0) return primaryPlans;
   const result = primaryPlans.map((p) => ({ ...p, targets: [...p.targets] }));
@@ -14540,7 +14542,7 @@ function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipar
   extraDrillSpecs.forEach((extra, i) => {
     const others = [primaryMatcher, ...extraMatchers.filter((_, j) => j !== i)];
     const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
-    const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor);
+    const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor, []);
     for (const extraPlan of extraPlans) {
       const host = result.find(
         (p) =>
