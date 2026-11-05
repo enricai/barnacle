@@ -8376,6 +8376,83 @@ function emitErrorSignalGuards(varName: string, urlPath: string, signals: ErrorS
 }
 
 /**
+ * The key a drill's WHOLE row array is attached under, or `null` when the
+ * normal per-row join applies. Several rows and not one carrying any join
+ * field (checked the way the emitted matcher reads it: full nested path, then
+ * bare last segment) means no row can be matched to a primary item, so the
+ * array itself belongs on the item. Shared by the emitter and shape
+ * inference so both describe the same attach. The key is the declared
+ * `attachAs`, else the drill URL's last path segment.
+ */
+function wholeArrayAttachKey(
+  target: Pick<FoldTarget, "joinFields" | "chainArrayPath" | "attachAs">,
+  terminalBody: unknown,
+  drillUrl: string
+): string | null {
+  const rows = objectItemsAtPath(terminalBody, target.chainArrayPath);
+  if (!rows || rows.length < 2) return null;
+  const carriesJoinField = rows.some((row) =>
+    target.joinFields.some((f) => {
+      const segments = f.split(".");
+      return (
+        readValueAtPath(row, segments) !== undefined ||
+        readValueAtPath(row, [segments[segments.length - 1]!]) !== undefined
+      );
+    })
+  );
+  if (carriesJoinField) return null;
+  if (target.attachAs !== undefined) return target.attachAs;
+  let pathname: string;
+  try {
+    pathname = new URL(drillUrl).pathname;
+  } catch {
+    return null;
+  }
+  const last = pathname.split("/").filter((seg) => seg !== "").pop();
+  return last === undefined ? null : decodeURIComponent(last);
+}
+
+/** A drill's log-safe name: its URL's last path segment. */
+function drillLabel(url: string): string {
+  let pathname = url;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    // not an absolute URL — use it as is
+  }
+  const last = pathname.split("/").filter((seg) => seg !== "").pop() ?? "drill";
+  return last.replace(/[^\w.-]/g, "_");
+}
+
+/**
+ * Wraps one drill's fetch+merge lines so a flagged drill is skipped when its
+ * payload flag is falsy and a failing drill logs (drill name and item) and
+ * drops only its own key instead of failing the whole item. Drills without
+ * `payloadFlag`/`attachAs` are returned untouched.
+ */
+function wrapIsolatedDrillLines(
+  target: Pick<FoldTarget, "payloadFlag" | "attachAs">,
+  drillName: string,
+  itemVar: string,
+  lines: string[]
+): string[] {
+  if (target.payloadFlag === undefined && target.attachAs === undefined) return lines;
+  const body = [
+    "      try {",
+    ...lines.map((l) => `  ${l}`),
+    "      } catch (error) {",
+    `        getLogger({ name: "fold-drill" }).error(\`fold drill ${drillName} failed for item \${JSON.stringify(${itemVar})}: \${error}\`);`,
+    "      }",
+  ];
+  if (target.payloadFlag === undefined) return body;
+  return [
+    `      if ((payload as Record<string, unknown>)[${JSON.stringify(target.payloadFlag)}]) {`,
+    ...body.map((l) => `  ${l}`),
+    "      }",
+  ];
+}
+
+/**
  * Emits the lines that match a fold target's drill-down chain response
  * against the loop item and merge the match onto it — the last leg of a
  * fold, shared by {@link emitMultiStepExecuteHttp}'s per-item loop and
@@ -8388,8 +8465,13 @@ function emitFoldMatchAndMergeLines(
   target: FoldTarget,
   itemVar: string,
   suffix: string,
-  joinAccessor: (field: string) => string
+  joinAccessor: (field: string) => string,
+  wholeArrayKey: string | null = null
 ): string[] {
+  // An array-root terminal (the response body IS the row array) is cast via
+  // `unknown` — an array is not a `Record<string, unknown>`.
+  const isArrayRoot =
+    target.chainArrayPath.length === 0 && Array.isArray(terminalStep.capture.responseBody);
   // An empty chainArrayPath means the terminal step's response IS the
   // implicit one-item collection (see findAllObjectArrayFieldsOrWholeObject
   // / objectItemsAtPath's flat-object branch): the response is a flat
@@ -8397,7 +8479,7 @@ function emitFoldMatchAndMergeLines(
   // no join-field match is needed (or even possible against an array
   // API) — emit a direct object reference instead of the array
   // `.find()` machinery the multi-item branch below needs.
-  if (target.chainArrayPath.length === 0) {
+  if (target.chainArrayPath.length === 0 && !isArrayRoot) {
     return [
       `      const foldMatch${suffix} = ${terminalStep.varName} as Record<string, unknown>;`,
       `      Object.assign(${itemVar}, Object.fromEntries(Object.entries(foldMatch${suffix} ?? {}).filter(([k]) => !(k in ${itemVar}))));`,
@@ -8413,7 +8495,9 @@ function emitFoldMatchAndMergeLines(
   const isFlatObjectAtPath =
     !target.chainArrayPath.includes(ARRAY_WILDCARD_SEGMENT) &&
     isObjectArrayItem(readValueAtPath(terminalStep.capture.responseBody, target.chainArrayPath));
-  const foldMatchesExpr = isFlatObjectAtPath
+  const foldMatchesExpr = isArrayRoot
+    ? `(${terminalStep.varName} as unknown as Record<string, unknown>[])`
+    : isFlatObjectAtPath
     ? `[${pathToFoldAccessorExpr(
         `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
         target.chainArrayPath
@@ -8422,6 +8506,12 @@ function emitFoldMatchAndMergeLines(
         `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
         target.chainArrayPath
       );
+  if (wholeArrayKey !== null) {
+    return [
+      `      const foldMatches${suffix} = ${foldMatchesExpr};`,
+      `      if (foldMatches${suffix} != null && !(${JSON.stringify(wholeArrayKey)} in ${itemVar})) Object.assign(${itemVar}, { [${JSON.stringify(wholeArrayKey)}]: foldMatches${suffix} });`,
+    ];
+  }
   const matchAccessorFor = (f: string, varName: string, optionalRoot: boolean): string => {
     const segments = f.split(".");
     // The drill-down response is a DIFFERENT payload than the
@@ -10056,14 +10146,28 @@ export function emitMultiStepExecuteHttp(
           }
         }
         const terminalStep = actions[target.chainTerminalIndex]!;
+        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
           itemVar,
           suffix,
-          joinAccessor
+          joinAccessor,
+          wholeArrayAttachKey(
+            target,
+            terminalStep.capture.responseBody,
+            actions[target.drillStepIndex]!.capture.url
+          )
         );
-        if (referencesItemVar) {
+        const drillName = drillLabel(actions[target.drillStepIndex]!.capture.url);
+        if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
+          // Fetch and merge travel together so a failure drops only this drill.
+          itemScopedLines.push(
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+          );
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
+        } else if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -11088,6 +11192,11 @@ export interface FoldTarget {
   chain: number[];
   chainArrayPath: string[];
   chainTerminalIndex: number;
+  /** Key the drill's whole result is attached under (from the declared
+   * foldReturn entry's `attachAs`); also isolates the drill's failures. */
+  attachAs?: string;
+  /** Caller payload flag gating this drill; also isolates its failures. */
+  payloadFlag?: string;
 }
 
 /** Every string and numeric value present in a capture's outbound request —
@@ -14428,6 +14537,8 @@ function pinTargetToEndpointStep<T extends { capture: Capture }>(
     chain: target.chain.filter((i) => i <= terminal),
     chainTerminalIndex: terminal,
     chainArrayPath: arrayPath,
+    ...(spec.attachAs !== undefined ? { attachAs: spec.attachAs } : {}),
+    ...(spec.payloadFlag !== undefined ? { payloadFlag: spec.payloadFlag } : {}),
   };
 }
 
@@ -14533,10 +14644,19 @@ function foldOneDrillOccurrence(
   primaryArrayPath: readonly string[],
   joinFields: readonly string[],
   drillItems: readonly Record<string, unknown>[],
-  matchedItem: Record<string, unknown>
+  matchedItem: Record<string, unknown>,
+  wholeArrayKey: string | null = null
 ): unknown {
   const primaryItems = objectItemsAtPath(body, primaryArrayPath);
   if (!primaryItems) return body;
+  // Mirrors emitFoldMatchAndMergeLines: no row can be joined, so the whole
+  // array is attached under its key (never overriding an existing field).
+  if (wholeArrayKey !== null) {
+    return replaceByReference(body, matchedItem, {
+      [wholeArrayKey]: drillItems,
+      ...matchedItem,
+    });
+  }
   const drillMatch =
     drillItems.find((d) =>
       joinFields.every(
@@ -14567,7 +14687,8 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
             foldPlan.primaryArrayPath,
             target.joinFields,
             drillItems,
-            matchedItem
+            matchedItem,
+            wholeArrayAttachKey(target, drillBody, actionSteps[target.drillStepIndex]!.capture.url)
           );
     // Every absorbed occurrence of this SAME endpoint (a repeat raw capture
     // threaded from a DIFFERENT primary item — see FoldPlan.absorbedIndices)
@@ -14599,7 +14720,12 @@ function foldResponseBodyForShapeInference<T extends { capture: Capture }>(
         foldPlan.primaryArrayPath,
         target.joinFields,
         absorbedDrillItems,
-        absorbedMatchedItem
+        absorbedMatchedItem,
+        wholeArrayAttachKey(
+          target,
+          absorbedCapture.responseBody,
+          actionSteps[target.drillStepIndex]!.capture.url
+        )
       );
     }, bodyAfterOwnDrill);
   }, initialBody);
@@ -16309,14 +16435,28 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         }
         const terminalStep = actionSteps[target.chainTerminalIndex];
         if (!terminalStep) continue;
+        const isolated = target.payloadFlag !== undefined || target.attachAs !== undefined;
         const matchLines = emitFoldMatchAndMergeLines(
           terminalStep,
           target,
           itemVar,
           suffix,
-          joinAccessor
+          joinAccessor,
+          wholeArrayAttachKey(
+            target,
+            terminalStep.capture.responseBody,
+            actionSteps[target.drillStepIndex]!.capture.url
+          )
         );
-        if (referencesItemVar) {
+        const drillName = drillLabel(actionSteps[target.drillStepIndex]!.capture.url);
+        if (isolated && target.chain[0] !== foldPlan.primaryStepIndex) {
+          // Fetch and merge travel together so a failure drops only this drill.
+          itemScopedLines.push(
+            ...wrapIsolatedDrillLines(target, drillName, itemVar, [...chainLines, ...matchLines])
+          );
+          if (chainLines.length > 0) hasItemScopedFetch = true;
+          if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
+        } else if (referencesItemVar) {
           itemScopedLines.push(...chainLines, ...matchLines);
           if (chainLines.length > 0) hasItemScopedFetch = true;
           if (chainUsesHeaderThreading) hasItemScopedHeaderThreading = true;
@@ -16492,7 +16632,11 @@ ${executeHttpBody}
 
 ${bottleneckImport}import { z } from "zod/v4";
 
-${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}
+${fixtureImport}${applicantContactImport}${jobTrackingImport}${caseInsensitiveHeadersImport}${mergeFoldedPrimaryBodiesImport}${multipartBoolImport}${clientImport}${
+  !omitExecuteHttp && /\bgetLogger\(/.test(executeHttpBody)
+    ? `\nimport { getLogger } from "${ENGINE_PKG}/lib/logging";`
+    : ""
+}
 import type { BrowserSession } from "${ENGINE_PKG}/scraper/session";
 import type { ${sitePluginImports} } from "${ENGINE_PKG}/site-plugin";
 import { run${pascal}BrowserFlow } from "@/sites/${siteId}/flows/browser-flow";
