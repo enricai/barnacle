@@ -16048,36 +16048,58 @@ export { ${camel}Plugin as plugin };
  */
 export function unreferencedRequiredUrlFields(
   contractCode: string,
-  browserFlowCode: string,
-  payloadOnly = false
+  browserFlowCode: string
 ): string[] {
-  const urlFieldLinePattern = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+  // Judge only the payload schema declaration: a response schema's required
+  // `*Url` leaf (e.g. `mapUrl: z.string()`) is output, not caller input. Text
+  // with no payload-schema declaration is itself the schema fragment under test.
+  const declaration = payloadSchemaDeclarationRange(contractCode);
+  const scanned = declaration
+    ? contractCode.slice(declaration.start, declaration.end)
+    : contractCode;
+  return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
+    .filter((match) => !match[0].includes(".optional("))
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined)
+    .filter((name) => !`${contractCode}\n${browserFlowCode}`.includes(`payload.${name}`));
+}
+
+const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+
+/**
+ * Character range of the `const <X>PayloadSchema = …` declaration, or null when
+ * the contract has none. Ends at the payload type export or the next top-level
+ * declaration, whichever comes first (a response schema may follow with no
+ * type between).
+ */
+function payloadSchemaDeclarationRange(
+  contractCode: string
+): { start: number; end: number } | null {
+  const start = contractCode.search(/^const \w*PayloadSchema\s*=/m);
+  if (start < 0) return null;
+  const rest = contractCode.slice(start);
+  const next = rest.slice(1).search(/^(?:export type \w*Payload\b|(?:export )?const \w+\s*=)/m);
+  return { start, end: next >= 0 ? start + next + 1 : contractCode.length };
+}
+
+/**
+ * `*Url` leaves outside the payload schema that nothing reads and that the
+ * single-entity verdict relaxed to `.nullable().optional()`. They are output,
+ * never grounds to abort generation, but a response leaf like this on an
+ * unrelated capture is how that capture's fields end up in the contract, so
+ * {@link healUnreferencedUrlFieldsOnce} uses them to attribute and drop noise.
+ */
+function unreadRelaxedResponseUrlFields(contractCode: string, browserFlowCode: string): string[] {
+  const declaration = payloadSchemaDeclarationRange(contractCode);
+  if (!declaration) return [];
+  const outsidePayload =
+    contractCode.slice(0, declaration.start) + contractCode.slice(declaration.end);
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  // Scan only the payload schema: a response schema's required `*Url` field is
-  // output, not caller input. Falls back to the whole contract when the
-  // payload-schema declaration is absent (hand-built fixtures). Opt-in
-  // (read-only GET flows): submission flows keep scanning the whole contract.
-  const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
-  let scanned = contractCode;
-  if (payloadOnly && payloadStart >= 0) {
-    const rest = contractCode.slice(payloadStart);
-    const end = rest.search(/^export type \w*Payload\b/m);
-    scanned = end >= 0 ? rest.slice(0, end) : rest;
-  }
-  return (
-    [...scanned.matchAll(urlFieldLinePattern)]
-      // Whole-contract scans also see response-schema leaves relaxed by the
-      // single-entity verdict (`.nullable().optional()`); those still attribute
-      // an unreferenced URL field to its source capture.
-      .filter((match) =>
-        payloadOnly
-          ? !match[0].includes(".optional(")
-          : !match[0].includes(".optional(") || match[0].includes(".nullable().optional(")
-      )
-      .map((match) => match[1])
-      .filter((name): name is string => name !== undefined)
-      .filter((name) => !emittedCode.includes(`payload.${name}`))
-  );
+  return [...outsidePayload.matchAll(URL_FIELD_LINE_PATTERN)]
+    .filter((match) => match[0].includes(".nullable().optional("))
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined)
+    .filter((name) => !emittedCode.includes(`payload.${name}`));
 }
 
 export function assertRequiredUrlFieldsReferenced(
@@ -17230,22 +17252,27 @@ function healUnreferencedUrlFieldsOnce(
   firstAttempt: TsGenerationResult,
   regenerate: (activeCaptures: Capture[]) => TsGenerationResult | null
 ): TsGenerationResult {
-  const payloadOnly = !!firstAttempt.contractOpts.getInputModel;
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
-    firstAttempt.browserFlow.code,
-    payloadOnly
+    firstAttempt.browserFlow.code
   );
-  if (offending.length === 0) return firstAttempt;
+  // Submission flows also drop unrelated captures whose unread response `*Url`
+  // leaves leaked into the contract; that attribution never aborts generation.
+  const unreadLeaves = firstAttempt.contractOpts.getInputModel
+    ? []
+    : unreadRelaxedResponseUrlFields(firstAttempt.contractCode, firstAttempt.browserFlow.code);
+  const attributedFields = [...new Set([...offending, ...unreadLeaves])];
+  if (attributedFields.length === 0) return firstAttempt;
 
   const primaryCapture = resolvedPrimaryResponseCapture(firstAttempt);
   const noiseCaptures = identifyNoiseCapturesForFields(
-    offending,
+    attributedFields,
     firstAttempt.resolvedPool,
     primaryCapture
   );
 
   if (noiseCaptures.size === 0) {
+    if (offending.length === 0) return firstAttempt;
     throw new Error(
       `recon-generate: required URL field(s) ${describeOffendingFieldSources(offending, firstAttempt.resolvedPool)} ` +
         `declared on the payload schema but never referenced by the emitted contract or browser flow, and no ` +
@@ -17255,7 +17282,7 @@ function healUnreferencedUrlFieldsOnce(
   }
 
   logger.warn(
-    `required URL field(s) ${offending.join(", ")} traced to ${noiseCaptures.size} unrelated capture(s) ` +
+    `unread URL field(s) ${attributedFields.join(", ")} traced to ${noiseCaptures.size} unrelated capture(s) ` +
       `(${[...noiseCaptures].map((c) => c.url).join(", ")}) not referenced or threaded by the resolved action ` +
       `sequence — excluding them and re-generating once`
   );
@@ -17280,8 +17307,7 @@ function healUnreferencedUrlFieldsOnce(
   }
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
-    retried.browserFlow.code,
-    !!retried.contractOpts.getInputModel
+    retried.browserFlow.code
   );
   if (stillOffending.length > 0) {
     throw new Error(
