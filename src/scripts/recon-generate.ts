@@ -5493,7 +5493,8 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
     // key for a nested array would declare the one array twice.
     const fieldName = pathToPayloadFieldName([...valuePath]);
-    if (!coveredByAncestorField) registerStructuredPayloadField(outStructuredKeys, fieldName, value);
+    if (!coveredByAncestorField)
+      registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
     // array carries none falls through to the same opaque `payload.<key>`
@@ -9348,10 +9349,20 @@ export function emitMultiStepExecuteHttp(
         shieldedUuids,
         boundValues
       );
-      // A later write of a write flow carries the caller's own scalars (contact
+      // A later write that threads a prior response carries the caller's own scalars (contact
       // details and the like): bind each still-literal string leaf to a payload
       // input instead of freezing the recorded value into the request.
-      if (isMutatingMethod(cap.method) && prior.some((p) => isMutatingMethod(p.capture.method))) {
+      const threadsPriorResponse = (text: string): boolean =>
+        prior.some((p) =>
+          [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
+            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text)
+          )
+        );
+      if (
+        isMutatingMethod(cap.method) &&
+        prior.some((p) => isMutatingMethod(p.capture.method)) &&
+        (threadsPriorResponse(url) || threadsPriorResponse(bodyTemplate))
+      ) {
         bodyTemplate = bindLaterWriteScalarLeaves(
           bodyTemplate,
           parsedBody,

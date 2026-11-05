@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { applyStructuredValuePayloadSubstitutionsForEnvelope } from "./recon-generate";
 
-function run(body: Record<string, unknown>, envelope: Record<string, unknown>, path: string[], keys: Map<string, string>) {
+function run(
+  body: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+  path: string[],
+  keys: Map<string, string>
+) {
   return applyStructuredValuePayloadSubstitutionsForEnvelope(
     JSON.stringify(body),
     envelope,
