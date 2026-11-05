@@ -16,7 +16,12 @@ afterEach(() => {
 
 const BASE = "https://shop.example/api/v2/products/search";
 
-function generate(urls: string[], steps: unknown[], tag: string): string {
+function generate(
+  urls: string[],
+  steps: unknown[],
+  tag: string,
+  withSensorPosts = false
+): string {
   const workDir = mkdtempSync(join(tmpdir(), "rest-get-emit-"));
   dirs.push(workDir);
   const runRoot = join(workDir, "run");
@@ -42,6 +47,23 @@ function generate(urls: string[], steps: unknown[], tag: string): string {
       )
     );
   });
+  if (withSensorPosts) {
+    // A bot manager acknowledges every opaque sensor body with one fixed response.
+    [1, 2, 3].forEach((n) => {
+      writeFileSync(
+        join(capturesDir, `01${n}-sensor.json`),
+        JSON.stringify(
+          buildCapture({
+            url: "https://shop.example/assets/3f9a1c7e",
+            method: "POST",
+            requestPostData: JSON.stringify({ sensor_data: `blob-${n}-${"x".repeat(40 * n)}` }),
+            responseBody: { success: true },
+            timestamp: `2024-02-01T00:00:1${n}Z`,
+          })
+        )
+      );
+    });
+  }
   const siteId = `rest-get-emit-${tag}-${process.pid}`;
   const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
   dirs.push(siteOutDir);
@@ -98,5 +120,16 @@ describe("single-endpoint REST GET emit", () => {
     expect(http).toContain("itemsById.size < total");
     expect(schema).not.toMatch(/\boffset:/);
     expect(schema).toContain("maxPages");
+  });
+});
+
+describe("single-endpoint REST GET emit alongside recurring bot-manager POSTs", () => {
+  const contract = generate(URLS, STEPS, "sensor", true);
+  const http = contract.slice(contract.indexOf("async executeHttp("), contract.indexOf("async execute("));
+
+  it("issues the primary as a GET with the facet query params, not a POST body", () => {
+    expect(http).toContain('method: "GET"');
+    expect(http).not.toContain('method: "POST"');
+    expect(http).toContain('payload.category !== undefined ? [["category", String(payload.category)]]');
   });
 });

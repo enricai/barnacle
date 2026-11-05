@@ -2568,6 +2568,36 @@ export function selectPrimaryGraphQLOperation(
 }
 
 /**
+ * Builds a predicate telling whether a non-GET capture is a recurring beacon
+ * (bot-manager sensor, heartbeat) rather than a candidate for the flow's real
+ * endpoint: vendor noise, a request-invariant repeat, or a method+endpoint
+ * that recurs in `pool` while its answer does not depend on what was sent --
+ * no business data at all, or the same response every time despite different
+ * requests (a sensor POST acknowledges every body with one fixed `{ok}`).
+ * A one-off submission, or a recurring endpoint whose responses differ with
+ * its requests, is not one. Always false for GET: a read is judged by its
+ * response, not its recurrence.
+ */
+function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
+  const occurrences = new Map<string, Capture[]>();
+  for (const c of pool) {
+    if (c.method === "GET") continue;
+    const key = `${c.method} ${endpointKey(c.url)}`;
+    const list = occurrences.get(key);
+    if (list) list.push(c);
+    else occurrences.set(key, [c]);
+  }
+  const answerIgnoresRequest = (list: Capture[]): boolean =>
+    new Set(list.map((c) => JSON.stringify(c.responseBody ?? null))).size === 1;
+  return (c) => {
+    if (c.method === "GET") return false;
+    if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
+    const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
+    return same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same));
+  };
+}
+
+/**
  * Resolves the same primary-endpoint capture that {@link firstEndpointPath}
  * derives a path string from, so non-GraphQL flows can also read that
  * capture's own `.responseBody` instead of an array-order-first replay.
@@ -2615,7 +2645,11 @@ export function firstEndpointCapture(
       return false;
     }
   };
-  const nonGet = pool.find((c) => c.method !== "GET" && valid(c));
+  // A non-GET only beats a read when it can be the flow's real endpoint
+  // ({@link isRecurringNonGetBeacon}): "any non-GET wins" let a bot-manager's
+  // recurring sensor POST outrank the GET search that produced the flow's data.
+  const isRecurringBeacon = nonGetBeaconPredicate(pool);
+  const nonGet = pool.find((c) => c.method !== "GET" && valid(c) && !isRecurringBeacon(c));
   if (nonGet) return nonGet;
   // Read-only REST flow: prefer a successful non-noise GET, richest query first
   // (ties keep chronological order).
@@ -18894,9 +18928,14 @@ async function main(): Promise<void> {
     // A declared submit pattern may select several same-route GET reads of the
     // winner as the "action sequence"; those are samples of one read, not steps.
     const readSiblings = readFlowWinner ? sameRouteGetSiblings(readFlowWinner, activeCaptures) : [];
+    // Recurring beacons (a bot-manager's sensor POSTs) in the action sequence are
+    // page chrome, not steps of the flow: they must not turn a read into a submission.
+    const isRecurringReadFlowBeacon = nonGetBeaconPredicate(activeCaptures);
     const actionSequenceIsReadSamples =
       compiledActionSteps.length === 0 ||
-      actionCaptures.every((a) => readSiblings.includes(a.capture));
+      actionCaptures.every(
+        (a) => readSiblings.includes(a.capture) || isRecurringReadFlowBeacon(a.capture)
+      );
     const isReadOnlyGetFlow =
       !gql &&
       actionSequenceIsReadSamples &&
@@ -18915,6 +18954,7 @@ async function main(): Promise<void> {
           c.status >= 200 &&
           c.status < 300 &&
           !isNoiseUrl(c.url) &&
+          !isRecurringReadFlowBeacon(c) &&
           (!(ownBackendHostnames.length > 0 || fallbackDomain !== null) ||
             isAllowedFixtureHost(
               captureHostname(c.url),

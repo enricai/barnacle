@@ -18,6 +18,7 @@ const get = (path: string, body: unknown, t: number) =>
   buildCapture({
     url: `${HOST}${path}`,
     method: "GET",
+    requestPostData: null,
     responseBody: body,
     timestamp: `2024-01-01T00:00:0${t}Z`,
   });
