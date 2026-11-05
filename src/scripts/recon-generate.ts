@@ -2584,44 +2584,30 @@ export function firstEndpointCapture(
       return false;
     return true;
   };
-  const nonGetCaptures = restrictToSubmitPattern(
-    captures.filter((c) => c.method !== "GET" && allowed(c)),
-    submitPatterns
-  );
-  for (const c of nonGetCaptures) {
+  // Declared submit pattern first, over ALL allowed captures: an unrelated
+  // non-GET (bot-sensor beacon) must not beat a GET the flow declared.
+  const pool = restrictToSubmitPattern(captures.filter(allowed), submitPatterns);
+  const valid = (c: Capture): boolean => {
     try {
       new URL(c.url);
-      return c;
+      return true;
     } catch {
-      // skip
+      return false;
     }
+  };
+  const nonGet = pool.find((c) => c.method !== "GET" && valid(c));
+  if (nonGet) return nonGet;
+  // Read-only REST flow: prefer a successful non-noise GET, richest query first
+  // (ties keep chronological order).
+  const queryCount = (c: Capture): number => new URL(c.url).searchParams.size;
+  let best: Capture | null = null;
+  for (const c of pool) {
+    if (c.method !== "GET" || c.status < 200 || c.status >= 300 || isNoiseUrl(c.url)) continue;
+    if (!valid(c)) continue;
+    if (best === null || queryCount(c) > queryCount(best)) best = c;
   }
-  // No non-GET submit capture: a read-only REST flow. Prefer a successful
-  // own-backend GET over failed/noise captures that the generic fallback
-  // below would otherwise pick by array order.
-  for (const c of restrictToSubmitPattern(
-    captures.filter(
-      (c) =>
-        c.method === "GET" && c.status >= 200 && c.status < 300 && !isNoiseUrl(c.url) && allowed(c)
-    ),
-    submitPatterns
-  )) {
-    try {
-      new URL(c.url);
-      return c;
-    } catch {
-      // skip
-    }
-  }
-  for (const c of restrictToSubmitPattern(captures.filter(allowed), submitPatterns)) {
-    try {
-      new URL(c.url);
-      return c;
-    } catch {
-      // skip
-    }
-  }
-  return null;
+  if (best) return best;
+  return pool.find(valid) ?? null;
 }
 
 function safeUrlPathname(url: string): string {
@@ -18322,6 +18308,12 @@ async function main(): Promise<void> {
       readFlowCaptures.filter(
         (c) =>
           c.method !== "GET" &&
+          // A multi-step flow with a fold spec and a declared submit pattern:
+          // only non-GETs matching that pattern can be the submit.
+          (foldReturnSpec === null ||
+            submitPatterns === null ||
+            (submitPatterns.endpoint === null && submitPatterns.body === null) ||
+            matchesDeclaredSubmit(c)) &&
           c.status >= 200 &&
           c.status < 300 &&
           !isNoiseUrl(c.url) &&
