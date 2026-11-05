@@ -104,7 +104,7 @@ export function buildCentreAndHitTestFn(expectText?: string): string {
     : document.elementFromPoint(x, y);
   for (let node = hit; node; ) {
     if (node === el) return { state: "hit", x, y };
-    node = node.parentNode && node.parentNode.host ? node.parentNode.host : node.parentNode;
+    node = node.parentNode && node.parentNode.nodeType === 11 && node.parentNode.host ? node.parentNode.host : node.parentNode;
   }
   const tag = hit && hit.tagName ? hit.tagName.toLowerCase() : "none";
   const id = hit && hit.id ? "#" + hit.id : "";
