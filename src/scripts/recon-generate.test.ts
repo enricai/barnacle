@@ -5806,6 +5806,36 @@ describe("deriveGetInputModel", () => {
     expect(m.fixedParams).toEqual({});
     expect(m.recordedQueryValues).toEqual({ valid: "1", grid: "2" });
   });
+  it("exposes path id, twinned array id key and date window for a GET feed with recorded fallbacks", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(
+      "https://example.com/venues/9/schedule.json?room_ids%5B%5D=9&date_from=2030-01-07&date_to=2030-01-13"
+    );
+    const b = cap(
+      "https://example.com/venues/9/schedule.json?room_ids%5B%5D=9&date_from=2030-01-14&date_to=2030-01-20"
+    );
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.pathVars).toEqual([{ field: "room_ids", segmentIndex: 2, queryKey: "room_ids[]" }]);
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["date_from", "date_to"]);
+    expect(m.fixedParams).toEqual({});
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/venues/9/schedule.json",
+      getInputModel: m,
+    });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('payload.room_ids ?? "9"');
+    expect(source).toContain("payload.date_from");
+    expect(source).toContain("payload.date_to");
+  });
+  it("exposes a lone path slug and a non-date non-id key as inputs", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://example.com/venues/9/schedule.json?view=week");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.pathVars.map((p) => p.segmentIndex)).toEqual([2]);
+    expect(m.dynamicFields).toEqual([{ field: "view", queryKey: "view" }]);
+    expect(m.recordedQueryValues).toEqual({ view: "week" });
+  });
   it("binds a path value repeated in two segments to one caller input", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/rooms/42/schedule/42?sort=asc");
