@@ -15510,7 +15510,12 @@ export function emitContractTsParts(opts: {
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
   const payloadFields = [...extendFields].map(([name, line]) => ({
     name,
-    optional: (line.split("\n")[0] ?? "").includes(".optional("),
+    optional: line
+      .split("\n")
+      .filter((l) => !/^\s*\/\*\*.*\*\/\s*$/.test(l))
+      .join("\n")
+      .trimEnd()
+      .endsWith(".optional(),"),
   }));
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
