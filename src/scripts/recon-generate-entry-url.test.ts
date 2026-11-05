@@ -4,6 +4,7 @@ import {
   assertRequiredUrlFieldsReferenced,
   emitBrowserFlowTs,
   emitContractTs,
+  emitContractTsParts,
 } from "@/scripts/recon-generate";
 
 /**
@@ -61,6 +62,15 @@ describe("recon-generate — browser-flow entry URL", () => {
     auxFiles: [],
     inputBody: { FirstName: "Reginald" },
   };
+
+  it("emitContractTsParts exposes the payload-schema expression verbatim; emitContractTs returns the same code", () => {
+    const { code, payloadSchemaExpr } = emitContractTsParts(contractOpts);
+
+    expect(emitContractTs(contractOpts)).toBe(code);
+    expect(code).toMatch(/^const \w*PayloadSchema = /m);
+    expect(code).toContain(`PayloadSchema = ${payloadSchemaExpr};`);
+    expect(payloadSchemaExpr).toContain("ClickUrl");
+  });
 
   it("emitContractTs's execute() call site passes payload.ClickUrl for a submission flow, not context.baseUrl", () => {
     const source = emitContractTs(contractOpts);
