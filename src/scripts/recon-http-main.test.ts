@@ -28,13 +28,11 @@ describe("recon-http main (in-process)", () => {
     const dir = mkdtempSync(join(tmpdir(), "recon-main-ip-"));
     mkdirSync(join(dir, "run1"), { recursive: true });
     const origArgv = process.argv;
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("exit-called");
-    }) as never);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     process.argv = ["node", "/x/recon-http.ts", "--run-dir", join(dir, "run1")];
     vi.resetModules();
     try {
-      await import("./recon-http");
+      await import("./recon-http.js");
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
     } finally {
       process.argv = origArgv;
