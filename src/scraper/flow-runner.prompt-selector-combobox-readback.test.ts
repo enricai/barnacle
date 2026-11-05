@@ -21,11 +21,26 @@ describe("empty placeholder regex", () => {
 });
 
 describe("combobox read-back", () => {
-  it("source reads non-input role=combobox like a button", () => {
-    expect(src).toContain('getAttribute("role") === "combobox" && w.tagName !== "INPUT"');
-    const w = new Window().document;
-    w.body.innerHTML = `<a role="combobox"><span>— Make a Selection —</span></a>`;
-    expect(w.querySelector("a")?.textContent).toContain("Make a Selection");
+  const exprSrc = /const PROMPT_CURRENT_TEXT_EXPR = `([\s\S]*?)`;\n/.exec(src)?.[1] ?? "";
+  const run = (html: string): string => {
+    const win = new Window();
+    win.document.body.innerHTML = html;
+    const expr = exprSrc
+      .replace("${BUTTON_VALUE_EXPR}", (/const BUTTON_VALUE_EXPR =\s*\n?\s*"([\s\S]*?)";\n/.exec(src)?.[1] ?? "").replace(/\\"/g, '"'))
+      .replace("${OPTION_ACCESSIBLE_LABEL_EXPR}", "(() => '')")
+      .replace(/\\\\/g, "\\");
+    const fn = new win.Function(`return ${expr}`)();
+    const w = win.document.querySelector("[role=combobox],button,input") as unknown;
+    return fn(w, "[data-x]", emptyRx) as string;
+  };
+  it("a role=combobox <a> placeholder reads empty", () => {
+    expect(run(`<a role="combobox"><span>— Make a Selection —</span></a>`)).toBe("");
+  });
+  it("a committed role=combobox <a> reads its text", () => {
+    expect(run(`<a role="combobox"><span>+57 Colombia</span></a>`)).toBe("+57 colombia");
+  });
+  it("button behaviour unchanged", () => {
+    expect(run(`<button>Mobile</button>`)).toBe("mobile");
   });
 });
 

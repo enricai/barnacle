@@ -978,7 +978,14 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
   if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-  if ((w.tagName === "BUTTON" || (w.getAttribute && w.getAttribute("role") === "combobox" && w.tagName !== "INPUT")) && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
+  if (w.tagName === "BUTTON" && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
+  if (w.tagName !== "BUTTON" && w.tagName !== "INPUT" && w.getAttribute && w.getAttribute("role") === "combobox") {
+    const cc = w.cloneNode(true);
+    for (const d of [w, ...Array.from(w.querySelectorAll("[aria-describedby]"))]) for (const id of (d.getAttribute("aria-describedby") || "").split(/\\s+/)) { const r = id ? cc.querySelector("[id='" + id + "']") : null; if (r) r.remove(); }
+    for (const n of cc.querySelectorAll("[data-automation-id='selectedItemList']")) n.remove();
+    const ct = buttonValue(cc).trim();
+    if (ct && !emptyRx.test(ct)) return norm(ct);
+  }
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
