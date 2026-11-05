@@ -85,8 +85,8 @@ function generateContract(flowExtras: Record<string, unknown>): string {
 function expectPayloadDrivenRead(contract: string): void {
   const http = contract.slice(contract.indexOf("async executeHttp("));
   expect(http).toContain(`encodeURIComponent(String(payload.item_ids ?? "9"))`);
-  expect(http).toContain('["date_from", String(payload.date_from)]');
-  expect(http).toContain('["date_to", String(payload.date_to)]');
+  expect(http).toContain('["date_from", String(payload.date_from ?? "');
+  expect(http).toContain('["date_to", String(payload.date_to ?? "');
   expect(http).toContain('["item_ids[]", String(payload.item_ids ?? "9")]');
   expect(http).not.toContain("item_ids%5B");
   expect(contract).not.toMatch(/^ {2}_: /m);

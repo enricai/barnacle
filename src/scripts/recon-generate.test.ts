@@ -5806,8 +5806,8 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain('method: "GET"');
     expect(source).toContain('encodeURIComponent(String(payload.item_ids ?? "7"))');
     expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
-    expect(source).toContain('["date_from", String(payload.date_from)]');
-    expect(source).toContain('["date_to", String(payload.date_to)]');
+    expect(source).toContain('["date_from", String(payload.date_from ?? "');
+    expect(source).toContain('["date_to", String(payload.date_to ?? "');
     expect(source).not.toContain('"2030-01-01"]');
     // Read-only GET: no mutation body, not emitted as a submission.
     expect(source).not.toContain('method: "POST"');
