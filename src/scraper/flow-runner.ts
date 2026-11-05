@@ -3764,10 +3764,10 @@ export async function judgeStepOutcome(params: {
   preVisibleTextDigest?: string;
   /**
    * Visible text of the settled post-click snapshot from the shared advance
-   * read. When present the non-final path judges it as-is instead of settling
-   * and re-probing a second time.
+   * read (readMidFlowPostClickAdvance). Required: the non-final path judges it
+   * as-is and never settles on its own.
    */
-  settledPostVisibleText?: string;
+  settledPostVisibleText: string;
   submitInput: Omit<VerifySubmitInput, "stepInstruction" | "isFinalStep" | "visibleText">;
 }): Promise<SubmitVerdict | null> {
   const { client, captureFn, step, isFinalStep, target } = params;
@@ -3785,30 +3785,7 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  let settledText = params.settledPostVisibleText;
-  if (settledText === undefined) {
-    // Same settle + header-only resettle every other post-click site uses, judged
-    // against the step-start baseline, so quiescence (not a fixed delay) decides.
-    const baseline = {
-      networkCount: params.preNetworkCount,
-      visibleTextSignature: params.preVisibleTextSignature,
-      visibleText: params.preVisibleText,
-      visibleTextDigest: params.preVisibleTextDigest,
-    } as StepSnapshot;
-    const settled = await settleAndSnapshotPostClick(
-      target,
-      params.signalCounter,
-      params.page as unknown as Page,
-      baseline,
-      isStepSettleWaitShaped({
-        step,
-        submitStep: params.submitStep,
-        isFinalStep,
-        flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-      }) || params.elementSubmitShaped === true
-    );
-    settledText = settled.visibleText || (await probeVisibleTextForJudge(target));
-  }
+  const settledText = params.settledPostVisibleText;
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
     signatureColon === -1
