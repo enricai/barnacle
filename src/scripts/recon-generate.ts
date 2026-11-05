@@ -952,7 +952,7 @@ function allPersonaLiterals(knownFieldValues: ReadonlyMap<string, string>): stri
  *
  * @throws when a persona literal survives emission
  */
-function assertNoLeakedPersonaConstant(
+export function assertNoLeakedPersonaConstant(
   code: string,
   knownFieldValues: ReadonlyMap<string, string>,
   flowSteps: FlowStepInput[] = []
