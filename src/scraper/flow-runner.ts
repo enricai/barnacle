@@ -3709,9 +3709,6 @@ export async function buildSubmitJudgeStepContext(params: {
   };
 }
 
-const STEP_REJUDGE_DELAY_MS = 5000;
-const STEP_REJUDGE_COMPARE_CHARS = 1200;
-
 type SubmitVerdict = z.infer<typeof SUBMIT_VERDICT_SCHEMA>;
 
 /**
@@ -3759,22 +3756,29 @@ export async function judgeStepOutcome(params: {
       captureFn,
     });
   }
-  const hasSettledRead = params.settledPostVisibleText !== undefined;
-  if (!hasSettledRead) {
-    await settleWithPageQuiescence(
-      params.page,
+  let settledText = params.settledPostVisibleText;
+  if (settledText === undefined) {
+    // Same settle + header-only resettle every other post-click site uses, judged
+    // against the step-start baseline, so quiescence (not a fixed delay) decides.
+    const baseline = {
+      networkCount: params.preNetworkCount,
+      visibleTextSignature: params.preVisibleTextSignature,
+      visibleText: params.preVisibleText,
+      visibleTextDigest: params.preVisibleTextDigest,
+    } as StepSnapshot;
+    const settled = await settleAndSnapshotPostClick(
       target,
       params.signalCounter,
-      params.preNetworkCount,
+      params.page as unknown as Page,
+      baseline,
       isStepSettleWaitShaped({
         step,
         submitStep: params.submitStep,
         isFinalStep,
         flowHasSubmitSemantics: params.flowHasSubmitSemantics,
-      }) || params.elementSubmitShaped === true,
-      params.preVisibleTextSignature,
-      params.preVisibleTextDigest
+      }) || params.elementSubmitShaped === true
     );
+    settledText = settled.visibleText ?? (await probeVisibleTextForJudge(target));
   }
   const signatureColon = params.preVisibleTextSignature.indexOf(":");
   const signatureHead = (
@@ -3796,26 +3800,7 @@ export async function judgeStepOutcome(params: {
       },
       captureFn,
     });
-  const rejudgeIfTextMoved = async (
-    first: Awaited<ReturnType<typeof judgeText>>,
-    judgedText: string
-  ): Promise<Awaited<ReturnType<typeof judgeText>>> => {
-    if (first === null || first.advanced || hasSettledRead) return first;
-    await params.page.waitForTimeout(STEP_REJUDGE_DELAY_MS);
-    const laterText = await probeVisibleTextForJudge(target);
-    if (
-      laterText.slice(0, STEP_REJUDGE_COMPARE_CHARS) ===
-      judgedText.slice(0, STEP_REJUDGE_COMPARE_CHARS)
-    ) {
-      return first;
-    }
-    return (await judgeText(laterText)) ?? first;
-  };
-  const afterText = hasSettledRead
-    ? (params.settledPostVisibleText ?? "")
-    : await probeVisibleTextForJudge(target);
-  const firstVerdict = await judgeText(afterText);
-  const verdict = await rejudgeIfTextMoved(firstVerdict, afterText);
+  const verdict = await judgeText(settledText);
   if (verdict === null) return null;
   return verdict.advanced
     ? {
