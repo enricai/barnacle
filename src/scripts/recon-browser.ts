@@ -3356,6 +3356,10 @@ async function main(): Promise<void> {
           // instead of the self-heal cascade.
           const stepPromise: Promise<"completed" | "skipped"> =
             step.navigateTo === undefined &&
+            step.upload === undefined &&
+            step.submitStep !== true &&
+            step.captchaGated !== true &&
+            step.emailStep !== true &&
             isPassiveNoopInstruction(step.instruction)
               ? Promise.resolve<"completed" | "skipped">("completed")
               : step.navigateTo !== undefined
