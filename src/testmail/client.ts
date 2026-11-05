@@ -6,11 +6,17 @@ import { z } from "zod/v4";
 import { config } from "@/config";
 import { getLogger } from "@/lib/logging";
 import { createGraphqlClient } from "@/scraper/graphql-client";
-import { TestmailApiError, TestmailTimeoutError } from "@/testmail/errors";
+import {
+  TestmailApiError,
+  type TestmailServiceStatus,
+  TestmailTimeoutError,
+} from "@/testmail/errors";
 
 const logger = getLogger({ name: "testmail/client" });
 
 const TESTMAIL_ENDPOINT = "https://api.testmail.app/api/graphql";
+const TESTMAIL_REST_ENDPOINT = "https://api.testmail.app/api/json";
+const REST_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Sustained per-key rate-limit ceiling per testmail docs (5 rps). Pinning
@@ -221,6 +227,7 @@ export async function pollTestmailInbox(opts: PollTestmailInboxOptions): Promise
   const deadline = Date.now() + timeoutMs;
   const subjectNeedle = subjectContains?.toLowerCase();
   let lastApiError: TestmailApiError | null = null;
+  let graphqlEverAnswered = false;
 
   while (Date.now() < deadline) {
     let response: z.infer<typeof InboxQueryResponseSchema>;
@@ -253,6 +260,7 @@ export async function pollTestmailInbox(opts: PollTestmailInboxOptions): Promise
       continue;
     }
 
+    graphqlEverAnswered = true;
     const inboxData = response.data.inbox;
     if (inboxData.result !== "success") {
       lastApiError = new TestmailApiError(
@@ -284,12 +292,51 @@ export async function pollTestmailInbox(opts: PollTestmailInboxOptions): Promise
     await sleep(Math.min(intervalMs, deadline - Date.now()));
   }
 
-  const reason = lastApiError ? ` (last API error: ${lastApiError.message})` : "";
+  let serviceStatus: TestmailServiceStatus = "undetermined";
+  if (!graphqlEverAnswered) {
+    serviceStatus = await probeRestInbox(namespace, inbox);
+    logger.warn(`testmail GraphQL never answered; REST probe says ${serviceStatus}`);
+  }
+  const statusNote =
+    serviceStatus === "reachable_no_mail"
+      ? " [API reachable via REST, inbox has no mail]"
+      : serviceStatus === "service_unavailable"
+        ? " [testmail service unavailable: REST probe failed too]"
+        : "";
+  const reason = (lastApiError ? ` (last API error: ${lastApiError.message})` : "") + statusNote;
   throw new TestmailTimeoutError(
     `testmail inbox ${inbox.address} did not receive ${
       subjectContains ? `a message with subject containing "${subjectContains}"` : "any message"
-    } within ${timeoutMs}ms${reason}`
+    } within ${timeoutMs}ms${reason}`,
+    serviceStatus
   );
+}
+
+/** Ask the REST api/json endpoint for the inbox count (limit=0) to tell "service down" from "no mail". */
+async function probeRestInbox(
+  namespace: string,
+  inbox: TestmailInbox
+): Promise<TestmailServiceStatus> {
+  try {
+    const url = new URL(TESTMAIL_REST_ENDPOINT);
+    url.searchParams.set("apikey", config.testmail.apiKey ?? "");
+    url.searchParams.set("namespace", namespace);
+    url.searchParams.set("tag", inbox.tag);
+    url.searchParams.set("timestamp_from", String(inbox.timestampFrom));
+    url.searchParams.set("limit", "0");
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(REST_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return "service_unavailable";
+    const body = JSON.parse(await res.text()) as {
+      result?: string;
+      count?: number;
+    };
+    if (body.result !== "success" || typeof body.count !== "number") return "service_unavailable";
+    return body.count === 0 ? "reachable_no_mail" : "undetermined";
+  } catch {
+    return "service_unavailable";
+  }
 }
 
 function sleep(ms: number): Promise<void> {
