@@ -29,12 +29,6 @@ const COLOR_STEP =
 const NIGHTS_STEP =
   "Open the number of nights filter dropdown in the sidebar and click the '4' nights option, keeping the other filters that are already applied";
 
-const DECLARED_STEPS = [
-  { step: "navigate", payloadField: "category" },
-  { step: COLOR_STEP, payloadField: "color" },
-  { step: NIGHTS_STEP, payloadField: "nights" },
-];
-
 type Transport = "rest" | "graphql";
 
 function transportCapture(transport: Transport): unknown {

@@ -18624,7 +18624,12 @@ async function main(): Promise<void> {
     // caller omits it, so the field still takes effect when supplied.
     const settled =
       unread.size === 0
-        ? { browserFlow, contractOpts, contractCode: firstContractCode, payloadSchemaExpr: firstContract.payloadSchemaExpr }
+        ? {
+            browserFlow,
+            contractOpts,
+            contractCode: firstContractCode,
+            payloadSchemaExpr: firstContract.payloadSchemaExpr,
+          }
         : (() => {
             const fallbackBrowserFlow = emitBrowserFlowTs({
               ...browserFlowOpts,

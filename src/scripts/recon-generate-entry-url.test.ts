@@ -98,9 +98,9 @@ describe("recon-generate — browser-flow entry URL", () => {
         "const SitePayloadSchema = z.object({\nClickUrl: z.string().min(1),\n});\nexport type SitePayload = 1;";
       const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).toThrow(
-        /ClickUrl/
-      );
+      expect(() =>
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+      ).toThrow(/ClickUrl/);
     });
 
     it("does not throw once the flow references payload.ClickUrl somewhere", () => {
@@ -108,14 +108,18 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode =
         'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "domcontentloaded" });';
 
-      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).not.toThrow();
+      expect(() =>
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+      ).not.toThrow();
     });
 
     it("ignores optional URL fields — only required ones must be referenced", () => {
       const contractCode = "RedirectUrl: z.string().optional(),";
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).not.toThrow();
+      expect(() =>
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+      ).not.toThrow();
     });
 
     it("does not flag a required *Url leaf in a response schema outside the payload schema", () => {
@@ -135,9 +139,9 @@ describe("recon-generate — browser-flow entry URL", () => {
         "const SitePayloadSchema = z.object({\nApplyUrl: z.string().min(1),\n});\nexport type SitePayload = 1;";
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).toThrow(
-        /ApplyUrl/
-      );
+      expect(() =>
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+      ).toThrow(/ApplyUrl/);
     });
 
     it("integration: a real emitContractTs + emitBrowserFlowTs pair for a submission flow passes the guard", () => {

@@ -5358,9 +5358,9 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
       "const XPayloadSchema = z.object({\nTrackingUrl: z.string(),\n});\n\nexport type XPayload = z.infer<typeof XPayloadSchema>;\n";
     const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-    expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)).toThrow(
-      /required URL field.*TrackingUrl/
-    );
+    expect(() =>
+      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+    ).toThrow(/required URL field.*TrackingUrl/);
   });
 });
 
@@ -5596,7 +5596,11 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
     "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();\n";
   it("does not flag a required nested response *Url leaf", () => {
     expect(
-      unreferencedRequiredUrlFields(src, "", "z.object({}).extend({\n  date: z.string().optional(),\n})")
+      unreferencedRequiredUrlFields(
+        src,
+        "",
+        "z.object({}).extend({\n  date: z.string().optional(),\n})"
+      )
     ).toEqual([]);
   });
   it("still flags a required unread payload *Url field", () => {

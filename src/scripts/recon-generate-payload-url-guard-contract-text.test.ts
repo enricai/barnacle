@@ -5,8 +5,7 @@ import {
   unreferencedRequiredUrlFields,
 } from "./recon-generate.js";
 
-const payload = (fields: string) =>
-  `const ExamplePayloadSchema = z.object({\n${fields}\n});\n`;
+const payload = (fields: string) => `const ExamplePayloadSchema = z.object({\n${fields}\n});\n`;
 const response = `const ExampleResponseSchema = z.object({\n  data: z.object({\n    mapUrl: z.string(),\n  }),\n});\n`;
 
 describe("required-URL guard on contract text alone", () => {
@@ -29,41 +28,31 @@ describe("required-URL guard on contract text alone", () => {
   it("reports only the payload's own unread required *Url field", () => {
     const code = `export ${payload("  siteUrl: z.string(),")}${response}`;
     expect(unreferencedRequiredUrlFields(code, "")).toEqual(["siteUrl"]);
-    expect(() => assertRequiredUrlFieldsReferenced(code, "")).toThrow(
-      /siteUrl/,
-    );
+    expect(() => assertRequiredUrlFieldsReferenced(code, "")).toThrow(/siteUrl/);
   });
 
   it("does not flag an optional or a read payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        payload("  siteUrl: z.string().optional(),") + response,
-        "",
-      ),
+      unreferencedRequiredUrlFields(payload("  siteUrl: z.string().optional(),") + response, "")
     ).toEqual([]);
     expect(
       unreferencedRequiredUrlFields(
         payload("  siteUrl: z.string(),") + response,
-        "fetch(payload.siteUrl)",
-      ),
+        "fetch(payload.siteUrl)"
+      )
     ).toEqual([]);
   });
 
   it("does not let a payload schema containing a string with brackets move the boundary", () => {
     const code =
-      payload(
-        '  q: z.string().describe("a ; ) } b"),\n  siteUrl: z.string(),',
-      ) + response;
+      payload('  q: z.string().describe("a ; ) } b"),\n  siteUrl: z.string(),') + response;
     expect(unreferencedRequiredUrlFields(code, "")).toEqual(["siteUrl"]);
   });
 
   it("attributes only response-side relaxed *Url leaves", () => {
     const relaxed = `const ExampleResponseSchema = z.object({\n  logoUrl: z.string().nullable().optional(),\n});\n`;
-    const code =
-      payload("  logoUrl: z.string().nullable().optional(),") + relaxed;
+    const code = payload("  logoUrl: z.string().nullable().optional(),") + relaxed;
     expect(unreadRelaxedResponseUrlFields(code, "")).toEqual(["logoUrl"]);
-    expect(
-      unreadRelaxedResponseUrlFields(payload("  q: z.string(),"), ""),
-    ).toEqual([]);
+    expect(unreadRelaxedResponseUrlFields(payload("  q: z.string(),"), "")).toEqual([]);
   });
 });
