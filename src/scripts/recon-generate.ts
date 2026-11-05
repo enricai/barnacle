@@ -16116,19 +16116,81 @@ export { ${camel}Plugin as plugin };
 export function unreferencedRequiredUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr: string
+  payloadSchemaExpr?: string
 ): string[] {
-  // Judge only the emitter's payload-schema expression: a response schema's
-  // required `*Url` leaf is output, not caller input. No payload data means
-  // no payload fields to guard.
-  return [...payloadSchemaExpr.matchAll(URL_FIELD_LINE_PATTERN)]
+  // Judge only the payload schema: a response schema's required `*Url` leaf is
+  // output, not caller input. Text with no payload-schema declaration is itself
+  // the schema fragment under test.
+  const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
+  const scanned =
+    payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : contractCode);
+  const emittedCode = `${contractCode}\n${browserFlowCode}`;
+  return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined)
-    .filter((name) => !`${contractCode}\n${browserFlowCode}`.includes(`payload.${name}`));
+    .filter((name) => !emittedCode.includes(`payload.${name}`));
 }
 
 const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
+
+/**
+ * Character span of the payload schema expression inside `contractCode`.
+ * When the emitter's own expression is supplied it is located verbatim;
+ * otherwise the `[export] const <X>PayloadSchema = <expr>` declaration is read
+ * by walking its bracket-balanced expression to the terminating `;` (or to the
+ * next top-level statement when the `;` is absent), so declaration order,
+ * `export`, and a following response schema never move the boundary. Null when
+ * the contract has no payload-schema declaration.
+ */
+function payloadSchemaSpan(
+  contractCode: string,
+  payloadSchemaExpr?: string
+): { start: number; end: number } | null {
+  if (payloadSchemaExpr !== undefined) {
+    const at = payloadSchemaExpr ? contractCode.indexOf(payloadSchemaExpr) : -1;
+    return at < 0 ? null : { start: at, end: at + payloadSchemaExpr.length };
+  }
+  const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(contractCode);
+  if (!declaration) return null;
+  const start = declaration.index + declaration[0].length;
+  let depth = 0;
+  for (let i = start; i < contractCode.length; i++) {
+    const ch = contractCode[i];
+    if (ch === '"' || ch === "'" || ch === "`") {
+      i = skipStringLiteral(contractCode, i);
+    } else if (ch === "/" && contractCode[i + 1] === "/") {
+      const eol = contractCode.indexOf("\n", i);
+      i = eol < 0 ? contractCode.length : eol - 1;
+    } else if (ch === "/" && contractCode[i + 1] === "*") {
+      const close = contractCode.indexOf("*/", i + 2);
+      i = close < 0 ? contractCode.length : close + 1;
+    } else if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+    } else if (depth === 0 && ch === ";") {
+      return { start, end: i };
+    } else if (
+      depth === 0 &&
+      ch === "\n" &&
+      /^\s*(?:export|const|let|type|function|interface|import)\s/.test(contractCode.slice(i + 1))
+    ) {
+      return { start, end: i };
+    }
+  }
+  return { start, end: contractCode.length };
+}
+
+/** Index of the closing quote of the string literal opening at `open`. */
+function skipStringLiteral(code: string, open: number): number {
+  const quote = code[open];
+  for (let i = open + 1; i < code.length; i++) {
+    if (code[i] === "\\") i++;
+    else if (code[i] === quote) return i;
+  }
+  return code.length;
+}
 
 /**
  * `*Url` leaves outside the payload schema that nothing reads and that the
@@ -16140,10 +16202,11 @@ const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
 export function unreadRelaxedResponseUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr: string
+  payloadSchemaExpr?: string
 ): string[] {
-  if (!payloadSchemaExpr || !contractCode.includes(payloadSchemaExpr)) return [];
-  const outsidePayload = contractCode.replace(payloadSchemaExpr, () => "");
+  const span = payloadSchemaSpan(contractCode, payloadSchemaExpr);
+  if (!span) return [];
+  const outsidePayload = contractCode.slice(0, span.start) + contractCode.slice(span.end);
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return [...outsidePayload.matchAll(URL_FIELD_LINE_PATTERN)]
     .filter((match) => match[0].includes(".nullable().optional("))
@@ -16155,7 +16218,7 @@ export function unreadRelaxedResponseUrlFields(
 export function assertRequiredUrlFieldsReferenced(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr: string
+  payloadSchemaExpr?: string
 ): void {
   const unreferenced = unreferencedRequiredUrlFields(
     contractCode,
