@@ -3304,11 +3304,51 @@ export function extractActionSequence(
     .map(({ capture }) => safeUrlPathname(capture.url));
   if (referencePaths.length === 0) return structurallyGated;
 
+  // A declared foldReturn drill-down is author-declared and authoritative, the
+  // same as the submit endpoint: it may share no path token with the submit
+  // endpoint, so structural relevance must not drop it. Neither may it drop
+  // the earlier call that MINTED the id the drill is keyed by (e.g. a POST
+  // whose response carries the id in the drill's path/query).
+  const drillCaptures = structurallyGated.filter(({ capture }) => matchesFoldReturn(capture));
+  const mintsDrillId = ({ capture, index }: { capture: Capture; index: number }): boolean =>
+    drillCaptures.some(
+      (d) => d.index > index && capturePathAndQueryValuesAppearIn(d.capture, capture.responseBody)
+    );
   return structurallyGated.filter(
-    ({ capture }) =>
-      matchesDeclaredSubmitEndpoint(capture) ||
-      isStructurallyRelevantCapture(safeUrlPathname(capture.url), referencePaths)
+    (entry) =>
+      matchesDeclaredSubmitEndpoint(entry.capture) ||
+      matchesFoldReturn(entry.capture) ||
+      mintsDrillId(entry) ||
+      isStructurallyRelevantCapture(safeUrlPathname(entry.capture.url), referencePaths)
   );
+}
+
+/**
+ * True when some id-bearing path segment or query value of `drill`'s URL
+ * appears as a string leaf of `body` — i.e. `body`'s call minted the id the
+ * drill is keyed by.
+ */
+function capturePathAndQueryValuesAppearIn(drill: Capture, body: unknown): boolean {
+  if (body === null || typeof body !== "object") return false;
+  let url: URL;
+  try {
+    url = new URL(drill.url);
+  } catch {
+    return false;
+  }
+  const candidates = [
+    ...url.pathname.split("/").map(decodePathSegment),
+    ...[...url.searchParams.values()],
+  ].filter((v) => v.length >= 4 && carriesEntityId(v));
+  if (candidates.length === 0) return false;
+  const leaves = new Set<string>();
+  const walk = (v: unknown): void => {
+    if (typeof v === "string" || typeof v === "number") leaves.add(String(v));
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v !== null && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(body);
+  return candidates.some((c) => leaves.has(c));
 }
 
 /**
@@ -18482,6 +18522,17 @@ async function main(): Promise<void> {
       );
     }
     const heuristicActionCaptures = patternedHeuristicActionCaptures;
+    if (foldReturnSpec !== null) {
+      const isDeclaredDrill = compileFoldReturnEndpointMatcher(foldReturnSpec);
+      const sawDrill = activeCaptures.some(
+        (c) => c.status >= 200 && c.status < 300 && isDeclaredDrill(c)
+      );
+      if (sawDrill && !heuristicActionCaptures.some((a) => isDeclaredDrill(a.capture))) {
+        logger.warn(
+          `declared foldReturn drill-down (endpointPattern: ${foldReturnSpec.endpointPattern}) matched captured traffic but is absent from the action sequence`
+        );
+      }
+    }
     const manifestActionCaptures = resolveManifestActionSequence(runRoot, activeCaptures);
     // A manifest only ever records submit-pattern matches, so it can never
     // carry a declared foldReturn drill-down the heuristic sequence found
