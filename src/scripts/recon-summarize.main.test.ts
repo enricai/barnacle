@@ -100,7 +100,7 @@ describe("recon-summarize main (real call path)", () => {
       "--run-dir",
       root,
     ];
-    await import("@/scripts/recon-summarize");
+    await import("@/scripts/recon-summarize.js");
     await vi.waitFor(() =>
       expect(() => readFileSync(out, "utf8")).not.toThrow(),
     );
