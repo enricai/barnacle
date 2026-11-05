@@ -137,7 +137,7 @@ async function generate(transport: Transport): Promise<string> {
   vi.resetModules();
   try {
     // Importing the module runs main() (argv[1] ends with recon-generate.ts).
-    await import("@/scripts/recon-generate");
+    await import("./recon-generate.js");
     for (let i = 0; i < 300 && !existsSync(contractPath); i++)
       await new Promise((r) => setTimeout(r, 100));
   } finally {
