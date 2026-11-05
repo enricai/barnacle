@@ -2280,12 +2280,32 @@ export function gatherResponseBodySamples(
   for (const c of captures) {
     if (c.status < 200 || c.status >= 300) continue;
     if (identityOf(c) !== winningIdentity) continue;
+    // A null/undefined body carries no shape evidence; sampling it would make
+    // the whole schema nullable.
+    if (c.responseBody === null || c.responseBody === undefined) continue;
     const serialized = JSON.stringify(c.responseBody);
     if (seen.has(serialized)) continue;
     seen.add(serialized);
     samples.push(c.responseBody);
   }
-  return samples.length > 0 ? samples : [winningCapture.responseBody];
+  if (samples.length > 0) return samples;
+  return winningCapture.responseBody === null || winningCapture.responseBody === undefined
+    ? [null]
+    : [winningCapture.responseBody];
+}
+
+/**
+ * Synthetic sample keeping only the array-valued top-level fields of a plain
+ * object body, emptied. Folded into drill schemas so `{ results: [] }` (an
+ * empty answer) validates and the non-array fields are optional.
+ */
+export function emptyArrayOnlySample(body: unknown): unknown | null {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const out: Record<string, unknown[]> = {};
+  for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+    if (Array.isArray(v)) out[k] = [];
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 export interface EntityVarianceEvidence {
@@ -17669,14 +17689,18 @@ export function inferChainStepResponseSchema(
     }
     captures = index.get(restResponseIdentity(stepCapture.url)) ?? allCaptures;
   }
-  const samples = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  const gathered = gatherResponseBodySamples(stepCapture, isGraphQL, captures);
+  const emptySamples = gathered
+    .map(emptyArrayOnlySample)
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+  const samples = emptySamples.length > 0 ? [...gathered, emptySamples[0]] : gathered;
   // Same verdict as the primary schema: no proof of more than one entity
   // means lenient leaves.
   const variance = gatherEntityVarianceEvidence(stepCapture, isGraphQL, captures);
   const singleEntityEvidence = singleEntityVerdict(
     stepCapture,
     isGraphQL,
-    samples.length,
+    gathered.length,
     variance
   );
   return inferZodSchemaFromSamples(samples, 0, "", {
@@ -18678,7 +18702,15 @@ async function main(): Promise<void> {
       // single terminal capture -- the multi-sample evidence gathered above
       // describes the (possibly different) read-flow winning capture and
       // doesn't apply once a submission flow has picked its own return call.
-      responseBodySamples: isSubmissionFlow ? [effectiveResponseBody] : responseBodySamples,
+      responseBodySamples: isSubmissionFlow
+        ? [effectiveResponseBody]
+        : effectiveResponseBody !== null &&
+            effectiveResponseBody !== undefined &&
+            !responseBodySamples.some(
+              (b) => JSON.stringify(b) === JSON.stringify(effectiveResponseBody)
+            )
+          ? [...responseBodySamples, effectiveResponseBody]
+          : responseBodySamples,
       // A submission flow validates its own lone terminal capture: one
       // sample proves nothing about which leaves another response carries.
       singleEntityEvidence: isSubmissionFlow
