@@ -887,7 +887,7 @@ const PROMPT_VALUE_SELECTORS = [
  * selected, …") is correctly read as filled.
  */
 const PROMPT_EMPTY_VALUE_RX =
-  /^\s*(?:0\s+items?\s+selected|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)\s*$/i;
+  /^[\s\-–—]*(?:0\s+items?\s+selected|make\s+an?\s+(?:selection|choice)|(?:please\s+)?(?:select|choose|pick)(?:\s+[^\s]+){0,2}\s*(?:\.{3}|…)?)[\s\-–—]*$/i;
 /**
  * {@link PROMPT_EMPTY_VALUE_RX}'s source and flags as plain strings, passed into
  * the browser-evaluated expressions to reconstruct the RegExp there. Kept as
@@ -943,6 +943,23 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
   return "";
 })`;
 /**
+ * Does a widget's label match the question label? Substring either way, or
+ * every token of the shorter label appears in the other ("Phone Country Code"
+ * matches "Country Code"); unrelated labels share no full subset.
+ */
+export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
+  const toks = (x: string): string[] =>
+    x
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+  const a = toks(widgetLabel);
+  const b = toks(questionLabel);
+  if (a.length === 0 || b.length === 0) return false;
+  const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+  return small.every((t) => big.includes(t));
+}
+/**
  * Browser-side expression reading a prompt-selector widget's OWN committed-value
  * text — the single source of truth for "is this widget filled?", shared by the
  * widget-enumeration phase ({@link tryPromptSelectorPrimitive}'s
@@ -961,7 +978,7 @@ const PROMPT_CURRENT_TEXT_EXPR = `((w, valueSel, emptyRx) => {
   const adid = w.getAttribute && w.getAttribute("aria-activedescendant");
   if (adid) { const opt = document.getElementById(adid); if (opt && optionLabel(opt)) return norm(optionLabel(opt)); }
   if (w.tagName === "INPUT" && (w.value || "").trim()) return norm(w.value);
-  if (w.tagName === "BUTTON" && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
+  if ((w.tagName === "BUTTON" || (w.getAttribute && w.getAttribute("role") === "combobox" && w.tagName !== "INPUT")) && buttonValue(w).trim() && !emptyRx.test(buttonValue(w).trim())) return norm(buttonValue(w));
   const lbl = w.matches(valueSel) ? w : w.querySelector(valueSel);
   const raw = lbl ? (lbl.textContent || "") : "";
   if (raw.trim() && !emptyRx.test(raw.trim())) return norm(raw);
@@ -9885,9 +9902,7 @@ async function tryPromptSelectorPrimitive(params: {
     const labelMatches = questionLabel
       ? candidates.filter(
           (c) =>
-            c.label !== "" &&
-            (norm(c.label).includes(norm(questionLabel)) ||
-              norm(questionLabel).includes(norm(c.label)))
+            c.label !== "" && widgetLabelMatches(c.label, questionLabel)
         )
       : [];
     const chosen =
