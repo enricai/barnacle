@@ -60,8 +60,17 @@ export const SHADOW_XPATH_RESOLVER_SRC = `((xpath) => {
     const next = [];
     for (const ctx of ctxs) {
       for (const root of roots(ctx)) {
-        const expr = k === 0 ? part : (root === document ? "//" + part : ".//" + part);
-        for (const n of all(expr, root)) if (next.indexOf(n) < 0) next.push(n);
+        const add = (expr, c) => { for (const n of all(expr, c)) if (next.indexOf(n) < 0) next.push(n); };
+        if (k === 0) { add(part, root); continue; }
+        if (root === document) { add("//" + part, root); continue; }
+        if (root.nodeType !== 11) { add(".//" + part, root); continue; }
+        // A ShadowRoot is not a valid XPath context node: search from each of
+        // its element children, and test the child itself via self::.
+        const selfOk = /^[A-Za-z_*][^:\\[\\/]*(\\[|\\/|$)/.test(part);
+        for (const c of Array.from(root.children)) {
+          if (selfOk) add("self::" + part, c);
+          add(".//" + part, c);
+        }
       }
     }
     if (next.length === 0) return null;
