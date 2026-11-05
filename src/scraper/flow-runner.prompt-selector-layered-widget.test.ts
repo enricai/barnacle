@@ -111,4 +111,47 @@ describe("flow-runner layered custom-select widget (real DOM)", () => {
     ).catch(() => "failed");
     expect(h.clicks.length).toBe(0);
   });
+
+  it("scopes options to a collapsed opener's aria-controls when the rendered anchor has no popup link", async () => {
+    const html = `
+<form>
+  <div>
+    <label for="cc-anchor">Country Code</label>
+    <div id="cc-anchor" role="combobox" tabindex="0">Select</div>
+    <div id="cc-opener" aria-haspopup="listbox" aria-controls="cc-list" aria-label="Country Code" style="display:none">Select</div>
+  </div>
+  <div id="cc-list" role="listbox"><div role="option">Norway</div><div role="option">Sweden</div></div>
+  <div id="decoy" role="listbox"><div role="option">Wrong Panel Option</div></div>
+</form>`;
+    const h = buildPromptWidgetHarness({ html, popupByWidgetId: {} });
+    const merged = {
+      ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+      frameTarget: h.target,
+      step: "for 'Country Code' select 'Norway'",
+    };
+    await executeStepWithHealing(
+      merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+    ).catch(() => "failed");
+    expect(h.clicks.some((c) => c.includes("Wrong Panel"))).toBe(false);
+    expect(h.clicks.some((c) => c.includes("cc-opener"))).toBe(false);
+  });
+
+  it("does not treat an aria-hidden or [hidden] anchor as the rendered widget", async () => {
+    for (const attr of ['aria-hidden="true"', "hidden"]) {
+      const html = HTML.replace('id="cc-anchor"', `${attr} id="cc-anchor"`);
+      const h = buildPromptWidgetHarness({
+        html,
+        popupByWidgetId: { "cc-anchor": { options: ["Norway"] } },
+      });
+      const merged = {
+        ...baseParams(h.page as unknown as Page, vi.fn(), ""),
+        frameTarget: h.target,
+        step: "for 'Phone Country Code' select 'Norway'",
+      };
+      await executeStepWithHealing(
+        merged as unknown as Parameters<typeof executeStepWithHealing>[0]
+      ).catch(() => "failed");
+      expect(h.clicks.some((c) => c.includes("cc-anchor"))).toBe(false);
+    }
+  });
 });
