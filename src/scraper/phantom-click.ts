@@ -99,7 +99,10 @@ function originAndPathOf(url: string): string {
  * flow-runner's own urlChanged/retryUrlChanged checks so both agree on what
  * counts as a genuine navigation.
  */
-export function hasOriginOrPathChanged(preUrl: string, postUrl: string): boolean {
+export function hasOriginOrPathChanged(
+  preUrl: string,
+  postUrl: string,
+): boolean {
   return originAndPathOf(preUrl) !== originAndPathOf(postUrl);
 }
 
@@ -147,7 +150,9 @@ const STEP_ACTION_VERBS = [
   "continue",
 ];
 
-const STEP_ACTION_VERB_PATTERN = new RegExp(`\\b(?:${STEP_ACTION_VERBS.join("|")})\\b`);
+const STEP_ACTION_VERB_PATTERN = new RegExp(
+  `\\b(?:${STEP_ACTION_VERBS.join("|")})\\b`,
+);
 
 /**
  * Verbs whose own direct complement is introduced by "to" (e.g. "navigate to
@@ -158,7 +163,14 @@ const STEP_ACTION_VERB_PATTERN = new RegExp(`\\b(?:${STEP_ACTION_VERBS.join("|")
  * recognized action verb, and {@link splitIntoActionClauses} would then
  * discard it as non-action descriptive context.
  */
-const TO_COMPLEMENT_VERBS = ["navigate", "go", "switch", "scroll", "open", "proceed"];
+const TO_COMPLEMENT_VERBS = [
+  "navigate",
+  "go",
+  "switch",
+  "scroll",
+  "open",
+  "proceed",
+];
 
 /**
  * Splits a step instruction into its comma/"to"/"and"-delimited clauses and
@@ -175,17 +187,38 @@ const TO_COMPLEMENT_VERBS = ["navigate", "go", "switch", "scroll", "open", "proc
  */
 export function splitIntoActionClauses(instruction: string): string[] {
   const normalized = normalizeForPatternMatch(instruction);
-  const toComplementPattern = new RegExp(`\\b(?:${TO_COMPLEMENT_VERBS.join("|")}) to `);
+  const toComplementPattern = new RegExp(
+    `\\b(?:${TO_COMPLEMENT_VERBS.join("|")}) to `,
+  );
   const toPlaceholder = "__BARNACLE_TO__";
   const protectedText = normalized.replace(toComplementPattern, (match) =>
-    match.replace(" to ", ` ${toPlaceholder} `)
+    match.replace(" to ", ` ${toPlaceholder} `),
   );
   const clauses = protectedText
     .split(/,| (?:to|and) /)
     .map((clause) => clause.trim().replace(toPlaceholder, "to"))
     .filter((clause) => clause.length > 0);
-  const actionClauses = clauses.filter((clause) => STEP_ACTION_VERB_PATTERN.test(clause));
+  const actionClauses = clauses.filter((clause) =>
+    STEP_ACTION_VERB_PATTERN.test(clause),
+  );
   return actionClauses.length > 0 ? actionClauses : clauses;
+}
+
+/**
+ * True when a step instruction asks for no page interaction: after discarding
+ * negated verbs ("do not click anything"), no recognized imperative action verb
+ * remains. Such a step (e.g. "Do not click anything; simply wait for the page
+ * to settle") has nothing to act on, so it is a no-op success rather than a
+ * phantom click. Verb-based only; never inspects provider output.
+ */
+export function isPassiveNoopInstruction(instruction: string): boolean {
+  const text = normalizeForPatternMatch(instruction);
+  if (text.length === 0) return false;
+  const negated = new RegExp(
+    `\\b(?:do not|don't|dont|never|without|no need to)\\s+(?:\\w+\\s+){0,2}?(?:${STEP_ACTION_VERBS.join("|")})\\b`,
+    "g",
+  );
+  return !STEP_ACTION_VERB_PATTERN.test(text.replace(negated, " "));
 }
 
 /**
@@ -207,11 +240,12 @@ export function splitIntoActionClauses(instruction: string): string[] {
 export function isPlausibleStepDestination(
   stepInstruction: string,
   postUrl: string,
-  preUrl?: string
+  preUrl?: string,
 ): boolean {
   // A click that never left its page cannot have bounced to an auth gate; an
   // account-creation step on a sign-in URL is the page's own transition.
-  if (preUrl !== undefined && !hasOriginOrPathChanged(preUrl, postUrl)) return true;
+  if (preUrl !== undefined && !hasOriginOrPathChanged(preUrl, postUrl))
+    return true;
   const pathname = (() => {
     try {
       return new URL(postUrl).pathname;
@@ -220,10 +254,14 @@ export function isPlausibleStepDestination(
     }
   })();
   if (pathname === null) return true;
-  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) => p.test(pathname.toLowerCase()));
+  const landedOnSignIn = SIGN_IN_PATTERNS.some((p) =>
+    p.test(pathname.toLowerCase()),
+  );
   if (!landedOnSignIn) return true;
   const actionClauses = splitIntoActionClauses(stepInstruction);
-  return actionClauses.some((clause) => SIGN_IN_PATTERNS.some((p) => p.test(clause)));
+  return actionClauses.some((clause) =>
+    SIGN_IN_PATTERNS.some((p) => p.test(clause)),
+  );
 }
 
 export type PhantomClickVerdict =
@@ -302,7 +340,11 @@ function isHeadSwapped(pre: string, post: string): boolean {
 
 type PageAdvanceKind = "none" | "header" | "body";
 
-const KIND_RANK: Record<PageAdvanceKind, number> = { none: 0, header: 1, body: 2 };
+const KIND_RANK: Record<PageAdvanceKind, number> = {
+  none: 0,
+  header: 1,
+  body: 2,
+};
 
 /** Head length the signature keeps; the excerpt tail starts past it. */
 const SIGNATURE_HEAD_CHARS = 200;
@@ -312,11 +354,14 @@ function wordsOf(text: string): Set<string> {
     text
       .toLowerCase()
       .split(/\W+/)
-      .filter((w) => w !== "")
+      .filter((w) => w !== ""),
   );
 }
 
-function wordSetSimilarity(preWords: Set<string>, postWords: Set<string>): number {
+function wordSetSimilarity(
+  preWords: Set<string>,
+  postWords: Set<string>,
+): number {
   const union = new Set([...preWords, ...postWords]);
   if (union.size === 0) return 1;
   return [...preWords].filter((w) => postWords.has(w)).length / union.size;
@@ -324,7 +369,7 @@ function wordSetSimilarity(preWords: Set<string>, postWords: Set<string>): numbe
 
 function swappedWordCounts(
   preWords: Set<string>,
-  postWords: Set<string>
+  postWords: Set<string>,
 ): { dropped: number; added: number } {
   return {
     dropped: [...preWords].filter((w) => !postWords.has(w)).length,
@@ -341,7 +386,7 @@ function swappedWordCounts(
  */
 function fullTextAdvanceKind(
   pre: PhantomClickSnapshot,
-  post: PhantomClickSnapshot
+  post: PhantomClickSnapshot,
 ): PageAdvanceKind {
   const preText = pre.visibleText;
   const postText = post.visibleText;
@@ -353,7 +398,7 @@ function fullTextAdvanceKind(
   if (similarity < PAGE_ADVANCE_MAX_HEAD_SIMILARITY) return "body";
   const { dropped, added } = swappedWordCounts(
     wordsOf(preText.slice(SIGNATURE_HEAD_CHARS)),
-    wordsOf(postText.slice(SIGNATURE_HEAD_CHARS))
+    wordsOf(postText.slice(SIGNATURE_HEAD_CHARS)),
   );
   if (
     dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS &&
@@ -363,7 +408,7 @@ function fullTextAdvanceKind(
   }
   const headSwap = swappedWordCounts(
     wordsOf(preText.slice(0, SIGNATURE_HEAD_CHARS)),
-    wordsOf(postText.slice(0, SIGNATURE_HEAD_CHARS))
+    wordsOf(postText.slice(0, SIGNATURE_HEAD_CHARS)),
   );
   return headSwap.dropped >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS &&
     headSwap.added >= PAGE_ADVANCE_MIN_SWAPPED_HEAD_WORDS
@@ -371,7 +416,10 @@ function fullTextAdvanceKind(
     : "none";
 }
 
-function signatureAdvanceKind(preSig: string, postSig: string): PageAdvanceKind {
+function signatureAdvanceKind(
+  preSig: string,
+  postSig: string,
+): PageAdvanceKind {
   if (preSig === postSig) return "none";
   const preLen = textLengthOf(preSig);
   const postLen = textLengthOf(postSig);
@@ -400,7 +448,7 @@ function signatureAdvanceKind(preSig: string, postSig: string): PageAdvanceKind 
  */
 export function hasVisibleTextChanged(
   pre: PhantomClickSnapshot,
-  post: PhantomClickSnapshot
+  post: PhantomClickSnapshot,
 ): boolean {
   if (pre.visibleTextSignature !== post.visibleTextSignature) return true;
   return (
@@ -418,14 +466,19 @@ export function hasVisibleTextChanged(
  * a settle tell a finished transition from a header that flipped before its
  * body re-rendered.
  */
-function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): PageAdvanceKind {
+function pageAdvanceKind(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot,
+): PageAdvanceKind {
   const preSig = pre.visibleTextSignature;
   const postSig = post.visibleTextSignature;
   if (preSig === undefined || postSig === undefined) return "none";
   if (!hasVisibleTextChanged(pre, post)) return "none";
   const fromSignature = signatureAdvanceKind(preSig, postSig);
   const fromFullText = fullTextAdvanceKind(pre, post);
-  return KIND_RANK[fromFullText] > KIND_RANK[fromSignature] ? fromFullText : fromSignature;
+  return KIND_RANK[fromFullText] > KIND_RANK[fromSignature]
+    ? fromFullText
+    : fromSignature;
 }
 
 /**
@@ -438,7 +491,10 @@ function pageAdvanceKind(pre: PhantomClickSnapshot, post: PhantomClickSnapshot):
  * head whose words were mostly replaced — so a tooltip or inline validation
  * line (small, mostly-shared text) is not an advance.
  */
-export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
+export function hasPageAdvanced(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot,
+): boolean {
   return pageAdvanceKind(pre, post) !== "none";
 }
 
@@ -447,7 +503,10 @@ export function hasPageAdvanced(pre: PhantomClickSnapshot, post: PhantomClickSna
  * finished: a header that flipped over shared chrome is an advance, but the
  * body usually re-renders after it, so only replaced copy counts as settled.
  */
-export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClickSnapshot): boolean {
+export function hasPageBodySwapped(
+  pre: PhantomClickSnapshot,
+  post: PhantomClickSnapshot,
+): boolean {
   return pageAdvanceKind(pre, post) === "body";
 }
 
@@ -461,9 +520,12 @@ export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClick
  */
 export function hasSettledPageAdvanced(
   pre: PhantomClickSnapshot,
-  post: PhantomClickSnapshot
+  post: PhantomClickSnapshot,
 ): boolean {
-  return hasPageBodySwapped(pre, post) || (post.settled === true && hasPageAdvanced(pre, post));
+  return (
+    hasPageBodySwapped(pre, post) ||
+    (post.settled === true && hasPageAdvanced(pre, post))
+  );
 }
 
 type SettledTextState = VisibleTextState & { settled?: boolean };
@@ -477,10 +539,12 @@ type SettledTextState = VisibleTextState & { settled?: boolean };
 export function hasSubmitStepDomAdvanced(
   isFinalStep: boolean,
   pre: string | SettledTextState | undefined,
-  live: string | SettledTextState | undefined
+  live: string | SettledTextState | undefined,
 ): boolean {
   if (isFinalStep) return false;
-  const asSnapshot = (text: string | SettledTextState | undefined): PhantomClickSnapshot => ({
+  const asSnapshot = (
+    text: string | SettledTextState | undefined,
+  ): PhantomClickSnapshot => ({
     networkCount: 0,
     url: "",
     bodyHtmlLength: 0,
@@ -497,7 +561,9 @@ export function hasSubmitStepDomAdvanced(
  * escalate off a phantom click immediately instead of burning all five
  * techniques on the same no-op.
  */
-export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClickVerdict {
+export function classifyPhantomClick(
+  attempt: PhantomClickAttempt,
+): PhantomClickVerdict {
   if (attempt.actResultSuccess !== true) return "unresolved";
 
   const networkDelta = attempt.post.networkCount - attempt.pre.networkCount;
@@ -509,13 +575,18 @@ export function classifyPhantomClick(attempt: PhantomClickAttempt): PhantomClick
   const submitShaped = attempt.isSubmitShapedStep === true || midFlowSubmit;
   // Element-scoped selection flip; not on a submit-shaped step, which must
   // prove itself via network/URL or the deep-submit escalation is defeated.
-  const elementStateChanged = !submitShaped && attempt.elementStateChanged === true;
+  const elementStateChanged =
+    !submitShaped && attempt.elementStateChanged === true;
   // A submit-shaped step likewise ignores a mere DOM-byte reflow.
   const bytesChangedSignificantly =
     !submitShaped && Math.abs(bytesDelta) >= TRIVIAL_DOM_DELTA_BYTES;
 
   const midFlowAdvanced =
-    midFlowSubmit && hasSettledPageAdvanced(attempt.advanceBaseline ?? attempt.pre, attempt.post);
+    midFlowSubmit &&
+    hasSettledPageAdvanced(
+      attempt.advanceBaseline ?? attempt.pre,
+      attempt.post,
+    );
 
   const hasEffect =
     networkDelta !== 0 ||
