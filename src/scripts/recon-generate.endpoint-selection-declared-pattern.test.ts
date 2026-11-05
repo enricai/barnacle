@@ -61,7 +61,11 @@ describe("firstEndpointCapture without a declared pattern", () => {
   });
   it("a one-off POST submission still wins over a GET read", () => {
     const get = cap({ url: "https://example.com/api/form?id=1" });
-    const post = cap({ method: "POST", url: "https://example.com/api/submit", requestPostData: "{}" });
+    const post = cap({
+      method: "POST",
+      url: "https://example.com/api/submit",
+      requestPostData: "{}",
+    });
     expect(firstEndpointCapture([get, post], [], null, null)).toBe(post);
   });
   it("a recurring POST that returns business data stays the primary", () => {

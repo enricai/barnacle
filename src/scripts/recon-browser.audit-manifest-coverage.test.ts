@@ -8,17 +8,17 @@ import {
   writeSubmitManifest,
 } from "@/scripts/recon-browser";
 
-const mkLogger = () =>
-  ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) as never;
+const mkLogger = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) as never;
 const tmp = () => mkdtempSync(join(tmpdir(), "rb-cov-"));
 const put = (dir: string, name: string, obj: unknown) =>
   writeFileSync(join(dir, name), JSON.stringify(obj));
 
 describe("auditFinalSubmitMatch", () => {
   it("fails with no hostnames and no pattern", () => {
-    expect(
-      auditFinalSubmitMatch({ capturesDir: tmp(), logger: mkLogger() }),
-    ).toEqual({ auditFailed: true, rejectionReason: null });
+    expect(auditFinalSubmitMatch({ capturesDir: tmp(), logger: mkLogger() })).toEqual({
+      auditFailed: true,
+      rejectionReason: null,
+    });
   });
   it("fails and warns when the captures dir is unreadable", () => {
     const logger = mkLogger();
@@ -32,17 +32,37 @@ describe("auditFinalSubmitMatch", () => {
   });
   it("passes on a matching 2xx capture (endpoint + body patterns)", () => {
     const d = tmp();
-    put(d, "001-a.json", { url: "https://x.test/apply", status: 200, method: "POST", requestPostData: "name=bob", responseBody: "{}" });
+    put(d, "001-a.json", {
+      url: "https://x.test/apply",
+      status: 200,
+      method: "POST",
+      requestPostData: "name=bob",
+      responseBody: "{}",
+    });
     put(d, "002-a.decoded.json", {});
     writeFileSync(join(d, "003-bad.json"), "{nope");
     expect(
-      auditFinalSubmitMatch({ capturesDir: d, submitEndpointPattern: "/apply", submitBodyPattern: "name=", logger: mkLogger() }),
+      auditFinalSubmitMatch({
+        capturesDir: d,
+        submitEndpointPattern: "/apply",
+        submitBodyPattern: "name=",
+        logger: mkLogger(),
+      })
     ).toEqual({ auditFailed: false, rejectionReason: null });
   });
   it("reports a rejection reason when the only match is a rejection", () => {
     const d = tmp();
-    put(d, "001-a.json", { url: "https://x.test/apply", status: 200, method: "POST", responseBody: JSON.stringify({ rejected: true, reason: "dup" }) });
-    const r = auditFinalSubmitMatch({ capturesDir: d, submitEndpointPattern: "/apply", logger: mkLogger() });
+    put(d, "001-a.json", {
+      url: "https://x.test/apply",
+      status: 200,
+      method: "POST",
+      responseBody: JSON.stringify({ rejected: true, reason: "dup" }),
+    });
+    const r = auditFinalSubmitMatch({
+      capturesDir: d,
+      submitEndpointPattern: "/apply",
+      logger: mkLogger(),
+    });
     expect(r.auditFailed).toBe(true);
     expect(r.rejectionReason).not.toBeNull();
   });
@@ -52,8 +72,20 @@ describe("writeSubmitManifest", () => {
   const run = (d: string, patt: string | null, body: string | null = null) => {
     const root = tmp();
     const logger = mkLogger();
-    writeSubmitManifest({ runRoot: root, capturesDir: d, submitEndpointPattern: patt, submitBodyPattern: body, logger });
-    return { root, logger: logger as unknown as { warn: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> } };
+    writeSubmitManifest({
+      runRoot: root,
+      capturesDir: d,
+      submitEndpointPattern: patt,
+      submitBodyPattern: body,
+      logger,
+    });
+    return {
+      root,
+      logger: logger as unknown as {
+        warn: ReturnType<typeof vi.fn>;
+        info: ReturnType<typeof vi.fn>;
+      },
+    };
   };
   it("writes nothing without a pattern", () => {
     const { root } = run(tmp(), null);
@@ -65,9 +97,24 @@ describe("writeSubmitManifest", () => {
   });
   it("records non-GET matches, skipping errors and non-matches", () => {
     const d = tmp();
-    put(d, "001-a.json", { url: "https://x.test/apply", status: 200, method: "POST", requestPostData: "k=1" });
-    put(d, "002-a.json", { url: "https://x.test/apply", status: 500, method: "POST", requestPostData: "k=1" });
-    put(d, "003-a.json", { url: "https://x.test/other", status: 200, method: "POST", requestPostData: "k=1" });
+    put(d, "001-a.json", {
+      url: "https://x.test/apply",
+      status: 200,
+      method: "POST",
+      requestPostData: "k=1",
+    });
+    put(d, "002-a.json", {
+      url: "https://x.test/apply",
+      status: 500,
+      method: "POST",
+      requestPostData: "k=1",
+    });
+    put(d, "003-a.json", {
+      url: "https://x.test/other",
+      status: 200,
+      method: "POST",
+      requestPostData: "k=1",
+    });
     put(d, "004-a.json", { status: 200 });
     writeFileSync(join(d, "005-a.json"), "{bad");
     const { root } = run(d, "/apply", "k=");
@@ -90,13 +137,27 @@ describe("writeSubmitManifest", () => {
 });
 
 describe("summarizeReplanFailureKinds", () => {
-  const sample = (success: boolean, failureKind: string | null) => JSON.stringify({
-    callId: "c", callType: "act", model: "m", systemPrompt: "s", userContent: "u",
-    responseContent: "r", parsedOk: true, inputTokens: 1, outputTokens: 1, latencyMs: 1,
-    success, errorMessage: null, failureKind, ts: "2026-05-30T00:00:00Z",
-  });
+  const sample = (success: boolean, failureKind: string | null) =>
+    JSON.stringify({
+      callId: "c",
+      callType: "act",
+      model: "m",
+      systemPrompt: "s",
+      userContent: "u",
+      responseContent: "r",
+      parsedOk: true,
+      inputTokens: 1,
+      outputTokens: 1,
+      latencyMs: 1,
+      success,
+      errorMessage: null,
+      failureKind,
+      ts: "2026-05-30T00:00:00Z",
+    });
   it("returns '' for a missing file", () => {
-    expect(summarizeReplanFailureKinds({ callsNdjsonPath: join(tmp(), "x"), callType: "act" })).toBe("");
+    expect(
+      summarizeReplanFailureKinds({ callsNdjsonPath: join(tmp(), "x"), callType: "act" })
+    ).toBe("");
   });
   it("returns '' when there are no failures", () => {
     const f = join(tmp(), "c.ndjson");
@@ -105,9 +166,14 @@ describe("summarizeReplanFailureKinds", () => {
   });
   it("counts failure kinds, most frequent first", () => {
     const f = join(tmp(), "c.ndjson");
-    writeFileSync(f, [sample(false, "response-empty"), sample(false, "response-empty"), sample(false, null)].join("\n"));
+    writeFileSync(
+      f,
+      [sample(false, "response-empty"), sample(false, "response-empty"), sample(false, null)].join(
+        "\n"
+      )
+    );
     expect(summarizeReplanFailureKinds({ callsNdjsonPath: f, callType: "act" })).toBe(
-      "3 recent act failure(s): 2× response-empty, 1× unknown",
+      "3 recent act failure(s): 2× response-empty, 1× unknown"
     );
   });
 });

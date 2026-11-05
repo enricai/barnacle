@@ -3,7 +3,11 @@ import { extractActionSequence, type FoldReturnSpec } from "@/scripts/recon-gene
 import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 const HOST = "https://api.example.com";
-const fold = { endpointPattern: "/lookup/", resultsPath: "rows", joinFields: ["id"] } as unknown as FoldReturnSpec;
+const fold = {
+  endpointPattern: "/lookup/",
+  resultsPath: "rows",
+  joinFields: ["id"],
+} as unknown as FoldReturnSpec;
 const submit = { endpoint: "/checkout-confirm", body: null };
 
 const post = (path: string, body: unknown, t: number) =>

@@ -29,11 +29,7 @@ const cap = (url: string, method: string, operationName: string | null) => ({
   decodedParams: null,
 });
 
-const replay = (
-  url: string,
-  replayStatus: number | null,
-  success: boolean,
-) => ({
+const replay = (url: string, replayStatus: number | null, success: boolean) => ({
   sourceCapture: "x",
   url,
   method: "POST",
@@ -49,8 +45,7 @@ const replay = (
 describe("recon-summarize main (real call path)", () => {
   it("renders every section from a run directory", async () => {
     const root = mkdtempSync(join(tmpdir(), "recon-sum-"));
-    for (const d of ["graphql", "replays", "aux"])
-      mkdirSync(join(root, d), { recursive: true });
+    for (const d of ["graphql", "replays", "aux"]) mkdirSync(join(root, d), { recursive: true });
     w(root + "/graphql", "a.json", cap("https://a.com/gql", "POST", "Op1"));
     w(root + "/graphql", "b.json", cap("https://a.com/rest", "GET", null));
     w(root + "/graphql", "c.json", cap("https://a.com/other", "GET", null));
@@ -101,9 +96,7 @@ describe("recon-summarize main (real call path)", () => {
       root,
     ];
     await import("@/scripts/recon-summarize.js");
-    await vi.waitFor(() =>
-      expect(() => readFileSync(out, "utf8")).not.toThrow(),
-    );
+    await vi.waitFor(() => expect(() => readFileSync(out, "utf8")).not.toThrow());
     const md = readFileSync(out, "utf8");
 
     expect(md).toContain("| Auth required | YES");
@@ -119,9 +112,7 @@ describe("recon-summarize main (real call path)", () => {
     expect(md).toContain("**unknown** (no trigger observed)");
     expect(md).not.toContain("cdn.other.com");
     expect(md).toContain("- Akamai edge detected");
-    expect(md).toContain(
-      "`fixture.json` — commit as `src/sites/acme/fixtures/fixture.json`",
-    );
+    expect(md).toContain("`fixture.json` — commit as `src/sites/acme/fixtures/fixture.json`");
     expect(md).toContain("Jan 2, 2024");
   });
 });

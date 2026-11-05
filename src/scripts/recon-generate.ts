@@ -2593,7 +2593,9 @@ function nonGetBeaconPredicate(pool: Capture[]): (c: Capture) => boolean {
     if (c.method === "GET") return false;
     if (isNoiseUrl(c.url) || isZeroVarianceRepeatCapture(c, pool)) return true;
     const same = occurrences.get(`${c.method} ${endpointKey(c.url)}`) ?? [];
-    return same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same));
+    return (
+      same.length >= 2 && (hasNoBusinessRelevantResponseState(c) || answerIgnoresRequest(same))
+    );
   };
 }
 
@@ -2689,13 +2691,18 @@ export interface GetInputModel {
 }
 
 /** The model without the query keys `keys` (inputs another mechanism owns). */
-export function pruneGetInputModelKeys(model: GetInputModel, keys: readonly string[]): GetInputModel {
+export function pruneGetInputModelKeys(
+  model: GetInputModel,
+  keys: readonly string[]
+): GetInputModel {
   const drop = new Set(keys);
   const dropped = model.dynamicFields.filter((d) => drop.has(d.queryKey)).map((d) => d.field);
   return {
     ...model,
     dynamicFields: model.dynamicFields.filter((d) => !drop.has(d.queryKey)),
-    fixedParams: Object.fromEntries(Object.entries(model.fixedParams).filter(([k]) => !drop.has(k))),
+    fixedParams: Object.fromEntries(
+      Object.entries(model.fixedParams).filter(([k]) => !drop.has(k))
+    ),
     fieldToQueryKey: Object.fromEntries(
       Object.entries(model.fieldToQueryKey).filter(([f]) => !dropped.includes(f))
     ),
@@ -8442,7 +8449,10 @@ export function wholeArrayAttachKey(
   } catch {
     return null;
   }
-  const last = pathname.split("/").filter((seg) => seg !== "").pop();
+  const last = pathname
+    .split("/")
+    .filter((seg) => seg !== "")
+    .pop();
   return last === undefined ? null : decodeURIComponent(last);
 }
 
@@ -8454,7 +8464,11 @@ function drillLabel(url: string): string {
   } catch {
     // not an absolute URL — use it as is
   }
-  const last = pathname.split("/").filter((seg) => seg !== "").pop() ?? "drill";
+  const last =
+    pathname
+      .split("/")
+      .filter((seg) => seg !== "")
+      .pop() ?? "drill";
   return last.replace(/[^\w.-]/g, "_");
 }
 
@@ -8532,14 +8546,14 @@ export function emitFoldMatchAndMergeLines(
   const foldMatchesExpr = isArrayRoot
     ? `(${terminalStep.varName} as unknown as Record<string, unknown>[])`
     : isFlatObjectAtPath
-    ? `[${pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
-        target.chainArrayPath
-      )}]`
-    : pathToFoldAccessorExpr(
-        `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
-        target.chainArrayPath
-      );
+      ? `[${pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath, "Record<string, unknown>")})`,
+          target.chainArrayPath
+        )}]`
+      : pathToFoldAccessorExpr(
+          `(${terminalStep.varName} as ${foldArrayAssertionType(target.chainArrayPath)})`,
+          target.chainArrayPath
+        );
   if (wholeArrayKey !== null) {
     return [
       `      const foldMatches${suffix} = ${foldMatchesExpr};`,
@@ -12199,10 +12213,29 @@ function selectDisambiguatedCandidate(
  * negotiation, cookie jar, caching, auth replay) and never a per-item minted
  * value; a re-sent cookie must not create a fold dependency. */
 const AMBIENT_HEADER_NAMES = new Set([
-  "content-type", "content-length", "content-encoding", "accept", "accept-encoding",
-  "accept-language", "cookie", "set-cookie", "cache-control", "date", "etag", "vary",
-  "server", "connection", "user-agent", "host", "origin", "referer", "authorization",
-  "expires", "pragma", "last-modified", "transfer-encoding",
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "cookie",
+  "set-cookie",
+  "cache-control",
+  "date",
+  "etag",
+  "vary",
+  "server",
+  "connection",
+  "user-agent",
+  "host",
+  "origin",
+  "referer",
+  "authorization",
+  "expires",
+  "pragma",
+  "last-modified",
+  "transfer-encoding",
 ]);
 
 /** True for a value that could plausibly be a minted id: not a trivial
@@ -12791,7 +12824,10 @@ export function parseFoldReturnSpecs(flowFileContents: string): FoldReturnSpec[]
   }
 }
 
-function parseFoldReturnEntry(entry: unknown, inheritedResultsPath?: string): FoldReturnSpec | null {
+function parseFoldReturnEntry(
+  entry: unknown,
+  inheritedResultsPath?: string
+): FoldReturnSpec | null {
   if (entry === undefined || entry === null || typeof entry !== "object" || Array.isArray(entry)) {
     return null;
   }
@@ -12812,7 +12848,8 @@ function parseFoldReturnEntry(entry: unknown, inheritedResultsPath?: string): Fo
     attachAs?: unknown;
     payloadFlag?: unknown;
   };
-  const resultsPath = declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
+  const resultsPath =
+    declaredResultsPath === undefined ? inheritedResultsPath : declaredResultsPath;
   const optNonEmptyString = (v: unknown): boolean =>
     v === undefined || (typeof v === "string" && v.length > 0);
   if (
@@ -17832,7 +17869,9 @@ function buildNavigateToExpr(
   const hashAt = rest.indexOf("#");
   const valueAt = value !== null && hashAt !== -1 ? rest.lastIndexOf(value) : -1;
   if (field !== null && value !== null && valueAt > hashAt) {
-    const access = isValidJsIdentifier(field) ? `payload.${field}` : `payload[${JSON.stringify(field)}]`;
+    const access = isValidJsIdentifier(field)
+      ? `payload.${field}`
+      : `payload[${JSON.stringify(field)}]`;
     const read = `encodeURIComponent(${optional ? `${access} ?? ""` : `String(${access})`})`;
     return `\`${prefix}${esc(rest.slice(0, valueAt))}\${${read}}${esc(rest.slice(valueAt + value.length))}\``;
   }

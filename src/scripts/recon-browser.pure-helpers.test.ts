@@ -54,7 +54,7 @@ describe("isStructurallyBlocked", () => {
       isStructurallyBlocked([
         { triedSelectors: [], verifiedBy: null },
         { triedSelectors: ["a"], verifiedBy: null },
-      ]),
+      ])
     ).toBe(false);
   });
 });

@@ -22,4 +22,24 @@ describe("isZeroVarianceRepeatCapture bodyless GET", () => {
     const all = [1, 2, 3].map(() => cap("https://x.test/api/ping?limit=1", {}));
     expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
   });
+  it("keeps a varying search GET whose parsed body arrived without a content-type header", () => {
+    const all = ["a", "b", "c"].map((f, i) => ({
+      method: "GET",
+      url: `https://x.test/api/search?limit=10&facet=${f}`,
+      requestPostData: null,
+      responseHeaders: {},
+      responseBody: { results: [{ id: i, name: `item-${f}` }] },
+    }));
+    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(false);
+  });
+  it("still treats a declared non-JSON response as no business state", () => {
+    const all = ["a", "b", "c"].map((f) => ({
+      method: "GET",
+      url: `https://x.test/px?id=fixed&t=${f}`,
+      requestPostData: null,
+      responseHeaders: { "content-type": "image/gif" },
+      responseBody: { results: [{ id: 1, name: "n" }] },
+    }));
+    expect(isZeroVarianceRepeatCapture(all[0]!, all)).toBe(true);
+  });
 });

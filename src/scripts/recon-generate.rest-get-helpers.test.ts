@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 import {
   buildPaginatedFetchLoopExecuteHttpBody,
   captureRequestParams,
   detectPaginationSignal,
-  pruneGetInputModelKeys,
   type GetInputModel,
+  pruneGetInputModelKeys,
 } from "@/scripts/recon-generate";
+import { buildCapture } from "@/scripts/recon-generate-multicall-fixture";
 
 const BASE = "https://shop.example/api/products";
 const body = (n: number) => ({
@@ -14,7 +14,13 @@ const body = (n: number) => ({
   items: Array.from({ length: n }, (_, i) => ({ id: i + 1, name: `p${i}` })),
 });
 const get = (url: string, responseBody: unknown) =>
-  buildCapture({ url, requestPostData: null, responseBody, timestamp: "2024-01-01T00:00:00Z", method: "GET" });
+  buildCapture({
+    url,
+    requestPostData: null,
+    responseBody,
+    timestamp: "2024-01-01T00:00:00Z",
+    method: "GET",
+  });
 
 describe("pruneGetInputModelKeys", () => {
   it("drops the given query keys and their fields", () => {
@@ -65,7 +71,12 @@ describe("GET paging through real call path", () => {
 
   it("emits a loop without a baseVariables line for a REST GET", () => {
     const signal = detectPaginationSignal(partial.responseBody, null, identity, [partial, full])!;
-    const model: GetInputModel = { dynamicFields: [], fixedParams: {}, fieldToQueryKey: {}, pathVars: [] };
+    const model: GetInputModel = {
+      dynamicFields: [],
+      fixedParams: {},
+      fieldToQueryKey: {},
+      pathVars: [],
+    };
     const rest = buildPaginatedFetchLoopExecuteHttpBody({
       pascal: "X",
       gqlVariablesExpr: "{}",

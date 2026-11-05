@@ -92,13 +92,21 @@ const STEPS = [
 
 describe("single-endpoint REST GET emit", () => {
   const contract = generate(URLS, STEPS, "paged");
-  const http = contract.slice(contract.indexOf("async executeHttp("), contract.indexOf("async execute("));
-  const schema = contract.slice(contract.indexOf("PayloadSchema = z"), contract.indexOf("PayloadSchema = z") + 800);
+  const http = contract.slice(
+    contract.indexOf("async executeHttp("),
+    contract.indexOf("async execute(")
+  );
+  const schema = contract.slice(
+    contract.indexOf("PayloadSchema = z"),
+    contract.indexOf("PayloadSchema = z") + 800
+  );
 
   it("emits a GET with optional URL-encoded facet params and no required query field", () => {
     expect(http).toContain('method: "GET"');
     expect(http).toContain("new URLSearchParams(");
-    expect(http).toContain('payload.category !== undefined ? [["category", String(payload.category)]]');
+    expect(http).toContain(
+      'payload.category !== undefined ? [["category", String(payload.category)]]'
+    );
     expect(http).not.toContain("payload.query");
     expect(schema).not.toMatch(/\bquery:/);
   });
@@ -126,12 +134,17 @@ describe("single-endpoint REST GET emit", () => {
 
 describe("single-endpoint REST GET emit alongside recurring bot-manager POSTs", () => {
   const contract = generate(URLS, STEPS, "sensor", true);
-  const http = contract.slice(contract.indexOf("async executeHttp("), contract.indexOf("async execute("));
+  const http = contract.slice(
+    contract.indexOf("async executeHttp("),
+    contract.indexOf("async execute(")
+  );
 
   it("issues the primary as a GET with the facet query params, not a POST body", () => {
     expect(http).toContain('method: "GET"');
     expect(http).not.toContain('method: "POST"');
-    expect(http).toContain('payload.category !== undefined ? [["category", String(payload.category)]]');
+    expect(http).toContain(
+      'payload.category !== undefined ? [["category", String(payload.category)]]'
+    );
   });
 });
 
@@ -140,7 +153,12 @@ describe("array-form foldReturn through the generator CLI", () => {
     const contract = generate(URLS, STEPS, "foldarr", false, {
       foldReturn: [
         { endpointPattern: "/detail", resultsPath: "items", joinFields: ["id"] },
-        { endpointPattern: "/other", joinFields: ["id"], attachAs: "extra", payloadFlag: "wantExtra" },
+        {
+          endpointPattern: "/other",
+          joinFields: ["id"],
+          attachAs: "extra",
+          payloadFlag: "wantExtra",
+        },
       ],
     });
     expect(contract).toContain('method: "GET"');

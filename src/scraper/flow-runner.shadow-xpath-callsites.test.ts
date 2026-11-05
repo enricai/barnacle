@@ -57,7 +57,11 @@ function makeTarget() {
 describe("flow-runner xpath call sites route through the shadow resolver", () => {
   it("selectOption verification resolves its xpath via the resolver", async () => {
     const { target, asked } = makeTarget();
-    const action = { selector: SELECTOR, method: "selectOption", arguments: ["T"] } as unknown as Action;
+    const action = {
+      selector: SELECTOR,
+      method: "selectOption",
+      arguments: ["T"],
+    } as unknown as Action;
     expect(await verifyDomEffect(target, action)).toBe(true);
     expect(asked).toContain(XPATH);
   });
@@ -79,6 +83,10 @@ describe("shadowXpathLookupExpr", () => {
     expect(expr.endsWith(`(${JSON.stringify(xp)})`)).toBe(true);
     const el = { id: "hit" };
     const doc = { evaluate: () => ({ singleNodeValue: el }) };
-    expect(new Function("document", "XPathResult", `return ${expr};`)(doc, { FIRST_ORDERED_NODE_TYPE: 9 })).toBe(el);
+    expect(
+      new Function("document", "XPathResult", `return ${expr};`)(doc, {
+        FIRST_ORDERED_NODE_TYPE: 9,
+      })
+    ).toBe(el);
   });
 });

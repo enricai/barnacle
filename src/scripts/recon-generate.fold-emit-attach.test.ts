@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   emitFoldMatchAndMergeLines,
-  foldOneDrillOccurrence,
   type FoldTarget,
+  foldOneDrillOccurrence,
   wholeArrayAttachKey,
   wrapIsolatedDrillLines,
 } from "@/scripts/recon-generate";

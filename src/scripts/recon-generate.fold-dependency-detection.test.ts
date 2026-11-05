@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   collectRequestValuesIncludingHeaders,
-  computeFoldChain,
   collectResponseLeafValues,
+  computeFoldChain,
 } from "@/scripts/recon-generate";
 import type { Capture } from "@/scripts/recon-shared";
 
@@ -48,7 +48,11 @@ describe("fold dependency value detection", () => {
   });
   it("a real minted id in a later URL still chains", () => {
     const a = cap({ url: "https://x.test/s", method: "GET", responseBody: { id: "item-9f3a" } });
-    const b = cap({ url: "https://x.test/item/item-9f3a", method: "GET", responseBody: { id: "item-9f3a", n: 1 } });
+    const b = cap({
+      url: "https://x.test/item/item-9f3a",
+      method: "GET",
+      responseBody: { id: "item-9f3a", n: 1 },
+    });
     expect(computeFoldChain([{ capture: a }, { capture: b }], 0, []).chain).toEqual([0, 1]);
   });
 });

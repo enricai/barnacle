@@ -9,8 +9,8 @@
  */
 
 import { getLogger } from "@/lib/logging";
-import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 import type { FrameTarget } from "@/scraper/frame-target";
+import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 
 const logger = getLogger({ name: "scraper/trusted-click" });
 

@@ -9,24 +9,14 @@
  * file exercises only the CLI's parse->params->cascade-call assembly.
  */
 
-import {
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  StepVerificationError,
-  type StepVerificationErrorKind,
-} from "@/scraper/errors";
-import type { FrameTarget } from "@/scraper/frame-target";
+import { StepVerificationError } from "@/scraper/errors";
 
 vi.mock("@/config", () => ({
   config: {
@@ -63,8 +53,7 @@ vi.mock("@/lib/logging", () => ({
 }));
 
 vi.mock("@/lib/telemetry/call-capture", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
+  const actual = await importOriginal<typeof import("@/lib/telemetry/call-capture")>();
   return {
     ...actual,
     captureLlmCall: vi.fn().mockResolvedValue(undefined),
@@ -108,8 +97,7 @@ function makeFakePage(): Stagehand {
     url: (): string => "https://example.com/apply",
     title: vi.fn().mockResolvedValue("Apply"),
     evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
-      if (typeof expr === "string" && expr.includes("document.body"))
-        return 10_000;
+      if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
       return null;
     }),
     frames: vi.fn().mockReturnValue([]),
@@ -164,24 +152,17 @@ describe("recon-browser — optional step with exhausted cascade", () => {
     const flowFilePath = join(runsRoot, "recon-flow.json");
     const original = `${JSON.stringify({ steps: ["Click A", { step: "Tick maybe box", optional: true }, "Click C", "Click D"] }, null, 2)}\n`;
     writeFileSync(flowFilePath, original);
-    executeStepWithHealingStub.mockImplementation(
-      async (a: { step: string }) => {
-        if (a.step === "Tick maybe box") {
-          throw new StepVerificationError(
-            "cascade exhausted",
-            "cascade-exhausted",
-          );
-        }
-        return "completed";
-      },
-    );
+    executeStepWithHealingStub.mockImplementation(async (a: { step: string }) => {
+      if (a.step === "Tick maybe box") {
+        throw new StepVerificationError("cascade exhausted", "cascade-exhausted");
+      }
+      return "completed";
+    });
     process.argv = argvFor(flowFilePath);
 
     await main();
 
-    const ran = executeStepWithHealingStub.mock.calls.map(
-      (c) => (c[0] as { step: string }).step,
-    );
+    const ran = executeStepWithHealingStub.mock.calls.map((c) => (c[0] as { step: string }).step);
     expect(ran).toEqual(["Click A", "Tick maybe box", "Click C", "Click D"]);
     expect(anthropicMessagesParseStub).not.toHaveBeenCalled();
     expect(readFileSync(flowFilePath, "utf8")).toBe(original);
@@ -192,7 +173,7 @@ describe("recon-browser — optional step with exhausted cascade", () => {
     const original = `${JSON.stringify({ steps: ["Click A"] }, null, 2)}\n`;
     writeFileSync(flowFilePath, original);
     executeStepWithHealingStub.mockRejectedValue(
-      new StepVerificationError("cascade exhausted", "cascade-exhausted"),
+      new StepVerificationError("cascade exhausted", "cascade-exhausted")
     );
     anthropicMessagesParseStub.mockResolvedValue({
       parsed_output: { outcome: "replan", steps: ["Click A alt"] },
@@ -205,8 +186,6 @@ describe("recon-browser — optional step with exhausted cascade", () => {
 
     expect(anthropicMessagesParseStub).toHaveBeenCalled();
     expect(readFileSync(flowFilePath, "utf8")).toBe(original);
-    expect(
-      readdirSync(runsRoot).filter((f) => f.endsWith(".bak.json")),
-    ).toEqual([]);
+    expect(readdirSync(runsRoot).filter((f) => f.endsWith(".bak.json"))).toEqual([]);
   });
 });

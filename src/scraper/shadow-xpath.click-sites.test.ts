@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMarkShadowInteractiveDescendantExpr, buildUnmarkShadowDescendantExpr } from "@/scraper/browser-click-expr";
+import {
+  buildMarkShadowInteractiveDescendantExpr,
+  buildUnmarkShadowDescendantExpr,
+} from "@/scraper/browser-click-expr";
 import { shadowXpathLookupExpr } from "@/scraper/shadow-xpath";
 
 const XPATH = "//shop-app//button[1]";

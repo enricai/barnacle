@@ -26,7 +26,10 @@ describe("recon run-dir resolution for reader scripts", () => {
   });
 
   it("picks the newest run when RECON_RUN_ID is unset", async () => {
-    for (const [name, t] of [["old", 1000], ["new", 2000]] as const) {
+    for (const [name, t] of [
+      ["old", 1000],
+      ["new", 2000],
+    ] as const) {
       mkdirSync(join(base, name));
       utimesSync(join(base, name), t, t);
     }

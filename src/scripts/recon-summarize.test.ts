@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type {
-  Capture,
-  RateLimitFinding,
-  ReplayResult,
-} from "@/scripts/recon-shared";
-import {
-  buildUniqueEndpoints,
-  detectHazards,
-  formatDate,
-} from "@/scripts/recon-summarize";
+import type { Capture, RateLimitFinding, ReplayResult } from "@/scripts/recon-shared";
+import { buildUniqueEndpoints, detectHazards, formatDate } from "@/scripts/recon-summarize";
 
 function makeCapture(overrides: Partial<Capture>): Capture {
   return {
@@ -45,9 +37,7 @@ function makeReplay(overrides: Partial<ReplayResult>): ReplayResult {
   };
 }
 
-function makeRateLimitFinding(
-  overrides: Partial<RateLimitFinding>,
-): RateLimitFinding {
+function makeRateLimitFinding(overrides: Partial<RateLimitFinding>): RateLimitFinding {
   return {
     endpoint: "https://example.com/graphql",
     safeRps: null,
@@ -61,9 +51,7 @@ function makeRateLimitFinding(
 
 describe("formatDate", () => {
   it("renders a UTC medium-date/short-time string", () => {
-    expect(formatDate("2026-01-15T12:34:00.000Z")).toBe(
-      "Jan 15, 2026, 12:34 PM",
-    );
+    expect(formatDate("2026-01-15T12:34:00.000Z")).toBe("Jan 15, 2026, 12:34 PM");
   });
 });
 
@@ -107,9 +95,7 @@ describe("buildUniqueEndpoints", () => {
 describe("detectHazards", () => {
   it("flags 401 auth-required hazards", () => {
     const replays = [makeReplay({ replayStatus: 401, success: false })];
-    expect(detectHazards(replays, [])).toEqual([
-      "Auth required on some endpoints (401)",
-    ]);
+    expect(detectHazards(replays, [])).toEqual(["Auth required on some endpoints (401)"]);
   });
 
   it("flags 403 bot-detection hazards", () => {
@@ -129,9 +115,7 @@ describe("detectHazards", () => {
   });
 
   it("flags Cloudflare edge detection from rate-limit headers", () => {
-    const findings = [
-      makeRateLimitFinding({ xRateLimitHeaders: { "cf-ray": "abc123" } }),
-    ];
+    const findings = [makeRateLimitFinding({ xRateLimitHeaders: { "cf-ray": "abc123" } })];
     expect(detectHazards([], findings)).toEqual(["Cloudflare edge detected"]);
   });
 

@@ -1,15 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { RateLimitFinding, ReplayResult } from "@/scripts/recon-shared";
-import {
-  detectHazards,
-  filterOwnHostRateLimits,
-  hasBotDetection,
-} from "@/scripts/recon-summarize";
+import { detectHazards, filterOwnHostRateLimits, hasBotDetection } from "@/scripts/recon-summarize";
 
-const rl = (
-  endpoint: string,
-  h: Record<string, string> = {},
-): RateLimitFinding => ({
+const rl = (endpoint: string, h: Record<string, string> = {}): RateLimitFinding => ({
   endpoint,
   safeRps: 1,
   triggerStatus: null,
@@ -26,12 +19,10 @@ describe("bot detection consistency", () => {
     expect(hasBotDetection([], [])).toBe(false);
   });
   it("rate-limit keeps own-host only", () => {
-    const replays = [
-      { url: "https://a.com/g", replayStatus: 200 } as ReplayResult,
-    ];
+    const replays = [{ url: "https://a.com/g", replayStatus: 200 } as ReplayResult];
     const out = filterOwnHostRateLimits(
       [rl("https://a.com/x"), rl("https://cdn.other.com/y")],
-      replays,
+      replays
     );
     expect(out.map((f) => f.endpoint)).toEqual(["https://a.com/x"]);
   });
