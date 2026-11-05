@@ -47,7 +47,7 @@
  * per act; healing and replans push the upper bound higher on flaky sites).
  */
 
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -2550,6 +2550,17 @@ function dumpStepHeal(params: {
 // runs from a consumer repo's working directory (the ENOENT WARN's root cause).
 const DEFAULT_UPLOAD_FIXTURE_PATH = RESUME_FIXTURE_PATH;
 
+/**
+ * Allocate a valid, per-run-unique E.164 US number in the reserved fictional
+ * 555-0100..0199 range: +1 <area code> 555 01XX. Matches ALLOCATED_PHONE_PATTERN.
+ */
+export const ALLOCATED_PHONE_PATTERN = /^\+1[2-9]\d{2}55501\d{2}$/;
+export function allocateFictionalPhone(): string {
+  const area = randomInt(200, 1000);
+  const line = randomInt(0, 100);
+  return `+1${area}55501${String(line).padStart(2, "0")}`;
+}
+
 function parseCli(): {
   url: string;
   flow: NormalizedStep[];
@@ -2560,6 +2571,7 @@ function parseCli(): {
   advancedStealth: boolean;
   dumpDomBeforeStep: number | null;
   allocateEmailEnvVar: string | null;
+  allocatePhoneEnvVar: string | null;
   maxCascadeReplans: number | null;
   maxProbeReplans: number | null;
   frameSelector: string | null;
@@ -2588,6 +2600,7 @@ function parseCli(): {
   let advancedStealth = false;
   let dumpDomBeforeStep: number | null = null;
   let allocateEmailEnvVar: string | null = null;
+  let allocatePhoneEnvVar: string | null = null;
   let maxCascadeReplans: number | null = null;
   let maxProbeReplans: number | null = null;
   let allowEmptyFlow = false;
@@ -2630,6 +2643,15 @@ function parseCli(): {
         process.exit(1);
       }
       allocateEmailEnvVar = name;
+    } else if (args[i] === "--allocate-phone" && args[i + 1]) {
+      const name = args[++i]!;
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+        logger.error(
+          `--allocate-phone value must be an UPPERCASE_SNAKE_CASE env var name (got ${JSON.stringify(name)})`
+        );
+        process.exit(1);
+      }
+      allocatePhoneEnvVar = name;
     } else if (args[i] === "--max-cascade-replans" && args[i + 1]) {
       const n = Number.parseInt(args[++i]!, 10);
       if (!Number.isInteger(n) || n < 1) {
@@ -2655,7 +2677,7 @@ function parseCli(): {
 
   if (!url) {
     logger.error(
-      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--max-cascade-replans <N>] [--max-probe-replans <N>] [--allow-empty-flow]'
+      'usage: recon-browser.ts --url <url> [--flow \'["step1","step2"]\'] [--flow-file <path>] [--provider browserbase|steel] [--upload-fixture <path>] [--no-save-replan] [--advanced-stealth] [--dump-dom-before-step <N>] [--allocate-email <ENV_VAR_NAME>] [--allocate-phone <ENV_VAR_NAME>] [--max-cascade-replans <N>] [--max-probe-replans <N>] [--allow-empty-flow]'
     );
     process.exit(1);
   }
@@ -2683,6 +2705,8 @@ function parseCli(): {
       advancedStealth,
       dumpDomBeforeStep,
       allocateEmailEnvVar,
+    allocatePhoneEnvVar,
+      allocatePhoneEnvVar,
       maxCascadeReplans,
       maxProbeReplans,
       frameSelector: null,
@@ -2770,6 +2794,7 @@ function parseCli(): {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    allocatePhoneEnvVar,
     maxCascadeReplans,
     maxProbeReplans,
     frameSelector,
@@ -2827,6 +2852,7 @@ async function main(): Promise<void> {
     advancedStealth,
     dumpDomBeforeStep,
     allocateEmailEnvVar,
+    allocatePhoneEnvVar,
     maxCascadeReplans,
     maxProbeReplans,
     frameSelector,
@@ -2863,6 +2889,12 @@ async function main(): Promise<void> {
     logger.info(
       `bound allocated testmail address to env var ${allocateEmailEnvVar}=${allocatedInbox.address}`
     );
+  }
+
+  if (allocatePhoneEnvVar) {
+    const phone = allocateFictionalPhone();
+    process.env[allocatePhoneEnvVar] = phone;
+    logger.info(`bound allocated phone number to env var ${allocatePhoneEnvVar}=${phone}`);
   }
 
   const flow = substituteFlowEnvVars(rawFlow);
