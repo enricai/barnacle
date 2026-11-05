@@ -135,4 +135,37 @@ describe("judgeStepOutcome stale title", () => {
     expect(submitJudge).not.toHaveBeenCalled();
     expect(v).toMatchObject({ verified: true });
   });
+
+  it("judges the snapshot's full text when the DOM read supplies it, without the probe fallback", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "full text" });
+    const FULL = "My Experience Add your previous employers FULL";
+    let probeReads = 0;
+    const target = {
+      url: async () => "https://example.org/apply",
+      evaluate: async (expr: string) => {
+        if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
+        if (expr.includes("outerHTML"))
+          return { html: FULL.length, text: `${FULL.length}:${FULL}`, values: "", state: "", full: FULL, digest: "d:1" };
+        probeReads++;
+        return "PROBE";
+      },
+    };
+    const v = await judgeStepOutcome({
+      client: {} as never,
+      step: STEP,
+      isFinalStep: false,
+      submitStep: true,
+      flowHasSubmitSemantics: true,
+      page: { waitForTimeout: async () => {} },
+      target: target as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      preVisibleText: BEFORE_TEXT,
+      submitInput: SUBMIT_INPUT,
+    });
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(FULL);
+    expect(probeReads).toBe(0);
+    expect(v).toMatchObject({ verified: true });
+  });
 });
