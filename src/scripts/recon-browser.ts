@@ -3409,7 +3409,7 @@ async function main(): Promise<void> {
                     preVisibleTextSignature: baselineText.visibleTextSignature,
                     preVisibleText: baselineText.visibleText,
                     preVisibleTextDigest: baselineText.visibleTextDigest,
-                    settledPostVisibleText: settledAdvance?.post.visibleText,
+                    settledPostVisibleText: settledAdvance?.post.visibleText ?? "",
                     submitInput: {
                       pageUrl: trailingGracePageUrl,
                       pageTitle,

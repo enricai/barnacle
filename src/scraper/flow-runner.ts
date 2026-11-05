@@ -15564,7 +15564,7 @@ export async function executeStepWithHealing(params: {
         preVisibleTextSignature: advanceBaseline.visibleTextSignature,
         preVisibleText: advanceBaseline.visibleText,
         preVisibleTextDigest: advanceBaseline.visibleTextDigest,
-        settledPostVisibleText: post.visibleText,
+        settledPostVisibleText: post.visibleText ?? "",
         submitInput: {
           pageUrl: post.url,
           pageTitle,
@@ -16259,7 +16259,7 @@ export async function executeStepWithHealing(params: {
               preVisibleTextSignature: retryAdvanceBaseline.visibleTextSignature,
               preVisibleText: retryAdvanceBaseline.visibleText,
               preVisibleTextDigest: retryAdvanceBaseline.visibleTextDigest,
-              settledPostVisibleText: retryPost.visibleText,
+              settledPostVisibleText: retryPost.visibleText ?? "",
               submitInput: {
                 pageUrl: retryPost.url,
                 pageTitle,
