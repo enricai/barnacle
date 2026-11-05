@@ -5633,13 +5633,7 @@ describe("deriveGetInputModel", () => {
       "https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030"
     );
     const m = deriveGetInputModel(a, [a])!;
-    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual([
-      "start",
-      "ts",
-      "at",
-      "sort",
-      "n",
-    ]);
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at", "sort", "n"]);
     expect(m.fixedParams).toEqual({});
     expect(m.recordedQueryValues).toEqual({ sort: "asc", n: "2030" });
   });
@@ -5696,14 +5690,13 @@ describe("deriveGetInputModel", () => {
   it("binds a lone path-only slug as a caller input with the recorded fallback", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     for (const [url, field, idx] of [
-      ["https://shop.example/escape-rooms/time-machine/schedule.json", "escape-roomsId", 2],
+      ["https://shop.example/guided-tours/old-town/schedule.json", "guidedToursId", 2],
       ["https://other.example/venues/blue_lagoon/hours", "venuesId", 2],
     ] as const) {
       const a = cap(url);
       const pv = deriveGetInputModel(a, [a])!.pathVars;
       expect(pv).toHaveLength(1);
-      expect(pv[0]).toMatchObject({ segmentIndex: idx, queryKey: "" });
-      expect(field).toBeTruthy();
+      expect(pv[0]).toMatchObject({ field, segmentIndex: idx, queryKey: "" });
     }
   });
   it("binds a path slug that differs across same-signature captures", async () => {

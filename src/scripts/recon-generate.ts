@@ -2683,7 +2683,7 @@ function isSlugSegment(segment: string): boolean {
  * route parts. Seen in a single capture it is still a caller input; the
  * recorded value stays as its fallback.
  */
-function isInstanceSlug(segments: readonly string[], i: number, value: string): boolean {
+function isInstanceSlug(i: number, value: string): boolean {
   if (i < 2 || value.includes(".") || /^v\d+$/i.test(value)) return false;
   return isSlugSegment(value);
 }
@@ -2865,7 +2865,7 @@ export function deriveGetInputModel(
       continue;
     }
     const varies = (valuesBySegment[i]?.size ?? 0) > 1;
-    if (!varies && !carriesEntityId(value) && !isInstanceSlug(segments, i, value)) continue;
+    if (!varies && !carriesEntityId(value) && !isInstanceSlug(i, value)) continue;
     const prev = safeGetFieldIdentifier(decode(segments[i - 1] ?? ""));
     const base = prev === "param" ? "id" : `${prev}Id`;
     let field = base;
