@@ -118,6 +118,14 @@ describe("recon-generate — browser-flow entry URL", () => {
       ).not.toThrow();
     });
 
+    it("does not flag a required *Url leaf in a response schema outside the payload schema", () => {
+      const contractCode =
+        "const SitePayloadSchema = z.object({\nq: z.string(),\n});\nexport type SitePayload = 1;\nconst SiteResponseSchema = z.object({\nmapUrl: z.string(),\n});";
+      expect(() =>
+        assertRequiredUrlFieldsReferenced(contractCode, "await page.goto(baseUrl);"),
+      ).not.toThrow();
+    });
+
     it("generalizes past ClickUrl — any required *Url field name is checked", () => {
       const contractCode =
         "const SitePayloadSchema = z.object({\nApplyUrl: z.string().min(1),\n});\nexport type SitePayload = 1;";
