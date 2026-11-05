@@ -9873,11 +9873,48 @@ async function tryPromptSelectorPrimitive(params: {
     // new widget claims that index this round, and the trigger-click selector's
     // \`.first()\` can resolve to the stale widget.
     for (const el of document.querySelectorAll("[" + markAttr + "]")) el.removeAttribute(markAttr);
+    // Layered widgets: one field may render a visible anchor, hidden shadow
+    // openers and a covered native select, all sharing a label. Collapse every
+    // unrendered same-label opener into the single rendered widget (when exactly
+    // one is rendered) so the field is ONE candidate, clicked at its rendered
+    // trigger; the collapsed openers are stamped as mates so option scoping can
+    // still follow their aria-controls link.
+    const rendered = (el) => {
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        if (n.hidden || n.getAttribute("aria-hidden") === "true") return false;
+        const cs = getComputedStyle(n);
+        if (cs.display === "none" || cs.visibility === "hidden") return false;
+      }
+      return true;
+    };
+    for (const el of document.querySelectorAll("[" + markAttr + "-mate]")) el.removeAttribute(markAttr + "-mate");
+    // A rendered role=combobox anchor with no aria-controls/aria-haspopup is
+    // outside the trigger union; adopt it when an unrendered union opener shares
+    // its label (the layered shape), so the rendered control becomes the widget.
+    const allWidgets = widgets.slice();
+    const hiddenLabels = new Set(widgets.filter((w) => !rendered(w)).map((w) => norm(widgetLabel(w))).filter(Boolean));
+    if (hiddenLabels.size > 0) {
+      for (const a of document.querySelectorAll("[role='combobox']")) {
+        if (allWidgets.includes(a) || !rendered(a) || allWidgets.some((o) => o.contains(a) || a.contains(o))) continue;
+        if (hiddenLabels.has(norm(widgetLabel(a)))) allWidgets.push(a);
+      }
+    }
+    widgets.length = 0;
+    widgets.push(...allWidgets);
+    const labelOf = new Map(widgets.map((w) => [w, norm(widgetLabel(w))]));
+    const collapsed = new Map();
+    for (const w of widgets) {
+      const l = labelOf.get(w);
+      if (!l || rendered(w)) continue;
+      const vis = widgets.filter((o) => labelOf.get(o) === l && rendered(o));
+      if (vis.length === 1) collapsed.set(w, vis[0]);
+    }
     const candidates = [];
     let idx = 0;
     for (const w of widgets) {
-      if (!isUnfilled(w)) continue;
+      if (collapsed.has(w) || !isUnfilled(w)) continue;
       w.setAttribute(markAttr, String(idx));
+      for (const [m, host] of collapsed) if (host === w) m.setAttribute(markAttr + "-mate", String(idx));
       candidates.push({ wIdx: idx, label: widgetLabel(w) });
       idx++;
     }
@@ -9942,7 +9979,12 @@ async function tryPromptSelectorPrimitive(params: {
       // Scope options/search to THIS widget's popup (aria-controls portal, or
       // inline subtree), so a sibling widget's options are never picked. Fall
       // back to document only when neither a portal nor an inline popup is found.
-      const scope = ${PROMPT_SCOPE_ROOT_EXPR}(w);
+      const scopeOf = ${PROMPT_SCOPE_ROOT_EXPR};
+      const mates = Array.from(document.querySelectorAll("[" + widgetMarkAttr + '-mate="' + wIdx + '"]'));
+      let scope = scopeOf(w);
+      // A rendered anchor without its own popup link borrows its collapsed
+      // layered openers' link (the visible widget's own list).
+      if (scope === document) for (const m of mates) { const sc = scopeOf(m); if (sc !== document) { scope = sc; break; } }
       // Under the document fallback, ownership is structural: content is foreign
       // when, climbing from it WITHOUT passing through this widget, some ancestor
       // is or holds another widget's trigger — e.g. a committed sibling's chips,
@@ -9953,7 +9995,7 @@ async function tryPromptSelectorPrimitive(params: {
       const containerOf = ${PROMPT_WIDGET_CONTAINER_EXPR};
       const foreignRoots = scope === document
         ? Array.from(new Set(Array.from(document.querySelectorAll(triggerSel)).map(containerOf)))
-            .filter((o) => o !== w && !o.contains(w) && !w.contains(o))
+            .filter((o) => o !== w && !o.contains(w) && !w.contains(o) && !mates.includes(o))
         : [];
       const heldByOtherWidget = (el) => {
         if (scope !== document || w.contains(el)) return false;
