@@ -308,7 +308,11 @@ export function resolveStepPayloadField(
     if (labelMatch === null) continue;
     // A code-style dropdown ("Country Code", "State ID") names a different
     // control than the field its leading word matches; never bind it to that row.
-    if (/^\s*(?:code|id)\b/i.test(instruction.slice(labelMatch.index + labelMatch[0].length))) {
+    // "Zip Code" / "Postal Code" are the field's own name, not a code-style variant.
+    if (
+      /^\s*(?:code|id)\b/i.test(instruction.slice(labelMatch.index + labelMatch[0].length)) &&
+      !/\b(?:zip|postal|post)\s*$/i.test(instruction.slice(0, labelMatch.index + labelMatch[0].length))
+    ) {
       continue;
     }
     const resolved = canonicalise ? canonicalPayloadField(field) : field;
