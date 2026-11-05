@@ -64,12 +64,14 @@ describe("recon-generate — browser-flow entry URL", () => {
   };
 
   it("emitContractTsParts exposes the payload-schema expression verbatim; emitContractTs returns the same code", () => {
-    const { code, payloadSchemaExpr } = emitContractTsParts(contractOpts);
+    const { code, payloadSchema } = emitContractTsParts(contractOpts);
+    const payloadSchemaExpr = payloadSchema.expr;
 
     expect(emitContractTs(contractOpts)).toBe(code);
     expect(code).toMatch(/^const \w*PayloadSchema = /m);
     expect(code).toContain(`PayloadSchema = ${payloadSchemaExpr};`);
     expect(payloadSchemaExpr).toContain("ClickUrl");
+    expect(payloadSchema.fields).toContainEqual({ name: "ClickUrl", optional: false });
   });
 
   it("emitContractTs's execute() call site passes payload.ClickUrl for a submission flow, not context.baseUrl", () => {
@@ -99,7 +101,7 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ClickUrl", optional: false }] })
       ).toThrow(/ClickUrl/);
     });
 
@@ -109,7 +111,7 @@ describe("recon-generate — browser-flow entry URL", () => {
         'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ClickUrl", optional: false }] })
       ).not.toThrow();
     });
 
@@ -118,7 +120,7 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "RedirectUrl", optional: true }] })
       ).not.toThrow();
     });
 
@@ -129,7 +131,7 @@ describe("recon-generate — browser-flow entry URL", () => {
         assertRequiredUrlFieldsReferenced(
           contractCode,
           "await page.goto(baseUrl);",
-          "z.object({\nq: z.string(),\n})"
+          { expr: "z.object({\nq: z.string(),\n})", fields: [{ name: "q", optional: false }] }
         )
       ).not.toThrow();
     });
@@ -140,19 +142,19 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, { expr: contractCode, fields: [{ name: "ApplyUrl", optional: false }] })
       ).toThrow(/ApplyUrl/);
     });
 
     it("integration: a real emitContractTs + emitBrowserFlowTs pair for a submission flow passes the guard", () => {
       const browserFlow = emitBrowserFlowTs(submissionOpts);
-      const { code: contractCode, payloadSchemaExpr } = emitContractTsParts({
+      const { code: contractCode, payloadSchema } = emitContractTsParts({
         ...contractOpts,
         payloadFieldNames: browserFlow.payloadFieldNames,
       });
 
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code, payloadSchemaExpr)
+        assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code, payloadSchema)
       ).not.toThrow();
     });
   });

@@ -1,17 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { unreadRelaxedResponseUrlFields } from "@/scripts/recon-generate";
+import { type PayloadSchemaParts, unreadRelaxedResponseUrlFields } from "@/scripts/recon-generate";
 
-const PAYLOAD = `z.object({
+const PAYLOAD_EXPR = `z.object({
   homeUrl: z.string().url(),
 })`;
+const PAYLOAD: PayloadSchemaParts = {
+  expr: PAYLOAD_EXPR,
+  fields: [{ name: "homeUrl", optional: false }],
+};
 
 function contract(extra: string): string {
-  return `const payloadSchema = ${PAYLOAD};\nconst responseSchema = z.object({\n${extra}\n});`;
+  return `const payloadSchema = ${PAYLOAD_EXPR};\nconst responseSchema = z.object({\n${extra}\n});`;
 }
 
 describe("unreadRelaxedResponseUrlFields", () => {
   it("returns [] when the payload expression is empty", () => {
-    expect(unreadRelaxedResponseUrlFields(contract(""), "", "")).toEqual([]);
+    expect(unreadRelaxedResponseUrlFields(contract(""), "", { expr: "", fields: [] })).toEqual([]);
   });
 
   it("returns [] when the contract does not contain the payload expression", () => {

@@ -5359,7 +5359,10 @@ describe("assertRequiredUrlFieldsReferenced — genuine SUBMIT-step-originated v
     const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
     expect(() =>
-      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, contractCode)
+      assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode, {
+        expr: contractCode,
+        fields: [{ name: "TrackingUrl", optional: false }],
+      })
     ).toThrow(/required URL field.*TrackingUrl/);
   });
 });
@@ -5576,7 +5579,7 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
       unreferencedRequiredUrlFields(
         mk("  resultUrl: z.string(),", "  q: z.string(),"),
         "",
-        "z.object({\n  q: z.string(),\n})"
+        { expr: "z.object({\n  q: z.string(),\n})", fields: [{ name: "q", optional: false }] }
       )
     ).toEqual([]);
   });
@@ -5585,7 +5588,10 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
       unreferencedRequiredUrlFields(
         mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
         "",
-        "z.object({\n  ClickUrl: z.string(),\n})"
+        {
+          expr: "z.object({\n  ClickUrl: z.string(),\n})",
+          fields: [{ name: "ClickUrl", optional: false }],
+        }
       )
     ).toEqual(["ClickUrl"]);
   });
@@ -5599,7 +5605,10 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
       unreferencedRequiredUrlFields(
         src,
         "",
-        "z.object({}).extend({\n  date: z.string().optional(),\n})"
+        {
+          expr: "z.object({}).extend({\n  date: z.string().optional(),\n})",
+          fields: [{ name: "date", optional: true }],
+        }
       )
     ).toEqual([]);
   });
@@ -5612,7 +5621,13 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
       unreferencedRequiredUrlFields(
         withUrl,
         "",
-        "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})"
+        {
+          expr: "z.object({}).extend({\n  date: z.string().optional(),\n  homeUrl: z.string(),\n})",
+          fields: [
+            { name: "date", optional: true },
+            { name: "homeUrl", optional: false },
+          ],
+        }
       )
     ).toEqual(["homeUrl"]);
   });

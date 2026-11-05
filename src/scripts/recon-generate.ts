@@ -14794,8 +14794,15 @@ export function emitContractTs(opts: Parameters<typeof emitContractTsParts>[0]):
   return emitContractTsParts(opts).code;
 }
 
-/** Same as {@link emitContractTs} but also hands out the exact expression
- * written as `const <X>PayloadSchema = ...`, so callers never re-parse emitted source. */
+/** The payload schema as structured data: the exact expression written as
+ * `const <X>PayloadSchema = ...` plus each top-level extension field's name and
+ * optionality, so guards never re-parse emitted source. */
+export interface PayloadSchemaParts {
+  expr: string;
+  fields: ReadonlyArray<{ name: string; optional: boolean }>;
+}
+
+/** Same as {@link emitContractTs} but also hands out the payload schema as {@link PayloadSchemaParts}. */
 export function emitContractTsParts(opts: {
   siteId: string;
   /**
@@ -14954,7 +14961,7 @@ export function emitContractTsParts(opts: {
    * output byte-for-byte: no `browserFallbackGate` meta field, and
    * `createHttpClient(...)` unchanged. */
   fallbackGateSpec?: FallbackGateSpec;
-}): { code: string; payloadSchemaExpr: string } {
+}): { code: string; payloadSchema: PayloadSchemaParts } {
   const {
     siteId,
     displayName,
@@ -15501,6 +15508,10 @@ export function emitContractTsParts(opts: {
   // rather than a second extend keeps the schema to a single `.extend()`.
   const trackingMerge = ".merge(JobTrackingSchema)";
   const payloadSchemaExpr = `${basePayloadSchemaExpr}${mergedExtension}${trackingMerge}`;
+  const payloadFields = [...extendFields].map(([name, line]) => ({
+    name,
+    optional: (line.split("\n")[0] ?? "").includes(".optional("),
+  }));
   // basePayloadSchemaExpr's own Answers field always wraps in
   // multipartJsonObject() for job-application submission flows
   // (usesApplicantContactSchema); multipartBoolean() is only imported when a
@@ -16191,7 +16202,7 @@ ${executeDocComment}  async execute(
 // through to \`m.default\` (the response schema above) and 404 at runtime.
 export { ${camel}Plugin as plugin };
 `;
-  return { code, payloadSchemaExpr };
+  return { code, payloadSchema: { expr: payloadSchemaExpr, fields: payloadFields } };
 }
 
 /**
@@ -16213,81 +16224,19 @@ export { ${camel}Plugin as plugin };
 export function unreferencedRequiredUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchema: PayloadSchemaParts
 ): string[] {
-  // Judge only the payload schema: a response schema's required `*Url` leaf is
-  // output, not caller input. Text with no payload-schema declaration is itself
-  // the schema fragment under test.
-  const span = payloadSchemaExpr === undefined ? payloadSchemaSpan(contractCode) : null;
-  const scanned =
-    payloadSchemaExpr ?? (span ? contractCode.slice(span.start, span.end) : contractCode);
+  // Judge only the payload schema's own field data: a response schema's
+  // required `*Url` leaf is output, not caller input.
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
-  return [...scanned.matchAll(URL_FIELD_LINE_PATTERN)]
-    .filter((match) => !match[0].includes(".optional("))
-    .map((match) => match[1])
-    .filter((name): name is string => name !== undefined)
+  return payloadSchema.fields
+    .filter((field) => !field.optional && URL_FIELD_NAME_PATTERN.test(field.name))
+    .map((field) => field.name)
     .filter((name) => !emittedCode.includes(`payload.${name}`));
 }
 
+const URL_FIELD_NAME_PATTERN = /^\w*Url\w*$/;
 const URL_FIELD_LINE_PATTERN = /^\s*(\w*Url\w*):\s*z\.\w+\(.*$/gm;
-
-/**
- * Character span of the payload schema expression inside `contractCode`.
- * When the emitter's own expression is supplied it is located verbatim;
- * otherwise the `[export] const <X>PayloadSchema = <expr>` declaration is read
- * by walking its bracket-balanced expression to the terminating `;` (or to the
- * next top-level statement when the `;` is absent), so declaration order,
- * `export`, and a following response schema never move the boundary. Null when
- * the contract has no payload-schema declaration.
- */
-function payloadSchemaSpan(
-  contractCode: string,
-  payloadSchemaExpr?: string
-): { start: number; end: number } | null {
-  if (payloadSchemaExpr !== undefined) {
-    const at = payloadSchemaExpr ? contractCode.indexOf(payloadSchemaExpr) : -1;
-    return at < 0 ? null : { start: at, end: at + payloadSchemaExpr.length };
-  }
-  const declaration = /^(?:export\s+)?const\s+\w*PayloadSchema\b[^=\n]*=/m.exec(contractCode);
-  if (!declaration) return null;
-  const start = declaration.index + declaration[0].length;
-  let depth = 0;
-  for (let i = start; i < contractCode.length; i++) {
-    const ch = contractCode[i];
-    if (ch === '"' || ch === "'" || ch === "`") {
-      i = skipStringLiteral(contractCode, i);
-    } else if (ch === "/" && contractCode[i + 1] === "/") {
-      const eol = contractCode.indexOf("\n", i);
-      i = eol < 0 ? contractCode.length : eol - 1;
-    } else if (ch === "/" && contractCode[i + 1] === "*") {
-      const close = contractCode.indexOf("*/", i + 2);
-      i = close < 0 ? contractCode.length : close + 1;
-    } else if (ch === "(" || ch === "[" || ch === "{") {
-      depth++;
-    } else if (ch === ")" || ch === "]" || ch === "}") {
-      depth--;
-    } else if (depth === 0 && ch === ";") {
-      return { start, end: i };
-    } else if (
-      depth === 0 &&
-      ch === "\n" &&
-      /^\s*(?:export|const|let|type|function|interface|import)\s/.test(contractCode.slice(i + 1))
-    ) {
-      return { start, end: i };
-    }
-  }
-  return { start, end: contractCode.length };
-}
-
-/** Index of the closing quote of the string literal opening at `open`. */
-function skipStringLiteral(code: string, open: number): number {
-  const quote = code[open];
-  for (let i = open + 1; i < code.length; i++) {
-    if (code[i] === "\\") i++;
-    else if (code[i] === quote) return i;
-  }
-  return code.length;
-}
 
 /**
  * `*Url` leaves outside the payload schema that nothing reads and that the
@@ -16298,11 +16247,12 @@ function skipStringLiteral(code: string, open: number): number {
 export function unreadRelaxedResponseUrlFields(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchema: PayloadSchemaParts
 ): string[] {
-  const span = payloadSchemaSpan(contractCode, payloadSchemaExpr);
-  if (!span) return [];
-  const outsidePayload = contractCode.slice(0, span.start) + contractCode.slice(span.end);
+  const at = payloadSchema.expr ? contractCode.indexOf(payloadSchema.expr) : -1;
+  if (at < 0) return [];
+  const outsidePayload =
+    contractCode.slice(0, at) + contractCode.slice(at + payloadSchema.expr.length);
   const emittedCode = `${contractCode}\n${browserFlowCode}`;
   return [...outsidePayload.matchAll(URL_FIELD_LINE_PATTERN)]
     .filter((match) => match[0].includes(".nullable().optional("))
@@ -16314,13 +16264,9 @@ export function unreadRelaxedResponseUrlFields(
 export function assertRequiredUrlFieldsReferenced(
   contractCode: string,
   browserFlowCode: string,
-  payloadSchemaExpr?: string
+  payloadSchema: PayloadSchemaParts
 ): void {
-  const unreferenced = unreferencedRequiredUrlFields(
-    contractCode,
-    browserFlowCode,
-    payloadSchemaExpr
-  );
+  const unreferenced = unreferencedRequiredUrlFields(contractCode, browserFlowCode, payloadSchema);
   if (unreferenced.length === 0) return;
   throw new Error(
     `recon-generate: required URL field(s) ${unreferenced.join(", ")} declared on the payload schema ` +
@@ -17325,8 +17271,8 @@ async function resolveValueConstraints(specifier: string): Promise<ReconValueCon
  * capture(s) to exclude on a narrowed retry. */
 interface TsGenerationResult {
   contractCode: string;
-  /** The exact expression emitted as `const <X>PayloadSchema = ...`. */
-  payloadSchemaExpr: string;
+  /** The payload schema as emitted in `const <X>PayloadSchema = ...`, with its field data. */
+  payloadSchema: PayloadSchemaParts;
   contractOpts: Parameters<typeof emitContractTs>[0];
   browserFlow: ReturnType<typeof emitBrowserFlowTs>;
   auxFiles: Array<{ filename: string; url: string }>;
@@ -17471,7 +17417,7 @@ function healUnreferencedUrlFieldsOnce(
   const offending = unreferencedRequiredUrlFields(
     firstAttempt.contractCode,
     firstAttempt.browserFlow.code,
-    firstAttempt.payloadSchemaExpr
+    firstAttempt.payloadSchema
   );
   // Only unread PAYLOAD `*Url` fields attribute noise captures. Response-schema
   // `*Url` leaves are output, never an input the caller must supply, so they
@@ -17522,7 +17468,7 @@ function healUnreferencedUrlFieldsOnce(
   const stillOffending = unreferencedRequiredUrlFields(
     retried.contractCode,
     retried.browserFlow.code,
-    retried.payloadSchemaExpr
+    retried.payloadSchema
   );
   if (stillOffending.length > 0) {
     throw new Error(
@@ -18725,7 +18671,7 @@ async function main(): Promise<void> {
             browserFlow,
             contractOpts,
             contractCode: firstContractCode,
-            payloadSchemaExpr: firstContract.payloadSchemaExpr,
+            payloadSchema: firstContract.payloadSchema,
           }
         : (() => {
             const fallbackBrowserFlow = emitBrowserFlowTs({
@@ -18744,12 +18690,12 @@ async function main(): Promise<void> {
               browserFlow: fallbackBrowserFlow,
               contractOpts: optionalized,
               contractCode: regenerated.code,
-              payloadSchemaExpr: regenerated.payloadSchemaExpr,
+              payloadSchema: regenerated.payloadSchema,
             };
           })();
     return {
       contractCode: settled.contractCode,
-      payloadSchemaExpr: settled.payloadSchemaExpr,
+      payloadSchema: settled.payloadSchema,
       contractOpts: settled.contractOpts,
       browserFlow: settled.browserFlow,
       auxFiles,

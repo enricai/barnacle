@@ -265,7 +265,7 @@ describe("bookstore catalog item, id in path and bracketed query, repeated acros
   it("a required *Url response leaf does not trip the required-URL-field guard", () => {
     const { src } = contractFor([mk(item(W1), captured), mk(item(W2), captured)]);
     expect(src).toContain("coverUrl");
-    expect(unreferencedRequiredUrlFields(src, "", "z.object({})")).toEqual([]);
+    expect(unreferencedRequiredUrlFields(src, "", { expr: "z.object({})", fields: [] })).toEqual([]);
   });
 
   it("multi-entity captures stay strict", () => {
