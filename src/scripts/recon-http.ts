@@ -80,7 +80,7 @@ interface Capture {
   variables: unknown;
 }
 
-interface ReplayResult {
+export interface ReplayResult {
   sourceCapture: string;
   url: string;
   method: string;
