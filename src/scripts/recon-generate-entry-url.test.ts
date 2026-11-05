@@ -25,13 +25,11 @@ describe("recon-generate — browser-flow entry URL", () => {
     const { code } = emitBrowserFlowTs(submissionOpts);
 
     expect(code).toMatch(
-      /export async function runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*entryUrl: string,/,
+      /export async function runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*entryUrl: string,/
     );
-    expect(code).toContain(
-      'page.goto(entryUrl, { waitUntil: "domcontentloaded" })',
-    );
+    expect(code).toContain('page.goto(entryUrl, { waitUntil: "domcontentloaded" })');
     expect(code).not.toMatch(
-      /runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*baseUrl: string,/,
+      /runReconSite9BrowserFlow\(\s*stagehand: Stagehand,\s*baseUrl: string,/
     );
     expect(code).not.toContain("page.goto(baseUrl,");
   });
@@ -43,11 +41,9 @@ describe("recon-generate — browser-flow entry URL", () => {
     });
 
     expect(code).toContain(
-      "runReconSite9BrowserFlow(\n  stagehand: Stagehand,\n  baseUrl: string,",
+      "runReconSite9BrowserFlow(\n  stagehand: Stagehand,\n  baseUrl: string,"
     );
-    expect(code).toContain(
-      'page.goto(baseUrl, { waitUntil: "domcontentloaded" })',
-    );
+    expect(code).toContain('page.goto(baseUrl, { waitUntil: "domcontentloaded" })');
     expect(code).not.toContain("entryUrl");
   });
 
@@ -70,10 +66,10 @@ describe("recon-generate — browser-flow entry URL", () => {
     const source = emitContractTs(contractOpts);
 
     expect(source).toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, payload.ClickUrl, payload, session.sessionProxy ?? null)",
+      "await runReconSite9BrowserFlow(session.stagehand, payload.ClickUrl, payload, session.sessionProxy ?? null)"
     );
     expect(source).not.toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)",
+      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)"
     );
   });
 
@@ -82,7 +78,7 @@ describe("recon-generate — browser-flow entry URL", () => {
     const source = emitContractTs(queryOpts);
 
     expect(source).toContain(
-      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)",
+      "await runReconSite9BrowserFlow(session.stagehand, context.baseUrl, payload, session.sessionProxy ?? null)"
     );
   });
 
@@ -90,12 +86,11 @@ describe("recon-generate — browser-flow entry URL", () => {
     it("throws when a required *Url payload field is declared but never referenced by the emitted browser flow", () => {
       const contractCode =
         "const SitePayloadSchema = z.object({\nClickUrl: z.string().min(1),\n});\nexport type SitePayload = 1;";
-      const browserFlowCode =
-        'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
+      const browserFlowCode = 'await page.goto(entryUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode),
-      ).toThrow(/ClickUrl/);
+      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
+        /ClickUrl/
+      );
     });
 
     it("does not throw once the flow references payload.ClickUrl somewhere", () => {
@@ -103,38 +98,32 @@ describe("recon-generate — browser-flow entry URL", () => {
       const browserFlowCode =
         'const url = payload.ClickUrl;\nawait page.goto(url, { waitUntil: "domcontentloaded" });';
 
-      expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode),
-      ).not.toThrow();
+      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).not.toThrow();
     });
 
     it("ignores optional URL fields — only required ones must be referenced", () => {
       const contractCode = "RedirectUrl: z.string().optional(),";
-      const browserFlowCode =
-        'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode),
-      ).not.toThrow();
+      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).not.toThrow();
     });
 
     it("does not flag a required *Url leaf in a response schema outside the payload schema", () => {
       const contractCode =
         "const SitePayloadSchema = z.object({\nq: z.string(),\n});\nexport type SitePayload = 1;\nconst SiteResponseSchema = z.object({\nmapUrl: z.string(),\n});";
       expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, "await page.goto(baseUrl);"),
+        assertRequiredUrlFieldsReferenced(contractCode, "await page.goto(baseUrl);")
       ).not.toThrow();
     });
 
     it("generalizes past ClickUrl — any required *Url field name is checked", () => {
       const contractCode =
         "const SitePayloadSchema = z.object({\nApplyUrl: z.string().min(1),\n});\nexport type SitePayload = 1;";
-      const browserFlowCode =
-        'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
+      const browserFlowCode = 'await page.goto(baseUrl, { waitUntil: "domcontentloaded" });';
 
-      expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode),
-      ).toThrow(/ApplyUrl/);
+      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlowCode)).toThrow(
+        /ApplyUrl/
+      );
     });
 
     it("integration: a real emitContractTs + emitBrowserFlowTs pair for a submission flow passes the guard", () => {
@@ -144,9 +133,7 @@ describe("recon-generate — browser-flow entry URL", () => {
         payloadFieldNames: browserFlow.payloadFieldNames,
       });
 
-      expect(() =>
-        assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code),
-      ).not.toThrow();
+      expect(() => assertRequiredUrlFieldsReferenced(contractCode, browserFlow.code)).not.toThrow();
     });
   });
 });

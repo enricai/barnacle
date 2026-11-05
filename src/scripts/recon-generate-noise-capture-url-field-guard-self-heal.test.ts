@@ -102,7 +102,7 @@ describe("recon-generate: required-URL-field guard self-heals on an unrelated no
     expect(contract).not.toContain("site-banner");
   }, 30_000);
 
-  it("still hard-fails when the offending required *Url field's only source is the resolved submit/primary capture itself", () => {
+  it("does not abort when a required *Url field appears only in the resolved submit/primary capture's response", () => {
     workDir = mkdtempSync(join(tmpdir(), "barnacle-recon-noise-url-guard-hardfail-"));
     const runRoot = join(workDir, "run");
     const actionCaptures = buildMultiEndpointSubmissionActionSteps().map((s) => s.capture);
@@ -131,9 +131,11 @@ describe("recon-generate: required-URL-field guard self-heals on an unrelated no
     );
 
     const result = runGenerate(siteId, runRoot);
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain("confirmationDetailsUrl");
-    expect(output).toContain(last.url);
+    // A response-only *Url field is output, not caller input: the guard judges
+    // the payload schema alone, so it must neither abort nor be dropped.
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).toContain("confirmationDetailsUrl");
+    expect(contract).not.toMatch(/PayloadSchema = [^;]*confirmationDetailsUrl/);
   }, 30_000);
 });

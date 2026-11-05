@@ -5578,10 +5578,7 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
   });
   it("still flags an unreferenced required payload *Url field", () => {
     expect(
-      unreferencedRequiredUrlFields(
-        mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"),
-        ""
-      )
+      unreferencedRequiredUrlFields(mk("  resultUrl: z.string(),", "  ClickUrl: z.string(),"), "")
     ).toEqual(["ClickUrl"]);
   });
 });
@@ -5593,7 +5590,10 @@ describe("unreferencedRequiredUrlFields — nested response leaf", () => {
     expect(unreferencedRequiredUrlFields(src, "")).toEqual([]);
   });
   it("still flags a required unread payload *Url field", () => {
-    const withUrl = src.replace("date: z.string().optional(),", "date: z.string().optional(),\n  homeUrl: z.string(),");
+    const withUrl = src.replace(
+      "date: z.string().optional(),",
+      "date: z.string().optional(),\n  homeUrl: z.string(),"
+    );
     expect(unreferencedRequiredUrlFields(withUrl, "")).toEqual(["homeUrl"]);
   });
 });
