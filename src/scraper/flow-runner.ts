@@ -948,6 +948,10 @@ const OPTION_ACCESSIBLE_LABEL_EXPR = `((el) => {
  * matches "Country Code"); unrelated labels share no full subset.
  */
 export function widgetLabelMatches(widgetLabel: string, questionLabel: string): boolean {
+  const lc = (x: string): string => x.toLowerCase().replace(/\s+/g, " ").trim();
+  const wl = lc(widgetLabel);
+  const ql = lc(questionLabel);
+  if (wl && ql && (wl.includes(ql) || ql.includes(wl))) return true;
   const toks = (x: string): string[] =>
     x
       .toLowerCase()
@@ -14527,7 +14531,7 @@ export async function executeStepWithHealing(params: {
             // trusted click at the real target instead of the host's own
             // bounding box. No shadow root, or no qualifying descendant,
             // falls back unchanged to clicking the host via its xpath.
-            const xpathBody = xpathBodyForEvaluate(topWindowSelector);
+            const xpathBody = xpathBodyForEvaluate(topWindowSelector, frameTarget);
             const markerAttr = "data-barnacle-shadow-click-target";
             const markerValue = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
             const markResult = xpathBody
