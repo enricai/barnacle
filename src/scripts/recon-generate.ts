@@ -2640,6 +2640,8 @@ export interface GetInputModel {
   fixedParams: Record<string, string>;
   /** Safe identifier -> real query key. */
   fieldToQueryKey: Record<string, string>;
+  /** Recorded value (queryKey -> value) replayed when the payload omits a constant-valued query input. */
+  recordedQueryValues?: Record<string, string>;
   /** Path segments of the winning URL the caller controls: repeating a query value, varying across siblings, or carrying an entity id. `queryKey` is empty for a path-only id. */
   pathVars: Array<{ field: string; segmentIndex: number; queryKey: string }>;
   /** Further query keys repeating an already-bound path segment: each follows that segment's `field`, so the path and every key it is repeated in stay in step. */
@@ -2800,6 +2802,7 @@ export function deriveGetInputModel(
   const dynamicFields: GetInputModel["dynamicFields"] = [];
   const fixedParams: Record<string, string> = {};
   const fieldToQueryKey: Record<string, string> = {};
+  const recordedQueryValues: Record<string, string> = {};
   const pathVars: GetInputModel["pathVars"] = [];
   const pathTwins: NonNullable<GetInputModel["pathTwins"]> = [];
   const nameFor = (key: string): string => {
@@ -2841,7 +2844,11 @@ export function deriveGetInputModel(
       dynamicFields.push({ field, queryKey: key });
       fieldToQueryKey[field] = key;
     } else {
-      fixedParams[key] = [...values][0] as string;
+      // A constant-valued key is still a caller input; its recorded value is the fallback.
+      const field = nameFor(key);
+      dynamicFields.push({ field, queryKey: key });
+      fieldToQueryKey[field] = key;
+      recordedQueryValues[key] = [...values][0] as string;
     }
   }
   // Path segments with no query twin that vary between captures or carry an entity id.
@@ -2868,7 +2875,7 @@ export function deriveGetInputModel(
     pathVars.push({ field, segmentIndex: i, queryKey: "" });
     fieldByValue.set(value, field);
   }
-  return { dynamicFields, fixedParams, fieldToQueryKey, pathVars, pathTwins };
+  return { dynamicFields, fixedParams, fieldToQueryKey, recordedQueryValues, pathVars, pathTwins };
 }
 
 /**
@@ -14356,6 +14363,13 @@ function buildGetRequestUrlExpr(
   for (const { field, queryKey } of model.dynamicFields) {
     if (queryKey === "") continue;
     if (overridden.has(JSON.stringify(queryKey))) continue;
+    const recorded = model.recordedQueryValues?.[queryKey];
+    if (recorded !== undefined) {
+      pairs.push(
+        `[${JSON.stringify(queryKey)}, String(${fieldAccess(field)} ?? ${JSON.stringify(recorded)})]`
+      );
+      continue;
+    }
     pairs.push(
       `...(${fieldAccess(field)} !== undefined ? [[${JSON.stringify(queryKey)}, String(${fieldAccess(field)})]] : [])`
     );
