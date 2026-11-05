@@ -94,11 +94,7 @@ describe("judgeStepOutcome stale title", () => {
     stepJudge.mockResolvedValue({ advanced: true, reason: "late render" });
     const waits: number[] = [];
     let reads = 0;
-    const v = await run(
-      false,
-      () => (reads++ < 1 ? "Sign In" : AFTER_TEXT),
-      waits
-    );
+    const v = await run(false, () => (reads++ < 1 ? "Sign In" : AFTER_TEXT), waits);
     expect(waits).not.toContain(5000);
     expect(stepJudge).toHaveBeenCalledTimes(1);
     expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(AFTER_TEXT);

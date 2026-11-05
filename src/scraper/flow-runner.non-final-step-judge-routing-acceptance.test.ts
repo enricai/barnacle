@@ -284,7 +284,10 @@ describe("flow-runner non-final step judge routing acceptance", () => {
       submitStep: false,
       flowHasSubmitSemantics: true,
       page: { waitForTimeout: async () => {} },
-      target: { evaluate: async () => POST_SIGNATURE } as never,
+      target: {
+        evaluate: async () => POST_SIGNATURE,
+        url: async () => "https://example.org/",
+      } as never,
       signalCounter: { n: 0 },
       preNetworkCount: 0,
       preVisibleTextSignature: PRE_SIGNATURE,
