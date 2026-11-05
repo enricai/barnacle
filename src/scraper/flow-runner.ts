@@ -309,7 +309,21 @@ export function wireSignalCapture(
       entry.requestPostData = priorBody;
     }
     if (!entry.requestPostData && mayHaveBody) {
+      const priorPending = prior?.bodyPending;
       entry.bodyPending = (async () => {
+        // A first hop's lazy fetch may still be in flight; adopt its body first.
+        if (priorPending) {
+          try {
+            await priorPending;
+          } catch {
+            // ignore
+          }
+          const got = prior?.requestPostData;
+          if (got && got !== REQUEST_BODY_UNAVAILABLE) {
+            entry.requestPostData = got;
+            return;
+          }
+        }
         try {
           const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
             requestId: params.requestId,

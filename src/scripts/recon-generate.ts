@@ -5472,14 +5472,16 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // the nested value is that field's content, not a second caller input.
     // Minting a flattened `orderItems_attributes` beside it would expose the
     // same array twice.
-    let coveredByAncestorField = false;
+    let coveringAncestorLen = 0;
     for (let len = 1; len < valuePath.length; len++) {
       if (outStructuredKeys.has(pathToPayloadFieldName(valuePath.slice(0, len)))) {
-        coveredByAncestorField = true;
+        coveringAncestorLen = len;
         break;
       }
     }
-    if (coveredByAncestorField) continue;
+    const coveredByAncestorField = coveringAncestorLen > 0;
+    // Only a direct child of the registered ancestor has a one-hop accessor.
+    if (coveredByAncestorField && valuePath.length - coveringAncestorLen !== 1) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -5491,7 +5493,7 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
     // key for a nested array would declare the one array twice.
     const fieldName = pathToPayloadFieldName([...valuePath]);
-    registerStructuredPayloadField(outStructuredKeys, fieldName, value);
+    if (!coveredByAncestorField) registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
     // array carries none falls through to the same opaque `payload.<key>`
@@ -5591,7 +5593,12 @@ export function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // substring `payload.`) avoids false-positiving on scraped leaf data that
     // merely happens to contain the word "payload." as ordinary text.
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
-    const replacement = `$${"{"}JSON.stringify(payload.${fieldName})${"}"}`;
+    // A value nested in an already-registered ancestor field is read from that
+    // field's content instead of being frozen as the recorded literal.
+    const valueExpr = coveredByAncestorField
+      ? `(payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))} as Record<string, unknown>)[${JSON.stringify(key)}]`
+      : `payload.${fieldName}`;
+    const replacement = `$${"{"}JSON.stringify(${valueExpr})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
   }
