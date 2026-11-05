@@ -251,6 +251,95 @@ describe("recon-browser/main — trailing-grace mid-flow-aware finality", () => 
     );
   });
 
+  describe("non-final trailing step whose body re-renders long after its header flipped", () => {
+    const FIELDS = Array.from({ length: 150 }, (_, i) => `field${i}`).join(" ");
+    const BEFORE = `Step 2 of 3 ${FIELDS}`;
+    const HEADER_ONLY = `Step 3 of 3 ${FIELDS}`;
+    const SETTLED_BODY = "Step 3 of 3 Payment details card number expiry security code billing";
+
+    async function runWithVirtualClock(bodyDelayMs: number): Promise<void> {
+      const session = { on: (): void => {}, off: (): void => {} };
+      let now = 0;
+      let flippedAt: number | null = null;
+      const textNow = (): string => {
+        if (flippedAt === null) return BEFORE;
+        return now - flippedAt >= bodyDelayMs ? SETTLED_BODY : HEADER_ONLY;
+      };
+      const page = {
+        goto: vi.fn().mockResolvedValue(undefined),
+        url: vi.fn().mockReturnValue("https://orders.example.com/checkout/review"),
+        title: vi.fn().mockResolvedValue("Order Confirmation"),
+        evaluate: vi.fn().mockImplementation(async (expr: unknown) => {
+          if (
+            typeof expr === "string" &&
+            expr.includes("outerHTML") &&
+            expr.includes("innerText")
+          ) {
+            const t = textNow();
+            return {
+              html: 5_000,
+              text: `${t.length}:${t.slice(0, 200)}`,
+              values: "",
+              state: "",
+              full: t,
+              digest: `${t.length}:${t}`,
+            };
+          }
+          if (typeof expr === "string" && expr.includes('innerText || ""')) return textNow();
+          if (typeof expr === "string" && expr.includes("document.body")) return 10_000;
+          if (typeof expr === "string" && expr.includes("querySelector"))
+            return { matched: false, src: null };
+          return null;
+        }),
+        frames: vi.fn().mockReturnValue([]),
+        getSessionForFrame: () => session,
+        mainFrameId: () => "main",
+        sendCDP: vi.fn().mockResolvedValue({ cookies: [] }),
+        waitForTimeout: vi.fn().mockImplementation(async (ms: number) => {
+          now += ms;
+        }),
+      } as unknown as Page;
+      const stagehand = {
+        context: { awaitActivePage: async (): Promise<Page> => page },
+      } as unknown as Stagehand;
+      vi.mocked(createBrowserSession).mockResolvedValue({
+        stagehand,
+        limiter: {} as never,
+        sessionId: "test-session",
+        provider: "browserbase",
+        close: vi.fn().mockResolvedValue(undefined),
+      } as never);
+      executeStepWithHealingStub.mockImplementation(async () => {
+        flippedAt = now;
+        throw new StepVerificationError("no observable effect", "cascade-exhausted");
+      });
+      verifyStepAdvancedStub.mockResolvedValue({ advanced: true, reason: "wizard moved on" });
+      process.argv = [
+        "node",
+        "recon-browser.ts",
+        "--url",
+        "https://orders.example.com/checkout/review",
+        "--flow",
+        JSON.stringify({
+          steps: [{ step: "Click the Continue button", optional: true, upload: false }],
+        }),
+      ];
+      await main().catch(() => undefined);
+    }
+
+    it.each([22_000, 30_000, 45_000])(
+      "judges the settled body when it re-renders %ims after the header flip",
+      async (bodyDelayMs) => {
+        await runWithVirtualClock(bodyDelayMs);
+
+        expect(verifySubmitWithLLMStub).not.toHaveBeenCalled();
+        const judgedTexts = verifyStepAdvancedStub.mock.calls.map((c) => c[0].input.afterText);
+        expect(judgedTexts.length).toBeGreaterThan(0);
+        expect(judgedTexts.every((t: string) => t.includes("Payment details"))).toBe(true);
+      }
+    );
+  });
+
   describe("pre-replan short-circuit from the step-start baseline", () => {
     const ADVANCED_LOG_FRAGMENT = "the page already advanced past this step";
 

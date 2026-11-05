@@ -1264,8 +1264,8 @@ interface StepSnapshot {
    */
   visibleTextDigest?: string;
   /**
-   * Set by the post-click re-settle when the visible text held still across a
-   * settle round, so a header-only flip can be judged as the final page.
+   * Set by the post-click re-settle when the visible text held still through the
+   * whole re-settle budget, so a header-only flip can be judged as the final page.
    */
   settled?: boolean;
   /**
@@ -7590,21 +7590,22 @@ const DEFAULT_POST_CLICK_SETTLE_IO: PostClickSettleIo = {
  * Re-settle rounds granted to a post-click page whose header flipped but whose
  * body has not re-rendered yet. Each round waits the settle's own idle
  * allowance, so the rounds together span the settle's MAX_MS ceiling rather
- * than a fixed guess; a held-still text ends the loop sooner.
+ * than a fixed guess.
  */
 const HEADER_ONLY_RESETTLE_ROUNDS = Math.floor(SETTLE_MAX_MS / SETTLE_IDLE_GIVE_UP_MS);
 
 /**
  * Re-reads the post-click page while only its header has flipped. One
  * settle-then-snapshot moment can land between a header flip and the body
- * re-render that follows it, so the verdict waits for the body or for the text
- * to hold still through the whole re-settle budget, and only then reads the
- * header flip as the page's final state (`settled`): a single quiet round
- * cannot distinguish a finished page from a body that re-renders later. Each round settles against the
- * pre-click text, so the header flip stays movement and the quiet window, not the silent no-op
- * give-up, decides how long a body re-render is waited for. Bounded; a page whose body already swapped
- * returns at once, and one showing no change gets a single probe round so a
- * re-render that lands after the first snapshot is still seen.
+ * re-render that follows it, and a single quiet round cannot distinguish a
+ * finished page from a body that re-renders later. So the verdict waits for the
+ * body to swap, or for the text to hold still through the whole re-settle
+ * budget, and only then reads the header flip as the page's final state
+ * (`settled`). Each round settles against the pre-click text, so the header
+ * flip stays movement and the quiet window, not the silent no-op give-up,
+ * decides how long a body re-render is waited for. Bounded; a page whose body
+ * already swapped returns at once, and one showing no change gets a single
+ * probe round so a re-render that lands after the first snapshot is still seen.
  */
 async function resettleThroughHeaderOnlyFlip(
   page: Page,
@@ -7615,6 +7616,7 @@ async function resettleThroughHeaderOnlyFlip(
   io: PostClickSettleIo = DEFAULT_POST_CLICK_SETTLE_IO
 ): Promise<StepSnapshot> {
   let current = post;
+  let heldStillThroughBudget = false;
   for (let round = 0; round < HEADER_ONLY_RESETTLE_ROUNDS; round++) {
     const moved = hasVisibleTextChanged(pre, current);
     if (moved && hasPageBodySwapped(pre, current))
@@ -7640,9 +7642,9 @@ async function resettleThroughHeaderOnlyFlip(
     const next = await io.snapshot(target, signalCounter, page);
     const heldStill = !hasVisibleTextChanged(current, next);
     current = next;
-    if (heldStill && !hasPageBodySwapped(pre, current)) return { ...current, settled: true };
+    heldStillThroughBudget = heldStill;
   }
-  return current;
+  return heldStillThroughBudget ? { ...current, settled: true } : current;
 }
 
 /**

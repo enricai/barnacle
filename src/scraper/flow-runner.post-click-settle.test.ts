@@ -4,7 +4,7 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
-import { settleAfterClick } from "@/scraper/click-settle";
+import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
 import {
   type PostClickSettleIo,
   readMidFlowPostClickAdvance,
@@ -299,19 +299,18 @@ describe("settleAndSnapshotPostClick header-only flip settledness", () => {
     expect(hasSettledPageAdvanced(pre, post)).toBe(true);
   });
 
-  it("ends the re-settle on the first quiescent held-still read without spending the rest of the budget", async () => {
+  it("does not read a header flip as settled after one quiet round: a body landing later in the budget is picked up", async () => {
     const t = makeIo([FLIPPED_SIG, FLIPPED_SIG, FLIPPED_SIG, BODY_SIG]);
     const pre = snap(PRE_SIG);
     const post = await run(pre, t.io);
-    expect(t.settles()).toBeLessThan(4);
-    expect(post.visibleTextSignature).toBe(FLIPPED_SIG);
-    expect(post.settled).toBe(true);
+    expect(post.visibleTextSignature).toBe(BODY_SIG);
+    expect(hasPageBodySwapped(pre, post)).toBe(true);
   });
 
   it("spends the whole re-settle budget before reading a header-only flip as settled", async () => {
     const t = makeIo([FLIPPED_SIG]);
     const post = await run(snap(PRE_SIG), t.io);
-    expect(t.settles()).toBeGreaterThan(1);
+    expect(t.settles()).toBe(1 + Math.floor(MAX_MS / IDLE_GIVE_UP_MS));
     expect(post.settled).toBe(true);
   });
 

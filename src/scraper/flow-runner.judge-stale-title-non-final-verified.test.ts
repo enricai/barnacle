@@ -146,7 +146,14 @@ describe("judgeStepOutcome stale title", () => {
       evaluate: async (expr: string) => {
         if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
         if (expr.includes("outerHTML"))
-          return { html: FULL.length, text: `${FULL.length}:${FULL}`, values: "", state: "", full: FULL, digest: "d:1" };
+          return {
+            html: FULL.length,
+            text: `${FULL.length}:${FULL}`,
+            values: "",
+            state: "",
+            full: FULL,
+            digest: "d:1",
+          };
         probeReads++;
         return "PROBE";
       },
