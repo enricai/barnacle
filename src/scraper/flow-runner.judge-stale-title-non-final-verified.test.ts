@@ -15,7 +15,8 @@ vi.mock("@/lib/llm/judges/verify-submit", async (orig) => ({
 
 import { judgeStepOutcome } from "@/scraper/flow-runner";
 
-const STEP = "click the Continue button to submit this step";
+const STEP =
+  "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
 const BEFORE_TEXT = "Sign In My Information";
 const AFTER_TEXT = "My Experience Add your previous employers";
 
@@ -90,18 +91,14 @@ describe("judgeStepOutcome stale title", () => {
     expect(v).toMatchObject({ verified: true });
   });
 
-  it("judges a late re-render after STEP_REJUDGE_DELAY_MS on the settled read", async () => {
-    stepJudge
-      .mockResolvedValueOnce({ advanced: false, reason: "no change yet" })
-      .mockResolvedValueOnce({ advanced: true, reason: "late render" });
+  it("judges the body re-rendered after a header-only flip, with no fixed rejudge delay", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "late render" });
     const waits: number[] = [];
-    const v = await run(
-      false,
-      () => (stepJudge.mock.calls.length === 0 ? BEFORE_TEXT : AFTER_TEXT),
-      waits
-    );
-    expect(waits).toContain(5000);
-    expect(stepJudge.mock.calls[1]?.[0].input.afterText).toBe(AFTER_TEXT);
+    let reads = 0;
+    const v = await run(false, () => (reads++ < 1 ? "Sign In" : AFTER_TEXT), waits);
+    expect(waits).not.toContain(5000);
+    expect(stepJudge).toHaveBeenCalledTimes(1);
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(AFTER_TEXT);
     expect(v).toMatchObject({ verified: true });
   });
 
@@ -137,6 +134,46 @@ describe("judgeStepOutcome stale title", () => {
       submitInput: SUBMIT_INPUT,
     });
     expect(submitJudge).not.toHaveBeenCalled();
+    expect(v).toMatchObject({ verified: true });
+  });
+
+  it("judges the snapshot's full text when the DOM read supplies it, without the probe fallback", async () => {
+    stepJudge.mockResolvedValue({ advanced: true, reason: "full text" });
+    const FULL = "My Experience Add your previous employers FULL";
+    let probeReads = 0;
+    const target = {
+      url: async () => "https://example.org/apply",
+      evaluate: async (expr: string) => {
+        if (expr.includes("__settleQ")) return { pending: 0, mutations: 0 };
+        if (expr.includes("outerHTML"))
+          return {
+            html: FULL.length,
+            text: `${FULL.length}:${FULL}`,
+            values: "",
+            state: "",
+            full: FULL,
+            digest: "d:1",
+          };
+        probeReads++;
+        return "PROBE";
+      },
+    };
+    const v = await judgeStepOutcome({
+      client: {} as never,
+      step: STEP,
+      isFinalStep: false,
+      submitStep: true,
+      flowHasSubmitSemantics: true,
+      page: { waitForTimeout: async () => {} },
+      target: target as never,
+      signalCounter: { n: 0 },
+      preNetworkCount: 0,
+      preVisibleTextSignature: `${BEFORE_TEXT.length}:${BEFORE_TEXT}`,
+      preVisibleText: BEFORE_TEXT,
+      submitInput: SUBMIT_INPUT,
+    });
+    expect(stepJudge.mock.calls[0]?.[0].input.afterText).toBe(FULL);
+    expect(probeReads).toBe(0);
     expect(v).toMatchObject({ verified: true });
   });
 });

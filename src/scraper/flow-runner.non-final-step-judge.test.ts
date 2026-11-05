@@ -124,16 +124,6 @@ describe("judgeStepOutcome", () => {
       };
     }
 
-    it("waits 5s and returns the second verdict when the text changed", async () => {
-      stepJudge.mockReset();
-      stepJudge.mockResolvedValueOnce(NO).mockResolvedValueOnce({ advanced: true, reason: "yes" });
-      const waits: number[] = [];
-      const verdict = await judgeStepOutcome(rejudgeParams(["a", "b"], waits));
-      expect(waits).toContain(5000);
-      expect(stepJudge).toHaveBeenCalledTimes(2);
-      expect(verdict).toMatchObject({ verified: true });
-    });
-
     it("judges once when the later read is identical", async () => {
       stepJudge.mockReset();
       stepJudge.mockResolvedValue(NO);

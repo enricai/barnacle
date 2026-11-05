@@ -19,8 +19,8 @@ export interface PhantomClickSnapshot {
   /** Digest of the whole normalised visible text, so a change beyond the head or excerpt is still seen. */
   visibleTextDigest?: string;
   /**
-   * True when this snapshot was re-read after a settle round and the visible
-   * text held still across it, so a header flip that has not been followed by
+   * True when this snapshot was re-read after the re-settle rounds and the visible
+   * text held still across the last of them, so a header flip that has not been followed by
    * a body swap is the page's final state rather than a transition in flight.
    */
   settled?: boolean;
@@ -454,7 +454,7 @@ export function hasPageBodySwapped(pre: PhantomClickSnapshot, post: PhantomClick
 /**
  * Decides whether a mid-flow submit's page advanced, judged on the settled
  * page: a replaced body always counts, and a replaced header counts once the
- * text has held still across a settle round, because by then nothing is left
+ * text has held still across the whole re-settle budget, because by then nothing is left
  * to re-render. Before that point a header-only flip stays unfinished, since
  * the body usually re-renders after it. A page with no visible-text change
  * never counts, so a no-op click keeps its give-up.

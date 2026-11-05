@@ -12,6 +12,8 @@ const REPO_ROOT = join(__dirname, "..", "..");
 const GENERATE_SCRIPT = join(REPO_ROOT, "src", "scripts", "recon-generate.ts");
 
 const ORDER_ID = "ord_8f3a91c2b7d4";
+/** Concatenated so Biome does not read the emitted placeholder as a stray template interpolation. */
+const BASE_URL_PLACEHOLDER = "$" + "{context.baseUrl}";
 
 const create: Capture = {
   timestamp: "2024-01-01T00:00:00Z",
@@ -96,7 +98,7 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).toContain('method: "PUT"');
     expect(contract).not.toContain(REQUEST_BODY_UNAVAILABLE);
     expect(contract).not.toMatch(/\bBaseUrl\s*:\s*z\./);
-    expect(contract).toContain("${context.baseUrl}/order.json");
+    expect(contract).toContain(`${BASE_URL_PLACEHOLDER}/order.json`);
     expect(contract.match(/items: multipartJsonObject/g)?.length).toBe(1);
     expect(contract).not.toContain(ORDER_ID);
   }, 60_000);

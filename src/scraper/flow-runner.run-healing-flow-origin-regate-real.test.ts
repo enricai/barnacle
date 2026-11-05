@@ -1,5 +1,5 @@
 import type { Page, Stagehand } from "@browserbasehq/stagehand";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type HealingFlowStep, runHealingFlow } from "@/scraper/flow-runner";
 import type { Logger } from "@/types/logging";
@@ -45,9 +45,15 @@ describe("flow-runner/runHealingFlow — origin re-gate with the real helper", (
     guardedObserve.mockResolvedValue([ACTION]);
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("reloads once after a cross-origin hop so the next step sees the rendered body", async () => {
     const urls = { current: "https://app.example.com/a" };
     const state = { rendered: true };
+    const clock = { now: Date.now() };
+    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
     const bodyAtStep: boolean[] = [];
     const reload = vi.fn().mockImplementation(async () => {
       state.rendered = true;
@@ -65,7 +71,9 @@ describe("flow-runner/runHealingFlow — origin re-gate with the real helper", (
           inputValue: vi.fn().mockResolvedValue(""),
         }),
       }),
-      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      waitForTimeout: vi.fn().mockImplementation(async (ms: number) => {
+        clock.now += ms;
+      }),
       waitForLoadState: vi.fn().mockResolvedValue(undefined),
       frames: () => [],
       getSessionForFrame: () => ({ on: vi.fn(), off: vi.fn() }),
