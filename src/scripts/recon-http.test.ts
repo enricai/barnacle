@@ -44,6 +44,7 @@ import {
   replayCapture,
   selectAuxFixtureCandidates,
   selectRateLimitTargets,
+  selectReplayCaptures,
 } from "@/scripts/recon-http";
 import type { ReplayResult } from "@/scripts/recon-shared";
 
@@ -603,5 +604,91 @@ describe("recon-http main() --methods and unavailable-body skipping", () => {
       vi.unstubAllGlobals();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("recon-http main() --methods opt-in wiring", () => {
+  it("replays PUT (opted in) but not POST (not opted in) through main()", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    vi.resetModules();
+    const root = mkdtempSync(join(tmpdir(), "recon-http-optin-"));
+    const caps = join(root, "caps");
+    mkdirSync(caps);
+    const base = {
+      query: null,
+      operationName: null,
+      variables: null,
+      decodedParams: null,
+    };
+    writeFileSync(
+      join(caps, "001.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/put",
+        method: "PUT",
+        requestPostData: "{}",
+      })
+    );
+    writeFileSync(
+      join(caps, "002.json"),
+      JSON.stringify({
+        ...base,
+        url: "https://api.example.com/post",
+        method: "POST",
+        requestPostData: "{}",
+      })
+    );
+    const fetchSpy = vi.fn(
+      async (_url: string | URL, _init?: RequestInit) => new Response("{}", { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const savedArgv = process.argv;
+    const savedOut = process.env.RECON_OUT_DIR;
+    process.env.RECON_OUT_DIR = root;
+    process.argv = ["node", "recon-http.ts", "--captures-dir", caps, "--methods", "PUT"];
+    try {
+      await import("@/scripts/recon-http.js");
+      await vi.waitFor(() =>
+        expect(loggerStub.info).toHaveBeenCalledWith(expect.stringContaining("recon-http complete"))
+      );
+      const urls = fetchSpy.mock.calls.map(([u]) => String(u));
+      expect(urls).toContain("https://api.example.com/put");
+      expect(urls).not.toContain("https://api.example.com/post");
+    } finally {
+      process.argv = savedArgv;
+      if (savedOut === undefined) delete process.env.RECON_OUT_DIR;
+      else process.env.RECON_OUT_DIR = savedOut;
+      vi.unstubAllGlobals();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("selectReplayCaptures — safe-by-default with --methods opt-in", () => {
+  const mk = (method: string) => ({
+    filename: `${method}.json`,
+    capture: {
+      method,
+      url: "https://example.com/api",
+      query: null,
+      operationName: null,
+    } as never,
+  });
+  const items = [mk("GET"), mk("POST"), mk("PUT")];
+
+  it("skips and reports POST/PUT by default", () => {
+    const r = selectReplayCaptures(items, false);
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json"]);
+    expect(r.skipped.map((s) => s.filename)).toEqual(["POST.json", "PUT.json"]);
+  });
+
+  it("--methods PUT,POST opts those methods in", () => {
+    const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT,POST"));
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "POST.json", "PUT.json"]);
+  });
+
+  it("--methods PUT opts in only PUT", () => {
+    const r = selectReplayCaptures(items, false, parseMethodsFilter("PUT"));
+    expect(r.selected.map((i) => i.filename)).toEqual(["GET.json", "PUT.json"]);
   });
 });
