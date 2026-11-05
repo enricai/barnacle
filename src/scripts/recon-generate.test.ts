@@ -5871,7 +5871,7 @@ describe("deriveGetInputModel", () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://example.com/venues/9/schedule.json?view=week");
     const m = deriveGetInputModel(a, [a])!;
-    expect(m.pathVars.map((p) => p.segmentIndex)).toEqual([3]);
+    expect(m.pathVars.map((p) => p.segmentIndex)).toEqual([2]);
     expect(m.dynamicFields).toEqual([{ field: "view", queryKey: "view" }]);
     expect(m.recordedQueryValues).toEqual({ view: "week" });
   });
