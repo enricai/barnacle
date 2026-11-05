@@ -16195,9 +16195,8 @@ function skipStringLiteral(code: string, open: number): number {
 /**
  * `*Url` leaves outside the payload schema that nothing reads and that the
  * single-entity verdict relaxed to `.nullable().optional()`. They are output,
- * never grounds to abort generation, but a response leaf like this on an
- * unrelated capture is how that capture's fields end up in the contract, so
- * {@link healUnreferencedUrlFieldsOnce} uses them to attribute and drop noise.
+ * never grounds to abort generation or to drop captures; the heal path does not
+ * consult them.
  */
 export function unreadRelaxedResponseUrlFields(
   contractCode: string,
@@ -17377,16 +17376,10 @@ function healUnreferencedUrlFieldsOnce(
     firstAttempt.browserFlow.code,
     firstAttempt.payloadSchemaExpr
   );
-  // Submission flows also drop unrelated captures whose unread response `*Url`
-  // leaves leaked into the contract; that attribution never aborts generation.
-  const unreadLeaves = firstAttempt.contractOpts.getInputModel
-    ? []
-    : unreadRelaxedResponseUrlFields(
-        firstAttempt.contractCode,
-        firstAttempt.browserFlow.code,
-        firstAttempt.payloadSchemaExpr
-      );
-  const attributedFields = [...new Set([...offending, ...unreadLeaves])];
+  // Only unread PAYLOAD `*Url` fields attribute noise captures. Response-schema
+  // `*Url` leaves are output, never an input the caller must supply, so they
+  // neither abort generation nor drive capture exclusion.
+  const attributedFields = offending;
   if (attributedFields.length === 0) return firstAttempt;
 
   const primaryCapture = resolvedPrimaryResponseCapture(firstAttempt);
@@ -17397,7 +17390,6 @@ function healUnreferencedUrlFieldsOnce(
   );
 
   if (noiseCaptures.size === 0) {
-    if (offending.length === 0) return firstAttempt;
     throw new Error(
       `recon-generate: required URL field(s) ${describeOffendingFieldSources(offending, firstAttempt.resolvedPool)} ` +
         `declared on the payload schema but never referenced by the emitted contract or browser flow, and no ` +
