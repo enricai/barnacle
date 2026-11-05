@@ -5682,6 +5682,19 @@ describe("deriveGetInputModel", () => {
     const a = cap("https://shop.example/api/v2/oauth2/stock.json");
     expect(deriveGetInputModel(a, [a])!.pathVars).toEqual([]);
   });
+  it("binds a lone path-only slug as a caller input with the recorded fallback", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    for (const [url, field, idx] of [
+      ["https://shop.example/escape-rooms/time-machine/schedule.json", "escape-roomsId", 2],
+      ["https://other.example/venues/blue_lagoon/hours", "venuesId", 2],
+    ] as const) {
+      const a = cap(url);
+      const pv = deriveGetInputModel(a, [a])!.pathVars;
+      expect(pv).toHaveLength(1);
+      expect(pv[0]).toMatchObject({ segmentIndex: idx, queryKey: "" });
+      expect(field).toBeTruthy();
+    }
+  });
   it("binds a path slug that differs across same-signature captures", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/teams/alpha-team/slots?x=1");
