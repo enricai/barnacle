@@ -14,6 +14,11 @@ import {
 import { hasPageBodySwapped, hasSettledPageAdvanced } from "@/scraper/phantom-click";
 import type { Logger } from "@/types/logging";
 
+const idleQuiescence = async (): Promise<{ pending: number; mutations: number }> => ({
+  pending: 0,
+  mutations: 0,
+});
+
 vi.mock("@/lib/llm/judges/verify-submit", () => ({
   verifySubmitWithLLM: vi.fn(async () => ({ verified: true, reason: "confirmation visible" })),
 }));
@@ -48,7 +53,7 @@ function makeClock(onTick: (nowMs: number, counter: { n: number }) => void): {
 describe("settleAfterClick virtual clock", () => {
   it("returns well before the max when no activity is ever observed", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBeGreaterThan(0);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -57,7 +62,7 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((_, counter) => {
       counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBe(MAX_MS);
   });
 
@@ -65,7 +70,7 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((now, counter) => {
       if (now === 6000) counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBeGreaterThan(6000);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -74,13 +79,13 @@ describe("settleAfterClick virtual clock", () => {
 describe("settleAfterClick no-op click give-up bound", () => {
   it("gives up after one quiet poll for a silent non-submit click", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, false);
+    await settleAfterClick(c.page, c.counter, 0, false, undefined, undefined, idleQuiescence);
     expect(c.now()).toBe(1000);
   });
 
   it("gives up a silent submit-shaped click at the idle allowance, far below the max", async () => {
     const c = makeClock(() => {});
-    await settleAfterClick(c.page, c.counter, 0, true);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
     expect(c.now()).toBe(14000);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
