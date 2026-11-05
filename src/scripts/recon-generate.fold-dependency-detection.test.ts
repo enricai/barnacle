@@ -4,7 +4,7 @@ import {
   computeFoldChain,
   collectResponseLeafValues,
 } from "@/scripts/recon-generate";
-import type { Capture } from "@/scripts/recon-generate";
+import type { Capture } from "@/scripts/recon-shared";
 
 function cap(over: Record<string, unknown>): Capture {
   return {
