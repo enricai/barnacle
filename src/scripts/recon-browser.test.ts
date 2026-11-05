@@ -671,6 +671,8 @@ describe("recon-browser/denormalizeStep + normalizeFlow — targetId/origin roun
 describe("recon-browser/persistReplannedFlow", () => {
   let tmpDir: string;
   let flowPath: string;
+  let runDir: string;
+  let outPath: string;
 
   // Build a per-test tmp dir + clear the hoisted loggerStub. afterEach removes
   // the dir even when an assertion throws, so a failing test can't leak files
@@ -678,6 +680,8 @@ describe("recon-browser/persistReplannedFlow", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-persist-"));
     flowPath = join(tmpDir, "recon-flow.json");
+    runDir = join(tmpDir, "run");
+    outPath = join(runDir, "recon-flow.json");
     loggerStub.info.mockClear();
     loggerStub.warn.mockClear();
     loggerStub.error.mockClear();
@@ -687,7 +691,7 @@ describe("recon-browser/persistReplannedFlow", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("backs up the ORIGINAL bytes verbatim (not re-serialized), then writes the new plan", () => {
+  it("leaves the ORIGINAL input bytes untouched (no backup) and writes the new plan to the run dir", () => {
     // Original file has idiosyncratic formatting: 4-space indent, trailing
     // whitespace, etc. Backup must preserve those bytes exactly.
     const originalBytes = '[\n    "Step A",\n    "Step B"\n]\n';
@@ -712,16 +716,19 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
-    // The backup sidecar should exist with the EXACT original bytes.
-    const backupFiles = readdirSync(tmpDir).filter((f) => f.includes(".bak.json"));
-    expect(backupFiles).toHaveLength(1);
-    const backupContents = readFileSync(join(tmpDir, backupFiles[0]!), "utf8");
-    expect(backupContents).toBe(originalBytes);
+    expect(readFileSync(flowPath, "utf8")).toBe(originalBytes);
+    expect(readdirSync(tmpDir).filter((f) => f.includes(".bak"))).toHaveLength(0);
 
     // The flow.json now reflects the in-memory plan, 2-space indent + trailing newline.
-    const newContents = readFileSync(flowPath, "utf8");
+    const newContents = readFileSync(outPath, "utf8");
     expect(newContents).toBe(`[\n  "Step A",\n  "Bridge X",\n  "Step B"\n]\n`);
   });
 
@@ -745,9 +752,15 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
-    const newContents = readFileSync(flowPath, "utf8");
+    const newContents = readFileSync(outPath, "utf8");
     const parsed = JSON.parse(newContents) as unknown[];
     expect(parsed).toEqual([
       "Required",
@@ -776,13 +789,19 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
     const allOutput = loggerStub.info.mock.calls
       .map((args: unknown[]) => args.map(String).join(" "))
       .join("\n");
-    expect(allOutput).toContain("flow.json updated");
-    expect(allOutput).toContain("original backed up:");
+    expect(allOutput).toContain("replanned flow written");
+    expect(allOutput).toContain("replanned flow written to run dir:");
     expect(allOutput).toContain("replan #1 (probe-absent)");
     expect(allOutput).toContain("failed: Step A");
     expect(allOutput).toContain("• Bridge");
@@ -810,6 +829,7 @@ describe("recon-browser/persistReplannedFlow", () => {
 
     persistReplannedFlow({
       flowFile: flowPath,
+      runDir,
       finalPlan,
       replanEvents,
       logger: testLogger,
@@ -817,7 +837,7 @@ describe("recon-browser/persistReplannedFlow", () => {
       submitEndpointPattern: "^https://example\\.com/api/submit$",
     });
 
-    const newContents = readFileSync(flowPath, "utf8");
+    const newContents = readFileSync(outPath, "utf8");
     const parsed = JSON.parse(newContents) as { steps: unknown[]; submitEndpointPattern: string };
     expect(parsed).toEqual({
       steps: ["Step A"],
@@ -857,13 +877,14 @@ describe("recon-browser/persistReplannedFlow", () => {
 
     persistReplannedFlow({
       flowFile: flowPath,
+      runDir,
       finalPlan,
       replanEvents,
       logger: testLogger,
       originalShape: "object",
     });
 
-    const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
+    const parsed = JSON.parse(readFileSync(outPath, "utf8"));
     expect(parsed).toEqual({
       frameSelector: "#apply_frame",
       wizardExitButtonLabels: ["Save & Exit"],
@@ -893,6 +914,7 @@ describe("recon-browser/persistReplannedFlow", () => {
     expect(() =>
       persistReplannedFlow({
         flowFile: flowPath,
+        runDir,
         finalPlan,
         replanEvents,
         logger: testLogger,
@@ -900,7 +922,7 @@ describe("recon-browser/persistReplannedFlow", () => {
       })
     ).not.toThrow();
 
-    const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
+    const parsed = JSON.parse(readFileSync(outPath, "utf8"));
     expect(parsed).toEqual({ steps: ["Step A"] });
   });
 
@@ -921,9 +943,15 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
-    const newContents = readFileSync(flowPath, "utf8");
+    const newContents = readFileSync(outPath, "utf8");
     expect(JSON.parse(newContents)).toEqual(["X"]);
   });
 
@@ -946,6 +974,7 @@ describe("recon-browser/persistReplannedFlow", () => {
 
     persistReplannedFlow({
       flowFile: flowPath,
+      runDir,
       finalPlan,
       replanEvents,
       logger: testLogger,
@@ -953,7 +982,7 @@ describe("recon-browser/persistReplannedFlow", () => {
       submitEndpointPattern: null,
     });
 
-    const parsed = JSON.parse(readFileSync(flowPath, "utf8"));
+    const parsed = JSON.parse(readFileSync(outPath, "utf8"));
     expect(parsed).toEqual({ steps: ["X"] });
     expect(parsed.submitEndpointPattern).toBeUndefined();
   });
@@ -978,9 +1007,16 @@ describe("recon-browser/persistReplannedFlow", () => {
     ];
 
     expect(() =>
-      persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger })
+      persistReplannedFlow({
+        flowFile: flowPath,
+        runDir,
+        finalPlan,
+        replanEvents,
+        logger: testLogger,
+      })
     ).not.toThrow();
     expect(existsSync(flowPath)).toBe(false);
+    expect(existsSync(outPath)).toBe(false);
     expect(loggerStub.error).toHaveBeenCalled();
   });
 
@@ -1007,9 +1043,15 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
-    const parsed = JSON.parse(readFileSync(flowPath, "utf8")) as unknown[];
+    const parsed = JSON.parse(readFileSync(outPath, "utf8")) as unknown[];
     expect(parsed).toEqual([
       "Hand-authored required",
       { step: "LLM-discovered required", optional: true, origin: "replan" },
@@ -1033,9 +1075,15 @@ describe("recon-browser/persistReplannedFlow", () => {
       },
     ];
 
-    persistReplannedFlow({ flowFile: flowPath, finalPlan, replanEvents, logger: testLogger });
+    persistReplannedFlow({
+      flowFile: flowPath,
+      runDir,
+      finalPlan,
+      replanEvents,
+      logger: testLogger,
+    });
 
-    expect(JSON.parse(readFileSync(flowPath, "utf8"))).toEqual([
+    expect(JSON.parse(readFileSync(outPath, "utf8"))).toEqual([
       { step: "Replan-optional", optional: true, origin: "replan" },
     ]);
   });
@@ -1083,13 +1131,14 @@ describe("recon-browser/persistReplannedFlow", () => {
 
     persistReplannedFlow({
       flowFile: flowPath,
+      runDir,
       finalPlan,
       replanEvents,
       logger: testLogger,
       originalShape: "object",
     });
 
-    const written = JSON.parse(readFileSync(flowPath, "utf8")) as { steps: unknown[] };
+    const written = JSON.parse(readFileSync(outPath, "utf8")) as { steps: unknown[] };
     // The second q_prev_employer step is dropped; School survives.
     expect(written.steps).toEqual([
       {

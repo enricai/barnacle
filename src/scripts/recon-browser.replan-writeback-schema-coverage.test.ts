@@ -126,10 +126,14 @@ function representativeValueFor(
 describe("recon-browser/persistReplannedFlow — schema-coverage drift guard", () => {
   let tmpDir: string;
   let flowPath: string;
+  let runDir: string;
+  let outPath: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "recon-persist-schema-coverage-"));
     flowPath = join(tmpDir, "recon-flow.json");
+    runDir = join(tmpDir, "run");
+    outPath = join(runDir, "recon-flow.json");
     loggerStub.info.mockClear();
     loggerStub.warn.mockClear();
     loggerStub.error.mockClear();
@@ -176,6 +180,7 @@ describe("recon-browser/persistReplannedFlow — schema-coverage drift guard", (
       // dropped by BOTH paths is exactly the regression this guards.
       persistReplannedFlow({
         flowFile: flowPath,
+        runDir,
         finalPlan,
         replanEvents,
         logger: testLogger,
@@ -183,7 +188,7 @@ describe("recon-browser/persistReplannedFlow — schema-coverage drift guard", (
         [key]: value,
       } as Parameters<typeof persistReplannedFlow>[0]);
 
-      const parsed = JSON.parse(readFileSync(flowPath, "utf8")) as Record<string, unknown>;
+      const parsed = JSON.parse(readFileSync(outPath, "utf8")) as Record<string, unknown>;
       expect(parsed[key]).toEqual(value);
     }
   );

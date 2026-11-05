@@ -53,7 +53,7 @@ import { dirname, join, resolve } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Action, LoadState, Page, Stagehand } from "@browserbasehq/stagehand";
-import { format, formatISO } from "date-fns";
+import { formatISO } from "date-fns";
 import { type Element, type HTMLInputElement, type HTMLTextAreaElement, Window } from "happy-dom";
 import { z } from "zod/v4";
 import { config } from "@/config";
@@ -1698,19 +1698,19 @@ function extractUnmanagedFlowFileKeys(originalBytes: Buffer): Record<string, unk
 }
 
 /**
- * Write-back at the end of a successful recon: back up the original file
- * bytes verbatim (so a subtle denormalization bug can never lose the user's
- * hand-authored flow), then write the in-memory plan back out and log a
+ * Write-back at the end of a recon: write the in-memory plan to the run
+ * directory (the input flow file is never modified, no backup is made) and log a
  * summary of each replan event. No-op when `--no-save-replan` was passed or
  * when no replans fired.
  *
- * Backup path encodes the timestamp + .bak so accumulated backups are easy
- * to sort and prune. Uses synchronous writes — the recon is single-purpose
+ * Uses synchronous writes — the recon is single-purpose
  * and we want the failure mode "write the bytes, then exit" rather than
  * "exit with the write half-flushed."
  */
 function persistReplannedFlow(params: {
   flowFile: string;
+  /** Run directory the replanned flow is written to; the input flowFile is never modified. */
+  runDir: string;
   finalPlan: NormalizedStep[];
   replanEvents: ReplanEvent[];
   logger: Logger;
@@ -1738,6 +1738,7 @@ function persistReplannedFlow(params: {
 }): void {
   const {
     flowFile,
+    runDir,
     finalPlan,
     replanEvents,
     logger,
@@ -1750,13 +1751,10 @@ function persistReplannedFlow(params: {
     ownBackendHostnames = [],
     knownErrorClassPrefixes = [],
   } = params;
-  // Timestamp format chosen to be filesystem-safe (no colons or dots that
-  // break common tooling on macOS/Windows).
-  const timestamp = format(new Date(), "yyyy-MM-dd'T'HH-mm-ss");
-  const backupPath = flowFile.replace(/\.json$/, `.${timestamp}.bak.json`);
+  const outPath = join(runDir, "recon-flow.json");
 
   // Read ORIGINAL bytes from disk (not a re-serialization of the parsed
-  // structure) so the backup is byte-identical to whatever the user had.
+  // structure) only to carry unmanaged keys; the input file is never written.
   let originalBytes: Buffer;
   try {
     originalBytes = readFileSync(flowFile);
@@ -1766,7 +1764,6 @@ function persistReplannedFlow(params: {
     );
     return;
   }
-  writeFileSync(backupPath, originalBytes);
 
   // Coerce replan-origin steps to optional before persistence: when a job
   // cascade-exhausts on an employer-specific field, the replan emits a
@@ -1808,7 +1805,8 @@ function persistReplannedFlow(params: {
           ...(knownErrorClassPrefixes.length > 0 ? { knownErrorClassPrefixes } : {}),
         }
       : dedupedSteps;
-  writeFileSync(flowFile, `${JSON.stringify(payload, null, 2)}\n`);
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`);
   if (dedupedSteps.length !== denormalizedSteps.length) {
     logger.info(
       `dedupe collapsed ${denormalizedSteps.length - dedupedSteps.length} consecutive identical step(s) before write-back`
@@ -1819,8 +1817,8 @@ function persistReplannedFlow(params: {
   // transport renders it nicely and the prod JSON output stays structured.
   // Lines call out the failed instruction string verbatim + the bridge that
   // took its place so a reviewer can diff intent without opening both files.
-  logger.info("── flow.json updated ──────────────────────────────────────");
-  logger.info(`original backed up: ${backupPath}`);
+  logger.info("── replanned flow written ─────────────────────────────────");
+  logger.info(`replanned flow written to run dir: ${outPath} (input ${flowFile} untouched)`);
   logger.info(`replacements (${replanEvents.length}):`);
   for (const ev of replanEvents) {
     logger.info(
@@ -1834,7 +1832,7 @@ function persistReplannedFlow(params: {
       );
     }
   }
-  logger.info(`run \`diff ${backupPath} ${flowFile}\` to inspect.`);
+  logger.info(`run \`diff ${flowFile} ${outPath}\` to inspect.`);
   logger.info("───────────────────────────────────────────────────────────");
 }
 
@@ -3904,6 +3902,7 @@ async function main(): Promise<void> {
           try {
             persistReplannedFlow({
               flowFile,
+              runDir: runDir.root,
               finalPlan: plan,
               replanEvents,
               logger,
