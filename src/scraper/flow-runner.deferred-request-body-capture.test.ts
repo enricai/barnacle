@@ -110,3 +110,68 @@ describe("flow-runner/wireSignalCapture — request-time body capture", () => {
     expect(cap.requestPostData).toBe("BODY");
   });
 });
+
+describe("flow-runner/wireSignalCapture — ordering", () => {
+  async function run(
+    events: Array<{ method: string; hasPostData?: boolean }>,
+    getPostData: (n: number) => Promise<unknown>
+  ): Promise<Capture> {
+    const handlers = new Map<string, (p: unknown) => void | Promise<void>>();
+    const session = {
+      on: (e: string, h: (p: unknown) => void | Promise<void>) => void handlers.set(e, h),
+      off: () => {},
+    };
+    let n = 0;
+    const sendCDP = vi.fn(async (method: string) =>
+      method === "Network.getRequestPostData"
+        ? getPostData(n++)
+        : { body: "{}", base64Encoded: false }
+    );
+    const page = {
+      getSessionForFrame: () => session,
+      mainFrameId: () => "main",
+      sendCDP,
+    } as unknown as Page;
+    const captured: Capture[] = [];
+    const teardown = wireSignalCapture(page, {
+      counter: { n: 0 },
+      signalCounter: { n: 0 },
+      recentCaptures: [],
+      recentCaptureMeta: [],
+      getCurrentPhase: () => "action",
+      getCurrentPageOrigin: () => "https://api.example.com",
+      onCapture: (c) => captured.push(c),
+    });
+    for (const e of events) {
+      handlers.get("Network.requestWillBeSent")?.({
+        requestId: "r1",
+        request: { url: "https://api.example.com/items/1", headers: {}, ...e },
+      });
+    }
+    await handlers.get("Network.loadingFinished")?.({ requestId: "r1" });
+    teardown();
+    const cap = captured[0];
+    if (!cap) throw new Error("no capture emitted");
+    return cap;
+  }
+
+  it("writes the resolved body when finished arrives before the lazy fetch settles", async () => {
+    const cap = await run([{ method: "PUT", hasPostData: true }], async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { postData: '{"slow":1}' };
+    });
+    expect(cap.requestPostData).toBe('{"slow":1}');
+    expect(cap.decodedParams).toEqual({ slow: 1 });
+  });
+
+  it("keeps the body across a redirect that repeats the requestId", async () => {
+    const cap = await run(
+      [
+        { method: "POST", hasPostData: true },
+        { method: "POST", hasPostData: true },
+      ],
+      async (n) => (n === 0 ? { postData: '{"a":1}' } : { postData: "" })
+    );
+    expect(cap.requestPostData).not.toBeNull();
+  });
+});
