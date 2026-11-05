@@ -5702,7 +5702,8 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.pathVars).toEqual([{ field: "teamsId", segmentIndex: 2, queryKey: "" }]);
     const other = cap("https://shop.example/users/beta-team/slots?y=1");
-    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual([]);
+    // A different route is not a sibling; the winner's own slug is still bound on its own.
+    expect(deriveGetInputModel(a, [a, other])!.pathVars).toEqual(m.pathVars);
   });
   it("keeps a declared query key payload-driven when it never varies", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
