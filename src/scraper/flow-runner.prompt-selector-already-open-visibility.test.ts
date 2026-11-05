@@ -5,14 +5,19 @@ import { executeStepWithHealing } from "@/scraper/flow-runner";
 import { buildPromptWidgetHarness } from "@/scraper/prompt-widget-dom-harness.test-helper";
 import type { Logger } from "@/types/logging";
 
-const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+const logger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+} as unknown as Logger;
 
 const WIDGET = (popup: string): string => `
 <div>
   <div role="group" aria-labelledby="phone-section">
     <span id="phone-section">Phone</span>
     <label for="phoneType"><span>Phone Device Type</span></label>
-    <button id="phoneType" aria-haspopup="listbox" type="button"
+    <button id="phoneType" aria-controls="pop" aria-haspopup="listbox" type="button"
             aria-invalid="true" aria-label="Phone Device Type Required"></button>
     ${popup}
   </div>
@@ -58,13 +63,15 @@ async function run(popup: string): Promise<string[]> {
 describe("prompt-selector alreadyOpen requires a visible option", () => {
   it("clicks the trigger when options sit in a display:none container", async () => {
     const clicks = await run(
-      `<div style="display:none"><ul role="listbox"><li role="option">Mobile</li></ul></div>`
+      `<div id="pop" style="display:none"><ul role="listbox"><li role="option">Mobile</li></ul></div>`
     );
-    expect(clicks.length).toBeGreaterThan(0);
+    expect(clicks.some((c) => c.includes("bcl-prompt-idx"))).toBe(true);
   });
 
   it("does not click the trigger when a visible option is rendered", async () => {
-    const clicks = await run(`<ul role="listbox"><li role="option">Mobile</li></ul>`);
-    expect(clicks.some((c) => c.includes("#t") || c.includes("button"))).toBe(false);
+    const clicks = await run(
+      `<div id="pop"><ul role="listbox"><li role="option">Mobile</li></ul></div>`
+    );
+    expect(clicks.some((c) => c.includes("bcl-prompt-idx"))).toBe(false);
   });
 });
