@@ -151,6 +151,72 @@ describe("recon-generate cart-then-update flow", () => {
     expect(contract).not.toContain("Jane Roe");
   }, 60_000);
 
+  it("takes the origin only from context.baseUrl across URL, Origin/Referer headers and body values", () => {
+    workDir = mkdtempSync(join(tmpdir(), "recon-cart-update-origin-"));
+    const runRoot = join(workDir, "run");
+    const capturesDir = join(runRoot, "graphql");
+    mkdirSync(capturesDir, { recursive: true });
+    mkdirSync(join(runRoot, "replays"), { recursive: true });
+    mkdirSync(join(runRoot, "aux"), { recursive: true });
+    writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
+    const ORIGIN = "https://shop.example.com";
+    const headers = {
+      "content-type": "application/json",
+      origin: ORIGIN,
+      referer: `${ORIGIN}/cart`,
+    };
+    const post: Capture = { ...create, requestHeaders: headers };
+    const put: Capture = {
+      ...update,
+      requestHeaders: headers,
+      requestPostData: JSON.stringify({
+        data: {
+          id: ORDER_ID,
+          returnUrl: `${ORIGIN}/thanks`,
+          contact: { name: "Jane Roe", email: "jane.roe@mail.example.org" },
+        },
+      }),
+    };
+    [post, put].forEach((c, i) => {
+      writeFileSync(join(capturesDir, `00${i}-action.json`), JSON.stringify(c));
+    });
+    const siteId = `recon-cart-update-origin-${process.pid}`;
+    siteOutDir = join(RECON_GENERATE_CWD, "src", "sites", siteId);
+    mkdirSync(siteOutDir, { recursive: true });
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        GENERATE_SCRIPT,
+        "--site-id",
+        siteId,
+        "--run-dir",
+        runRoot,
+        "--emit",
+        "ts",
+        "--force",
+      ],
+      {
+        cwd: RECON_GENERATE_CWD,
+        encoding: "utf8",
+        env: { ...process.env, NODE_PATH: join(REPO_ROOT, "node_modules") },
+      }
+    );
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const contract = readFileSync(join(siteOutDir, "contract.ts"), "utf8");
+    expect(contract).not.toMatch(/\bBaseUrl\b/);
+    expect(contract).not.toMatch(/payload\.(baseUrl|origin|returnUrl)/i);
+    // The only literal origin is the plugin's defaultBaseUrl metadata; every
+    // URL, header and body occurrence goes through context.baseUrl.
+    expect(contract.split(ORIGIN).length - 1).toBe(1);
+    expect(contract).toContain(`defaultBaseUrl: "${ORIGIN}"`);
+    expect(contract).toContain('origin": `${context.baseUrl}`');
+    expect(contract).toContain('referer": `${context.baseUrl}/cart`');
+    expect(contract).toContain('"returnUrl":"${context.baseUrl}/thanks"');
+    expect(contract).toContain("${context.baseUrl}/order.json");
+  }, 60_000);
+
   it.each(["orderId", "order_id"])(
     "threads a bare response id into a PUT body keyed %s instead of freezing it",
     (bodyKey) => {
