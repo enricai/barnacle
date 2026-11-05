@@ -15,7 +15,8 @@ vi.mock("@/lib/llm/judges/verify-submit", async (orig) => ({
 
 import { judgeStepOutcome } from "@/scraper/flow-runner";
 
-const STEP = "click the Continue button to submit this step";
+const STEP =
+  "On the account registration form (Email Address, Password and Verify New Password already filled), click the 'Create Account' button to submit the account creation form";
 const BEFORE_TEXT = "Sign In My Information";
 const AFTER_TEXT = "My Experience Add your previous employers";
 
