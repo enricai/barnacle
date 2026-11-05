@@ -16806,6 +16806,8 @@ export function emitConfigManifest(opts: {
   hasMultipartStep?: boolean;
   /** Browser-flow-only emit (no executeHttp); feeds {@link contractUsesApplicantContactSchema}. */
   browserFlowOnly?: boolean;
+  /** Read-only GET flow: no submission, so the request schema omits TrackingUrl (mirrors the .ts contract). */
+  readOnlyGet?: boolean;
   /** Env supplying `${RECON_*}` token values for {@link buildKnownFieldValues};
    * defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -16822,6 +16824,7 @@ export function emitConfigManifest(opts: {
     isSubmissionFlow = false,
     hasMultipartStep = false,
     browserFlowOnly = false,
+    readOnlyGet = false,
     env = process.env,
   } = opts;
   // Raw (uncanonicalised) splice names are the evidence for a body-less flow;
@@ -16929,7 +16932,7 @@ export function emitConfigManifest(opts: {
   });
   // Mirrors the .ts contract's JobTrackingSchema composition: a request schema
   // without it would drop the TrackingUrl the engine reads after submission.
-  requestProperties.TrackingUrl ??= { type: "string" };
+  if (!readOnlyGet) requestProperties.TrackingUrl ??= { type: "string" };
   const sortedRequestProperties = Object.fromEntries(
     Object.keys(requestProperties)
       .sort()
@@ -18739,6 +18742,7 @@ async function main(): Promise<void> {
           isSubmissionFlow,
           hasMultipartStep,
           browserFlowOnly,
+          readOnlyGet: isReadOnlyGetFlow,
           // A submission flow is the case where the `.ts` emit carries an
           // executeHttp hot path; point the manifest at where the operator drops
           // the compiled module rather than silently dropping the direct path.
