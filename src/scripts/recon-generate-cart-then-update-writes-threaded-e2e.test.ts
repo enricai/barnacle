@@ -361,6 +361,6 @@ describe("recon-generate cart-then-update flow", () => {
       contract.indexOf(".merge(JobTrackingSchema)")
     );
     expect(schema.match(/items_attributes: z\.array/g)).toHaveLength(1);
-    expect(schema.match(/^ {2}\w+: /gm)).toHaveLength(1);
+    expect(schema.match(/^ {2}\w+: multipartJsonObject/gm)).toHaveLength(1);
   }, 60_000);
 });
