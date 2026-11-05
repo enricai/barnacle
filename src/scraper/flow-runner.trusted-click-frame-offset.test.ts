@@ -31,6 +31,15 @@ describe("dispatchTrustedClick frame offset", () => {
     await dispatchTrustedClick(page, target, 5, 6);
     expect([sent[0]?.args.x, sent[0]?.args.y]).toEqual([5, 6]);
   });
+  it("uses zero offset when evaluate rejects", async () => {
+    const { sent, target, page } = make(null, true);
+    target.evaluate = async () => {
+      throw new Error("detached");
+    };
+    await dispatchTrustedClick(page, target, 5, 6);
+    expect(sent).toHaveLength(3);
+    for (const s of sent) expect([s.args.x, s.args.y]).toEqual([5, 6]);
+  });
   it("main frame clicks via page.click unchanged", async () => {
     const calls: number[][] = [];
     const page: any = {
