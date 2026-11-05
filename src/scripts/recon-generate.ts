@@ -14172,8 +14172,21 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   foldReturnSpec: FoldReturnSpec | null = null,
   // See detectDrillDownFoldPlan's identical parameter — threaded through to
   // both the structural and spec-driven resolution paths below.
-  primaryIdentityAnchor: string | null = null
+  primaryIdentityAnchor: string | null = null,
+  // Further declared drill-downs (array-form foldReturn entries after the
+  // primary one). Each folds onto the same primary as its own target and is
+  // invisible to the primary spec's resolution — see
+  // {@link maskExtraDrillActions}.
+  extraDrillSpecs: readonly FoldReturnSpec[] = []
 ): FoldPlan[] {
+  if (extraDrillSpecs.length > 0) {
+    return resolveFoldPlanWithExtraDrills(
+      actions,
+      foldReturnSpec,
+      primaryIdentityAnchor,
+      extraDrillSpecs
+    );
+  }
   const structuralPlans = detectDrillDownFoldPlan(actions, primaryIdentityAnchor);
   const plans =
     structuralPlans.length > 0
@@ -14201,12 +14214,157 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
           );
           return specPlan === null ? [] : [specPlan];
         })();
-  return plans.flatMap((plan) => {
+  return collapseTargetsToDeclaredDrillPath(
+    actions,
+    plans,
+    foldReturnSpec === null ? [] : [foldReturnSpec]
+  ).flatMap((plan) => {
     const targets = plan.targets.filter(
       (target) => !target.chain.some((chainIndex) => actions[chainIndex]!.isMultipart)
     );
     return targets.length === 0 ? [] : [{ ...plan, targets }];
   });
+}
+
+/**
+ * For each declared spec carrying a `drillResultsPath`, keeps only the target
+ * on that spec's drill endpoint whose folded array IS the declared one,
+ * dropping structural targets on the same endpoint whose array is an
+ * ancestor (or descendant) of it. One drill endpoint yields one target.
+ */
+function collapseTargetsToDeclaredDrillPath<T extends { capture: Capture }>(
+  actions: readonly T[],
+  plans: readonly FoldPlan[],
+  specs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  return plans.map((plan) => {
+    let targets = plan.targets;
+    for (const spec of specs) {
+      if (spec.drillResultsPath === undefined) continue;
+      const matches = compileFoldReturnEndpointMatcher(spec);
+      const onEndpoint = (t: FoldTarget): boolean =>
+        matches(actions[t.chainTerminalIndex]!.capture);
+      const declaredPathOf = (t: FoldTarget): string[] =>
+        resolveDeclaredArrayPath(
+          spec.drillResultsPath!.split("."),
+          actions[t.chainTerminalIndex]!.capture.responseBody
+        );
+      const isDeclared = (t: FoldTarget): boolean =>
+        onEndpoint(t) && JSON.stringify(declaredPathOf(t)) === JSON.stringify(t.chainArrayPath);
+      const declared = targets.filter(isDeclared);
+      if (declared.length === 0) continue;
+      targets = targets.filter((t) => {
+        if (!onEndpoint(t) || isDeclared(t)) return true;
+        const declaredPath = declaredPathOf(t);
+        return !(
+          isDescendantArrayPath(declaredPath, t.chainArrayPath) ||
+          isDescendantArrayPath(t.chainArrayPath, declaredPath)
+        );
+      });
+    }
+    return targets.length === plan.targets.length ? plan : { ...plan, targets };
+  });
+}
+
+/**
+ * Replaces every capture matching an extra drill's endpoint (and not the
+ * primary spec's own) with an inert stand-in, preserving indices, so the
+ * primary's structural + declared resolution is exactly what it would be
+ * were the extra drills never captured.
+ */
+function maskExtraDrillActions<T extends { capture: Capture }>(
+  actions: readonly T[],
+  keepMatchers: readonly ((c: Capture) => boolean)[],
+  maskMatchers: readonly ((c: Capture) => boolean)[]
+): T[] {
+  return actions.map((action) => {
+    const c = action.capture;
+    if (keepMatchers.some((m) => m(c)) || !maskMatchers.some((m) => m(c))) return action;
+    return {
+      ...action,
+      capture: {
+        ...c,
+        url: "about:blank",
+        requestHeaders: {},
+        requestPostData: null,
+        responseHeaders: {},
+        responseBody: null,
+        query: null,
+        variables: null,
+        decodedParams: null,
+      },
+    };
+  });
+}
+
+function resolveFoldPlanWithExtraDrills<T extends { capture: Capture; isMultipart: boolean }>(
+  actions: readonly T[],
+  primarySpec: FoldReturnSpec | null,
+  primaryIdentityAnchor: string | null,
+  extraDrillSpecs: readonly FoldReturnSpec[]
+): FoldPlan[] {
+  const extraMatchers = extraDrillSpecs.map((s) => compileFoldReturnEndpointMatcher(s));
+  const primaryMatcher = compileFoldReturnEndpointMatcher(primarySpec);
+  // 1. Primary plan: extra drills masked out.
+  const primaryPlans = resolveFoldPlan(
+    maskExtraDrillActions(actions, [primaryMatcher], extraMatchers),
+    primarySpec,
+    primaryIdentityAnchor
+  );
+  if (primaryPlans.length === 0) return primaryPlans;
+  const result = primaryPlans.map((p) => ({ ...p, targets: [...p.targets] }));
+  // 2. Each extra drill resolved with every OTHER drill masked, then pinned
+  // to its own endpoint step as chain terminal.
+  extraDrillSpecs.forEach((extra, i) => {
+    const others = [primaryMatcher, ...extraMatchers.filter((_, j) => j !== i)];
+    const masked = maskExtraDrillActions(actions, [extraMatchers[i]!], others);
+    const extraPlans = resolveFoldPlan(masked, extra, primaryIdentityAnchor);
+    for (const extraPlan of extraPlans) {
+      const host = result.find(
+        (p) =>
+          p.primaryStepIndex === extraPlan.primaryStepIndex &&
+          JSON.stringify(p.primaryArrayPath) === JSON.stringify(extraPlan.primaryArrayPath)
+      );
+      const pinned = extraPlan.targets.flatMap((t) => {
+        const own = pinTargetToEndpointStep(actions, t, extra, extraMatchers[i]!);
+        return own === null ? [] : [own];
+      });
+      if (pinned.length === 0) continue;
+      if (host === undefined) result.push({ ...extraPlan, targets: pinned });
+      else host.targets.push(...pinned);
+    }
+  });
+  return collapseTargetsToDeclaredDrillPath(actions, result, [
+    ...(primarySpec === null ? [] : [primarySpec]),
+    ...extraDrillSpecs,
+  ]);
+}
+
+/** Pins a target's chain terminal to the chain step matching the spec's own
+ * endpointPattern — a later dependent hop must not displace it. */
+function pinTargetToEndpointStep<T extends { capture: Capture }>(
+  actions: readonly T[],
+  target: FoldTarget,
+  spec: FoldReturnSpec,
+  matches: (c: Capture) => boolean
+): FoldTarget | null {
+  const endpointSteps = target.chain.filter((i) => matches(actions[i]!.capture));
+  if (endpointSteps.length === 0) return null;
+  const terminal = endpointSteps[endpointSteps.length - 1]!;
+  const body = actions[terminal]!.capture.responseBody;
+  const arrayPath =
+    spec.drillResultsPath !== undefined
+      ? resolveDeclaredArrayPath(spec.drillResultsPath.split("."), body)
+      : terminal === target.chainTerminalIndex
+        ? target.chainArrayPath
+        : findObjectArrayFieldOrWholeObject(body)?.path;
+  if (arrayPath === undefined || !objectItemsAtPath(body, arrayPath)) return null;
+  return {
+    ...target,
+    chain: target.chain.filter((i) => i <= terminal),
+    chainTerminalIndex: terminal,
+    chainArrayPath: arrayPath,
+  };
 }
 
 /**
