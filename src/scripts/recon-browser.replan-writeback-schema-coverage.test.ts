@@ -73,6 +73,7 @@ interface IntrospectableZodDef {
   type: string;
   innerType?: { def: IntrospectableZodDef };
   shape?: Record<string, IntrospectableZodType>;
+  options?: IntrospectableZodType[];
 }
 interface IntrospectableZodType {
   def: IntrospectableZodDef;
@@ -109,6 +110,12 @@ function representativeValueFor(
         Object.entries(shape).map(([subKey, subType]) => [subKey, representativeValueFor(subType)])
       );
     }
+    case "record":
+      return {};
+    case "union":
+      // Single-or-array unions (e.g. foldReturn): the first option is the
+      // single-entry form, which round-trips verbatim.
+      return representativeValueFor(unwrapped.options![0]!);
     default:
       throw new Error(
         `replan-writeback-schema-coverage guard: no representative-value mapping for zod type "${unwrapped.type}" — add a case to representativeValueFor in this test`
