@@ -4738,7 +4738,7 @@ export function toFrameRelativeXpath(xpath: string, target?: FrameTarget): strin
   const re = /\/iframe(?:\[\d+\])?(\/html(?:\[\d+\])?(?:\/|$))/gi;
   let cut = -1;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(xpath)) !== null) cut = m.index + m[0].length - m[1].length;
+  while ((m = re.exec(xpath)) !== null) cut = m.index + m[0].length - (m[1] ?? "").length;
   return cut < 0 ? xpath : xpath.slice(cut);
 }
 
