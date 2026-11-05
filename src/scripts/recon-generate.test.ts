@@ -5586,6 +5586,18 @@ describe("unreferencedRequiredUrlFields — payload-schema scoping", () => {
   });
 });
 
+describe("unreferencedRequiredUrlFields — nested response leaf", () => {
+  const src =
+    "const XPayloadSchema = z.object({}).extend({\n  date: z.string().optional(),\n});\n\nexport const XResponseSchema = z.object({\n  location: z.object({\n    mapUrl: z.string(),\n  }).loose(),\n}).loose();\n";
+  it("does not flag a required nested response *Url leaf", () => {
+    expect(unreferencedRequiredUrlFields(src, "")).toEqual([]);
+  });
+  it("still flags a required unread payload *Url field", () => {
+    const withUrl = src.replace("date: z.string().optional(),", "date: z.string().optional(),\n  homeUrl: z.string(),");
+    expect(unreferencedRequiredUrlFields(withUrl, "")).toEqual(["homeUrl"]);
+  });
+});
+
 describe("deriveGetInputModel", () => {
   const cap = (url: string, method = "GET", status = 200) =>
     ({ method, url, status }) as unknown as import("./recon-shared").Capture;
