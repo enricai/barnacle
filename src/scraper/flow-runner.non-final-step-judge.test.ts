@@ -67,6 +67,7 @@ function params(isFinalStep: boolean, reads: string[]): Parameters<typeof judgeS
     signalCounter: { n: 0 },
     preNetworkCount: 0,
     preVisibleTextSignature: "12:Create account",
+    settledPostVisibleText: reads[reads.length - 1] ?? "",
     submitInput: SUBMIT_INPUT,
   };
 }
@@ -117,6 +118,7 @@ describe("judgeStepOutcome", () => {
     ): Parameters<typeof judgeStepOutcome>[0] {
       return {
         ...params(false, []),
+        settledPostVisibleText: reads[0] ?? "",
         page: { waitForTimeout: async (ms: number) => void waits.push(ms) },
         target: judgeTarget(
           () => reads[Math.min(stepJudge.mock.calls.length, reads.length - 1)] ?? ""
@@ -147,15 +149,6 @@ describe("judgeStepOutcome", () => {
       const verdict = await judgeStepOutcome(rejudgeParams(["a", "b"], []));
       expect(verdict).toEqual({ verified: false, reason: "no" });
     });
-  });
-});
-
-describe("judgeStepOutcome non-final settle baseline", () => {
-  it("seeds the settle with the pre-click signature", async () => {
-    settle.mockClear();
-    stepJudge.mockResolvedValue({ advanced: true, reason: "ok" });
-    await judgeStepOutcome(params(false, ["a", "b", "b"]));
-    expect(settle.mock.calls[0]?.[5]).toBe("12:Create account");
   });
 });
 
