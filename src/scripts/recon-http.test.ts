@@ -145,7 +145,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
@@ -157,7 +157,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       replay({ url: "https://bat.bing.com/action/0" }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/real/endpoint"]);
   });
@@ -171,7 +171,7 @@ describe("selectRateLimitTargets — noise host exclusion", () => {
       }),
     ];
 
-    const { targets } = selectRateLimitTargets(replays);
+    const { targets } = selectRateLimitTargets(replays, [], "example.com");
 
     expect(targets.size).toBe(0);
   });
@@ -181,7 +181,7 @@ describe("selectRateLimitTargets — captured query string", () => {
   it("probes the captured request including its query string, not the bare path", () => {
     const { targets } = selectRateLimitTargets([
       replay({ url: "https://api.example.com/items?id=42&lang=en" }),
-    ]);
+    ], [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/items?id=42&lang=en"]);
   });
@@ -190,7 +190,7 @@ describe("selectRateLimitTargets — captured query string", () => {
     const { targets } = selectRateLimitTargets([
       replay({ url: "https://api.example.com/v1/search.json?q=a" }),
       replay({ url: "https://api.example.com/v1/search.json?q=b" }),
-    ]);
+    ], [], "example.com");
 
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/v1/search.json?q=a"]);
   });
@@ -505,7 +505,7 @@ describe("selectRateLimitTargets — fixture shape and safety", () => {
       replay({ url: "https://api.example.com/config/app" }),
       replay({ url: "https://api.example.com/locales/en" }),
       replay({ url: "https://api.example.com/submit", method: "POST" }),
-    ]);
+    ], [], "example.com");
     expect(Array.from(targets.keys())).toEqual(["https://api.example.com/x/schedule.json"]);
   });
 });

@@ -521,11 +521,22 @@ async function probeRateLimit(
  * earlier in the pipeline — the probe fires 60 requests per target, so a noise host reaching
  * this function must never silently slip through on a caller's say-so.
  */
-export function selectRateLimitTargets(replays: ReplayResult[]): {
+export function selectRateLimitTargets(
+  replays: ReplayResult[],
+  ownBackendHostnames: string[],
+  fallbackHost: string | null = null
+): {
   targets: Map<string, { method: string; body: string | null }>;
   skipped: number;
 } {
   const targets = new Map<string, { method: string; body: string | null }>();
+  const own = ownBackendHostnames.map((h) => h.toLowerCase());
+  const fallbackDomain = fallbackHost ? registrableDomain(fallbackHost) : null;
+  const isOwnHost = (hostname: string): boolean => {
+    const host = hostname.toLowerCase();
+    if (own.length > 0) return own.some((o) => host === o || host.endsWith(`.${o}`));
+    return fallbackDomain !== null && registrableDomain(host) === fallbackDomain;
+  };
   const seenEndpoints = new Set<string>();
   let skipped = 0;
   for (const replay of replays) {
@@ -538,6 +549,8 @@ export function selectRateLimitTargets(replays: ReplayResult[]): {
     try {
       const u = new URL(replay.url);
       if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      // Never probe third-party hosts: only the site's own hosts and subdomains.
+      if (!isOwnHost(u.hostname)) continue;
       const pathname = u.pathname.toLowerCase();
       // Skip static fixture endpoints — probing them 60+ times could ban the CDN egress IP
       if (isStaticFixturePath(pathname, true)) continue;
@@ -731,7 +744,11 @@ async function main(): Promise<void> {
 
   // Rate-limit probe — runs last
   logger.info("=== PHASE 3C: RATE-LIMIT PROBE (runs last — may trigger ban) ===");
-  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(replays);
+  const { targets: probeTargets, skipped: skippedAsNoise } = selectRateLimitTargets(
+    replays,
+    ownBackendHostnames,
+    fallbackHost
+  );
   logger.info(
     `rate-limit targets: ${probeTargets.size}` +
       (skippedAsNoise > 0 ? ` (${skippedAsNoise} skipped as noise)` : "")
