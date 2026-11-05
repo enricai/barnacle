@@ -11,6 +11,7 @@
  */
 
 import { Stagehand } from "@browserbasehq/stagehand";
+import { fetch as undiciFetch } from "undici";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startCdpTransportHeartbeat } from "@/scraper/cdp-heartbeat";
@@ -101,13 +102,19 @@ vi.mock("@browserbasehq/stagehand", async (importOriginal) => {
   };
 });
 
-const { bbUpdate } = vi.hoisted(() => ({ bbUpdate: vi.fn() }));
+const { bbUpdate, bbCtorOptions } = vi.hoisted(() => ({
+  bbUpdate: vi.fn(),
+  bbCtorOptions: [] as Record<string, unknown>[],
+}));
 
 vi.mock("@browserbasehq/sdk", () => ({
-  default: vi.fn(function (this: Record<string, unknown>) {
+  default: vi.fn(function (this: Record<string, unknown>, options: Record<string, unknown>) {
+    bbCtorOptions.push(options);
     this.sessions = { update: bbUpdate };
   }),
 }));
+
+vi.mock("undici", () => ({ fetch: vi.fn() }));
 
 vi.mock("steel-sdk", () => ({
   default: vi.fn(function (this: Record<string, unknown>) {
@@ -519,6 +526,50 @@ describe("createBrowserbaseBrowserSession close() release", () => {
     bbUpdate.mockRejectedValue(new Error("boom"));
     const session = await createBrowserbaseBrowserSession();
     await expect(session.close()).resolves.toBeUndefined();
+  });
+
+  /**
+   * The SDK sets an explicit `content-length`, and once undici is loaded its dispatcher
+   * folds that together with its own computed value into `"53, 53"`, failing undici's
+   * digit-only validation — surfacing as `Connection error.` and leaving the session
+   * billing until its own timeout. The release therefore carries its own transport, on
+   * the undici the rest of the engine is tested against, so it does not depend on
+   * whether this entry point ran {@link configureHttpDispatcher}. Bounded because the
+   * SDK's own timeout is 60 s per attempt, far too long for teardown a caller awaits.
+   */
+  it("releases through its own transport rather than the SDK's default", async () => {
+    bbCtorOptions.length = 0;
+    const session = await createBrowserbaseBrowserSession();
+    await session.close();
+
+    const released = bbCtorOptions.at(-1);
+    expect(typeof released?.fetch).toBe("function");
+    // Retries are worth it for the one teardown call whose failure costs money,
+    // but the SDK retries a request our fetch aborted, so the count must be fixed.
+    expect(released?.maxRetries).toBe(2);
+  });
+
+  it("passes the release an abort signal so it cannot outlive a caller's run", async () => {
+    bbCtorOptions.length = 0;
+    const session = await createBrowserbaseBrowserSession();
+    await session.close();
+
+    // The bound is carried by `signal`: assert the wrapper attaches one and that it
+    // is not already aborted, rather than waiting out the real 5 s in a unit test.
+    const fetchImpl = bbCtorOptions.at(-1)?.fetch as (
+      url: string,
+      init: { signal?: AbortSignal }
+    ) => Promise<unknown>;
+    expect(fetchImpl).toBeTypeOf("function");
+
+    let seen: AbortSignal | undefined;
+    vi.mocked(undiciFetch).mockImplementationOnce((async (_url: unknown, init: unknown) => {
+      seen = (init as { signal?: AbortSignal }).signal;
+      return { status: 200 } as never;
+    }) as never);
+    await fetchImpl("https://api.browserbase.com/v1/sessions/x", {});
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen?.aborted).toBe(false);
   });
 });
 
