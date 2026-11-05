@@ -768,6 +768,35 @@ describe("flow-runner/executeStepWithHealing — phantom-click escalation", () =
     expect(stagehandAct).toHaveBeenCalledTimes(2);
   });
 
+  it("applies withClearBeforeType to a click-then-type rephrase before the retry act() call", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: { instruction: "Click the email input, then type a@example.com", outcome: "rewritten" },
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    const fakeRephraseModel = { modelId: "bedrock-claude-fake" } as unknown as Parameters<
+      typeof executeStepWithHealing
+    >[0]["rephraseModel"];
+    const { page } = fakePage({
+      url: "https://apply.acme.example/jobs/1/apply-portal/apply",
+      bodyHtmlLength: 184186,
+      deepIndexClicked: -1,
+    });
+    const stagehandAct = vi.fn().mockResolvedValue(actResult());
+    const params = {
+      ...baseParams(page, stagehandAct),
+      signalCounter: { n: 0 },
+      anthropic: null,
+      rephraseModel: fakeRephraseModel,
+    };
+    await expect(executeStepWithHealing(params)).rejects.toMatchObject({
+      name: "StepVerificationError",
+    });
+    expect(stagehandAct).toHaveBeenCalledTimes(2);
+    const retryArg = String(stagehandAct.mock.calls[1][0]);
+    expect(retryArg).toContain("Click the email input, then type a@example.com");
+    expect(retryArg).toMatch(/selecting all existing text/);
+  });
+
   it("records a ranked-empty deep-locator attempt and continues the cascade instead of throwing synchronously", async () => {
     // Attempt 1 (act-string) phantom-clicks like the bug report. Attempt 2
     // (deep-submit-locator) ranks zero submit-shaped candidates — the
