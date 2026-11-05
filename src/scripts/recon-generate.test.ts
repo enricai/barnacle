@@ -5623,6 +5623,15 @@ describe("deriveGetInputModel", () => {
     expect(m.pathVars).toEqual([{ field: "item_ids", segmentIndex: 2, queryKey: "item_ids[]" }]);
     expect(m.fieldToQueryKey.item_ids).toBe("item_ids[]");
   });
+  it("treats date/epoch-valued query params of a lone capture as caller inputs", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(
+      "https://shop.example/s.json?start=2030-01-01&ts=1893456000&at=2030-01-01T10:00:00Z&sort=asc&n=2030"
+    );
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields.map((d) => d.queryKey)).toEqual(["start", "ts", "at"]);
+    expect(m.fixedParams).toEqual({ sort: "asc", n: "2030" });
+  });
   it("drops cache-buster keys from both dynamicFields and fixedParams", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://shop.example/stock.json?_=111&date_from=2030-01-01&date_to=2030-01-07");
@@ -5706,6 +5715,17 @@ describe("deriveGetInputModel", () => {
     expect(m.pathTwins).toEqual([{ field: "space", segmentIndex: 3, queryKey: "ref" }]);
     expect(m.fixedParams).toEqual({});
   });
+  it("gives a digit-leading key a valid identifier that maps back to the real key", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://shop.example/stock.json?60x=1&site-id=2");
+    const b = cap("https://shop.example/stock.json?60x=3&site-id=4");
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([
+      { field: "_60x", queryKey: "60x" },
+      { field: "siteId", queryKey: "site-id" },
+    ]);
+    expect(m.fieldToQueryKey._60x).toBe("60x");
+  });
   it("treats a single varying key as dynamic", async () => {
     const { deriveGetInputModel } = await import("./recon-generate.js");
     const a = cap("https://api.example.com/v1/search?page=1&sort=asc");
@@ -5713,6 +5733,35 @@ describe("deriveGetInputModel", () => {
     const m = deriveGetInputModel(a, [a, b])!;
     expect(m.dynamicFields).toEqual([{ field: "page", queryKey: "page" }]);
     expect(m.fixedParams).toEqual({ sort: "asc" });
+  });
+  it.each([
+    ["id", "id"],
+    ["room_id", "room_id"],
+    ["roomId", "roomId"],
+    ["room_ids[]", "room_ids"],
+  ])("treats entity-id query key %s as a caller input although constant", async (key, field) => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
+    const b = cap(`https://api.example.com/v1/list?${key}=7&limit=10`);
+    const m = deriveGetInputModel(a, [a, b])!;
+    expect(m.dynamicFields).toEqual([{ field, queryKey: key }]);
+    expect(m.fixedParams).toEqual({ limit: "10" });
+  });
+  it("keeps a non-entity key that merely ends in id letters fixed", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/v1/list?valid=1&grid=2");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.dynamicFields).toEqual([]);
+    expect(m.fixedParams).toEqual({ valid: "1", grid: "2" });
+  });
+  it("binds a path value repeated in two segments to one caller input", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = cap("https://api.example.com/rooms/42/schedule/42?sort=asc");
+    const m = deriveGetInputModel(a, [a])!;
+    expect(m.pathVars).toEqual([
+      { field: "roomsId", segmentIndex: 2, queryKey: "" },
+      { field: "roomsId", segmentIndex: 4, queryKey: "" },
+    ]);
   });
 });
 
@@ -5783,6 +5832,28 @@ describe("emitContractTs — payload-driven GET request", () => {
     expect(source).toContain("ids: z.string().optional(),");
     expect(source).toContain('"a-b": z.string().optional(),');
     expect(source).toContain("id: z.string().optional(),");
+  });
+  it("emits a lone date window, bracketed key and path id as payload inputs in a read-only GET", async () => {
+    const { deriveGetInputModel } = await import("./recon-generate.js");
+    const a = {
+      method: "GET",
+      status: 200,
+      url: "https://shop.example/items/7/stock.json?item_ids[]=7&date_from=2030-01-01&date_to=2030-01-07",
+    } as unknown as Capture;
+    const getInputModel = deriveGetInputModel(a, [a])!;
+    const source = emitContractTs({
+      ...BASE_OPTS,
+      endpointPath: "/items/7/stock.json",
+      getInputModel,
+    });
+    expect(source).toContain('method: "GET"');
+    expect(source).toContain('encodeURIComponent(String(payload.item_ids ?? "7"))');
+    expect(source).toContain('["item_ids[]", String(payload.item_ids ?? "7")]');
+    expect(source).toContain('["date_from", String(payload.date_from)]');
+    expect(source).toContain('["date_to", String(payload.date_to)]');
+    expect(source).not.toContain("2030-01-01");
+    // Read-only GET: no mutation body, not emitted as a submission.
+    expect(source).not.toContain('method: "POST"');
   });
   it("keeps the POST emission when no GET model is given", () => {
     const source = emitContractTs({ ...BASE_OPTS });

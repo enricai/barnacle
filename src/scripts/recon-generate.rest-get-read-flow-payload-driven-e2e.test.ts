@@ -20,7 +20,10 @@ const URLS = [
   `${BASE}?item_ids%5B%5D=9&date_from=2030-11-02&date_to=2030-11-08&_=1700000000002`,
 ];
 
-function generateContract(flowExtras: Record<string, unknown>): string {
+function generateContract(
+  flowExtras: Record<string, unknown> | null,
+  urls: readonly string[] = URLS
+): string {
   const workDir = mkdtempSync(join(tmpdir(), "barnacle-get-payload-"));
   dirs.push(workDir);
   const runRoot = join(workDir, "run");
@@ -29,7 +32,7 @@ function generateContract(flowExtras: Record<string, unknown>): string {
   mkdirSync(join(runRoot, "replays"), { recursive: true });
   mkdirSync(join(runRoot, "aux"), { recursive: true });
   writeFileSync(join(runRoot, "replays", "rate-limit.json"), JSON.stringify([]));
-  URLS.forEach((url, i) => {
+  urls.forEach((url, i) => {
     writeFileSync(
       join(capturesDir, `00${i}-read.json`),
       JSON.stringify(
@@ -61,17 +64,19 @@ function generateContract(flowExtras: Record<string, unknown>): string {
   const siteOutDir = join(REPO_ROOT, "src", "sites", siteId);
   dirs.push(siteOutDir);
   mkdirSync(siteOutDir, { recursive: true });
-  writeFileSync(
-    join(siteOutDir, "recon-flow.json"),
-    JSON.stringify({
-      steps: [
-        { step: "open the page" },
-        { step: "pick a color", payloadField: "color" },
-        { step: "pick a size", payloadField: "size" },
-      ],
-      ...flowExtras,
-    })
-  );
+  if (flowExtras !== null) {
+    writeFileSync(
+      join(siteOutDir, "recon-flow.json"),
+      JSON.stringify({
+        steps: [
+          { step: "open the page" },
+          { step: "pick a color", payloadField: "color" },
+          { step: "pick a size", payloadField: "size" },
+        ],
+        ...flowExtras,
+      })
+    );
+  }
   const result = spawnSync(
     TSX_BIN,
     [GENERATE_SCRIPT, "--site-id", siteId, "--run-dir", runRoot, "--emit", "ts", "--force"],
@@ -94,6 +99,7 @@ function expectPayloadDrivenRead(contract: string): void {
   expect(http).not.toContain("1700000000002");
   expect(contract).not.toMatch(/\b(?:const|class|function)\s+\d/);
   expect(contract).toMatch(/\bSite7GetPayloadDriven/);
+  // No captured window is replayed verbatim.
   for (const literal of ["2030-10-26", "2030-11-01", "2030-11-02", "2030-11-08"]) {
     expect(http).not.toContain(literal);
   }
@@ -113,5 +119,31 @@ describe("recon-generate CLI — payload-driven GET read flow, end to end", () =
 
   it("stays a payload-driven read when a declared submit pattern selects the same-route GET reads", () => {
     expectPayloadDrivenRead(generateContract({ submitEndpointPattern: "schedule" }));
+  }, 60_000);
+
+  it("derives the same inputs with no flow file at all", () => {
+    const contract = generateContract(null);
+    const http = contract.slice(contract.indexOf("async executeHttp("));
+    expect(http).toContain(`encodeURIComponent(String(payload.item_ids ?? "9"))`);
+    expect(http).toContain('["date_from", String(payload.date_from)]');
+    expect(http).toContain("await httpClient(");
+    for (const f of ["date_from", "date_to", "item_ids"]) {
+      expect(contract).toMatch(new RegExp(`^  ${f}: z\\.string\\(\\)`, "m"));
+    }
+    expect(contract).not.toMatch(/submission/i);
+  }, 60_000);
+
+  it("treats an entity-id array key as an input even when every capture used the same id", () => {
+    const urls = [
+      `${BASE}?item_ids%5B%5D=9&date_from=2030-10-26&date_to=2030-11-01`,
+      `${BASE}?item_ids%5B%5D=9&date_from=2030-10-26&date_to=2030-11-01`,
+    ];
+    const contract = generateContract(null, urls);
+    const http = contract.slice(contract.indexOf("async executeHttp("));
+    expect(http).toContain('["item_ids[]", String(payload.item_ids ?? "9")]');
+    expect(http).toContain('["date_from", String(payload.date_from)]');
+    expect(http).not.toContain("2030-10-26");
+    expect(contract).toMatch(/^ {2}item_ids: z\.string\(\)/m);
+    expect(contract).not.toMatch(/submission/i);
   }, 60_000);
 });
