@@ -84,6 +84,10 @@
       "types": "./dist/lib/errors.d.ts",
       "default": "./dist/lib/errors.js"
     },
+    "./lib/http": {
+      "types": "./dist/lib/http.d.ts",
+      "default": "./dist/lib/http.js"
+    },
     "./lib/job-tracking": {
       "types": "./dist/lib/job-tracking.d.ts",
       "default": "./dist/lib/job-tracking.js"
