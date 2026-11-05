@@ -14349,6 +14349,12 @@ function collectDependentDrillDownChainValues<T extends { capture: Capture }>(
   return consumersByValue;
 }
 
+/**
+ * Array-form `foldReturn` entries after the primary, set once by `main()` so
+ * every resolveFoldPlan call site sees the same declared drills.
+ */
+let ambientExtraDrillSpecs: readonly FoldReturnSpec[] = [];
+
 export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boolean }>(
   actions: readonly T[],
   foldReturnSpec: FoldReturnSpec | null = null,
@@ -14359,7 +14365,7 @@ export function resolveFoldPlan<T extends { capture: Capture; isMultipart: boole
   // primary one). Each folds onto the same primary as its own target and is
   // invisible to the primary spec's resolution — see
   // {@link maskExtraDrillActions}.
-  extraDrillSpecs: readonly FoldReturnSpec[] = []
+  extraDrillSpecs: readonly FoldReturnSpec[] = ambientExtraDrillSpecs
 ): FoldPlan[] {
   if (extraDrillSpecs.length > 0) {
     return resolveFoldPlanWithExtraDrills(
@@ -18359,7 +18365,9 @@ async function main(): Promise<void> {
     // Parsed off the raw bytes, independently of the steps shape below, so a
     // valid `foldReturn` still resolves when the rest of the flow file is
     // degenerate — the two declarations fail independently.
-    const foldReturnSpec = flowFileContents === null ? null : parseFoldReturnSpec(flowFileContents);
+    const allFoldSpecs = flowFileContents === null ? null : parseFoldReturnSpecs(flowFileContents);
+    const foldReturnSpec = allFoldSpecs === null ? null : allFoldSpecs[0]!;
+    ambientExtraDrillSpecs = allFoldSpecs === null ? [] : allFoldSpecs.slice(1);
     // Same independence rule as `foldReturnSpec` above: an empty spec
     // (missing/malformed declaration) is indistinguishable from "not
     // declared" and preserves today's byte-identical output.
