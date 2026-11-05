@@ -5942,6 +5942,17 @@ export async function attachToSurfacedInput(params: {
       "xpath=(//input[@type='file' and not(@disabled)] | //input[@type='file'][not(//input[@type='file' and not(@disabled)])])[1]"
     )
     .first();
+  // Snapshot before the upload: a widget may consume the input (clear .files) and
+  // render the file name; only a name that appears NEWLY counts as success.
+  const nameInPageText = (): Promise<boolean> =>
+    Promise.resolve(
+      target.evaluate(
+        `(() => { const t = (document.body && document.body.innerText) || ""; return t.includes(${JSON.stringify(fixture.name)}); })()`
+      )
+    )
+      .then((v: unknown) => v === true)
+      .catch(() => false);
+  const nameBefore = await nameInPageText();
   try {
     await inputLocator.setInputFiles({
       name: fixture.name,
@@ -6004,6 +6015,16 @@ export async function attachToSurfacedInput(params: {
       "(() => { const els = document.querySelectorAll('input[type=file]'); for (const el of els) { if (el.files && el.files.length > 0) return el.files.length; } return 0; })()"
     )
     .catch(() => 0);
+  if (
+    (typeof attachedLength !== "number" || attachedLength === 0) &&
+    !nameBefore &&
+    (await nameInPageText())
+  ) {
+    logger.info(
+      `upload primitive: input consumed and file name newly in page text (name=${fixture.name}); treating as success`
+    );
+    return true;
+  }
   if (typeof attachedLength !== "number" || attachedLength === 0) {
     // A dispatched drop is unverified (no network signal, no .files), so it is
     // not success here: return false and let surfaceAndUpload run the verified
