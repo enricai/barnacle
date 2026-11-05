@@ -18,7 +18,7 @@ describe("recon run-dir resolution for reader scripts", () => {
   it("adopts an existing run root without nesting a new run dir", async () => {
     const existing = join(base, "run-a");
     mkdirSync(join(existing, "graphql"), { recursive: true });
-    const { adoptReconRunRoot } = await import("@/scripts/recon-shared");
+    const { adoptReconRunRoot } = await import("@/scripts/recon-shared.js");
     const dir = adoptReconRunRoot(existing);
     expect(dir.root).toBe(existing);
     expect(dir.graphqlDir).toBe(join(existing, "graphql"));
@@ -30,12 +30,12 @@ describe("recon run-dir resolution for reader scripts", () => {
       mkdirSync(join(base, name));
       utimesSync(join(base, name), t, t);
     }
-    const { resolveLatestReconRunRoot } = await import("@/scripts/recon-shared");
+    const { resolveLatestReconRunRoot } = await import("@/scripts/recon-shared.js");
     expect(resolveLatestReconRunRoot()).toBe(join(base, "new"));
   });
 
   it("an explicit run dir wins over the newest run", async () => {
-    const { resolveLatestReconRunRoot } = await import("@/scripts/recon-shared");
+    const { resolveLatestReconRunRoot } = await import("@/scripts/recon-shared.js");
     expect(resolveLatestReconRunRoot("/x/y")).toBe("/x/y");
   });
 });
