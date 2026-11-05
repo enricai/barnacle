@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { settleAfterClick } from "@/scraper/click-settle";
+import { QUIESCENT_NO_OP_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
 
 const idleQuiescence = async (): Promise<{ pending: number; mutations: number }> => ({
   pending: 0,
@@ -27,7 +27,10 @@ describe("settleAfterClick", () => {
     const f = makeFake((p, c) => {
       if (p === 6) c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, async () => ({
+      pending: f.polls() < 6 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(f.polls()).toBe(15);
   });
 
@@ -35,14 +38,17 @@ describe("settleAfterClick", () => {
     const f = makeFake((p, c) => {
       if (p === 11) c.n += 1;
     });
-    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
+    await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, async () => ({
+      pending: f.polls() < 11 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(f.polls()).toBe(20);
   });
 
   it("gives up when no activity ever appears", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("stops at the max on a continuous stream", async () => {
@@ -99,7 +105,7 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(17);
   });
 
-  it("still gives up at 14 polls when text never changes", async () => {
+  it("still gives up at the quiescent no-op bound when text never changes", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(
       f.page,
@@ -110,7 +116,7 @@ describe("settleAfterClick", () => {
       undefined,
       idleQuiescence
     );
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("stops at the max when text changes continuously", async () => {
@@ -142,10 +148,10 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBeGreaterThan(9);
   });
 
-  it("still gives up at 14 polls when text matches the pre-click baseline", async () => {
+  it("still gives up at the quiescent no-op bound when text matches the pre-click baseline", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same", idleQuiescence);
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("does not return between a header flip and a later body re-render", async () => {
@@ -218,7 +224,7 @@ describe("settleAfterClick", () => {
   it("still waits the full idle window for a submit-shaped click", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0, true, undefined, undefined, idleQuiescence);
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("keeps activity-driven quiet logic for a non-submit click", async () => {
@@ -270,10 +276,10 @@ describe("settleAfterClick", () => {
     expect(f.polls()).toBe(60);
   });
 
-  it("gives up at 14 polls when the text never moved", async () => {
+  it("gives up at the quiescent no-op bound when the text never moved", async () => {
     const f = makeFake(() => {});
     await settleAfterClick(f.page, f.counter, 0, true, async () => "same", "same", idleQuiescence);
-    expect(f.polls()).toBe(14);
+    expect(f.polls()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS / 1000);
   });
 
   it("ends only after a body re-render following a header flip when the probe sees mutations", async () => {

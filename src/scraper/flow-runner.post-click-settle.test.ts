@@ -4,7 +4,11 @@ import type { Element as HappyDomElement } from "happy-dom";
 import { Window } from "happy-dom";
 import { describe, expect, it, vi } from "vitest";
 import { verifyStepAdvancedWithLLM } from "@/lib/llm/judges/verify-step-advanced";
-import { IDLE_GIVE_UP_MS, settleAfterClick } from "@/scraper/click-settle";
+import {
+  IDLE_GIVE_UP_MS,
+  QUIESCENT_NO_OP_GIVE_UP_MS,
+  settleAfterClick,
+} from "@/scraper/click-settle";
 import {
   type PostClickSettleIo,
   readMidFlowPostClickAdvance,
@@ -70,7 +74,10 @@ describe("settleAfterClick virtual clock", () => {
     const c = makeClock((now, counter) => {
       if (now === 6000) counter.n += 1;
     });
-    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
+    await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, async () => ({
+      pending: c.now() < 6000 ? 1 : 0,
+      mutations: 0,
+    }));
     expect(c.now()).toBeGreaterThan(6000);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
@@ -86,7 +93,7 @@ describe("settleAfterClick no-op click give-up bound", () => {
   it("gives up a silent submit-shaped click at the idle allowance, far below the max", async () => {
     const c = makeClock(() => {});
     await settleAfterClick(c.page, c.counter, 0, true, undefined, undefined, idleQuiescence);
-    expect(c.now()).toBe(14000);
+    expect(c.now()).toBe(QUIESCENT_NO_OP_GIVE_UP_MS);
     expect(c.now()).toBeLessThan(MAX_MS);
   });
 });
