@@ -798,6 +798,31 @@ const RECON_FLOW_SCHEMA = z.array(RECON_FLOW_STEP_SCHEMA).min(1);
  *
  * Both forms route through `parseReconFlow` into a shared internal record.
  */
+/**
+ * One `foldReturn` entry. Mirrors the keys `parseFoldReturnSpec` reads in
+ * recon-generate.ts. `resultsPath` is optional (later entries in an array may
+ * fold onto an earlier entry's results); `attachAs`, `payloadFlag` and
+ * `drillParamBindings` are generator-read keys that must survive validation.
+ */
+const RECON_FOLD_RETURN_ENTRY_SCHEMA = z.object({
+  endpointPattern: z.string().min(1),
+  resultsPath: z.string().min(1).optional(),
+  drillResultsPath: z.string().min(1).optional(),
+  joinFields: z.array(z.string().min(1)).min(1),
+  attachAs: z.string().min(1).optional(),
+  payloadFlag: z.string().min(1).optional(),
+  drillParamBindings: z
+    .record(
+      z.string(),
+      z.object({
+        payloadField: z.string().min(1),
+        type: z.enum(["int", "string", "boolean"]),
+        default: z.union([z.string(), z.number(), z.boolean()]),
+      }),
+    )
+    .optional(),
+});
+
 export const RECON_FLOW_FILE_SCHEMA = z.union([
   RECON_FLOW_SCHEMA,
   z.object({
@@ -931,12 +956,7 @@ export const RECON_FLOW_FILE_SCHEMA = z.union([
      * heuristic can see structurally are applied.
      */
     foldReturn: z
-      .object({
-        endpointPattern: z.string().min(1),
-        resultsPath: z.string().min(1),
-        drillResultsPath: z.string().min(1).optional(),
-        joinFields: z.array(z.string().min(1)).min(1),
-      })
+      .union([RECON_FOLD_RETURN_ENTRY_SCHEMA, z.array(RECON_FOLD_RETURN_ENTRY_SCHEMA).min(1)])
       .optional(),
   }),
 ]);

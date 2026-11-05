@@ -159,17 +159,43 @@ describe("recon-browser/RECON_FLOW_FILE_SCHEMA — cross-frame flow structural c
     expect(result.data.foldReturn).toEqual(flowWithCompositeJoinFields.foldReturn);
   });
 
-  it("rejects a foldReturn declaration missing resultsPath", () => {
+  it("rejects a foldReturn declaration missing endpointPattern", () => {
     const flowWithFoldReturnMissingResultsPath = {
       ...EXAMPLE_FLOW,
       foldReturn: {
-        endpointPattern: "/api/example/candidate-details",
+        resultsPath: "data.results",
         joinFields: ["candidateId"],
       },
     };
 
     const result = RECON_FLOW_FILE_SCHEMA.safeParse(flowWithFoldReturnMissingResultsPath);
 
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts array foldReturn, optional resultsPath and the new keys", () => {
+    const foldReturn = [
+      {
+        endpointPattern: "/a",
+        resultsPath: "data.results",
+        joinFields: ["id"],
+        attachAs: "details",
+        payloadFlag: "includeDetails",
+        drillParamBindings: { n: { payloadField: "n", type: "int", default: 1 } },
+      },
+      { endpointPattern: "/b", joinFields: ["id"] },
+    ];
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({ ...EXAMPLE_FLOW, foldReturn });
+    expect(result.success).toBe(true);
+    if (!result.success || Array.isArray(result.data)) return;
+    expect(result.data.foldReturn).toEqual(foldReturn);
+  });
+
+  it("rejects an array foldReturn with a malformed entry", () => {
+    const result = RECON_FLOW_FILE_SCHEMA.safeParse({
+      ...EXAMPLE_FLOW,
+      foldReturn: [{ endpointPattern: "/a", joinFields: [] }],
+    });
     expect(result.success).toBe(false);
   });
 
