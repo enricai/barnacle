@@ -309,7 +309,21 @@ export function wireSignalCapture(
       entry.requestPostData = priorBody;
     }
     if (!entry.requestPostData && mayHaveBody) {
+      const priorPending = prior?.bodyPending;
       entry.bodyPending = (async () => {
+        // A first hop's lazy fetch may still be in flight; adopt its body first.
+        if (priorPending) {
+          try {
+            await priorPending;
+          } catch {
+            // ignore
+          }
+          const got = prior?.requestPostData;
+          if (got && got !== REQUEST_BODY_UNAVAILABLE) {
+            entry.requestPostData = got;
+            return;
+          }
+        }
         try {
           const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
             requestId: params.requestId,
@@ -407,6 +421,21 @@ export function wireSignalCapture(
 
     // The body fetch was started at request time; wait for it to settle.
     if (req.bodyPending) await req.bodyPending;
+    // A body the browser only exposes once the request has been sent is not
+    // readable at requestWillBeSent time; retry once now that loading finished
+    // before settling for the unavailable marker.
+    if (req.bodyPending && req.requestPostData === REQUEST_BODY_UNAVAILABLE) {
+      try {
+        const res = await page.sendCDP<{ postData?: string }>("Network.getRequestPostData", {
+          requestId: params.requestId,
+        });
+        if (typeof res?.postData === "string" && res.postData.length > 0) {
+          req.requestPostData = res.postData;
+        }
+      } catch {
+        // keep the explicit marker
+      }
+    }
 
     let operationName: string | null = null;
     let query: string | null = null;

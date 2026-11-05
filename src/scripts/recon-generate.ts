@@ -5426,7 +5426,7 @@ function registerStructuredPayloadField(
   outStructuredKeys.set(field, inferZodSchemaFromSamples(samples));
 }
 
-function applyStructuredValuePayloadSubstitutionsForEnvelope(
+export function applyStructuredValuePayloadSubstitutionsForEnvelope(
   template: string,
   envelope: Record<string, unknown>,
   outStructuredKeys: Map<string, string>,
@@ -5466,6 +5466,22 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // An array path the facet pass owns is rendered element by element at every
     // call site, so it is neither a payload field of its own nor swallowable.
     if (isNonEmptyArray && ownedArrayPathKeys.has(arrayPathKey(valuePath))) continue;
+    // One field per distinct body value path: when an ancestor of this path is
+    // already a registered whole-structure payload field (a wrapped body such as
+    // `{"order":{"items_attributes":[...]}}` carries the array inside `order`),
+    // the nested value is that field's content, not a second caller input.
+    // Minting a flattened `orderItems_attributes` beside it would expose the
+    // same array twice.
+    let coveringAncestorLen = 0;
+    for (let len = 1; len < valuePath.length; len++) {
+      if (outStructuredKeys.has(pathToPayloadFieldName(valuePath.slice(0, len)))) {
+        coveringAncestorLen = len;
+        break;
+      }
+    }
+    const coveredByAncestorField = coveringAncestorLen > 0;
+    // Only a direct child of the registered ancestor has a one-hop accessor.
+    if (coveredByAncestorField && valuePath.length - coveringAncestorLen !== 1) continue;
     // Schema registration and the wholesale text-swallow below are
     // independent concerns: this field's inferred Zod shape is correct
     // regardless of whether any of the exclusion/guard checks below skip
@@ -5477,7 +5493,8 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // SAME name payloadAccessorForPath gives by-index accessors into it; a bare
     // key for a nested array would declare the one array twice.
     const fieldName = pathToPayloadFieldName([...valuePath]);
-    registerStructuredPayloadField(outStructuredKeys, fieldName, value);
+    if (!coveredByAncestorField)
+      registerStructuredPayloadField(outStructuredKeys, fieldName, value);
     // A call site whose array carries a facet was already rewritten by the
     // facet pass (the span-text guard below leaves it intact); a site whose
     // array carries none falls through to the same opaque `payload.<key>`
@@ -5577,7 +5594,12 @@ function applyStructuredValuePayloadSubstitutionsForEnvelope(
     // substring `payload.`) avoids false-positiving on scraped leaf data that
     // merely happens to contain the word "payload." as ordinary text.
     if (result.slice(spanStart, spanEnd).includes("${payload.")) continue;
-    const replacement = `$${"{"}JSON.stringify(payload.${fieldName})${"}"}`;
+    // A value nested in an already-registered ancestor field is read from that
+    // field's content instead of being frozen as the recorded literal.
+    const valueExpr = coveredByAncestorField
+      ? `(payload.${pathToPayloadFieldName(valuePath.slice(0, coveringAncestorLen))} as Record<string, unknown>)[${JSON.stringify(key)}]`
+      : `payload.${fieldName}`;
+    const replacement = `$${"{"}JSON.stringify(${valueExpr})${"}"}`;
     result = result.slice(0, spanStart) + replacement + result.slice(spanEnd);
     cursor = Math.max(cursor, spanStart + replacement.length);
   }
@@ -8112,6 +8134,53 @@ function applyVolatileFieldSubstitutions(
   return result;
 }
 
+/** True for the HTTP methods that change server state. */
+function isMutatingMethod(method: string): boolean {
+  return /^(POST|PUT|PATCH|DELETE)$/i.test(method);
+}
+
+/**
+ * Binds every string leaf of a later write's body that no earlier pass bound
+ * (still a bare literal in `template`) to a flat `payload.<field>` input, so the
+ * caller's own scalars are never frozen from the recording. The field name is
+ * derived from the leaf's path ({@link pathToPayloadFieldName}); a value already
+ * bound elsewhere reuses its accessor, and a name clash between different values
+ * is disambiguated with a numeric suffix. Leaves under an array are left to the
+ * structured-value passes, as are shielded ids, pure-digit strings, strings
+ * that embed the recorded origin, and single-character enum-like values.
+ */
+function bindLaterWriteScalarLeaves(
+  template: string,
+  parsedBody: unknown,
+  shieldedUuids: Set<string>,
+  boundValues: Set<string>,
+  baseUrl: string,
+  payloadAccessorByValue: Map<string, string>,
+  outDiscoveredFields: Set<string>
+): string {
+  let result = template;
+  for (const { value, path } of walkAllPrimitiveLeaves(parsedBody)) {
+    if (typeof value !== "string" || value.length < 3) continue;
+    if (path.length === 0 || path.some((seg) => /^\d+$/.test(seg))) continue;
+    if (shieldedUuids.has(value) || boundValues.has(value) || /^\d+$/.test(value)) continue;
+    if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
+    const literal = JSON.stringify(value);
+    if (!result.includes(literal)) continue;
+    let accessor = payloadAccessorByValue.get(value);
+    if (accessor === undefined) {
+      const base = pathToPayloadFieldName(path);
+      if (!isValidJsIdentifier(base)) continue;
+      let field = base;
+      for (let n = 2; outDiscoveredFields.has(field); n++) field = `${base}${n}`;
+      outDiscoveredFields.add(field);
+      accessor = `payload.${field}`;
+      payloadAccessorByValue.set(value, accessor);
+    }
+    result = result.split(literal).join(`"\${${accessor}}"`);
+  }
+  return result;
+}
+
 /**
  * Collects captured string leaves AND whole array/object values that survived
  * every binding/generation pass as still-literal — the values a reviewer must
@@ -8721,6 +8790,10 @@ export function emitMultiStepExecuteHttp(
   if (inputBody !== undefined && inputBody !== null) {
     for (const { value, path } of walkStringLeaves(inputBody)) {
       if (value.length < MIN_STATE_VALUE_LENGTH) continue;
+      // The recon origin is runtime context, never a caller payload field: a
+      // leaf that is or embeds it must not mint a payload key (e.g. BaseUrl);
+      // the origin substitution below rewrites it to `${context.baseUrl}`.
+      if (baseUrl.length > 0 && value.includes(baseUrl)) continue;
       // An element of an array any call site's facet pass owns belongs to the
       // facet's payloadField (or stays literal), not to a by-index accessor
       // that would freeze the sibling elements' shape.
@@ -9276,6 +9349,30 @@ export function emitMultiStepExecuteHttp(
         shieldedUuids,
         boundValues
       );
+      // A later write that threads a prior response carries the caller's own scalars (contact
+      // details and the like): bind each still-literal string leaf to a payload
+      // input instead of freezing the recorded value into the request.
+      const threadsPriorResponse = (text: string): boolean =>
+        prior.some((p) =>
+          [p.varName, ...p.produces.map((pr) => pr.name)].some((name) =>
+            new RegExp(`\\$\\{[^}]*(?<![.\\w])${name}\\b`).test(text)
+          )
+        );
+      if (
+        isMutatingMethod(cap.method) &&
+        prior.some((p) => isMutatingMethod(p.capture.method)) &&
+        (threadsPriorResponse(url) || threadsPriorResponse(bodyTemplate))
+      ) {
+        bodyTemplate = bindLaterWriteScalarLeaves(
+          bodyTemplate,
+          parsedBody,
+          shieldedUuids,
+          boundValues,
+          baseUrl,
+          payloadAccessorByValue,
+          outDiscoveredFields
+        );
+      }
       for (const key of collectUnboundLiterals(bodyTemplate, parsedBody, shieldedUuids)) {
         unboundLiteralKeys.add(key);
       }
@@ -15718,8 +15815,8 @@ const httpClient = createHttpClient({ schema: ${pascal}ResponseSchema, bottlenec
         // parent object (e.g. a group id) resolve at all.
         const parameterizeUrl = (rawUrl: string, chainCapture: Capture): string => {
           const withBase =
-            baseUrl.length > 0 && rawUrl.startsWith(baseUrl)
-              ? `\${context.baseUrl}${rawUrl.slice(baseUrl.length)}`
+            baseUrl.length > 0
+              ? rawUrl.split(baseUrl).join(`$${"{"}context.baseUrl${"}"}`)
               : rawUrl;
           const rawThreadedFields = dedupeThreadedFields([
             ...target.joinFields.map((field) => ({ varName: itemVar, field })),
