@@ -20,7 +20,7 @@
  *
  * Output lands under the run-scoped root resolved by `resolveReconRunDir()`
  * (`@/scripts/recon-shared`) — `/tmp/recon/<runId>/` by default, rooted
- * elsewhere via `--out-dir <path>` / `RECON_OUT_DIR`:
+ * elsewhere via `--out-dir <path>` / `RECON_OUT_DIR`; `--run-dir <path>` replays an existing run:
  *   replays/<filename>.json  — one replay result per unique capture
  *   aux/<basename>.json      — downloaded static fixture per auxiliary endpoint
  *   replays/rate-limit.json  — rate-limit probe findings
@@ -46,7 +46,11 @@ import {
 import { isSafeToReplay, unsafeReplayReason } from "@/recon/replay-safety";
 import { matchingDisallow, parseRobots, type RobotsRule } from "@/recon/robots";
 import { REQUEST_BODY_UNAVAILABLE } from "@/scraper/request-body-marker";
-import { readOwnBackendHostnames, resolveReconRunDir } from "@/scripts/recon-shared";
+import {
+  adoptReconRunRoot,
+  readOwnBackendHostnames,
+  resolveLatestReconRunRoot,
+} from "@/scripts/recon-shared";
 
 configureHttpDispatcher();
 
@@ -632,11 +636,16 @@ export function applyRobots<T extends { capture: Capture }>(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  let runDirArg: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--out-dir" && args[i + 1]) process.env.RECON_OUT_DIR = args[++i]!;
+    else if (args[i] === "--run-dir" && args[i + 1]) runDirArg = args[++i]!;
   }
 
-  const runDir = resolveReconRunDir();
+  // recon-http replays what an earlier recon-browser run captured, so it reads
+  // that run (--run-dir, RECON_RUN_ID, else the newest) rather than minting a
+  // fresh empty run dir with nothing to replay.
+  const runDir = adoptReconRunRoot(resolveLatestReconRunRoot(runDirArg));
   let capturesDir = runDir.graphqlDir;
   let flowFile: string | null = null;
   let methods: Set<string> | null = null;
@@ -651,6 +660,12 @@ async function main(): Promise<void> {
 
   logger.info("=== PHASE 2: HTTP REPLAY ===");
   const all = loadCaptures(capturesDir);
+  if (all.length === 0) {
+    logger.error(
+      `recon-http: ${capturesDir} has no captures — nothing to replay (did recon-browser run first? pass --run-dir <path> to pick a run)`
+    );
+    process.exit(1);
+  }
   const unique = deduplicateCaptures(all);
   // Drop third-party asset/telemetry hosts and a site's own error sink before
   // replaying. Without this the probe replays and rate-limits every captured
