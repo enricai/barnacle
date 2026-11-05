@@ -1,21 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  type ReplayResult,
-  selectRateLimitTargets,
-  selectReplayCaptures,
-} from "@/scripts/recon-http";
+import type { ReplayResult } from "@/scripts/recon-http";
+import { selectRateLimitTargets, selectReplayCaptures } from "@/scripts/recon-http";
 
 const r = (url: string, method = "GET"): ReplayResult => ({
-  sourceCapture: "c.json",
+  success: true,
   url,
   method,
   operationName: null,
   requestBody: null,
+  sourceCapture: "c.json",
   replayStatus: 200,
   replayHeaders: {},
   replayBody: null,
-  success: true,
   error: null,
 });
 const urls = (x: ReturnType<typeof selectRateLimitTargets>) => [...x.targets.keys()];
