@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SHADOW_XPATH_RESOLVER_SRC } from "@/scraper/shadow-xpath";
 
@@ -43,7 +44,7 @@ describe("shadow-aware xpath resolver", () => {
   });
 
   it("flow-runner has no raw document.evaluate first-node xpath lookup left", () => {
-    const src = readFileSync(new URL("./flow-runner.ts", import.meta.url), "utf8");
+    const src = readFileSync(join(process.cwd(), "src/scraper/flow-runner.ts"), "utf8");
     expect(src).not.toMatch(/document\.evaluate\([^)]*FIRST_ORDERED_NODE_TYPE/);
   });
 });
