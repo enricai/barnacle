@@ -16058,8 +16058,10 @@ export function unreferencedRequiredUrlFields(
   const payloadStart = contractCode.search(/^const \w*PayloadSchema\s*=/m);
   if (payloadStart < 0) return [];
   const rest = contractCode.slice(payloadStart);
-  const end = rest.search(/^export type \w*Payload\b/m);
-  const scanned = end >= 0 ? rest.slice(0, end) : rest;
+  // End at the payload type export or the next top-level declaration,
+  // whichever comes first (a response schema may follow with no type between).
+  const end = rest.slice(1).search(/^(?:export type \w*Payload\b|(?:export )?const \w+\s*=)/m);
+  const scanned = end >= 0 ? rest.slice(0, end + 1) : rest;
   return [...scanned.matchAll(urlFieldLinePattern)]
     .filter((match) => !match[0].includes(".optional("))
     .map((match) => match[1])
