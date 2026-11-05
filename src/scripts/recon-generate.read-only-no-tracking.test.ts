@@ -22,7 +22,7 @@ describe("JobTrackingSchema merge", () => {
     const source = emitContractTs({
       ...base,
       isSubmissionFlow: false,
-      getInputModel: { dynamicFields: [{ field: "q" }], pathVars: [] },
+      getInputModel: { dynamicFields: [{ field: "q" }], pathVars: [], fixedParams: {} },
     } as never);
     expect(source).not.toContain("JobTrackingSchema");
     expect(source).not.toContain("TrackingUrl");
