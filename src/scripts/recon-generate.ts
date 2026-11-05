@@ -17381,6 +17381,7 @@ export function emitBrowserFlowTs(opts: {
   let usesThrowawayPassword = false;
   let usesEmailStep = false;
 
+  let navigateBaselineHash: string | undefined;
   const stepLiterals = flowSteps.map((step) => {
     const isObj = typeof step !== "string";
     const instruction = isObj ? step.step : step;
@@ -17397,7 +17398,16 @@ export function emitBrowserFlowTs(opts: {
     if (isObj && step.navigateTo !== undefined) {
       const optional = step.optional === true;
       const submitStep = step.submitStep === true;
-      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${JSON.stringify(step.navigateTo)} },`;
+      const navigateToExpr = buildNavigateToExpr(
+        step.navigateTo,
+        step.payloadField && !step.payloadFieldNone ? step.payloadField : null,
+        navigateBaselineHash,
+        optional,
+        readOnlyGetFlow
+      );
+      const hashAt = step.navigateTo.indexOf("#");
+      if (hashAt !== -1) navigateBaselineHash = step.navigateTo.slice(hashAt + 1);
+      return `  { instruction: ${JSON.stringify(instruction)}, optional: ${optional}, upload: false, submitStep: ${submitStep}, navigateTo: ${navigateToExpr} },`;
     }
     if (isObj && step.emailStep === true) {
       usesEmailStep = true;
@@ -17598,6 +17608,41 @@ ${flowStepsBlock}
   }`;
   assertNoLeakedPersonaConstant(code, knownFieldValues);
   return { code, payloadFieldNames, optionalPayloadFieldNames, usesThrowawayPassword };
+}
+
+/**
+ * Emitted `navigateTo` expression. A step declaring `payloadField` has the hash
+ * value recon captured replaced by `payload.<field>` (URL-encoded), so the
+ * caller's value drives navigation. In a read-only GET flow the recon origin is
+ * also replaced by the `baseUrl` argument's origin. Otherwise a plain literal.
+ */
+function buildNavigateToExpr(
+  url: string,
+  field: string | null,
+  baselineHash: string | undefined,
+  optional: boolean,
+  rebaseOrigin: boolean
+): string {
+  const esc = (t: string) => t.replace(/[`\\$]/g, (c) => `\\${c}`);
+  let prefix = "";
+  let rest = url;
+  if (rebaseOrigin) {
+    const m = /^https?:\/\/[^/?#]+/i.exec(url);
+    if (m) {
+      prefix = "${new URL(baseUrl).origin}";
+      rest = url.slice(m[0].length);
+    }
+  }
+  const value = field !== null ? extractNavigateToHashFragmentValue(url, baselineHash) : null;
+  const hashAt = rest.indexOf("#");
+  const valueAt = value !== null && hashAt !== -1 ? rest.lastIndexOf(value) : -1;
+  if (field !== null && value !== null && valueAt > hashAt) {
+    const access = isValidJsIdentifier(field) ? `payload.${field}` : `payload[${JSON.stringify(field)}]`;
+    const read = `encodeURIComponent(${optional ? `${access} ?? ""` : `String(${access})`})`;
+    return `\`${prefix}${esc(rest.slice(0, valueAt))}\${${read}}${esc(rest.slice(valueAt + value.length))}\``;
+  }
+  if (prefix === "") return JSON.stringify(url);
+  return `\`${prefix}${esc(rest)}\``;
 }
 
 /** Emitted extract-prompt expression for a read-only GET browser fallback: binds
